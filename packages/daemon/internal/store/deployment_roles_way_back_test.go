@@ -55,7 +55,10 @@ func deploymentRolesWayBackFor(t *testing.T, project string) string {
 	return strings.ReplaceAll(deploymentRolesWayBack(t), rollingBackProject, project)
 }
 
-// The release before this one, the release this rollback goes back to, is main at 167c7d3ed6e7.
+// The release before this one, the release this rollback goes back to, is main at 41524d0dd5a8.
+// It decodes and runs each row the way back leaves as main at 167c7d3ed6e7 (the lines cited
+// below) and legion-v26.24.1 do: a probe ran each such row of the fixture through all three
+// releases' own decoder and outbox executor (dispatch://INFRA-4333/artifact/way-back-probe-sh).
 // Its types are not in the tree, so what it reads of a row is written here from its code: the two
 // shapes below, which it decodes strictly (record.DecodeOutboxPayload, DisallowUnknownFields), and
 // the checks refusedBeforeTheRoles makes. Every other payload of the rows below is this release's
