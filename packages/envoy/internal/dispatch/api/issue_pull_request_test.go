@@ -185,6 +185,17 @@ func TestIssueDetailsPullRequest(t *testing.T) {
 		wantPullRequest(t, handler, key, repo, 40, "merged", address(repo, 40))
 	})
 
+	t.Run("of two merged pull requests with one merge time the higher number is read", func(t *testing.T) {
+		key := createOutcomeIssue(t, handler, "PULL", "Two pull requests merged at the same time")
+		const repo = "acme/merge-time-tie"
+		mergedAt := at(0)
+		writePullRequestHeads(t, database,
+			pullRequestHead{repo: repo, number: 50, state: "merged", issue: key, url: address(repo, 50), eventAt: at(2), mergedAt: mergedAt},
+			pullRequestHead{repo: repo, number: 51, state: "merged", issue: key, url: address(repo, 51), eventAt: at(1), mergedAt: mergedAt},
+		)
+		wantPullRequest(t, handler, key, repo, 51, "merged", address(repo, 51))
+	})
+
 	t.Run("a pull request with no stored address reads https://github.com/<repo>/pull/<number>", func(t *testing.T) {
 		key := createOutcomeIssue(t, handler, "PULL", "A pull request whose event named no address")
 		writePullRequestHeads(t, database, pullRequestHead{
