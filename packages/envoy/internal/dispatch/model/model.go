@@ -1868,7 +1868,9 @@ type BasisLearnedAt struct {
 // CheckPassStands is the one line that answers the gate's question for a check: whether a pass
 // of it stands at what it compared its results with, against the check's words now, and from
 // which roles. Roles is empty for every answer but PassStandsYes. A pass whose check's words
-// moved does not stand, and a retracted result counts for nothing.
+// moved does not stand, and a retracted result counts for nothing. A pass recorded by a session
+// that held no role of its recording issue (CheckResult.Role "") names no role: NoRole says
+// that such a pass stands, and no role "" is ever in Roles.
 //
 // A `before_merge` check compared with heads has subjects, the heads a pass must stand at: each
 // open pull request's head, or where the issue has none, the newest merged one's final head. A
@@ -1889,6 +1891,7 @@ type BasisLearnedAt struct {
 type CheckPassStands struct {
 	Answer   string              `json:"answer" enum:"yes,no,unknown"`
 	Roles    []string            `json:"roles,omitempty"`
+	NoRole   bool                `json:"no_role,omitempty"`
 	Reason   string              `json:"reason,omitempty" enum:"pass_and_fail,fail,no_result,not_placed,read_failed,program_not_named,no_deploy,deploy_not_merged,no_result_from_deploy"`
 	Subjects []PassStandsSubject `json:"subjects,omitempty"`
 	Results  []string            `json:"results,omitempty"`
@@ -1902,8 +1905,10 @@ type CheckPassStands struct {
 // PassStandsReasonPassAndFail where a pass and a fail that count at one commit of a `before_merge`
 // check, from any role, make that commit's state unknown, or with PassSubjectReasonReadFailed
 // where the check is one CI proves and GitHub's check runs at that head could not be read. Roles
-// names each role whose pass counts there, for PassStandsYes alone. Results holds the ids of the
-// results that decide the state: for PassStandsYes the newest pass of each role in Roles, for
+// names each role whose pass counts there, for PassStandsYes alone, and NoRole says that a pass of
+// a session that held no role counts there. Results holds the ids of the
+// results that decide the state: for PassStandsYes the newest pass of each role in Roles and,
+// where NoRole is set, the newest pass of a session with no role, for
 // PassStandsNo with PassSubjectReasonFail the newest fail, for PassStandsReasonPassAndFail the
 // newest pass and the newest fail, and for PassSubjectReasonNoResult and
 // PassSubjectReasonReadFailed none. CI is the read of a check CI proves at that head, in the
@@ -1913,6 +1918,7 @@ type PassStandsSubject struct {
 	Answer  string     `json:"answer" enum:"yes,no,unknown"`
 	Reason  string     `json:"reason,omitempty" enum:"fail,no_result,pass_and_fail,read_failed"`
 	Roles   []string   `json:"roles,omitempty"`
+	NoRole  bool       `json:"no_role,omitempty"`
 	Results []string   `json:"results,omitempty"`
 	CI      *CheckCI   `json:"ci,omitempty"`
 }
@@ -2049,7 +2055,10 @@ type SpecCheckRecorder struct {
 // version both moved, since a block respelled by another renderer version takes a new digest
 // and keeps its changed version (refs.BlockIndexing.KeepRespelled). CommitStands,
 // CheckWordsMoved and Retracted are read when the results are read and are absent from the
-// record's own answer.
+// record's own answer. Role is the role that the recording session held on IssueKey when the
+// result was recorded, as the Legion daemon published it (issue_role_holders), and "" for a
+// session or a person that held none; the role a request names is never stored
+// (dispatch://INFRA-3994). A row recorded by an earlier release holds the role its request named.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`

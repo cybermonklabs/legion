@@ -3416,6 +3416,12 @@ Such a repository is one with an open or merged linked pull request that GitHub 
 The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one, and reads a `before_merge` result's pull requests through it.
 A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `check_results` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
 
+Migration `20261128161114_check_results_no_role` widens the role check of `check_results` to take the empty string beside every role of a-z and - it took: the role of a result whose session holds no role of its recording issue, and of a person's result (dispatch://INFRA-3994).
+It drops `check_results_role_check` without `cascade` and adds it back `not valid`, so it reads no stored row: none can fail a check wider than the one it was written under.
+Both are the census's catalog-only `alter table` forms, so the migration is exempt from the table size limit at any size, it holds `check_results` `ACCESS EXCLUSIVE` for the catalog write alone, and its census answers `0`.
+The release before it writes only roles of a-z and -, which the wider check takes, so the two run against it at once.
+Rolling back past it is an image rollback alone; once a row holds the empty role, the narrower check cannot be put back without refusing that row.
+
 Migration `20261125125702_after_merge_states` stores merge metadata, commit ancestry answers and deploys for result comparison.
 `pull_request_heads.merge_commit_sha` defaults to `''`, and `merged_at` is nullable.
 They hold the merge commit and GitHub's merge time.
@@ -3469,7 +3475,7 @@ It deletes the migration's version row, so the next boot of this release applies
 Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
 The `role` check names the six Legion roles, and a row goes with its issue.
-A later release reads the table in the write transaction of a result, so that the stored role of a result is the role that its session holds.
+The results route reads the table in the write transaction of a result (`POST /api/v1/issues/{key}/results`, Routes below), so that the stored role of a result is the role that its session holds on the recording issue, and no role where it holds none; the release that added the table stored the role the request named.
 A new table: the foreign key holds `issues` in `SHARE ROW EXCLUSIVE` for the migration's transaction, so an issue write waits behind it while a read does not; otherwise nothing existing is read or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
 Migration `20261125002856_issue_role_holders_daemon_proven` adds `issue_role_holders.daemon_proven`, `boolean not null default false`: whether the credential that wrote a pair held `legion-status` and proved a daemon's session, which only a daemon's own broker token does.
@@ -6847,6 +6853,7 @@ Each item below names a path with its method and identity, then its purpose.
     It is a second fact and a second field: a result at a compared commit whose check has been reworded since is both, and one word for both would hide which.
 
   - `pass_stands` names the deciding answer, roles, result IDs, commit and reason.
+    A pass recorded by a session that held no role of its recording issue (role `""`) names no role: `no_role: true` says that such a pass stands, on the answer and on each head, and `roles` never holds `""`.
     A retracted or reworded result does not decide it.
     A `before_merge` check needs a standing pass at every required head, with no fail at any of those heads.
     A pass on one head cannot erase a fail on another.
@@ -6923,7 +6930,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/results` (POST; cookie, trusted header, or bearer)
 
-  POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
+  POST records one result: `{check, role?, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
   What it takes, and what it refuses:
 
   - `{key}` is the issue the result is recorded on;
@@ -6932,8 +6939,14 @@ Each item below names a path with its method and identity, then its purpose.
   - A check CI proves (GET above) is `409 CHECK_PROVED_BY_CI` for every role, naming the block and the check run, since its result is read from that run;
     the test runs right after the check is resolved, before GitHub is asked about the commit, and again inside the recording transaction, where whether a result is recorded against the block is read again.
 
-  - `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0;
+  - `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, absent counts are 0, and a `role` the request names is at most 32 characters of `[a-z-]`;
     a `pass` counting any failed, skipped or excluded case is `400 RESULT_CONTRADICTS`, and any other malformed field `400 RESULT_INPUT`.
+
+  - The stored `role` is the role that the recording session holds on `{key}`, as the Legion daemon last published it (`issue_role_holders`, `PUT /api/v1/issues/{key}/role-holders` below), read in the transaction that writes the result; it is `""` for a session that holds no role of `{key}` and for a person, whose actor names no session (dispatch://INFRA-3994).
+    It is the recording issue's role, not the check's issue's: a child's session that records its parent's check records it on the child, under its role there.
+    A `role` the request names is never stored and refuses nothing: the answer says what Dispatch recorded instead (`role_notice` below), and each such write is counted in `envoy_dispatch_result_roles_named_total`, labelled `held="yes"` where the session held the role it named and `held="no"` where it did not, and logged as `dispatch: a result write named its role` with the issue, the session and `held`.
+    A later release refuses a body that names a role, once that counter rises nowhere and the logs, which span the restarts that set the counter back to 0, hold no such line for 72 hours.
+    A result recorded before this release keeps the role its request named.
 
   - A stored open or merged head fixes its commit's repository without a GitHub read.
     Otherwise Dispatch asks the issue's repository, then its other attributed-head repositories in name order, stopping at the first proved hold.
@@ -6965,9 +6978,12 @@ Each item below names a path with its method and identity, then its purpose.
   The result is appended as `result.recorded` on the check's own issue, naming the recording issue.
   A closed issue, the recording one or the check's, takes a result only for a check whose `when` is `after_merge` or `default_branch` — the production check after the merge
   — and refuses every other with `409 ISSUE_CLOSED`; every other write on a closed issue stays refused.
-  The answer is `{result, line}`, `line` the pull-request body line the result implies:
+  The answer is `{result, line, role_notice?, role_not_taken?}`.
+  `role_notice` is set where the request named a role: `This call named the role <r>. Dispatch records the role that the session holds, and that is <r>.` where the session holds it, and `Dispatch did not take the role <named> that this call named. It recorded the role that the session holds on <key>: <role, or no role>.` where it does not, each followed by `A later release refuses a result that names a role.`;
+  `role_not_taken` is the named role where it is not the role stored.
+  `line` is the pull-request body line the result implies:
 
-  - The line is `- Check <id> (<when>): <verdict> at <commit>, recorded by <role>.` and the reading.
+  - The line is `- Check <id> (<when>): <verdict> at <commit>, recorded by <role>.` and the reading, and `recorded by a session that holds no role of the issue.` where the stored role is `""`: the line names neither the session nor the issue's key, which is a word the reading leaves out.
     It goes into a pull request, which can be public, so the reading keeps only plain words: a word every rune of which is a visible letter, a digit or one of `. , ; : ! ? ' " - ( ) /`.
     Every other rune drops its word whole: many of them, such as emphasis and strikethrough (`*`, `_`, `~`), code, HTML, links, escapes, character references, math, mentions and every Unicode dash, quotation mark or invisible character, can split, join, hide or forge a key or a host once the pull request renders it, and the rule allows these few runes rather than list which; `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b` and `it’s` leave the line too, while the record keeps the whole reading.
     Of the plain words it also leaves out every one that holds `://`, a host below `.internal.` or ending in `.internal`, a Tailscale MagicDNS host, this Dispatch's own host, or an issue key of a project this Dispatch holds, judged as written and under NFKC; a public host written as `www.` and a domain, which GitHub renders as a link, stays.
@@ -6981,7 +6997,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/results/dry-run` (POST; cookie, trusted header, or bearer)
 
   The dry run of a result's record, which `dispatch result --dry-run` sends: it takes the record's body and refuses it as the record does before it writes anything (`400 RESULT_INPUT`, `400 RESULT_CONTRADICTS`, `400 UNKNOWN_CHECK`, `409 CHECK_AMBIGUOUS`, `409 CHECK_PROVED_BY_CI`, `400 RESULT_COMMIT_UNKNOWN`, `502 GITHUB_UNREADABLE`).
-  Otherwise it answers `200 {line}`, the line the record would answer, and records nothing: no row and no event.
+  Otherwise it answers `200 {line}`, the line the record would answer, with the role that the session holds now, and records nothing: no row and no event.
   A closed issue, a screenshot and a check reworded while the record writes are refused by the record alone, since the record judges them under its locks.
   The dry run is a path of its own, not a flag on the record: a release that does not serve it answers `404`, where it would drop a flag it did not know and record the result.
 

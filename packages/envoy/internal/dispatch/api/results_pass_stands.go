@@ -24,6 +24,35 @@ func standingCommit(result model.CheckResult) string {
 	return result.CommitStands.Answer
 }
 
+// passRoles is the roles of the passes that stand, in the order the results come, and whether a
+// pass of a session that held no role of its recording issue stands among them. Such a pass
+// carries the role "", which names no role, so it goes in no list and sets noRole instead
+// (model.CheckPassStands.NoRole).
+type passRoles struct {
+	roles  []string
+	noRole bool
+}
+
+// add takes the role of one pass that stands and answers whether it is one the list did not hold
+// yet: a role not listed, or the first pass of a session with no role.
+func (p *passRoles) add(role string) bool {
+	if role == "" {
+		first := !p.noRole
+		p.noRole = true
+		return first
+	}
+	if slices.Contains(p.roles, role) {
+		return false
+	}
+	p.roles = append(p.roles, role)
+	return true
+}
+
+// any is whether a pass stands at all, from a role or from a session with no role.
+func (p passRoles) any() bool {
+	return len(p.roles) > 0 || p.noRole
+}
+
 // passStandsOf is the one line that answers the gate's question for a check: whether a pass of
 // it stands at what it compared with, against the check's words now, and from which roles.
 //
@@ -67,7 +96,7 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 	if check.When == docs.CheckWhenBeforeMerge && len(compared.subjects) > 0 {
 		return eachSubjectStands(check, compared, conflicted)
 	}
-	var roles []string
+	var roles passRoles
 	unknown, conflict := false, false
 	for _, result := range check.Results {
 		if result.Verdict != "pass" {
@@ -79,16 +108,14 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 				conflict = true
 				continue
 			}
-			if !slices.Contains(roles, result.Role) {
-				roles = append(roles, result.Role)
-			}
+			roles.add(result.Role)
 		case model.CommitUnknown:
 			unknown = true
 		}
 	}
 	switch {
-	case len(roles) > 0:
-		return model.CheckPassStands{Answer: model.PassStandsYes, Roles: roles}
+	case roles.any():
+		return model.CheckPassStands{Answer: model.PassStandsYes, Roles: roles.roles, NoRole: roles.noRole}
 	case conflict:
 		return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: model.PassStandsReasonPassAndFail}
 	case unknown:
@@ -144,6 +171,9 @@ func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted m
 			stands.Roles = append(stands.Roles, role)
 		}
 	}
+	stands.NoRole = !slices.ContainsFunc(stands.Subjects, func(subject model.PassStandsSubject) bool {
+		return !subject.NoRole
+	})
 	return stands
 }
 
@@ -187,6 +217,7 @@ func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map
 		return state
 	}
 	newestFail := ""
+	var roles passRoles
 	for _, result := range check.Results {
 		if result.CommitSHA != basis.Commit || standingCommit(result) != model.CommitAtBasis || derivedAtAnotherHead(result, ci) {
 			continue
@@ -196,13 +227,13 @@ func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map
 			if newestFail == "" {
 				newestFail = result.ID
 			}
-		case !slices.Contains(state.Roles, result.Role):
-			state.Roles = append(state.Roles, result.Role)
+		case roles.add(result.Role):
 			state.Results = append(state.Results, result.ID)
 		}
 	}
+	state.Roles, state.NoRole = roles.roles, roles.noRole
 	switch {
-	case len(state.Roles) > 0:
+	case roles.any():
 		state.Answer, state.Reason = model.PassStandsYes, ""
 	case newestFail != "":
 		state.Reason, state.Results = model.PassSubjectReasonFail, []string{newestFail}
@@ -269,7 +300,7 @@ func newestResultStands(check model.CheckBlock, compared comparison) model.Check
 			return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: "not_placed", Results: []string{result.ID}, Commit: result.CommitSHA}
 		case model.CommitAtBasis:
 			var pass, fail string
-			var roles []string
+			var roles passRoles
 			for _, at := range check.Results {
 				if at.CommitSHA != result.CommitSHA || standingCommit(at) != model.CommitAtBasis {
 					continue
@@ -278,9 +309,7 @@ func newestResultStands(check model.CheckBlock, compared comparison) model.Check
 					if pass == "" {
 						pass = at.ID
 					}
-					if !slices.Contains(roles, at.Role) {
-						roles = append(roles, at.Role)
-					}
+					roles.add(at.Role)
 				} else if fail == "" {
 					fail = at.ID
 				}
@@ -291,7 +320,7 @@ func newestResultStands(check model.CheckBlock, compared comparison) model.Check
 			case fail != "":
 				return model.CheckPassStands{Answer: model.PassStandsNo, Reason: "fail", Results: []string{fail}, Commit: result.CommitSHA}
 			default:
-				return model.CheckPassStands{Answer: model.PassStandsYes, Roles: roles, Results: []string{pass}, Commit: result.CommitSHA}
+				return model.CheckPassStands{Answer: model.PassStandsYes, Roles: roles.roles, NoRole: roles.noRole, Results: []string{pass}, Commit: result.CommitSHA}
 			}
 		}
 	}
@@ -332,11 +361,13 @@ func liveResultStands(check model.CheckBlock, compared comparison) model.CheckPa
 			return answer
 		}
 		answer.Answer = model.PassStandsYes
+		var roles passRoles
 		for _, pass := range check.Results {
-			if pass.Verdict == "pass" && standingCommit(pass) == model.CommitAtBasis && !slices.Contains(answer.Roles, pass.Role) {
-				answer.Roles = append(answer.Roles, pass.Role)
+			if pass.Verdict == "pass" && standingCommit(pass) == model.CommitAtBasis {
+				roles.add(pass.Role)
 			}
 		}
+		answer.Roles, answer.NoRole = roles.roles, roles.noRole
 		return answer
 	}
 	answer.Reason = "no_result_from_deploy"

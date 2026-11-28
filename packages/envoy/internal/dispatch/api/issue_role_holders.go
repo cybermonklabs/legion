@@ -22,9 +22,10 @@ import (
 // party that gives a session a role. It publishes the set of each issue here: when a claim
 // readies, when a claim ends and at each boot. A claim whose idle pod the daemon released, or that
 // a project pause's stop suspended, keeps its session and its role, so its session stays in the
-// set until the claim ends (packages/daemon's supervise.HoldsRole). The results route of a later
-// release reads the set in the write transaction of a result (heldRole), so that the stored role
-// of a result is the role that its session holds.
+// set until the claim ends (packages/daemon's supervise.HoldsRole). The results route reads the
+// set in the write transaction of a result (resultRoleOf, heldRole), so the stored role of a
+// result is the role that its session holds on the recording issue, and no role for a session
+// that holds none (dispatch://INFRA-3994). The release before it stored the role the request named.
 //
 // With DISPATCH_LEGION_STATUS_SCOPE on, only a Legion daemon's own broker token can publish. It
 // must hold model.ScopeLegionStatus. It must prove session legion-daemon:<project> of the issue's

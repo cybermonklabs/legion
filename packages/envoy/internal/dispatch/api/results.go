@@ -38,7 +38,9 @@ import (
 // child's pull request answers for nothing against its parent's check. The comparison itself
 // is answered in results_comparison.go.
 
-// checkResultRole bounds the role a result names: the word the pull-request body line prints.
+// checkResultRole bounds the role a request may still name: a word of a-z and -. The role is never
+// stored (resultRoleOf), and the answer echoes it (roleNotice), so a role outside this bound is
+// refused as before.
 var checkResultRole = regexp.MustCompile(`^[a-z-]{1,32}$`)
 
 // resultCommitSHA is the commit a result ran at, as the column's own check spells it.
@@ -97,11 +99,14 @@ type resolvedCheck struct {
 	checkResolution
 }
 
-// checkResultInput is the body POST /api/v1/issues/{key}/results takes.
+// checkResultInput is the body POST /api/v1/issues/{key}/results takes. Role is optional and never
+// stored: the stored role is the one the recording session holds on {key} (resultRoleOf), and a
+// named role only earns the answer's notice (roleNotice), the count and the log line of
+// noteResultRoleNamed. A later release refuses a body that names it (dispatch://INFRA-3994).
 type checkResultInput struct {
 	Actor           *model.Actor `json:"actor"`
 	Check           string       `json:"check" required:"true"`
-	Role            string       `json:"role" required:"true"`
+	Role            string       `json:"role"`
 	Surface         string       `json:"surface"`
 	Run             string       `json:"run"`
 	Observed        string       `json:"observed"`
@@ -114,10 +119,14 @@ type checkResultInput struct {
 	Screenshots     []string     `json:"screenshots"`
 }
 
-// checkResultRecorded is the body POST /api/v1/issues/{key}/results answers.
+// checkResultRecorded is the body POST /api/v1/issues/{key}/results answers. RoleNotice is set
+// where the request named a role, and says what Dispatch recorded instead; RoleNotTaken is the
+// named role where it is not the role stored (roleNotice).
 type checkResultRecorded struct {
-	Line   string            `json:"line"`
-	Result model.CheckResult `json:"result"`
+	Line         string            `json:"line"`
+	Result       model.CheckResult `json:"result"`
+	RoleNotice   string            `json:"role_notice,omitempty"`
+	RoleNotTaken string            `json:"role_not_taken,omitempty"`
 }
 
 // checkResultDryRun is the body POST /api/v1/issues/{key}/results/dry-run answers.
@@ -181,12 +190,49 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	s.readThroughPullRequests(r.Context(), request.check.IssueKey, written.result.CommitSHA, readThrough)
 	s.publish(r.Context(), written.event)
 	s.storeDisplayTrees(r.Context(), written.result.ID, written.result.Observed)
+	if request.input.Role != "" {
+		s.noteResultRoleNamed(request.issueKey, written.result.Session, request.input.Role == written.result.Role)
+	}
+	notice, notTaken := roleNotice(request.issueKey, request.input.Role, written.result.Role)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{
 		// The check as the transaction that wrote the row saw it, which after a redo is not the
 		// one resolveCheck read: the line names the `when` the result was judged by.
-		Line:   checkResultLine(written.check, written.result, request.words),
-		Result: written.result,
+		Line:         checkResultLine(written.check, written.result, request.words),
+		Result:       written.result,
+		RoleNotice:   notice,
+		RoleNotTaken: notTaken,
 	})
+}
+
+// roleNotice is what the answer of a record says about the role its request named: nothing where
+// it named none; where it named the role the session holds, that Dispatch records the held role;
+// and where it named another, that Dispatch did not take it, with the role it stored, as notTaken.
+// stored is the role the record stored, "" for none.
+func roleNotice(issueKey, named, stored string) (notice, notTaken string) {
+	const later = " A later release refuses a result that names a role."
+	switch {
+	case named == "":
+		return "", ""
+	case named == stored:
+		return fmt.Sprintf("This call named the role %s. Dispatch records the role that the session holds, and that is %s.%s",
+			named, stored, later), ""
+	}
+	held := stored
+	if held == "" {
+		held = "no role"
+	}
+	return fmt.Sprintf("Dispatch did not take the role %s that this call named. It recorded the role that the session holds on %s: %s.%s",
+		named, issueKey, held, later), named
+}
+
+// resultRoleOf is the role a result recorded on issueKey by actor stores: the role actor's session
+// holds on issueKey, as the Legion daemon published it (issue_role_holders, heldRole), and "" for
+// a session that holds none and for a person, whose actor names no session. It is the recording
+// issue's role, not the check's issue's: a Legion session holds its role on the issue it works,
+// and a child's run of a parent's check is recorded on the child. The request's own role never
+// enters it (dispatch://INFRA-3994).
+func resultRoleOf(ctx context.Context, q queryer, issueKey string, actor model.Actor) (string, error) {
+	return heldRole(ctx, q, issueKey, sessionOf(actor))
 }
 
 // POST /api/v1/issues/{key}/results/dry-run  (any authenticated actor)
@@ -203,8 +249,20 @@ func (s *server) dryRunCheckResult(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The role the record would store, read outside the record's transaction: the line is what
+	// the record would answer if the role holders did not change before it.
+	pool, err := s.readyPool()
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	role, err := resultRoleOf(r.Context(), pool, request.issueKey, request.actor)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, checkResultDryRun{Line: checkResultLine(request.check, model.CheckResult{
-		Role: request.input.Role, Observed: request.input.Observed,
+		IssueKey: request.issueKey, Role: role, Observed: request.input.Observed,
 		CommitSHA: request.input.Commit, Verdict: request.input.Verdict,
 	}, request.words)})
 }
@@ -500,13 +558,19 @@ func (s *server) recordResultUnderOwnerLocks(
 	if err := s.refuseResultScreenshots(ctx, tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
-
+	// The stored role is the one the session holds on the recording issue, read under the issue's
+	// owner lock in the transaction that writes the row, so a read error stores nothing and no
+	// publication of the set lands between the read and the write.
+	role, err := resultRoleOf(ctx, tx, issueKey, actor)
+	if err != nil {
+		return recordedCheckResult{}, indexedCheck{}, err
+	}
 	result := model.CheckResult{
 		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
 		CheckVersion: resolved.Version, CheckSHA256: resolved.SHA256,
 		CheckSubject: resolved.Attributes.Subject, CheckProgram: resolved.Attributes.Program,
-		Role: input.Role, Surface: input.Surface, Run: input.Run, Observed: input.Observed,
+		Role: role, Surface: input.Surface, Run: input.Run, Observed: input.Observed,
 		CommitSHA: input.Commit, CommitRepo: linkedCommitRepo, NegativeControl: input.NegativeControl,
 		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
 		Verdict: input.Verdict, Screenshots: nonNilStrings(input.Screenshots),
@@ -667,9 +731,9 @@ func (input checkResultInput) refusal() error {
 	if strings.TrimSpace(input.Check) == "" {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT", "check names the check block the result proves")
 	}
-	if !checkResultRole.MatchString(input.Role) {
+	if input.Role != "" && !checkResultRole.MatchString(input.Role) {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT",
-			"role is required and is at most 32 characters of a-z and -, the word the pull-request line prints")
+			"role is optional, and Dispatch records the role that the session holds, not this one. A role this call names is at most 32 characters of a-z and -")
 	}
 	if input.Verdict != "pass" && input.Verdict != "fail" {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT", "verdict is pass or fail")
@@ -1382,9 +1446,17 @@ func blockContent(node *pmdoc.Node) string {
 // one (cut). A result with no reading says so, since a line that simply stopped after the role
 // would read as a reading nobody recorded, and a reading of which nothing is left after the cut
 // says that, whether words kept nothing of it or the cut's second judging dropped what it kept.
+//
+// A result whose session held no role of its recording issue (Role "") says so in place of a
+// role. The line names neither the session nor the issue: the issue's key is a word the reading
+// leaves out, for the reason the reading does.
 func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWords) string {
+	recorder := result.Role
+	if recorder == "" {
+		recorder = "a session that holds no role of the issue"
+	}
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, recorded by %s.",
-		check.BlockID, check.Attributes.When, result.Verdict, result.CommitSHA, result.Role)
+		check.BlockID, check.Attributes.When, result.Verdict, result.CommitSHA, recorder)
 	if strings.TrimSpace(result.Observed) == "" {
 		return line + " The role recorded no reading."
 	}

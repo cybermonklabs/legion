@@ -578,13 +578,14 @@ func sortedPairs(holders []issueRoleHolderRecord) []issueRoleHolder {
 // Two publications of one issue that run at the same time leave one of the two sets, whole, and
 // never a mix of both: the route replaces the issue's whole set. Each publication that answers 200
 // answers the set that it stored, so the one that finished first answers its own set, and the one
-// that finished last leaves its set stored. Twenty rounds of each shape, because one round can pass
-// by the order the two happen to run in.
+// that finished last leaves its set stored. Eighty rounds, the number the check v-set-whole of
+// dispatch://INFRA-3994 names, the three shapes in turn, because one round can pass by the order
+// the two happen to run in.
 func TestTwoPublicationsOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
-	for _, shape := range []struct {
+	shapes := []struct {
 		name string
 		a, b []issueRoleHolder
 	}{
@@ -595,38 +596,38 @@ func TestTwoPublicationsOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 		{"two sessions that swap roles",
 			[]issueRoleHolder{{Role: "implementer", Session: "s1"}, {Role: "tester", Session: "s2"}},
 			[]issueRoleHolder{{Role: "implementer", Session: "s2"}, {Role: "tester", Session: "s1"}}},
-	} {
-		for round := range 20 {
-			publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "architect", Session: "z0"}})
-			sets := [][]issueRoleHolder{shape.a, shape.b}
-			codes := make([]int, 2)
-			answers := make([][]issueRoleHolder, 2)
-			var start, done sync.WaitGroup
-			start.Add(1)
-			for index, set := range sets {
-				done.Add(1)
-				go func() {
-					defer done.Done()
-					start.Wait()
-					response := putRoleHoldersAs(t, handler, issue, map[string]any{"holders": set, "actor": daemonSessionOf("ACME")})
-					codes[index] = response.Code
-					if response.Code == http.StatusOK {
-						answers[index] = sortedPairs(decodeBody[issueRoleHolders](t, response).Holders)
-					}
-				}()
-			}
-			start.Done()
-			done.Wait()
-			stored := sortedPairs(readRoleHolders(t, handler, issue).Holders)
-			if !slices.Equal(stored, shape.a) && !slices.Equal(stored, shape.b) {
-				t.Errorf("%s, round %d: the issue stores %v, want exactly %v or %v", shape.name, round+1, stored, shape.a, shape.b)
-			}
-			for index, set := range sets {
-				if codes[index] != http.StatusOK {
-					t.Errorf("%s, round %d: publication %d answered %d, want 200", shape.name, round+1, index, codes[index])
-				} else if !slices.Equal(answers[index], set) {
-					t.Errorf("%s, round %d: publication %d of %v answered %v, want the set it stored", shape.name, round+1, index, set, answers[index])
+	}
+	for round := range 80 {
+		shape := shapes[round%len(shapes)]
+		publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "architect", Session: "z0"}})
+		sets := [][]issueRoleHolder{shape.a, shape.b}
+		codes := make([]int, 2)
+		answers := make([][]issueRoleHolder, 2)
+		var start, done sync.WaitGroup
+		start.Add(1)
+		for index, set := range sets {
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				start.Wait()
+				response := putRoleHoldersAs(t, handler, issue, map[string]any{"holders": set, "actor": daemonSessionOf("ACME")})
+				codes[index] = response.Code
+				if response.Code == http.StatusOK {
+					answers[index] = sortedPairs(decodeBody[issueRoleHolders](t, response).Holders)
 				}
+			}()
+		}
+		start.Done()
+		done.Wait()
+		stored := sortedPairs(readRoleHolders(t, handler, issue).Holders)
+		if !slices.Equal(stored, shape.a) && !slices.Equal(stored, shape.b) {
+			t.Errorf("%s, round %d: the issue stores %v, want exactly %v or %v", shape.name, round+1, stored, shape.a, shape.b)
+		}
+		for index, set := range sets {
+			if codes[index] != http.StatusOK {
+				t.Errorf("%s, round %d: publication %d answered %d, want 200", shape.name, round+1, index, codes[index])
+			} else if !slices.Equal(answers[index], set) {
+				t.Errorf("%s, round %d: publication %d of %v answered %v, want the set it stored", shape.name, round+1, index, set, answers[index])
 			}
 		}
 	}
