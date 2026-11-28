@@ -396,29 +396,69 @@ func TestGCPReadCachesARefusalAndCoalescesConcurrentChecks(t *testing.T) {
 }
 
 // TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError pins two failure answers. A metadata call that
-// keeps answering UNAVAILABLE is made gcpMetadataAttempts times — the count below is what bounds
-// the work, not a reading of the clock — and then fails with its own code. A FAILED_PRECONDITION
-// on an enabled version (an unusable key, say) is an error the broker logs, not a secret with no
+// keeps answering UNAVAILABLE is made gcpMetadataAttempts times and then fails with its own code,
+// and the pauses between those calls stay bounded: each is within the ceiling gax.Backoff draws
+// it under, 200 ms doubling at each retry, and one call's pauses come to no more than failWithin,
+// the 10 s within which a lasting outage must fail it. The row reads the pauses the store hands
+// gax to wait out (gcp.RecordMetadataPausesForTest) rather than any clock, and waits none of them.
+// gax draws each pause at random up to its ceiling, so the row reads the pauses of
+// retriedDescribes calls rather than one call's two: a pause past its ceiling, such as one
+// doubled, shows in at least one of them but for a chance of one in 2^40. A FAILED_PRECONDITION on
+// an enabled version (an unusable key, say) is an error the broker logs, not a secret with no
 // value.
+//
+// The named revert: double the pause boundedRetryer answers; a pause past its ceiling then fails
+// this row.
 func TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError(t *testing.T) {
+	const (
+		// retriedDescribes is how many Describes the row makes through the outage, each one
+		// call's gcpMetadataAttempts GetSecrets and the pauses between them.
+		retriedDescribes = 20
+		// failWithin is the bound within which a call through a lasting UNAVAILABLE fails, which
+		// its pauses together may not pass.
+		failWithin = 10 * time.Second
+		// firstCeiling and lastCeiling are the store's backoff: the first retry's pause is drawn up
+		// to 200 ms, and each retry after it up to twice the one before, to at most 2 s.
+		firstCeiling, lastCeiling = 200 * time.Millisecond, 2 * time.Second
+	)
 	broken := servedSecret("v")
 	broken.KeyUnusable = true
 	f := &gcptest.FakeSecretManager{
 		Secrets:     map[string]*gcptest.FakeSecret{fakePrefix + "a": servedSecret("v"), fakePrefix + "broken": broken},
-		Unavailable: map[string]int{"GetSecret": 100},
+		Unavailable: map[string]int{"GetSecret": retriedDescribes * gcp.MetadataAttemptsForTest},
 	}
-	store := gcp.New(gcptest.Start(t, f), fakeKey)
+	client := gcptest.Start(t, f)
+	var pauses []time.Duration
+	gcp.RecordMetadataPausesForTest(client, func(pause time.Duration) { pauses = append(pauses, pause) })
+	store := gcp.New(client, fakeKey)
 	ctx := testwait.Context(t)
-	_, err := store.Describe(ctx, fakePrefix+"a")
-	if err == nil || !strings.Contains(err.Error(), "Unavailable") {
-		t.Fatalf("Describe through a lasting UNAVAILABLE = %v; want Unavailable", err)
+	for describe := 1; describe <= retriedDescribes; describe++ {
+		pauses = nil
+		if _, err := store.Describe(ctx, fakePrefix+"a"); err == nil || !strings.Contains(err.Error(), "Unavailable") {
+			t.Fatalf("Describe %d through a lasting UNAVAILABLE = %v; want Unavailable", describe, err)
+		}
+		if len(pauses) != gcp.MetadataAttemptsForTest-1 {
+			t.Fatalf("Describe %d through a lasting UNAVAILABLE paused %d times (%v), want %d, one before each retry", describe, len(pauses), pauses, gcp.MetadataAttemptsForTest-1)
+		}
+		var waited time.Duration
+		ceiling := firstCeiling
+		for retry, pause := range pauses {
+			if pause > ceiling {
+				t.Fatalf("Describe %d paused %v before its retry %d, past that retry's ceiling of %v (its pauses: %v)", describe, pause, retry+1, ceiling, pauses)
+			}
+			waited += pause
+			ceiling = min(2*ceiling, lastCeiling)
+		}
+		if waited > failWithin {
+			t.Fatalf("Describe %d through a lasting UNAVAILABLE paused %v in all (%v), past the %v within which it must fail", describe, waited, pauses, failWithin)
+		}
 	}
 	f.Mu.Lock()
 	calls := f.Calls["GetSecret"]
 	f.Unavailable = nil
 	f.Mu.Unlock()
-	if calls != gcp.MetadataAttemptsForTest {
-		t.Fatalf("GetSecret calls = %d, want %d", calls, gcp.MetadataAttemptsForTest)
+	if calls != retriedDescribes*gcp.MetadataAttemptsForTest {
+		t.Fatalf("GetSecret calls = %d, want %d, %d for each of %d Describes", calls, retriedDescribes*gcp.MetadataAttemptsForTest, gcp.MetadataAttemptsForTest, retriedDescribes)
 	}
 	if _, err := store.Read(context.Background(), fakePrefix+"broken"); err == nil || errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read of an enabled version that answers FAILED_PRECONDITION = %v; want a logged error, not ErrNotFound", err)

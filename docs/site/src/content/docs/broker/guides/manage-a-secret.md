@@ -728,7 +728,7 @@ and ends that grant.
 Exit 0 is the answer of the one broker process that served the reread, not of every process. That
 process tells the others over Postgres and they reread within seconds, so exit 0 is the usual case
 and the one below is the exception. Five log lines say a process may be behind, and only two of
-them name the secret:
+them name the secret. A sixth, the last below, says a peer ran the reread it was told of:
 
 | Log line | Names a secret? | What it means |
 | --- | --- | --- |
@@ -737,6 +737,7 @@ them name the secret:
 | `broker: a Postgres listener has no connection; redialing channels=… error=… attempt=… wait_ms=…` | no | That process is outside the fan-out **for every name** while it redials, and catches nothing up when it reconnects. |
 | `broker: serving without the boot's catch-up policy load … error=…` | no | A booting process could not take its catch-up read, so a retag served while it was starting may not be in force there. |
 | `broker: binding before the reread listener has had an answer waited=…` | no | A booting process bound without its `LISTEN`, so notifications sent in that gap reached it not at all. |
+| `broker: reread a secret a peer fanned out secret=… sender=… cause=fan-out` | **yes**, `secret` and the peer that sent it | A peer was told and its reread ran. It is not one of the five: it says that peer read the secret again, not which tags it read, so on Secret Manager that peer can still be behind. |
 
 A process left behind serves the secret as stored, and a grant of it there releases the stored
 value raw.
@@ -749,9 +750,10 @@ the window, and it is worth a new name to close it.
 
 Where you must convert, before you store an App key or a Google login:
 
-- Read the broker's log since the retag. **If any of those five lines appears, do not store yet** —
-  not only one naming your secret. Three of the five carry no secret at all, so a process that
-  logged one may be behind on yours and nothing in the line will say so.
+- Read the broker's log since the retag. **If any of the five lines that say a process may be
+  behind appears, do not store yet** — not only one naming your secret. Three of the five carry no
+  secret at all, so a process that logged one may be behind on yours and nothing in the line will
+  say so.
 - Run the retag again and require another exit 0 with none of those lines after it, or, where the
   retag wrote the tags without checking the value, exit 1 on `reason=value-malformed` alone. That
   says **the answering process** has the new tags: its reread reads the one secret directly
@@ -763,9 +765,10 @@ Where you must convert, before you store an App key or a Google login:
   no retag of it says this. For such a secret, `secret set` is
   the next step, and the line its own reread prints, `broker: serving NAME (type <type>)`, says
   the answering process has the new tags.
-- **It says nothing about the peers, and no log line will.** A peer's reread reads the one name
-  too, so on Secret Manager it can succeed while still reading the old tags: the broker warns
-  only when that read returns an error, and a successful read of stale tags is not one. The
+- **It says nothing about the peers, and no log line will settle them.** A peer's reread reads
+  the one name too, so on Secret Manager it can succeed while still reading the old tags: the
+  broker warns only when that read returns an error, and a peer whose reread ran logs
+  `broker: reread a secret a peer fanned out` whichever tags it read. The
   notification is asynchronous besides, so a healthy peer need not have applied the retag by the
   time exit 0 is printed. Neither a second exit 0 nor a clean log establishes the peers — that is
   the residual `dispatch://INFRA-375` tracks, and the reason the paragraph above recommends a new

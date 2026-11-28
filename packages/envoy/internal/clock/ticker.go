@@ -4,8 +4,9 @@ import "time"
 
 // Ticker is a time.Ticker on a Clock, for a loop a test must be able to read: its next tick is
 // armed only once the loop's work for the tick before it is done, so a test that sees that tick
-// armed on a clocktest.Fake knows the work before it has returned. It is the one ticker of the
-// module's loops that keep a fixed cadence on a Clock.
+// armed on a clocktest.Fake knows the work before it has returned. Not every loop of the module
+// that keeps a fixed cadence on a Clock runs on it: enroll's ServingClock.Run keeps its own grid
+// on a Clock's timer.
 //
 // Its ticks fall on a grid one interval apart from the moment NewTicker read the clock, and each
 // hands the loop the moment it fired, as a time.Ticker hands the value it sent: Go sends the moment

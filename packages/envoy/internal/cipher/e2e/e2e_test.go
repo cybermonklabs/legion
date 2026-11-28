@@ -91,7 +91,7 @@ const (
 	otherPerson = "ben@example.com"
 
 	// reloadInterval is the policy's reload period for this test, as a deployment's: its ticker
-	// runs on the broker's reload clock, a fake that step 8 moves to each next tick
+	// runs on the broker's reload clock, a fake that step 8 moves just past each next tick
 	// (awaitStatus), so the real reload path runs at the moments the test chooses and no real
 	// time passes for it.
 	reloadInterval = 5 * time.Minute
@@ -803,17 +803,22 @@ func TestEndToEnd(t *testing.T) {
 
 // awaitStatus moves the policy's reload clock to its next tick, which reloads the policy and so
 // applies a tag edit, and asks for name from a fresh session until the create route answers status
-// (and, for an error, code).
+// (and, for an error, code). The move goes a second past the tick: the reload takes its bound
+// (reloadInterval) at the moment it took the tick, so that bound falls due a second after the
+// next tick rather than with it. awaitStatus returns once that next tick is armed, which the
+// ticker does only after the reload has returned and released its bound, so the next call's move
+// fires that tick and never the bound of a reload still running.
 func (s *e2eServer) awaitStatus(t *testing.T, name string, status int, code string) {
 	t.Helper()
 	enrollmentID, key := s.loginAndEnroll(t, testApprover, "e2e-reload-"+uuid.NewString()[:8])
 	tick := s.reloads.AwaitArmed(t, "the policy's next reload tick", 1)
-	s.reloads.Set(tick[0])
+	s.reloads.Set(tick[0].Add(time.Second))
 	testwait.Until(t, fmt.Sprintf("POST /v1/requests (%s) to answer %d %s once the reload has run", name, status, code), func() (string, bool) {
 		got, body := s.session(t, key, enrollmentID, http.MethodPost, "/v1/requests",
 			map[string]any{"request": signAgentSecretRequest(t, key, s.URL, "reload", name), "session_id": nil})
 		return fmt.Sprintf("%d %s", got, body), got == status && (code == "" || decode[wireError](t, body).Code == code)
 	})
+	s.reloads.AwaitArmedAt(t, "the policy's reload tick after this one, once the reload has returned", tick[0].Add(reloadInterval))
 }
 
 // pendingListsFor answers whether GET /v1/pending?approver=<person> lists recordID, with the

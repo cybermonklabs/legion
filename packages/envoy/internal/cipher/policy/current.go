@@ -124,8 +124,12 @@ func NewCurrent(ctx context.Context, loader Loader, every time.Duration) (*Curre
 
 // NewCurrentOn is NewCurrent with its reload ticker and each reload's bound on clk: clock.Real
 // from NewCurrent, and a test's clocktest.Fake, on which the policy reloads only where the test
-// moves it. The ticker is clock.Ticker, which arms the next tick once a reload has returned.
+// moves it. A nil clk is clock.Real. The ticker is clock.Ticker, whose ticks fall on a grid one
+// interval apart and which arms the next of them once a reload has returned.
 func NewCurrentOn(ctx context.Context, loader Loader, every time.Duration, clk clock.Clock) (*Current, error) {
+	if clk == nil {
+		clk = clock.Real()
+	}
 	c := &Current{loader: loader, mu: make(chan struct{}, 1), recent: map[string]time.Time{}, values: map[string]*valueState{}, now: time.Now}
 	// The loader weighs a secret waiting for its value by c's clock, which PendingValue reads too,
 	// so the two never answer differently. Load and LoadOne run under the writer lock, which SetNow

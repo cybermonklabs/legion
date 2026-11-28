@@ -2,11 +2,14 @@ package reread
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -71,6 +74,37 @@ func TestARereadAnotherPodSentIsRunHere(t *testing.T) {
 	}
 	if name := next(t, refreshed); name != "AGENT_SECRET_ONE" {
 		t.Fatalf("reread %q, want AGENT_SECRET_ONE", name)
+	}
+}
+
+// TestAFannedOutRereadLogsItsReadWithItsCause pins the one line a pod writes for a reread a peer
+// fanned out to it (ReadMessage): once Refresh has run for the name a notification carries, the
+// line names that secret, the peer that sent it and the cause, fan-out, which is what tells a
+// read from the fan-out from the pod's own reread route and its own reloads. The line is read off
+// the log's stream, so the wait ends at the line however late the listener's goroutine writes it.
+//
+// The named revert: notified writes no line after a Refresh that ran; this row then gives up
+// waiting for it.
+func TestAFannedOutRereadLogsItsReadWithItsCause(t *testing.T) {
+	logs := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+		if len(groups) == 0 && a.Key == slog.TimeKey {
+			return slog.Attr{}
+		}
+		return a
+	}}))
+	st, refreshed := listener(t, "pod-a")
+	if err := Notifier(st.Pool, "pod-b")(context.Background(), "FANNED_OUT_KEY"); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	if name := next(t, refreshed); name != "FANNED_OUT_KEY" {
+		t.Fatalf("reread %q, want FANNED_OUT_KEY", name)
+	}
+	const want = `level=INFO msg="` + ReadMessage + `" secret=FANNED_OUT_KEY sender=pod-b cause=` + CauseFanOut
+	if line := testwait.Next(t, "the fan-out's read line", logs.Stream(), func(line string) bool {
+		return strings.Contains(line, ReadMessage)
+	}); line != want {
+		t.Fatalf("the fan-out's read line is\n%s\nwant\n%s", line, want)
 	}
 }
 

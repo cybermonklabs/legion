@@ -680,6 +680,30 @@ func TestAReloadItsShutdownEndsLogsNothing(t *testing.T) {
 	})
 }
 
+// TestANilReloadClockIsTheRealClock pins NewCurrentOn's nil clock: it is clock.Real, as
+// NewCurrent's is, so the reload ticker and each reload's bound run on the time the process reads.
+// The row runs in a synctest bubble, whose time is what clock.Real reads inside it, so the hour to
+// the first reload passes at no cost, and synctest.Wait returns once that reload has returned.
+//
+// The named revert: drop NewCurrentOn's default; the reload goroutine then reads the nil clock in
+// clock.NewTicker and panics, which ends the test binary inside this row.
+func TestANilReloadClockIsTheRealClock(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := memory.New()
+		policytest.CaptureLog(t)
+		cur, err := policy.NewCurrentOn(t.Context(), policytest.Loader(store), time.Hour, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.Put(policytest.Secret("LATER_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		time.Sleep(time.Hour + time.Second)
+		synctest.Wait()
+		if _, served := cur.Get().Secrets["LATER_KEY"]; !served {
+			t.Fatalf("an hour after NewCurrentOn with a nil clock the policy serves %v, want LATER_KEY: its reload ran on no clock", cur.Get().Secrets)
+		}
+	})
+}
+
 // refusedLine is the exact RefusedMessage line Current writes, as CaptureLog reads it, for the
 // secret whose whole name in the store is id: refused for reason, its owner tag owner, first_load
 // on the pod's first load, and was the reason before on a change of reason ("" for none).
