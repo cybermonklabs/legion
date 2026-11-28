@@ -124,6 +124,10 @@ const refusal = (status: number, code: string, error: string) =>
 /** The upload's route, whose declared answer each stored upload serves (`routeAnswer`). */
 const UPLOAD = "POST /api/v1/issues/{key}/artifacts";
 
+/** The slugs of the documents that play a role on an issue (`roleSlugs` in Dispatch's
+ *  `artifacts.go`): an issue's plan, Verification document and decisions document. */
+const ROLE_SLUGS: readonly string[] = ["plan-md", "verification-md", "decisions-md"];
+
 /** One upload, answered as Dispatch answers it. */
 function store(name: string, kind: Kind, bytes: Uint8Array, mime: string, precondition: unknown) {
   uploads.push({ name, precondition });
@@ -154,6 +158,39 @@ function store(name: string, kind: Kind, bytes: Uint8Array, mime: string, precon
     );
   }
   if (target.kind !== kind) {
+    // R15: a Markdown upload under the name of a role document that an earlier upload stored as
+    // a file or a picture becomes that artifact's next version and makes it a document, as
+    // Dispatch takes it (POST /api/v1/issues/{key}/artifacts); every other upload of another kind
+    // is refused under that name.
+    if (kind === "doc" && ROLE_SLUGS.includes(target.slug)) {
+      const standing = target.versions.at(-1);
+      if (
+        document !== undefined &&
+        document !== `sha256:${hexOf(standing?.bytes ?? new Uint8Array())}`
+      ) {
+        return refusal(409, "PRECONDITION_FAILED", `"${name}" stands at another version`);
+      }
+      const next: StoredVersion = {
+        number: (standing?.number ?? 0) + 1,
+        bytes,
+        mime,
+        hashed: true,
+      };
+      const converted: StoredArtifact = {
+        ...target,
+        kind: "doc",
+        versions: [...target.versions, next],
+      };
+      held[held.indexOf(target)] = converted;
+      return Response.json(
+        routeAnswer(
+          UPLOAD,
+          { artifact: artifactOf(converted), version: versionOf(converted, next) },
+          201
+        ),
+        { status: 201 }
+      );
+    }
     return refusal(
       400,
       "ARTIFACT_KIND_MISMATCH",
@@ -491,4 +528,55 @@ describe("dispatch artifact under a name the owner holds", () => {
     const refused = await upload("notes", ["--path", pathOf("n.txt", textOf("second"))]);
     expect(refusalOf(refused.stdout, "notes")).not.toContain("doc-edit");
   });
+});
+
+describe("dispatch artifact over a role document Dispatch holds as a file", () => {
+  // R15: a Markdown upload under the name of an issue's plan, where the artifact is a file today
+  // (BET-1328's plan-md), becomes that artifact's next version and makes it a document; the stub
+  // takes it as Dispatch does. So the command must not tell the writer that the upload cannot be
+  // the name's next version, or to give it another name: either it sends the upload, or its
+  // refusal names a flag, and the upload sending that flag is taken as the plan's version 2.
+  test.each([
+    ["--content", (text: string) => ["--content", text]],
+    ["a Markdown --path", (text: string) => ["--path", pathOf("plan.md", textOf(text))]],
+  ] as const)(
+    "a Markdown upload under plan.md over a held file, by %s, is sent to no other name and is taken",
+    async (_label, sourceOf) => {
+      held[0] = {
+        id: "file-plan",
+        name: "plan.md",
+        slug: "plan-md",
+        kind: "file",
+        versions: [
+          {
+            number: 1,
+            bytes: textOf("The plan, stored as a file.\n"),
+            mime: "text/plain",
+            hashed: true,
+          },
+        ],
+      };
+      const source = sourceOf(":::plan_task{#t1}\nShip the parser.\n:::\n");
+      let answer = await upload("plan.md", source);
+      if (answer.code !== 0) {
+        expect(answer.code, answer.stdout).toBe(2);
+        const text = refusalOf(answer.stdout, "plan.md");
+        expect(text).not.toContain("another name");
+        expect(text).not.toContain("with force or without");
+        expect(text).toContain("--force");
+        const flags = text.includes("--precondition-json")
+          ? [
+              "--force",
+              "--precondition-json",
+              JSON.stringify({ document: await readToken("plan-md") }),
+            ]
+          : ["--force"];
+        answer = await upload("plan.md", source, flags);
+      }
+      expect(answer.code, answer.stdout).toBe(0);
+      const plan = held.find((artifact) => artifact.slug === "plan-md");
+      expect(plan?.kind).toBe("doc");
+      expect(plan?.versions).toHaveLength(2);
+    }
+  );
 });
