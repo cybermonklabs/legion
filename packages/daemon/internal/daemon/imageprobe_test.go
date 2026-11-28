@@ -663,7 +663,7 @@ func TestTheImageProbesBootRunMakesOnlyThePluginLoadProbe(t *testing.T) {
 			var logged bytes.Buffer
 
 			err := ProbeImage(context.Background(), ImageProbe{
-				Omp: f.path, Contract: 3, Env: imageEnv(home), WorkDir: t.TempDir(),
+				Omp: f.invocation, Contract: 3, Env: imageEnv(home), WorkDir: t.TempDir(),
 				PluginRoot: legionRootOf(home), EnvoyPluginRoot: envoyRootOf(home),
 				ClaudeRoot: claudeRoot, ClaudeCodePin: capabilitiestest.ClaudeCodePin(t),
 				RoleReferences: names, BootRun: testCase.bootRun, Log: slog.New(slog.NewTextHandler(&logged, nil)),
