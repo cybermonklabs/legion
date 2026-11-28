@@ -1131,9 +1131,13 @@ export function useNextTreePage(issue: IssueDetails): NextTreePage | undefined {
  *  observer of the view it mounts (`useViewAnswer`). */
 export interface ViewNextPage {
   /** The view's own query's answer as this load holds it (`LoadView.data`). Not the answer the
-   *  page holds of the view, which `next` is read from: on the Decisions view, from a Keep's drop
-   *  of the decisions view until its read lands, that one is the answer the drop took
-   *  (`LoadHold.kept`) while this one is undefined. */
+   *  page holds of the view, which `next` is read from: on the Decisions view, from a Keep's or a
+   *  Change's drop of the decisions view until its read lands, that one is the answer the drop took
+   *  (`LoadHold.kept`) while this one is undefined, as the drop resets the view's query, which has
+   *  no initial data. A press of the control made while that read is out waits for it in `next`'s
+   *  read (`readNextTreePage`), not on this answer; a drop after the press merged its page leaves
+   *  this answer and the cache's both undefined, so the press's landing ends at once, on the page's
+   *  row where the view draws one (`NextViewPage`). */
   readonly answer: TreeAnswer | undefined;
   /** The next page of the answer the page holds of the view (`NextTreePage`); undefined while the
    *  view holds no answer, or one that names none. */

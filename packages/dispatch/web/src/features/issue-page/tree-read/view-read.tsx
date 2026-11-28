@@ -252,8 +252,13 @@ export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
  * view has drawn the answer the page merged into with no row of the page there, as where the
  * Decisions view draws the page's entries past the pages of entries a part draws. Whether the
  * view has drawn that answer is looked at after each render of this control, which reads the
- * view's own query's answer, which the view draws its rows from, and in no frame; on the Decisions
- * view during a Keep's drop the view draws the kept answer, so the look waits on that read. A press
+ * view's own query's answer, which the view draws its rows from, and in no frame, and only once the
+ * press has merged its page: a press made during a Keep's or a Change's drop, while the read the
+ * drop started is out, waits in `readNextTreePage` for that read's answer and then reads the page
+ * after it, whatever answer this control reads meanwhile. A drop after the page merged and before a
+ * render of this control reads the merged answer resets the view's query, which has no initial
+ * data, so that render reads no answer and the cache holds none, and the landing ends at once, on
+ * the page's row where the view draws one, as the Decisions view may from the kept answer. A press
  * takes no focus from where it was (`preventDefault` on `mousedown`), since the control goes once
  * no page is left. Nothing while the view's answer names no next page.
  */
@@ -266,9 +271,13 @@ export function NextViewPage({
 }): ReactNode {
   // The view's own query's answer, as `useNextViewPage` hands it beside the next page, and
   // `drawnAnswer` it as the last render drew it. The view draws its rows from it in the same
-  // render, but on the Decisions view during a Keep's drop the view draws the kept answer
-  // (`useViewAnswer`) while this one is undefined until the Keep's read lands, so `ends` waits
-  // for that read.
+  // render, but on the Decisions view during a Keep's or a Change's drop the view draws the kept
+  // answer (`useViewAnswer`) while this one is undefined. That undefined answer plays no part in a
+  // press made during the drop: `ends` is set up only once `readNextTreePage` has the answer of the
+  // read the drop started and has merged the next page after it. A drop after the page merged,
+  // before a render draws the merged answer, resets the view's query, which has no initial data, so
+  // `drawnAnswer` and the cache's answer are both undefined and `ends` ends the landing at once, on
+  // the page's row where the view draws one, as the Decisions view may from the kept answer.
   const { answer, next } = useNextViewPage(issueKey, filter);
   const queryClient = useQueryClient();
   const drawnAnswer = useRef(answer);
