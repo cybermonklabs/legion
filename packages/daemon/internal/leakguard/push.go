@@ -181,14 +181,18 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 // negotiation from every update's local commit (destinationHolds), and the remotes whose
 // remote-tracking refs hold what the destination has are read (heldRemotes), which bound the
 // range too only where the negotiation does not answer (Guard.commits). The URL is read only where
-// the reads reach the repository the push writes to (readsReachItsRepository). A push that can
-// write somewhere else — a receive-pack program of its own, a remote helper, another exec path's
-// git-receive-pack — writes where that program writes, which the URL says nothing of; a push
-// that reaches its server through a program or a proxy of its own can have its git-receive-pack
-// sent to another repository than the reads' git-upload-pack; and a url.<base>.insteadOf, or a
-// remote whose name is the URL, would lead the reads elsewhere than the push went. For each,
-// neither read is made: not is empty and the remote-tracking refs bound the range alone, with the
-// remote's commit where the repository holds it, as they bounded every push before these reads.
+// the reads reach the repository the push writes to (readsReachItsRepository), and so only for a
+// URL whose transport git serves itself: https://, http://, git://, file:// or a local path. git
+// reaches the server of any other URL through a program, over ssh an ssh program, the first `ssh`
+// on PATH where the push names none, and for another <scheme>:// a git-remote-<scheme> found on
+// PATH; that program, like a program or a proxy the push names, can send the push's
+// git-receive-pack to another repository than the reads' git-upload-pack. A push that can write
+// somewhere else — a receive-pack program of its own, a remote helper, another exec path's
+// git-receive-pack — writes where that program writes, which the URL says nothing of; and a
+// url.<base>.insteadOf, or a remote whose name is the URL, would lead the reads elsewhere than the
+// push went. For each, neither read is made: not is empty and the remote-tracking refs bound the
+// range alone, with the remote's commit where the repository holds it, as they bounded every push
+// before these reads.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Record) error) error {
 	read := map[string]bool{}
 	var held []string

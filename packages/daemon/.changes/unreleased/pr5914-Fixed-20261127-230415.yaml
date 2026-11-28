@@ -25,7 +25,13 @@ body: |-
     repository, with its configuration and its environment, so they connect the way the push
     does, and they use no credential helper and no prompt. The guard makes neither read where the
     reads might not reach the repository the push writes to, and such a push keeps the
-    remote-tracking refs as its bound: a push that names its own receive-pack program, its own
+    remote-tracking refs as its bound. It makes them only for a URL whose transport git serves
+    itself, `https://`, `http://`, `git://`, `file://` or a local path, and so none for a push over
+    ssh (`ssh://`, `git+ssh://`, `ssh+git://` or the scp-like `host:path`), which goes through an
+    `ssh` program, the first `ssh` on `PATH` where the push names none, and none for any other
+    `<scheme>://`, which git serves through a `git-remote-<scheme>` found on `PATH`: such a program
+    sees whether it serves a read or the push, and can send the two to different repositories.
+    Within those URLs, it makes none for a push that names its own receive-pack program, its own
     transport (`remote.<name>.vcs`, a URL with `::`) or an exec path that is not git's own; a push
     that names a program or a proxy between git and the server (`core.sshCommand`,
     `GIT_SSH_COMMAND`, `GIT_SSH`, `core.gitProxy`, `GIT_PROXY_COMMAND`, `http.proxy`,

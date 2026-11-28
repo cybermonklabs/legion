@@ -61,6 +61,12 @@ import (
 // the push by origin's name goes through the proxy to the second repository. No case's
 // environment holds NO_PROXY or no_proxy, under which git and libcurl would pass a proxy by for the
 // hosts they name, and an issue pod's environment names some (withoutNoProxy).
+//
+// An ssh:// URL is also one whose transport git does not serve itself, so the guard now makes
+// neither read for the three ssh cases by their URL alone, whatever their setting
+// (gitServesItsTransport, and the thirteenth case,
+// TestAPushOverATransportGitDoesNotServeItselfKeepsTheBasesBound); they keep the verdicts the
+// tenth case names.
 func TestAPushThatNamesAProgramOrProxyBetweenGitAndTheServerKeepsTheBasesBound(t *testing.T) {
 	const class = leakguardtest.RulesHostClass
 	refused := "the runner answers at " + leakguardtest.RulesHost + "\n"
@@ -206,6 +212,122 @@ func TestAPushThatNamesAProgramOrProxyBetweenGitAndTheServerKeepsTheBasesBound(t
 	}
 }
 
+// A push to a URL whose transport git does not serve itself keeps the base's bound, with no
+// setting at all (gitServesItsTransport): git reaches its server through a program it finds, the
+// first `ssh` on PATH for a URL over ssh and a git-remote-<scheme> on PATH for any scheme but
+// https, http, git and file, which git compares case-sensitively. That program sees whether it
+// serves a read, git-upload-pack, or the push, git-receive-pack, as a program the push names does
+// (TestAPushThatNamesAProgramOrProxyBetweenGitAndTheServerKeepsTheBasesBound), and can send the
+// two to different repositories, so the guard makes neither read of what the hook's URL holds,
+// and the remote-tracking refs bound the push as they did before the reads (R10 of
+// dispatch://INFRA-3524's spec, the thirteenth case of its check c10).
+//
+// Each case's router, in a directory first on PATH, routes by service: for ssh://, git+ssh://,
+// ssh+git:// and the scp-like host:path, an `ssh` that is sshRouter's program; for a scheme of
+// the test's own, and for HTTPS://, which git serves through git-remote-HTTPS and not through its
+// own git-remote-https, a remote helper that answers `connect` (remoteHelperRouter). As in the
+// tenth case, git-upload-pack reaches the destination, which holds a commit that adds the refused
+// line, fetched by the destination's URL so that no remote-tracking ref holds it, and the new
+// branch starts from it; git-receive-pack reaches a second bare repository that holds nothing.
+// Each case first shows that its router routes, or it would prove nothing: git ls-remote of the
+// hook's URL lists the destination's main, and a real push of the branch by origin's name, with no
+// hook, lands it in the second repository, which the case then undoes. Reads made through the
+// router would answer that the destination holds the refused commit and pass the push, which
+// would land it in the second repository; the base reads that commit and refuses the push, and so
+// must the guard. TestAPushOverSSHThroughTheSSHOnPathKeepsTheBasesBound, the tester's, holds the
+// ssh:// and host:path cases too.
+func TestAPushOverATransportGitDoesNotServeItselfKeepsTheBasesBound(t *testing.T) {
+	const class = leakguardtest.RulesHostClass
+	refused := "the runner answers at " + leakguardtest.RulesHost + "\n"
+	// overSSH is a case over ssh whose hook URL is url of the destination's path: the `ssh` first
+	// on PATH is sshRouter's program.
+	overSSH := func(url func(path string) string) func(*testing.T, routes, string) (string, string) {
+		return func(t *testing.T, r routes, bin string) (string, string) {
+			t.Helper()
+			if err := os.Symlink(sshRouter(t, r.second), filepath.Join(bin, "ssh")); err != nil {
+				t.Fatal(err)
+			}
+			return url(r.destination), "ssh"
+		}
+	}
+	// throughHelper is a case of a URL of scheme, which git serves through the git-remote-<scheme>
+	// first on PATH, remoteHelperRouter's program.
+	throughHelper := func(scheme string) func(*testing.T, routes, string) (string, string) {
+		return func(t *testing.T, r routes, bin string) (string, string) {
+			t.Helper()
+			remoteHelperRouter(t, bin, scheme, r)
+			return scheme + "://example.invalid/destination.git", scheme
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		// route writes the case's router for r to bin, the directory first on the push's PATH, and
+		// answers the URL git hands the hook and the transport that GIT_ALLOW_PROTOCOL lets through
+		// beside file.
+		route func(t *testing.T, r routes, bin string) (url, transport string)
+	}{
+		{name: "an ssh:// URL", route: overSSH(func(path string) string { return "ssh://example.invalid" + path })},
+		{name: "a git+ssh:// URL", route: overSSH(func(path string) string { return "git+ssh://example.invalid" + path })},
+		{name: "an ssh+git:// URL", route: overSSH(func(path string) string { return "ssh+git://example.invalid" + path })},
+		{name: "the scp-like host:path", route: overSSH(func(path string) string { return "example.invalid:" + path })},
+		{name: "a URL of a scheme a remote helper on PATH serves", route: throughHelper("routed")},
+		{name: "an HTTPS:// URL, whose scheme git compares case-sensitively", route: throughHelper("HTTPS")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, elsewhere := t.TempDir(), t.TempDir()
+			r := routes{
+				root:        root,
+				elsewhere:   elsewhere,
+				destination: filepath.Join(root, "destination.git"),
+				second:      filepath.Join(elsewhere, "destination.git"),
+			}
+			fixture := fixturegit.Isolated(t, t.TempDir())
+			seed, repo := filepath.Join(root, "seed"), filepath.Join(root, "repo")
+			fixture.Run(root, fixturegit.InitBare(r.destination, "main")...)
+			fixture.Run(elsewhere, fixturegit.InitBare(r.second, "main")...)
+			fixture.Run(root, fixturegit.InitWorkTree(seed, "main")...)
+			commitFiles(t, fixture, seed, map[string]string{"README.md": "one\n"}, "the destination's first commit")
+			fixture.Run(seed, "git", "push", "--quiet", r.destination, "main")
+			fixture.Run(root, "git", "clone", "--quiet", r.destination, repo)
+			commitFiles(t, fixture, seed, map[string]string{"held.md": refused}, "a commit of the destination's that adds the refused line")
+			fixture.Run(seed, "git", "push", "--quiet", r.destination, "main")
+			fixture.Run(repo, "git", "fetch", "--quiet", r.destination, "main")
+			start := fixture.Run(repo, "git", "rev-parse", "FETCH_HEAD")
+			bin := t.TempDir()
+			url, transport := tc.route(t, r, bin)
+			fixture.Run(repo, "git", "remote", "set-url", "origin", url)
+			fixture.Run(repo, "git", "checkout", "--quiet", "-b", "work", start)
+			own := commitFiles(t, fixture, repo, map[string]string{"work.md": "a line of the branch's own\n"}, "the branch's own commit")
+			env := append(withoutNoProxy(fixtureenv.Isolated(t.TempDir())), "GIT_ALLOW_PROTOCOL=file:"+transport, pathWith(bin))
+			routed := fixturegit.Runner{TB: t, Env: env}
+			if listed, want := routed.Out(repo, "git", "ls-remote", "--heads", url), start+"\trefs/heads/main\n"; listed != want {
+				t.Fatalf("git ls-remote of %s through the router on PATH lists %q, want the destination's main %q: the router does not route git-upload-pack there, and the case would prove nothing", url, listed, want)
+			}
+			routed.Run(repo, "git", "-c", "core.hooksPath=/dev/null", "push", "--quiet", "origin", "work")
+			if landed, _ := fixture.Try(r.second, "git", "rev-parse", "--verify", "--quiet", "refs/heads/work"); strings.TrimSpace(landed) != own {
+				t.Fatalf("the push through the router on PATH left the second repository's work at %q, want %s: the router does not route git-receive-pack there, and the case would prove nothing", landed, own)
+			}
+			fixture.Run(r.second, "git", "update-ref", "-d", "refs/heads/work")
+			fixture.Run(repo, "git", "update-ref", "-d", "refs/remotes/origin/work")
+			before := fixture.Raw(r.second, "git", "for-each-ref")
+			guard := New(Options{Check: leakguardtest.Write(t, t.TempDir(), passes), Visibility: answers(Public, nil), Env: withRules(t, env)})
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     url,
+				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: own, RemoteRef: "refs/heads/work", RemoteSHA: noSHA}},
+			})
+			if err == nil {
+				t.Fatalf("the push to %s passed: the guard read what it holds through the router on PATH, which sends the push elsewhere, and took the refused commit as held", url)
+			}
+			reports(t, refusal(t, err).Lines, "held.md: "+class)
+			if after := fixture.Raw(r.second, "git", "for-each-ref"); after != before {
+				t.Errorf("the second repository's refs were %q before the guard's read of the push and are %q after it", before, after)
+			}
+		})
+	}
+}
+
 // routes are the two repositories of a case of
 // TestAPushThatNamesAProgramOrProxyBetweenGitAndTheServerKeepsTheBasesBound, each named
 // destination.git in a directory of its own: the destination at root, which the hook's URL names
@@ -232,6 +354,27 @@ esac
 exit 1
 `)
 	return filepath.Join(dir, "ssh-router")
+}
+
+// remoteHelperRouter writes to bin git-remote-<scheme>, the remote helper git runs for a URL of
+// scheme, that routes by service as sshRouter does: it answers `capabilities` with connect, and
+// `connect git-upload-pack` by running git-upload-pack against r.destination and `connect
+// git-receive-pack` by running git-receive-pack against r.second, each after the empty line by
+// which a helper says the connection is made, as git-remote-ext does (gitremote-helpers(7)). The
+// shell's read takes its input a byte at a time from a pipe, so it takes no byte past the command.
+func remoteHelperRouter(t *testing.T, bin, scheme string, r routes) {
+	t.Helper()
+	git := shQuote(fixturegit.CompiledGit(t))
+	writeProgram(t, bin, "git-remote-"+scheme, `while read -r command; do
+	case "$command" in
+	capabilities) printf 'connect\n\n' ;;
+	"connect git-upload-pack") printf '\n'; exec `+git+` upload-pack `+shQuote(r.destination)+` ;;
+	"connect git-receive-pack") printf '\n'; exec `+git+` receive-pack `+shQuote(r.second)+` ;;
+	*) exit 1 ;;
+	esac
+done
+exit 1
+`)
 }
 
 // sshRunsHere is a PATH entry whose `ssh`, written to a directory of the test's own, runs its

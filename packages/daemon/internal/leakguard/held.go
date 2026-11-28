@@ -101,6 +101,10 @@ func (g *Guard) destinationHolds(ctx context.Context, dir, url string, tips []st
 // stands for a repository the push does not write to (R10 of dispatch://INFRA-3524's spec). It
 // answers false where a read it makes fails, and in each of these cases, a condition of its own:
 //
+//   - url is not one whose transport git serves itself (gitServesItsTransport): git reaches the
+//     server of any other URL through a program, an ssh program, the first `ssh` on PATH where the
+//     push names none, or a git-remote-<scheme> found on PATH, which sees whether it serves a read
+//     or the push and can send the two to different repositories.
 //   - The push can write somewhere other than url (writesOnlyToItsURL, by pushConfig): a
 //     receive-pack program of its own, a remote helper or another exec path's git-receive-pack
 //     writes where that program writes, and what url holds says nothing of that repository.
@@ -116,6 +120,9 @@ func (g *Guard) destinationHolds(ctx context.Context, dir, url string, tips []st
 // line's (GIT_CONFIG_PARAMETERS, which `git -c` hands the hook, and a GIT_CONFIG_COUNT block),
 // under the guard's whole environment, a GIT_DIR there included.
 func (g *Guard) readsReachItsRepository(ctx context.Context, dir, url string) bool {
+	if !gitServesItsTransport(url) {
+		return false
+	}
 	base := g.base()
 	config, only := g.pushConfig(ctx, dir, url, base)
 	if !only {
@@ -134,6 +141,47 @@ func (g *Guard) readsReachItsRepository(ctx context.Context, dir, url string) bo
 		return false
 	}
 	return true
+}
+
+// gitServesItsTransport is whether git serves the transport of url, the URL git hands the hook,
+// itself, with no program of another's between git and the server: https://, http://, git://,
+// file:// and a local path (R10 of dispatch://INFRA-3524's spec). For every other URL git connects
+// through a program it finds, and hands that program the service it asks for, git-upload-pack for
+// a read and git-receive-pack for the push, so the program can send the two to different
+// repositories, and a read of url through it need not reach the repository the push writes to:
+//
+//   - Over ssh, ssh://, git+ssh://, ssh+git:// and the scp-like host:path, git always runs an ssh
+//     program, the one the push names (core.sshCommand, GIT_SSH_COMMAND or GIT_SSH, which
+//     routedKeys and routedNames name too) or else the first `ssh` on PATH, and hands it the
+//     service as its remote command. Measured by dispatch://INFRA-3524's tester on 2026-11-28 at
+//     33a24deb, through the head's git wrapper and hook: with no setting at all and an `ssh` first
+//     on PATH that routed by service, a push to ssh://example.invalid<path> landed a commit the
+//     rules refuse in a second repository while the reads answered for the hook's URL, and main's
+//     hook refused it.
+//   - Any other <scheme>:// git serves through the remote helper git-remote-<scheme>, which it
+//     looks up on PATH after its own exec path, and which, where it answers `connect`, it hands
+//     the service in `connect <service>` (gitremote-helpers(7)). git's own exec path holds
+//     git-remote-http and git-remote-https, which serve http:// and https://, and a push whose
+//     exec path is not git's own gets no read either (pushConfig, ownExecPath).
+//
+// url is read as git 2.47.3 reads it to pick a transport (transport.c's transport_get, connect.c's
+// parse_connect_url, get_protocol and url_is_local_not_ssh). A URL that holds `://` is served by
+// git itself only where what comes before its first `://` is exactly http, https, git or file,
+// which git compares case-sensitively, so that a git-remote-HTTPS serves HTTPS://. A URL that
+// holds no `://` is the scp-like ssh where it holds a colon and no slash comes before its first
+// colon, and a local path otherwise. A <transport>::<address>, which git serves through
+// git-remote-<transport>, answers false too, since no slash comes before its first colon and what
+// comes before a `://` in it is none of the four, and R1 keeps it guarded on its own (pushConfig).
+func gitServesItsTransport(url string) bool {
+	if scheme, _, ok := strings.Cut(url, "://"); ok {
+		return scheme == "https" || scheme == "http" || scheme == "git" || scheme == "file"
+	}
+	colon := strings.IndexByte(url, ':')
+	if colon < 0 {
+		return true
+	}
+	slash := strings.IndexByte(url, '/')
+	return slash >= 0 && slash < colon
 }
 
 // configKey is a key of git's configuration in its three parts, as `git config -z --list` writes
@@ -409,8 +457,9 @@ func (g *Guard) negotiated(ctx context.Context, dir, url string, tips []string) 
 // the hook's, GIT_DIR, GIT_CONFIG_PARAMETERS, a GIT_CONFIG_COUNT block and HOME included. So each
 // transport setting the push uses, an http or curl setting or a protocol setting, carries the
 // read too, and the read answers for the destination the push reaches through it; where the push
-// reaches its server through a program or a proxy of its own, which can send a read and the push
-// to two repositories, no read is made (Guard.readsReachItsRepository). It uses no credential:
+// reaches its server through a program or a proxy, one it names or one git finds on PATH for a
+// URL whose transport git does not serve itself, which can send a read and the push to two
+// repositories, no read is made (Guard.readsReachItsRepository). It uses no credential:
 //
 //   - `-c credential.helper=` empties the list of credential helpers on its command line, which
 //     git reads after every other scope: measured with git 2.47.3, it empties a
@@ -423,8 +472,8 @@ func (g *Guard) negotiated(ctx context.Context, dir, url string, tips []string) 
 // `legion git-credential` that an issue pod's configuration names for github.com, which makes a
 // REST read for an owner the bundle does not serve, never runs for it. The rules run only for a
 // destination that reads as public, which answers a read with no credential, and a destination
-// that asks for one fails both reads. Over ssh, the user's key still reaches the server through
-// ssh's own files and SSH_AUTH_SOCK: that is git's own transport, and no REST read.
+// that asks for one fails both reads. No read is made over ssh (gitServesItsTransport), so no
+// key of the user's reaches a server for one.
 func (g *Guard) heldRead(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	var stderr strings.Builder
 	status, out, err := g.run(ctx, child{
