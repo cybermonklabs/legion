@@ -191,11 +191,16 @@
 # DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME, set together, make the broker's store
 # Google Cloud Secret Manager (BROKER_SECRETS_STORE=gcp-secret-manager) under that secrets prefix
 # (projects/<project number>/secrets/<id prefix>) and that agent-secrets key, with no memory
-# secrets file: GET /v1/settings then describes that store, so `agent-secrets secret` forms run
-# against the real Secret Manager under whatever Google credential their own caller chose, while
-# the broker itself serves none of the demo secrets below, which are under the memory store's
-# prefix. Unset, the stack is the memory one above. One set without the other is a usage error
-# (exit 2).
+# secrets file. The broker then reads the real Secret Manager under Application Default
+# Credentials, which need the roles the operate page's Google Cloud Secret Manager row lists
+# (docs/site/src/content/docs/broker/operate.md, "What it depends on"): with no application-default
+# login, or without secretmanager.secrets.list on the project, it does not boot. It serves that
+# prefix's secrets, owner=shared ones among them, to this stack's sessions, which dev-oidc-issuer
+# signs in with no page, so point it at a scratch project that holds nothing anyone needs kept.
+# GET /v1/settings describes that store, so `agent-secrets secret` forms run against the real
+# Secret Manager under whatever Google credential their own caller chose. None of the demo secrets
+# below is served, since they are the memory store's. Unset, the stack is the memory one above.
+# One set without the other is a usage error (exit 2).
 #
 # Needs bash, go, curl and jq, and a Postgres server. With DEV_BROKER_POSTGRES_URL it reaches
 # that server through psql, which is given the URL without its password and the password in
@@ -266,7 +271,7 @@ if [ -n "${DEV_BROKER_GCP_PREFIX:-}" ]; then
   SECRETS_PREFIX="$DEV_BROKER_GCP_PREFIX"
   SECRETS_KMS_KEY_NAME="$DEV_BROKER_GCP_KMS_KEY_NAME"
   MEMORY_SECRETS_FILE=""
-  STORE_LINE="gcp-secret-manager under $SECRETS_PREFIX, key $SECRETS_KMS_KEY_NAME; the broker serves none of the demo secrets below"
+  STORE_LINE="gcp-secret-manager under $SECRETS_PREFIX, key $SECRETS_KMS_KEY_NAME, read under Application Default Credentials; this stack's sessions are served that prefix's real secrets, so point it at a scratch project (the demo secrets below are not served)"
 fi
 BROKER_LOG="$WORK_DIR/broker.log"
 OPERATOR_FILE="$WORK_DIR/operator"

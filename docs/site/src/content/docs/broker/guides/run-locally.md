@@ -22,11 +22,20 @@ role that may create databases; the script then creates and drops its database t
 
 Set `DEV_BROKER_GCP_PREFIX` (`projects/<project number>/secrets/<id prefix>`) and
 `DEV_BROKER_GCP_KMS_KEY_NAME` (a global Cloud KMS key) together to give the broker Google Cloud
-Secret Manager as its store under them, with no memory secrets file: `GET /v1/settings` then
-describes that store, so `agent-secrets secret` writes the real Secret Manager under the
-credential you choose for it ([Manage a secret](/legion/broker/guides/manage-a-secret/#before-you-start)),
-while the broker serves none of the demo secrets below. Its profiles file names no profile, so the
-broker binds no proxy port and the banner's `proxy:` line says `none`.
+Secret Manager as its store under them, with no memory secrets file.
+The broker then reads the real Secret Manager under your
+[Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials),
+which need the roles the Google Cloud Secret Manager row of
+[What it depends on](/legion/broker/operate/#what-it-depends-on) lists: with no application-default
+login, or without `secretmanager.secrets.list` on the project, the broker does not boot.
+It serves that prefix's secrets, `owner=shared` ones among them, to this stack's sessions, which
+the stack's issuer signs in with no page, so point it at a scratch project that holds nothing
+anyone needs kept.
+`GET /v1/settings` then describes that store, so `agent-secrets secret` writes the real Secret
+Manager under the credential you choose for it
+([Manage a secret](/legion/broker/guides/manage-a-secret/#before-you-start)); none of the demo
+secrets below is served, since they are the memory store's. Its profiles file names no profile,
+so the broker binds no proxy port and the banner's `proxy:` line says `none`.
 One of the two alone is refused (exit 2).
 
 ## Start the stack
