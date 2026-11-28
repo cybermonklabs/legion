@@ -1014,8 +1014,9 @@ test("today's Decisions tab and Spec margin read every statement's first line in
 });
 
 /** Main's shell reads and the issue, Inbox, Conversation, answer and document reads its surfaces
- *  already use, and the one read R21 adds. In particular a document read here must be for the
- *  document actually drawn, never decisions.md on a surface that shows only a decision card. */
+ *  already use, the one read R21 adds, and the command bar's one read on the Inbox, its waiting
+ *  plans. In particular a document read here must be for the document actually drawn, never
+ *  decisions.md on a surface that shows only a decision card. */
 function expectReads(traffic: ApiRequests, data: AskTodaySeed, surface: string): void {
   const paths = getPaths(traffic);
   const issue = `/api/v1/issues/${data.key}`;
@@ -1080,6 +1081,9 @@ function expectReads(traffic: ApiRequests, data: AskTodaySeed, surface: string):
         sent.searchParams.get("issue") === data.key
       );
     }
+    // The Inbox's header draws WaitingPlans, the person's command-bar plans that wait for them
+    // (spec R11): the command bar's one read on every surface that draws the Inbox.
+    if (inbox && sent.pathname === `${api}/me/going-plans`) return true;
     if (inbox) {
       if (surface === "ThreadBody") return replyPaneReads.has(path);
       // The reading view draws the one row it opened, as the column beside the list does: the
