@@ -113,6 +113,5 @@ var verifyingPhase = []EnumeratedValue{{Value: "verifying", Since: defectCallsCo
 // so the state the source answered is left as it was.
 func withoutCloseWait(issue Issue) (Issue, bool) {
 	moved := issue.CloseWait != nil
-	issue.CloseWait = nil
 	return issue, moved
 }
