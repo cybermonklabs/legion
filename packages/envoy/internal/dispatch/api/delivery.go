@@ -718,7 +718,9 @@ func nextUTCMidnight(t time.Time) time.Time {
 
 // getDeliveryRun answers GET /api/v1/delivery/runs/{id} and GET /api/v2/deploy-runs/{id}: one run
 // of the deploy repository with every job it ran, in ListRunJobs' order (by when each started, a
-// job that never started last, then by name), for the drill-down's job lists.
+// job that never started last, then by name), for the drill-down's job lists. A run the
+// repository has none of is 404 NOT_FOUND on /api/v1 and DEPLOY_RUN_NOT_FOUND on /api/v2
+// (apicode.DeployRunNotFound).
 func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -737,7 +739,7 @@ func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	run, err := delivery.ScanRun(pool.QueryRow(ctx, `select `+delivery.RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, settings.DeployRepo, runID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, r, apicode.NotFound, "no run "+strconv.FormatInt(runID, 10)+" of "+settings.DeployRepo)
+			writeError(w, r, apicode.DeployRunNotFound, "no run "+strconv.FormatInt(runID, 10)+" of "+settings.DeployRepo)
 			return
 		}
 		s.writeHandlerError(w, r, err)

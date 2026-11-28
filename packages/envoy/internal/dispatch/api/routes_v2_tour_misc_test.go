@@ -177,6 +177,7 @@ func miscTourSteps() []tourStep {
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				return tourRequest{Path: map[string]string{"id": tour.deployRun(t)}, As: alice}
 			},
+			Missing: []tourMissing{{Param: "id", Value: "999999", Code: apicode.DeployRunNotFound}},
 		},
 		{
 			Method: http.MethodPost, Pattern: "/markdown-round-trips", Status: http.StatusOK,

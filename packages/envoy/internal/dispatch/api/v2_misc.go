@@ -13,10 +13,11 @@ package api
 // hours whole
 // (cireconcile.RecentPasses) and /api/v2 within a window it names (cireconcile.Passes). A list
 // answers the envelope; a report, bytes, a stream and one object answer
-// none (R1.4's departure). The {id} of a session group answers SESSION_GROUP_NOT_FOUND and of a
-// going request GOING_REQUEST_NOT_FOUND (R7); {session_id} keeps the answer /api/v1 gives it
-// (R7), and a deploy run keeps its own 404s, since its id is GitHub's and its repository the
-// deployment's, which is also why its route is GET /api/v2/deploy-runs/{id} and no project's.
+// none (R1.4's departure). The {id} of a session group answers SESSION_GROUP_NOT_FOUND, of a
+// going request GOING_REQUEST_NOT_FOUND and of a deploy run DEPLOY_RUN_NOT_FOUND (R7);
+// {session_id} keeps the answer /api/v1 gives it (R7). A deploy run's id is GitHub's and its
+// repository the deployment's, which is why its route is GET /api/v2/deploy-runs/{id} and no
+// project's.
 
 import (
 	"crypto/sha256"
@@ -40,7 +41,7 @@ import (
 var (
 	sessionGroupMissingRefusal = apicode.Refusal{Condition: apicode.SessionGroupMissing, Code: apicode.SessionGroupNotFound}
 	goingRequestMissingRefusal = apicode.Refusal{Condition: apicode.GoingRequestMissing, Code: apicode.GoingRequestNotFound}
-	deployRunMissingRefusal    = apicode.Refusal{Condition: apicode.DeployRunMissing, Code: apicode.NotFound}
+	deployRunMissingRefusal    = apicode.Refusal{Condition: apicode.DeployRunMissing, Code: apicode.DeployRunNotFound}
 	runIDMalformedRefusal      = apicode.Refusal{Condition: apicode.RunIDMalformed, Code: apicode.RunIDInput}
 )
 

@@ -533,6 +533,12 @@ var (
 	// path names (dispatch://INFRA-4071/spec R7).
 	SessionGroupNotFound = renamed("NOT_FOUND", http.StatusNotFound, "SESSION_GROUP_NOT_FOUND")
 
+	// DeployRunNotFound is a deploy run's {id} (GET /api/v2/deploy-runs/{id}) that names no run of
+	// the deployment's deploy repository Dispatch holds. /api/v1 answers it as it answers a row
+	// nothing holds (NOT_FOUND); /api/v2 names the run, the object its path names
+	// (dispatch://INFRA-4071/spec R7).
+	DeployRunNotFound = renamed("NOT_FOUND", http.StatusNotFound, "DEPLOY_RUN_NOT_FOUND")
+
 	// AskClosed is a first answer to an ask somebody has already answered (transitionAskTx),
 	// which /api/v1 answered under a code of its own. /api/v2 answers it as it answers every other
 	// transition of an answered ask (AskAnswered), so one condition takes one code there (R7).

@@ -42,7 +42,6 @@ ANCHOR_ORPHANED 409
 ANSWER_NOT_KEPT *
 APPROVAL_WAITS_ON_HUMAN 409
 APPROVER_ME_ONLY 400
-APPROVE_ONLY_TOKEN 403 # #5239, an approve-only token calls only the routes the approve list names, and answers only an approval request
 ARTIFACT_AGENT_OWNED 400
 ARTIFACT_INPUT 400
 ARTIFACT_KIND_MISMATCH 400
@@ -278,6 +277,7 @@ UNKNOWN_CHECK 400
 WAIT_INPUT 400
 
 # Added on main after c8a44f97.
+APPROVE_ONLY_TOKEN 403 # #5239, an approve-only token calls only the routes the approve list names, and answers only an approval request
 AS_OF_TOKEN_NOT_SERVED 403 # #4557, a read at a cut is not served by this build
 BROWSER_SIGN_IN_REQUIRED 403 # #4631, closing descendants needs a browser sign-in
 CHECK_CONTENDED 409 # #2468, a write holds its transaction id only for its database statements

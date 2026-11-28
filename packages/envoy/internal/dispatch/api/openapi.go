@@ -235,6 +235,9 @@ func openAPIDocument(version apiVersion) (*openAPIEmitter, *openapi31.Spec, erro
 				"those of every layer the server runs it behind, but the router's origin and host guards " +
 				"in front of every route (ORIGIN_REFUSED, HOST_MISMATCH), the test hooks " +
 				"(SLOW_WRITE_CUT_OFF) and a server built with no store (DATABASE_UNAVAILABLE). " +
+				"The nine delivery and Legion rows of the INFRA-979 tree are the exception: they keep " +
+				"their /api/v1 shape, so their operations list no x-refusal-codes, a query key they do " +
+				"not declare is not refused, and their PUT and DELETE take no Idempotency-Key. " +
 				"components.x-refusal-codes lists every code /api/v2 can answer, once; every object a " +
 				"Go struct answers declares each member it can hold and no other.")
 	default:

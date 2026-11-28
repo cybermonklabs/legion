@@ -129,10 +129,9 @@ func TestV2Refusals(t *testing.T) {
 // whose absence the route answers with that object's 404 (decision 11): every wildcard but a
 // {session_id} (ruling A), the {owner}/{repo} of the app-installation read (ruling A) and of a PUT
 // that creates the repository row, the {id} of a plan's PUT, which creates the plan whatever id it
-// names (a plan write names its whole identity, so no plan is missing to it), a mark's {kind}, and
-// the {id} of a deploy run, which is GitHub's run id of the deployment's deploy repository:
-// decision 11 names no deploy run among the objects, and the read keeps /api/v1's 404 NOT_FOUND
-// for a run Dispatch has not mirrored.
+// names (a plan write names its whole identity, so no plan is missing to it), and a mark's {kind}.
+// The {id} of a deploy run names a run Dispatch mirrors from the deployment's deploy repository,
+// which answers DEPLOY_RUN_NOT_FOUND where Dispatch holds none (R7).
 func namesAStoredObject(route apiRoute, wildcard string) bool {
 	switch {
 	case wildcard == "session_id":
@@ -142,8 +141,6 @@ func namesAStoredObject(route apiRoute, wildcard string) bool {
 	case wildcard == "id" && route.Method == http.MethodPut && strings.HasSuffix(route.Pattern, "/plans/{id}"):
 		return false
 	case wildcard == "kind" && strings.Contains(route.Pattern, "/marks/{kind}/{id}"):
-		return false
-	case wildcard == "id" && strings.HasSuffix(route.Pattern, "/deploy-runs/{id}"):
 		return false
 	}
 	return true

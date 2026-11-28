@@ -836,21 +836,19 @@ where not exists (select 1 from architecture_sources s where s.project_key = c.p
 ```
 
 The first `legion-envoy` release that carries pull request #4274 serves `/api/v2` beside
-`/api/v1`, and its page calls `/api/v2` alone, where every write method takes a key, so its `PUT`
-and `DELETE` writes carry one too. It needs no step of its own: the server serves both versions,
-so a page or a `dispatch` command of either release works against either while the release rolls.
-A page of this release that reaches a server of the release before it is answered "no route" for a
-`/api/v2` path, and sends that request again after 1, 2 and 4 seconds, as it does for any route a
-rolling release adds. A write a page of an earlier release kept to send again after a reload goes
-to the `/api/v1` path it was first sent to, under its own key, so a write that landed is answered
-its stored result rather than made twice.
+`/api/v1`, while the web app and the `dispatch` command stay on `/api/v1`. It needs no migration
+step of its own: the server serves both versions, so a page or a `dispatch` command of either
+release works against either while the release rolls.
 
 ## The HTTP API
 
 Dispatch serves two versions of its API side by side. `/api/v2`, from the first `legion-envoy`
 release that carries pull request #4274, is the one to call: every list answers
 `{items, total, limit, offset}`, every refusal is `{code, error}`, a query key a route does not
-declare is refused `400 QUERY_KEY_UNKNOWN`, and every write takes an `Idempotency-Key`.
+declare is refused `400 QUERY_KEY_UNKNOWN`, and every write takes an `Idempotency-Key`. The nine
+INFRA-979 delivery and Legion rows are the exception: they keep their `/api/v1` shape, so the
+OpenAPI document lists no refusal codes for them, a query key they do not declare is not refused,
+and their `PUT` and `DELETE` take no `Idempotency-Key`.
 `GET /api/v2` lists every route with its method, who may call it, what it serves and a
 description, with no credential, and the [HTTP API reference](/legion/dispatch/reference/api/) is
 the same list.

@@ -41,7 +41,6 @@ type tourRefusal struct {
 var tourRefusals = map[string][]tourRefusal{
 	"GET /api/v2/deploy-runs/{id}": {
 		{Name: "an id that is not a positive integer", Change: refusalPath("id", "0"), Code: apicode.RunIDInput},
-		{Name: "an id no run of the deploy repository has", Change: refusalPath("id", "999999"), Code: apicode.NotFound},
 		{Name: "no delivery settings", Change: withoutDeliverySettings, Code: apicode.DeliveryNotConfigured},
 	},
 	"GET /api/v2/nodes": {

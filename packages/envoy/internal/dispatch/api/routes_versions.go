@@ -68,11 +68,13 @@ func versionPrefix(version apiVersion) string {
 }
 
 // successor is what answers a /api/v1 route under /api/v2 (R2): the route the route map names for it
-// (dispatch://INFRA-2946/artifact/route-map-md, section (a)), but for row 67, which maps to the
+// (dispatch://INFRA-2946/artifact/route-map-md, section (a)), except for row 67, which maps to the
 // deployment-wide GET /deploy-runs/{id} since its run is read from the deployment's own
-// repository, and for the two near-copy rows of #4103, which the map predates and which map to GET
-// /projects/{key}/near-copy-checks and GET /near-copy-checks/{id}.
-//
+// repository; row 116 (GET /api/v1/limits), which maps to the singleton GET /limit-set
+// (dispatch://INFRA-4071/comment/fa6c9d57-e6a5-462b-8d95-063e5b48b163); and the rows main added
+// after c8a44f97 (which the map predates — #4103's near-copy rows and each later route listed in
+// testdata/v1-only-routes.txt, with post-freeze awaiting rows on testdata/v1-awaiting-v2-routes.txt
+// naming no successor until their /api/v2 routes land).
 // A `{name}` in Query, and on the right of a Path binding, is filled from the v1 request: its path
 // value of that name, or, where the v1 pattern holds no such wildcard, its query value of that
 // name (`ref={ref}` of GET /api/v1/issues/resolve). A wildcard of the v2 Pattern that no binding

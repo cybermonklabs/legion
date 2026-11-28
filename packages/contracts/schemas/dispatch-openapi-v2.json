@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Dispatch HTTP API",
-    "description": "Generated from the /api/v2 rows of Dispatch's route declarations (one file per route in internal/dispatch/api) and the query, body and answer types each row declares, by `envoy-dispatch openapi`. Edit those, never this document: it is committed so a client's types can be rendered from it, and `envoy-dispatch openapi --check` refuses a tree where it is stale. Each operation of a /api/v2 row lists the refusal codes it can answer with their statuses (x-refusal-codes): its row's own and those of every layer the server runs it behind, but the router's origin and host guards in front of every route (ORIGIN_REFUSED, HOST_MISMATCH), the test hooks (SLOW_WRITE_CUT_OFF) and a server built with no store (DATABASE_UNAVAILABLE). components.x-refusal-codes lists every code /api/v2 can answer, once; every object a Go struct answers declares each member it can hold and no other.",
+    "description": "Generated from the /api/v2 rows of Dispatch's route declarations (one file per route in internal/dispatch/api) and the query, body and answer types each row declares, by `envoy-dispatch openapi`. Edit those, never this document: it is committed so a client's types can be rendered from it, and `envoy-dispatch openapi --check` refuses a tree where it is stale. Each operation of a /api/v2 row lists the refusal codes it can answer with their statuses (x-refusal-codes): its row's own and those of every layer the server runs it behind, but the router's origin and host guards in front of every route (ORIGIN_REFUSED, HOST_MISMATCH), the test hooks (SLOW_WRITE_CUT_OFF) and a server built with no store (DATABASE_UNAVAILABLE). The nine delivery and Legion rows of the INFRA-979 tree are the exception: they keep their /api/v1 shape, so their operations list no x-refusal-codes, a query key they do not declare is not refused, and their PUT and DELETE take no Idempotency-Key. components.x-refusal-codes lists every code /api/v2 can answer, once; every object a Go struct answers declares each member it can hold and no other.",
     "version": "2"
   },
   "paths": {
@@ -8234,7 +8234,7 @@
     },
     "/api/v2/deploy-runs/{id}": {
       "get": {
-        "description": "One run of the deployment's deploy repository, by its GitHub run id, with every job it ran, by start, each with its result and timings: {id, url, jobs}. The repository is the deployment's own (GET /api/v2/settings/delivery), so the path names no project. 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run of that repository, 404 DELIVERY_NOT_CONFIGURED without the delivery settings.",
+        "description": "One run of the deployment's deploy repository, by its GitHub run id, with every job it ran, by start, each with its result and timings: {id, url, jobs}. The repository is the deployment's own (GET /api/v2/settings/delivery), so the path names no project. 400 RUN_ID_INPUT for an id that is not a positive integer, 404 DEPLOY_RUN_NOT_FOUND for no such run of that repository, 404 DELIVERY_NOT_CONFIGURED without the delivery settings.",
         "operationId": "getApiV2DeployRunsById",
         "parameters": [
           {
@@ -8304,11 +8304,11 @@
           "BROKER_TOKEN_RATE_LIMITED": 429,
           "BROKER_UNAVAILABLE": 503,
           "DELIVERY_NOT_CONFIGURED": 404,
+          "DEPLOY_RUN_NOT_FOUND": 404,
           "IDENTITY_ERROR": 500,
           "INTERNAL": 500,
           "INVALID_QUERY": 400,
           "INVALID_UTF8": 400,
-          "NOT_FOUND": 404,
           "NO_IDENTITY": 401,
           "NUL_CHARACTER": 400,
           "OIDC_ISSUER_UNAVAILABLE": 503,
@@ -42218,6 +42218,7 @@
       "DEPLOY_COMMIT_UNKNOWN": 400,
       "DEPLOY_INPUT": 400,
       "DEPLOY_NOT_NEWEST": 409,
+      "DEPLOY_RUN_NOT_FOUND": 404,
       "DOCUMENT_LIVE": 409,
       "DOCUMENT_LOADS": 409,
       "DOCUMENT_UNLOADABLE": 409,

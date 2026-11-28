@@ -437,9 +437,13 @@ the API with its token as `Authorization: Bearer <token>`. A session under
 `dispatch proxy` ([The proxy](#the-proxy)).
 
 On `/api/v2` every list answers `{items, total, limit, offset}` and every refusal `{code, error}`,
-its code one of those `packages/contracts/schemas/dispatch-openapi-v2.json` declares for the route.
-A query key the route does not declare is refused `400 QUERY_KEY_UNKNOWN`, naming the key and every
-key the route declares, so a misspelt filter is never read as no filter.
+its code one of those `packages/contracts/schemas/dispatch-openapi-v2.json` declares for the route
+(`x-refusal-codes`). A query key the route does not declare is refused `400 QUERY_KEY_UNKNOWN`,
+naming the key and every key the route declares, so a misspelt filter is never read as no filter,
+and every write takes an `Idempotency-Key`. The nine INFRA-979 delivery and Legion rows are the
+exception: they keep their `/api/v1` shape, so the document declares no refusal codes for them, a
+query key they do not declare is not refused, and their `PUT` and `DELETE` take no
+`Idempotency-Key`.
 
 `/api/v1` is deprecated. Its routes keep their answers, each answer carries a `Link` header
 (`rel="successor-version"`) naming the `/api/v2` route that answers for it (or `GET /api/v2` for a

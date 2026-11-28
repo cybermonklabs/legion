@@ -66,7 +66,10 @@ func (r *signInRig) rebuilt(t *testing.T, change func(*AppContextOptions)) http.
 
 // Every refusal of the /auth routes, of the cookie-origin guard and of an unknown API path is a
 // {code, error} body a client can tell apart by its code (R7, R3.2), the /auth refusals and the
-// origin guard among them.
+// origin guard among them, but one: GET /auth/callback's 403 for a person the issuer vouched for
+// and Dispatch does not admit is a browser page, not a refusal an API client reads. The callback
+// is a top-level navigation back from the issuer, so it renders an HTML sign-in refusal page for
+// the person (writeSignInRefusedPage, text/html), which carries no code.
 func TestAuthAndOriginRefusalsCarryACode(t *testing.T) {
 	t.Run("a callback with an expired state", func(t *testing.T) {
 		rig := newSignInRig(t, "")
