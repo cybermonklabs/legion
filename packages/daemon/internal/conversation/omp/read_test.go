@@ -532,7 +532,7 @@ func TestReadReplaysOnlyTrustedFailedTurnSignatures(t *testing.T) {
 		f.add(responsesEntry("stop", `[{"type":"thinking","thinking":"earlier","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_stale\"}"},{"type":"toolCall","id":"call","name":"read","arguments":{}},{"type":"thinking","thinking":"","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_stale_empty\"}"}]`))
 		f.add(toolResultEntry("call", "read", "tool not run", true))
 		assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
-			user("request"), responses(call("call", "read", `{}`)),
+			user("request"), responses(thinking("earlier", ""), call("call", "read", `{}`)),
 			result("call", "read", "tool not run", true),
 		})
 	})

@@ -30,10 +30,12 @@ type llmMessage struct {
 	isError              bool
 	synthetic            bool
 	notExecuted          bool
+	providerMetadata     json.RawMessage
 	// custom user message
 	customType string
 	// provider-native replay derived from compaction
-	native *conversation.Native
+	native              *conversation.Native
+	exactCompactionTail bool
 }
 
 // Custom message types the pinned Oh My Pi treats apart (session-context.ts, messages.ts,
@@ -195,10 +197,8 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 			if first < len(path) {
 				// session-context.ts:606–626 predates the rewrite marker to the retained tail.
 				// An exactTail payload uses the first message's time, not its entry's time.
-				var native struct{ ExactTail bool }
-				_ = json.Unmarshal(summary.native.Payload, &native)
 				at := entryMillis(path[first].Timestamp)
-				if native.ExactTail && path[first].Type == "message" {
+				if summary.exactCompactionTail && path[first].Type == "message" {
 					at = path[first].Message.Timestamp
 				}
 				if at != nil {
@@ -500,7 +500,8 @@ func compactionSummary(c *entry) (summary llmMessage, remote *conversation.Nativ
 	if c.Method == handoffCompactionMethod {
 		template = handoffSummaryTemplate
 	}
-	summary = llmMessage{role: "user", rewriteAt: entryMillis(c.Timestamp), blocks: []block{{Type: "text", Text: render(template, "{{summary}}", c.Summary)}}}
+	stamp := entryMillis(c.Timestamp)
+	summary = llmMessage{role: "user", timestamp: stamp, rewriteAt: stamp, blocks: []block{{Type: "text", Text: render(template, "{{summary}}", c.Summary)}}}
 	if raw, ok := c.PreserveData[openaiRemoteCompaction]; ok {
 		var candidate struct {
 			Provider           string            `json:"provider"`
@@ -524,10 +525,12 @@ func compactionSummary(c *entry) (summary llmMessage, remote *conversation.Nativ
 			Provider    string          `json:"provider"`
 			Content     string          `json:"content"`
 			ToolChanges json.RawMessage `json:"toolChanges"`
+			ExactTail   json.RawMessage `json:"exactTail"`
 		}
 		if json.Unmarshal(raw, &candidate) == nil && candidate.Provider != "" && candidate.Content != "" &&
 			validToolChanges(candidate.ToolChanges) {
 			summary.native = &conversation.Native{Kind: conversation.AnthropicCompaction, Provider: candidate.Provider, Payload: raw}
+			summary.exactCompactionTail = string(candidate.ExactTail) == "true"
 		}
 	}
 	return summary, nil, nil
@@ -578,12 +581,13 @@ func entryMessages(e *entry) ([]llmMessage, error) {
 		if e.Attribution != nil {
 			attribution = *e.Attribution
 		}
-		return customMessages(customType, e.Content, attribution, "custom message "+e.ID)
+		return customMessages(customType, e.Content, attribution, "custom message "+e.ID, entryMillis(e.Timestamp))
 	case "branch_summary":
 		if e.Summary == "" {
 			return nil, nil
 		}
-		return []llmMessage{{role: "user", rewriteAt: entryMillis(e.Timestamp), blocks: []block{{Type: "text", Text: render(branchSummaryTemplate, "{{summary}}", e.Summary)}}}}, nil
+		stamp := entryMillis(e.Timestamp)
+		return []llmMessage{{role: "user", timestamp: stamp, rewriteAt: stamp, blocks: []block{{Type: "text", Text: render(branchSummaryTemplate, "{{summary}}", e.Summary)}}}}, nil
 	}
 	return nil, nil
 }
@@ -601,7 +605,7 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 			blocks = steeringBlocks(blocks)
 		}
 		turn := llmMessage{role: "user", blocks: blocks, developer: m.Role == "developer",
-			attribution: m.Attribution, payload: m.ProviderPayload}
+			attribution: m.Attribution, payload: m.ProviderPayload, timestamp: m.Timestamp}
 		turn.stringInput = startsJSON(m.Content, '"')
 		if m.Role == "user" {
 			turn.rewriteAt = m.HistoryRewriteAt
@@ -644,9 +648,10 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 		_ = json.Unmarshal(m.Details, &details)
 		synthetic := string(details["__synthetic"]) == "true"
 		return []llmMessage{{role: "toolResult", blocks: blocks, toolCallID: m.ToolCallID, toolName: stripXdPrefix(m.ToolName), isError: m.IsError,
-			synthetic: synthetic, notExecuted: synthetic && string(details["executed"]) == "false", rewriteAt: m.PrunedAt}}, nil
+			synthetic: synthetic, notExecuted: synthetic && string(details["executed"]) == "false", rewriteAt: m.PrunedAt,
+			providerMetadata: m.ProviderMetadata}}, nil
 	case "custom":
-		return customMessages(m.CustomType, m.Content, m.Attribution, where)
+		return customMessages(m.CustomType, m.Content, m.Attribution, where, m.Timestamp)
 	case "bashExecution", "pythonExecution":
 		if m.ExcludeFromContext {
 			return nil, nil
@@ -659,9 +664,9 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 // customMessages is convertToLlm's custom message: a collaborator's prompt in the steering
 // envelope and a skill the user invoked as user turns, images split into a user turn of their own,
 // anything else a developer message.
-func customMessages(customType string, content json.RawMessage, attribution, where string) ([]llmMessage, error) {
+func customMessages(customType string, content json.RawMessage, attribution, where string, timestamp *float64) ([]llmMessage, error) {
 	one := func(blocks []block) llmMessage {
-		return llmMessage{role: "user", blocks: blocks, customType: customType}
+		return llmMessage{role: "user", blocks: blocks, customType: customType, timestamp: timestamp}
 	}
 	developer := func(blocks []block) llmMessage {
 		turn := one(blocks)

@@ -333,7 +333,7 @@ func TestTransformAssistantReplayRules(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertMessages(t, got, []conversation.Message{{Role: conversation.Assistant, API: responses, Provider: "openai", Model: id,
-			Content: []conversation.Block{thinking("", signature), text("answer")}}})
+			Content: []conversation.Block{thinking("", signature), thinking("unsigned", ""), text("answer")}}})
 	})
 	t.Run("Responses native turn drops empty unanchored thinking blocks", func(t *testing.T) {
 		const responses = conversation.OpenAIResponses
@@ -398,5 +398,8 @@ func TestReadExactNativeCompactionPreservesBoundThinking(t *testing.T) {
 	if len(messages) != 2 || messages[0].Native == nil {
 		t.Fatalf("want native summary and retained turn, got %+v", messages)
 	}
-	assertMessages(t, messages[1:], []conversation.Message{claude(thinking("plan", "c2ln"), text("answer"))})
+	plan, answer := thinking("plan", "c2ln"), text("answer")
+	ms := 2.0
+	plan.Timestamp, answer.Timestamp = &ms, &ms
+	assertMessages(t, messages[1:], []conversation.Message{claude(plan, answer)})
 }

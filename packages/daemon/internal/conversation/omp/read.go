@@ -78,12 +78,18 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // rules for the restored model. They start as user content and can become mid-conversation
 // system messages. Read preserves recorded tool changes by logical name and sets controls on
 // the messages that carry them. The sender applies wire tool names and any endpoint overrides.
-// The answer loop sets request-level effort and tools. Read does not insert request-time markers.
+// Request-level effort and tools are parameters that the answer loop sets. To generate
+// historical markers, a sender would also need each assistant turn's saved requestControls.
+// Read does not return those snapshots or insert their markers.
 //
 // The sender chooses native Anthropic compaction or the summary text. It needs the target's
 // compaction support, legacy replay policy, and request mode. Native replay uses the recorded
 // payload and requires the sender to place the block at the start of the retained assistant
 // turn, if there is one, and replay the file notes at their recorded boundaries.
+// For exact-tail replay, Read keeps the compaction's commit time on Native.Timestamp.
+// It keeps the saved times of retained non-tool turns on their blocks or on Native.Timestamp
+// for a native-only turn.
+// All times are Unix milliseconds, distinct from any timestamp used to invalidate signatures.
 //
 // Read assumes that the Anthropic request does not suppress all thinking or exclude individual
 // blocks after a provider rejection. Reproducing those branches needs the current request's
@@ -115,23 +121,25 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // choose between native items and blocks. An incremental assistant payload adds its items.
 // An assistant snapshot replaces the earlier wire input. Eligible user or developer payloads,
 // including compaction summaries, use their items in place of the message's fallback blocks.
-// Read carries the same-model Responses text phase and the saved message and tool item IDs
-// on blocks. The sender decides which IDs to keep, omit, or invent and hashes IDs over 64
-// characters. It needs the message-ID preservation option, the presence of replayable
-// reasoning after filtering, the message index, and the resolved tool item kind.
+// Read carries the same-model Responses text phase and the saved message, reasoning, and
+// tool item IDs on blocks. The sender decides which IDs to keep, omit, or invent and hashes
+// IDs over 64 characters. It needs the message-ID preservation option, the presence of
+// replayable reasoning after filtering, the message index, and the resolved tool item kind.
 //
 // The sender needs the resolved target identity and compatibility policy: image and computer
 // support, custom tool format, current tool declarations and wire names, and thinking mode.
 // The reader does not create the required reasoning item for targets that need one on every
 // assistant turn or tool call. The sender needs the replay requirements and filter policy.
+// Retained same-model thinking can supply text and a recorded ID for that synthesis.
+// Without native replay, a Thinking block with no replayable signature is not a wire item.
 // On a model alias the reader cannot infer the wire model identity from the journal ID.
 //
 // The sender checks pairing and order again after it has chosen and combined native and
 // block replay. It needs the call kinds, retained IDs, active tool map, and endpoint pairing
 // policy for orphan repair, recovering calls absent from native items, and batch ordering.
-// The sender uses native computer metadata for actions, screenshots, and safety checks.
-// The replay items preserve that metadata when it is in a native payload. Neutral blocks
-// represent no computer-call metadata, freeform wire name, or tool namespace.
+// Native items and saved block calls and results preserve provider metadata, including
+// computer actions, screenshots, and safety checks. Saved block calls also preserve their
+// custom wire names and namespaces. The sender chooses the outgoing tool form.
 //
 // Read replaces malformed native function arguments with a bounded diagnostic. Its parser
 // message can differ from the pinned JavaScript parser's.

@@ -43,6 +43,9 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 	ids := normalizedToolIDs{exact: map[string]string{}, responses: map[string]string{}}
 	out := make([]conversation.Message, len(messages))
 	var latestRewrite *float64
+	exactCompactionTail := t.api == conversation.AnthropicMessages && slices.ContainsFunc(messages, func(m llmMessage) bool {
+		return m.exactCompactionTail
+	})
 	for i, m := range messages {
 		if t.prefixBinding && m.rewriteAt != nil && (latestRewrite == nil || *m.rewriteAt > *latestRewrite) {
 			latestRewrite = m.rewriteAt
@@ -71,6 +74,9 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 		}
 		if err != nil {
 			return nil, err
+		}
+		if exactCompactionTail {
+			setCompactionTimestamp(&out[i], m.timestamp)
 		}
 	}
 	pairingKey := toolPairingKey(messages, out)
@@ -137,7 +143,8 @@ func userMessage(m llmMessage, t target) (conversation.Message, error) {
 }
 
 func toolResultMessage(m llmMessage) (conversation.Message, error) {
-	result := conversation.Block{Type: conversation.ToolResult, ToolCallID: m.toolCallID, ToolName: m.toolName, IsError: m.isError}
+	result := conversation.Block{Type: conversation.ToolResult, ToolCallID: m.toolCallID, ToolName: m.toolName, IsError: m.isError,
+		ProviderMetadata: m.providerMetadata}
 	for _, b := range m.blocks {
 		converted, keep, err := inputBlock(b)
 		if err != nil {
@@ -206,6 +213,9 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 		case "thinking":
 			visibleThinking = true
 			thinking := conversation.Block{Type: conversation.Thinking, Text: b.Thinking, Signature: b.ThinkingSignature}
+			if !anthropicTarget && sameModel {
+				thinking.ItemID = b.ItemID
+			}
 			signatureUntrustworthy := abandonedToolUse || (failed && i == len(m.blocks)-1)
 			if signatureUntrustworthy {
 				thinking.Signature = ""
@@ -264,6 +274,9 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 				arguments = json.RawMessage("null")
 			}
 			converted[i] = &conversation.Block{Type: conversation.ToolCall, ToolCallID: id, ToolName: b.Name, Arguments: arguments}
+			converted[i].CustomWireName = b.CustomWireName
+			converted[i].Namespace = b.Namespace
+			converted[i].ProviderMetadata = b.ProviderMetadata
 			if !anthropicTarget && sameModel {
 				_, converted[i].ItemID = splitResponsesToolCallID(b.ID)
 			}
@@ -282,6 +295,7 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 			signed = true
 		}
 	}
+	hasResponsesOutput := msg.Native != nil
 	for _, block := range converted {
 		if block == nil {
 			continue
@@ -303,11 +317,26 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 				block.Signature = ""
 			}
 		case block.Type == conversation.Thinking && !anthropicTarget && msg.Native == nil:
-			if hiddenEmpty || m.stopReason == "error" || !responsesReasoningSignature(block.Signature) {
+			if hiddenEmpty || m.stopReason == "error" {
 				continue
 			}
+			if !responsesReasoningSignature(block.Signature) {
+				if blank(block.Text) && block.ItemID == "" {
+					continue
+				}
+				// This thinking is input to the sender's optional synthesis,
+				// not a replayable reasoning item on its own.
+				block.Signature = ""
+			} else {
+				hasResponsesOutput = true
+			}
+		default:
+			hasResponsesOutput = true
 		}
 		msg.Content = append(msg.Content, *block)
+	}
+	if !anthropicTarget && !hasResponsesOutput {
+		msg.Content = nil
 	}
 	return msg, nil
 }

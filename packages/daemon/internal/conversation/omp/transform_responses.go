@@ -54,14 +54,16 @@ func responsesReasoningSignature(signature string) bool {
 		json.Unmarshal(item["id"], &id) == nil && id != nil
 }
 
-// Responses hoists assistant messages out of a tool batch. In block replay the
-// following tool outputs are contiguous; reasoning items separate batches.
+// Responses hoists assistant text out of a tool batch. Replayable reasoning
+// items separate batches, but thinking retained only for synthesis does not.
 func hoistResponsesText(blocks []conversation.Block) []conversation.Block {
 	firstCall, move := -1, false
 	for i, b := range blocks {
 		switch b.Type {
 		case conversation.Thinking:
-			firstCall, move = -1, false
+			if b.Signature != "" {
+				firstCall, move = -1, false
+			}
 		case conversation.ToolCall:
 			if firstCall < 0 {
 				firstCall = i
@@ -76,7 +78,7 @@ func hoistResponsesText(blocks []conversation.Block) []conversation.Block {
 	ordered := make([]conversation.Block, firstCall, len(blocks))
 	copy(ordered, blocks[:firstCall])
 	for _, b := range blocks[firstCall:] {
-		if b.Type == conversation.Text {
+		if b.Type != conversation.ToolCall {
 			ordered = append(ordered, b)
 		}
 	}

@@ -70,9 +70,9 @@ type Block struct {
 	// Phase is a Text block's OpenAI Responses message phase, empty when unrecorded
 	// or from another model. Read fills it. Append refuses a block that sets it.
 	Phase string
-	// ItemID is the saved OpenAI Responses message ID of a Text block or the item
-	// half of a ToolCall block's ID. It is empty when unrecorded or from another
-	// model. Read fills it. Append refuses a block that sets it.
+	// ItemID is a saved Responses ID: a Text block's message ID, a ToolCall
+	// block's item ID, or a Thinking block's recorded reasoning item ID.
+	// Read fills it for same-model replay. Append refuses a block that sets it.
 	ItemID string
 	// Signature is a Thinking block's signature, empty when unsigned.
 	Signature string
@@ -82,6 +82,14 @@ type Block struct {
 	ToolCallID string
 	// ToolName is the tool of a ToolCall or ToolResult block.
 	ToolName string
+	// CustomWireName and Namespace are the names a saved Responses ToolCall can
+	// supply to the sender. Read fills them. Append refuses a block that sets either.
+	CustomWireName string
+	Namespace      string
+	// ProviderMetadata is the saved provider data of a ToolCall or ToolResult,
+	// such as computer actions, screenshots and safety checks. Read fills it.
+	// Append refuses a block that sets it.
+	ProviderMetadata json.RawMessage
 	// Arguments is a ToolCall block's JSON arguments. The Claude reader preserves
 	// the recorded input. The Oh My Pi reader uses null for missing or null
 	// Responses arguments.
@@ -98,6 +106,10 @@ type Block struct {
 	// Detail is an Image block's detail as recorded by the session, empty when
 	// unrecorded. Read fills it. Append refuses a block that sets it.
 	Detail string
+	// Timestamp is the saved turn time in Unix milliseconds. Read fills it on
+	// blocks that can mark Anthropic compaction file-note boundaries.
+	// Append refuses a block that sets it.
+	Timestamp *float64
 }
 
 // NativeKind is the kind of provider-native history a message carries.
@@ -130,6 +142,9 @@ type Native struct {
 	Payload json.RawMessage
 	// Controls is set only for AnthropicMessageControls.
 	Controls *AnthropicControls
+	// Timestamp is the saved turn time in Unix milliseconds for Anthropic
+	// compaction replay when the sender cannot use a block's Timestamp.
+	Timestamp *float64
 }
 
 // AnthropicControls holds the message-level fields of an Anthropic system turn.
@@ -358,6 +373,14 @@ func (b Block) readOnlyField() string {
 		return "Detail"
 	case b.ItemID != "":
 		return "ItemID"
+	case b.CustomWireName != "":
+		return "CustomWireName"
+	case b.Namespace != "":
+		return "Namespace"
+	case len(b.ProviderMetadata) != 0:
+		return "ProviderMetadata"
+	case b.Timestamp != nil:
+		return "Timestamp"
 	default:
 		return ""
 	}

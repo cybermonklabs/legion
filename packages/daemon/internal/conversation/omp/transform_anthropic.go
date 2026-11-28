@@ -10,6 +10,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
+// setCompactionTimestamp keeps the source time distinct from the prefix rewrite
+// time. Only non-tool turns can flush exact-tail notes.
+func setCompactionTimestamp(m *conversation.Message, timestamp *float64) {
+	if timestamp == nil || m.Role == conversation.Tool {
+		return
+	}
+	if m.Native != nil && (m.Native.Kind == conversation.AnthropicCompaction || len(m.Content) == 0) {
+		m.Native.Timestamp = timestamp
+		return
+	}
+	for i := range m.Content {
+		m.Content[i].Timestamp = timestamp
+	}
+}
+
 // shapeAnthropicHistory applies the encoder after tool pairing. The neutral model
 // keeps individual tool results; the sender encodes each adjacent run as one user turn.
 func shapeAnthropicHistory(messages []conversation.Message, t target) []conversation.Message {
@@ -131,8 +146,10 @@ func placeAnthropicDeveloperTurns(out []conversation.Message, t target) []conver
 		}
 		msg.Role = conversation.User
 		var controls conversation.AnthropicControls
+		var timestamp *float64
 		if msg.Native != nil && msg.Native.Kind == conversation.AnthropicMessageControls {
 			controls = *msg.Native.Controls
+			timestamp = msg.Native.Timestamp
 			msg.Native = nil
 		}
 		if !t.anthropicSystem {
@@ -172,6 +189,7 @@ func placeAnthropicDeveloperTurns(out []conversation.Message, t target) []conver
 		}
 		if controls.ClearAt != "" || controls.Effort != "" {
 			msg.Native = anthropicMessageControls(controls)
+			msg.Native.Timestamp = timestamp
 		}
 	}
 	return out

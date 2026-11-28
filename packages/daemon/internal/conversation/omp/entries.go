@@ -82,11 +82,12 @@ type message struct {
 	RetryRecovery   json.RawMessage `json:"retryRecovery"` // true in older builds, an object now
 	Continued       json.RawMessage `json:"continued"`
 	// toolResult
-	ToolCallID string          `json:"toolCallId"`
-	ToolName   string          `json:"toolName"`
-	IsError    bool            `json:"isError"`
-	PrunedAt   *float64        `json:"prunedAt"`
-	Details    json.RawMessage `json:"details"`
+	ToolCallID       string          `json:"toolCallId"`
+	ToolName         string          `json:"toolName"`
+	IsError          bool            `json:"isError"`
+	PrunedAt         *float64        `json:"prunedAt"`
+	ProviderMetadata json.RawMessage `json:"providerMetadata"`
+	Details          json.RawMessage `json:"details"`
 	// custom
 	CustomType string `json:"customType"`
 	// bashExecution, pythonExecution
@@ -108,9 +109,13 @@ type block struct {
 		Provider string `json:"provider"`
 		ID       string `json:"id"`
 	} `json:"providerFile"`
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	Arguments        json.RawMessage `json:"arguments"`
+	ItemID           string          `json:"itemId"`
+	CustomWireName   string          `json:"customWireName"`
+	Namespace        string          `json:"namespace"`
+	ProviderMetadata json.RawMessage `json:"providerMetadata"`
 }
 
 // parsed is a session's records as Oh My Pi's loader reads them.
