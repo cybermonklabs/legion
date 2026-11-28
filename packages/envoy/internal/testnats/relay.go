@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,7 +27,7 @@ import (
 // waits for its PONG, which is how Server.Reload keeps a reload clear of client traffic. A gate's
 // relay and a cluster's route relays cannot be held.
 type relay struct {
-	listener   net.Listener
+	listener   *net.TCPListener
 	target     func() (string, error)
 	clientPort bool
 	done       chan struct{}
@@ -74,7 +75,7 @@ func (j *joined) port() int { return j.upstream.LocalAddr().(*net.TCPAddr).Port 
 
 // newRelay starts a relay that serves listener and dials target for each connection it accepts;
 // clientPort says it is the relay of a server's client port, which a hold can stop.
-func newRelay(listener net.Listener, target func() (string, error), clientPort bool) *relay {
+func newRelay(listener *net.TCPListener, target func() (string, error), clientPort bool) *relay {
 	r := &relay{listener: listener, target: target, clientPort: clientPort, done: make(chan struct{}), joins: map[*joined]struct{}{}}
 	r.moved = sync.NewCond(&r.mu)
 	go r.serve()
@@ -416,23 +417,46 @@ func (r *relay) await(t testing.TB, end waitEnd, what string, settled func() (re
 }
 
 // Close frees the port the relay held and releases every copy a freeze or a hold holds, which then
-// runs on as a free copy does: a copy keeps running until one of its endpoints ends.
-func (r *relay) Close() {
+// runs on until one of its endpoints ends. It reports listener shutdown errors to t.
+func (r *relay) Close(t testing.TB) {
+	t.Helper()
 	r.closing.Do(func() {
 		close(r.done)
-		// A child process forked while the relay listens, as a parallel test's child binary is,
-		// keeps a copy of the listening socket until its exec closes it, and a close alone leaves
-		// the address answering dials that long. Shutdown acts on the socket itself, not on this
-		// process's descriptor, so it stops the listening at once. The fork lock, held for reading
-		// across both, keeps a fork from starting meanwhile, and on Linux Go's fork waits for the
-		// child's exec (CLONE_VFORK), so once Close returns no child holds a copy: gVisor keeps a
-		// shut-down listener's port bound while any copy is open, and the next bind then succeeds.
+		// A child forked while the relay listens, such as a parallel test's child binary,
+		// inherits a copy of the listener. Closing the relay's descriptor alone leaves the
+		// address answering dials while any copy is open.
+		//
+		// On native Linux, the shutdown is what refuses dials: it stops the socket itself from
+		// listening, not just this descriptor, so an inherited copy then neither answers a dial
+		// nor blocks an SO_REUSEADDR bind such as Gate.Open's beside its reservation. A child can
+		// still hold a copy for a moment after Close returns: Go releases ForkLock when the vfork
+		// parent resumes, which Linux does in exec_mmap before do_close_on_exec, and a child that
+		// exits without exec holds its copies until it exits.
+		//
+		// The fork lock is for gVisor, which keeps a shut-down listener's port bound while any
+		// copy is open but closes close-on-exec descriptors before it resumes the vfork parent.
+		// Holding ForkLock for reading across the shutdown and the close keeps forks out, so no
+		// copy of a child that execs outlives Close and the next bind takes the port. With the
+		// shutdown alone, the regression test's gate rows failed their reopen in an issue pod
+		// with "bind: address already in use".
+		//
+		// Elsewhere the close under ForkLock is all there is: Darwin's kernel refuses shutdown on
+		// a listening socket with ENOTCONN, and StartGate refuses every system but Linux.
 		syscall.ForkLock.RLock()
-		if conn, ok := r.listener.(syscall.Conn); ok {
-			if raw, err := conn.SyscallConn(); err == nil {
-				_ = raw.Control(func(fd uintptr) {
-					_ = syscall.Shutdown(int(fd), syscall.SHUT_RDWR)
-				})
+		if runtime.GOOS == "linux" {
+			raw, err := r.listener.SyscallConn()
+			if err != nil {
+				t.Errorf("get the raw listener for relay at %s: %v", r.listener.Addr(), err)
+			} else {
+				var shutdownErr error
+				if err := raw.Control(func(fd uintptr) {
+					shutdownErr = syscall.Shutdown(int(fd), syscall.SHUT_RDWR)
+				}); err != nil {
+					t.Errorf("control the listener for relay at %s: %v", r.listener.Addr(), err)
+				}
+				if shutdownErr != nil {
+					t.Errorf("shut down the listener for relay at %s: %v", r.listener.Addr(), shutdownErr)
+				}
 			}
 		}
 		_ = r.listener.Close()
