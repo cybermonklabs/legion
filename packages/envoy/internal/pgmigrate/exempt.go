@@ -102,6 +102,10 @@ type classifier struct {
 	// (catalogRelation), whether or not catalog below is nil: that read finds every relation of the
 	// name's last part, in every schema, so it does not depend on what the name resolves to.
 	census pgx.Tx
+	// catalogRelations holds, by relation name, the answer of each catalogRelation read of census
+	// that answered, shared by every classifier of one Census call (Census says why one census
+	// may reuse it); nil where the classifier reads every name, as in a unit test.
+	catalogRelations map[string]catalogRelationAnswer
 	// catalog is the census's transaction where the classifier may read what the migration's
 	// names resolve to; nil where Census gives the migration no catalog, or where the migration's
 	// own statements forbid reading it (catalogReadsOff).
@@ -1097,6 +1101,13 @@ func (names *treeNames) walk(tree any) {
 	}
 }
 
+// catalogRelationAnswer is one answer of catalogRelation's read (Catalog read 7), kept in
+// classifier.catalogRelations.
+type catalogRelationAnswer struct {
+	catalog   bool
+	setConfig bool
+}
+
 // catalogRelation reads relation, a name that a statement gives (Catalog read 7). catalog says
 // whether the name may name a relation of pg_catalog or a relation whose rules read one, and
 // setConfig whether it may name a relation whose rules call pg_catalog.set_config (keepsReadsOn):
@@ -1114,7 +1125,13 @@ func (c *classifier) catalogRelation(relation rangeVar) (catalog, setConfig bool
 	if relation.Schemaname == "pg_catalog" || c.census == nil {
 		return true, true, nil
 	}
+	if answer, ok := c.catalogRelations[relation.Relname]; ok {
+		return answer.catalog, answer.setConfig, nil
+	}
 	found, err := c.read(c.census, catalogRelationQuery, relation.Relname, &catalog, &setConfig)
+	if found && c.catalogRelations != nil {
+		c.catalogRelations[relation.Relname] = catalogRelationAnswer{catalog: catalog, setConfig: setConfig}
+	}
 	return catalog || !found, setConfig || !found, err
 }
 
@@ -1386,17 +1403,19 @@ type classification struct {
 // tableSizeExemption says why migration sql is exempt from CensusTableLimit, and what it changes
 // for the pending migrations after it (classification).
 //
-// census is the census's transaction, nil only in a unit test. The classifier's first pass reads
-// in it, for each statement, whether a relation it names is of pg_catalog or reads one
-// (takesLaterExemptions), whether or not catalog is nil, since the answer decides
+// c.census is the census's transaction, nil only in a unit test. The classifier's first pass
+// reads in it, for each statement, whether a relation it names is of pg_catalog or reads one
+// (takesLaterExemptions), whether or not c.catalog is nil, since the answer decides
 // laterExemptionsOff. The same read says whether a rule of a relation it names calls set_config
-// (keepsReadsOn), which decides laterReadsOff. With a nil census, both answers are yes. catalog
-// is the same transaction where Census gives the migration a catalog, and nil where it does not.
+// (keepsReadsOn), which decides laterReadsOff. With a nil c.census, both answers are yes. Where
+// c.catalogRelations is not nil, a name whose read answered once is answered from it
+// (catalogRelation). c.catalog is the same transaction where Census gives the migration a
+// catalog, and nil where it does not.
 // The classifier reads it where a form needs it: an added column's type, its default's cast and
 // function, and whether the table a created index is built on is new. The first pass also reads
 // it, for each statement on the keep-on list, for whether a function, a table or a view it
 // creates has the name of a function or a type of pg_catalog, or of a cast's function
-// (keepsReadsOn), since the answer decides laterReadsOff. With a nil catalog, or where the
+// (keepsReadsOn), since the answer decides laterReadsOff. With a nil c.catalog, or where the
 // migration's own statements forbid the reads (catalogReadsOff), it reads nothing to admit a form,
 // and every added column and every created index is judged on size; the other kinds need no read.
 // An error Postgres raises for a read refuses the form it is for, and any other error is
@@ -1411,7 +1430,7 @@ type classification struct {
 // the census cannot see what it changes, and a migration can parse on the PostgreSQL 18 server and
 // not in the census's Postgres 17 grammar (a VIRTUAL generated column). A failure of the parser
 // itself is answered the same way, so the size rule stands whenever the reading cannot be had.
-func tableSizeExemption(ctx context.Context, census, catalog pgx.Tx, sql string) (classification, error) {
+func (c *classifier) tableSizeExemption(sql string) (classification, error) {
 	statements, ok := parseStatements(sql)
 	if !ok {
 		return classification{
@@ -1419,7 +1438,6 @@ func tableSizeExemption(ctx context.Context, census, catalog pgx.Tx, sql string)
 			laterExemptionsOff: exemptionsOff{does: "does not parse", unseen: true},
 		}, nil
 	}
-	c := &classifier{ctx: ctx, census: census, catalog: catalog}
 	readsOff, laterReadsOff, laterExemptionsOff, err := c.catalogReadsOff(statements)
 	if err != nil {
 		return classification{}, err

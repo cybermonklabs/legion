@@ -319,10 +319,14 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	// The catalog the classifier reads holds what every pending migration's names resolve to until
 	// one of them holds a statement not known to leave the names as they are; tableSizeExemption's
 	// laterReadsOff says it does, and from there on no migration reads the catalog for what a name
-	// resolves to. The classifier still reads in tx, for every migration, whether a relation that a
+	// resolves to. For every migration, the classifier can still ask whether a relation that a
 	// statement names is of pg_catalog or reads one, since that read resolves no name
 	// (catalogRelation). A recorded migration, which the loop skips, changes nothing.
 	catalogTrusted := true
+	// catalogRelations holds successful catalogRelation answers by relation name. This read
+	// takes the name alone, resolves no name, and sees one repeatable-read, read-only snapshot
+	// throughout Census. A read Postgres refuses is not kept.
+	catalogRelations := make(map[string]catalogRelationAnswer)
 	// laterEventTrigger is why the first pending migration that can create or enable an event
 	// trigger that the census does not see, or that does not parse, stops the exemptions
 	// (laterExemptionsOff), with its words naming that migration; the zero value until one does.
@@ -348,7 +352,8 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		if catalogTrusted {
 			catalog = tx
 		}
-		classified, err := tableSizeExemption(ctx, tx, catalog, migration.SQL)
+		classify := &classifier{ctx: ctx, census: tx, catalog: catalog, catalogRelations: catalogRelations}
+		classified, err := classify.tableSizeExemption(migration.SQL)
 		if err != nil {
 			return nil, fmt.Errorf("census: %s: classify: %w", migration.Name, err)
 		}
@@ -383,7 +388,12 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		// migration or of an earlier pending one, can change the table before the writes run, or
 		// where a statement of the migration can make its names resolve to another table than the
 		// one the census read.
-		writes := &writeReading{c: &classifier{ctx: ctx, census: tx, catalog: catalog}, statements: classified.statements, changedBy: changedBy, reviewed: options.reviewedTriggers}
+		writes := &writeReading{
+			c:          &classifier{ctx: ctx, census: tx, catalog: catalog, catalogRelations: catalogRelations},
+			statements: classified.statements,
+			changedBy:  changedBy,
+			reviewed:   options.reviewedTriggers,
+		}
 		switch {
 		case classified.statements == nil:
 		case classified.laterExemptionsOff.does != "":
