@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -425,6 +426,73 @@ func TestACompactionSkipsAnUnfoldableLogUntilItChanges(t *testing.T) {
 	if folds != 2 || strings.Count(logs.String(), logged) != 2 {
 		t.Fatalf("after the log changed: %d folds and %d log lines, want 2 of each", folds, strings.Count(logs.String(), logged))
 	}
+}
+
+// A document store writes its lines to the logger its builder gave it: the store New builds, to the
+// service's (Deps.Logger), and a store a caller builds and hands to New (Deps.Persistence), to the
+// caller's, which New leaves as it is. Each row stores an unfoldable log of a document of its own
+// and compacts it through the service's compaction (tryCompaction), whose store logs once that it
+// leaves the rows as stored, and waits for that line in the logger it must reach; the second row
+// then finds it missing from the service's. A New that builds its store with no logger fails the
+// first row, and one that sets its own logger on the store it is handed fails the second. The rows
+// run beside each other, so a row that waits out the test binary's deadline does not spend the
+// other's.
+func TestAStoreWritesToTheLoggerOfItsBuilder(t *testing.T) {
+	t.Parallel()
+	// compactUnfoldable stores the rows of unfoldableHistory as a document of their own through
+	// versioned, service's store, and compacts them once they are due, answering the document.
+	compactUnfoldable := func(t *testing.T, database *store.Store, service *Service, versioned *PgVersioned) string {
+		t.Helper()
+		shrinkPendingItems(t, nil, versioned)
+		artifactID := createDocument(t, database, "unfoldable")
+		rows, _ := unfoldableHistory()
+		for index, row := range rows {
+			if _, err := versioned.AppendUpdate(context.Background(), artifactID, row); err != nil {
+				t.Fatalf("append update %d: %v", index+1, err)
+			}
+		}
+		ageUpdatesThrough(t, database, artifactID, everyVersion, time.Hour)
+		if attempt := service.tryCompaction(context.Background(), artifactID, false); attempt.try != tryDone {
+			t.Fatalf("the service's compaction = %+v, want the rows left as unfoldable", attempt)
+		}
+		return artifactID
+	}
+	// leftAsStored is the part of the line that leaves the document's rows as stored, from the end
+	// of its message through the room it names.
+	leftAsStored := func(artifactID string) string {
+		return `compaction leaves them as stored" room=` + artifactID + " "
+	}
+
+	t.Run("the store New builds writes to the service's logger", func(t *testing.T) {
+		t.Parallel()
+		database := storetest.Open(t)
+		logs, logger := testLogger(slog.LevelWarn)
+		service := newTestServiceOnTo(t, database, logger)
+		artifactID := compactUnfoldable(t, database, service, service.persistence.(*PgVersioned))
+		logtest.AwaitLogged(t, logs, "the line leaving the document's rows as stored in the service's logger", leftAsStored(artifactID))
+	})
+
+	t.Run("a store handed to New writes to its builder's logger", func(t *testing.T) {
+		t.Parallel()
+		database := storetest.Open(t)
+		storeLogs, storeLogger := testLogger(slog.LevelWarn)
+		serviceLogs, serviceLogger := testLogger(slog.LevelWarn)
+		versioned := NewPgVersioned(database)
+		versioned.logger = storeLogger
+		deps := testServiceDeps(database)
+		deps.Persistence, deps.Logger = versioned, serviceLogger
+		service := New(deps)
+		testcleanup.Add(t, func() {
+			if err := service.Shutdown(context.Background()); err != nil {
+				t.Errorf("shutdown document service: %v", err)
+			}
+		})
+		artifactID := compactUnfoldable(t, database, service, versioned)
+		logtest.AwaitLogged(t, storeLogs, "the line leaving the document's rows as stored in the store's builder's logger", leftAsStored(artifactID))
+		if got := linesHolding(serviceLogs.String(), "compaction leaves them as stored"); got != "" {
+			t.Fatalf("the service's logger holds the line of the store it was handed:\n%s", got)
+		}
+	})
 }
 
 // A browser's edit lands in the store while the document's compaction is held inside its fold:

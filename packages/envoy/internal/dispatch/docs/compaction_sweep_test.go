@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A restart loses the compaction queue, and nothing reopens the documents it held: the sweep of the
@@ -88,6 +89,52 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	}
 	if !thisHour {
 		t.Fatal("the sweep's duty record does not hold this hour's pass")
+	}
+}
+
+// Each leased loop of the service hands duty's runner the service's logger (Deps.Logger), so the
+// lines of its lease - a pass that ran, was skipped or was cut short - go where the service's own
+// lines go. A row starts one loop on a database of its own and waits for the line of the pass the
+// loop runs at start; a loop that hands duty no logger writes that line where the default points,
+// and its row fails. The rows run beside each other, so a row that waits out the test binary's
+// deadline does not spend the deadline of the rows after it. TestEditNoticeSweepRetriesAHeldLease,
+// TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass and
+// TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod read the lease lines of the woken
+// loops and of the resumption the same way.
+func TestEachLeasedLoopWritesItsLeaseLinesToTheServicesLogger(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		lease string
+		run   func(*Service, context.Context, duty.Leases)
+	}{
+		{BlockIndexLease, (*Service).RunBlockIndexReconciliation},
+		{RefsFormsLease, (*Service).RunRefsFormsReconciliation},
+		{compactionSweepLease, (*Service).RunCompactionSweep},
+	} {
+		t.Run(row.lease, func(t *testing.T) {
+			t.Parallel()
+			database := storetest.Open(t)
+			logs, logger := testLogger(slog.LevelInfo)
+			service := newTestServiceOnTo(t, database, logger)
+			leases := excerptLeases(t, database)
+			ctx, cancel := context.WithCancel(context.Background())
+			returned := make(chan struct{})
+			go func() {
+				defer close(returned)
+				row.run(service, ctx, leases)
+			}()
+			// stop ends the loop and waits for it to return; the cleanup stops it when a wait
+			// below fails the row, before the service and the database go.
+			stop := func() {
+				cancel()
+				testwait.Receive(t, "the "+row.lease+" loop to return once its context ended", returned)
+			}
+			testcleanup.Add(t, stop)
+			testwait.Until(t, "the "+row.lease+" loop's pass at start to be logged to the service's logger", func() (string, bool) {
+				return logs.Lines("lease="), countExcerptLeaseLines(logs.String(), "dispatch duty: leased pass ran", row.lease) > 0
+			})
+			stop()
+		})
 	}
 }
 

@@ -675,10 +675,15 @@ process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), th
 (`t.Setenv`), a package variable, flags, the GC or `GOMAXPROCS`, heap statistics or goroutine
 counts, or pmdoc's schema manifest, display tree version or block ID generator
 (`pmdoc.UseManifestForTest`, `pmdoc.UseStagedBlockForTest`, `pmdoctest.UseBlockSchema`,
-`pmdoc.SetDisplayTreeVersionForTest`, `pmdoc.SetBlockIDGenerator`). go test runs every serial
-test before it starts the parallel ones, so such a test runs alone. A serial test whose reason is
-not a call in its own body or a helper of the package's says why on its first line: a wall-clock
-bound that missed under parallel load, or a write through another package's test hook.
+`pmdoc.SetDisplayTreeVersionForTest`, `pmdoc.SetBlockIDGenerator`). A docs test that reads the
+document service's lines gives each service it builds a logger of its own (`Deps.Logger`, which
+also reaches the store `New` builds, the service's ygo server and its duty loops), sets its own in
+the `logger` field of each store it builds itself, and runs beside the others; only a test of the
+default itself sets the default logger
+(`TestAServiceWithNoLoggerWritesWhereTheDefaultPointsAtEachLine`). go test runs every serial test
+before it starts the parallel ones, so such a test runs alone. A serial test whose reason is not a
+call in its own body or a helper of the package's says why on its first line: a wall-clock bound
+that missed under parallel load, or a write through another package's test hook.
 
 A test that reads `pg_locks` or `pg_stat_activity` names its own database in the predicate
 (`database = (select oid from pg_database where datname = current_database())`, or
