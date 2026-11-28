@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,10 +26,11 @@ import (
 // (linkedPullRequestTerms). pull_request_heads holds that head for every pull request Dispatch
 // has seen an event for, in any repository and by any author — not the merged population
 // delivery_pull_requests keeps — and the issue Dispatch's own attribution picks for it
-// (attribution.go): the first issue its ranked sources name that resolves to the repository the
-// pull request is in, and only where the head branch is in that same repository, never a fork's
-// (headAttribution). A child's pull request is attributed to the child, so it answers for the
-// child's own checks alone and never for a check of an issue above it.
+// (attribution.go): of the first of its ranked sources that names an issue, the first issue that
+// resolves to the repository the pull request is in, nobody where that source names none, and
+// only where the head branch is in that same repository, never a fork's (headAttribution). A
+// child's pull request is attributed to the child, so it answers for the child's own checks alone
+// and never for a check of an issue above it.
 //
 // Three writers keep it: the `pull_request` envelope (intake.go, every action), the read-through
 // made for a commit that is no head Dispatch knows (ReadThroughCommitPulls) — by a recorded
@@ -1283,15 +1285,17 @@ func headInOwnRepository(repoFull, headRepo string) bool {
 }
 
 // headAttributionResult is one attribution attempt's answer: the issue it picked and the source
-// that named it ("none" when none did), the commit messages it read (nil when it read none,
-// which a merge that follows reuses rather than paging them again), whether the head is a
-// branch of the pull request's own repository, and whether the attempt read every source there
-// was. complete is the write's leave to replace a stored attribution: an attempt that could not
-// read a source it wanted — a payload that named no head repository, a commit read GitHub
-// refused — may add an attribution but never deletes one (UpsertPullRequestHead).
+// that named it ("none" when none did), whether any source it read names an issue Dispatch holds
+// (named, which ends the walk whether or not the issue is held), the commit messages it read (nil
+// when it read none, which a merge that follows reuses rather than paging them again), whether
+// the head is a branch of the pull request's own repository, and whether the attempt read every
+// source there was. complete is the write's leave to replace a stored attribution: an attempt
+// that could not read a source it wanted — a payload that named no head repository, a commit
+// read GitHub refused — may add an attribution but never deletes one (UpsertPullRequestHead).
 type headAttributionResult struct {
 	issueKey *string
 	source   string
+	named    bool
 	messages []string
 	ownHead  bool
 	complete bool
@@ -1299,32 +1303,33 @@ type headAttributionResult struct {
 
 // headAttribution resolves the issue a pull request belongs to from what GitHub said about it,
 // through the same ranked candidates every other attribution reads
-// (resolveAttributionCandidates): the first of them whose issue resolves to the repository the
-// pull request is in. It holds the head to that repository too.
+// (resolveAttributionCandidates): of the first source that names an issue, the first candidate
+// whose issue resolves to the repository the pull request is in (attributedCandidate). It holds
+// the head to that repository too.
 //
 // Both holdings are what keep the results read honest. A pull request's title, body and branch
 // are text any account that can open one writes, this row is written for any author and any
 // repository the App watches, and an attributed row is exactly what a `before_merge` result's
-// commit stands at (HeadAttributedTo), which is the reviewer's approval condition. So a
-// candidate whose issue resolves to another repository, or to none, is passed over for the next
-// one and a pull request no candidate of which resolves here attributes nobody; and neither
-// does a pull request whose head is not in this repository, since on a public repository anyone
-// may open one from a fork at any commit of their choosing — including an earlier one that
-// already carries a recorded pass — and title it after an issue, which would make that commit
-// a basis the recorded pass stands at again. Either way the row is still written, since the
-// reconcile and the head itself are wanted either way, but with no issue and the source "none".
+// commit stands at (HeadAttributedTo), which is the reviewer's approval condition. So a pull
+// request whose first source that names an issue names none that resolves here attributes
+// nobody, rather than an issue a weaker source mentions; and neither does a pull request whose
+// head is not in this repository, since on a public repository anyone may open one from a fork at
+// any commit of their choosing — including an earlier one that already carries a recorded pass —
+// and title it after an issue, which would make that commit a basis the recorded pass stands at
+// again. Either way the row is still written, since the reconcile and the head itself are wanted
+// either way, but with no issue and the source "none".
 //
 // The head is tested before any candidate is taken, since a fork's head attributes nobody
 // whatever the title names. This is the one place it is tested (headInOwnRepository), and the
-// answer rides back as ownHead, which is what tells attributeHead whether reading the commit
+// answer rides back as ownHead, which with named tells attributeHead whether reading the commit
 // messages could change anything, and as complete, since an answer naming no head repository at
 // all left a source unread and so may attribute nobody but delete nobody either.
 //
 // A log line is written per call, not per attribution, to logger, the caller's: the fork's head
-// names the first candidate it refused, and a pull request that passed candidates over names them
-// and the issue it settled on, if any. attributeHead calls this a second time, after reading the
-// commit messages, whenever the first call held no candidate, so on that path both calls log and
-// the second line names the candidates the commit messages added.
+// names the first candidate it refused, and a pull request that passed candidates of its first
+// source over names them and the issue it settled on, if any. attributeHead calls this a second
+// time, after reading the commit messages, only when the first call found no candidate at all,
+// so on that path a line names the candidates the commit messages added.
 func (a *Attributor) headAttribution(ctx context.Context, logger *slog.Logger, pool *store.Pool, facts attributionFacts, headRepo string) (headAttributionResult, error) {
 	attributed := headAttributionResult{
 		source:   string(sourceNone),
@@ -1335,15 +1340,21 @@ func (a *Attributor) headAttribution(ctx context.Context, logger *slog.Logger, p
 	if err != nil || len(candidates) == 0 {
 		return attributed, err
 	}
+	attributed.named = true
 	if !attributed.ownHead {
 		logger.Info("dispatch delivery: a pull request whose head is in another repository names an issue",
 			"repo", facts.Repo, "head_repo", headRepo, "issue", candidates[0].key, "source", string(candidates[0].source))
 		return attributed, nil
 	}
-	// passedOver is every candidate ranked above the one taken, and every candidate when none
-	// was held: the keys the log line below names.
-	passedOver := candidates
-	if i := firstHeldCandidate(candidates); i >= 0 {
+	// passedOver is every candidate of the first source ranked above the one taken, and every
+	// candidate of that source when none was held: the keys the log line below names. The
+	// candidates of later sources are never reached.
+	firstSource := slices.IndexFunc(candidates, func(candidate attributionCandidate) bool { return !candidate.first })
+	if firstSource < 0 {
+		firstSource = len(candidates)
+	}
+	passedOver := candidates[:firstSource]
+	if i := attributedCandidate(candidates); i >= 0 {
 		attributed.issueKey, attributed.source = &candidates[i].key, string(candidates[i].source)
 		passedOver = candidates[:i]
 	}
@@ -1364,11 +1375,12 @@ func (a *Attributor) headAttribution(ctx context.Context, logger *slog.Logger, p
 
 // attributeHead is headAttribution plus the one source the caller's facts cannot carry: the
 // commit messages, rank 5, which are read — one GitHub call, or one per page of 100 commits —
-// only when no candidate the title, body, branch and links name is held to this repository, as
-// every source after the first is read only when the earlier ones name nobody the pull request
-// may keep (attribution.go). A pull request whose head is not this repository's is not read at
-// all: it attributes nobody whatever its commits say, which is headAttribution's own ownHead
-// and not a second test here.
+// only when the title, body, branch and links name no issue at all, as every source after the
+// first is read only when the earlier ones name no issue (attribution.go). An issue of another
+// repository among those four ends the walk with nobody credited, and no commit message is a
+// reason to look past it. A pull request whose head is not this repository's is not read at all:
+// it attributes nobody whatever its commits say, which is headAttribution's own ownHead and not a
+// second test here.
 //
 // A read the App refuses leaves the attribution weaker than it could be, so the answer is not
 // complete: the caller's write adds no issue, deletes none (UpsertPullRequestHead), and leaves
@@ -1383,7 +1395,7 @@ func (a *Attributor) headAttribution(ctx context.Context, logger *slog.Logger, p
 // routes call, pass slog.Default(), where those callers write.
 func (a *Attributor) attributeHead(ctx context.Context, logger *slog.Logger, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
 	attributed, err := a.headAttribution(ctx, logger, pool, facts, headRepo)
-	if err != nil || attributed.issueKey != nil || !attributed.ownHead {
+	if err != nil || attributed.named || !attributed.ownHead {
 		return attributed, err
 	}
 	owner, repo, err := refs.SplitGitHubRepo(facts.Repo)
@@ -1445,10 +1457,10 @@ func mergeCommitOf(payload pullRequestPayload) string {
 }
 
 // attributePayload attributes one pull request GitHub itself answered: the four facts its
-// payload carries, the head repository it names (headRepositoryOf) and, when no candidate those
-// four name is held to the repository the pull request is in, its commit messages, read with the
-// caller's installation token. The one place the two GitHub readers below build an attribution
-// from a payload, so a sixth source, or a sixth fact a payload carries, is added in one.
+// payload carries, the head repository it names (headRepositoryOf) and, when those four name no
+// issue at all, its commit messages, read with the caller's installation token. The one place the
+// two GitHub readers below build an attribution from a payload, so a sixth source, or a sixth fact
+// a payload carries, is added in one.
 func (a *Attributor) attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.Client, token, repoFull string, payload pullRequestPayload) (headAttributionResult, error) {
 	return a.attributeHead(ctx, slog.Default(), pool, client, func() (string, error) { return token, nil },
 		attributionFacts{
@@ -1717,13 +1729,12 @@ func mergeLearnedOnBranch(answers HeadAnswers, repoFull, branch, sha string) boo
 //
 // The envelope carries the title, body, branch and head commit, which are four of the
 // attribution's five sources and outrank the fifth; the fifth, the commit messages, is read only
-// when no candidate those four name is held to the repository the pull request is in
-// (attributeHead), and a merge that follows reuses what was read rather than paging the same
-// commits again (completePullRequest). A read the App refuses attributes the row from the
-// envelope alone and makes the write an incomplete one, which deletes no attribution the row
-// already carries and leaves it unstamped; a rate limit is returned, as the reconcile's own
-// refresh returns it, so the caller does not persist a weaker attribution and then stamp the
-// row read.
+// when those four name no issue at all (attributeHead), and a merge that follows reuses what was
+// read rather than paging the same commits again (completePullRequest). A read the App refuses
+// attributes the row from the envelope alone and makes the write an incomplete one, which deletes
+// no attribution the row already carries and leaves it unstamped; a rate limit is returned, as
+// the reconcile's own refresh returns it, so the caller does not persist a weaker attribution and
+// then stamp the row read.
 //
 // The envelope also carries the head's own repository (`head_repo`), which the attribution
 // holds the head to. An envelope that does not name it — one a publisher older than this field

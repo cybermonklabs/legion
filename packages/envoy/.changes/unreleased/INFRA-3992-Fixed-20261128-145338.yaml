@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+    A pull request is no longer credited to an unrelated issue that only a later source mentions.
+    The attribution stops at the first of its five sources that names an issue Dispatch holds,
+    and takes the first issue of that source that resolves to the pull request's repository; where
+    that source names none, the pull request is credited to nobody, and the commit messages are
+    read only where no earlier source names an issue. Before, a pull request whose body declared
+    an issue of another repository was credited to whatever issue of its own repository a merge
+    commit's prose mentioned, so every before-merge check of that issue needed a pass at the head
+    of another issue's work. A key that names no issue still does not stop the walk.
+    `AttributionRuleVersion` is 10, so the reconcile judges each stored merged row once more; an
+    open row is judged again at its next read.
+time: 2026-11-28T14:53:38.000000000Z
+custom:
+    Issue: INFRA-3992

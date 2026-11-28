@@ -72,7 +72,7 @@ const pollMs = 250;
 
 /** Mirrors delivery.AttributionRuleVersion in packages/envoy/internal/dispatch/delivery/attribution.go.
  *  Raise this version when that constant increases. */
-const attributionRuleVersion = 8;
+const attributionRuleVersion = 10;
 
 const person = "alice";
 const session = "verification-results-e2e";

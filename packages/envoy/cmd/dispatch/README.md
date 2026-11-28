@@ -3303,8 +3303,9 @@ Stored merges sort by `merged_at`, newest first, then number (`delivery.Attribut
 The results reader fills missing times before choosing a merge.
 If a needed time remains unknown, the merged set stays unordered.
 `event_at` records an attribution update, not a merge time.
-`delivery.AttributionRuleVersion` is 8, so reconciliation offers each stored merged row once more.
-Rule 8 breaks a tie between candidates by issue key in byte order, so the reconcile judges each merged row stored before rule 8 once more.
+`delivery.AttributionRuleVersion` is 10, so reconciliation offers each stored merged row once more.
+Rule 8 breaks a tie between candidates by issue key in byte order.
+Rule 10 stops the attribution at the first source that names an issue, so a merged row a later source credited before rule 10 is judged once more.
 Each pass offers at most `delivery.RejudgedHeadsPerPass` rows, whose refresh reads both columns from GitHub.
 `pull_request_heads_merged_head_ref` indexes `(lower(repo), head_ref)` for merged rows.
 It finds merged pull requests whose head was an integration branch, so the reader can follow its recorded landing.
@@ -3427,11 +3428,14 @@ This is not `delivery_pull_requests`, which keeps the merged pull requests of th
 this table holds open ones too, by any author and in any repository, one row per pull request.
 A row names the `repo` and `number`, the repository under the canonical name it is called today (`refs.Renames.Canonical`, over the rename pairs the server read at boot), so one repository stored under two names keeps one row and one attribution (`20261105075455_repo_projects_renamed_to`, below);
 then the `head_sha` (on a merge, the final head of the merged work), the `head_ref` and `base_ref`, the `state` (`open`, `closed` or `merged`), the `issue_key` Dispatch's attribution picks and which of its five sources named it, the title and URL, the pull request's `updated_at` as the event reported it, and when the reconcile or a read-through last read it through the App.
-That key is the first issue the five sources name that resolves to the repository the pull request is in, not the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
-a pull request titled after another repository's issue therefore keeps its own, and one no candidate of which resolves to its repository is attributed to nobody, with the source `none`, as is one whose head branch is in another repository (`headInOwnRepository`).
+That key comes from the first of the five sources that names an issue Dispatch holds: of that source's issues, the first that resolves to the repository the pull request is in (`attributionCandidates`, `attributedCandidate` and `attributionHeld` in `delivery/attribution.go`).
+A key that names no issue Dispatch holds names nothing, so the walk goes on past it to the next source.
+A pull request titled after another repository's issue and then its own therefore keeps its own, since both keys are in one source.
+A pull request whose first naming source names no issue of its repository is attributed to nobody, with the source `none`, rather than to an issue a later source mentions, and the commit messages are read only where no earlier source names an issue.
+A pull request whose head branch is in another repository is attributed to nobody as well (`headInOwnRepository`).
 The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms`, `attributionCandidatesQuery`), so the attribution and the issue page cannot disagree, and a pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
 One rule picks both attributions: this row's `issue_key` (`headAttribution`) and the issue of a `delivery_pull_requests` row, which the reconcile resolves again from the database alone (`AttributePullRequests`).
-Raising `delivery.AttributionRuleVersion` is how a change to that rule reaches the merged head rows already stored, as rule 8's tie-break does.
+Raising `delivery.AttributionRuleVersion` is how a change to that rule reaches the merged head rows already stored, as rule 10's stop at the first naming source does.
 An older event arriving after a newer one leaves the row as it is, and the reconcile re-reads an open row older than 4.5 minutes (`delivery.PullRequestHeadStaleAfter`).
 That head pass runs whether or not the deployment has delivery settings, and before the deploy repository's permission check (`Reconcile.runOnce`):
 a recorded result is compared with those heads in every deployment, and behind the settings the pass never ran in one that had none, so a result recorded at a head a later push replaced went on standing at it for ever.
