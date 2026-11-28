@@ -87,10 +87,7 @@ func (credit *UpdateCredit) take() (authors map[string]model.Actor, lastActor *m
 }
 
 // landed takes the credit out of F once its append has committed, or once its own call has ended
-// without appending it: its authors are in R, on a version, or dropped with an update the room
-// failed on, which nothing in Dispatch stores later but a batch that took its class first
-// (room_appends.go, "What a nil return means"). Its state may then be released (unlockState). A
-// second call does nothing.
+// without appending it. Its state may then be released (unlockState). A second call does nothing.
 func (credit *UpdateCredit) landed() {
 	if credit == nil {
 		return
