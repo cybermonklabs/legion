@@ -23,7 +23,7 @@ agent-secrets NAME... [--reason 'TEXT'] [--wait DURATION] [--ttl DURATION] -- <c
 - A request that waits for a person is already in that person's Dispatch Inbox, with a link to the broker's page that decides it (https://cybermonklabs.github.io/legion/broker/concepts/#approvals).
   Open no Dispatch ask, comment or message that asks them to approve it: each one is a duplicate of that Inbox row. Continue your work, and read the decision with `agent-secrets status <request_id>`.
 - A GitHub App credential is a profile. `--target ACCOUNT`, or `--target ACCOUNT/REPOSITORY` for each repository of one account, narrows it in a run of that name alone.
-  A profile of value `token` puts one token in the name; any other holds the JSON object of installations, which GitHub answers `401`.
+  A profile of value `token` puts one token in the name; any other holds the JSON object of installations, which GitHub answers `401`: take one account's token out of it at `.installations["ACCOUNT"].token` inside the command, as [The value never reaches your transcript](#the-value-never-reaches-your-transcript) shows.
   A line `the profile NAME left out …` names permissions the token lacks (calls needing them get `403`).
 
 ## The command reads the value, your shell does not

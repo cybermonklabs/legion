@@ -64,3 +64,19 @@ func TestTheRunFormsHelpNamesTargetAndNoRemovedFlag(t *testing.T) {
 		}
 	}
 }
+
+// TestTheRunFormsHelpSaysHowToReadAGitHubProfilesToken: the exec form's help gives the jq read of
+// one account's token out of a GitHub profile's JSON object of installations, which GitHub answers
+// 401 when it is sent as a token, and says never to echo the variable, which prints a live token.
+func TestTheRunFormsHelpSaysHowToReadAGitHubProfilesToken(t *testing.T) {
+	t.Parallel()
+	summary := lookupCommand("").summary
+	for _, want := range []string{
+		`GH_TOKEN=$(printf %s "$NAME" | jq -r ".installations[\"ACCOUNT\"].token")`,
+		"Never echo $NAME",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("the run form's help does not say %q:\n%s", want, summary)
+		}
+	}
+}
