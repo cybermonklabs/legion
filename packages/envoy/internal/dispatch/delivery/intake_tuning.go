@@ -25,8 +25,14 @@ type intakeTuning struct {
 	// (JobIntake.fire) on the intake's clock (heldDurable.clock): intakeMessageTimeout.
 	messageTimeout time.Duration
 	// maxAckPending is the durable's MaxAckPending: intakeMaxAckPending. Together with
-	// messageTimeout it sets the durable's ack wait (ackWait).
+	// messageTimeout and ackLanding it sets the durable's ack wait (ackWait).
 	maxAckPending int
+	// ackLanding is what the durable's ack wait leaves an acknowledgement to land in once every
+	// message outstanding has had its messageTimeout (ackWait): intakeAckLanding. It is the
+	// server's own span, which no clock of this module reaches, so a row that counts each message
+	// handled once and needs the server's redelivery inside its run sets it, with messageTimeout,
+	// to an ack wait above one handling and its acknowledgement's trip.
+	ackLanding time.Duration
 	// stopBudget is the one deadline of the intake's stop, counted on the intake's clock from the
 	// moment Run's context ends (stopContext): intakeStopBudget.
 	stopBudget time.Duration
@@ -86,6 +92,7 @@ func newIntakeTuning() *intakeTuning {
 	tuning := &intakeTuning{
 		messageTimeout:         intakeMessageTimeout,
 		maxAckPending:          intakeMaxAckPending,
+		ackLanding:             intakeAckLanding,
 		stopBudget:             intakeStopBudget,
 		headWriteMaxDeliveries: headWriteMaxDeliveries,
 		createDurable:          addDurable,

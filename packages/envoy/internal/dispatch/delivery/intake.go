@@ -324,11 +324,16 @@ const intakeMaxAckPending = 4
 // ackWait is how long NATS waits for an acknowledgement before redelivering. Derived from the
 // intake's maxAckPending and messageTimeout rather than chosen: when every outstanding message is
 // one key's, the last of maxAckPending waits for the ones before it, so the bound is their total
-// handling time, plus a minute for the acknowledgement itself to land. A test that shortens either
-// on its intakes gets an ack wait derived from what it set.
+// handling time, plus ackLanding (intakeAckLanding, a minute) for the acknowledgement itself to
+// land. A test that shortens any of them on its intakes gets an ack wait derived from what it set.
 func (t *intakeTuning) ackWait() time.Duration {
-	return time.Duration(t.maxAckPending)*t.messageTimeout + time.Minute
+	return time.Duration(t.maxAckPending)*t.messageTimeout + t.ackLanding
 }
+
+// intakeAckLanding is the part of the durable's ack wait left for an acknowledgement to land
+// once every message outstanding has had its intakeMessageTimeout (ackWait): a minute. It is the
+// default of the intake's own ackLanding (intakeTuning).
+const intakeAckLanding = time.Minute
 
 // deliveryConsumerConfig is the policy a take-over creates the durable with
 // (bus.DispatchDeliveryDurable, one push consumer over githubIntakeSubject), unless the deployed

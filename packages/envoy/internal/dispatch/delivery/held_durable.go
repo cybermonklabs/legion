@@ -275,6 +275,12 @@ type heldDurable struct {
 	// that closes d.nats waits for them after that close, while its database pool is still open
 	// (waitFinalizers).
 	finalizers sync.WaitGroup
+	// lossWatchers counts this intake's loss watchers still running (watchLoss): subscribe raises it
+	// as it starts one, before the watcher's goroutine runs, and the watcher lowers it as it returns.
+	// Nothing in production reads it. A test reads it to require that a watcher ends with its
+	// delivery's hand-backs and not with the hold, counting this intake's watchers alone rather than
+	// every goroutine of the process.
+	lossWatchers atomic.Int32
 }
 
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
@@ -915,6 +921,7 @@ func (d *heldDurable) severHandBacks() {
 // connection, so the handlers the run loop's stop waits for still acknowledge their messages
 // through it.
 func (d *heldDurable) watchLoss(delivery *intakeDelivery, hold *duty.Hold) {
+	defer d.lossWatchers.Add(-1)
 	select {
 	case <-hold.Lost():
 		d.lostWith(delivery, nil)

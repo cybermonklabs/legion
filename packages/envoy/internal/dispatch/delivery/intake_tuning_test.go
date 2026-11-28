@@ -30,6 +30,7 @@ func TestProductionsIntakeTuningIsTheShippedTimersAndNoHook(t *testing.T) {
 	}{
 		{"messageTimeout", tuning.messageTimeout, time.Minute},
 		{"maxAckPending", tuning.maxAckPending, 4},
+		{"ackLanding", tuning.ackLanding, time.Minute},
 		{"stopBudget", tuning.stopBudget, 15 * time.Second},
 		{"headWriteMaxDeliveries", tuning.headWriteMaxDeliveries, uint64(30)},
 		{"callWait", time.Duration(tuning.callWait.Load()), bus.ConnLockWait},
@@ -81,6 +82,7 @@ func TestACopiedTuningHoldsEveryFieldOfItsParent(t *testing.T) {
 	settingsWaiting := func(bool) {}
 	parent.messageTimeout = 7 * time.Second
 	parent.maxAckPending = 9
+	parent.ackLanding = 23 * time.Second
 	parent.stopBudget = 11 * time.Second
 	parent.headWriteMaxDeliveries = 13
 	parent.createDurable = createDurable
@@ -102,6 +104,7 @@ func TestACopiedTuningHoldsEveryFieldOfItsParent(t *testing.T) {
 		}{
 			{"messageTimeout", got.messageTimeout, 7 * time.Second},
 			{"maxAckPending", got.maxAckPending, 9},
+			{"ackLanding", got.ackLanding, 23 * time.Second},
 			{"stopBudget", got.stopBudget, 11 * time.Second},
 			{"headWriteMaxDeliveries", got.headWriteMaxDeliveries, uint64(13)},
 			{"createDurable", reflect.ValueOf(got.createDurable).Pointer(), reflect.ValueOf(createDurable).Pointer()},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -49,10 +50,12 @@ import (
 // Each subtest ends once the standby has acknowledged the message, by requiring that no -NAK reached
 // the server after the standby created the durable and that its consumer delivered the message once
 // (requireNoHandBackAfterCreation). No step waits on a time: each waits for an event, through the
-// shared wait (testwait), whose bound guards against one that never comes. The negative controls:
-// the code before the seal, where the hand-back was counted after beforeHandBackPublish, and a stop
-// that does not seal, each fail the second subtest with the standby's consumer delivering the
-// message twice.
+// shared wait (testwait), whose bound guards against one that never comes. The stop's calls wait
+// for NATS with no bound of the row's (callWait), so a loaded machine cannot have the stop withhold
+// the hand-back, and the standby tries for the hold only where the row moves its hold clock
+// (holdTries). The negative controls: the code before the seal, where the hand-back was counted
+// after beforeHandBackPublish, and a stop that does not seal, each fail the second subtest with the
+// standby's consumer delivering the message twice.
 func TestACallbacksHandBackAsTheStopEndsLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	// Serial until the hang a reviewer saw once in requireHandBackBeforeCreation is explained
 	// (build-cluster Job legion-ci-handback-hang-4zwgk reproduces it at main).
@@ -80,8 +83,9 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 	letKeyingGo := make(chan struct{})
 	releaseKeying := sync.OnceFunc(func() { close(letKeyingGo) })
 	t.Cleanup(releaseKeying)
-	wanted := deliveryConsumerConfig(tuningFor(t))
-	durable := newHeldDurable(tuningFor(t), client, deliveryTestLeases(t, pool), func(*intakeTuning) natsgo.ConsumerConfig { return wanted },
+	tuning := tuningFor(t)
+	wanted := deliveryConsumerConfig(tuning)
+	durable := newHeldDurable(tuning, client, deliveryTestLeases(t, pool), func(*intakeTuning) natsgo.ConsumerConfig { return wanted },
 		func(msg *natsgo.Msg) (string, *contracts.Envelope, bool) {
 			entered.Do(func() { close(keying) })
 			<-letKeyingGo
@@ -107,7 +111,11 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 	t.Cleanup(durable.waitFinalizers)
 	t.Cleanup(func() { durable.stop(cancelled()) })
 
-	standby := startIntakeProcess(t, pool, natsURL, func(int) bool { return true })
+	tries := newHoldTries()
+	standby := startIntakeProcessWith(t, pool, natsURL, func(int) bool { return true }, tries.before)
+	if tries.first(t, "the standby's try for the hold as it starts") {
+		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
+	}
 	from := recorded.count()
 	sequences := []uint64{publishMergedPullRequest(t, client, number)}
 	testwait.Receive(t, "the holder's callback to begin keying the message (control)", keying)
@@ -122,7 +130,18 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 		<-letPublishGo
 	}
 	delivery.beforeHandBackPublish.Store(&hook)
+	// admitted closes once the hand-back is admitted (afterHandBackAdmitted): counted, so
+	// handBacksLanded reads it. Read before then, handBacksLanded answers that no hand-back waits,
+	// and a row that ended the stop's context on that answer would end it before the hand-back's
+	// publish began.
+	admitted := make(chan struct{})
+	var admitting sync.Once
+	afterAdmitted := func() { admitting.Do(func() { close(admitted) }) }
+	delivery.afterHandBackAdmitted.Store(&afterAdmitted)
 
+	// The stop's hand-backs go out only once its drain has answered, and the callback's only while
+	// its connected read answers: each of the stop's calls waits for NATS with no bound of the row's.
+	tuning.callWait.Store(math.MaxInt64)
 	stopping, endStop := context.WithCancel(context.Background())
 	defer endStop()
 	stopped := make(chan struct{})
@@ -137,6 +156,7 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 	testwait.Receive(t, "the callback's hand-back to reach its publish (control: the rule withheld it if it never does)", atPublish)
 	if !heldPastTheStop {
 		releasePublish()
+		testwait.Receive(t, "the callback's hand-back to be admitted once released (control: a sealed delivery withholds it)", admitted)
 		testwait.Receive(t, "the callback's hand-back to land once released (control)", delivery.handBacksLanded())
 	}
 	endStop()
@@ -145,6 +165,7 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 	if heldPastTheStop && !holdLive(t, pool, durable.holder) {
 		// The stop released its hold with the callback's hand-back still to be decided: the standby
 		// takes the durable over and starts the message, and only then does the hand-back go on.
+		tries.untilDelivering(t, "the standby to take over the hold the holder released")
 		waitFor(t, func() bool { return standby.fetches(number) == 1 }, func() string {
 			return "control: the standby did not start the message the holder left: " + consumerState(client)
 		})
@@ -155,13 +176,17 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 			return fmt.Sprintf("the callback's hand-back neither reached the server nor was withheld once released: %q; logged %q", recorded.since(from), loggedMessages(logs()))
 		})
 		if handBackAfterCreation(recorded.since(from)) {
+			// The -NAK reached the standby's consumer, whose handler holds the message, so the
+			// consumer delivers it a second time; the wait names the count it read should it not.
 			delivered := uint64(0)
-			testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
-				info, err := client.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-				if err == nil {
+			waitFor(t, func() bool {
+				if info, err := client.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable); err == nil {
 					delivered = info.Delivered.Consumer
 				}
 				return delivered >= 2
+			}, func() string {
+				return fmt.Sprintf("the stop released its hold before the callback's hand-back was decided, and the hand-back went on: the -NAK reached the server after the standby created the durable, and the standby's consumer has delivered the one message %d time(s); events %q",
+					delivered, recorded.since(from))
 			})
 			t.Fatalf("the stop released its hold before the callback's hand-back was decided, and the hand-back went on: the -NAK reached the server after the standby created the durable, and the standby's consumer delivered the one message %d time(s); events %q",
 				delivered, recorded.since(from))
@@ -171,6 +196,7 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 		return
 	}
 	releasePublish()
+	tries.untilDelivering(t, "the standby to take over the hold the holder released once the hand-back landed")
 	waitFor(t, func() bool { return standby.fetches(number) >= 1 }, func() string {
 		return fmt.Sprintf("the standby did not start the message the holder left: %s; events %q", consumerState(client), recorded.since(from))
 	})
@@ -280,7 +306,12 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 // second message's, since the first's came before the drain answered. The negative control is the
 // stop that takes the queue after arming the give-up: two handlers start and the server is sent no
 // hand-back.
+//
+// The stop's drain and its connected read wait for NATS with no bound of the row's (callWait): the
+// second message's hand-back needs the drain answered, which a loaded machine could otherwise delay
+// past the 100 ms production gives it and have the stop withhold it.
 func TestAStopUnderAnEndedContextHoldsTheMessageWaitingBehindItsKey(t *testing.T) {
+	t.Parallel()
 	var started atomic.Int32
 	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
 		started.Add(1)
@@ -299,42 +330,41 @@ func TestAStopUnderAnEndedContextHoldsTheMessageWaitingBehindItsKey(t *testing.T
 		defer delivery.keys.mu.Unlock()
 		return len(delivery.keys.queued) == 0
 	}
-	// Every wait and failure is on the row's goroutine; ended lets a stop still held in the hook go
-	// on when the row ends early.
+	// Every failure is on the row's goroutine: the hook waits through the shared wait's helper form
+	// and reports a give-up by leaving idle open, which the row's own wait then names. ended lets a
+	// stop still held in the hook go on when the row ends early.
 	idle := make(chan struct{})
 	ended := make(chan struct{})
 	t.Cleanup(func() { close(ended) })
 	var waiting sync.Once
 	armed := func() {
 		waiting.Do(func() {
-			for !keyIdle() {
+			var rowEnded bool
+			if err := testwait.InHelper("intakeTuning.stopArmed", "the given-up handler's key to have no handler goroutine left", func() bool {
 				select {
 				case <-ended:
-					return
-				case <-time.After(10 * time.Millisecond):
+					rowEnded = true
+					return true
+				default:
 				}
+				return keyIdle()
+			}); err != nil || rowEnded {
+				return
 			}
 			close(idle)
 		})
 	}
 	delivery.tuning.stopArmed.Store(&armed)
+	delivery.tuning.callWait.Store(math.MaxInt64)
 	stopped := row.stopUnder(cancelled())
-	select {
-	case <-idle:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the given-up handler's key still had a handler goroutine 30 s after the give-up was armed")
-	}
-	testnats.AnswersWithin(t, 30*time.Second, "StopDelivering", stopped)
+	testwait.Receive(t, "the given-up handler's key to have no handler goroutine left once the give-up was armed (control)", idle)
+	testnats.Answers(t, "StopDelivering", stopped)
 	delivery.tuning.stopArmed.Store(nil)
 	if n := started.Load(); n != 1 {
 		t.Fatalf("%d handlers started: the message waiting behind its key started its handler under the stop's ended context, rather than being held by the stop", n)
 	}
-	select {
-	case <-delivery.handBacksLanded():
-	case <-time.After(30 * time.Second):
-		t.Fatal("a hand-back publish was still waiting for NATS 30 s after the stop returned")
-	}
-	if err := row.conn.Flush(); err != nil {
+	testwait.Receive(t, "every hand-back publish to have reached NATS once the stop returned", delivery.handBacksLanded())
+	if err := row.conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the intake's client: %v", err)
 	}
 	if n := naks(); n != 1 {

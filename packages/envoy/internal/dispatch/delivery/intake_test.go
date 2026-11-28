@@ -90,6 +90,7 @@ func copyTuning(from *intakeTuning) *intakeTuning {
 	to := &intakeTuning{
 		messageTimeout:         from.messageTimeout,
 		maxAckPending:          from.maxAckPending,
+		ackLanding:             from.ackLanding,
 		stopBudget:             from.stopBudget,
 		headWriteMaxDeliveries: from.headWriteMaxDeliveries,
 		createDurable:          from.createDurable,

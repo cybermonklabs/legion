@@ -751,9 +751,9 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 		t.Fatalf("subscribe to the job durable: %v", err)
 	}
 	t.Cleanup(func() { _, _ = natsClient.DrainSubscription(sub) })
-	jobs.mu.Lock()
-	delivery := jobs.delivering
-	jobs.mu.Unlock()
+	// delivering is guarded by the held durable's own lock (heldDurable.mu), which JobIntake.mu
+	// shadows in the job intake.
+	delivery := delivering(&jobs.heldDurable)
 	consumer := func() *natsgo.ConsumerInfo {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, wanted.Durable)
 		if err != nil {

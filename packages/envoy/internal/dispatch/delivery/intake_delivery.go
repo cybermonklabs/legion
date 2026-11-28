@@ -139,6 +139,7 @@ func (d *heldDurable) subscribe(deliverSubject string) (*natsgo.Subscription, er
 	d.delivering = delivery
 	d.mu.Unlock()
 	if delivery.hold != nil {
+		d.lossWatchers.Add(1)
 		go d.watchLoss(delivery, delivery.hold)
 	}
 	return sub, nil

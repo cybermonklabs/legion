@@ -160,8 +160,10 @@ func deliveryConsumerInfo(t *testing.T, natsClient *bus.Client) *natsgo.Consumer
 	return info
 }
 
-// runIntake runs intake until the returned stop is called or the test ends, and stop waits for Run
-// to return.
+// runIntake runs intake until the returned stop is called or the test ends. stop ends Run's context
+// and waits for Run to return through the shared wait (testwait.Receive), whose give-up names it. A
+// row may call it more than once, each call ending the one context and waiting for the one return,
+// and from a goroutine of its own, where a give-up fails the test and ends that goroutine.
 func runIntake(t *testing.T, intake *Intake) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -170,10 +172,10 @@ func runIntake(t *testing.T, intake *Intake) (stop func()) {
 		defer close(done)
 		intake.Run(ctx)
 	}()
-	stop = sync.OnceFunc(func() {
+	stop = func() {
 		cancel()
-		<-done
-	})
+		testwait.Receive(t, "the intake's Run to return once its context ended", done)
+	}
 	t.Cleanup(stop)
 	return stop
 }
