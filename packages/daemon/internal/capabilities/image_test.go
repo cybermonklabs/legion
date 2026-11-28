@@ -642,16 +642,25 @@ func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t 
 // commandTimeout is a second, as on main. The order of the two ends is a fact, not a time: the
 // context ends once Chromium has written that the SIGTERM reached it (stopped), and Chromium exits
 // once it has seen the release the row writes after the context ended, writing released first.
-// How late the timeout's stop came is read from Chromium's own marks: it writes started as its
-// first act once its trap is set, so a timeout counted from before that reaches it within its
-// second, and one that reaches it more than lateBy past that second stopped its command late,
-// which fails the run whatever its order. lateBy is main's: its context ended 400 ms past the
-// timeout, counted from Chromium's start, and failed a stop that came after it. The one span this
-// row does not own is its own cancel, which follows Chromium's stopped mark by a poll: a run in
-// which a loaded machine kept this process from it for half of procgroup.StopGrace or more may
-// have had the stop ended by the grace before the context ended, so it shows nothing of a stop
-// that outlasts the context, and is not judged. The row runs the check again, within its bound,
-// until a run of the right order comes, and fails naming the runs it made when none comes.
+// How late the timeout's stop came is read from Chromium's own records (testkernel.Hold): its
+// first act, once its trap is set, records its start, and its trap's first act records the moment
+// the SIGTERM reached it, each beside the shell's own schedstat line. Between the two the shell
+// only waits, in the wait builtin, on a watcher it started, and a trapped signal ends that wait at
+// once; so the time it slept over the span is how long after its first act the SIGTERM came, and
+// the time the kernel kept it waiting for a CPU once the SIGTERM had come, which a loaded machine
+// adds and main's row never read, is no part of it. A timeout counted from before the first act
+// reaches it within its second, and one that reaches it more than lateBy past that second stopped
+// its command late, which fails the run whatever its order. lateBy is main's: its context ended
+// 400 ms past the timeout, counted from when the row saw Chromium's start, and failed a run whose
+// timeout fired after that. The SIGTERM leaves only once the timeout has fired, and the first act
+// comes before the row could see it, so the span read here is no shorter than main's. A kernel that
+// keeps no schedstat line (gVisor) leaves the sleep unknown, and the whole span is held to the
+// bound. The one span this row does not own is its own cancel, which follows Chromium's stopped
+// mark by a poll: a run in which a loaded machine kept this process from it for half of
+// procgroup.StopGrace or more may have had the stop ended by the grace before the context ended, so
+// it shows nothing of a stop that outlasts the context, and is not judged. The row runs the check
+// again, within its bound, until a run of the right order comes, and fails naming the runs it made
+// when none comes.
 func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDeadline(t *testing.T) {
 	was := commandTimeout
 	commandTimeout = time.Second
@@ -663,11 +672,14 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 		t.Fatal(err)
 	}
 	// Each run's files are in the directory LEGION_TEST_RUN names. Chromium runs until a signal
-	// ends it, the row's cleanup writes held, or this test process is gone, never on a timer of its own.
+	// ends it, the row's cleanup writes held, or this test process is gone, never on a timer of its
+	// own. A watcher it starts reads those two ends, and its shell waits on the watcher, so from its
+	// first act until the SIGTERM it needs no CPU.
 	s.install("chromium", "#!/bin/sh\nSLEEP="+shellprefix.Literal(sleep)+"\nOWNER="+strconv.Itoa(os.Getpid())+"\n"+
-		"trap ': >\"$LEGION_TEST_RUN/stopped\"; while [ ! -e \"$LEGION_TEST_RUN/release\" ] && kill -0 \"$OWNER\" 2>/dev/null; do \"$SLEEP\" 0.01; done; : >\"$LEGION_TEST_RUN/released\"; exit 1' TERM\n"+
-		testexec.MarkStart(`"$LEGION_TEST_RUN/startmark"`)+"\n: >\"$LEGION_TEST_RUN/started\"\n"+
-		"while [ ! -e \"$LEGION_TEST_RUN/held\" ] && kill -0 \"$OWNER\" 2>/dev/null; do \"$SLEEP\" 0.01; done\n")
+		"onterm() { "+testkernel.HoldTrap(`"$LEGION_TEST_RUN/stopped"`)+"; while [ ! -e \"$LEGION_TEST_RUN/release\" ] && kill -0 \"$OWNER\" 2>/dev/null; do \"$SLEEP\" 0.01; done; : >\"$LEGION_TEST_RUN/released\"; exit 1; }\n"+
+		"trap onterm TERM\n"+
+		testkernel.HoldStart(`"$LEGION_TEST_RUN/startmark"`)+"\n: >\"$LEGION_TEST_RUN/started\"\n"+
+		"(while [ ! -e \"$LEGION_TEST_RUN/held\" ] && kill -0 \"$OWNER\" 2>/dev/null; do \"$SLEEP\" 0.01; done) &\nwait $!\n")
 	watch := testwait.Bounded(t, answerBudget, time.Second)
 	until := time.Now().Add(testwait.Bounded(t, 3*answerBudget, 2*answerBudget))
 	for runs := 1; ; runs++ {
@@ -718,10 +730,16 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 			}
 		}
 		// A Chromium with no started mark had the SIGTERM before its first act, which is no late stop.
-		if started, statErr := os.Stat(filepath.Join(run, "started")); statErr == nil {
-			if took := stopped.ModTime().Sub(started.ModTime()); took > commandTimeout+lateBy {
-				t.Fatalf("run %d: the timeout's SIGTERM reached the browser's Chromium %s after its start, more than its %s timeout and %s: the timeout stopped its command late", runs, took, commandTimeout, lateBy)
+		if _, statErr := os.Stat(filepath.Join(run, "started")); statErr == nil {
+			hold := testkernel.ReadHold(t, filepath.Join(run, "startmark"), filepath.Join(run, "stopped"))
+			came, read := hold.Span, "the whole span from its first act to its SIGTERM trap, since "+hold.String()
+			if hold.Known {
+				came, read = hold.Slept(), "the time its shell slept, waiting on its watcher: "+hold.String()
 			}
+			if came > commandTimeout+lateBy {
+				t.Fatalf("run %d: the timeout's SIGTERM reached the browser's Chromium %s after its first act, more than its %s timeout and %s (%s): the timeout stopped its command late", runs, came, commandTimeout, lateBy, read)
+			}
+			t.Logf("run %d: the timeout's SIGTERM reached the browser's Chromium %s after its first act, against its %s timeout and %s (%s)", runs, came, commandTimeout, lateBy, read)
 		}
 		if gap := at.Sub(stopped.ModTime()); gap >= procgroup.StopGrace/2 {
 			if time.Now().Before(until) {
