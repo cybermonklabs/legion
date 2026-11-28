@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { QueryClient, type QueryKey, QueryObserver } from "@tanstack/react-query";
 
+import { ApiError } from "./client";
 import {
   MIN_REFETCH_INTERVAL_MS,
   ownQuery,
@@ -131,6 +132,31 @@ test("events during a fetch give exactly one more fetch, once it settles", async
   }
 });
 
+// A search whose last answer was that it ran past the server's bound is never sent again on its
+// own (`heldAfterSearchTimeout`). A refresh that arrives while the search is out is owed all the
+// same, since the search's start cleared its last answer; once the search answers `503
+// SEARCH_TIMEOUT` the debt is dropped, not paid, while a search refused for another reason pays it.
+test("a refresh during a search that answers 503 SEARCH_TIMEOUT fetches nothing more, and one during a search refused otherwise fetches once more", async () => {
+  const starts: Record<string, readonly number[]> = {};
+  for (const code of ["SEARCH_TIMEOUT", "DATABASE_BUSY"]) {
+    const queryClient = newClient();
+    const refusal = new ApiError(503, { code, error: "the search was refused" });
+    const search = servedQuery(queryClient, ["search", "astrolabe"], 400, () =>
+      Promise.reject(refusal)
+    );
+    try {
+      // The search is out from 0 to 400 ms; the refresh arrives at 100 ms.
+      await advance(100);
+      refreshQueries(queryClient, [{ queryKey: ["search"] }]);
+      await advance(3_000);
+      starts[code] = search.starts;
+    } finally {
+      search.stop();
+    }
+  }
+  expect(starts).toEqual({ DATABASE_BUSY: [0, MIN_REFETCH_INTERVAL_MS], SEARCH_TIMEOUT: [0] });
+});
+
 test("a fetch slower than a second is fetched again the moment it settles", async () => {
   const queryClient = newClient();
   const inbox = servedQuery(queryClient, ["inbox"], 1_500);
@@ -242,6 +268,33 @@ test("a test of a first load's data runs on the response that lands, and fetches
   } finally {
     holds.stop();
     lacks.stop();
+  }
+});
+
+test("a refresh judges every check before it marks any query, and gives each check the client", () => {
+  const queryClient = newClient();
+  const keyA = ["issue-summary", "CORE-1"];
+  const keyB = ["issue-summary", "CORE-2"];
+  queryClient.setQueryData(keyA, { title: "First issue" });
+  queryClient.setQueryData(keyB, { title: "Second issue" });
+  let checkClient: QueryClient | undefined;
+  try {
+    refreshQueries(queryClient, [
+      { queryKey: keyA },
+      {
+        queryKey: keyB,
+        when: (_data, _query, receivedClient) => {
+          checkClient = receivedClient;
+          return queryClient.getQueryState(keyA)?.isInvalidated !== true;
+        },
+      },
+    ]);
+
+    expect(queryClient.getQueryState(keyB)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(keyA)?.isInvalidated).toBe(true);
+    expect(checkClient).toBe(queryClient);
+  } finally {
+    queryClient.clear();
   }
 });
 

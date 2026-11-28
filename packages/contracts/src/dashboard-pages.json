@@ -1,0 +1,124 @@
+{
+  "about": "Generated from the dashboard's route table by packages/dispatch/web/src/features/refs/dashboard-pages-file.ts; do not edit.",
+  "tabs": [
+    {
+      "page": "verification",
+      "reference": "verification"
+    },
+    {
+      "page": "plan",
+      "reference": "plan"
+    },
+    {
+      "page": "steps",
+      "reference": "steps"
+    },
+    {
+      "page": "conversation",
+      "reference": "log"
+    },
+    {
+      "page": "children",
+      "reference": "children"
+    },
+    {
+      "page": "artifacts",
+      "reference": "artifacts"
+    },
+    {
+      "page": "activity",
+      "reference": "activity"
+    },
+    {
+      "page": "collaborators",
+      "reference": "collaborators"
+    }
+  ],
+  "document_segments": [
+    "artifacts",
+    "artifact"
+  ],
+  "document_pages": {
+    "primary": [
+      "/issues/{key}",
+      "/issues/{key}/spec",
+      "/issues/{key}/artifacts/{slug}",
+      "/issues/{key}/artifact/{slug}"
+    ],
+    "verification": [
+      "/issues/{key}/verification",
+      "/issues/{key}/artifacts/{slug}",
+      "/issues/{key}/artifact/{slug}"
+    ],
+    "plan": [
+      "/issues/{key}/plan",
+      "/issues/{key}/artifacts/{slug}",
+      "/issues/{key}/artifact/{slug}"
+    ],
+    "decisions": [
+      "/issues/{key}/decisions",
+      "/issues/{key}/artifacts/{slug}",
+      "/issues/{key}/artifact/{slug}"
+    ],
+    "issue": [
+      "/issues/{key}/artifacts/{slug}",
+      "/issues/{key}/artifact/{slug}"
+    ],
+    "project": [
+      "/projects/{project}/documents/{slug}"
+    ],
+    "agent": [
+      "/agents/{session}/artifacts/{slug}"
+    ]
+  },
+  "references": [
+    {
+      "href": "/issues/CORE-1/verification",
+      "ref": "dispatch://CORE-1/verification"
+    },
+    {
+      "href": "/issues/CORE-1/plan",
+      "ref": "dispatch://CORE-1/plan"
+    },
+    {
+      "href": "/issues/CORE-1/steps",
+      "ref": "dispatch://CORE-1/steps"
+    },
+    {
+      "href": "/issues/CORE-1/conversation",
+      "ref": "dispatch://CORE-1/log"
+    },
+    {
+      "href": "/issues/CORE-1/children",
+      "ref": "dispatch://CORE-1/children"
+    },
+    {
+      "href": "/issues/CORE-1/artifacts",
+      "ref": "dispatch://CORE-1/artifacts"
+    },
+    {
+      "href": "/issues/CORE-1/activity",
+      "ref": "dispatch://CORE-1/activity"
+    },
+    {
+      "href": "/issues/CORE-1/collaborators",
+      "ref": "dispatch://CORE-1/collaborators"
+    },
+    {
+      "href": "/issues/CORE-1/artifacts/notes-md",
+      "ref": "dispatch://CORE-1/artifact/notes-md"
+    },
+    {
+      "href": "/issues/CORE-1/artifacts/notes-md?v=2",
+      "ref": "dispatch://CORE-1/artifact/notes-md@v2"
+    },
+    {
+      "href": "/issues/CORE-1/artifact/notes-md",
+      "ref": "dispatch://CORE-1/artifact/notes-md"
+    },
+    {
+      "href": "/issues/CORE-1/artifact/notes-md?v=2",
+      "ref": "dispatch://CORE-1/artifact/notes-md@v2"
+    }
+  ]
+}

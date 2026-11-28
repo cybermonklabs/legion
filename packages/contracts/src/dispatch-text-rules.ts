@@ -6,9 +6,11 @@
  * line is written in, the text a streamed row carries for a block it renders no other way, which
  * uploads are pictures, and the lines a person's message is compared by when a session says it
  * delivered it. The Go server holds the same session-id rule (`text.IsSessionID`), short-id rule
- * (`text.IsIDPrefix`), target bound (`text.MaxTargetBytes`) and issue tabs (`text.issueTabs`),
- * all pinned against the TypeScript readers by `DISPATCH_TEXT_REFERENCES`, and classifies an
- * upload as a picture by the same four types, read from its bytes.
+ * (`text.IsIDPrefix`) and target bound (`text.MaxTargetBytes`), and reads the issue tabs from the
+ * dashboard's pages file (`dashboard-pages.json`, its `text.issueTabPages` and
+ * `text.issueTabReferences`), all pinned against the TypeScript readers by
+ * `DISPATCH_TEXT_REFERENCES`, and classifies an upload as a picture by the same four types, read
+ * from its bytes.
  */
 
 /**
@@ -84,8 +86,11 @@ export function referenceTargetFits(target: string): boolean {
  * The tabs of an issue's page whose whole route is the tab itself - no block, no slug, no id -
  * each the segment of its own name after the issue's key, in a reference
  * (`dispatch://CORE-1/plan`) and in the dashboard's path (`/issues/CORE-1/plan`) alike. Either
- * reads as the issue, as the dashboard draws it and the server's graph stores it (`text.issueTabs`,
- * which adds the conversation, written `conversation` in both and `log` in a reference too).
+ * reads as the issue, as the dashboard draws it and the server's graph stores it. The server reads
+ * the tabs from the dashboard's pages file (`dashboard-pages.json`): `text.issueTabPages` by the
+ * segment of their page and `text.issueTabReferences` by the segment of their reference, and a
+ * reference by either. The file holds these tabs and the conversation, whose page is
+ * `conversation` and whose reference is `log`.
  * `DISPATCH_TEXT_REFERENCES` holds a row per tab, so a tab added here that the server does not
  * read fails its table.
  */
