@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Snoozing an Inbox row is a human's own view state, like the Agents page's Clear: the ask
@@ -96,31 +97,50 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 // NOT_FOUND, each writing nothing.
 func (s *server) snoozeAskIn(ctx context.Context, tx pgx.Tx, actor model.Actor, askID string, snoozedUntil time.Time) (time.Time, *model.Event, error) {
 	// A snooze that has already passed would fold nothing away, so it is refused. "Passed" is
-	// judged against the database's now(), in the statement that stores the snooze: each
-	// process's host keeps its own clock, and the Inbox compares a snooze with now when it reads
-	// it. The bound allows no skew: the Inbox's presets are its own to keep clear of it, and the
-	// one that can land near midnight keeps a few seconds of today in hand rather than naming a
-	// moment this could refuse. The ask is selected rather than its id inserted, so an unknown ask
-	// stores nothing and reads as absent - a 404 - instead of the foreign key's 500; a past moment
-	// is refused first, whatever ask it names. previous is read from the statement's own snapshot,
-	// before the write, so a snooze to the moment the row already holds is known to move nothing.
+	// judged against the database's now(), in the statement that reads the ask: each process's
+	// host keeps its own clock, and the Inbox compares a snooze with now when it reads it. The
+	// bound allows no skew: the Inbox's presets are its own to keep clear of it, and the one that
+	// can land near midnight keeps a few seconds of today in hand rather than naming a moment this
+	// could refuse. A past moment is refused first, whatever ask it names; then an unknown ask
+	// reads as absent, a 404.
+	//
+	// The same statement reads the ask's project (askProjectRead), and the project's owner lock is
+	// taken before the row is written, as writeUserIssueStateIn takes its issue's: it is the lock
+	// the event's append takes, and an ask mark under /api/v2 takes it before it writes this row
+	// (lockMarkProjects), so a snooze that wrote the row first would hold the row that mark waits
+	// for while it waited for the project the mark holds
+	// (TestAV1SnoozeAndAV2AskMarkOfOnePersonAtOnceBothLand).
 	var future bool
+	var project *string
+	if err := tx.QueryRow(ctx, `select $2::timestamptz > now(), (`+askProjectRead+`)`, askID, snoozedUntil).Scan(&future, &project); err != nil {
+		return time.Time{}, nil, err
+	}
+	if !future {
+		return time.Time{}, nil, errorf(apicode.SnoozeInput, "snoozed_until must be in the future")
+	}
+	if project == nil {
+		return time.Time{}, nil, errorf(apicode.NotFound, "no ask %s", askID)
+	}
+	if err := store.LockOwner(ctx, tx, store.ProjectOwner(*project)); err != nil {
+		return time.Time{}, nil, err
+	}
+	// The ask is selected rather than its id inserted, so an ask gone since that read stores
+	// nothing and reads as absent - a 404 - instead of the foreign key's 500. previous is read
+	// from the statement's own snapshot, before the write, so a snooze to the moment the row
+	// already holds is known to move nothing.
 	var stored, previous *time.Time
 	if err := tx.QueryRow(ctx, `
 		with previous as (
 			select snoozed_until from user_ask_snooze where login = $1 and ask_id = $2
 		), snoozed as (
 			insert into user_ask_snooze (login, ask_id, snoozed_until)
-			select $1, id, $3::timestamptz from asks where id = $2 and $3::timestamptz > now()
+			select $1, id, $3::timestamptz from asks where id = $2
 			on conflict (login, ask_id) do update set snoozed_until = excluded.snoozed_until
 			returning snoozed_until
 		)
-		select $3::timestamptz > now(), (select snoozed_until from snoozed), (select snoozed_until from previous)
-	`, model.CanonicalLogin(actor.ID), askID, snoozedUntil).Scan(&future, &stored, &previous); err != nil {
+		select (select snoozed_until from snoozed), (select snoozed_until from previous)
+	`, model.CanonicalLogin(actor.ID), askID, snoozedUntil).Scan(&stored, &previous); err != nil {
 		return time.Time{}, nil, err
-	}
-	if !future {
-		return time.Time{}, nil, errorf(apicode.SnoozeInput, "snoozed_until must be in the future")
 	}
 	if stored == nil {
 		return time.Time{}, nil, errorf(apicode.NotFound, "no ask %s", askID)
@@ -128,10 +148,7 @@ func (s *server) snoozeAskIn(ctx context.Context, tx pgx.Tx, actor model.Actor, 
 	if previous != nil && previous.Equal(*stored) {
 		return *stored, nil, nil
 	}
-	event, err := s.askSnoozeEvent(ctx, tx, actor, askID)
-	if err != nil {
-		return time.Time{}, nil, err
-	}
+	event := askSnoozeEvent(actor, *project)
 	return *stored, &event, nil
 }
 
@@ -168,16 +185,22 @@ func (s *server) deleteAskSnooze(w http.ResponseWriter, r *http.Request) {
 // mark's write under /api/v2 that writes snoozed_until null. Un-snoozing a row that is not snoozed
 // is the state the caller asked for, so it is no refusal, and it announces nothing.
 func (s *server) unsnoozeAskIn(ctx context.Context, tx pgx.Tx, actor model.Actor, askID string) (*model.Event, error) {
+	// The ask's project's owner lock before the row, as snoozeAskIn takes it. An ask that does not
+	// exist holds no snooze to end.
+	var project *string
+	if err := tx.QueryRow(ctx, `select (`+askProjectRead+`)`, askID).Scan(&project); err != nil || project == nil {
+		return nil, err
+	}
+	if err := store.LockOwner(ctx, tx, store.ProjectOwner(*project)); err != nil {
+		return nil, err
+	}
 	removed, err := tx.Exec(ctx, `
 		delete from user_ask_snooze where login = $1 and ask_id = $2
 	`, model.CanonicalLogin(actor.ID), askID)
 	if err != nil || removed.RowsAffected() == 0 {
 		return nil, err
 	}
-	event, err := s.askSnoozeEvent(ctx, tx, actor, askID)
-	if err != nil {
-		return nil, err
-	}
+	event := askSnoozeEvent(actor, *project)
 	return &event, nil
 }
 
@@ -198,24 +221,24 @@ func (s *server) commitAskSnooze(ctx context.Context, tx pgx.Tx, event *model.Ev
 	return nil
 }
 
-// askSnoozeEvent is the `user_state.updated` a snooze or an un-snooze of askID appends, owned
-// by the ask's project (its issue's, or its document's) as every `user_state.updated` is. It
-// carries the writer's login and `changed: ["snoozed"]`, and nothing else: every signed-in
-// person's stream replays it, so it names neither the ask nor any issue state of the writer's,
-// and the writer's other tabs refetch their whole Inbox from it.
-func (s *server) askSnoozeEvent(ctx context.Context, tx pgx.Tx, actor model.Actor, askID string) (model.Event, error) {
-	var project string
-	if err := tx.QueryRow(ctx, `
-		select coalesce(i.project_key, ar.project_key)
-		from asks a
-		left join issues i on i.key = a.issue_key
-		left join artifacts ar on ar.id = a.artifact_id
-		where a.id = $1
-	`, askID).Scan(&project); err != nil {
-		return model.Event{}, err
-	}
+// askProjectRead is the project of the ask $1 names, its issue's or its document's, which owns the
+// event a snooze or an un-snooze of the ask appends (askSnoozeEvent). Each reads it as a scalar
+// subquery, null where no ask has that id.
+const askProjectRead = `
+	select coalesce(i.project_key, ar.project_key)
+	from asks a
+	left join issues i on i.key = a.issue_key
+	left join artifacts ar on ar.id = a.artifact_id
+	where a.id = $1`
+
+// askSnoozeEvent is the `user_state.updated` a snooze or an un-snooze of an ask appends, owned by
+// the ask's project (askProjectRead) as every `user_state.updated` is. It carries the writer's
+// login and `changed: ["snoozed"]`, and nothing else: every signed-in person's stream replays it,
+// so it names neither the ask nor any issue state of the writer's, and the writer's other tabs
+// refetch their whole Inbox from it.
+func askSnoozeEvent(actor model.Actor, project string) model.Event {
 	return projectOwner(project).event("user_state.updated", actor, map[string]any{
 		"login":   model.CanonicalLogin(actor.ID),
 		"changed": []string{"snoozed"},
-	}), nil
+	})
 }

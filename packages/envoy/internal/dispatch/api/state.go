@@ -664,9 +664,8 @@ const personMarksLockNamespace int32 = 0x4D41524B
 // conversation's state takes one session's Clear, read mark and pin before its replies and its
 // prune; a write of several marks takes each item's rows in item order. A write that holds the
 // lock alone therefore runs before or after every other of the same person's, waiting here
-// holding nothing, so no two of one person's mark writes can each hold a row the other waits on;
-// two people's never share such a row. It is held to the commit, as every transaction-scoped
-// advisory lock is.
+// holding nothing; two people's never share such a row. It is held to the commit, as every
+// transaction-scoped advisory lock is.
 func lockPersonMarks(ctx context.Context, tx pgx.Tx, login string, mode personMarksLock) error {
 	var err error
 	if mode == marksBesideTheInbox {

@@ -220,12 +220,167 @@ func TestAV2ReadMarkOfAThreadWhoseRowLandsAfterItsWriteTookItsThreadsWritesNothi
 	}
 }
 
+// TestAV2MessageDismissalOfAThreadBackInTheInboxAfterItsWriteTookItsRootsWritesNothing: a
+// dismissal of an Agent thread under PATCH /api/v2/me/marks whose root was out of the caller's
+// Inbox when the write took its roots (lockMarkThreads) writes nothing, even where the thread is
+// back in the Inbox before the dismissals run. By then the write holds the caller's user_threads
+// rows of the threads it names, and the Inbox's lock order takes a root before those rows
+// (markInboxReadThreads).
+//
+// The window is made rather than waited for. A transaction of the test's own holds the owner of a
+// thread Alice's write also dismisses, so her write queues there having read her Agent thread as
+// dismissed. A session's reply in that thread then commits, whose trigger clears her dismissal
+// (user_agent_thread_dismissed_clear), and a second transaction of the test's takes the root as
+// that trigger takes it, `for key share`, and keeps it. Once the owner is let go, a write that
+// went on to take the root `for update` would queue behind that hold while holding her thread's
+// row; the holder, taking the two in the Inbox's order, then asks for that row, and Postgres
+// breaks the cycle with a 40P01. The write must answer instead, its thread dismissed and its Agent
+// thread not.
+func TestAV2MessageDismissalOfAThreadBackInTheInboxAfterItsWriteTookItsRootsWritesNothing(t *testing.T) {
+	t.Parallel()
+	// A server whose session s1 is live, so the Agent thread's message reaches it and its replies
+	// come back, as seedInboxRead builds one; and, as in TestV2BulkMarksOfTwoPeopleAtOnceBothLand,
+	// nothing but the write queues on what the test holds, and its statements are bounded past any
+	// run.
+	live := true
+	sent := []map[string]any{}
+	listener := sessionListener(t, &live, &sent)
+	t.Cleanup(listener.Close)
+	handler, database, _ := newTestServer(t, testServerOptions{settle: pastTheRun, inboxStatementBound: pastTheRun, envoyURL: listener.URL})
+	left := createInteractionIssue(t, handler, "LEFT", "Marks on the left", "A spec").Key
+	thread := createThreadComment(t, handler, left, map[string]any{"body": "Ready to ship?"}, "alice").ID
+	root, reply := agentThread(t, handler, "btw", "Deploy is tonight.", "Noted.")
+	if dismissed := dismissRows(t, handler, database, "alice", inboxDismissAgentPrefix+root.ID); dismissed != 1 {
+		t.Fatalf("alice's dismissal of her Agent thread changed %d threads, want 1", dismissed)
+	}
+	ctx := context.Background()
+	var version int64
+	if err := database.Pool.QueryRow(ctx, `
+		select version from user_threads where login = 'alice' and thread_id = $1
+	`, thread).Scan(&version); err != nil {
+		t.Fatalf("read alice's version of thread %s: %v", thread, err)
+	}
+
+	owner := beginGateHold(t, database, "the thread's owner")
+	if err := store.LockOwner(ctx, owner.tx, store.IssueOwner(left)); err != nil {
+		t.Fatalf("hold %s's owner lock: %v", left, err)
+	}
+	answered := serveMarksWrite(t, handler, "alice", []map[string]any{
+		{"kind": "thread", "id": thread, "dismissed": true, "version": version},
+		{"kind": "message", "id": root.ID, "dismissed": true, "newest_reply": reply.ID, "unread_replies": []string{}},
+	})
+	if early := awaitMarksWrite(t, owner.tx, "alice", answered); early != nil {
+		t.Fatalf("alice's write answered %d %s before it queued behind %s's owner lock", early.Code, early.Body.String(), left)
+	}
+	// The session's reply clears her dismissal and commits: the write she has queued holds neither
+	// the root nor her dismissal's row.
+	if replied := replyTo(t, handler, root.ID, "One more thing."); replied.Code != http.StatusCreated {
+		t.Fatalf("s1's reply under %s answered %d %s, want 201", root.ID, replied.Code, replied.Body.String())
+	}
+	held := beginGateHold(t, database, "the Agent thread's root")
+	if _, err := held.tx.Exec(ctx, `select 1 from messages where id = $1 for key share`, root.ID); err != nil {
+		t.Fatalf("hold the root %s: %v", root.ID, err)
+	}
+	owner.release()
+	response := awaitMarksWrite(t, held.tx, "alice", answered)
+	if response == nil {
+		// The write waits for the root, holding her thread's row. The root's holder asks for that
+		// row and the two meet; the holder is let go before the write's answer is read, so a write
+		// the cycle left waiting behind a holder Postgres ended can answer.
+		_, err := held.tx.Exec(ctx, `
+			select 1 from user_threads where login = 'alice' and thread_id = $1 for no key update
+		`, thread)
+		held.release()
+		response = awaitResponse(t, answered)
+		t.Fatalf("alice's write waited for the root of an Agent thread it never took, holding her row of %s: the root's holder "+
+			"then asking for that row answered %v, and the write %d %s", thread, err, response.Code, response.Body.String())
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("alice's write answered %d %s, want 200", response.Code, response.Body.String())
+	}
+	if updated := decodeBody[markUpdatesV2](t, response).Updated; updated != 1 {
+		t.Fatalf("alice's write changed %d marks, want 1: the thread's dismissal, and no dismissal of an Agent thread it never took", updated)
+	}
+}
+
+// TestAV1SnoozeAndAV2AskMarkOfOnePersonAtOnceBothLand: one person's snooze of an ask under PUT
+// /api/v1/me/asks/{id}/snooze and the same person's mark of that ask under PATCH /api/v2/me/marks,
+// lined up so that each could hold a lock the other waits for, both land. The snooze writes one
+// mark row and takes no marks lock (lockPersonMarks), so that lock does not order the two. Each
+// writes the person's user_ask_snooze row of the ask and appends its event to the ask's project:
+// the mark takes the project before its item writes (lockMarkProjects), and the snooze takes it
+// before its row (snoozeAskIn). A snooze that wrote its row first and took the project only with
+// its event would hold the row the mark waits for while it waits for the project the mark holds.
+//
+// The crossing is made rather than waited for, as in TestV2BulkMarksOfTwoPeopleAtOnceBothLand. A
+// transaction of the test's own holds the ask's project; the mark queues behind it, watched by the
+// backend holding the person's marks lock (awaitMarksWrite), then the snooze; and the hold ends at
+// once, so the mark is given the project first and goes on to the row. Where the snooze wrote the
+// row before it queued, Postgres breaks the cycle with a 40P01 that its caller answers 500.
+func TestAV1SnoozeAndAV2AskMarkOfOnePersonAtOnceBothLand(t *testing.T) {
+	t.Parallel()
+	// As in TestV2BulkMarksOfTwoPeopleAtOnceBothLand: nothing but the two writes queues on what the
+	// test holds, and the mark's statements are bounded past any run.
+	handler, database, _ := newTestServer(t, testServerOptions{settle: pastTheRun, inboxStatementBound: pastTheRun})
+	issue := createInteractionIssue(t, handler, "LEFT", "Marks on the left", "A spec").Key
+	ask := createAnswerListAsk(t, handler, issue, "Which way?").ID
+	until := func() string { return time.Now().Add(time.Hour).UTC().Format(time.RFC3339) }
+	ctx := context.Background()
+
+	hold := beginGateHold(t, database, "the ask's project")
+	if err := store.LockOwner(ctx, hold.tx, store.ProjectOwner("LEFT")); err != nil {
+		t.Fatalf("hold LEFT's owner lock: %v", err)
+	}
+	marked := serveMarksWrite(t, handler, "alice", []map[string]any{{"kind": "ask", "id": ask, "snoozed_until": until()}})
+	if early := awaitMarksWrite(t, hold.tx, "alice", marked); early != nil {
+		t.Fatalf("alice's mark answered %d %s before it queued behind LEFT's owner lock", early.Code, early.Body.String())
+	}
+	snoozed := serveRequest(t, handler, http.MethodPut, "/api/v1/me/asks/"+ask+"/snooze", map[string]any{"snoozed_until": until()}, "alice")
+	// The snooze takes no marks lock to be watched by. It is the second backend to queue behind the
+	// hold, since nothing but the two writes queues there.
+	type seen struct {
+		early   *httptest.ResponseRecorder
+		waiting int
+	}
+	queued := testwait.Until(t, "alice's snooze to queue behind LEFT's owner lock after her mark, or to answer (the backends queued there last read)", func() (seen, bool) {
+		select {
+		case early := <-snoozed:
+			return seen{early: early}, true
+		default:
+		}
+		waiting, err := storetest.LockWaiters(ctx, hold.tx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return seen{waiting: waiting}, waiting >= 2
+	})
+	if queued.early != nil {
+		t.Fatalf("alice's snooze answered %d %s before it queued behind LEFT's owner lock", queued.early.Code, queued.early.Body.String())
+	}
+	hold.release()
+	for _, write := range []struct {
+		name     string
+		answered <-chan *httptest.ResponseRecorder
+	}{{"mark under /api/v2", marked}, {"snooze under /api/v1", snoozed}} {
+		if response := awaitResponse(t, write.answered); response.Code != http.StatusOK {
+			t.Errorf("alice's %s, sent beside the other, answered %d %s, want 200", write.name, response.Code, response.Body.String())
+		}
+	}
+}
+
 // serveMarksWrite sends login's PATCH /api/v2/me/marks of items and answers the channel its
-// answer lands on. The request is built on the test's goroutine, which alone may fail the test,
-// and served on a goroutine of its own.
+// answer lands on (serveRequest).
 func serveMarksWrite(t *testing.T, handler http.Handler, login string, items []map[string]any) <-chan *httptest.ResponseRecorder {
 	t.Helper()
-	request := newDispatchRequest(t, http.MethodPatch, "/api/v2/me/marks", map[string]any{"items": items}, login)
+	return serveRequest(t, handler, http.MethodPatch, "/api/v2/me/marks", map[string]any{"items": items}, login)
+}
+
+// serveRequest sends login's request of method on target, with body, and answers the channel its
+// answer lands on. The request is built on the test's goroutine, which alone may fail the test,
+// and served on a goroutine of its own.
+func serveRequest(t *testing.T, handler http.Handler, method, target string, body any, login string) <-chan *httptest.ResponseRecorder {
+	t.Helper()
+	request := newDispatchRequest(t, method, target, body, login)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		response := httptest.NewRecorder()
