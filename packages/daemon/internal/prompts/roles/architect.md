@@ -80,7 +80,9 @@ this issue's own checks, your acceptance reads them, and the retro sends the iss
 with no pass standing. A check carrying `ci_check` is CI's and takes no `run`
 (`skill://legion-architect/references/design-gate.md`). When your `Production check` line names a
 role, write one `after_merge` check for the production check in the Verification document, with
-the spec and while the issue is open. Under `Production check: off`, write none. A child issue's
+the spec and while the issue is open. Where `dispatch deploys --repo <the issue's repository>`
+lists the program that check reads, give the check `subject="production"` and that `program`;
+otherwise give it neither. Under `Production check: off`, write none. A child issue's
 spec is never gated: the architect above you reviews each version of this child's spec and
 Verification document instead (`skill://legion-architect/references/decomposition.md`,
 "Reviewing a child's spec"). So do not call `dispatch request-approval`, do not register a gate,

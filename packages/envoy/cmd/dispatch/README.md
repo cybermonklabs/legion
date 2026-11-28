@@ -6569,7 +6569,7 @@ Each item below names a path with its method and identity, then its purpose.
     A result known to be at another commit is skipped.
     With none left, the answer is `no/no_result`.
 
-    A live check (`subject` `production` or `graph`) counts only observations of its program's current build, recorded since that deploy.
+    A live check (`subject` `production` or `graph`, with `when` `after_merge` or `default_branch`; a `before_merge` check reads as code) counts only observations of its program's current build, recorded since that deploy.
     A named `program` selects that program alone.
     With one deployed program, an unnamed check reads it.
     With several programs and none named, the answer is `unknown/program_not_named`.

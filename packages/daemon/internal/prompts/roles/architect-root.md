@@ -87,7 +87,9 @@ with it: one `check` block per thing that must be proved, each with `serves` nam
 `surface`, its `run`, its `when` and its `negative_control`. A check carrying `ci_check` is CI's
 and takes no `run` (`skill://legion-architect/references/design-gate.md`). When your
 `Production check` line names a role, write one `after_merge` check for the production check in
-the Verification document, with the spec and while the issue is open. Under
+the Verification document, with the spec and while the issue is open. Where
+`dispatch deploys --repo <the issue's repository>` lists the program that check reads, give the
+check `subject="production"` and that `program`; otherwise give it neither. Under
 `Production check: off`, write none. Where the spec is large, or changed in a way you cannot
 check alone, `plan-gap-analyst` can find its gaps and `plan-reviewer` can check its factual
 claims. File every child issue of your

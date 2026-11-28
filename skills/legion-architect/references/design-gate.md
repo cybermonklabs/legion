@@ -11,10 +11,10 @@ Read this before you write a root spec, before any edit to an approved one, and 
 - Upload `verification.md` beside it (`--force` from its second version). Each clause of a check's
   `negative_control` names the test row or run that drives it. A requirement over every member of
   a class iterates the class's list, never a sample.
-- Your `Production check` line says whether this project checks production after a merge. When it
-  names a role, write one `after_merge` check for the production check in the Verification
-  document, with the spec and while the issue is open, because a closed issue refuses every new
-  document. Under `Production check: off`, write none.
+- Your `Production check` line says whether this project checks production after a merge.
+  When it names a role, write one `after_merge` check for the production check in the Verification document, with the spec and while the issue is open, because a closed issue refuses every new document.
+  Where `dispatch deploys --repo <the issue's repository>` lists the program that check reads, give the check `subject="production"` and that `program`; otherwise give it neither.
+  Under `Production check: off`, write none.
 - Where a real recorded input exists (a stored record, a captured log, a real service's answer),
   hold at least one read-only check against it, or say in a decision block why none can be
   written. A requirement of the form "try X and see" is accepted by an observed real run.
