@@ -223,6 +223,57 @@ test("the frame after it opens, a dialog gives the focus to its first control an
   }
 });
 
+// The trap wraps at the stops the keyboard reaches, in the browser's Tab order: a disclosure's
+// summary is one, as a button is, and a control the page took out of the Tab order with
+// `tabindex="-1"` is none, as a tab of a tab list other than the selected one is not; nor is a
+// `disabled` control, which the keyboard passes over. A trap that took either control for the
+// dialog's last stop would let Tab from the summary leave the dialog for the page behind it, and
+// aim Shift+Tab from the first control at a control no key reaches.
+test("Tab wraps from a dialog's last stop the keyboard reaches, past a control with tabindex -1 and a disabled control, and stops on a disclosure's summary", async () => {
+  const user = userEvent.setup();
+  const frames = holdFrames();
+  const view = render(
+    <KeymapProvider>
+      <Dialog label="Settings" onClose={() => {}} open>
+        <details>
+          <summary>More settings</summary>
+          <p>Words of the disclosure</p>
+        </details>
+        <button tabIndex={-1} type="button">
+          Out of the Tab order
+        </button>
+        <button disabled type="button">
+          Disabled
+        </button>
+      </Dialog>
+      <button type="button">Behind the dialog</button>
+    </KeymapProvider>
+  );
+  try {
+    frames.run();
+    const first = view.getByRole("button", { name: "First control of Settings" });
+    const summary = view.getByText("More settings");
+    expect(document.activeElement, "the frame gave the focus to no control of the dialog").toBe(
+      first
+    );
+    await user.tab();
+    expect(document.activeElement, "Tab from the first control skipped the summary").toBe(summary);
+    await user.tab();
+    expect(
+      document.activeElement,
+      "Tab from the summary, the dialog's last stop, did not wrap to its first control"
+    ).toBe(first);
+    await user.tab({ shift: true });
+    expect(
+      document.activeElement,
+      "Shift+Tab from the first control went to no last stop the keyboard reaches"
+    ).toBe(summary);
+  } finally {
+    frames.restore();
+    view.unmount();
+  }
+});
+
 /** A sheet whose own Search closes it and opens another dialog in one handler, as the navigation
  *  sheet's Search and New issue do (`app.tsx`). With `staysMounted`, the closed sheet keeps its
  *  element and its Search, as the margin sheet's `aside` does; otherwise it is removed. With

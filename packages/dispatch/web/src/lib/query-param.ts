@@ -20,7 +20,7 @@ export function capSearchQuery(next: string): string {
  * where it lives and the load balancer refuses a URL past 16 K on reload or a shared link. The cut
  * lands on a code point: a trailing lone high surrogate is dropped rather than split, so a value
  * longer than the cap - typed, or arriving on a link - never leaves half an emoji in the address.
- * `useIssueFilters`'s `?q=` and the Agents page's `?q=` both go through this one hook.
+ * `useIssueFilters`'s `?q=` goes through this hook.
  */
 export function useCappedSearchParam(name: string): readonly [string, (next: string) => void] {
   const [searchParams, setSearchParams] = useSearchParams();

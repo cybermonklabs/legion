@@ -5,6 +5,7 @@ import {
   DIALOG_SCOPE,
   type KeyBinding,
   type Keymap,
+  PAGE_KEYS_ATTRIBUTE,
   PANEL_ATTRIBUTE,
 } from "./keymap";
 
@@ -411,6 +412,82 @@ test("a key pressed on an option list's trigger fires only inEditable bindings, 
   } finally {
     trigger.remove();
     panelTrigger.remove();
+  }
+});
+
+// A host that keeps the keys its trigger had before the shared list marks the trigger, which the
+// registry then reads as the plain button it is: the Inbox's `f` and Escape fire from its
+// Assignee, on the page or inside an open panel. The same trigger unmarked takes a select's keys.
+test("a key pressed on an option list's trigger that keeps the page's keys fires the page's bindings, inside an open panel too", () => {
+  const { keymap, press } = harness();
+  const search = binding("search", "f");
+  const clear = binding("clear", "Escape");
+  keymap.register("global", [search.definition, clear.definition]);
+  const listTrigger = () => {
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute(PAGE_KEYS_ATTRIBUTE, "");
+    return trigger;
+  };
+  const onPage = listTrigger();
+  const { panel } = openPanel();
+  const inPanel = listTrigger();
+  panel.appendChild(inPanel);
+  document.body.appendChild(onPage);
+  const triggers = [
+    ["on the page", onPage],
+    ["in a panel", inPanel],
+  ] as const;
+  try {
+    for (const [where, target] of triggers) {
+      expect(press("f", { target }), `f ${where}`).toBe(true);
+      expect(press("Escape", { target }), `Escape ${where}`).toBe(true);
+    }
+    expect(search.fired()).toBe(2);
+    expect(clear.fired()).toBe(2);
+    for (const [where, target] of triggers) {
+      target.removeAttribute(PAGE_KEYS_ATTRIBUTE);
+      expect(press("f", { target }), `f ${where}, unmarked`).toBe(false);
+      expect(press("Escape", { target }), `Escape ${where}, unmarked`).toBe(false);
+    }
+    expect(search.fired()).toBe(2);
+    expect(clear.fired()).toBe(2);
+  } finally {
+    onPage.remove();
+    panel.remove();
+  }
+});
+
+// A host that keeps the page's keys marks its open panel too, and the panel's controls then
+// leave the page's keys to the page as they did before the shared list: `j` fires from a button
+// or a checkbox there, while a select there keeps its own keys, as a select on the page does. The
+// same button inside a panel with no such mark fires only the bindings that fire while the reader
+// types.
+test("a key pressed on a button or a checkbox inside an open panel that keeps the page's keys fires the page's bindings, and one on a select there does not", () => {
+  const { keymap, press } = harness();
+  const next = binding("next", "j");
+  keymap.register("global", [next.definition]);
+  const panel = document.createElement("div");
+  panel.setAttribute(PANEL_ATTRIBUTE, "");
+  panel.setAttribute(PAGE_KEYS_ATTRIBUTE, "");
+  const button = document.createElement("button");
+  button.type = "button";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  const select = document.createElement("select");
+  panel.append(button, checkbox, select);
+  document.body.appendChild(panel);
+  try {
+    expect(press("j", { target: button }), "j on the panel's button").toBe(true);
+    expect(press("j", { target: checkbox }), "j on the panel's checkbox").toBe(true);
+    expect(press("j", { target: select }), "j on the panel's select").toBe(false);
+    expect(next.fired()).toBe(2);
+    panel.removeAttribute(PAGE_KEYS_ATTRIBUTE);
+    expect(press("j", { target: button }), "j on the button, unmarked").toBe(false);
+    expect(next.fired()).toBe(2);
+  } finally {
+    panel.remove();
   }
 });
 

@@ -13,7 +13,7 @@ import {
 import { createPortal } from "react-dom";
 
 import { hearPresses } from "../features/issue-page/focus-keeper";
-import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
+import { PAGE_KEYS_ATTRIBUTE, PANEL_ATTRIBUTE } from "../features/shell/keymap";
 import { inputMethodKey } from "../lib/input-method-key";
 import { CLIPPING_OVERFLOW, firstFocusableIn, focusableIn } from "./focus-place";
 
@@ -52,6 +52,9 @@ const EDGE: CSSProperties = {
 /** The keymap's mark on the panel's element: a key pressed inside it is the panel's own
  *  (`PANEL_ATTRIBUTE`). */
 const PANEL_MARK = { [PANEL_ATTRIBUTE]: "" };
+/** The keymap's mark on the element of a panel whose host keeps the page's keys on its controls
+ *  (`PAGE_KEYS_ATTRIBUTE`). */
+const PAGE_KEYS_MARK = { [PAGE_KEYS_ATTRIBUTE]: "" };
 
 /** Where the panel stands in the window, and the height it is cut to where it is cut. */
 interface Placement {
@@ -249,7 +252,10 @@ export type PanelDismissal = "escape" | "gone" | "press" | "tab";
  *
  * The panel's element carries the keymap's `PANEL_ATTRIBUTE`, so a key pressed anywhere inside
  * it fires only the page's bindings that fire in a text field (`inEditable`): a radio or a
- * checkbox here stands where a select used to, and `j` on it must not walk the table behind.
+ * checkbox here stands where a select used to, and `j` on it must not walk the table behind. A
+ * host that keeps the page's keys on the panel's controls (`pageKeys`) marks it with the
+ * keymap's `PAGE_KEYS_ATTRIBUTE` too, and there a key on a button, a checkbox or a radio is the
+ * page's, as on `main`.
  *
  * The host owns whether it is open: it renders the panel or it does not. Every popover in
  * Dispatch is built on this, so a dismissal fix is made once (`MultiSelect`, and the issues
@@ -265,6 +271,7 @@ export function AnchoredPanel({
   label,
   onDismiss,
   overflowAnchor,
+  pageKeys = false,
   role,
 }: {
   align?: "left" | "right";
@@ -280,6 +287,10 @@ export function AnchoredPanel({
   onDismiss: (how: PanelDismissal) => void;
   /** The browser's scroll anchoring of the panel box itself. Defaults to the browser's own. */
   overflowAnchor?: CSSProperties["overflowAnchor"];
+  /** Whether the panel's host keeps the page's keys on its controls, as on `main`: a button, a
+   *  checkbox or a radio inside it leaves the page's keys to the page, and only a control that
+   *  takes typed text or a `<select>` keeps a key its own (`PAGE_KEYS_ATTRIBUTE`). */
+  pageKeys?: boolean;
   role?: "dialog";
 }): ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -553,6 +564,7 @@ export function AnchoredPanel({
         tabIndex={-1}
         {...named}
         {...PANEL_MARK}
+        {...(pageKeys ? PAGE_KEYS_MARK : undefined)}
       >
         <EnclosingPanel.Provider value={hold}>{children}</EnclosingPanel.Provider>
       </div>

@@ -20,8 +20,8 @@ import {
 
 /** One line the outline draws over the tree (`FailedReadLine`), with a Retry. A read the rows
  *  come from has one while it stands failed (`standsFailed`), and its Retry asks that read alone
- *  again. The names reads have one line between them, which stands while their count of failures
- *  is above 0 (`IssueTreeView.namesFailure`): while a read under a new set of addresses is out as
+ *  again. The names reads have one line between them, which stands while
+ *  `IssueTreeView.namesFailure` is set: while a read under a new set of addresses is out as
  *  well, though no names read stands failed then. Its Retry asks again every names read that
  *  holds no answer under its set, a first read of a new set included. */
 export interface FailedRead {
@@ -34,8 +34,7 @@ export interface FailedRead {
   readonly bringsQuestions: boolean;
   /** Which failure of the read the line says, which keys the line's alert, so a second failure
    *  is said again: a read's own `errorUpdateCount` (TanStack Query's), and for the names the
-   *  count of their reads' failures since every one of them last answered
-   *  (`NamesFailure.failure`), which is no read's own. */
+   *  count `NamesFailure.failure` gives, which is no read's own. */
   readonly failure: number;
   /** Tells the read from every other read of the outline: its line's React key. */
   readonly key: string;
@@ -53,6 +52,8 @@ export interface FailedRead {
    *  one of the names reads that hold no answer under their set runs, again or as a first read
    *  of a new set (`NamesFailure.retrying`). */
   readonly retrying: boolean;
+  /** Whether the line says its failure; the names line's comes from `NamesFailure.speaks`. */
+  readonly speaks: boolean;
 }
 
 /** What the outline's reads give (`useOutlineReads`). Each field is one value for as long as the
@@ -184,6 +185,7 @@ function failedLines(
         placesRows: true,
         retry: answer.refetch,
         retrying: answer.isFetching,
+        speaks: true,
       },
     ];
   });
@@ -237,8 +239,8 @@ function useNamesLine(namesFailure: NamesFailure | undefined): readonly FailedRe
  * they cost no request of their own. A read that stands failed holds nothing either
  * (`standsFailed`): the page cannot say what it would have held, so the outline says that the
  * read failed (`failed`). One whose refresh failed holds the answer it had, which its rows are
- * drawn from, and says nothing. The names' line stands while the names reads' count of failures
- * is above 0 (`IssueTreeView.namesFailure`): from a failure of a names read that holds no answer
+ * drawn from, and says nothing. The names' line stands while
+ * `IssueTreeView.namesFailure` is set: from a failure of a names read that holds no answer
  * under its set of addresses until every one of them holds one, so it stays while a read under a
  * new set is out, though no names read stands failed then - the tree draws the names an older
  * set's read gave meanwhile. Its Retry asks again every names read that holds no answer under its

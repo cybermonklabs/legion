@@ -145,11 +145,15 @@ func TestTheValuesAnswerCarriesTheAirlock(t *testing.T) {
 // (policy.ReasonProfileMinted), so a grant of the stored secret made before the block was there is
 // answered 403 GRANT_NOT_LIVE at its next release, and a new request for the name 400
 // UNKNOWN_SECRET, each a refusal with nothing of the value in it and no placeholder written,
-// rather than a broker fault. The release's own refusal of a dpop binding (requests.ErrMintedOnly,
-// which this route answers 403 MINTED_ONLY) sits behind that policy rule, and the requests
-// package tests it with the set the loader builds before the profiles' apply, the one set where a
-// dpop block binds a name the policy serves.
+// rather than a broker fault. The broker writes no ERROR line of its own fault for it, as it does
+// for a 500. Control: a grant of a secret behind the example kind is released as the airlock, 200
+// (TestTheValuesAnswerCarriesTheAirlock). The release's own refusal of a dpop binding
+// (requests.ErrMintedOnly, which this route answers 403 MINTED_ONLY naming the rule, never a
+// stored secret's release) sits behind that policy rule, and the requests package tests it with
+// the set the loader builds before the profiles' apply, the one set where a dpop block binds a
+// name the policy serves.
 func TestAStoredSecretUnderADPoPBlockIsRefusedItsRelease(t *testing.T) {
+	logged := policytest.CaptureLog(t)
 	ts := newProxiedTestServer(t, nil, func(*api.Deps) {})
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
@@ -180,5 +184,10 @@ func TestAStoredSecretUnderADPoPBlockIsRefusedItsRelease(t *testing.T) {
 		map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "read the worker token again", "WORKER_TOKEN"), "session_id": nil})
 	if status != http.StatusBadRequest || decode[wireError](t, body).Code != "UNKNOWN_SECRET" || strings.Contains(string(body), "worker-v1") {
 		t.Fatalf("POST /v1/requests for a name a dpop block holds = %d %s; want 400 UNKNOWN_SECRET with nothing of the value", status, body)
+	}
+	for l := range strings.Lines(logged.String()) {
+		if strings.Contains(l, "ERROR") && strings.Contains(l, "read grant values") {
+			t.Errorf("the broker logs the refusal as its own fault: %q", l)
+		}
 	}
 }

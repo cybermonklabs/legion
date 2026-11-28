@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -59,27 +58,6 @@ func loggedMessages(t *testing.T, logs, msg string) []map[string]any {
 		text, _ := entry["msg"].(string)
 		return !strings.HasPrefix(text, msg)
 	})
-}
-
-// recordControllerSession registers session as the project's controller in the store before the
-// daemon boots, as a registration an earlier boot took leaves the record.
-func recordControllerSession(t *testing.T, cfg config.Config, project, session string) {
-	t.Helper()
-	st, err := store.Open(context.Background(), cfg.PostgresDSN)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	if _, err := st.Migrate(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	generation, err := st.MintController(context.Background(), project, []byte("capability"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok, err := st.RegisterController(context.Background(), project, generation, session, []byte("secret"), time.Now(), 0); err != nil || !ok {
-		t.Fatalf("register the controller: %v %v", ok, err)
-	}
 }
 
 // envoyRoleRegistry answers the controller role lookup: session holds the role, seen now, when
@@ -129,7 +107,7 @@ func TestTheDaemonSaysWhenNoControllerIsRegistered(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.register {
-				recordControllerSession(t, cfg, project, session)
+				registerProjectControllerAs(t, cfg.PostgresDSN, project, session)
 			}
 			logs := &syncBuffer{}
 			o := fakeRuntime(fake.NewRuntime(), &built{})
@@ -215,7 +193,7 @@ func TestTheDaemonSaysWhenItsOwnControllerIsNotRegistered(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.recorded {
-				recordControllerSession(t, cfg, project, session)
+				registerProjectControllerAs(t, cfg.PostgresDSN, project, session)
 			}
 			logs := &syncBuffer{}
 			rt := fake.NewRuntime()

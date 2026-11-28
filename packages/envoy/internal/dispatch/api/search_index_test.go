@@ -3,8 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"maps"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -311,7 +317,8 @@ func meaningStatementAsSearchPicksIt(t *testing.T, database *store.Store, projec
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	// The statements of a search naming no kind, which is what this helper's callers run.
-	return meaningStatementFor(searchKinds(0).statements(), project, embeddingProjectKeysFilled(ctx, tx), false)
+	statement, _ := meaningStatementFor(searchKinds(0).statements(), project, embeddingProjectKeysFilled(ctx, tx), false)
+	return statement
 }
 
 // TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins holds INFRA-988's measurement as a
@@ -488,5 +495,497 @@ func TestTheIssueKeywordArmMatchesItsVectorThroughIssuesSearch(t *testing.T) {
 	if both != nil {
 		t.Fatalf("the plan still tests the vector and the issue's key in one condition at %s, which no index serves:\n%s",
 			both.NodeType, plan)
+	}
+}
+
+// searchPlanSettings is what the plans of the search statements below are read under.
+// Sequential scans off alone is not enough, for the reason refs' planSettings gives: the planner
+// can still hash or merge a whole relation into a join, reading it under a node that carries no
+// index condition, so both are off as well, and what is left is the nested loop over an index
+// each arm is written for. Sorts are off for the reason
+// TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan gives: on a fixture's few rows a meaning
+// arm is read through embeddings_pkey and sorted whatever its shape, rather than ordered by the
+// HNSW index its shape permits. Incremental sorts are off with them, or the planner keeps a sort
+// off a `distinct on` by reading the table it is keyed on whole in that key's order (the comment
+// arm's comments, through comments_pkey) and sorting the rest of each group, where with both off
+// it sorts what it read through the arm's own index. So a plan says what the statement's shape
+// permits, not what a corpus's planner would choose.
+var searchPlanSettings = []string{
+	"set local enable_seqscan = off",
+	"set local enable_hashjoin = off",
+	"set local enable_mergejoin = off",
+	"set local enable_sort = off",
+	"set local enable_incremental_sort = off",
+}
+
+// searchStatementPlan is one plan of a statement the plan tests below read: mode names which.
+type searchStatementPlan struct {
+	mode string
+	plan json.RawMessage
+}
+
+// searchStatementPlans is both plans of statement bound to arguments, each read under
+// searchPlanSettings on connection: the generic plan a prepared statement settles on
+// (explaintest.GenericPlan, prepared under name with the parameter types Postgres gives the
+// statement and executed with arguments as literals of those types, statementLiterals), and the
+// plan Postgres builds knowing the values bound, under force_custom_plan.
+func searchStatementPlans(t *testing.T, connection *pgxpool.Conn, name, statement string, arguments []any) []searchStatementPlan {
+	t.Helper()
+	ctx := context.Background()
+	types, literals := statementLiterals(t, connection, statement, arguments)
+	generic := explaintest.GenericPlan(t, ctx, connection, name, statement, types, literals, searchPlanSettings...)
+
+	tx, err := connection.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction %s is explained with its values in: %v", name, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, setting := range append(slices.Clone(searchPlanSettings), "set local plan_cache_mode = force_custom_plan") {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s: %v", setting, err)
+		}
+	}
+	var raw []byte
+	if err := tx.QueryRow(ctx, "explain (format json) "+statement, arguments...).Scan(&raw); err != nil {
+		t.Fatalf("explain %s with its values: %v", name, err)
+	}
+	return []searchStatementPlan{{"generic", generic}, {"with values", explaintest.OnePlan(t, raw)}}
+}
+
+// statementLiterals is what explaintest.GenericPlan prepares statement under and executes it
+// with: the type Postgres gives each of its parameters (statementTypes), and each of arguments
+// written as a literal of that type, which Postgres writes itself (quote_nullable over the value
+// cast to text), so no value is spelled by hand.
+func statementLiterals(t *testing.T, connection *pgxpool.Conn, statement string, arguments []any) (types, literals []string) {
+	t.Helper()
+	ctx := context.Background()
+	types = statementTypes(t, connection, statement)
+	if len(types) != len(arguments) {
+		t.Fatalf("the statement takes %d parameters and %d arguments were given", len(types), len(arguments))
+	}
+	for index, typeName := range types {
+		var literal string
+		if err := connection.QueryRow(ctx, "select quote_nullable(($1::"+typeName+")::text)", arguments[index]).Scan(&literal); err != nil {
+			t.Fatalf("write $%d as a literal of %s: %v", index+1, typeName, err)
+		}
+		literals = append(literals, literal+"::"+typeName)
+	}
+	return types, literals
+}
+
+// statementTypes is the type Postgres gives each of statement's parameters, read from the
+// server's own description of the statement as pgx reads it before it binds one.
+func statementTypes(t *testing.T, connection *pgxpool.Conn, statement string) []string {
+	t.Helper()
+	ctx := context.Background()
+	description, err := connection.Conn().PgConn().Prepare(ctx, "", statement, nil)
+	if err != nil {
+		t.Fatalf("describe the statement's parameters: %v", err)
+	}
+	types := make([]string, len(description.ParamOIDs))
+	for index, oid := range description.ParamOIDs {
+		if err := connection.QueryRow(ctx, "select format_type($1, null)", oid).Scan(&types[index]); err != nil {
+			t.Fatalf("name the type of $%d: %v", index+1, err)
+		}
+	}
+	return types
+}
+
+// planIndexCatalog answers, from the catalog, the table an index a plan names is on and the
+// access method it is built with (hnsw, gin, btree), each index read once: a Bitmap Index Scan
+// names its index and no relation, and what kind of read an index scan is depends on its index.
+type planIndexCatalog struct {
+	database *store.Store
+	read     map[string][2]string
+}
+
+func newPlanIndexCatalog(database *store.Store) *planIndexCatalog {
+	return &planIndexCatalog{database: database, read: map[string][2]string{}}
+}
+
+func (c *planIndexCatalog) of(t *testing.T, index string) (table, method string) {
+	t.Helper()
+	if known, ok := c.read[index]; ok {
+		return known[0], known[1]
+	}
+	if err := c.database.Pool.QueryRow(context.Background(), `
+		select i.indrelid::regclass::text, am.amname::text
+		  from pg_index i join pg_class c on c.oid = i.indexrelid join pg_am am on am.oid = c.relam
+		 where i.indexrelid = $1::regclass`, index).Scan(&table, &method); err != nil {
+		t.Fatalf("read the table and access method of the index %s: %v", index, err)
+	}
+	c.read[index] = [2]string{table, method}
+	return table, method
+}
+
+// searchPlanTree is a plan's nodes in the order explaintest.Nodes walks them, with each node's
+// children (explaintest.Children).
+type searchPlanTree struct {
+	nodes    []explaintest.Node
+	children [][]int
+}
+
+func newSearchPlanTree(t *testing.T, plan json.RawMessage) searchPlanTree {
+	t.Helper()
+	nodes := explaintest.Nodes(t, plan)
+	return searchPlanTree{nodes: nodes, children: explaintest.Children(nodes)}
+}
+
+// relationOf is the table the node at position at reads: the relation it names, or, for a
+// Bitmap Index Scan, which names none, the table its index is on.
+func (tree searchPlanTree) relationOf(t *testing.T, at int, catalog *planIndexCatalog) string {
+	t.Helper()
+	node := tree.nodes[at]
+	if node.Relation == "" && node.Index != "" {
+		table, _ := catalog.of(t, node.Index)
+		return table
+	}
+	return node.Relation
+}
+
+// reads reports whether any node of nodes reads relation.
+func (tree searchPlanTree) reads(t *testing.T, nodes []int, relation string, catalog *planIndexCatalog) bool {
+	t.Helper()
+	return slices.ContainsFunc(nodes, func(at int) bool { return tree.relationOf(t, at, catalog) == relation })
+}
+
+// kindsArms is the arms of a meaning statement's kinds CTE: the children of the first Append
+// under the plan named `CTE kinds`, each the subtree of one select of its union, a keyword arm or
+// a meaning arm, and false where the plan holds no such plan or Append. A meaning statement reads
+// kinds twice (ranked and totals), so Postgres plans it once as a CTE of its own, which is how a
+// plan without VERBOSE, naming no output, still tells the union's arms from the rest of it.
+func (tree searchPlanTree) kindsArms() ([]int, bool) {
+	cte := slices.IndexFunc(tree.nodes, func(node explaintest.Node) bool { return node.SubplanName == "CTE kinds" })
+	if cte < 0 {
+		return nil, false
+	}
+	for queue := []int{cte}; len(queue) > 0; queue = queue[1:] {
+		if tree.nodes[queue[0]].Type == "Append" {
+			return tree.children[queue[0]], true
+		}
+		queue = append(queue, tree.children[queue[0]]...)
+	}
+	return nil, false
+}
+
+// embeddingsKind matches the window kind a scan of embeddings tests, as a plan writes it.
+var embeddingsKind = regexp.MustCompile(`kind = '([a-z_]+)'`)
+
+// meaningArms is every arm of the kinds CTE that reads embeddings, which only a meaning arm
+// does, by the kind its scan of embeddings tests (`issue`, `document_block`, ...), and false where
+// the plan holds no kinds CTE.
+func (tree searchPlanTree) meaningArms(t *testing.T, catalog *planIndexCatalog) (map[string][]int, bool) {
+	t.Helper()
+	arms, found := tree.kindsArms()
+	if !found {
+		return nil, false
+	}
+	meaning := map[string][]int{}
+	for _, arm := range arms {
+		nodes := explaintest.Subtree(tree.nodes, arm)
+		for _, at := range nodes {
+			if tree.relationOf(t, at, catalog) != "embeddings" {
+				continue
+			}
+			node := tree.nodes[at]
+			if kind := embeddingsKind.FindStringSubmatch(node.IndexCond + " " + node.RecheckCond + " " + node.Filter); kind != nil {
+				meaning[kind[1]] = nodes
+				break
+			}
+		}
+	}
+	return meaning, true
+}
+
+// describe is nodes one to a line, as a failure prints them.
+func (tree searchPlanTree) describe(nodes []int) string {
+	lines := make([]string, 0, len(nodes))
+	for _, at := range nodes {
+		lines = append(lines, tree.nodes[at].String())
+	}
+	return strings.Join(lines, "\n")
+}
+
+// meaningStatementPair is one of the meaning statements R2 changes the document arm of: this
+// build's text and main's at 497581c7 (search_oracle_test.go), with the arguments its caller
+// binds over documentSearchFixture. Both texts take the same parameters.
+type meaningStatementPair struct {
+	name, live, main string
+	arguments        []any
+}
+
+// meaningStatementPairs is search's three meaning statements in each of the 32 sets of kinds
+// searchKinds.statements builds them for, beside main's text of the same set
+// (mainAt4975Statements), and the related-item check's six, which take no set of kinds, each
+// bound as its caller binds it: an unscoped statement for a search or a check naming no project,
+// a scoped or joined one for the fixture's project, and an excluding one leaving the fixture's
+// issue out, as an issue create does.
+func (f documentSearchFixture) meaningStatementPairs() []meaningStatementPair {
+	search := func(project string) []any {
+		return searchMeaningQueryArguments(searchParameters{text: documentSearchWord, project: project, limit: searchDefaultLimit},
+			queryVector(), f.embedder.Identity())
+	}
+	related := func(project string, excluding bool) []any {
+		word := documentSearchWord
+		arguments := slices.Concat(
+			[]any{"'" + word + "'", project, suggestionSearchDepth, word, headlineOptions, 0, contracts.SearchKindDepth, searchFusionK},
+			f.meaningArguments(), []any{[]string{word}, []float64{2.5}})
+		if excluding {
+			arguments = append(arguments, []string{"issue:" + f.issueKey})
+		}
+		return append(arguments, documentSearchSeen()...)
+	}
+	var pairs []meaningStatementPair
+	for set := range searchKinds(len(searchStatementsByKinds)) {
+		main := mainAt4975Statements(uint8(set)).fields()
+		for i, field := range set.statements().fields() {
+			if field.name == searchKeywordField {
+				continue
+			}
+			project := f.project
+			if field.name == searchMeaningEveryField {
+				project = ""
+			}
+			pairs = append(pairs, meaningStatementPair{
+				searchSetStatementName(set, field.name), field.text, main[i].text, search(project),
+			})
+		}
+	}
+	return append(pairs, []meaningStatementPair{
+		{"relatedMeaningQuery", relatedMeaningQuery, mainAt4975RelatedMeaningQuery, related("", false)},
+		{"relatedMeaningScopedQuery", relatedMeaningScopedQuery, mainAt4975RelatedMeaningScopedQuery, related(f.project, false)},
+		{"relatedMeaningJoinedQuery", relatedMeaningJoinedQuery, mainAt4975RelatedMeaningJoinedQuery, related(f.project, false)},
+		{"relatedMeaningExcludingQuery", relatedMeaningExcludingQuery, mainAt4975RelatedMeaningExcludingQuery, related("", true)},
+		{"relatedMeaningScopedExcludingQuery", relatedMeaningScopedExcludingQuery, mainAt4975RelatedMeaningScopedExcludingQuery,
+			related(f.project, true)},
+		{"relatedMeaningJoinedExcludingQuery", relatedMeaningJoinedExcludingQuery, mainAt4975RelatedMeaningJoinedExcludingQuery,
+			related(f.project, true)},
+	}...)
+}
+
+// TestNoMeaningDocumentArmReadsArtifactVersions holds R2b: the meaning document arm of each of
+// search's three meaning statements, in each of the 32 sets of kinds searchKinds.statements builds
+// them for, and of the related-item check's six reads its date from document_search and reads no
+// artifact_versions, in the generic plan a prepared statement settles on and in the plan with its
+// values. A plan without VERBOSE names no output, so the arm is found by what it reads: the arm of
+// the kinds CTE's union under which a scan of embeddings tests the kind 'document_block'
+// (meaningArms), and a plan holding no such arm fails, since it says nothing of the arm. That
+// holds for a set that leaves documents out as well: the set drops the arm's rows above the
+// union, and the plan of every such set still holds the arm.
+//
+// main's text at 497581c7, of the same set, is the negative control, read the same way over the
+// same rows: its arm reads the newest version's created_at through a lateral over
+// artifact_versions, so the same reading of its plans must find artifact_versions in the arm, or
+// the assertion on this build's text decides nothing.
+func TestNoMeaningDocumentArmReadsArtifactVersions(t *testing.T) {
+	t.Parallel()
+	fixture := newDocumentSearchFixture(t)
+	ctx := context.Background()
+	connection, err := fixture.database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the plans: %v", err)
+	}
+	defer connection.Release()
+	catalog := newPlanIndexCatalog(fixture.database)
+
+	prepared := 0
+	for _, statement := range fixture.meaningStatementPairs() {
+		t.Run(statement.name, func(t *testing.T) {
+			for _, side := range []struct {
+				text, whose           string
+				readsArtifactVersions bool
+			}{
+				{statement.live, "this build's", false},
+				{statement.main, "main's at 497581c7", true},
+			} {
+				prepared++
+				for _, plan := range searchStatementPlans(t, connection, fmt.Sprintf("meaning_document_arm_%d", prepared), side.text, statement.arguments) {
+					tree := newSearchPlanTree(t, plan.plan)
+					arms, found := tree.meaningArms(t, catalog)
+					arm, documents := arms["document_block"]
+					if !found || !documents {
+						t.Fatalf("%s, %s text's %s plan has no arm of CTE kinds' Append under which a scan of embeddings tests 'document_block', so it says nothing of the meaning document arm:\n%s",
+							statement.name, side.whose, plan.mode, tree.describe(explaintest.Subtree(tree.nodes, 0)))
+					}
+					switch reads := tree.reads(t, arm, "artifact_versions", catalog); {
+					case reads && !side.readsArtifactVersions:
+						t.Errorf("%s, %s text's %s plan reads artifact_versions in its meaning document arm:\n%s",
+							statement.name, side.whose, plan.mode, tree.describe(arm))
+					case !reads && side.readsArtifactVersions:
+						t.Errorf("%s, %s text's %s plan reads no artifact_versions in its meaning document arm, so the control decides nothing:\n%s",
+							statement.name, side.whose, plan.mode, tree.describe(arm))
+					}
+				}
+			}
+		})
+	}
+}
+
+// searchIndexScanTypes is every plan node that reads a relation through an index and so can
+// carry an "Index Cond", as explaintest.ScansWithoutIndexCond reads them.
+var searchIndexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Scan"}
+
+// TestEverySearchStatementReadsEachGrowingTableThroughAnIndex holds that each of the four
+// statements a search runs, in each of the 32 sets of kinds searchKinds.statements builds them
+// for, in the generic plan a prepared statement settles on and in the plan with the values the
+// route binds, reads every table that grows with the data through an index condition
+// (explaintest.ScansWithoutIndexCond), and its meaning arms read no artifact_versions. Every
+// table the statements read grows with the data but projects, so the reads allowed without an
+// index condition are three: an HNSW Index Scan, which orders by a distance and takes no
+// condition (its "Order By" holds the distance); a Bitmap Index Scan of a GIN index, a keyword
+// arm's match; and a whole read of projects.
+//
+// The fixture is newDocumentSearchFixture's two thousand documents, and two thousand each of
+// issues, comments, asks and messages and ten thousand document blocks beside them
+// (growWithTheData): a table of a few rows is cheapest read whole whatever the statement says,
+// whether as the side of a join or as the hash a subplan tests each row against, so a plan of
+// such a fixture says nothing of the statement.
+//
+// The keyword statement is read for a search of every project and of one; each meaning statement
+// for the project form meaningStatementFor picks it for. Its meaning arms are the arms of the
+// kinds CTE that read embeddings (meaningArms), five in set 0, and a plan in which the arm of a
+// kind the set ranks is not found fails, since it would say nothing of that arm. The arm of a kind
+// the set leaves out may be in the plan or not - the set drops its rows above the union either
+// way - and is held to the same when it is. Each set's statements are prepared under names of
+// their own, and each failure names the set (`set 5 meaningScoped`).
+func TestEverySearchStatementReadsEachGrowingTableThroughAnIndex(t *testing.T) {
+	t.Parallel()
+	fixture := newDocumentSearchFixture(t)
+	growWithTheData(t, fixture)
+	ctx := context.Background()
+	connection, err := fixture.database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the plans: %v", err)
+	}
+	defer connection.Release()
+	catalog := newPlanIndexCatalog(fixture.database)
+
+	subject := func(project string) searchParameters {
+		return searchParameters{text: documentSearchWord, project: project, limit: searchDefaultLimit}
+	}
+	meaning := func(project string) []any {
+		return searchMeaningQueryArguments(subject(project), queryVector(), fixture.embedder.Identity())
+	}
+	for set := range searchKinds(len(searchStatementsByKinds)) {
+		var ranked []string
+		for _, kind := range searchKindsAsked(set) {
+			ranked = append(ranked, searchMeaningArmKinds[kind])
+		}
+		number := 0
+		run := func(field searchStatementField, form string, arguments []any, meaning bool) {
+			name := searchSetStatementName(set, field.name) + form
+			t.Run(name, func(t *testing.T) {
+				prepared := fmt.Sprintf("growing_reads_%d_%d", set, number)
+				for _, plan := range searchStatementPlans(t, connection, prepared, field.text, arguments) {
+					tree := newSearchPlanTree(t, plan.plan)
+					unkeyed := 0
+					for at, node := range tree.nodes {
+						if node.Type != "Seq Scan" && (!slices.Contains(searchIndexScanTypes, node.Type) || node.IndexCond != "") {
+							continue
+						}
+						unkeyed++
+						relation := tree.relationOf(t, at, catalog)
+						method := ""
+						if node.Index != "" {
+							_, method = catalog.of(t, node.Index)
+						}
+						switch {
+						case relation == "projects":
+						case node.Type == "Index Scan" && method == "hnsw" && strings.Contains(node.OrderBy, "<=>"):
+						case node.Type == "Bitmap Index Scan" && method == "gin":
+						default:
+							t.Errorf("%s, %s plan: %s reads %s with no index condition (under %q)",
+								name, plan.mode, node, relation, node.Subplan)
+						}
+					}
+					if listed := explaintest.ScansWithoutIndexCond(t, plan.plan); len(listed) != unkeyed {
+						t.Fatalf("%s, %s plan: explaintest.ScansWithoutIndexCond names %d scans (%s) and this walk met %d",
+							name, plan.mode, len(listed), strings.Join(listed, ", "), unkeyed)
+					}
+					if !meaning {
+						continue
+					}
+					arms, _ := tree.meaningArms(t, catalog)
+					missing := slices.DeleteFunc(slices.Clone(ranked), func(kind string) bool {
+						_, planned := arms[kind]
+						return planned
+					})
+					if len(missing) > 0 {
+						t.Fatalf("%s, %s plan: found the meaning arms %v in the kinds CTE and none of %v, which the set ranks:\n%s",
+							name, plan.mode, slices.Sorted(maps.Keys(arms)), missing, tree.describe(explaintest.Subtree(tree.nodes, 0)))
+					}
+					for _, kind := range slices.Sorted(maps.Keys(arms)) {
+						if tree.reads(t, arms[kind], "artifact_versions", catalog) {
+							t.Errorf("%s, %s plan: the meaning arm of %s reads artifact_versions:\n%s",
+								name, plan.mode, kind, tree.describe(arms[kind]))
+						}
+					}
+				}
+			})
+			number++
+		}
+		for _, field := range set.statements().fields() {
+			switch field.name {
+			case searchKeywordField:
+				run(field, ", every project", searchQueryArguments(subject("")), false)
+				run(field, ", one project", searchQueryArguments(subject(fixture.project)), false)
+			case searchMeaningEveryField:
+				run(field, "", meaning(""), true)
+			default:
+				run(field, "", meaning(fixture.project), true)
+			}
+		}
+	}
+}
+
+// searchMeaningArmKinds is the window kind the meaning arm of each of searchIndexedKinds tests on
+// embeddings, which is how meaningArms keys the arm.
+var searchMeaningArmKinds = map[string]string{
+	"issue": "issue", "document": "document_block", "comment": "comment_block", "ask": "ask_part", "message": "message_block",
+}
+
+// growWithTheData adds to fixture two thousand issues of its project and two thousand each of
+// comments, asks and messages on them, none holding documentSearchWord, and five blocks of each of
+// its two thousand documents, and analyzes the database, so each of those tables holds as many
+// rows as its documents do or more. They are written as SQL, as newDocumentSearchFixture writes
+// its documents, and the tables' own triggers fill each row's search vector. A block written so
+// names no graph node, which the ask arms' test of a block (askBlockNodeSQL) does not read.
+func growWithTheData(t *testing.T, fixture documentSearchFixture) {
+	t.Helper()
+	ctx := context.Background()
+	for _, bulk := range []struct{ what, statement string }{
+		{"the other issues", `
+			insert into issues (key, project_key, number, title, created_by, rank)
+			select $1 || '-' || n, $1, n, 'Routine survey ' || n, '{"kind":"user","id":"alice"}', 'U' || n
+			from generate_series(2, 2001) n
+		`},
+		{"their comments", `
+			insert into comments (issue_key, author, body)
+			select $1 || '-' || (n % 2000 + 2), '{"kind":"user","id":"alice"}', 'Routine remark ' || n
+			from generate_series(1, 2000) n
+		`},
+		{"their asks", `
+			insert into asks (issue_key, author, question)
+			select $1 || '-' || (n % 2000 + 2), '{"kind":"user","id":"alice"}', 'Routine question ' || n
+			from generate_series(1, 2000) n
+		`},
+		{"their messages", `
+			insert into messages (issue_key, author, body)
+			select $1 || '-' || (n % 2000 + 2), '{"kind":"user","id":"alice"}', 'Routine message ' || n
+			from generate_series(1, 2000) n
+		`},
+		{"their documents' blocks", `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+			select a.id, 'block-' || n, a.id || '#block-' || n, 'paragraph', '', 'Routine survey notes', 1, now()
+			from artifacts a cross join generate_series(1, 5) n
+			where a.project_key = $1 and a.slug like 'sheet-%'
+		`},
+	} {
+		if _, err := fixture.database.Pool.Exec(ctx, bulk.statement, fixture.project); err != nil {
+			t.Fatalf("seed %s: %v", bulk.what, err)
+		}
+	}
+	if _, err := fixture.database.Pool.Exec(ctx, "analyze"); err != nil {
+		t.Fatalf("analyze the grown fixture: %v", err)
 	}
 }

@@ -1,0 +1,39 @@
+kind: Added
+body: |-
+  The `dispatch` command's `read`, `doc-read`, `search`, `answers`, `open-asks`, `inbox` and
+  `results` take `--as-of <text>`, an RFC 3339 time, and read Dispatch as it stood at that time.
+  Each of the seven now reads `GET /api/v1/whoami` first on every run, with or without
+  `--as-of`: a token whose whoami answer names a cut reads at that cut, and the cut replaces
+  `--as-of`. At a cut each command sends `as_of` to each route it calls that answers it, and calls
+  no route that keeps no history. The first line of the output, `Left out at <time>:`, names each
+  part that the command did not read and each field that Dispatch cannot give at that time. Every
+  age and window counts from that time.
+
+  The command uses nothing of an answer to a read at a past time that does not name the cut in
+  `Dispatch-As-Of`, which an older Dispatch does not send, and exits 1 naming the route.
+  `dispatch results` refuses `--at` with a cut, with exit 2. Dispatch's refusals of a read at a
+  past time print in words before Dispatch's own message.
+
+  `dispatch issues` is not one of the seven. Under a token that carries a cut it lists the issues
+  as Dispatch answers that token, as of the cut, with no `Left out at` line. Its details and
+  `--json` leave out of each row the `route_status`, `route_holder` and `route_status_reason` that
+  the listing left out, where they were `null`.
+
+  A read that sends no `as_of` is told the cut that an answer under such a token names, and the
+  members it left out (`AnswerCut`, an `AsOfRead` with no `asOf`); it refuses nothing.
+  `readSessionAnswers` reads the people's answers this way, keeps the cut with the list (`as_of`
+  in `answers.json`; a file without it still reads), and prints an ask's question that the answer
+  left out as `Question: left out at <cut>`. Under such a token the people's answers list is read
+  at the cut, for the 72 hours before it: a read whose list kept a cut, or whose read before was
+  answered with the list left out at a cut, sends no `since`, so Dispatch counts the 72 hours back
+  from the cut it answers at, and a read whose answer's having a cut differs from how it asked
+  asks once more, at once, as that answer was answered.
+  If Dispatch names `/items` and `/total` absent, the command and host print that Dispatch left
+  out the list at that cut. The host does not show a cached list or store an empty list in its place.
+  Each renderer prints a member that an answer left out as `left out at <cut>`, or `left out by
+  Dispatch` where the cut is not known (`leftOutWords`), and never throws on it, the refusal of a
+  `reply_to_ask` prefix that lists an ask whose question the answer left out included.
+  `readDocumentBlocks` types a block's `id` as possibly absent.
+time: 2026-11-20T19:00:03Z
+custom:
+  Issue: pr4639

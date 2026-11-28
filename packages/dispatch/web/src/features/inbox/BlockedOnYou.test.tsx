@@ -8,8 +8,10 @@ import { withWaitingOnPerson } from "./inbox-fixture";
 
 function request(record_id: string, requested_at: string): CredentialPendingRow {
   return {
+    dispatch_scopes: null,
     identifiers: ["DEMO_API_KEY"],
     kind: "agent_secret",
+    reason: "",
     record_id,
     requested_at,
     session: { enrollment: null, request: null },
@@ -52,6 +54,8 @@ function ask(id: string, overrides: Partial<InboxRow> = {}): InboxRow {
       route_status_reason: null,
     },
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     snoozed_until: null,
     question: "Which approach?",
     state: "open",

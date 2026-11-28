@@ -635,6 +635,22 @@ const aloneProjects = [
 ] satisfies Project[];
 
 /**
+ * `--disable-partial-raster`, on both visual projects: Chromium then draws every tile it redraws
+ * whole, rather than only the part of it a later paint invalidated. A tile drawn once and then
+ * partly redrawn differs at the edges of what was redrawn from the same tile drawn whole, so with
+ * partial raster on, one page at one layout came out in more than one rendering, depending on the
+ * order its paints came in. The Inbox, shot 20 times in the visual image with its own fonts, came
+ * out in two renderings in light, 7 and 13 times, and with the DevTools LayerTree domain on in the
+ * one the committed baseline refused, 20 times of 20. Every difference was at x 832 or right of
+ * it, which is the main column's left edge plus one 512 px tile, and main's build of that page
+ * varied the same way on the other side of that edge. With the flag the same 20 shots gave one
+ * rendering in light and one in dark, and the same two with LayerTree on (dispatch://INFRA-3135).
+ * The flag changes what is captured, not what is compared: the spec's comparison and its
+ * tolerance are as before.
+ */
+const VISUAL_CAPTURE = { args: ["--disable-partial-raster"] };
+
+/**
  * The containerised visual review: one row per page of `e2e/review-routes.ts`'s shot set, each
  * comparing that page against a committed baseline in light and in dark, and the pages a phone
  * width rearranges once more in that viewport (e2e/visual.e2e.ts).
@@ -669,22 +685,7 @@ const aloneProjects = [
  * screenshot comparison that fails and then passes is a tolerance that is too tight or a page
  * that is not settled, and either one is the thing this layer exists to find, so it is reported
  * as a failure rather than as a flake.
- *
- * `--disable-partial-raster` (`VISUAL_CAPTURE`), on both projects: Chromium then draws every
- * tile it redraws whole, rather than only the part of it a later paint invalidated. A tile drawn
- * once and then partly redrawn differs at the edges of what was redrawn from the same tile drawn
- * whole, so with partial raster on, one page at one layout came out in more than one rendering,
- * depending on the order its paints came in. The Inbox, shot 20 times in the visual image with
- * its own fonts, came out in two renderings in light, 7 and 13 times, and with the DevTools
- * LayerTree domain on in the one the committed baseline refused, 20 times of 20. Every
- * difference was at x 832 or right of it, which is the main column's left edge plus one 512 px
- * tile, and main's build of that page varied the same way on the other side of that edge. With
- * the flag the same 20 shots gave one rendering in light and one in dark, and the same two with
- * LayerTree on (dispatch://INFRA-3135). The flag changes what is captured, not what is
- * compared: the spec's comparison and its tolerance are as before.
  */
-const VISUAL_CAPTURE = { args: ["--disable-partial-raster"] };
-
 const visualProjects = [
   {
     name: "visual",
@@ -823,7 +824,7 @@ export default defineConfig({
   // which is why a run given one keeps its logs whatever it did, and why
   // .github/scripts/dispatch-browser-shard-suite.sh and dispatch-browser-alone-suite.sh name
   // this file in theirs. `shard-reporter.ts` does nothing in a run without `--shard`, and in one
-  // with it places the files on the legs by measured row time in place of Playwright's split by
+  // with it places the rows on the legs by measured row time in place of Playwright's split by
   // count (e2e/shard-split.ts says why), so a local `--shard` run holds the rows the CI leg of
   // that number holds; the shard job names it in its own list for the same reason as above. With
   // E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the list

@@ -1,8 +1,9 @@
+import { signInScopes } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
-import type { DecisionResponse, StateResponse } from "../../api/types";
+import type { DecisionResponse, RecordResponse, StateResponse } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
@@ -13,6 +14,7 @@ import {
   textMutedOnCanvas,
   textPrimaryOnCanvas,
 } from "../../theme/classes";
+import { signInScopeStartsTicked, signInScopesText } from "../settings/dispatch-scope-choices";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -23,27 +25,43 @@ import { MachineLoginsSection } from "./MachineLoginsSection";
 
 /** What the login's decision was, in place of the buttons that decide it: one just made on this
  *  page, or the one a looked-up record already carries. A service's approved login (the Legion
- *  daemon's) starts worker pods as the service, where a person's machine starts sessions as them. */
+ *  daemon's) starts worker pods as the service, where a person's machine starts sessions as them.
+ *  A Dispatch sign-in names its reason beside its host, where it gave one, and the scopes approved
+ *  where this page approved it; a record looked up once decided names only the scopes it asked
+ *  for (`RecordResponse.dispatch_scopes`), so the line sends the person to the machine logins
+ *  list, which names the approved ones. */
 function MachineLoginDecision({
   credentialId,
   event,
   host,
+  reason,
   service,
+  signIn,
 }: {
   credentialId: string | null;
   event: string;
   host: string;
+  reason: string;
   service: string | null;
+  signIn: { readonly asked: readonly string[]; readonly approved: readonly string[] | null } | null;
 }): ReactNode {
+  // The reason the request gave, as it typed it: the reading list's
+  // `credential-request-reason`.
+  const named = `${machineName({ host, service })}${reason === "" ? "" : ` (${reason})`}`;
   return (
     <div className="space-y-1 text-sm">
       <p className={`font-medium ${textPrimaryOnCanvas}`}>
         {event !== "approved" ? (
           <>
-            <span className="capitalize">{event}</span>. {host} is not logged in.
+            <span className="capitalize">{event}</span>. {host} is not{" "}
+            {signIn === null ? "logged in" : "signed in to Dispatch"}.
           </>
-        ) : (
+        ) : signIn === null ? (
           `Approved. ${machineName({ host, service })} can start ${service ? `worker pods as ${service}` : "agent sessions as you"}.`
+        ) : signIn.approved === null ? (
+          `Approved. ${named} is signed in to Dispatch. It asked for ${signInScopesText(signIn.asked)}; Machine logins below names the scopes approved.`
+        ) : (
+          `Approved. ${named} is signed in to Dispatch with ${signInScopesText(signIn.approved)}.`
         )}
       </p>
       {credentialId === null ? null : (
@@ -51,6 +69,14 @@ function MachineLoginDecision({
       )}
     </div>
   );
+}
+
+/** What an Approve press sends, read from the page when it is pressed: the record and the code it
+ *  was looked up by, and the scopes ticked, null for a machine login, which sends none. */
+interface ApprovalPress {
+  readonly recordId: string;
+  readonly code: string;
+  readonly scopes: readonly string[] | null;
 }
 
 /**
@@ -67,19 +93,33 @@ function MachineLoginDecision({
  * and after, and the broker refuses every decision of it: it shows that in one line, with no
  * buttons. Below it, the machine logins the viewer may revoke that can still reach a secret:
  * their own machines', their own pods' and every service's.
+ *
+ * A Dispatch sign-in is looked up and decided here too. Its boxes start ticked for the scopes it
+ * asked for that the page draws in its own words, but `p0`, which starts unticked so the person
+ * ticks it for that sign-in themselves; a word the page does not know is drawn as itself,
+ * unticked. Approve sends only ticked boxes of scopes the record asked for, so the page never
+ * sends a scope it did not show. The list below marks each sign-in with its approved scopes; it
+ * starts no agent session and reads no secret.
  */
 export function MachineLoginPage(): ReactNode {
   const [code, setCode] = useState("");
   const queryClient = useQueryClient();
+  const [ticked, setTicked] = useState<readonly string[]>([]);
   const submitGuard = useSubmitGuard();
 
   // A lookup and a decision are the form's own: it shows a refusal, beside the code it names.
-  const lookup = useKeyedWrite({
+  const lookup = useKeyedWrite<RecordResponse, string>({
     inline: true,
     label: () => "Lookup of a machine login code",
     onSettled: () => submitGuard.release(),
+    // A sign-in's boxes start ticked for the asked scopes the page knows, but p0: it and a scope
+    // drawn as a bare word start unticked (signInScopeStartsTicked).
+    onSuccess: (lookedUp) =>
+      setTicked(
+        (lookedUp === null ? null : signInScopes(lookedUp))?.filter(signInScopeStartsTicked) ?? []
+      ),
     method: "POST",
-    write: (lookupCode: string, bounds) => api.lookupMachineCredential(lookupCode, bounds),
+    write: (lookupCode, bounds) => api.lookupMachineCredential(lookupCode, bounds),
   });
   // A lookup Dispatch answered with nothing it kept shows nothing until it is looked up again.
   const record = lookup.data ?? undefined;
@@ -87,20 +127,40 @@ export function MachineLoginPage(): ReactNode {
   const lookedUpCode = lookup.variables ?? "";
 
   // Each is typed by its answer, which its callbacks read.
-  const approve = useKeyedWrite<DecisionResponse>({
+  // An approval carries the record, the code and the scopes as they were when Approve was pressed
+  // (`ApprovalPress`), so its request and the view of its answer are the press's own.
+  const approve = useKeyedWrite<DecisionResponse, ApprovalPress>({
     method: "POST",
-    write: (_variables, bounds) =>
-      api.approveCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
+    write: (press, bounds) =>
+      api.approveCredentialRecord(
+        press.recordId,
+        { code: press.code, ...(press.scopes === null ? {} : { scopes: [...press.scopes] }) },
+        bounds
+      ),
     inline: true,
     label: () => "Approval of a machine login",
     onSettled: () => submitGuard.release(),
-    onSuccess: (decided) => {
+    onSuccess: (decided, press) => {
       void queryClient.invalidateQueries({ queryKey: ["credential-pending"] });
       void queryClient.invalidateQueries({ queryKey: machineLoginsQuery().queryKey });
       // Decided, with no answer to say how: the record is looked up again for its decision.
-      if (decided === null) lookup.mutate(lookedUpCode);
+      if (decided === null) lookup.mutate(press.code);
     },
   });
+  // Approve as the buttons press it: the press reads the shown record, its code and the boxes
+  // ticked now, each a scope the record asked for.
+  const askedScopes = record === undefined ? null : signInScopes(record);
+  const approval = {
+    error: approve.error,
+    isError: approve.isError,
+    isPending: approve.isPending,
+    mutate: () =>
+      approve.mutate({
+        code: lookedUpCode,
+        recordId: record?.record_id ?? "",
+        scopes: askedScopes === null ? null : ticked.filter((scope) => askedScopes.includes(scope)),
+      }),
+  };
   const deny = useKeyedWrite<StateResponse>({
     method: "POST",
     write: (_variables, bounds) =>
@@ -192,7 +252,7 @@ export function MachineLoginPage(): ReactNode {
       ) : null}
       {view === undefined ? null : (
         <div className="max-w-2xl space-y-4">
-          <CredentialRecordFacts record={view.record} />
+          <CredentialRecordFacts onTickedChange={setTicked} record={view.record} ticked={ticked} />
           {view.record.state === "expired" ? (
             <p className={`text-sm font-medium ${textPrimaryOnCanvas}`}>
               This login expired before anyone decided it.
@@ -202,11 +262,20 @@ export function MachineLoginPage(): ReactNode {
               credentialId={view.decided.credential_id}
               event={view.decided.event}
               host={view.record.identifiers?.[0] ?? ""}
+              reason={view.record.reason}
               service={view.record.service}
+              signIn={
+                askedScopes === null
+                  ? null
+                  : {
+                      asked: askedScopes,
+                      approved: approved === undefined ? null : (approve.variables?.scopes ?? null),
+                    }
+              }
             />
           ) : view.record.state === "pending" ? (
             <CredentialDecisionButtons
-              approve={view.record.service === null ? approve : undefined}
+              approve={view.record.service === null ? approval : undefined}
               deny={deny}
               submitGuard={submitGuard}
             />

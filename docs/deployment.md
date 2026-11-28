@@ -251,8 +251,8 @@ that execs `legion gh` by its absolute path), and every command under a `GH_HOST
 and send nothing.
 A read that names only owners the bundle holds no directory for runs, rather than being refused,
 with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
-(`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form
-`ghGraphQLQueryRead` reads for certain (`api graphql` typed first, its query given with
+(`selectors.dir` in `internal/ghroute`): a call `writesNothing` admits, or `gh api graphql` in the
+one form `graphQLQueryRead` reads for certain (`api graphql` typed first, its query given with
 `-f query=…` and holding the words `mutation` and `subscription` nowhere, in any case and inside a
 string or a comment too, its other fields given with `-f` or with `-F` values that read no file
 and none of them with a key that holds `query`, no `-H` naming a method override or
@@ -796,8 +796,10 @@ session then carries that token's service or owner as well. `dispatch whoami` in
 two apart: for a shared agent token it answers
 `Session <id> runs under the shared token: no owner, …`
 (`packages/envoy-client/src/dispatch-commands/session.ts`). A pod's side of this is in `docs/kubernetes.md`,
-"Anatomy of a Sandbox pod". A person's own session on the same box uses a personal token instead,
-minted from Dispatch's Settings → Agent tokens
+"Anatomy of a Sandbox pod". A person's own session on the same box trades the person's sign-in
+(`agent-secrets login`), or, on a machine with no identity of its own, a Dispatch sign-in the
+person approved for chosen scopes (`dispatch login --device --scope`); a personal token minted
+from Dispatch's Settings → Agent tokens serves only where neither does
 (`docs/site/src/content/docs/dispatch/for-agents.md`).
 
 The agent-secrets helper holds a credential of its own: the machine login a person approves for
@@ -1130,11 +1132,15 @@ provider_keys:
   does.
   `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
   kubernetes`, where an arm's newly declared overlay file replaces every live issue pod.
-- **An arm's `plan`** says how the issues drawn into it are done: `owner`, whose issues take the
-  plan their owner gives with `register_plan`, or `default`, whose issues run the project's
-  `default_steps` and take no plan from their owner: once the daemon records such an issue, its
-  owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner
-  gave before is passed over at its first step and told in a `plan-not-taken` notice.
+- **An arm's `plan`** says how the issues drawn into it are done, `owner` or `default`.
+  An issue of `owner` takes the plan its owner gives with `register_plan`.
+  An issue of `default` runs the project's `default_steps`.
+  Legion takes from its owner only a version that changes nothing but the text of its running
+  task `default`.
+  Once the daemon records such an issue, every other `register_plan` and every `stop_task` of its
+  owner are answered `409 PLAN_NOT_TAKEN`.
+  A plan its owner gave before is passed over at its first step and told in a `plan-not-taken`
+  notice.
   The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
   whatever the file says later.
   An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at

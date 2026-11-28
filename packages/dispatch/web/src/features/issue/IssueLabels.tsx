@@ -245,6 +245,8 @@ export function IssueLabels({
           ariaDisabled={saving}
           // Main's look, which draws no chevron, until a piece of INFRA-3135 converts this page.
           chevron={false}
+          // Main's keys on the trigger, until a piece of INFRA-3135 converts this page.
+          triggerKeys="page"
           disabled={disabled}
           emptyMessage="No labels yet."
           error={inputError}

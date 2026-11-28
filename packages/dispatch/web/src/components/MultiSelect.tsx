@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 
+import { PAGE_KEYS_ATTRIBUTE } from "../features/shell/keymap";
 import { inputMethodKey } from "../lib/input-method-key";
 import {
   borderDefault,
@@ -116,6 +117,9 @@ const ON_PAGE = {
   trigger: `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${pageLineBorder} ${pagePaperBg} ${pageMutedText}`,
 } as const;
 
+/** The keymap's mark on a trigger that keeps the page's keys (`PAGE_KEYS_ATTRIBUTE`). */
+const PAGE_KEYS_MARK = { [PAGE_KEYS_ATTRIBUTE]: "" };
+
 interface SharedProps {
   /** Trigger content. A multi-select's defaults to the label with the selection count
    *  (`Labels · 2`), a single pick's to the picked value's row text, else to the label. */
@@ -194,6 +198,14 @@ interface SharedProps {
    *  name starts with it in place of `label`, before what the trigger shows. */
   readonly triggerAriaLabel?: string;
   readonly triggerClassName?: string;
+  /** Which keys the trigger takes. `"list"`, the default, is the shared rule: the keymap reads
+   *  the trigger as a field, and ArrowDown, ArrowUp and a typed character open the closed list
+   *  (`handleTriggerKeyDown`). `"page"` keeps the keys a host's trigger had before the shared
+   *  list: the trigger is a plain button to the page's keys (`PAGE_KEYS_ATTRIBUTE`), and no key
+   *  but Enter and Space opens it. It keeps the page's keys on the open list's controls too
+   *  (`AnchoredPanel`'s `pageKeys`): a key on a row or on Clear reaches the page's bindings, and
+   *  only the text box keeps the keys it types. */
+  readonly triggerKeys?: "list" | "page";
   /** Classes for the element that holds the trigger's text, beside the chevron: where a trigger
    *  stands in a `<select>`'s place and has to take its box, the text's line is the place to
    *  say so (`features/settings/classes.ts`, `settingsListText`). */
@@ -259,7 +271,8 @@ export type MultiSelectProps = MultipleProps | SingleProps;
  *
  * The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
  * Enter and Space, which press it, ArrowDown and ArrowUp, with Alt or without, and a typed
- * character, which goes into the text box and narrows the list by it.
+ * character, which goes into the text box and narrows the list by it; a trigger whose host keeps
+ * the page's keys on it opens on Enter and Space alone (`triggerKeys`).
  */
 export function MultiSelect(props: MultiSelectProps): ReactNode {
   const {
@@ -286,6 +299,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     size,
     triggerAriaLabel,
     triggerClassName,
+    triggerKeys = "list",
     triggerTextClassName = "",
     triggerTitle,
   } = props;
@@ -755,6 +769,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         className={trigger}
         data-control={control}
         {...marks?.trigger}
+        {...(triggerKeys === "page" ? PAGE_KEYS_MARK : undefined)}
         disabled={disabled}
         onClick={() => {
           if (open) onOpenChange(false, "trigger");
@@ -765,7 +780,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           // run the effect above, which is while `wasOpen` holds.
           if (!wasOpen.current) onTriggerFocus?.(event.relatedTarget);
         }}
-        onKeyDown={handleTriggerKeyDown}
+        onKeyDown={triggerKeys === "page" ? undefined : handleTriggerKeyDown}
         ref={triggerRef}
         type="button"
       >
@@ -809,6 +824,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           // A pointer tick in a multi-select scrolls nothing. Firefox otherwise follows the moved
           // option through native scroll anchoring. Arrow and Enter reveal use scrollTop directly.
           overflowAnchor={single ? undefined : "none"}
+          pageKeys={triggerKeys === "page"}
         >
           <div
             className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}

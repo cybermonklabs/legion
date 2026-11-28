@@ -143,6 +143,8 @@ const coreIssue: IssueSummary = {
   blocked_by: [],
   primary_artifact_id: "artifact-1",
   priority: null,
+  priority_from: null,
+  resolved_priority: null,
   rank: "U",
   route: null,
   repo: null,

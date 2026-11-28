@@ -53,7 +53,9 @@ func (s *server) lookupMachineLogin(w http.ResponseWriter, r *http.Request, _ st
 		writeInternal(w, "read credential request", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, buildRecordResponse(detail))
+	response := buildRecordResponse(detail)
+	response.DispatchScopes = view.DispatchScopes
+	writeJSON(w, http.StatusOK, response)
 }
 
 // launcherCredentialsResponse is GET /v1/launcher-credentials's and GET /v1/operator/machines's
@@ -135,7 +137,7 @@ func (s *server) writeLauncherCredentials(w http.ResponseWriter, r *http.Request
 	}
 	out := make([]wire.LauncherCredentialResp, len(rows))
 	for i, c := range rows {
-		out[i] = wire.LauncherCredentialResp{CredentialID: c.ID.String(), Host: c.Host, Service: c.Service, Subject: c.Subject, Person: c.Person, ApprovedBy: c.ApprovedBy, IssuedAt: c.IssuedAt, ExpiresAt: c.ExpiresAt, Expired: c.Expired}
+		out[i] = wire.LauncherCredentialResp{CredentialID: c.ID.String(), Host: c.Host, Service: c.Service, Subject: c.Subject, Person: c.Person, ApprovedBy: c.ApprovedBy, IssuedAt: c.IssuedAt, ExpiresAt: c.ExpiresAt, Expired: c.Expired, DispatchScopes: c.DispatchScopes, Reason: c.Reason}
 	}
 	writeJSON(w, http.StatusOK, launcherCredentialsResponse{Credentials: out})
 }

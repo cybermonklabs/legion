@@ -27,8 +27,10 @@ import {
   IDENTITY_VAR,
 } from "@legion/cipher-client/environment";
 import { PERSON_VAR } from "@legion/cipher-client/signins";
+import { sentAs } from "@legion/cipher-client/test/refusal-corpus";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
+import { BROKER_REQUEST_REASON_MAX, DISPATCH_SIGN_IN_SCOPES } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { runDispatchCli } from "../dispatch-cli";
@@ -87,6 +89,91 @@ test("dispatch login --device prints the code and where to type it, and keeps th
   expect(stub.authorizations[0]?.form.get("dpop_jkt")).toBeTruthy();
   expect(stub.polls).toHaveLength(2);
   expect(statSync(file).mode & 0o777).toBe(0o600);
+});
+
+test("dispatch login --device --scope person requests a Dispatch sign-in and prints its approved scopes", async () => {
+  const stub = broker({ dispatchScopes: ["person"], scope: "dispatch" });
+  const file = path.join(tempDir(), "legion", "device-login.json");
+  const { code, stdout } = await dispatch(
+    ["login", "--device", "--person", PERSON, "--scope", "person"],
+    {
+      HOME: tempDir(),
+      AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
+      AGENT_SECRETS_URL: stub.url,
+    }
+  );
+
+  expect(code, stdout).toBe(0);
+  expect(stub.authorizations[0]?.form.get("scope")).toBe("dispatch");
+  expect(stdout).toContain("approved Dispatch scopes: person");
+});
+
+// `--scope person,p0` asks for both scopes a sign-in may hold, sorted as the request object names
+// them, and keeps the ones its person approved: both where the person ticked p0, and person alone
+// where they left it unticked.
+test("dispatch login --device --scope person,p0 asks for both and keeps the scopes its person approved", async () => {
+  for (const approved of [["p0", "person"], ["person"]]) {
+    const stub = broker({ dispatchScopes: approved, scope: "dispatch" });
+    const file = path.join(tempDir(), "legion", "device-login.json");
+    const { code, stdout } = await dispatch(
+      ["login", "--device", "--person", PERSON, "--scope", "person,p0"],
+      { HOME: tempDir(), AGENT_SECRETS_DEVICE_LOGIN_FILE: file, AGENT_SECRETS_URL: stub.url }
+    );
+
+    expect(code, stdout).toBe(0);
+    const request = stub.authorizations[0]?.form;
+    expect(request?.get("scope")).toBe("dispatch");
+    const payload = (request?.get("request") ?? "").split(".")[1] ?? "";
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+      authorization_details: { actions?: string[] }[];
+    };
+    expect(claims.authorization_details.map((detail) => detail.actions)).toEqual([
+      ["p0", "person"],
+    ]);
+    expect(stdout).toContain(`approved Dispatch scopes: ${approved.join(", ")}.`);
+    expect(JSON.parse(readFileSync(file, "utf8")).dispatch_scopes).toEqual(approved);
+  }
+});
+
+// A Dispatch sign-in names itself as one, with the session or tool its reason names: no word of
+// this machine's device login, which would read as a machine login's sessions and secrets. Its
+// denial is the sign-in's, and names the command that asks for the same sign-in.
+test("dispatch login --device --scope says it signs a session or tool in to Dispatch, and its denial is the sign-in's", async () => {
+  const approving = broker({ dispatchScopes: ["person"], scope: "dispatch" });
+  const signIn = [
+    "login",
+    "--device",
+    "--person",
+    PERSON,
+    "--scope",
+    "person",
+    "--reason",
+    "the release tool",
+  ];
+  const approved = await dispatch(signIn, {
+    HOME: tempDir(),
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: path.join(tempDir(), "legion", "device-login.json"),
+    AGENT_SECRETS_URL: approving.url,
+  });
+  expect(approved.code, approved.stdout).toBe(0);
+  expect(approved.stdout).toContain(
+    `for ${PERSON} to approve this Dispatch sign-in ("the release tool" on `
+  );
+  expect(approved.stdout).toContain(") through the secrets broker at ");
+  expect(approved.stdout).toContain("dispatch login: approved. This Dispatch sign-in is kept in ");
+  expect(approved.stdout).not.toContain("this machine's device login");
+
+  const denying = broker({ polls: ["deny"], scope: "dispatch" });
+  const file = path.join(tempDir(), "legion", "device-login.json");
+  const denied = await dispatch(signIn, {
+    HOME: tempDir(),
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
+    AGENT_SECRETS_URL: denying.url,
+  });
+  expect(denied.code).toBe(1);
+  expect(denied.stdout).toContain("this Dispatch sign-in was denied");
+  expect(denied.stdout).toContain(`ask again with: ${DEVICE_LOGIN_COMMAND} --scope person`);
+  expect(() => statSync(file)).toThrow();
 });
 
 test("a second dispatch login --device names the earlier login's credential, which stays live", async () => {
@@ -274,10 +361,16 @@ test("dispatch --help names dispatch login, and dispatch login --help says what 
   expect(all.stdout).toContain("dispatch login --device");
   const one = await dispatch(["login", "--help"], { HOME: tempDir() });
   expect(one.code).toBe(0);
-  expect(one.stdout).toContain("Usage: dispatch login --device [--person <address>]");
+  expect(one.stdout).toContain(
+    "Usage: dispatch login --device [--person <address>] [--scope <list>] [--reason <text>]"
+  );
   expect(one.stdout).toContain("AGENT_SECRETS_URL");
   expect(one.stdout).toContain("AGENT_SECRETS_MACHINE_IDENTITY=device-login");
   expect(one.stdout).toContain("It exits 0 once the login is kept");
+  // What a sign-in may do whatever its person ticks, the same words the consent page says.
+  expect(one.stdout).toContain(
+    "Whatever is ticked, the session writes in Dispatch and works on Envoy as its own session within its person's projects; the scope person adds acting as the person, the scope p0, which the page shows unticked until the person ticks it, adds making work P0 (setting P0, or moving, clearing or filing work under a P0 issue), and --scope none asks for no scope."
+  );
   // The help is written out without @legion/cipher-client (dispatch-login-command.ts), so these
   // hold the names it gives to that package's constants.
   expect(one.stdout).toContain(`It reads ${BROKER_URL_VAR}, the broker,`);
@@ -285,6 +378,92 @@ test("dispatch --help names dispatch login, and dispatch login --help says what 
   expect(one.stdout).toContain(`kept in the file ${DEVICE_LOGIN_FILE_VAR} names`);
   expect(one.stdout).toContain(`sets ${IDENTITY_VAR}=${IDENTITY_DEVICE_LOGIN} trades`);
   expect(one.stdout).toContain(`Example: ${DEVICE_LOGIN_COMMAND} --person `);
+  // So does the help name the scopes a sign-in may ask for and the reason's bound as contracts
+  // holds them.
+  expect(one.stdout).toContain(
+    `the comma-separated scopes ${DISPATCH_SIGN_IN_SCOPES.join(", ")}, or none.`
+  );
+  expect(one.stdout).toContain(`at most ${BROKER_REQUEST_REASON_MAX} characters.`);
+});
+
+// What a sign-in may not ask for is refused as a usage error before any request: a scope its
+// person may not approve, and a reason longer than the broker takes. Each is startDeviceLogin's
+// one check, which the command reads as its usage error.
+test("dispatch login --device refuses a scope a Dispatch sign-in cannot hold, and a reason too long", async () => {
+  const stub = broker();
+  for (const [name, flags, says] of [
+    [
+      "approve",
+      ["--scope", "approve"],
+      `a Dispatch sign-in may ask only for these scopes: ${DISPATCH_SIGN_IN_SCOPES.join(", ")}`,
+    ],
+    ["an empty word", ["--scope", "person,"], "a Dispatch sign-in may ask only for these scopes"],
+    [
+      "a long reason",
+      ["--scope", "person", "--reason", "r".repeat(BROKER_REQUEST_REASON_MAX + 1)],
+      `a device login's reason has at most ${BROKER_REQUEST_REASON_MAX} characters`,
+    ],
+  ] as const) {
+    const { code, stdout } = await dispatch(["login", "--device", "--person", PERSON, ...flags], {
+      HOME: tempDir(),
+      AGENT_SECRETS_DEVICE_LOGIN_FILE: path.join(tempDir(), "legion", "device-login.json"),
+      AGENT_SECRETS_URL: stub.url,
+    });
+    expect(code, name).toBe(2);
+    expect(stdout, name).toContain(`dispatch login was not called: ${says}`);
+  }
+  expect(stub.authorizations).toHaveLength(0);
+});
+
+// A broker that predates Dispatch sign-ins refuses the sign-in's device request 400
+// invalid_scope in its OAuth library's words, which this client does not know: the command
+// prints the client's own sentence. The control: a broker whose BROKER_DISPATCH_SIGNIN is off
+// refuses it in its own words (oauth.DispatchSignInOff, as the refusal corpus holds them), and
+// the command prints those instead, so the client's sentence names the older broker alone.
+test("dispatch login --device --scope says when the broker serves no Dispatch sign-in", async () => {
+  const stub = broker({ refuseAuthorization: "invalid_scope" });
+  const { code, stdout } = await dispatch(
+    ["login", "--device", "--person", PERSON, "--scope", "person"],
+    {
+      HOME: tempDir(),
+      AGENT_SECRETS_DEVICE_LOGIN_FILE: path.join(tempDir(), "legion", "device-login.json"),
+      AGENT_SECRETS_URL: stub.url,
+    }
+  );
+  expect(code, stdout).toBe(1);
+  expect(stdout).toContain(
+    "this broker serves no Dispatch sign-in: it predates them, or BROKER_DISPATCH_SIGNIN is off"
+  );
+
+  const off = broker({
+    refuseAuthorization: "invalid_scope",
+    refuseAuthorizationDescription: sentAs(
+      "DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off"
+    ),
+  });
+  const refused = await dispatch(["login", "--device", "--person", PERSON, "--scope", "person"], {
+    HOME: tempDir(),
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: path.join(tempDir(), "legion", "device-login.json"),
+    AGENT_SECRETS_URL: off.url,
+  });
+  expect(refused.code, refused.stdout).toBe(1);
+  expect(refused.stdout).toContain(
+    "DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off"
+  );
+  expect(refused.stdout).not.toContain("it predates them");
+});
+
+test("dispatch login --device keeps no Dispatch sign-in from an older broker", async () => {
+  const stub = broker({ scope: "dispatch" });
+  const file = path.join(tempDir(), "legion", "device-login.json");
+  const { code, stdout } = await dispatch(
+    ["login", "--device", "--person", PERSON, "--scope", "person"],
+    { HOME: tempDir(), AGENT_SECRETS_DEVICE_LOGIN_FILE: file, AGENT_SECRETS_URL: stub.url }
+  );
+
+  expect(code).toBe(1);
+  expect(stdout).toContain("too old");
+  expect(() => statSync(file)).toThrow();
 });
 
 test("dispatch login refuses a call it cannot make, and says why", async () => {

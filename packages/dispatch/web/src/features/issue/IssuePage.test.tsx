@@ -103,6 +103,8 @@ const issue = {
   resolved_repo: null,
   status: "todo",
   priority: null,
+  priority_from: null,
+  resolved_priority: null,
   rank: "U",
   title: "Review the spec",
   updated_at: "2026-09-09T00:00:00Z",
@@ -1537,6 +1539,8 @@ test("IssuePage opens the Spec tab and leaves open asks out of the main column",
       ...openIssueAsk,
       last_reply: null,
       priority: issue.priority,
+      priority_from: issue.priority_from,
+      resolved_priority: issue.resolved_priority,
       snoozed_until: null,
       thread: {
         answers: [],
@@ -1707,6 +1711,38 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
     expect(getMyStateSpy).not.toHaveBeenCalled();
   } finally {
     view.unmount();
+    getIssueSpy.mockRestore();
+    getMyStateSpy.mockRestore();
+  }
+});
+
+// dispatch://INFRA-5704/spec#b-r-today-unchanged (R18): Threads' addresses are the new page's
+// alone, so today's page draws for each of them what it draws on main, its not-found page, and
+// reads no issue for them.
+test("IssuePage renders a not-found view for Threads' addresses without fetching the issue", async () => {
+  const getIssueSpy = spyOn(api, "getIssue").mockResolvedValue(issue);
+  const getMyStateSpy = spyOn(api, "getMyState").mockResolvedValue({
+    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
+  });
+  try {
+    for (const path of [
+      "/issues/CORE-1/threads",
+      "/issues/CORE-1/threads/0b6f3c1e-58a4-4d6e-9c41-7f2d8e1a9b30",
+    ]) {
+      const view = renderIssuePage(path);
+      try {
+        await screen.findByRole("heading", { name: "Page not found" });
+        expect(
+          screen.queryByRole("tablist", { name: "Issue detail" }),
+          `today's page draws its tabs at ${path}`
+        ).not.toBeInTheDocument();
+      } finally {
+        view.unmount();
+      }
+    }
+    expect(getIssueSpy, "today's page read the issue at a Threads address").not.toHaveBeenCalled();
+    expect(getMyStateSpy).not.toHaveBeenCalled();
+  } finally {
     getIssueSpy.mockRestore();
     getMyStateSpy.mockRestore();
   }

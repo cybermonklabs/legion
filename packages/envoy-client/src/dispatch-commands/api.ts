@@ -28,6 +28,7 @@ import { type AskgateState, askgateState } from "../askgate-marker";
 import type { DispatchClient } from "../dispatch-http";
 import { SESSION_VARIABLES, sessionDirectory } from "../dispatch-session-directory";
 import { ToolInputError } from "../tool-input-errors";
+import { ReadCut } from "./as-of";
 import {
   type DispatchToolResult,
   defined,
@@ -108,6 +109,8 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues/{key}/results", commands: ["result"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/results/dry-run", commands: ["result"] },
   { method: "POST", pattern: "/api/v1/results/{id}/retract", commands: ["result"] },
+  // A CI job's result of a check of the spec files (`dispatch result --project`).
+  { method: "POST", pattern: "/api/v1/projects/{key}/results", commands: ["result"] },
   { method: "POST", pattern: "/api/v1/deploys", commands: ["deploy"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/handoffs/{phase}", commands: ["handoff-write"] },
   // The first two also carry the pictures of a comment, an ask or a message (`postWithPictures`,
@@ -237,6 +240,12 @@ function gatedWriteRefusal(
  * Dispatch's JSON, printed for `jq` as every command prints it, or any other 2xx's body as
  * `body`, the bytes that came (an attachment, a body that is not JSON, a bodiless 204's none),
  * which its details record by their Content-Type and their count alone.
+ *
+ * An answer at a cut, under a token that carries one or with `as_of` in the path, leaves fields
+ * out, and its body alone does not tell a field left out from a field that does not exist. So a
+ * read adds the `Left out at <cut>:` line that every read at a cut prints (`ReadCut.line`) to the
+ * result's warnings, which the CLI writes to stderr: stdout stays the body alone. An answer that
+ * names no cut adds no warning.
  */
 export async function sendApiCall(
   args: ToolArguments,
@@ -249,20 +258,29 @@ export async function sendApiCall(
     const refusal = gatedWriteRefusal(method, path, env);
     if (refusal !== undefined) throw refusal;
   }
+  const cuts: ReadCut[] = [];
   const answer =
     method === undefined
-      ? await client.readRoute(path)
+      ? await client.readRoute(path, {
+          answeredAt: (cut) => {
+            cuts.push(new ReadCut(cut));
+          },
+          absent: (pointers) => cuts[0]?.absent(pointers),
+        })
       : await client.sendRoute(method, path, optionalString(args, "body"));
+  const warnings = cuts.map((cut) => cut.line());
   const details = { path, ...defined("method", method) };
+  const warned = warnings.length === 0 ? {} : { warnings };
   if ("body" in answer) {
     const { body, type } = answer;
     return {
       text: `the answer's body as it came: ${body.byteLength} bytes (${type ?? "no Content-Type"})`,
       body,
       details: { ...details, ...defined("content_type", type), bytes: body.byteLength },
+      ...warned,
     };
   }
-  return { text: JSON.stringify(answer.payload, null, 2), details };
+  return { text: JSON.stringify(answer.payload, null, 2), details, ...warned };
 }
 
 /**

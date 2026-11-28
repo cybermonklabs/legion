@@ -31,7 +31,8 @@ import (
 // trusted to the hint. An error is returned only where the broker itself failed — a storage
 // outage, or a row it could not decode — because answering that as "not live" would both deny a
 // sound token and hide the outage; notLive is how the two are told apart, and brokerFailure makes
-// that error say which of the two it was.
+// that error say which of the two it was. A row whose run (oauthwire.ClaimCI) does not decode as
+// one is the broker's failure too, for the same reason.
 //
 // A token whose HMAC is not the broker's is answered not live before anything is read: the
 // provider's own HMAC strategy (codeStrategy, built in New) checks it, as ValidateAccessToken ends
@@ -92,6 +93,18 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	answer.Service, _ = session.Extra[ClaimService].(string)
 	answer.Machine, _ = session.Extra[ClaimMachine].(string)
 	answer.ProjectScope, _ = session.Extra[ClaimProjectScope].(string)
+	run, err := oauthwire.CIRunOf(session.Extra[oauthwire.ClaimCI])
+	if err != nil {
+		return oauthwire.Introspection{}, fmt.Errorf("oauth: the token's run: %w", err)
+	}
+	answer.CI = run
+	if answer.ProjectScope == oauthwire.ProjectScopeConsented {
+		// The sign-in the token was traded from, which its own row names as every token of the
+		// login does (oauthstore.Store stores the credential its session's extra carries), so a
+		// verifier reads the principal the exchange bound its name under
+		// (oauthwire.ConsentedPrincipal).
+		answer.SignIn, _ = session.Extra[oauthwire.ExtraCredentialID].(string)
+	}
 	if answer.Person != "" {
 		issuer, _ := session.Extra[ClaimAccountIssuer].(string)
 		subject, _ := session.Extra[ClaimAccountSubject].(string)
