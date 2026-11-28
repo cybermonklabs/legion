@@ -76,30 +76,21 @@ const storedHistoryBlocks = 150_000
 // as a document that loads and leaves its history as it was.
 func TestAStoredHistoryLoadsEveryItemOneClientWroteAheadOfItsParent(t *testing.T) {
 	t.Parallel()
-	service, coldID := newTestService(t)
-	roomID := createIssueDocument(t, service.store, 2, "# First")
-	rebuildID := createIssueDocument(t, service.store, 3, "# First")
+	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp of every paragraph's block id would race the
 	// subtests' reads of the history.
 	service.settle = time.Hour
 	ctx := context.Background()
 	persist := NewPgVersioned(service.store)
-	// Give each reader the same history without sharing its room or durable state.
-	storeOnEachDocument := func(update []byte, what string) {
-		t.Helper()
-		for _, id := range []string{coldID, roomID, rebuildID} {
-			if _, err := persist.AppendUpdate(ctx, id, update); err != nil {
-				t.Fatalf("store %s on %s: %v", what, id, err)
-			}
-		}
-	}
 	live := crdt.New(crdt.WithClientID(1_000_000))
 	liveFragment := live.GetXmlFragment(fragmentName)
 	live.Transact(func(txn *crdt.Transaction) {
 		liveFragment.InsertElement(txn, 0, crdt.NewYXmlElement("paragraph"))
 	})
 	seed := crdt.EncodeStateAsUpdateV1(live, nil)
-	storeOnEachDocument(seed, "the server's paragraph")
+	if _, err := persist.AppendUpdate(ctx, artifactID, seed); err != nil {
+		t.Fatalf("store the server's paragraph on %s: %v", artifactID, err)
+	}
 	browser := crdt.New(crdt.WithClientID(5))
 	if err := crdt.ApplyUpdateV1(browser, seed, nil); err != nil {
 		t.Fatalf("open the document in the browser: %v", err)
@@ -114,28 +105,30 @@ func TestAStoredHistoryLoadsEveryItemOneClientWroteAheadOfItsParent(t *testing.T
 				browserFragment.InsertElement(txn, 0, crdt.NewYXmlElement("paragraph"))
 			}
 		})
-		storeOnEachDocument(crdt.EncodeStateAsUpdateV1(browser, before), "the browser's paragraphs")
+		if _, err := persist.AppendUpdate(ctx, artifactID, crdt.EncodeStateAsUpdateV1(browser, before)); err != nil {
+			t.Fatalf("store the browser's paragraphs on %s: %v", artifactID, err)
+		}
 	}
 	want, err := renderDocument(browser)
 	if err != nil {
 		t.Fatalf("render the browser's document: %v", err)
 	}
 
+	// Each subtest decodes the full history. Run them serially on one document so
+	// setup decodes it once and the subtests do not hold decoded histories at once.
 	t.Run("reads with no room resident", func(t *testing.T) {
-		t.Parallel()
-		if service.srv.GetDoc(coldID) != nil {
+		if service.srv.GetDoc(artifactID) != nil {
 			t.Fatal("the document's room is resident before the read")
 		}
-		if text, err := service.Text(ctx, coldID); err != nil || text != want {
+		if text, err := service.Text(ctx, artifactID); err != nil || text != want {
 			t.Fatalf("read the stored history: %d bytes (%v), want the browser's %d", len(text), err, len(want))
 		}
 	})
 	t.Run("opens in a room", func(t *testing.T) {
-		t.Parallel()
-		if err := service.warmLiveDocument(ctx, roomID); err != nil {
+		if err := service.warmLiveDocument(ctx, artifactID); err != nil {
 			t.Fatalf("open a room on the stored history: %v", err)
 		}
-		room := service.srv.GetDoc(roomID)
+		room := service.srv.GetDoc(artifactID)
 		if room == nil {
 			t.Fatal("no room is resident after it opened")
 		}
@@ -146,20 +139,19 @@ func TestAStoredHistoryLoadsEveryItemOneClientWroteAheadOfItsParent(t *testing.T
 		if text, err := renderDocument(snapshot); err != nil || text != want {
 			t.Fatalf("the room renders %d bytes (%v), want the browser's %d", len(text), err, len(want))
 		}
-		if err := service.Evict(ctx, roomID); err != nil {
+		if err := service.Evict(ctx, artifactID); err != nil {
 			t.Fatalf("evict the room: %v", err)
 		}
 	})
 	t.Run("refuses a rebuild with its history intact", func(t *testing.T) {
-		t.Parallel()
-		before, err := persist.Load(ctx, rebuildID)
+		before, err := persist.Load(ctx, artifactID)
 		if err != nil {
 			t.Fatalf("load the history before the rebuild: %v", err)
 		}
-		if _, _, err := rebuildDocument(t, service, rebuildID, nil); !errors.Is(err, ErrDocumentLoads) {
+		if _, _, err := rebuildDocument(t, service, artifactID, nil); !errors.Is(err, ErrDocumentLoads) {
 			t.Fatalf("rebuild a document whose history loads: %v, want ErrDocumentLoads", err)
 		}
-		after, err := persist.Load(ctx, rebuildID)
+		after, err := persist.Load(ctx, artifactID)
 		if err != nil {
 			t.Fatalf("load the history after the refused rebuild: %v", err)
 		}
@@ -299,7 +291,7 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 	// The settlement runs below, once, on the test's own goroutine.
 	service.settle = time.Hour
 	// Keep the room resident through the live check, even if the version write is slow.
-	service.srv.RoomIdleTimeout = time.Hour
+	holdRoomsResident(t, service)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
 	const blocks = 150_000

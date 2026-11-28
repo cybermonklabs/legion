@@ -671,7 +671,6 @@ func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
 }
 
 func testSuppressedAndRetiredAppendRound(t *testing.T, database *store.Store, round int) {
-	t.Helper()
 	ctx := context.Background()
 	artifactID := createIssueDocument(t, database, round+1, "# First")
 	appends := &burstStore{VersionedStore: NewPgVersioned(database), room: artifactID}
@@ -691,7 +690,7 @@ func testSuppressedAndRetiredAppendRound(t *testing.T, database *store.Store, ro
 		return replaceRun(fmt.Sprintf("%s %d.", name, round), fmt.Sprintf("%s %d.", name, round+1))
 	}
 	if err := service.warmLiveDocument(ctx, artifactID); err != nil {
-		t.Fatalf("round %d: load the document's room: %v", round, err)
+		t.Fatalf("load the document's room: %v", err)
 	}
 	waitForLandedAppends(t, service, artifactID)
 	live := service.srv.GetDoc(artifactID)
@@ -712,18 +711,18 @@ func testSuppressedAndRetiredAppendRound(t *testing.T, database *store.Store, ro
 	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{
 		{Op: "replace", Find: fmt.Sprintf("Agent %d.", round), With: fmt.Sprintf("Agent %d.", round+1)},
 	}, agent, nil); err != nil {
-		t.Fatalf("round %d: the live write: %v", round, err)
+		t.Fatalf("the live write: %v", err)
 	}
 	liveRows := storedHead(t, database, artifactID) - before
 	storedNow := func() crdt.StateVector {
 		t.Helper()
 		loaded, err := NewPgVersioned(database).Load(ctx, artifactID)
 		if err != nil {
-			t.Fatalf("round %d: load the stored document: %v", round, err)
+			t.Fatalf("load the stored document: %v", err)
 		}
 		stored := newDocumentCopy()
 		if err := crdt.ApplyUpdateV1(stored, loaded.Update, nil); err != nil {
-			t.Fatalf("round %d: decode the stored document: %v", round, err)
+			t.Fatalf("decode the stored document: %v", err)
 		}
 		return stored.StateVector()
 	}
@@ -731,7 +730,7 @@ func testSuppressedAndRetiredAppendRound(t *testing.T, database *store.Store, ro
 	for index, peer := range []*crdt.Doc{first, second} {
 		for client, clock := range peer.StateVector() {
 			if afterLive[client] < clock {
-				t.Fatalf("round %d: the live write did not store update %d, typed before it, ahead of its own version", round, index)
+				t.Fatalf("the live write did not store update %d, typed before it, ahead of its own version", index)
 			}
 		}
 	}
@@ -764,16 +763,16 @@ func testSuppressedAndRetiredAppendRound(t *testing.T, database *store.Store, ro
 	retired.through = head
 	retired.mu.Unlock()
 	if err := storeRetired(); err != nil {
-		t.Fatalf("round %d: store the retired instance's update: %v", round, err)
+		t.Fatalf("store the retired instance's update: %v", err)
 	}
 	waitForLandedAppends(t, service, artifactID)
 
 	if failure := service.roomFailure(artifactID); failure != nil {
-		t.Fatalf("round %d: the room failed: %v", round, failure)
+		t.Fatalf("the room failed: %v", failure)
 	}
 	// The live write's rows hold the first two updates; one row each follows for the other three.
 	if got, want := storedHead(t, database, artifactID)-before, liveRows+3; got != want {
-		t.Fatalf("round %d: %d rows were stored, want %d: the live write's %d, which hold the two updates typed before it, and one for each of the three other updates", round, got, want, liveRows)
+		t.Fatalf("%d rows were stored, want %d: the live write's %d, which hold the two updates typed before it, and one for each of the three other updates", got, want, liveRows)
 	}
 	var duplicated int
 	if err := database.Pool.QueryRow(ctx, `
@@ -781,27 +780,27 @@ func testSuppressedAndRetiredAppendRound(t *testing.T, database *store.Store, ro
 				select 1 from doc_updates where artifact_id = $1 and version > $2 group by update having count(*) > 1
 			) repeated
 		`, artifactID, before).Scan(&duplicated); err != nil {
-		t.Fatalf("round %d: read the stored updates: %v", round, err)
+		t.Fatalf("read the stored updates: %v", err)
 	}
 	if duplicated != 0 {
-		t.Fatalf("round %d: %d updates are stored more than once", round, duplicated)
+		t.Fatalf("%d updates are stored more than once", duplicated)
 	}
 	loaded, err := NewPgVersioned(database).Load(ctx, artifactID)
 	if err != nil {
-		t.Fatalf("round %d: load the stored document: %v", round, err)
+		t.Fatalf("load the stored document: %v", err)
 	}
 	stored := newDocumentCopy()
 	if err := crdt.ApplyUpdateV1(stored, loaded.Update, nil); err != nil {
-		t.Fatalf("round %d: decode the stored document: %v", round, err)
+		t.Fatalf("decode the stored document: %v", err)
 	}
 	if pending := stored.PendingStats(); pending.Items != 0 || pending.DeleteRanges != 0 {
-		t.Fatalf("round %d: the stored history leaves %d items and %d delete ranges pending", round, pending.Items, pending.DeleteRanges)
+		t.Fatalf("the stored history leaves %d items and %d delete ranges pending", pending.Items, pending.DeleteRanges)
 	}
 	held := stored.StateVector()
 	for index, peer := range []*crdt.Doc{first, second, third, retiredPeer, fourth} {
 		for client, clock := range peer.StateVector() {
 			if held[client] < clock {
-				t.Fatalf("round %d: the store does not hold update %d", round, index)
+				t.Fatalf("the store does not hold update %d", index)
 			}
 		}
 	}
@@ -809,7 +808,7 @@ func testSuppressedAndRetiredAppendRound(t *testing.T, database *store.Store, ro
 	// Evict it before the service's cleanup can settle it.
 	doneWaiting()
 	if err := service.Evict(ctx, artifactID); err != nil {
-		t.Fatalf("round %d: evict the room: %v", round, err)
+		t.Fatalf("evict the room: %v", err)
 	}
 	waitForNoLiveDocument(t, service, artifactID)
 }

@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"log/slog"
+	"math"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -54,17 +55,17 @@ func newProcessPairTo(t *testing.T, logger *slog.Logger) processPair {
 	return pair
 }
 
-// answerWait gives each process what is left of the shared wait when its fixture is built.
+// roomQueryTestWait gives each process what is left of the shared wait when its fixture is built.
 // The room query takes a duration, not an absolute deadline. Production's roomQueryWait
 // is a latency budget: on a loaded machine an answer can take longer to cross Postgres
 // twice (INFRA-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn sets that budget
 // itself. With -timeout 0, use the largest duration the query's timer can take.
-func answerWait(t *testing.T) time.Duration {
+func roomQueryTestWait(t *testing.T) time.Duration {
 	t.Helper()
 	if end, bounded := testwait.GiveUpAt(t); bounded {
 		return max(time.Until(end), time.Nanosecond)
 	}
-	return 1<<63 - 1
+	return time.Duration(math.MaxInt64)
 }
 
 // newSeededProcessPair is the pair on a document seeded with markdown and not settled, which
@@ -83,11 +84,12 @@ func newSeededProcessPairTo(t *testing.T, markdown string, logger *slog.Logger) 
 	artifactID := createDocument(t, database, "# First")
 	taskA, serverA := newTestServiceInstanceTo(t, database, logger)
 	taskB, gateB := newGatedServiceInstanceTo(t, storetest.SecondProcess(t, database), logger)
-	taskA.roomQueries.wait = answerWait(t)
-	taskB.roomQueries.wait = answerWait(t)
+	taskA.roomQueries.wait = roomQueryTestWait(t)
+	taskB.roomQueries.wait = roomQueryTestWait(t)
 	// ygo's real-clock sweeper must not close an idle room on a slow run. Set both timeouts
 	// before the first room loads.
-	taskA.srv.RoomIdleTimeout, taskB.srv.RoomIdleTimeout = time.Hour, time.Hour
+	holdRoomsResident(t, taskA)
+	holdRoomsResident(t, taskB)
 	serverB := newTestServer(t, taskB)
 	seedServiceText(t, taskA, artifactID, markdown)
 	return processPair{

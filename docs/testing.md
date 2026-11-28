@@ -1002,7 +1002,8 @@ After the tests, `TestMain` prints `docs: <built> services built, <alive> still 
 For each service in that count, it prints the test that built it and whether shutdown never started, is still running, or returned.
 A service whose shutdown never started fails the run before the report waits for collection.
 Otherwise the report waits for shutdown and collection through `testwait.InMain`.
-Its only bound is the test binary's deadline less the shared spare. With `-timeout 0`, the wait has no deadline.
+Its only bound is 30 s before the test binary's deadline.
+With `-timeout 0`, the wait has no deadline.
 A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
 A service that was shut down is still alive at the end of the run when a callback of one of its stopped timers holds it.
@@ -1248,10 +1249,6 @@ A room's appends go through the service's room-appends pool of 8 connections.
 The queue grows with the number of rooms sharing the pool and with the machine's load.
 A fixed 10 s clock on it failed `TestSetAskBlockTextRefusalOfEveryBrokenBodyLeadsToAValidDecision` (2026-11-16, 288 CPUs).
 At the timeout all 8 connections were in use, with 1449 s of acquire waiting in total, and the same wait issued again returned at once.
-A separate run that day started at load 230 on 288 CPUs and gave these waits up to 10 min.
-It recorded 927 intervals over 1 s in which no append landed and the waiting room's counts stayed unchanged.
-Of those intervals, 231 exceeded 3 s and 22 lasted at least 5 s.
-The longest lasted 5.363 s.
 
 `awaitRoomAppends` waits on the room's idle signal, with `testwait.Context(t)` as its only bound.
 That context ends 30 s before the test binary's deadline, so a failure names the append wait instead of the binary timing out.

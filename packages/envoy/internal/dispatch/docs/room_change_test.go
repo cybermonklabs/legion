@@ -12,7 +12,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -202,23 +201,28 @@ func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
 func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 	t.Parallel()
 	const doomed = "Doomed paragraph."
-	for _, tc := range []struct {
+	type deleteAt int
+	const (
+		beforeEdit deleteAt = iota
+		observerHeldAcrossForkRead
+		afterForkRead
+		afterCaptureFork
+	)
+	for _, test := range []struct {
 		name       string
+		at         deleteAt
 		keepDoomed bool
 	}{
-		{name: "before_apply_ops"},
-		{name: "observer_held_across_fork_read"},
-		{name: "after_fork_read", keepDoomed: true},
-		{name: "after_capture_fork", keepDoomed: true},
+		{name: "before the edit", at: beforeEdit},
+		{name: "with its observer held across the fork read", at: observerHeldAcrossForkRead},
+		{name: "after the fork read", at: afterForkRead, keepDoomed: true},
+		{name: "after the capture takes the fork", at: afterCaptureFork, keepDoomed: true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			db := storetest.Open(t)
-			artifactID := createDocument(t, db, "# First")
-			deps := testServiceDeps(db)
-			deps.Settle = time.Hour
-			deps.RoomIdleTimeout = time.Hour
-			service := newTestServiceWith(t, deps)
+			service, artifactID := newTestService(t)
+			service.settle = time.Hour
+			holdRoomsResident(t, service)
 			seedServiceText(t, service, artifactID, "Before.\n\nKept paragraph.\n\n"+doomed)
 			checks := checkRenderings(service)
 
@@ -257,10 +261,10 @@ func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 				startDelete()
 				waitForDelete()
 			}
-			switch tc.name {
-			case "before_apply_ops":
+			switch test.at {
+			case beforeEdit:
 				deleteAndWait()
-			case "observer_held_across_fork_read":
+			case observerHeldAcrossForkRead:
 				held, proceed := make(chan struct{}), make(chan struct{})
 				release := sync.OnceFunc(func() { close(proceed) })
 				testcleanup.Add(t, func() {
@@ -274,9 +278,9 @@ func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 				service.afterForkRead = onFirst(artifactID, release)
 				startDelete()
 				testwait.Receive(t, "the committed delete's observer to reach the hold", held)
-			case "after_fork_read":
+			case afterForkRead:
 				service.afterForkRead = onFirst(artifactID, deleteAndWait)
-			case "after_capture_fork":
+			case afterCaptureFork:
 				service.afterCaptureFork = onFirst(artifactID, deleteAndWait)
 			}
 
@@ -286,7 +290,7 @@ func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 			}}, alice, nil); err != nil {
 				t.Fatalf("joined edit: %v", err)
 			}
-			if tc.name == "observer_held_across_fork_read" {
+			if test.at == observerHeldAcrossForkRead {
 				waitForDelete()
 			}
 			write := ledger.liveWriteFor(artifactID)
@@ -325,8 +329,8 @@ func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 			if captured.markdown != freshMarkdown {
 				t.Errorf("capture reused stale markdown:\n got %q\nwant %q", captured.markdown, freshMarkdown)
 			}
-			if !strings.Contains(captured.markdown, "After.") || strings.Contains(captured.markdown, doomed) != tc.keepDoomed {
-				t.Errorf("capture markdown = %q, want the agent edit and doomed paragraph present = %t", captured.markdown, tc.keepDoomed)
+			if !strings.Contains(captured.markdown, "After.") || strings.Contains(captured.markdown, doomed) != test.keepDoomed {
+				t.Errorf("capture markdown = %q, want the agent edit and doomed paragraph present = %t", captured.markdown, test.keepDoomed)
 			}
 		})
 	}

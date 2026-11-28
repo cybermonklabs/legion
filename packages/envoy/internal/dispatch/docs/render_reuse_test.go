@@ -52,7 +52,8 @@ func renderReuseDocument() string {
 }
 
 // renderReuseSections keeps the shape and text of the sections each case edits without building
-// the full typing fixture. Section 0 also gives the warm-up edit its paragraph and the room an ask.
+// the full 400 KB document (renderReuseDocument). Section 0 also gives the warm-up edit its
+// paragraph and the room an ask.
 func renderReuseSections(sections ...int) string {
 	var b strings.Builder
 	b.WriteString("# Equivalence specification\n\n")
@@ -1403,13 +1404,10 @@ func TestRenderReuseARoomBehindTheHeadRendersThePublish(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	depsA := testServiceDeps(database)
-	depsB := testServiceDeps(storetest.SecondProcess(t, database))
-	depsA.Settle, depsB.Settle = time.Hour, time.Hour
-	// Both rooms must survive ygo's idle sweep until the test compares task A's publish.
-	depsA.RoomIdleTimeout, depsB.RoomIdleTimeout = heldRoomIdleTimeout, heldRoomIdleTimeout
-	taskA := newTestServiceWith(t, depsA)
-	taskB := newTestServiceWith(t, depsB)
+	taskA, _ := newTestServiceInstance(t, database)
+	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	holdRoomsResident(t, taskA)
+	holdRoomsResident(t, taskB)
 	sh := watchRenders(t, taskA, artifactID)
 	seedServiceText(t, taskA, artifactID, renderReuseSections(26))
 	if err := taskA.warmLiveDocument(context.Background(), artifactID); err != nil {

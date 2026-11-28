@@ -28,15 +28,16 @@ const leakCheckDatabaseEnv = "DOCS_LEAK_CHECK_DATABASE_URL"
 var leakCheckHeld *Service
 
 const (
-	formerLeakBound = 30 * time.Second
-	leakCheckHold   = 35 * time.Second
+	leakCheckHeldPast = 30 * time.Second
+	leakCheckHold     = 35 * time.Second
 
-	leakCheckHoldAdvanced = "docs: the leak check's child advanced past the former 30s bound"
-	leakCheckHoldEnded    = "docs: the leak check's child lets its shut-down service go"
+	leakCheckHoldEnded = "docs: the leak check's child lets its shut-down service go"
 )
 
+var leakCheckHoldAdvanced = fmt.Sprintf("docs: the leak check's child held its shut-down service past %s", leakCheckHeldPast)
+
 // A child with a shut-down service holds it for 35 s on its fake clock, starting when the
-// end-of-run check begins. The report must see it still held past the old cutoff, then wait
+// end-of-run check begins. The report must see it still held past 30 s, then wait
 // for its collection. A child with a never-shut-down service must fail before entering the
 // collection wait, even when it also holds a shut-down service. Both children run without
 // their own deadline. The parent's shared wait kills a child that does not exit.
@@ -51,7 +52,7 @@ func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing
 		{child: "shut-down-held", wantExit: 0, want: []string{
 			leakCheckHoldAdvanced,
 			leakCheckHoldEnded,
-			"docs: 1 services built, 0 still alive after 35s",
+			fmt.Sprintf("docs: 1 services built, 0 still alive after %s", leakCheckHold),
 		}},
 		{child: "never-shut-down", wantExit: 1, want: []string{
 			"docs: 2 services built, 2 still alive after",
@@ -105,13 +106,8 @@ func TestLeakCheckChild(t *testing.T) {
 		t.Fatalf("open the database the parent built, %s: %v", leakCheckDatabaseEnv, err)
 	}
 	testcleanup.Add(t, database.Pool.Close)
-	deps := Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
-	}
+	deps := testServiceDeps(database)
+	deps.Settle = time.Hour
 	switch child {
 	case "never-shut-down":
 		leakCheckHeld = New(deps)
@@ -126,15 +122,15 @@ func TestLeakCheckChild(t *testing.T) {
 	holdFromTheCheck(service)
 }
 
-// holdFromTheCheck drives the report across the former cutoff without releasing the service.
+// holdFromTheCheck drives the report past 30 s without releasing the service.
 // The report calls back with the same clock's elapsed time after each pass that still sees a
 // live service. Only the next pass, which still sees it beyond 30 s, can release it.
 func holdFromTheCheck(service *Service) {
 	fake := clocktest.New(time.Unix(0, 0))
 	leakReportClock = fake
 	leakReportAfterGC = func(elapsed time.Duration) {
-		if elapsed <= formerLeakBound {
-			fake.Advance(formerLeakBound + time.Second - elapsed)
+		if elapsed <= leakCheckHeldPast {
+			fake.Advance(leakCheckHeldPast + time.Second - elapsed)
 			fmt.Fprintln(os.Stderr, leakCheckHoldAdvanced)
 			return
 		}

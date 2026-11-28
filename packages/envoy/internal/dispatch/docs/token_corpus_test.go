@@ -128,8 +128,8 @@ func tokenCorpusMark(node, parent *pmdoc.Node, texts *int) {
 	}
 }
 
-// tokenCorpusRead folds doc as foldDocument folds the document it loads (foldLoaded), the call the
-// corpus times: the read and its tree, or why the fold has no read. A panic is returned as its
+// tokenCorpusRead folds doc as foldDocument folds the document it loads (foldLoaded):
+// the read and its tree, or why the fold has no read. A panic is returned as its
 // error, as tokenCorpusDoc returns one.
 func tokenCorpusRead(doc *crdt.Doc) (read *documentRead, tree *pmdoc.Node, err error) {
 	defer func() {

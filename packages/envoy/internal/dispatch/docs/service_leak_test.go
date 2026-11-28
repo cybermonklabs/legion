@@ -37,6 +37,10 @@ type builtService struct {
 	returned  int
 }
 
+func (entry *builtService) shutdownReturned() bool {
+	return entry.shutdowns > 0 && entry.returned == entry.shutdowns
+}
+
 var (
 	builtServicesMu sync.Mutex
 	builtServices   []*builtService
@@ -81,7 +85,7 @@ func serviceEnded(service *Service) bool {
 	builtServicesMu.Lock()
 	defer builtServicesMu.Unlock()
 	entry := builtByService[weak.Make(service)]
-	return entry != nil && entry.shutdowns > 0 && entry.returned == entry.shutdowns
+	return entry != nil && entry.shutdownReturned()
 }
 
 // buildingTest names the nearest frame of the call to New that belongs to a test of this package:
@@ -111,11 +115,11 @@ type liveService struct {
 	returned  int
 }
 
-func (s liveService) released() bool { return s.shutdowns > 0 }
+func (s liveService) shutdownStarted() bool { return s.shutdowns > 0 }
 
 func (s liveService) why() string {
 	switch {
-	case !s.released():
+	case !s.shutdownStarted():
 		return "its Shutdown never started"
 	case s.returned < s.shutdowns:
 		return "its Shutdown started and has not returned"
@@ -130,7 +134,7 @@ func liveServices() (built int, live []liveService) {
 	builtServicesMu.Lock()
 	defer builtServicesMu.Unlock()
 	for _, entry := range builtServices {
-		if entry.shutdowns == 0 || entry.returned < entry.shutdowns || entry.service.Value() != nil {
+		if !entry.shutdownReturned() || entry.service.Value() != nil {
 			live = append(live, liveService{test: entry.test, shutdowns: entry.shutdowns, returned: entry.returned})
 		}
 	}
@@ -145,18 +149,32 @@ func collect() {
 
 // reportLeakedServices fails immediately if a test never started a service's Shutdown.
 // Otherwise, it waits for each Shutdown to return and each service to become unreachable.
-// The only bound is testwait.InMain's (the binary's deadline less its spare). With -timeout 0,
+// The only bound is the binary's deadline less testwait's margin. With -timeout 0,
 // there is no deadline. TestMain turns a true result into a nonzero exit code.
 func reportLeakedServices() bool {
 	start := leakReportClock.Now()
 	built, live := liveServices()
-	failed := func(s liveService) bool { return !s.released() }
-	if len(live) != 0 && !slices.ContainsFunc(live, failed) {
+	neverShutDown := func(s liveService) bool { return !s.shutdownStarted() }
+	if len(live) != 0 && !slices.ContainsFunc(live, neverShutDown) {
+		asks := 0
 		// InMain already prints its error to stderr if the shared wait gives up.
 		_ = testwait.InMain("the document services to finish Shutdown and be collected", func() bool {
+			asks++
+			built, live = liveServices()
+			if len(live) == 0 || slices.ContainsFunc(live, neverShutDown) {
+				return true
+			}
+			for _, service := range live {
+				if service.returned < service.shutdowns {
+					return false
+				}
+			}
+			if asks%25 != 0 {
+				return false
+			}
 			collect()
 			built, live = liveServices()
-			if len(live) == 0 || slices.ContainsFunc(live, failed) {
+			if len(live) == 0 || slices.ContainsFunc(live, neverShutDown) {
 				return true
 			}
 			if leakReportAfterGC != nil {

@@ -229,9 +229,6 @@ func (side *equivalenceSide) run(t *testing.T, document *equivalenceDocument, fl
 	t.Helper()
 	ctx := context.Background()
 	var observed flowObservation
-	if side.classes == nil {
-		t.Fatal("the side has no class recorder")
-	}
 	side.classes.mu.Lock()
 	classesFrom := len(side.classes.classes)
 	side.classes.mu.Unlock()

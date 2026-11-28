@@ -5828,7 +5828,7 @@ func newSettlementLockService(t *testing.T, serviceClock clock.Clock) (*Service,
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	recorder := &roundTripRecorder{}
-	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, recorder, nil)}
+	traced := storetest.TracedStore(t, database, recorder)
 	deps := testServiceDeps(traced)
 	deps.Persistence = NewPgVersioned(database)
 	deps.Settle = time.Hour
@@ -6639,10 +6639,10 @@ func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T
 	}
 }
 
-func closeRoomInHelper(what string, service *Service, room string, flush bool) error {
+func closeRoomInHelper(helper string, service *Service, room string, flush bool) error {
 	closed := make(chan error, 1)
 	go func() { closed <- service.srv.CloseRoom(room, flush) }()
-	err, waitErr := testwait.ReceiveInHelper(what, "the document room to close", closed)
+	err, waitErr := testwait.ReceiveInHelper(helper, "the document room to close", closed)
 	return errors.Join(err, waitErr)
 }
 
