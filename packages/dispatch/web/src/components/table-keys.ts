@@ -138,8 +138,9 @@ export function useRowKeymap<TData>({
   };
   const moveFocus = (direction: 1 | -1) => {
     const leaves = displayRows.filter(({ row }) => !row.getIsGrouped());
-    const focusedKey = focusedRow()?.getAttribute(rowAttribute);
-    const current = leaves.findIndex(({ row }) => row.id === focusedKey);
+    const current = leaves.findIndex(
+      ({ row }) => row.id === focusedRow()?.getAttribute(rowAttribute)
+    );
     const target =
       leaves[
         current < 0

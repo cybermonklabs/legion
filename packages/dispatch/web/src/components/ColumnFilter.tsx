@@ -9,7 +9,6 @@ import {
 } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
 import type { RowNoun } from "./DataTable";
-import { columnFilterPicks } from "./filter-chips";
 import { MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
 
@@ -102,7 +101,7 @@ export function ColumnFilter<TData>({
       </PanelTrigger>
     );
   }
-  const picks = columnFilterPicks(column.getFilterValue());
+  const picks = (column.getFilterValue() as string[] | undefined) ?? [];
   const order = meta?.order;
   const options = [...new Set([...counts.keys(), ...picks, ...(meta?.always ?? [])])].sort(
     (a, b) =>
@@ -113,18 +112,24 @@ export function ColumnFilter<TData>({
   const show = meta?.show ?? ((value: string) => value);
   const countOf = (value: string) => counts.get(value) ?? 0;
   const isCounted = typeof counted === "function" ? counted : () => counted;
-  /** What an option says beside it where the column counts it: `loading` while its rows are not
-   *  read yet, else what `count` makes of its count. */
-  const optionText = (loading: string, count: (n: number) => string) =>
+  const detail =
     counted === false
       ? undefined
-      : (value: string) => {
-          if (!isCounted(value)) return undefined;
-          if (unloaded.includes(value)) return loading;
-          return count(countOf(value));
-        };
-  const detail = optionText("load", String);
-  const detailLabel = optionText("not loaded", (n) => `${n} ${n === 1 ? noun.one : noun.many}`);
+      : (value: string) =>
+          !isCounted(value)
+            ? undefined
+            : unloaded.includes(value)
+              ? "load"
+              : String(countOf(value));
+  const detailLabel =
+    counted === false
+      ? undefined
+      : (value: string) =>
+          !isCounted(value)
+            ? undefined
+            : unloaded.includes(value)
+              ? "not loaded"
+              : `${countOf(value)} ${countOf(value) === 1 ? noun.one : noun.many}`;
   return (
     <MultiSelect
       // The funnel is the sign that it opens a panel, as it is on the text filter's `PanelTrigger`

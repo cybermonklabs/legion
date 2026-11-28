@@ -749,7 +749,7 @@ export function Inbox({
     } else {
       // Replace rather than push: a reader trying filters out would otherwise have to walk Back
       // through every pick, the rule every URL-backed filter here holds to
-      // (`lib/page-address.ts`'s `useAddressUpdate`).
+      // (`lib/url-array-params.ts`).
       // A rewrite that keeps the row the address names keeps what its history entry says of it
       // too: who picked the row, and whether opening it pushed over the list (`pane-selection.ts`).
       navigate(buildInboxPath(next), {

@@ -9,7 +9,7 @@ import { tableStorageKey, WRITES_IN_FLIGHT } from "./issues-table-model";
 
 /** The kinds of action a reload can interrupt. The union and the check a stored record passes
  *  are one list, so neither can gain a kind the other refuses. */
-const ACTION_KINDS = ["newEpic", "startNext", "merge"] as const;
+export const ACTION_KINDS = ["newEpic", "startNext", "merge"] as const;
 export interface TableAction {
   id: string;
   kind: (typeof ACTION_KINDS)[number];
@@ -31,11 +31,11 @@ export interface TableAction {
 /** How long a stored action is still the reader's to finish: a day. Past that the banner goes
  *  and a new action may begin, because the writes it named have long since landed or been
  *  discarded in Pending changes. */
-const ACTION_LIFETIME_MS = 24 * 60 * 60 * 1000;
+export const ACTION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
 /** The action record a reload interrupted, kept beside the reader's layout under the project's
  *  one storage key, and read back only where every field is the kind it was written as. */
-function readTableAction(project: string): TableAction | undefined {
+export function readTableAction(project: string): TableAction | undefined {
   const action = readStore(tableStorageKey(project)).action as TableAction | undefined;
   if (
     action?.project === project &&
@@ -60,7 +60,7 @@ function readTableAction(project: string): TableAction | undefined {
   return undefined;
 }
 
-function writeTableAction(project: string, action: TableAction | undefined): void {
+export function writeTableAction(project: string, action: TableAction | undefined): void {
   writeStore(tableStorageKey(project), { action });
 }
 

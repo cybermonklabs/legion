@@ -6,10 +6,6 @@ import type { RowNoun } from "./DataTable";
 import { MultiSelect } from "./MultiSelect";
 import { StepButton } from "./StepButton";
 
-/** The page size that means every row unless a caller names another (`PagerOptions`'s
- *  `allRows`): the size the tables list last among their page sizes. */
-export const ALL_ROWS = Number.MAX_SAFE_INTEGER;
-
 /** What a pager takes from the page it belongs to beyond what its rows are called, which a
  *  table hands on unread. */
 export interface PagerOptions {
@@ -48,7 +44,7 @@ const sentence = (word: string) => `${word.charAt(0).toLocaleUpperCase()}${word.
  * it holds fires nothing.
  */
 export function Pager<TData>({
-  allRows = ALL_ROWS,
+  allRows = Number.MAX_SAFE_INTEGER,
   noun,
   pageSizes,
   pagerRef,

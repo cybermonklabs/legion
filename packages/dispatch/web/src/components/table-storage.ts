@@ -30,18 +30,14 @@ export interface StoredColumns {
   readonly pins?: { readonly wide: { readonly columns: readonly string[] } };
 }
 
-/** `value` where it is an object this can read a field out of, else an empty one. */
-function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 /** Everything stored under `key`, or nothing where the browser refuses or the value is not an
  *  object this can read a field out of. */
 export function readStore(key: string): Record<string, unknown> {
   try {
-    return asRecord(JSON.parse(localStorage.getItem(key) ?? "{}"));
+    const stored: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");
+    return stored !== null && typeof stored === "object" && !Array.isArray(stored)
+      ? (stored as Record<string, unknown>)
+      : {};
   } catch {
     return {};
   }
@@ -61,6 +57,10 @@ export function readLayout(
   { hiddenByDefault, ids, pins }: StoredColumns
 ): TableLayout {
   const saved = readStore(key);
+  const asRecord = (value: unknown): Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
   const sizing: ColumnSizingState = Object.fromEntries(
     Object.entries(asRecord(saved.sizing)).flatMap(([id, size]): [string, number][] =>
       ids.includes(id) &&

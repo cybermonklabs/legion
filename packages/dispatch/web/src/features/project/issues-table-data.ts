@@ -75,14 +75,6 @@ export const listingName = (listing: IssueListing): string =>
         ...(listing.statuses ?? []),
       ].join(":");
 
-/** The read of a listing's issues: a project's, or every project's that advance one priority;
- *  with `open`, the open ones alone. */
-export function listingIssuesQuery(listing: IssueListing, open = false) {
-  return "project" in listing
-    ? projectIssuesQuery(listing.project, [], open)
-    : advancesIssuesQuery(listing, open);
-}
-
 /**
  * One project's issues as the table shows them - or, under a scope, every project's issues that
  * advance one priority: the open listing, the full one once the reader lets closed issues
@@ -106,12 +98,16 @@ export function useIssueTableItems(
   // none, so the work under it is every project's. A listing its open read answers whole never
   // asks for this one (`answeredWhole`, which `IssuesTable` reads).
   const everyIssue = useQuery({
-    ...listingIssuesQuery(listing),
+    ...("project" in listing
+      ? projectIssuesQuery(listing.project, [])
+      : advancesIssuesQuery(listing)),
     enabled: wantsDone,
   });
   const doneLoaded = wantsDone && everyIssue.data !== undefined;
   const openIssues = useQuery({
-    ...listingIssuesQuery(listing, true),
+    ...("project" in listing
+      ? projectIssuesQuery(listing.project, [], true)
+      : advancesIssuesQuery(listing, true)),
     enabled: !doneLoaded,
   });
   const issues = doneLoaded ? everyIssue : openIssues;

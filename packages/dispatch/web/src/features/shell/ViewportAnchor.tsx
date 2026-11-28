@@ -269,12 +269,11 @@ function focusedControl(): Element | null {
  * itself is named: a thread's own Dismiss takes away the row the reader's hand is on, and the
  * browser holds the view against its going as much as against a row's above. The snapshot taken
  * before the commit cannot tell whether that row goes in it, and the browser would hold the view
- * against that going. It is turned back on two frames later, once a rendering update has run
- * with it off (`releaseAfterRendering`), or at the next commit no press takes rows away in. Where
- * the window scrolls the rows and moved in a commit it was off for all the same, it is put back
- * where the press found it (`keepPlace`). A row that goes in the same commit without the
- * reader's press, by a live update or another device, is compensated as any other shift is, so
- * the rows in view do not jump under it.
+ * against that going. It is turned back on as soon as this component has kept its place. Where
+ * the window scrolls the rows and moved in such a commit all the same, it is put back where the
+ * press found it (`keepPlace`). A row that goes in the same commit without the reader's press,
+ * by a live update or another device, is compensated as any other shift is, so the rows in view
+ * do not jump under it.
  *
  * A press of the reader's in the page's control row (`components/ControlRow.tsx`), while that
  * row stands outside the list in the box that scrolls it, makes the row their place for the

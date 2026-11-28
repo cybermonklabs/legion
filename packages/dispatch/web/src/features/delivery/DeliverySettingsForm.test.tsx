@@ -436,10 +436,9 @@ test("another writer's save keeps the line break a reader typed after a list's l
 });
 
 // The fields this tab's save sent follow its answer from its landing on, and the reader types once
-// it has landed - the fields are held, `aria-disabled` and read-only, while it is out. A line
-// break typed then after the list's last entry stays as typed when the read the landing started
-// answers the same record, with the caret where the reader left it, so the next name is an entry
-// of its own.
+// it has landed - the fields are disabled while it is out. A line break typed then after the
+// list's last entry stays as typed when the read the landing started answers the same record,
+// with the caret where the reader left it, so the next name is an entry of its own.
 test("text a reader types after their save landed stays as typed when the read that landing started answers", async () => {
   const user = userEvent.setup();
   const saved = {
@@ -803,6 +802,35 @@ test("Save keeps the focus once the save lands and draws the stored record, and 
   } finally {
     answer.resolve(stored);
     restoreFocus();
+    cleanup();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// Held by `aria-disabled` while its save is out, Save draws as a control that cannot be pressed:
+// its look is the `refused:` variant's (`styles.css`), which covers `aria-disabled` as it covers
+// `disabled`. A `disabled:` look would leave the held Save drawn as one that can be pressed.
+test("a Save held while its save is out draws as one that cannot be pressed", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<DeliverySettings>();
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockReturnValue(answer.promise);
+  try {
+    renderForm();
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Deploy repository", "acme/gadgets");
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    await user.click(save);
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    await afterFrameAndTasks();
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).not.toBeDisabled();
+    expect(save.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["refused:cursor-not-allowed", "refused:opacity-50"])
+    );
+  } finally {
+    answer.resolve(record);
     cleanup();
     getDeliverySettings.mockRestore();
     putDeliverySettings.mockRestore();

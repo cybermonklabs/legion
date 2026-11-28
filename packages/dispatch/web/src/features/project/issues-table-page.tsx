@@ -1,11 +1,11 @@
 import type { Table } from "@tanstack/react-table";
-import { type ReactNode, type RefObject, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { IssueSummary } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
 import { ControlRow } from "../../components/ControlRow";
-import { DisplayMenu, groupBySection } from "../../components/DisplayMenu";
+import { DisplayMenu } from "../../components/DisplayMenu";
 import {
   columnFilterChip,
   columnFilterPicks,
@@ -82,7 +82,7 @@ export function IssueTableStatus({
   legend?: boolean;
 }): ReactNode {
   const statusColumn = table.getColumn("status");
-  const statusPicks = columnFilterPicks(statusColumn?.getFilterValue());
+  const statusPicks = (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
   const statusCounts = new Map<string, number>();
   let queuedCount = 0;
   let runningCount = 0;
@@ -211,8 +211,8 @@ export function IssueTableStatus({
 type ToolbarPanel = "flags" | "view";
 
 /**
- * The one row the List's controls sit in: the search box, the trigger over the three flags
- * (Needs you, Unread and Unclaimed), the chips of every narrowing that is on - the issues a link
+ * The one row the List's controls sit in: the search box, the trigger over the three flags that
+ * narrow no column of the table, the chips of every narrowing that is on - the issues a link
  * names (`only=`), the flags, and every column's filter - **Clear filters** (which the row
  * draws), the columns menu, and the display menu carrying the grouping.
  * A column's filter is set on that column's header, where `ColumnFilter` draws it, and its chip
@@ -236,22 +236,24 @@ export function IssueTableToolbar({
   const flags = useIssueFilters();
   const update = useAddressUpdate();
   const [openPanel, setOpenPanel] = useState<ToolbarPanel | undefined>(undefined);
-  const { globalFilter: search, columnFilters: filters } = table.getState();
+  const { globalFilter: search, columnFilters: filters, grouping } = table.getState();
   const setSearch = table.setGlobalFilter;
+  const setGrouping = table.setGrouping;
+  const setExpanded = table.setExpanded;
   // Unclaimed is the Claimed by column's "Nobody or lapsed", which this table writes as
   // `?unclaimed=1` under its own prefix (`issues-table-model.ts`) - the parameter the Board's
   // control row writes too - so the flag is read from and written to that column, and a table drawn
   // under a prefix narrows itself rather than the page's bare address.
   const claim = table.getColumn("claim");
-  const claimPicks = columnFilterPicks(claim?.getFilterValue());
+  const claimPicks = (claim?.getFilterValue() as string[] | undefined) ?? [];
   const unclaimed = claimPicks.includes(UNCLAIMED_FACET);
   const setUnclaimed = (on: boolean) => {
     const rest = claimPicks.filter((value) => value !== UNCLAIMED_FACET);
     const next = on ? [...rest, UNCLAIMED_FACET] : rest;
     claim?.setFilterValue(next.length === 0 ? undefined : next);
   };
-  // The three flags the row's own trigger holds: Needs you and Unread, which are no column of
-  // this table, and Unclaimed, the Claimed by column's "Nobody or lapsed" (above).
+  // The three narrowings that are no column of this table, and so the ones the row's own
+  // trigger holds.
   const flagged = [
     { label: "Needs you", on: flags.needsYou, remove: () => flags.setNeedsYou(false) },
     { label: "Unread", on: flags.unread, remove: () => flags.setUnread(false) },
@@ -333,7 +335,27 @@ export function IssueTableToolbar({
             label="View"
             onOpenChange={(open) => setOpenPanel(open ? "view" : undefined)}
             open={openPanel === "view"}
-            sections={[groupBySection(table)]}
+            sections={[
+              {
+                id: "group",
+                label: "Group by",
+                onChange: (next) => {
+                  setGrouping(next ? [next] : []);
+                  setExpanded(true);
+                },
+                options: [
+                  { label: "Nothing", value: "" },
+                  ...table
+                    .getAllLeafColumns()
+                    .filter((column) => column.getCanGroup())
+                    .map((column) => ({
+                      label: String(column.columnDef.header),
+                      value: column.id,
+                    })),
+                ],
+                value: grouping[0] ?? "",
+              },
+            ]}
             size="toolbar"
           />
         }
@@ -389,9 +411,8 @@ export function IssueTableToolbar({
  * Its groups, in this order: Count ("N selected" and "Select all N matching"), Start next, Move
  * (the epic list and its Move), Epic (Take out of epic, New epic from these) and Clear. A screen
  * too narrow for one line moves the last groups that do not fit to the next line whole, so every
- * action stays in sight and nothing scrolls sideways. Below `sm` the bar stands under the header;
- * from `sm` up it stands at the foot of the screen, where the List keeps room for its whole
- * height (`SelectionBar`'s `BAR_LINE`).
+ * action stays in sight and nothing scrolls sideways; the bar stands at the foot of the screen,
+ * where the List keeps room for its whole height (`SelectionBar`'s `BAR_LINE`).
  */
 export function IssueTableSelection({
   barRef,
@@ -425,11 +446,7 @@ export function IssueTableSelection({
   /** The epic the reader has picked to move the selection into; no write has been sent yet. */
   const [epic, setEpic] = useState("");
   const [picking, setPicking] = useState(false);
-  const epicTitles = useMemo(
-    () => new Map(epics.map((option) => [option.key, option.title])),
-    [epics]
-  );
-  const epicKeys = useMemo(() => epics.map((option) => option.key), [epics]);
+  const epicTitles = new Map(epics.map((option) => [option.key, option.title]));
   return (
     // Over the list, not in it: selecting a row moves no row.
     <SelectionBar
@@ -478,7 +495,7 @@ export function IssueTableSelection({
           }}
           open={picking}
           optionLabel={(key) => epicTitles.get(key)}
-          options={epicKeys}
+          options={epics.map((option) => option.key)}
           searchLabel="Search epics"
           size="compact"
           triggerClassName={`min-w-0 max-w-60 rounded-lg border text-left refused:opacity-40 ${borderDefault} ${surfaceBg}`}

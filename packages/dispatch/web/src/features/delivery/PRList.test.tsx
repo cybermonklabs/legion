@@ -69,9 +69,7 @@ function measureBoxAt(height: number): () => void {
   });
   return () => {
     if (box !== undefined) Object.defineProperty(HTMLElement.prototype, "clientHeight", box);
-    else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
     if (row !== undefined) Object.defineProperty(HTMLElement.prototype, "offsetHeight", row);
-    else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
   };
 }
 
@@ -174,8 +172,8 @@ test("arrowing past the last rendered row renders and focuses the next, and Home
 
     await user.keyboard("{End}");
     // The foot of the list: a row the window never held, so only the scroll that follows the
-    // key draws it. The scroll goes past the list's end, which draws its last rows: 64 px a row,
-    // where every row is 36 px, measured or estimated (`ROW_HEIGHT_PX`).
+    // key draws it. Every row past the drawn window is still an estimate, so the offset is
+    // past the whole list rather than an arithmetic of measured heights.
     scrolledTo(200 * 64);
     expect(document.activeElement?.getAttribute("data-pr-row")).toBe("acme/widgets#200");
     await user.keyboard("{Home}");

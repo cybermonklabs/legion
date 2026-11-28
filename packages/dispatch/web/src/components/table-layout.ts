@@ -396,10 +396,9 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     return { sizing: widths, pinned, compact: false };
   }, [boxEdge, boxWidth, columns, measured, sizing, visibility]);
 
-  // The box's height now against the window. `bounds` is the box's own rectangle, read here
-  // unless the caller has just read it.
   const boxHeightNow = useCallback(
-    (box: HTMLDivElement, bounds: DOMRect = box.getBoundingClientRect()): number => {
+    (box: HTMLDivElement): number => {
+      const bounds = box.getBoundingClientRect();
       const header = box.querySelector("thead")?.getBoundingClientRect().height ?? 61;
       const firstRows = [...box.querySelectorAll<HTMLElement>(`[${rowAttribute}]`)].slice(0, 3);
       const rowsHeight = firstRows.reduce(
@@ -442,12 +441,11 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
   const measure = useCallback(() => {
     const box = scrollRef.current;
     if (!box) return;
-    const bounds = box.getBoundingClientRect();
-    setBoxWidth(bounds.width);
+    setBoxWidth(box.getBoundingClientRect().width);
     // The box's border box less the room inside it that is beside any scrollbar: its borders
     // and a classic scrollbar. Both are whole pixels, read where the page lays them out.
     setBoxEdge(box.offsetWidth - box.clientWidth);
-    setBoxHeight(boxHeightNow(box, bounds));
+    setBoxHeight(boxHeightNow(box));
   }, [boxHeightNow]);
   useLayoutEffect(() => {
     measure();

@@ -11,7 +11,7 @@ import type { PagerOptions } from "../../components/Pager";
 import { useTableLayout } from "../../components/table-layout";
 import { useTableAddress } from "../../lib/page-address";
 import { textMutedOnSurfaceMuted } from "../../theme/classes";
-import { PAGE_SIZES, tableStorageKey } from "../project/issues-table-model";
+import { ALL_ROWS, PAGE_SIZES } from "../project/issues-table-model";
 import { NOTHING_KEPT, usedOn } from "./field-arrival";
 import { ChangedMeanwhile } from "./InPlaceField";
 import { NewPriority } from "./NewPriority";
@@ -62,16 +62,16 @@ const NAMES: DataTableNames = {
 };
 /** The line under the table: the page sizes the issue tables offer, and its own test id. */
 const PAGER: PagerOptions = {
+  allRows: ALL_ROWS,
   pageSizes: PAGE_SIZES,
   testId: "priorities-table-pager",
 };
 /** The whole key the priorities table keeps its layout under: one table, one deployment, one
  *  stored layout, under the key the page has always written it to. */
-const LAYOUT_KEY = tableStorageKey("priorities");
-/** The address prefix of this table's own view, so the fault lists keep their own. */
+const LAYOUT_KEY = "dispatch.project-table.priorities";
+/** The address prefix of this table's own view, so the fault lists keep their own. A
+ *  module-level constant, since `useTableAddress` memoizes the view it reads on its identity. */
 const VIEW_PREFIX = "p";
-/** This table's view in the address. A module-level constant, since `useTableAddress` memoizes
- *  the view it reads on its identity. */
 const VIEW_ADDRESS = priorityTableGrammar(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
 /** The priorities a table draws while it draws none. */
 const NONE_DRAWN: readonly string[] = [];
@@ -85,10 +85,9 @@ const ROW_TEXTS: readonly EditedText[] = ["description"];
  * description and drags its order here, and renames it on its own page, which its title links
  * to; every reader opens a row, which shows the whole of that priority's description. The work
  * advancing a priority is listed on that priority's own page, so this tab draws one table and
- * the keys that walk and open its rows (`j`, `k`, `o`, Enter) are this table's alone; it selects
- * no row, so `x` is none of its keys. The reader's own texts kept beside a priority's description
- * (`ChangedMeanwhile`) stand beside its row, or above the table while the view leaves the row
- * out.
+ * the keys every table is walked with (`j`, `k`, `x`, `o`, Enter) are this table's alone. The
+ * reader's own texts kept beside a priority's description (`ChangedMeanwhile`) stand beside its
+ * row, or above the table while the view leaves the row out.
  *
  * Its groups, in this order, each on a line of its own: Toolbar (search, filters, columns and New
  * priority), Kept texts (the reader's texts kept for rows the view leaves out,

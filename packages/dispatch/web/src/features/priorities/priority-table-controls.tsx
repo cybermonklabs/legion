@@ -2,7 +2,7 @@ import type { Table } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
 import { ControlRow } from "../../components/ControlRow";
-import { DisplayMenu, groupBySection } from "../../components/DisplayMenu";
+import { DisplayMenu } from "../../components/DisplayMenu";
 import { columnFilterChips, filterChips } from "../../components/filter-chips";
 import { SearchBox } from "../../components/SearchBox";
 
@@ -35,7 +35,7 @@ export function TableToolbar<Row>({
   table: Table<Row>;
 }): ReactNode {
   const [viewOpen, setViewOpen] = useState(false);
-  const { globalFilter: search } = table.getState();
+  const { globalFilter: search, grouping } = table.getState();
   return (
     <ControlRow
       chips={filterChips(columnFilterChips(table.getAllLeafColumns()), "toolbar")}
@@ -44,7 +44,24 @@ export function TableToolbar<Row>({
           label="View"
           onOpenChange={setViewOpen}
           open={viewOpen}
-          sections={[groupBySection(table)]}
+          sections={[
+            {
+              id: "group",
+              label: "Group by",
+              onChange: (next) => {
+                table.setGrouping(next ? [next] : []);
+                table.setExpanded(true);
+              },
+              options: [
+                { label: "Nothing", value: "" },
+                ...table
+                  .getAllLeafColumns()
+                  .filter((column) => column.getCanGroup())
+                  .map((column) => ({ label: String(column.columnDef.header), value: column.id })),
+              ],
+              value: grouping[0] ?? "",
+            },
+          ]}
           size="toolbar"
         />
       }

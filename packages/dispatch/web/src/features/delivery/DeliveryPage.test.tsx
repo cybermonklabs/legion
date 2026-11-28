@@ -7,7 +7,13 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { drawnSize } from "../../__tests__/control-size";
 import { pickIn } from "../../__tests__/issue-picks";
-import { optionNames, panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
+import {
+  optionNames as listOptionNames,
+  panelOf,
+  pickNamed,
+  rows,
+  textBoxes,
+} from "../../__tests__/list-picks";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -181,9 +187,7 @@ function measureList(): () => void {
   });
   return () => {
     if (box !== undefined) Object.defineProperty(HTMLElement.prototype, "clientHeight", box);
-    else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
     if (row !== undefined) Object.defineProperty(HTMLElement.prototype, "offsetHeight", row);
-    else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
   };
 }
 
@@ -207,9 +211,8 @@ function renderPage(url = DELIVERY_URL, { container }: { container?: HTMLElement
 }
 
 /** The one panel the page's filter trigger opens, which holds the four facets that are no
- *  column of the list while the List view is chosen, and all nine on the Timeline. It is
- *  portalled out of the page, so its controls are found in the document rather than inside the
- *  row. */
+ *  column of the list. It is portalled out of the page, so its controls are found in the
+ *  document rather than inside the row. */
 async function openFilterPanel(user: UserEvent): Promise<void> {
   const trigger = screen.getByRole("button", { name: /^Filter(?: · \d+)?$/ });
   if (trigger.getAttribute("aria-expanded") !== "true") await user.click(trigger);
@@ -494,7 +497,7 @@ const listedPR: DeliveryPR = {
   url: "https://github.com/acme/widgets/pull/1",
 };
 
-test("the filter panel offers each value with its count, subscribes a pick and keeps the view in the URL", async () => {
+test("the facet column offers each value with its count, subscribes a pick and keeps the view in the URL", async () => {
   const user = userEvent.setup();
   const timeline: DeliveryTimelineWithMeasures = {
     ...emptyTimeline,
@@ -1118,9 +1121,15 @@ test("a brush window narrows the merges shown but the waiting line still counts 
   }
 });
 
-// A facet's options as they are read out, on the filter panel and on a column's header alike:
-// sorted by count, a placeholder in words, and a parent component with how many sub-components
-// it includes.
+/** The options of an open filter, by the name each is read out as (`<value>, <n> PR(s)`). */
+function optionNames(listbox: string): (string | null)[] {
+  return within(screen.getByRole("listbox", { name: listbox }))
+    .getAllByRole("option")
+    .map((option) => option.getAttribute("aria-label"));
+}
+
+// What `FacetPanel.test.tsx` proved before the page drew these controls itself: the counts, the
+// wording of a placeholder, what a parent component says it includes, and what a trigger reads.
 test("a facet's options sort by count, read placeholders in words, and say a parent includes its sub-components", async () => {
   const user = userEvent.setup();
   renderPage();
@@ -1140,7 +1149,7 @@ test("a facet's options sort by count, read placeholders in words, and say a par
   });
 
   await user.click(await panelFacet(user, "Component"));
-  expect(optionNames(screen.getByRole("listbox", { name: "Component options" }))).toEqual([
+  expect(optionNames("Component options")).toEqual([
     "No issue, 4 PRs",
     "No component, 3 PRs",
     "Public API (includes 1 sub-component), 2 PRs",
@@ -1151,10 +1160,7 @@ test("a facet's options sort by count, read placeholders in words, and say a par
   // counted by the same answer.
   await user.keyboard("{Escape}");
   await user.click(screen.getByRole("button", { name: "Filter Parent agent" }));
-  expect(optionNames(screen.getByRole("listbox", { name: "Parent agent options" }))).toEqual([
-    "No session, 5 PRs",
-    "Agent 1, 2 PRs",
-  ]);
+  expect(optionNames("Parent agent options")).toEqual(["No session, 5 PRs", "Agent 1, 2 PRs"]);
 });
 
 test("a facet's trigger names the facet and what is picked", async () => {
@@ -1192,10 +1198,7 @@ test("a group's Parent agent value reads as its name, and Edit groups opens the 
   });
 
   await user.click(screen.getByRole("button", { name: "Filter Parent agent" }));
-  expect(optionNames(screen.getByRole("listbox", { name: "Parent agent options" }))).toEqual([
-    "Release crew, 3 PRs",
-    "Reviewer, 1 PR",
-  ]);
+  expect(optionNames("Parent agent options")).toEqual(["Release crew, 3 PRs", "Reviewer, 1 PR"]);
   await user.keyboard("{Escape}");
 
   await openFilterPanel(user);
@@ -1494,14 +1497,14 @@ test("after a first read that failed the row still draws the link's chips", asyn
 });
 
 /** Each option of the list `trigger` opens, named `listbox`, by the name it is read out as
- *  (`optionNames`). Escape closes the list again, so the next read opens its own. */
+ *  (`listOptionNames`). Escape closes the list again, so the next read opens its own. */
 async function openedOptionNames(
   user: UserEvent,
   trigger: HTMLElement,
   listbox: string
 ): Promise<string[]> {
   await user.click(trigger);
-  const names = optionNames(screen.getByRole("listbox", { name: listbox }));
+  const names = listOptionNames(screen.getByRole("listbox", { name: listbox }));
   await user.keyboard("{Escape}");
   return names;
 }

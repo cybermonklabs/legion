@@ -1,4 +1,3 @@
-import type { Table } from "@tanstack/react-table";
 import { type ReactNode, useId } from "react";
 
 import {
@@ -27,28 +26,6 @@ export interface DisplayMenuSection {
   readonly options: readonly DisplayMenuOption[];
   /** Which option is taken. A value naming no option leaves the section with none checked. */
   readonly value: string;
-}
-
-/** A table's **Group by** section: one choice of **Nothing**, then one for each column that can
- *  group, by its header, in the table's order. A pick groups the rows by that column, or by none,
- *  and opens every group. */
-export function groupBySection<Row>(table: Table<Row>): DisplayMenuSection {
-  return {
-    id: "group",
-    label: "Group by",
-    onChange: (next) => {
-      table.setGrouping(next ? [next] : []);
-      table.setExpanded(true);
-    },
-    options: [
-      { label: "Nothing", value: "" },
-      ...table
-        .getAllLeafColumns()
-        .filter((column) => column.getCanGroup())
-        .map((column) => ({ label: String(column.columnDef.header), value: column.id })),
-    ],
-    value: table.getState().grouping[0] ?? "",
-  };
 }
 
 export interface DisplayMenuProps {
