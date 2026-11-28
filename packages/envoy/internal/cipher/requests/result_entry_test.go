@@ -167,7 +167,7 @@ func TestARequestForTheResultsCapabilityIsRefusedBeforeAnyGrant(t *testing.T) {
 				retag(t, m, policytest.Secret(oauthwire.AirlockResultsName, fixtureOperator, policy.TierAgent, "stored-results-v1"))
 			}
 			if entry := m.AirlockRules().Lookup(oauthwire.AirlockResultsName); entry == nil || entry.Inline == nil || entry.Way != proxyrules.WayDPoP {
-				t.Fatalf("the airlock's entry %s = %+v; want the profile's block, of kind %s", oauthwire.AirlockResultsName, entry, proxyrules.WayDPoP)
+				t.Fatalf("the airlock's entry %s = %+v; want the profile's block, of kind %s", oauthwire.AirlockResultsName, entry, policy.ProxyBlockKindDPoP)
 			}
 			request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "write the results", oauthwire.AirlockResultsName), "")
 			if !errors.Is(err, policy.ErrUnknownSecret) || request.GrantID != nil {

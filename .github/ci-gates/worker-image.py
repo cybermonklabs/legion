@@ -24,6 +24,7 @@ EXCLUDED = excluded('worker_image', "gates worker-image.yaml's image build; .git
     'go.work.sum',
     'packages/envoy/*',
     'packages/envoy/agentloop/**',
+    'packages/envoy/awsbody/**',
     'packages/envoy/cipheraddr/**',
     'packages/envoy/cipherclient/**',
     'packages/envoy/ciphertest/**',

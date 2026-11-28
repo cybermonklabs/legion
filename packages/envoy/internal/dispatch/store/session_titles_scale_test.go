@@ -134,7 +134,7 @@ func runSessionTitlesBootScale(t *testing.T, admin url.URL, newest, floor, load 
 	// 1. Every shipped migration but the four, in version order, as the runner applies them.
 	started := time.Now()
 	migrations := shippedMigrations(t)
-	if err := database.prepareVersionTable(ctx, migrations); err != nil {
+	if _, err := database.prepareVersionTable(ctx, migrations); err != nil {
 		t.Fatalf("prepare the version table: %v", err)
 	}
 	left := 0

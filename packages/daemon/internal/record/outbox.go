@@ -308,11 +308,19 @@ type OwedStart struct {
 // OutboxPayload is the sealed vocabulary of payloads a workflow may enqueue.
 type OutboxPayload interface{ OutboxKind() OutboxKind }
 
-// ClaimRelease releases the issue's Dispatch claim: the row's issue column is the whole of what
-// it carries. The holder and the issue's record are read when the row runs, not when it is
-// queued, so a re-admission, a second park or a person who claims the issue meanwhile each end
-// the row on their own, with no generation or holder to fence it.
-type ClaimRelease struct{}
+// ClaimRelease releases the issue's Dispatch claim; the row's issue column names the issue. The
+// holder and the issue's record are read when the row runs, not when it is queued, so a
+// re-admission, a second park or a person who claims the issue meanwhile each end the row on their
+// own, with no generation or holder to fence it.
+type ClaimRelease struct {
+	// Session, when set, is the session the daemon left behind for a claim of the issue: store's
+	// putClaim queued the row in the claim write that moved the claim off it, and the row acts only
+	// while Dispatch shows that session as the holder. Empty is the row of a move out of the
+	// workflow and of the boot pass, which judge whatever holder Dispatch shows. A release before
+	// this one decodes the payload strictly (DisallowUnknownFields) and would retry a row that
+	// carries it for ever, so the way back of 20261127193428_claim_left deletes those rows.
+	Session string `json:"session,omitempty"`
+}
 
 func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 
@@ -1084,9 +1092,10 @@ func CatchUpIsHeld(at time.Time) bool {
 	return at.Equal(CatchUpHeldAt)
 }
 
-// ControllerNotice is a Notice for the project's controller topic (notify.ControllerTopic) alone,
-// in an outbox row of its own, so its publish retries apart from the architect's notice row. It is
-// published as the Notice it is.
+// ControllerNotice is a Notice for the project's controller alone, published to the controller's
+// role topic once the registered controller session holds that role live (the daemon's outbox,
+// controllerNotice), in an outbox row of its own, so its publish retries apart from the
+// architect's notice row. It is published as the Notice it is.
 type ControllerNotice Notice
 
 func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNotice }

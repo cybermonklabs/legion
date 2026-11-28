@@ -438,9 +438,17 @@ func ReadRecorded(ctx context.Context, q Querier, table string) ([]Recorded, err
 // ReconcileRecorded is a runner's judgment of its version table table before it applies anything,
 // on q, which holds the runner's advisory lock: it reads every row (ReadRecorded), judges them
 // against migrations (Reconcile) and, where it refuses none, writes each fix. It answers the rows
-// the table recorded before the fixes, for a runner that applies its whole set in the same
-// transaction, and the fixes it wrote, for LogFixes once that transaction commits. A refusal
-// writes nothing.
+// the table recorded before the fixes, and the fixes it wrote, for LogFixes once that
+// transaction commits. A refusal writes nothing.
+//
+// The rows it answers have two uses. A runner that applies its whole set in the same transaction
+// reads them there. A runner that applies each migration in a transaction of its own, as
+// Dispatch's does, takes them as the versions it applies nothing for, after this transaction has
+// ended: a row answered here is one this judgment accepted under the rule the per-version
+// recheck (RecheckRecorded) applies, and no runner deletes or renames a recorded row of a version
+// in its set - the only writes are Record's insert of a version it has just applied and the fill
+// of a null name, both under the advisory lock. A row an operator deletes by hand, as a `.down`
+// file's text does, is applied again at the next boot, which is what that text promises.
 func ReconcileRecorded(ctx context.Context, q versionTable, table string, migrations []Migration) ([]Recorded, []Fix, error) {
 	recorded, err := ReadRecorded(ctx, q, table)
 	if err != nil {

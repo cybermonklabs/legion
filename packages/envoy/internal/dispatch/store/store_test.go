@@ -716,10 +716,11 @@ func TestMigrateRecordsTheVersionUnderTheValuesResetGives(t *testing.T) {
 	}
 }
 
-// openIsolatedStoreWithPool opens a database of its own and a pool of maxConns connections to it,
-// built as the shared pool is (scanTimestampsInUTC on each connection), so a test can hold every
-// connection the pool can give and read each one.
-func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
+// openIsolatedStoreWithPool opens a database of its own and a pool to it, built as the shared pool
+// is (scanTimestampsInUTC on each connection), so a test can hold every connection the pool can
+// give and read each one. configure is given the pool's config before it opens, for the size a
+// test needs (MaxConns) or a tracer of its own.
+func openIsolatedStoreWithPool(t *testing.T, configure func(*pgxpool.Config)) *Store {
 	t.Helper()
 	ctx := context.Background()
 	baseURL, err := url.Parse(testDatabaseURL(t))
@@ -733,8 +734,8 @@ func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 	if err != nil {
 		t.Fatalf("parse the isolated database's URL: %v", err)
 	}
-	config.MaxConns = maxConns
 	config.AfterConnect = scanTimestampsInUTC
+	configure(config)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		t.Fatalf("open the isolated pool: %v", err)
@@ -742,6 +743,19 @@ func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 	t.Cleanup(pool.Close)
 	return &Store{Pool: NewPool(pool)}
 }
+
+// poolOf is openIsolatedStoreWithPool's configure for a pool of that many connections.
+func poolOf(maxConns int32) func(*pgxpool.Config) {
+	return func(config *pgxpool.Config) { config.MaxConns = maxConns }
+}
+
+// appliedCheck is the statement a runner sends once for each migration it judges on its way to
+// applying it (pgmigrate.RecheckRecorded, through applyMigrationOnce or
+// applyNonTransactionalMigration), and its only sender outside the tests. Its text must match
+// pgmigrate's byte for byte: TestMigrateClearsThePgxStatementCacheItReset names it to find it in a
+// connection's statement cache, and TestABootJudgesOnlyTheMigrationsItsPrepareDidNotReadAsRecorded
+// counts it.
+const appliedCheck = `select name, checksum, applied_checksum from "schema_migrations" where version = $1::bigint`
 
 // connectForTest opens one connection of its own to store's database, closed when t ends.
 func connectForTest(t *testing.T, ctx context.Context, store *Store) *pgx.Conn {
@@ -770,7 +784,7 @@ func TestMigrateResetsSessionSettingsAMigrationLeftOnThePooledConnection(t *test
 	t.Parallel()
 	ctx := context.Background()
 	const poolSize = 4
-	store := openIsolatedStoreWithPool(t, poolSize)
+	store := openIsolatedStoreWithPool(t, poolOf(poolSize))
 	schema := "leak_" + randomDatabaseSuffix(t)
 	set := fstest.MapFS{
 		"migrations/0001_schema.up.sql": {Data: []byte("create schema " + schema)},
@@ -841,7 +855,7 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	const poolSize = 4
-	store := openIsolatedStoreWithPool(t, poolSize)
+	store := openIsolatedStoreWithPool(t, poolOf(poolSize))
 	set := fstest.MapFS{
 		"migrations/0001_a.up.sql": {Data: []byte("create table a (id int)")},
 		"migrations/0002_b.up.sql": {Data: []byte("create table b (id int)")},
@@ -851,10 +865,9 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 	if err := store.migrate(ctx, set); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	// appliedCheck is the runner's own statement text, which it prepared and cached on the pooled
-	// connection as it applied the set (applyMigrationOnce, pgmigrate.RecheckRecorded). Its text
-	// must match byte for byte, so pgx finds it in the connection's statement cache.
-	const appliedCheck = `select name, checksum, applied_checksum from "schema_migrations" where version = $1::bigint`
+	// The runner prepared and cached appliedCheck on the pooled connection as it applied the set
+	// (applyMigrationOnce, pgmigrate.RecheckRecorded), and its text matches pgmigrate's byte for
+	// byte, so pgx finds it in the connection's statement cache.
 	var held []*pgxpool.Conn
 	for i := range poolSize {
 		conn, err := store.Pool.Acquire(ctx)
@@ -902,7 +915,7 @@ func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 		"a holder that ends after the first attempt": {"bigint", nil, true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			store := openIsolatedStoreWithPool(t, 4)
+			store := openIsolatedStoreWithPool(t, poolOf(4))
 			setup := context.Background()
 			if _, err := store.Pool.Exec(setup, "create table schema_migrations (version "+tc.versionType+" primary key, applied_at timestamptz not null default now())"); err != nil {
 				t.Fatalf("seed an earlier runner's schema_migrations: %v", err)
@@ -927,7 +940,7 @@ func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 			ctx, cancel := context.WithTimeout(setup, bound+10*time.Second)
 			defer cancel()
 			started := time.Now()
-			err := store.prepareVersionTable(ctx, tc.set)
+			_, err := store.prepareVersionTable(ctx, tc.set)
 			elapsed := time.Since(started)
 			if tc.release {
 				if err != nil {
@@ -1046,7 +1059,7 @@ func migrateAbove(t *testing.T, store *Store, after, maxVersion int) {
 	// The runner's own table (prepareVersionTable), bigint and identity columns included: a test
 	// that created the table as an integer would make the runner widen it, which is not what these
 	// tests are about.
-	if err := store.prepareVersionTable(ctx, migrations); err != nil {
+	if _, err := store.prepareVersionTable(ctx, migrations); err != nil {
 		t.Fatalf("prepare schema migrations table: %v", err)
 	}
 	for _, migration := range migrations {
