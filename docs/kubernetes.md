@@ -285,7 +285,9 @@ Such a file would name the versions of this image and no other, and a file proxy
 Without those files the file proxy answers a version query with a 404, and the query falls through to `proxy.golang.org`, while the `.info`, `.mod` and `.zip` of a pinned version still come from the cache.
 `go.env` is the place for it rather than the final stage's `ENV`, for the reason the cgo paragraph above gives in reverse:
 a variable the image's `ENV` sets is one `runtime.kubernetes.pod.env` may not set, while a `go.env` default leaves `GOPROXY` to an operator, a role, or one command, each of which outranks it through the process environment.
-The `go-modules` stage also deletes the cache's `sumdb` directory, the checksum-database tiles and lookups `go mod download` fetches for the `go.mod` sums `go.work.sum` lacks: they differ with the hour they are read, so with them each build's copy of the cache was new bytes and a new layer.
+The `go-modules` stage's `go mod download` needs only the checksums in `go.work.sum` and the two modules' `go.sum` files.
+The test job's `.github/scripts/check-go-work-sum.sh` checks that those files stay complete, so the download makes no checksum database request and creates no `sumdb` directory.
+On a branch the check has not run on, a missing checksum can make Go fetch tiles and lookups that vary by hour, so the stage still deletes `sumdb` to ship the same cache bytes for the same module files.
 A pod's go reads the cache only through the file proxy, which has never served the checksum database (a go asks for it at `<proxy>/sumdb/<name>/supported`); a go whose own `GOMODCACHE` is the image's fetches from `sum.golang.org` the checksums it lacks, as it does for any module the cache does not hold.
 
 The image's `python3` carries Debian's PyYAML, `python3-yaml`, because six of this repository's own gates read a workflow or `.github/ci-images.yaml` with `import yaml`:
