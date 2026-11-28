@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -225,10 +226,12 @@ func TestBootBudgetAFailingReadOfHeldCatchUpsStillFailsTheBoot(t *testing.T) {
 	}
 	unlock := func() { _ = lock.tx.Rollback(context.Background()) }
 	t.Cleanup(unlock)
+	// The read waits on the outbox's lock while pg_locks holds its ungranted request
+	// (lockwaittest.Waiting, whose package comment says why not from the wait event).
 	pid := testwait.Until(t, "the boot's read of the held catch-ups to wait on the outbox's lock", func() (int, bool) {
 		var pid int
 		err := st.Pool().QueryRow(context.Background(), `select pid from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and query like '%next_at > $2 and split_part(issue%'`).Scan(&pid)
+			where datname = current_database() and `+lockwaittest.Waiting+` and query like '%next_at > $2 and split_part(issue%'`).Scan(&pid)
 		return pid, err == nil
 	})
 	var cancelled bool
