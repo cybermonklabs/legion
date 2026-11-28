@@ -11,7 +11,6 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -327,44 +326,14 @@ func (r *doneByChecksRig) childFiled(child doneByChecksIssueSpec) string {
 }
 
 // stepOf is one role's turn on issue, a member of the walk's tree: it takes the role's next task
-// (taskOf) and finishes it, and issue reaches next.
+// (taskOf) and finishes it (finishOf), and issue reaches next.
 func (r *doneByChecksRig) stepOf(issue string, role claim.Role, word string, req api.HandoffCompleteRequest, next phase.Phase) {
 	t := r.t
 	t.Helper()
 	c := r.workerOf(issue, role)
 	r.taskOf(c)
-	if word != "" {
-		req.HandoffID, req.HandoffVersion = r.writeHandoffOf(issue, c.session, word)
-	}
-	if status, body := r.complete(c, req); status != http.StatusOK {
-		t.Fatalf("the %s's completion of %s = %d %s, want 200", role, issue, status, body)
-	}
-	c.endTurn()
-	r.waitPhaseOf(issue, next)
+	r.finishOf(issue, c, word, req, next)
 	t.Logf("the walk of %s: %s done; the daemon's state route shows it in %s", issue, role, r.d.state().Issues[issue].Phase)
-}
-
-// writeHandoffOf writes issue's handoff record of word under session, as `dispatch handoff-write`
-// does with the agent's bearer, and answers its id and version (stepRecordsRig's writeHandoff,
-// which writes the walk's own issue's).
-func (r *doneByChecksRig) writeHandoffOf(issue, session, word string) (string, int) {
-	t := r.t
-	t.Helper()
-	body := fmt.Sprintf(`{"schemaVersion": 1, "phase": %q, "issue": %q, "summary": "written by %s"}`, word, issue, session)
-	status, answer := r.agent(http.MethodPost, "/api/v1/issues/"+issue+"/handoffs/"+word, map[string]any{
-		"actor": map[string]string{"kind": "session", "id": session}, "body": body,
-	})
-	if status != http.StatusCreated {
-		t.Fatalf("write the %s handoff of %s as %s = %d %s, want 201", word, issue, session, status, answer)
-	}
-	var written struct {
-		ID      string `json:"id"`
-		Version int    `json:"version"`
-	}
-	if err := json.Unmarshal(answer, &written); err != nil || written.ID == "" {
-		t.Fatalf("decode the written handoff %s: %v", answer, err)
-	}
-	return written.ID, written.Version
 }
 
 // walk runs one step of the walk, which returns once the issue reached its next phase, and logs
@@ -376,25 +345,27 @@ func (r *doneByChecksRig) walk(step string, run func()) {
 }
 
 // walkToMerging walks the walk's issue, a root, from its first step to merging on its pull request
-// number at head (the steps below), each step's barrier the phase the issue reaches.
+// number at head (walkToReviewing, then walkReviewingToMerging), each step's barrier the phase the
+// issue reaches.
 func (r *doneByChecksRig) walkToMerging(number int, head string) {
 	r.t.Helper()
-	r.walkPlanning()
-	r.walkImplementing(head)
-	r.walkTesting()
-	r.walkReview(number, head)
-	r.walkSignOff()
-	r.walkRetro(head)
+	r.walkToReviewing(head)
+	r.walkReviewingToMerging(number, head)
 }
 
-// walkToMergingPassingBefore is walkToMerging with a pass of doneByChecksBeforeCheck recorded at
-// head once testing ends, before the review.
-func (r *doneByChecksRig) walkToMergingPassingBefore(number int, head string) {
+// walkToReviewing walks the walk's issue, a root, from its first step to reviewing at head: its
+// planning, its implementing and its testing.
+func (r *doneByChecksRig) walkToReviewing(head string) {
 	r.t.Helper()
 	r.walkPlanning()
 	r.walkImplementing(head)
 	r.walkTesting()
-	r.recordCheck(doneByChecksBeforeCheck, "pass", head)
+}
+
+// walkReviewingToMerging walks the walk's issue from reviewing to merging on its pull request
+// number at head: its review, its sign-off and its retro.
+func (r *doneByChecksRig) walkReviewingToMerging(number int, head string) {
+	r.t.Helper()
 	r.walkReview(number, head)
 	r.walkSignOff()
 	r.walkRetro(head)
@@ -468,28 +439,10 @@ func (r *doneByChecksRig) reviewOf(issue string, number int, head, state string,
 	r.waitPhaseOf(issue, next)
 }
 
-// publishReviewAt is a person with write access submitting state on pull request number at head,
-// as Envoy relays GitHub's review (publishReview at a head of the walk's own).
-func (r *doneByChecksRig) publishReviewAt(number int, head, state string) {
-	t := r.t
-	t.Helper()
-	r.reviews++
-	payload, err := json.Marshal(map[string]string{
-		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": state,
-		"commit_id": head, "head_sha": head, "author": stepRecordsPerson, "body": "round " + strconv.Itoa(r.reviews),
-		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number)
-	r.publish(subject, "github", fmt.Sprintf("review-%d-%d", number, r.reviews), string(payload))
-}
-
 // taskOf waits for the daemon's next task of c's claim and starts the turn that works it, as take
 // does, and answers the prompt that carried it. A claim the daemon launched again since c's pane
-// came up is met in its new pane first (attach), so the task that launch carries reaches the walk.
-// The barrier is the prompt the pane acknowledged.
+// came up is met in its new pane first (relaunched), so the task that launch carries reaches the
+// walk. The barrier is the prompt the pane acknowledged.
 func (r *doneByChecksRig) taskOf(c *stepClaimant) shimwire.Prompt {
 	r.t.Helper()
 	return r.taskWithin(c, stepRecordsWait)
@@ -500,69 +453,23 @@ func (r *doneByChecksRig) taskOf(c *stepClaimant) shimwire.Prompt {
 func (r *doneByChecksRig) taskWithin(c *stepClaimant, bound time.Duration) shimwire.Prompt {
 	t := r.t
 	t.Helper()
-	var prompt shimwire.Prompt
-	if !testwait.Holds(bound, 50*time.Millisecond, func() bool {
-		select {
-		case prompt = <-c.prompts:
-			return true
-		default:
-		}
-		if lastLaunch(t, r.rt, c.token).BootToken != c.bootToken {
-			r.attach(c)
-		}
-		return false
-	}) {
+	prompt, told := c.receiveWithin(bound, r.relaunched)
+	if !told {
 		held := r.d.claim(c.token)
 		t.Fatalf("%s was told no task within %s: the daemon holds its claim %s at generation %d", c.token, bound, held.State, held.Generation)
 	}
-	c.answer()
-	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
-	c.waitState(supervise.StateWorking)
+	c.startTurn(prompt)
 	return prompt
 }
 
-// attach is c's pane coming up in its claim's latest launch: a resume of c's own session, or a
-// spawn of a session of its own, which c holds from then on. It says hello with that launch's boot
-// token, registers in that session and says ready, as the plugin does (ownerStepsRig's reattach,
-// which takes a resume alone).
-func (r *doneByChecksRig) attach(c *stepClaimant) {
+// relaunched is c's pane coming up in its claim's latest launch, whichever it is: a resume of c's
+// own session, or a spawn of a session of its own (attach).
+func (r *doneByChecksRig) relaunched(c *stepClaimant) {
 	t := r.t
 	t.Helper()
 	launch := lastLaunch(t, r.rt, c.token)
-	file := "/sessions/" + c.session + ".jsonl"
-	if launch.ResumeSessionFile != file {
-		c.session = "ses_" + string(c.role) + "_" + randomSuffix(t)[:6]
-		file = "/sessions/" + c.session + ".jsonl"
-	}
+	c.attach(launch)
 	t.Logf("the daemon launched %s again (%q resumed); its pane comes up in session %s", c.token, launch.ResumeSessionFile, c.session)
-	r.built.mu.Lock()
-	address := r.built.address
-	r.built.mu.Unlock()
-	c.mu.Lock()
-	_ = c.sh.conn.Close()
-	c.mu.Unlock()
-	sh := dialShimUntilAcked(t, address, launch.BootToken)
-	c.mu.Lock()
-	c.sh, c.bootToken, c.open, c.inTurn = sh, launch.BootToken, nil, false
-	c.mu.Unlock()
-	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: file, AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
-	}, false)
-	if status != http.StatusOK {
-		t.Fatalf("register %s again in session %s = %d %s, want 200", c.token, c.session, status, body)
-	}
-	var registered claim.RegisterResponse
-	if err := json.Unmarshal(body, &registered); err != nil {
-		t.Fatalf("decode the registration of %s: %v", c.token, err)
-	}
-	c.secret = registered.Secret
-	d := r.d
-	sh.serve(func() { c.serve(sh, d) })
-	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
-		ClaimToken: c.token, SessionID: c.session, Secret: c.secret, Generation: launch.Generation,
-	}, false); status != http.StatusNoContent {
-		t.Fatalf("ready %s = %d %s, want 204", c.token, status, body)
-	}
 }
 
 // merge is mergeOf the walk's issue's pull request as doneByChecksMergeCommit, M, which it answers.
@@ -700,24 +607,6 @@ func (r *doneByChecksRig) recordCheck(check, verdict, commit string) string {
 	}
 	t.Logf("recorded a %s of %s of %s at %s as the tester (%s): result %s", verdict, check, r.key, commit, tester.session, recorded.Result.ID)
 	return recorded.Result.ID
-}
-
-// agent sends one request to Dispatch with the agent bearer, as a role's session sends one, and
-// answers the status and the body.
-func (r *doneByChecksRig) agent(method, path string, body any) (int, []byte) {
-	t := r.t
-	t.Helper()
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request, err := http.NewRequest(method, r.dispatch.base+path, bytes.NewReader(encoded))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+r.dispatch.token)
-	return r.send(request)
 }
 
 // doneByChecksAnswer is the issue's check as GET /api/v1/issues/{key}/results answers it: what
@@ -1146,14 +1035,9 @@ func (r *doneByChecksRig) lookOf(c *stepClaimant, look int, bound time.Duration)
 	t := r.t
 	t.Helper()
 	prompt := r.taskWithin(c, bound)
-	_, value, found := strings.Cut(prompt.Message, "check_opened_at `")
-	value, _, closed := strings.Cut(value, "`")
-	if !found || !closed {
-		t.Fatalf("the task of look %d of %s's production check names no check_opened_at", look, r.key)
-	}
-	opened, err := time.Parse(time.RFC3339Nano, value)
+	opened, err := checkOpenedAt(prompt.Message)
 	if err != nil {
-		t.Fatalf("the check_opened_at of look %d of %s is no RFC 3339 instant: %v", look, r.key, err)
+		t.Fatalf("the task of look %d of %s's production check %v", look, r.key, err)
 	}
 	check := readProductionCheck(t, r.st.Pool(), r.records, r.key)
 	if check.Looks != look || !check.LookOpen || !check.Open() || !check.OpenedAt.Equal(opened) {

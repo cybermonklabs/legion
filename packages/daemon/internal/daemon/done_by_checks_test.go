@@ -199,7 +199,9 @@ func firstToItsMerge(r *doneByChecksRig, first string) firstLook {
 	t := r.t
 	t.Helper()
 	r.on(first)
-	r.walkToMergingPassingBefore(doneByChecksPull, stepRecordsHead)
+	r.walkToReviewing(stepRecordsHead)
+	r.recordCheck(doneByChecksBeforeCheck, "pass", stepRecordsHead)
+	r.walkReviewingToMerging(doneByChecksPull, stepRecordsHead)
 	r.awaitIssue(first, "its retro's end", func(issue api.Issue) error {
 		if issue.Phase != phase.Merging || issue.Status != "retro" {
 			return fmt.Errorf("it stands in %s with status %s, want merging with status retro", issue.Phase, issue.Status)
@@ -268,7 +270,9 @@ func secondClosesAtItsProductionPass(r *doneByChecksRig, second string) {
 	t := r.t
 	t.Helper()
 	r.on(second)
-	r.walkToMergingPassingBefore(doneByChecksGadgetsPull, doneByChecksGadgetsHead)
+	r.walkToReviewing(doneByChecksGadgetsHead)
+	r.recordCheck(doneByChecksBeforeCheck, "pass", doneByChecksGadgetsHead)
+	r.walkReviewingToMerging(doneByChecksGadgetsPull, doneByChecksGadgetsHead)
 	merged := r.mergeOf(second, doneByChecksGadgetsPull, doneByChecksGadgetsMerge)
 	r.awaitCloseRead(second, "the second issue's merge", merged, passesAt(doneByChecksBeforeCheck, doneByChecksGadgetsHead))
 	r.awaitIssue(second, "its merge, its production check open", func(issue api.Issue) error {
@@ -538,7 +542,9 @@ func sixthHeldByItsOpenChange(r *doneByChecksRig, sixth string) {
 	t := r.t
 	t.Helper()
 	r.on(sixth)
-	r.walkToMergingPassingBefore(doneByChecksPinsPull, doneByChecksPinsHead)
+	r.walkToReviewing(doneByChecksPinsHead)
+	r.recordCheck(doneByChecksBeforeCheck, "pass", doneByChecksPinsHead)
+	r.walkReviewingToMerging(doneByChecksPinsPull, doneByChecksPinsHead)
 	merged, status, body := r.mergeAndComplete(doneByChecksPinsPull, doneByChecksPinsMerge)
 	if status != http.StatusOK {
 		t.Fatalf("the merger's completion of %s in verifying = %d %s, want 200", sixth, status, body)
@@ -619,7 +625,9 @@ func TestANextChangeNeedsAPassAtItsOwnHead(t *testing.T) {
 		{title: doneByChecksTitle, verification: doneByChecksBothChecks, number: doneByChecksPull, head: stepRecordsHead},
 	}})
 	key, branch := r.key, claim.IssueBranch(r.key)
-	r.walkToMergingPassingBefore(doneByChecksPull, stepRecordsHead)
+	r.walkToReviewing(stepRecordsHead)
+	r.recordCheck(doneByChecksBeforeCheck, "pass", stepRecordsHead)
+	r.walkReviewingToMerging(doneByChecksPull, stepRecordsHead)
 	merged, status, body := r.mergeAndComplete(doneByChecksPull, doneByChecksMergeCommit)
 	r.awaitCloseRead(key, "the first merge", merged, passesAt(doneByChecksBeforeCheck, stepRecordsHead))
 	failed := r.awaitResultFact(r.record("fail", r.standIn.commitOnMain(doneByChecksLaterCommit)))
