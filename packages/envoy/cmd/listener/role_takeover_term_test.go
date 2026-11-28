@@ -1,10 +1,7 @@
 package main
 
-// The takeover passes the kept lane's sweep runs are the lease holder's: each copy and record write
-// of them is held to the receive term the sweep runs under and to the lease's loss deadline
-// (keptSweepConfig, takeoverWriteContext). And a record's write lands only over the body its pass
-// read (bus.Client.WriteTakeoverRecordAt), so a pass that comes late writes nothing over another
-// pass's newer body or over the record's removal.
+// A record's write lands only over the body its pass read (bus.Client.WriteTakeoverRecordAt), so a
+// pass that comes late writes nothing over another pass's newer body or over the record's removal.
 
 import (
 	"context"
@@ -64,58 +61,6 @@ func termRecords(t *testing.T, harness listenerDeliveryHarness) []bus.StoredTake
 		t.Fatalf("read the takeover records of %s: %v", termRole, err)
 	}
 	return records
-}
-
-// A takeover pass the kept lane's sweep reaches once its receive term is over, or once the lease's
-// loss deadline has passed - the lease stepped down, or another pod may hold it - writes nothing:
-// no copy on the role's kept lane, and the record as the stream held it. The control is the same
-// sweep within a live term, which copies the message and writes the record on.
-func TestATakeoverPassReachedAfterTheLeaseSteppedDownWritesNothing(t *testing.T) {
-	t.Parallel()
-	ended, end := context.WithCancel(context.Background())
-	end()
-	for _, tc := range []struct {
-		name   string
-		term   *relayTerm
-		writes bool
-	}{
-		{name: "the lease stepped down: its loss deadline has passed", term: &relayTerm{ctx: context.Background(), untilLoss: func() time.Duration { return 0 }}},
-		{name: "the receive term ended", term: &relayTerm{ctx: ended, untilLoss: func() time.Duration { return time.Minute }}},
-		{name: "control: a live term", term: &relayTerm{ctx: context.Background(), untilLoss: func() time.Duration { return time.Minute }}, writes: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			harness := newListenerDeliveryHarness(t)
-			eventID, stored := startTermTakeover(t, harness)
-			relays := &sessionRelays{term: tc.term}
-			cfg := keptSweepConfig(harness.config, relays)
-
-			ctx, cancel := context.WithTimeout(context.Background(), roleKeepHandoverWindow)
-			defer cancel()
-			handOverSweptLane(ctx, cfg, termRole, []bus.StoredTakeoverRecord{stored})
-
-			copies := copiesOf(storedEnvelopes(t, harness.client, bus.KeptRoleSubject(termRole)), eventID)
-			records := termRecords(t, harness)
-			if len(records) != 1 {
-				t.Fatalf("the stream holds %d takeover records of %s after the sweep's pass, want 1", len(records), termRole)
-			}
-			after := records[0]
-			if !tc.writes {
-				if copies != 0 {
-					t.Errorf("the role's kept lane holds %d copies of %s after a pass this pod's term no longer allows; want none", copies, eventID)
-				}
-				if after.Sequence != stored.Sequence || after.Record != stored.Record {
-					t.Errorf("the takeover record is %+v at %d after a pass this pod's term no longer allows; want it as it stood, %+v at %d", after.Record, after.Sequence, stored.Record, stored.Sequence)
-				}
-				return
-			}
-			if copies != 1 {
-				t.Errorf("the role's kept lane holds %d copies of %s after a pass within a live term; want 1", copies, eventID)
-			}
-			if after.Sequence == stored.Sequence || after.Record.Next == 0 {
-				t.Errorf("the takeover record is %+v at %d after a pass within a live term; want it written on past %d", after.Record, after.Sequence, stored.Sequence)
-			}
-		})
-	}
 }
 
 // A pass's write of a takeover record lands only over the body that pass read: one another pass

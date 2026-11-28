@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dedupe"
 	dispatchapi "github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -127,6 +128,10 @@ func listenerRigLog(t *testing.T, name string) (*logging.Logger, *cmdtest.Locked
 func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer {
 	t.Helper()
 	machineID := "dispatch-" + id.New()
+	dedupeCache := dedupe.New(10 * time.Minute)
+	attemptCache := dedupe.New(5 * time.Minute)
+	t.Cleanup(dedupeCache.Stop)
+	t.Cleanup(attemptCache.Stop)
 	met := metrics.New()
 	logger, logs := listenerRigLog(t, "delivery listener")
 	config := listenerDeliveryHandlerConfig{
@@ -137,7 +142,8 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		machineID:   rigMachineID,
 		// The delivery config resolves the entry from its own sessions field and hands it to
 		// session.Resolve, which holds no registry of its own (INFRA-141).
-		ledger:            testDeliveryLedger(t, d.client.Conn, machineID, "boot-pod-a"),
+		dedupeCache:       dedupeCache,
+		attemptCache:      attemptCache,
 		logger:            logger,
 		messagesReceived:  met.NewCounter("rig_messages_received", "test"),
 		messagesDelivered: met.NewCounter("rig_messages_delivered", "test"),
@@ -188,7 +194,7 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 	})
 	// This listener serves the machine's receive term, which is what makes it relay the sessions
 	// it registered (sessionRelays.setOwned).
-	relays.setOwned(endlessTerm())
+	relays.setOwned(true)
 	d.consumers = delivery
 	rig := startReceiverRig(t, d.client.Conn.ConnectedUrl(), machineID, "pod-a", jetStreamDeliveryHandler(config), testReceiveTiming(), testLeaseTiming())
 	rig.awaitState(t, receiveActive, 10*time.Second)

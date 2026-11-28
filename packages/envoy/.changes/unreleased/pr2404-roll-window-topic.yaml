@@ -35,11 +35,9 @@ body: |-
     no read within 250 ms of the last one. In those cases, and when its read fails, it judges the
     topic on the subjects the pod holds. So a direct publish in the roll window can still go over
     core NATS, stored, with no message id and no acknowledgement. A delivery exception about a
-    stored message on such a topic's exception lane is judged the same way before the listener
-    chooses the exception's message id. Outside those cases it is stored once, however many
-    listeners raise it. Judged on the older list, it could be stored twice, under two ids. And a
-    slow read of the stream's subjects that ends after a newer one no longer replaces the newer
-    list with the older one, including a read that ends while the listener sets up the stream.
+    stored message on such a topic's exception lane is judged the same way. And a slow read of the
+    stream's subjects that ends after a newer one no longer replaces the newer list with the older
+    one, including a read that ends while the listener sets up the stream.
 time: 2026-11-15T10:13:09.000000000Z
 custom:
     Issue: pr2404

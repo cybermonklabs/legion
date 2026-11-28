@@ -13,7 +13,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -120,26 +119,13 @@ func forwardRefused(err error) bool {
 // confirm records that the stream stored item, the message under its dedupe key, for sessionID
 // through the route, at sequence. The route's own record (listenerDeps.confirmed) is what a later
 // send of the same key reads, so envoy-client's retry of a send skips a recipient the first
-// attempt stored it for; the delivery ledger every lane asks is told too, so no lane forwards the
-// same key to that session again, on this pod or any other of the machine. A ledger that cannot be
-// read or written leaves only the route's own record, under one WARN: the lane that takes the pair
-// next settles it itself. It also records the forward under the request that made it
+// attempt stored it for; the delivery handlers' cache is told too, so they do not deliver the same
+// key to it again. It also records the forward under the request that made it
 // (forwardRequest), which a later echo of the same request reads (settledBeforeForward).
 func (d *listenerDeps) confirm(item contracts.Envelope, sessionID string, sequence uint64) {
-	dedupeKey := item.DedupeKey
-	d.confirmed.RecordStored(dedupeKey, sessionID, sequence)
+	d.confirmed.RecordStored(item.DedupeKey, sessionID, sequence)
 	d.confirmed.RecordForward(forwardRequest(item), sessionID, sequence)
-	attempt, err := d.delivery.ledger.Attempt(dedupeKey, sessionID)
-	if err != nil {
-		d.delivery.logger.Warn(ledgerUnavailableLine, slog.String("operation", "attempt"), slog.String("session_id", sessionID), slog.String("dedupe_key", dedupeKey), slog.String("error", err.Error()))
-		return
-	}
-	if attempt.Verdict != dedupe.Proceed {
-		return
-	}
-	if err := d.delivery.ledger.Record(attempt); err != nil {
-		d.delivery.logger.Warn(ledgerUnavailableLine, slog.String("operation", "record"), slog.String("session_id", sessionID), slog.String("dedupe_key", dedupeKey), slog.String("error", err.Error()))
-	}
+	d.delivery.dedupeCache.Record(item.DedupeKey, sessionID)
 }
 
 // forwardRequest is the key the route's record keeps a role forward under for an echo to read:
@@ -615,22 +601,18 @@ func (s *roleSend) windowEnded(inProcess error) {
 // holder, which is the request's own source session (beforeForward).
 // The repeat is answered as that stored forward (deliveredHeld on the earlier holder's subject),
 // never with the new envelope built for the repeat, whose event_id no stored message carries.
-// The record is this pod's own and lasts 10 minutes: the delivery ledger the pods share holds
-// neither the request nor the copy's sequence (dedupe.Cache). A repeat after that or on another
-// pod answers its own new envelope and forwards nothing, as at main. No stream lookup finds the
-// earlier forward by the request alone, since its message id names the earlier holder's subject.
+// The record is the listener's own and lasts 10 minutes; a repeat after that or on another
+// listener answers its own new envelope, as at main. No stream lookup finds the earlier forward
+// by the request alone, since its message id names the earlier holder's subject.
 //
 // None of those answers marks the charge: each stores nothing, and an earlier forward of the same
 // send that failed with no refusal, which may have stored the message for the holder it went to,
 // has marked the charge already (sendToRole).
 //
 // The dedupe check reads the route's own record (listenerDeps.confirmed), not the delivery
-// ledger: the route's confirmation records its stored forward in the ledger too (confirm), but a
-// ledger record can also come from another pod, or from another lane's forward, refusal or
-// give-up, so it cannot show that this route forwarded the key to this holder. The route's
-// record is this pod's alone (README, "State the pods share"), so a send retried against another
-// pod of the machine forwards again, and the stream keeps one copy of that forward under its
-// Nats-Msg-Id (bus.ForwardMsgID).
+// handlers' cache: agentSubjectDelivery and fanoutDelivery record a key there for every delivery
+// they make or hand over, so a role send under a key one of them saw would be answered 200 for a
+// holder the route never forwarded it to.
 func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.SessionEntry) bool {
 	verdict := beforeForward(s.item, s.holder, entry, s.d.confirmed.Seen)
 	switch verdict.kind {

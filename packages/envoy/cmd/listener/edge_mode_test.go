@@ -804,7 +804,7 @@ func TestAnEdgeRegistryReadNamesNothingOfAGoneOrStoppedSessionOfAnotherProject(t
 	if err := rig.deps.sessions.Delete(t.Context(), gone); err != nil {
 		t.Fatalf("delete %s's record: %v", gone, err)
 	}
-	if seen := rig.deps.sessions.LastSeen(t.Context(), gone); seen == 0 {
+	if seen := rig.deps.sessions.LastSeen(gone); seen == 0 {
 		t.Fatalf("UNKNOWN: the session registry keeps no last registration of %s, so no answer could name one", gone)
 	}
 	requireUnknownSession(t, rig.call(t, http.MethodGet, token, "/v1/registry/"+gone, ""), "GET /v1/registry/"+gone)

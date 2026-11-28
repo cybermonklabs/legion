@@ -89,19 +89,17 @@ type listenerDeps struct {
 	streamName string
 	streamInfo streamInfoLookup
 	// delivery is the config main hands the delivery handlers (the role lane and the durable),
-	// wired once, so the publish route forwards through its forwardRole, records each session it
-	// confirms in its delivery ledger (so no lane forwards that key to the session again, on this
-	// pod or any other of the machine), and writes each send's delivery line and delivery_status
-	// count through its logger and messagesDelivered, reading as the role lane's do, beside the
-	// route's own request record (request_record.go). The route never reads that ledger for its
-	// own dedupe answer: the ledger records what this machine delivered, a forward this pod
-	// published, which is not this route's own forward to the holder.
+	// wired once, so the publish route forwards through its forwardRole, records each
+	// session it confirms in its dedupeCache (so the handlers do not deliver that key to it again),
+	// and writes each send's delivery line and delivery_status count through its logger and
+	// messagesDelivered, reading as the role lane's do, beside the route's own request record
+	// (request_record.go). The route never reads that dedupeCache, since the handlers write it
+	// for deliveries of their own, which are not the route's forwards.
 	delivery *listenerDeliveryHandlerConfig
 	// confirmed is the publish route's own record of each (dedupe key, session) the route stored a
-	// forward for, which only the route writes, and which this pod alone holds (README, "State the
-	// pods share"). A send skips a holder or recipient recorded there, so envoy-client's retry of
-	// a send does not forward again to one the first attempt already had the stream store the
-	// message for.
+	// forward for, which only the route writes. A send skips a holder or recipient recorded there,
+	// so envoy-client's retry of a send does not forward again to one the first attempt already
+	// had the stream store the message for.
 	confirmed *dedupe.Cache
 	// sendsToUnresponsive counts the sends POST /v1/messages/send took for a recipient past the
 	// live window and stored for it (sendHandler). It is how a box's operator sees that a growing
@@ -402,6 +400,10 @@ func rebuildListenerDependencies(
 // after the stall.
 const disconnectedFailureThreshold = 20
 
+// attemptCacheTTL is how long the attempt cache (below) remembers a (dedupe_key, session_id)
+// pair it recorded before a delivery.
+const attemptCacheTTL = 5 * time.Minute
+
 // runSelfHealthMonitor leaves transient dependency timeouts degraded while
 // NATS reconnects. A terminal watcher, closed KV handle, or missing durable
 // consumer is rebuilt immediately, and a rebuild that reports success is
@@ -644,8 +646,7 @@ type healthAnswer struct {
 // probe that takes any 200 keeps routing /v1 to it, as it does to a standby. A standby of another
 // holder is ready and healthy: it serves /v1, the webhooks and the role lane, and takes over
 // delivery when the lease comes free. A listener without the lease's grant says so in "lease"
-// (listenerLeaseUnavailable) until it joins the lease (joinDeliveryLease). It answers 503
-// "unhealthy" when NATS is unavailable, the role
+// (listenerLeaseUnavailable). It answers 503 "unhealthy" when NATS is unavailable, the role
 // lane's own client is not connected or holds no valid core subscription, since no role message
 // is forwarded then, a cache's watcher has stopped, a bus check did not answer within
 // healthzBudget, or on the active pod when its subscription is inactive, the durable consumer is
@@ -1134,17 +1135,15 @@ func listenerInstance() (string, error) {
 
 // startRetry is how long a start waits between attempts to reach NATS while it cannot answer: the
 // connect (connectListener), the spent-proof bucket (openSpentProofBucket), each store's buckets
-// (openStartStore), the listener state bucket (openDeliveryLease), the last-seen bucket
-// (startLastSeenBucket), and the connections the start opens once the stores are open
-// (openStartConnection). It is the third group of the start rule (cmd/listener/README.md,
-// "Start"); a server that answers from its cluster's state, a grant that refuses a step, or an
-// account's limits or the server's state that refuse one, waits by nextRefusedWait instead
-// (logClusterState, logGrantRefusal, logAccountState).
+// (openStartStore), the listener state bucket (openDeliveryLease), and the connections the start
+// opens once the stores are open (openStartConnection). It is the third group of the start rule
+// (cmd/listener/README.md, "Start"); a server that answers from its cluster's state, a grant that
+// refuses a step, or an account's limits or the server's state that refuse one, waits by
+// nextRefusedWait instead (logClusterState, logGrantRefusal, logAccountState).
 const startRetry = 2 * time.Second
 
-// clusterStateLine is the line a start step, the lease join (joinDeliveryLease) or the last-seen
-// bucket's open (startLastSeenBucket) logs at each try of a request the NATS server answered from
-// its cluster's state (bus.ClusterStateAnswer), the second group of the start rule
+// clusterStateLine is the line a start step logs at each try of a request the NATS server answered
+// from its cluster's state (bus.ClusterStateAnswer), the second group of the start rule
 // (cmd/listener/README.md, "Start"), with what the request was for, the copies it asked, the
 // answer's code, the server's text and the wait before the next try (logClusterState).
 const clusterStateLine = "start refused by the NATS cluster's state; retrying"
@@ -1157,7 +1156,7 @@ const clusterStateLine = "start refused by the NATS cluster's state; retrying"
 // for nothing; an answer that has lasted this long is logged at ERROR at each try after.
 const clusterUnavailableWarnFor = 30 * time.Second
 
-// clusterStateWait is what one start step, or the lease join, carries across the answers the NATS
+// clusterStateWait is what one start step carries across the answers the NATS
 // server gives it from its cluster's state (logClusterState).
 type clusterStateWait struct {
 	// next is the wait before the step's next try: durableBindPoll at first, then twice the last
@@ -1168,8 +1167,7 @@ type clusterStateWait struct {
 	unavailableSince time.Time
 }
 
-// logClusterState logs clusterStateLine for err, a request of a start step, of the lease join
-// (joinDeliveryLease) or of the last-seen bucket's open (startLastSeenBucket) the NATS server
+// logClusterState logs clusterStateLine for err, a request of a start step the NATS server
 // answered from its cluster's state with the JetStream API error code code (bus.ClusterStateAnswer):
 // what names what the step opens (the stream, a bucket or a store's buckets), replicas the copies
 // the deployment asks for (bus.ReplicasEnvVar). The line is an ERROR, but a WARN for a
@@ -1177,8 +1175,7 @@ type clusterStateWait struct {
 // clusterUnavailableWarnFor ago. It returns wait.next, the wait before the step's next try, which
 // the line names as retry_in, and doubles wait.next up to durableRefusedRetryCap for the step's
 // next such answer (nextRefusedWait), as a refused durable's retries wait. It waits nothing itself:
-// a start step sleeps the wait out (waitOutClusterState), and the lease join and the last-seen
-// bucket's open wait it out until their context ends (waitUnlessDone).
+// a start step sleeps the wait out (waitOutClusterState).
 func logClusterState(logger *logging.Logger, wait *clusterStateWait, what slog.Attr, replicas, code int, err error) time.Duration {
 	level := slog.LevelError
 	if code == int(nats.JSErrCodeJetStreamNotAvailable) || code == int(nats.JSErrCodeInsufficientResourcesErr) {
@@ -1226,18 +1223,14 @@ const (
 	streamRefusedLine = "notification stream refused by the NATS grant; retrying"
 )
 
-// logGrantRefusal logs line at ERROR for err, a request of a start step, of the lease join
-// (joinDeliveryLease) or of the last-seen bucket's open (startLastSeenBucket) the NATS grant
+// logGrantRefusal logs line at ERROR for err, a request of a start step the NATS grant
 // refused: what names what the step opens, then the refused subject (refusedSubject), the server's
 // text and *wait, the wait before the next try, as retry_in. It returns *wait and doubles *wait up
 // to durableRefusedRetryCap for the step's next refusal (nextRefusedWait), as a refused durable's
-// retries wait; a step of the start and the last-seen bucket's open start *wait at
-// durableBindPoll, and the join of the listener state bucket at twice that, since the start's own
-// ERROR named durableBindPoll as the wait before the join's first try. Every pod of the machine
+// retries wait; a step of the start starts *wait at durableBindPoll. Every pod of the machine
 // connects as the same NATS user and would be refused alike, and an exit would send each into a
 // crash loop whose backoff delays the recovery by minutes once the grant is fixed. It waits
-// nothing itself: a start step sleeps the wait out (waitOutGrantRefusal), and the lease join and
-// the last-seen bucket's open wait it out until their context ends (waitUnlessDone).
+// nothing itself: a start step sleeps the wait out (waitOutGrantRefusal).
 func logGrantRefusal(logger *logging.Logger, wait *time.Duration, line string, err error, what ...slog.Attr) time.Duration {
 	logger.Error(line, append(what,
 		slog.String("subject", refusedSubject(err)),
@@ -1503,17 +1496,15 @@ const (
 	spentProofBucketAccountStateLine = "spent-proof bucket refused by the NATS account's limits or the server's state; retrying"
 )
 
-// logAccountState logs line at ERROR for err, a request of a start step or of the last-seen
-// bucket's open (startLastSeenBucket) that the account's JetStream limits or the server's own
-// failure refused with the JetStream API error code code (bus.AccountStateAnswer): what names what
-// the step opens, then the code, the server's text and *wait, the wait before the next try, as
-// retry_in. It returns *wait and doubles *wait up to durableRefusedRetryCap for the step's next
-// such refusal (nextRefusedWait), as a grant's refusal waits (logGrantRefusal); a step starts
-// *wait at durableBindPoll. An operator who raises the account's limit or frees what it counts, or
-// the server's own recovery, lifts the refusal with no change to the listener, and every pod of
-// the machine shares the account and would be refused alike. It waits nothing itself: a start
-// step sleeps the wait out (waitOutAccountState), and the last-seen bucket's open waits it out
-// until its context ends (waitUnlessDone).
+// logAccountState logs line at ERROR for err, a request of a start step that the account's
+// JetStream limits or the server's own failure refused with the JetStream API error code code
+// (bus.AccountStateAnswer): what names what the step opens, then the code, the server's text and
+// *wait, the wait before the next try, as retry_in. It returns *wait and doubles *wait up to
+// durableRefusedRetryCap for the step's next such refusal (nextRefusedWait), as a grant's refusal
+// waits (logGrantRefusal); a step starts *wait at durableBindPoll. An operator who raises the
+// account's limit or frees what it counts, or the server's own recovery, lifts the refusal with no
+// change to the listener, and every pod of the machine shares the account and would be refused
+// alike. It waits nothing itself: a start step sleeps the wait out (waitOutAccountState).
 func logAccountState(logger *logging.Logger, wait *time.Duration, line string, code int, err error, what ...slog.Attr) time.Duration {
 	logger.Error(line, append(what,
 		slog.Int("code", code),
@@ -1684,20 +1675,19 @@ func bucketSubject(subject, bucket string) bool {
 }
 
 // openDeliveryLease opens the listener state bucket and makes machineID's delivery lease over it
-// for this process, instance, and returns it with the connection the bucket is on. The bucket is
-// opened on a NATS connection of the lease's own (bus.Dial, as the user and through the proxy the
-// environment names), which nats.go reconnects in place for the life of the process: the bus client
-// replaces its connection after a close, and a handle on the replaced one would never renew the
-// lease again. By the start rule (cmd/listener/README.md, "Start"), an open the server cannot
-// take in its cluster's present state is tried again after waitOutClusterState, and an open that
-// fails for want of a connection, or for any other cause, every startRetry, so a NATS that answers
+// for this process, instance, and returns it. The bucket is opened on a NATS connection of the
+// lease's own (bus.Dial, as the user and through the proxy the environment names), which nats.go
+// reconnects in place for the life of the process: the bus client replaces its connection after a
+// close, and a handle on the replaced one would never renew the lease again. By the start rule
+// (cmd/listener/README.md, "Start"), an open the server cannot take in its cluster's present state
+// is tried again after waitOutClusterState, and an open that fails for want of a connection, or
+// for any other cause, every startRetry, so a NATS that answers
 // late does not end the start. An open the NATS user's grant refuses (errListenerStateRefused)
-// returns no lease, and the connection, after one ERROR naming the bucket, the missing grant and
-// the wait before the next try: the listener then delivers without a lease, as the machine's one
-// deliverer receiving only while no other subscriber holds the durable, says so in /healthz, and
-// tries the bucket again on that connection until a grant lets it open it (joinDeliveryLease). ctx
-// is the start's (openListenerState).
-func openDeliveryLease(ctx context.Context, urls []string, replicas int, machineID, instance string, logger *logging.Logger) (*lease, *nats.Conn) {
+// returns no lease, and closes the connection, after one ERROR naming the bucket and the missing
+// grant: the listener then delivers without a lease, as the machine's one deliverer receiving only
+// while no other subscriber holds the durable, and says so in /healthz. ctx is the start's
+// (openListenerState).
+func openDeliveryLease(ctx context.Context, urls []string, replicas int, machineID, instance string, logger *logging.Logger) *lease {
 	var conn *nats.Conn
 	clusterWait := clusterStateWait{next: durableBindPoll}
 	for {
@@ -1708,7 +1698,7 @@ func openDeliveryLease(ctx context.Context, urls []string, replicas int, machine
 		if err == nil {
 			var kv bus.KeyValue
 			if kv, err = openListenerState(ctx, conn, replicas, listenerStateRequestWait); err == nil {
-				return newLease(kv, machineID, instance, productionLeaseConfig(), time.Now, logger), conn
+				return newLease(kv, machineID, instance, productionLeaseConfig(), time.Now, logger)
 			}
 		}
 		if errors.Is(err, errListenerStateRefused) {
@@ -1716,9 +1706,9 @@ func openDeliveryLease(ctx context.Context, urls []string, replicas int, machine
 				slog.String("bucket", bus.ListenerStateBucket),
 				slog.String("grant", listenerGrant),
 				slog.String("error", err.Error()),
-				slog.String("retry_in", durableBindPoll.String()),
 			)
-			return nil, conn
+			conn.Close()
+			return nil
 		}
 		if code, ok := bus.ClusterStateAnswer(err); ok {
 			waitOutClusterState(logger, &clusterWait, slog.String("bucket", bus.ListenerStateBucket), replicas, code, err)
@@ -1733,67 +1723,11 @@ func openDeliveryLease(ctx context.Context, urls []string, replicas int, machine
 	}
 }
 
-// listenerStateRefusedLine is the ERROR a listener delivering without a lease logs at each try of
-// the listener state bucket its NATS grant refuses again (joinDeliveryLease), with the bucket, the
-// grant it lacks, the refused subject, the server's text and the wait before the next try, as the
-// start's refused steps log theirs (logGrantRefusal).
-const listenerStateRefusedLine = "listener state bucket refused by the NATS grant; delivering without a lease and retrying"
-
 // listenerStateOpenFailedLine is the WARN a listener logs at each try of the listener state bucket
 // that failed neither by the NATS grant's refusal nor by an answer from the cluster's state, an
 // open no answer came to included, with the bucket, the wait before the next try (startRetry) and
-// the error: at the start (openDeliveryLease) and in the lease join (joinDeliveryLease).
+// the error: at the start (openDeliveryLease).
 const listenerStateOpenFailedLine = "listener state bucket open failed; retrying"
-
-// joinDeliveryLease opens the listener state bucket on conn, the lease connection of a listener
-// whose start the NATS grant refused that bucket (openDeliveryLease), and returns machineID's
-// delivery lease over it once it opens: a grant applied after the pod started is picked up without
-// a restart, as the start rule has it for every dependency that answers late (cmd/listener/README.md,
-// "Start"). It tries again after the start's ERROR's wait (durableBindPoll), and each refusal after
-// the wait logGrantRefusal returns, which logs listenerStateRefusedLine with the wait before the
-// next try, twice durableBindPoll after the first refusal, doubling up to durableRefusedRetryCap;
-// an open the cluster's state answers after the wait logClusterState returns, and any other
-// failure after startRetry, as the start's open does. The pod delivers without a lease meanwhile.
-//
-// Every wait between two tries is the loop's waitUnlessDone, which ends when ctx ends, and the
-// open itself runs under ctx (openListenerState), so the join returns nil as soon as ctx has
-// ended, wherever it is. The shutdown ends ctx and waits for the try the join runs in, within
-// stopHTTPGrace (durableReceiver.startJoin, durableReceiver.Stop): a join that slept its retry_in
-// out, up to durableRefusedRetryCap, would spend that budget, and a lease it made after waking
-// would take the record and renew it until the process exits. A try the stop cut ends with nothing
-// logged by the join and no lease: the join reads ctx as soon as the open returns, before it reads
-// the open's result, so an open that ctx's end failed logs none of listenerStateRefusedLine,
-// clusterStateLine (logClusterState) and listenerStateOpenFailedLine, and an open that succeeded
-// once ctx had ended makes no lease.
-func joinDeliveryLease(ctx context.Context, conn *nats.Conn, replicas int, machineID, instance string, logger *logging.Logger) *lease {
-	wait, refusedWait := durableBindPoll, nextRefusedWait(durableBindPoll)
-	clusterWait := clusterStateWait{next: durableBindPoll}
-	for waitUnlessDone(ctx, wait) == nil {
-		kv, err := openListenerState(ctx, conn, replicas, listenerStateRequestWait)
-		if ctx.Err() != nil {
-			return nil
-		}
-		if err == nil {
-			logger.Info("listener state bucket opened: joining the machine's delivery lease", slog.String("bucket", bus.ListenerStateBucket))
-			return newLease(kv, machineID, instance, productionLeaseConfig(), time.Now, logger)
-		}
-		if code, ok := bus.ClusterStateAnswer(err); ok {
-			wait = logClusterState(logger, &clusterWait, slog.String("bucket", bus.ListenerStateBucket), replicas, code, err)
-			continue
-		}
-		if errors.Is(err, errListenerStateRefused) {
-			wait = logGrantRefusal(logger, &refusedWait, listenerStateRefusedLine, err, slog.String("bucket", bus.ListenerStateBucket), slog.String("grant", listenerGrant))
-			continue
-		}
-		logger.Warn(listenerStateOpenFailedLine,
-			slog.String("bucket", bus.ListenerStateBucket),
-			slog.String("retry_in", startRetry.String()),
-			slog.String("error", err.Error()),
-		)
-		wait = startRetry
-	}
-	return nil
-}
 
 // natsReleaseRefusedLine is the ERROR the start logs at each try of the session consumers'
 // connection whose server is a nats-server release the listener refuses (natsversion's floor,
@@ -1862,86 +1796,6 @@ func openStartConnection[T any](logger *logging.Logger, start *natsStart, failed
 			wait = nextRefusedWait(wait)
 		}
 	}
-}
-
-// deliveryHandlingLimit is the longest one durable message's handling may take while it holds a
-// delivery-ledger attempt: its session read, its ledger calls, and, on the role lane, the
-// forward's publish and its wait for the stream's acknowledgement (roleForwardTimeout). The
-// delivery ledger's take-over age and the unplaceable deferrals' expiry
-// (unplaceableDeferralExpiry) count on it.
-const deliveryHandlingLimit = 30 * time.Second
-
-// ledgerTakeoverMargin is how much longer than one message's handling (deliveryHandlingLimit) a
-// pod waits on another pod's unresolved delivery attempt before it takes the attempt over: the
-// other pod may still be settling it until then, and after it, that pod died without resolving it.
-const ledgerTakeoverMargin = 5 * time.Second
-
-// ledgerReconnectWait bounds how long the durable lane waits for the delivery ledger's connection
-// to come back, to ask the ledger once more, before it NAKs the message for durableRetryDelay.
-const ledgerReconnectWait = 5 * time.Second
-
-// ledgerConnected is the delivery handler's ledgerReconnected over conn, the lease's connection,
-// the one the listener state bucket is on: it waits, polling, until conn is connected, for at most
-// ledgerReconnectWait and while ctx lasts. A listener that started without the bucket keeps that
-// connection to open the bucket on later (openDeliveryLease), and its ledger in process asks
-// nothing of it until then. An edge listener dials no lease connection (conn nil), and its ledger
-// stays in process, so it has none to wait for (nil).
-func ledgerConnected(conn *nats.Conn) func(ctx context.Context) bool {
-	if conn == nil {
-		return nil
-	}
-	return func(ctx context.Context) bool {
-		ctx, cancel := context.WithTimeout(ctx, ledgerReconnectWait)
-		defer cancel()
-		poll := time.NewTicker(50 * time.Millisecond)
-		defer poll.Stop()
-		for !conn.IsConnected() {
-			select {
-			case <-ctx.Done():
-				return conn.IsConnected()
-			case <-poll.C:
-			}
-		}
-		return true
-	}
-}
-
-// newDeliveryLedger makes the delivery ledger every lane asks before it forwards a role-lane
-// message to a session, reports a refusal of one, or gives an unplaceable delivery up: the
-// `delivery.` keys of the listener state bucket, shared by every pod of machineID, under the
-// lease's boot (leaseLedger). A listener with no lease (its NATS user lacks the grant for the
-// bucket) is the machine's one deliverer and keeps the ledger in process, which a restart forgets,
-// until it joins its machine's lease once a grant lets it open the bucket (joinDeliveryLease): the
-// ledger is the shared one from then on, but for the pairs it delivered or attempted before, which
-// it still answers from its own records for as long as each stops a delivery (dedupe.Joining).
-//
-// A record is keyed by the envelope's dedupe key, not its event id: fan-out normalization can
-// produce envelopes with one event id and distinct dedupe keys. Each forward is recorded as
-// attempted before it is sent and as delivered once the stream acknowledges that it stored the
-// forward, which is the whole of a forward's outcome (startRoleForward), so no pod of the machine
-// forwards that pair again.
-func newDeliveryLedger(deliveryLease *lease, machineID string, requestLimit time.Duration) dedupe.Ledger {
-	if deliveryLease == nil {
-		return dedupe.NewJoining(requestLimit + ledgerTakeoverMargin)
-	}
-	return leaseLedger(deliveryLease, machineID, requestLimit)
-}
-
-// leaseLedger is machineID's shared delivery ledger under l's boot (newDeliveryLedger), so a pod
-// that takes the lease over neither forwards again what the pod before it delivered nor reports a
-// refusal it already reported, and takes at once an attempt a former lease holder
-// (lease.FormerHolder) only made. A former holder that released the lease is alive and its role
-// lane is finishing the forward it had in flight, so its attempt is deferred until it has had
-// ledgerFormerSettle to record, give up or report that forward, and only a holder taken over by
-// force is taken over at once. Another pod's young attempt is otherwise deferred until it is
-// requestLimit and ledgerTakeoverMargin old.
-func leaseLedger(l *lease, machineID string, requestLimit time.Duration) *dedupe.KV {
-	return dedupe.NewKV(l.kv, dedupe.KVConfig{
-		Durable:       bus.ListenerDurable(machineID),
-		Boot:          l.boot,
-		TakeoverAfter: requestLimit + ledgerTakeoverMargin,
-		GoneBoot:      l.FormerHolder,
-	})
 }
 
 // listenerStreamOptions are the options envoy-listener starts the stream with
@@ -2374,20 +2228,15 @@ func runListener(credentialWait time.Duration) {
 	// and started once /v1 serves and the shutdown can release it. A pod that opened the bucket
 	// has the grant for it, so its keeper raises that bucket to the deployment's copies every
 	// period too (bus.Client.KeepBucket): naming it at the connect would have a pod whose grant
-	// lacks it, which delivers without a lease, refused on it every period instead. Such a pod
-	// keeps the lease's connection and joins the lease once a grant lets it open the bucket
-	// (joinDeliveryLease, below); podLease is the lease from whichever of the two, and what reads
-	// the lease outside the receive loop reads it there, so it follows the join.
+	// lacks it, which delivers without a lease, refused on it every period instead.
 	//
 	// An edge listener opens no lease and dials no lease connection: its grant holds no call of the
-	// listener state bucket (natsgrant.Edge), so every request of that connection would be refused,
-	// and none is ever granted to join on. It delivers as a listener without a lease does, the
-	// machine's one deliverer, receiving from the durable only while no other subscriber holds it,
-	// with its ledger and last-seen times in process: one edge pod runs per machine id.
+	// listener state bucket (natsgrant.Edge), so every request of that connection would be refused.
+	// It delivers as a listener without a lease does, the machine's one deliverer, receiving from
+	// the durable only while no other subscriber holds it: one edge pod runs per machine id.
 	var deliveryLease *lease
-	var leaseConn *nats.Conn
 	if edge == nil {
-		deliveryLease, leaseConn = openDeliveryLease(starting, cfg.NATSURLs, cfg.NATSReplicas, cfg.MachineID, instance, logger)
+		deliveryLease = openDeliveryLease(starting, cfg.NATSURLs, cfg.NATSReplicas, cfg.MachineID, instance, logger)
 	} else {
 		logger.Info("delivery lease not opened: an edge listener's grant holds no listener state bucket; delivering without a lease",
 			slog.String("bucket", bus.ListenerStateBucket))
@@ -2438,9 +2287,9 @@ func runListener(credentialWait time.Duration) {
 	// and its reaper cycles are JSON records with this machine's id. Never slog.SetDefault
 	// instead: see store.WithLogger for the CloudWatch filters that breaks. A role claim's grace
 	// counts from the machine's service start, the delivery lease record's service_since, which
-	// every pod reads alike; a listener with no lease takes its own start (store.WithServiceSince),
-	// until it joins the lease. Each old-form name a caller gives the registry is counted on
-	// legacySubjects (store.WithLegacySubjectCounter).
+	// every pod reads alike; a listener with no lease takes its own start (store.WithServiceSince).
+	// Each old-form name a caller gives the registry is counted on legacySubjects
+	// (store.WithLegacySubjectCounter).
 	registryOptions := []store.OpenOption{store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithLegacySubjectCounter(legacySubjects),
 		store.WithServiceSince(func() time.Time {
 			if l := podLease.Load(); l != nil {
@@ -2547,31 +2396,6 @@ func runListener(credentialWait time.Duration) {
 			slog.String("session_gone_horizon", sessionGoneHorizon.String()))
 	}
 
-	// The last-seen bucket (bus.LastSeenBucket) holds every session's `seen.` record, the one
-	// answer every pod of the fleet gives for a lapsed session's last_seen. Its open follows the
-	// registry, whose TTL its age follows (lastSeenAge), and runs on the bus client's connection
-	// in a loop of its own that never ends the process and holds back nothing of the lease: the
-	// lease's open above came first and the lease join waits on no try of it. Each try the NATS
-	// grant, the cluster's state or the account's state refuses, and each other failure, is tried
-	// again after its own wait (startLastSeenBucket); the try that opens it gives the registry the
-	// bucket (session.SessionRegistry.SetLastSeenBucket) and has the keeper keep it
-	// (bus.Client.KeepBucket), so a pod whose grant lacks it is not refused on it every period.
-	// Until then the registry keeps last-seen times in its own process. The start waits for the
-	// first try to end before /v1 opens (lastSeenTried, below), which lastSeenOpenBound bounds, so
-	// a healthy start has the bucket before the first registration, and a pod whose first try
-	// failed serves all the same. The loop runs under a context the shutdown ends
-	// (listenerParts.stopLastSeen).
-	//
-	// An edge listener opens none: its grant holds no call of the bucket (natsgrant.Edge), so it
-	// keeps last-seen times in process, as it keeps its ledger.
-	lastSeenCtx, stopLastSeen := context.WithCancel(context.Background())
-	var lastSeenTried <-chan struct{}
-	if edge == nil {
-		lastSeenTried = startLastSeenBucket(lastSeenCtx, client, cfg.NATSReplicas, sessions, logger)
-	} else {
-		logger.Info(lastSeenNotOpenedLine, slog.String("bucket", bus.LastSeenBucket))
-	}
-
 	// Wait for the session cache to finish its initial scan before we accept
 	// traffic, mirroring the interest-cache gate above. Bounded at 30s: a healthy
 	// cluster completes in milliseconds. On timeout we fail open — Put
@@ -2665,7 +2489,14 @@ func runListener(credentialWait time.Duration) {
 	client.AddReconnectHook(knownSessionMoveHook(known, logger))
 	client.AddDrainHook(known.EndWatch)
 
-	ledger := newDeliveryLedger(deliveryLease, cfg.MachineID, deliveryHandlingLimit)
+	dedupeCache := dedupe.New(10 * time.Minute)
+
+	// attemptCache tracks (dedupe_key, session_id) pairs BEFORE a delivery is reported, so a
+	// second copy of the same event read while the first is still being placed is a skip rather
+	// than a second delivery. Keyed by DedupeKey (not EventID) because fan-out normalization can
+	// produce multiple envelopes with the same EventID but distinct DedupeKeys. The existing
+	// dedupeCache records only successful deliveries (post-delivery) and cannot catch that case.
+	attemptCache := dedupe.New(attemptCacheTTL)
 
 	// The one wait a message on the agent subject of a session with no record takes before this
 	// listener reports the session's wake (unplaceable_delivery.go). Zero is a value an operator
@@ -2695,8 +2526,8 @@ func runListener(credentialWait time.Duration) {
 		sessions:          sessions,
 		known:             known,
 		machineID:         cfg.MachineID,
-		ledger:            ledger,
-		ledgerReconnected: ledgerConnected(leaseConn),
+		dedupeCache:       dedupeCache,
+		attemptCache:      attemptCache,
 		logger:            logger,
 		messagesReceived:  messagesReceived,
 		messagesDelivered: messagesDelivered,
@@ -2795,16 +2626,6 @@ func runListener(credentialWait time.Duration) {
 	// starts the sweep, the two callers (passRecords); the configuration and each copy made of it
 	// already hold the answer this sets.
 	deliveryConfig.consumerGrant.set(delivery.holdsConsumerGrant)
-	// A relay of this pod restarts a session's consumer at its ack floor only once a former holder
-	// that released the lease has had its settle bound (lease.FormerSettleWait): until then that pod
-	// may still be acking a frame the session answered, which this one would otherwise publish
-	// again. A pod without a lease waits for nothing until it joins one.
-	relays.formerSettle = func() time.Duration {
-		if l := podLease.Load(); l != nil {
-			return l.FormerSettleWait()
-		}
-		return 0
-	}
 	// An edge listener serves its sessions' relay sockets on a NATS connection of the sockets'
 	// own, as the main client's but for its name, whose slow consumers stay off the main
 	// connection's last error (confirmPublished reads it), opened by the start rule
@@ -2844,16 +2665,15 @@ func runListener(credentialWait time.Duration) {
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
 	parts := listenerParts{
-		server:       server,
-		client:       client,
-		lane:         lane,
-		delivery:     delivery,
-		relays:       relays,
-		sockets:      sockets,
-		caches:       caches,
-		known:        known,
-		stopWakes:    stopWakeReports,
-		stopLastSeen: stopLastSeen,
+		server:    server,
+		client:    client,
+		lane:      lane,
+		delivery:  delivery,
+		relays:    relays,
+		sockets:   sockets,
+		caches:    caches,
+		known:     known,
+		stopWakes: stopWakeReports,
 	}
 
 	// From here a SIGTERM or SIGINT is an ordered shutdown: /v1 serves from the next step, and the
@@ -2934,14 +2754,13 @@ func runListener(credentialWait time.Duration) {
 				// registered on another listener between that read and the delete is given its
 				// consumer back, at the floor the delete recorded, from the record and the
 				// interest row the bucket then holds (sessionDelivery.deleteConsumer,
-				// repairRegistered). The delete is held to this receive term and to the
-				// lease's loss deadline (the relays' term, sessionRelays.termContext), so a
-				// pass that reaches it once the lease has stepped down or another pod may hold
-				// it sends nothing. That body logs whatever became of the consumer and answers
+				// repairRegistered). That body logs whatever became of the consumer and answers
 				// no error, which is why the field carries none: the pass deletes the records
 				// behind this one either way, and the reaper's own log line would say no more
 				// than the delete's.
-				DeleteConsumer: delivery.deleteReaped(ready, relays),
+				DeleteConsumer: func(ctx context.Context, sessionID string) {
+					delivery.deleteConsumer(ctx, ready, sessionID, nil)
+				},
 			}),
 			// The collector removes the interest bucket's delete markers, which the reaper leaves
 			// one of per dead session on a key that is never reused and which nothing else removes,
@@ -2969,12 +2788,10 @@ func runListener(credentialWait time.Duration) {
 			// cadence is the interval the repeated wake report is named by (roleWakeInterval).
 			// It also runs the passes of every takeover record that is not finished
 			// (handOverTakenRole), on a listener whose NATS user holds the session consumers'
-			// calls (passRecords), each copy and record write of them held to this receive term
-			// and to the lease's loss deadline, so none is sent once the lease has stepped down
-			// or another pod may hold it (keptSweepConfig, takeoverWriteContext). An edge
-			// listener runs none, since its grant writes no kept lane: the shared listeners'
-			// sweeps hand over the lanes of roles held at the edge too.
-			startKeptRoleSweep(ctx, keptSweepConfig(deliveryConfig, relays), roleWakeInterval,
+			// calls (passRecords). An edge listener runs none, since its grant writes no kept
+			// lane: the shared listeners' sweeps hand over the lanes of roles held at the edge
+			// too.
+			startKeptRoleSweep(ctx, deliveryConfig, roleWakeInterval,
 				sweepPhase(sweepPhaseSeed("kept role sweep"), roleWakeInterval)),
 			// The session consumer sweep frees the slot every session consumer whose session
 			// ended without deregistering holds. The deregistration route deletes the consumer
@@ -2992,10 +2809,7 @@ func runListener(credentialWait time.Duration) {
 			// ends between a tick and its pass sweeps nothing and among the pods of one machine
 			// id only the one receiving deletes a consumer (startSessionConsumerSweep,
 			// session_consumer_sweep.go, whose trusted also reads that ownership for a caller
-			// that starts it anywhere else). The lease ends the term a moment before that
-			// context ends, so each delete is held to the relays' term and to the lease's loss
-			// deadline besides, and one reached once the lease has stepped down or another pod
-			// may hold it sends nothing (sessionDelivery.deleteConsumer).
+			// that starts it anywhere else).
 			startSessionConsumerSweep(ctx, &sessionConsumerSweep{
 				delivery: delivery,
 				sessions: sessions,
@@ -3091,13 +2905,6 @@ func runListener(credentialWait time.Duration) {
 		relaySockets:        sockets,
 		repositories:        repositories,
 	}
-	// A healthy start has the last-seen bucket before the first registration: /v1 opens once the
-	// loop's first try has ended, whatever it came to (startLastSeenBucket), and that try ends
-	// within lastSeenOpenBound. A pod whose first try failed serves with last-seen kept in process
-	// until a later try opens the bucket.
-	if lastSeenTried != nil {
-		<-lastSeenTried
-	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 
 	// The lease runs until the shutdown releases it (durableReceiver.Stop). Its loop runs under a
@@ -3107,40 +2914,6 @@ func runListener(credentialWait time.Duration) {
 		deliveryLease.Start(context.Background())
 	}
 	receiver.Start()
-	// A pod whose grant refused the listener state bucket at its start delivers without a lease,
-	// and joins its machine's lease once a grant lets it open the bucket, with no restart
-	// (joinDeliveryLease). What the start built without the lease follows the join here: the keeper
-	// keeps the bucket, the role claim's grace and the relays' wait for a former holder read the
-	// lease (podLease), the delivery ledger becomes the machine's shared one (dedupe.Joining), and
-	// the lease judges this pod's receiving by the receive loop's signal. The last-seen records are
-	// no part of the join: their bucket opens in a loop of its own, which the join waits on no try
-	// of (startLastSeenBucket). The lease's first rounds then take the record, or see another pod
-	// write it (lease.Contend), before anything this pod delivers is given up: a dead holder's
-	// record, which nobody renews, they take once it has stood unchanged for the ttl, and a live
-	// holder's they leave once its next renewal lands, within leaseRenewEvery and one standby
-	// poll. Its loop starts, and the receive loop hands the term it receives on to it, which takes
-	// that term as it stands or, when another pod holds the lease, ends it (durableReceiver.join).
-	// An edge listener, which dialled no lease connection, joins none. The join runs under a
-	// context of the receiver's own, which the shutdown ends and waits out before it stops receiving
-	// (durableReceiver.startJoin, durableReceiver.Stop), so a join that completes as the pod stops
-	// is handed over or released by that stop rather than left renewing until the exit; the
-	// joined lease's own loop runs under a context nothing cancels, as a lease opened at the start
-	// does.
-	if deliveryLease == nil && leaseConn != nil {
-		receiver.startJoin(func(ctx context.Context) *lease {
-			joined := joinDeliveryLease(ctx, leaseConn, cfg.NATSReplicas, cfg.MachineID, instance, logger)
-			if joined == nil {
-				return nil
-			}
-			podLease.Store(joined)
-			client.KeepBucket(bus.ListenerStateBucket)
-			ledger.(*dedupe.Joining).Join(leaseLedger(joined, cfg.MachineID, deliveryHandlingLimit))
-			joined.SetReceiveSignal(receiver.receiveUp)
-			joined.Contend(ctx)
-			joined.Start(context.Background())
-			return joined
-		})
-	}
 	deps.Store(ready)
 	logger.Info("envoy-listener ready (NATS connected)")
 
@@ -3293,8 +3066,7 @@ type listenerLoops struct {
 // relays the relay of its consumers (nil when it does not run), sockets an edge listener's relay
 // sockets (nil on every other listener), caches the KV caches whose watchers are retired last,
 // stopWakes ends the wake reports still retrying, the liveness report and the old-form counter's
-// log line (wakeReporter, startListenerReadyReports, startLegacySubjectsLog), and stopLastSeen
-// ends the last-seen bucket's open while it still tries the bucket (startLastSeenBucket).
+// log line (wakeReporter, startListenerReadyReports, startLegacySubjectsLog).
 type listenerParts struct {
 	server   *http.Server
 	client   *bus.Client
@@ -3305,9 +3077,8 @@ type listenerParts struct {
 	caches   []listenerCache
 	// known is the known-session store, whose watcher is retired with the caches' but which is
 	// none of them (listenerDeps.known); nil on a listener with no store, which retires nothing.
-	known        *session.KnownSessions
-	stopWakes    func()
-	stopLastSeen func()
+	known     *session.KnownSessions
+	stopWakes func()
 }
 
 // The listener's stop budget: the deadlines shutdownListener spends after SIGTERM, one after
@@ -3326,8 +3097,7 @@ const (
 	// Its whole stop stays inside stopBudget all the same: its role lane has no client of its own,
 	// so its drain spends none of stopLaneDrain (roleLane.drain). The receive stop is the one that
 	// most plausibly spends the whole of this grace: step 2 of shutdownListener below sizes its
-	// hand-over at 11 s, and 12.25 s where the flush and the release both run to their bounds, so
-	// whoever sizes this number reads that step too.
+	// hand-over at 9 s at most, so whoever sizes this number reads that step too.
 	stopHTTPGrace = 10 * time.Second
 	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
 	stopLaneDrain = 3 * time.Second
@@ -3361,14 +3131,12 @@ const (
 // for disconnectedFailureThreshold probes in a row (runSelfHealthMonitor's terminate). It exits
 // non-zero so the runtime's restart policy restores the listener.
 func shutdownListener(logger *logging.Logger, parts listenerParts, loops listenerLoops) {
-	// 1. Stop the self-health monitor, so nothing re-subscribes or re-watches from here, the wake
-	// reports retrying off their callers' paths, and the last-seen bucket's tries: each holds its
-	// goroutine for minutes otherwise, and a report or a bucket open sent into a draining
-	// connection reaches nothing. Each is a context cancel and waits on nothing, so none spends any
-	// of the budget below.
+	// 1. Stop the self-health monitor, so nothing re-subscribes or re-watches from here, and the
+	// wake reports retrying off their callers' paths: each holds its goroutine for minutes
+	// otherwise, and a report sent into a draining connection reaches nothing. Each is a context
+	// cancel and waits on nothing, so none spends any of the budget below.
 	loops.stop()
 	parts.stopWakes()
-	parts.stopLastSeen()
 
 	// 2. Stop receiving the durable, inside stopHTTPGrace, the budget the relays and the HTTP stop share:
 	// the term's end stops this pod's session relays (durableReceiver.end), the holder-only
@@ -3376,39 +3144,25 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// (3 s) before its handling is cancelled and it is NAKed, with a second for the handler to
 	// return, every message not handled is NAKed with a delay for the next holder, and the lease
 	// is marked released, so a standby takes the lease at its next poll; the subscription then
-	// stays until the standby receives, at least 1.25 s after the release (lingerUntaken and a
-	// poll, the floor that holds the deliver subject while the standby subscribes) and up to
-	// lingerMax (3 s) after the NAKs, then drains (2 s) and, when the whole hand-over went
-	// through, writes the lease's clean-hand-back mark, one bucket call of 2 s at most, which
-	// ends the standby's settle hold at 3 s (durableReceiver.handBack): 11 s at most, and
-	// 12.25 s when the flush (1 s) and the release (2 s) both run to their bounds and leave that
-	// floor past the cap. The relays' own settle is not in that sum: the term's end only cancels
-	// them, and step 3 below waits for it. This budget bounds none of those waits: it is how
-	// long this shutdown waits for the receive stop. Past it the shutdown goes on to the relays
-	// and the HTTP stop with no time left, then to the NATS drains below and os.Exit(1), while
-	// the hand-back may still be running. The listener's own shutdown, not the runtime's kill,
-	// cuts that hand-back off: client.Drain ends the subscription of a hand-back still lingering
-	// or draining, and os.Exit(1) ends only a mark write still in flight on the lease's own
-	// connection. So a longer grace period in the runtime keeps no mark, and the next holder
-	// then settles at its 7 s cap, as it does after any stop that wrote none. HTTP keeps serving
-	// meanwhile.
+	// drains (durableReceiver.handBack): the grace and the handler's second, the flush (1 s), the
+	// release (2 s) and the drain (2 s) come to 9 s at most. This budget bounds none of those
+	// waits: it is how long this shutdown waits for the receive stop. Past it the shutdown goes on
+	// to the relays and the HTTP stop with no time left, then to the NATS drains below and
+	// os.Exit(1), while the hand-back may still be running; client.Drain ends the subscription of
+	// a hand-back still draining. HTTP keeps serving meanwhile.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), stopHTTPGrace)
 	defer cancel()
 	loops.receiver.Stop(shutdownCtx)
 
-	// 3. The session relays: publish no frame and ack nothing more. Each relay the term's end stopped
-	// first gives the frame it had unanswered relaySettleGrace (0.75 s) to be answered and acks it
-	// (sessionRelays.settleStoppedFrames), so the pod taking over does not publish it again; this step
-	// waits for that, out of what the receive stop left of the budget. Each relay then returns to the
-	// server, with a nak, every message it still holds (sessionRelays.release), the frames the settle
-	// left in doubt among them, so the machine's pod that receives the durable next is delivered them
-	// at once, not after their ack wait. Past the budget the stop warns and the shutdown goes on, and
-	// a run still going may publish, have a frame acked or nak what it holds (sessionRelays.stop).
+	// 3. The session relays: publish no frame and ack nothing more. Each relay returns to the
+	// server, with a nak, every message it still holds (sessionRelays.release), so the machine's
+	// pod that receives the durable next is delivered them at once, not after their ack wait. Past
+	// the budget the stop warns and the shutdown goes on, and a run still going may publish, have
+	// a frame acked or nak what it holds (sessionRelays.stop).
 	parts.relays.stop(shutdownCtx)
 	// An edge listener's relay sockets close next, each with 1012, on which its client opens it
-	// again at once on another replica, and every upgrade after it is refused. They stay open
-	// through the relays' settle above, since an edge session answers its frames over its socket
-	// alone, and close before the HTTP server's shutdown, which does not wait for a hijacked
+	// again at once on another replica, and every upgrade after it is refused. They close before
+	// the HTTP server's shutdown, which does not wait for a hijacked
 	// connection, so nothing else would close them. The close takes no context: it waits up to
 	// relaySocketCloseGrace whatever the steps above left of stopHTTPGrace (stopHTTPGrace says
 	// what that costs).
@@ -3450,8 +3204,8 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	}
 	parts.known.StopWatch()
 	// 10 s for the deliveries in their handlers, as before the drain hooks, and the hooks' 3 s on
-	// top (bus's drainHookReserve): with the 10 s the receive stop, the relays' settle and the
-	// HTTP stop share and the role lane's 5 s side by side, 28 s, inside every runtime's 30 s.
+	// top (bus's drainHookReserve): with the 10 s the receive stop, the relays and the HTTP stop
+	// share and the role lane's 5 s side by side, 28 s, inside every runtime's 30 s.
 	if err := parts.client.Drain(stopClientDrain); err != nil {
 		logger.Warn("nats drain error", slog.String("error", err.Error()))
 	}

@@ -56,7 +56,7 @@ func TestTheReceiveSignalAnswersWhileTheReceiveConnectionsLocksAreHeld(t *testin
 		t.Fatal("pod-a did not take the lease")
 	}
 	term := rig.lease.Status().Term
-	if err := rig.receiver.begin(context.Background(), subject, 0, term); err != nil {
+	if err := rig.receiver.begin(subject, 0, term); err != nil {
 		t.Fatalf("subscribe to the durable's deliver subject: %v", err)
 	}
 	if !rig.receiver.receiveUp() {

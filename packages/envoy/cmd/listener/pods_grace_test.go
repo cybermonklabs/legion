@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,7 +13,6 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
@@ -22,8 +20,8 @@ import (
 )
 
 // stateTestPod is one listener pod for a test of the state its pods share: its own NATS connection,
-// its own handles on the listener state bucket and the last-seen bucket and its delivery lease
-// over the first, and its interest and session registries wired to them as main wires them.
+// its own handle on the listener state bucket and its delivery lease over it, and its interest and
+// session registries wired to them as main wires them.
 // startedAgo is how long before now the pod started, as its interest registry's clock reads while
 // it opens.
 type stateTestPod struct {
@@ -46,17 +44,12 @@ func openStateTestPod(t *testing.T, instance string, startedAgo time.Duration, s
 	}
 	t.Cleanup(registry.StopWatch)
 	elapsed.Store(0)
-	seen, err := openLastSeen(t.Context(), client.Conn, 1, lastSeenMaxAge)
-	if err != nil {
-		t.Fatalf("open pod %s's last-seen bucket: %v", instance, err)
-	}
 	sessionOptions = append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, sessionOptions...)
 	if err != nil {
 		t.Fatalf("open pod %s's session registry: %v", instance, err)
 	}
 	t.Cleanup(sessions.StopWatch)
-	sessions.SetLastSeenBucket(seen)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := sessions.WaitForCacheReady(ctx); err != nil {
@@ -195,13 +188,12 @@ func (kv *heldRoleDeleteKV) Delete(key string, opts ...natsgo.DeleteOpt) error {
 // under the context the receive loop makes for the term's loops from context.Background() and
 // cancels only once it hears the term has ended (durableReceiver.serve), and the pass sends each
 // release on that context (store.Registry.ReapRoleClaims): nothing holds the release to the term
-// or to the lease's loss deadline, as a session consumer's delete is held
-// (sessionRelays.termContext). So the release reaches the bucket. Here the pass has judged the
+// or to the lease's loss deadline, so the release reaches the bucket. Here the pass has judged the
 // claim's holder gone and called the delete, which is held before it is sent while the lease
 // steps down, its loss deadline passes and the next holder claims the role, the loop's context
 // still live. What refuses the delete is the revision the pass's scan read, which the next
 // holder's claim moved (store.Registry.releaseReadExpiredRoleClaim). The lease is stepped by
-// hand, as the relay's and the consumer reaper's rows step theirs (relay_ownership_test.go).
+// hand (stepLeaseDown, relay_ownership_test.go).
 func TestARoleClaimReleaseReachedAfterTheLeaseSteppedDownKeepsTheNextHoldersClaim(t *testing.T) {
 	t.Parallel()
 	const (
@@ -256,9 +248,6 @@ func TestARoleClaimReleaseReachedAfterTheLeaseSteppedDownKeepsTheNextHoldersClai
 	if !stepLeaseDown(t, a.lease.kv, a.lease) {
 		t.Fatal("pod-a's lease did not step down while the pass's release was held")
 	}
-	if left := a.lease.UntilLoss(status.Term); left != 0 {
-		t.Fatalf("pod-a's term has %s left before its loss deadline after the step-down, want none", left)
-	}
 	a.claim(t, role, nextHolder)
 	claimed := storedRoleClaim(t, a.deps.registry, role)
 	if claimed.HolderSessionID != nextHolder || claimed.Revision <= judged.Revision {
@@ -278,45 +267,5 @@ func TestARoleClaimReleaseReachedAfterTheLeaseSteppedDownKeepsTheNextHoldersClai
 	}
 	if got.err != nil || got.sweep != (store.RoleClaimSweep{}) {
 		t.Fatalf("the pass answered %+v, %v; want nothing reaped and nothing skipped: its release lost to the next holder's claim, which is the release's answer and not a failure", got.sweep, got.err)
-	}
-}
-
-// A role holder whose session heartbeated only through pod A and then expired is reported with one
-// last_seen by every pod, pod B started after it lapsed included. Before, the last-seen time lived
-// in the memory of a pod whose cache had held the session, so pod B reported none.
-func TestARoleHoldersLastSeenIsTheSameOnAPodStartedAfterItLapsed(t *testing.T) {
-	t.Parallel()
-	const (
-		holder = "ses_lapsing_holder"
-		ttl    = 3 * time.Second
-	)
-	a := openStateTestPod(t, "pod-a", 0, session.WithSessionTTL(ttl))
-	if err := a.deps.sessions.Put(holder, session.SessionEntry{MachineID: "box-a", SelfSubscribed: true}); err != nil {
-		t.Fatalf("register %s through pod a: %v", holder, err)
-	}
-	a.claim(t, "role-a", holder)
-	a.claim(t, "role-b", holder)
-	sessionKV, err := a.deps.client.JS().KeyValue(bus.SessionBucket)
-	if err != nil {
-		t.Fatalf("open the session bucket: %v", err)
-	}
-	deadline := time.Now().Add(ttl + 10*time.Second)
-	for {
-		if _, err := sessionKV.Get(holder); errors.Is(err, natsgo.ErrKeyNotFound) {
-			break
-		} else if err != nil {
-			t.Fatalf("read %s while it expires: %v", holder, err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's registration was not removed within %s of its write", holder, ttl+10*time.Second)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	b := openStateTestPod(t, "pod-b", 0)
-
-	bodyA, onA := a.getLapsedRole(t, "role-a")
-	bodyB, onB := b.getLapsedRole(t, "role-b")
-	if onA.LastSeen == nil || onB.LastSeen == nil || *onA.LastSeen != *onB.LastSeen {
-		t.Fatalf("pod a answers %s, pod b answers %s; want one last_seen on both", bodyA, bodyB)
 	}
 }

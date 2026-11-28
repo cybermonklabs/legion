@@ -114,7 +114,7 @@ func TestList_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
 	if len(entries) != 1 || entries[0].SessionID != "ses_live" {
 		t.Fatalf("expected only ses_live, got %v", entries)
 	}
-	before := r.LastSeen(context.Background(), "ses_expired")
+	before := r.LastSeen("ses_expired")
 	if before != updated {
 		t.Fatalf("LastSeen before removal = %d, want the expired entry's UpdatedAt %d", before, updated)
 	}
@@ -122,7 +122,7 @@ func TestList_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
 	// The copy schedules each row's deadline as it stores it (storedLocked), so the expiry timer
 	// removes the expired one with no read of any kind.
 	waitForCacheSize(t, r, 1)
-	if after := r.LastSeen(context.Background(), "ses_expired"); after != before {
+	if after := r.LastSeen("ses_expired"); after != before {
 		t.Fatalf("LastSeen after removal = %d, want %d as before it", after, before)
 	}
 	if _, err := r.Get("ses_live"); err != nil {
@@ -161,7 +161,7 @@ func TestGet_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
 	if _, err := r.Get("ses_short"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("Get(ses_short) after its deadline = %v, want ErrKeyNotFound", err)
 	}
-	if got := r.LastSeen(context.Background(), "ses_short"); got != created.UnixMilli() {
+	if got := r.LastSeen("ses_short"); got != created.UnixMilli() {
 		t.Fatalf("LastSeen(ses_short) after removal = %d, want %d", got, created.UnixMilli())
 	}
 }
@@ -194,63 +194,40 @@ func TestExpiredLastSeenReadsZeroAndLeavesAtItsDeadline(t *testing.T) {
 	clock := &heldClock{now: time.Now()}
 	r := newTestRegistry(ttl)
 	r.now = clock.Now
-	r.seenLocal["ses_lapsed"] = clock.Now().Add(-2 * time.Minute).UnixMilli()
-	if got := r.LastSeen(context.Background(), "ses_lapsed"); got != 0 {
+	r.lastSeen["ses_lapsed"] = lastSeenSession{
+		lastSeen:  clock.Now().Add(-2 * time.Minute).UnixMilli(),
+		expiresAt: clock.Now().Add(-time.Minute),
+	}
+	if got := r.LastSeen("ses_lapsed"); got != 0 {
 		t.Fatalf("LastSeen(ses_lapsed) = %d, want 0 for an expired record", got)
 	}
 	if !lastSeenHeld(r, "ses_lapsed") {
 		t.Fatal("LastSeen removed a record: a read must change nothing")
 	}
 
-	// A record the registry keeps when a session leaves leaves seenLocal at its own deadline, one
-	// retention after the registration's expiry, with no read and no Ping.
+	// A record the registry writes when a session leaves leaves lastSeen at its own deadline, one
+	// TTL later, with no read and no Ping.
 	created := clock.Now()
 	r.applyWatched(watchedPut(t, "ses_gone", 1, created, SessionEntry{Port: 1, UpdatedAt: created.UnixMilli()}))
 	r.applyWatched(watchedDelete("ses_gone", 2))
-	if got := r.LastSeen(context.Background(), "ses_gone"); got != created.UnixMilli() {
+	if got := r.LastSeen("ses_gone"); got != created.UnixMilli() {
 		t.Fatalf("LastSeen(ses_gone) = %d, want %d", got, created.UnixMilli())
 	}
 	clock.advance(2 * ttl)
 	waitUntil(t, func() bool { return !lastSeenHeld(r, "ses_gone") })
-	if got := r.LastSeen(context.Background(), "ses_gone"); got != 0 {
+	if got := r.LastSeen("ses_gone"); got != 0 {
 		t.Fatalf("LastSeen(ses_gone) after its deadline = %d, want 0", got)
 	}
 }
 
-// Without the last-seen bucket a lapsed session's last-seen time is the registry's own
-// (seenLocal), reported for one retention after the expiry of the registration it came from and
-// then dropped at that deadline.
-func TestPerProcessLastSeenEndsOneTTLAfterTheRegistrationsExpiry(t *testing.T) {
-	now := time.Now()
-	r := newTestRegistry(time.Minute)
-	r.seenLocal["ses_recent"] = now.Add(-90 * time.Second).UnixMilli()
-	r.seenLocal["ses_old"] = now.Add(-2*time.Minute - time.Second).UnixMilli()
-	if got, want := r.LastSeen(context.Background(), "ses_recent"), now.Add(-90*time.Second).UnixMilli(); got != want {
-		t.Fatalf("last seen of a session that lapsed 30 s ago = %d, want %d", got, want)
-	}
-	if got := r.LastSeen(context.Background(), "ses_old"); got != 0 {
-		t.Fatalf("last seen of a session whose registration expired over a TTL ago = %d, want none", got)
-	}
-	// The records went in directly, so nothing scheduled their deadlines; schedule them as a write
-	// does. The expiry timer then drops the one past its retention and keeps the other.
-	r.mu.Lock()
-	for id, at := range r.seenLocal {
-		r.scheduleLocked(id, expireLastSeen, seenUntil(at, r.ttl, r.retention()))
-	}
-	r.mu.Unlock()
-	waitUntil(t, func() bool { return !lastSeenHeld(r, "ses_old") })
-	if !lastSeenHeld(r, "ses_recent") {
-		t.Fatal("the registry dropped a last-seen time within its retention")
-	}
-}
-
-// A lapsed session's per-process last-seen time does not make it live, and once the session
-// registers again its last-seen time is the live registration's.
 func TestLastSeenRetentionDoesNotRestoreLiveSession(t *testing.T) {
 	now := time.Now()
 	r := followingRegistry(t)
 	r.mu.Lock()
-	r.seenLocal["ses_lapsed"] = now.Add(-6 * time.Minute).UnixMilli()
+	r.lastSeen["ses_lapsed"] = lastSeenSession{
+		lastSeen:  now.Add(-time.Minute).UnixMilli(),
+		expiresAt: now.Add(time.Minute),
+	}
 	r.mu.Unlock()
 
 	if _, err := r.Get("ses_lapsed"); !errors.Is(err, natsgo.ErrKeyNotFound) {
@@ -263,7 +240,7 @@ func TestLastSeenRetentionDoesNotRestoreLiveSession(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("live sessions = %+v, want none", entries)
 	}
-	if got := r.LastSeen(context.Background(), "ses_lapsed"); got == 0 {
+	if got := r.LastSeen("ses_lapsed"); got == 0 {
 		t.Fatal("last seen timestamp was lost before its retention TTL")
 	}
 
@@ -273,8 +250,8 @@ func TestLastSeenRetentionDoesNotRestoreLiveSession(t *testing.T) {
 	if _, err := r.Get("ses_lapsed"); err != nil {
 		t.Fatalf("Get(reregistered): %v", err)
 	}
-	if got := r.LastSeen(context.Background(), "ses_lapsed"); got != now.UnixMilli() {
-		t.Fatalf("last seen = %d after re-registration, want the live registration's %d", got, now.UnixMilli())
+	if got := r.LastSeen("ses_lapsed"); got != 0 {
+		t.Fatalf("last seen = %d after re-registration, want removed diagnostic", got)
 	}
 }
 

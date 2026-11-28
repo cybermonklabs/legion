@@ -6,26 +6,31 @@ import (
 	"time"
 )
 
-// entryCount is how many pairs c holds, read under its lock, as its writes and its sweep change
-// them.
-func entryCount(c *Cache) int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.entries)
+// testClock provides a thread-safe injectable clock for tests.
+type testClock struct {
+	mu  sync.Mutex
+	now time.Time
 }
 
-// mustBeStored fails t unless c answers the pair as recorded with the copy at sequence.
-func mustBeStored(t *testing.T, c *Cache, dedupeKey, sessionID string, sequence uint64) {
-	t.Helper()
-	if got, ok := c.Stored(dedupeKey, sessionID); !ok || got != sequence {
-		t.Fatalf("Stored(%q, %q) = %d, %t; want %d, true", dedupeKey, sessionID, got, ok, sequence)
-	}
+func newTestClock() *testClock {
+	return &testClock{now: time.Now()}
 }
 
-// A pair nothing recorded is not seen.
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *testClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
 func TestCache_FirstDeliveryNotSeen(t *testing.T) {
 	clock := newTestClock()
-	c := newCache(10*time.Minute, clock.Now)
+	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
 	if c.Seen("key-1", "ses-A") {
@@ -33,27 +38,23 @@ func TestCache_FirstDeliveryNotSeen(t *testing.T) {
 	}
 }
 
-// A recorded pair is seen, and Stored answers it with the sequence it was recorded with.
 func TestCache_AfterRecordIsSeen(t *testing.T) {
 	clock := newTestClock()
-	c := newCache(10*time.Minute, clock.Now)
+	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
-	c.RecordStored("key-1", "ses-A", 5)
+	c.Record("key-1", "ses-A")
 	if !c.Seen("key-1", "ses-A") {
-		t.Fatal("should be seen after RecordStored")
+		t.Fatal("should be seen after Record")
 	}
-	mustBeStored(t, c, "key-1", "ses-A", 5)
 }
 
-// Clear drops a recorded pair, which is then not seen.
 func TestCache_ClearRemovesRecordedDelivery(t *testing.T) {
 	clock := newTestClock()
-	c := newCache(10*time.Minute, clock.Now)
+	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
-	c.RecordStored("key-1", "ses-A", 5)
-	mustBeStored(t, c, "key-1", "ses-A", 5)
+	c.Record("key-1", "ses-A")
 	c.Clear("key-1", "ses-A")
 
 	if c.Seen("key-1", "ses-A") {
@@ -61,40 +62,34 @@ func TestCache_ClearRemovesRecordedDelivery(t *testing.T) {
 	}
 }
 
-// A pair recorded for one session is not seen for another session of the same key.
 func TestCache_DifferentSessionsIndependent(t *testing.T) {
 	clock := newTestClock()
-	c := newCache(10*time.Minute, clock.Now)
+	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
-	c.RecordStored("key-1", "ses-A", 5)
+	c.Record("key-1", "ses-A")
 	if c.Seen("key-1", "ses-B") {
 		t.Fatal("different session should not be seen")
 	}
-	mustBeStored(t, c, "key-1", "ses-A", 5)
 }
 
-// A pair recorded for one dedupe key is not seen for another key to the same session.
 func TestCache_DifferentKeysIndependent(t *testing.T) {
 	clock := newTestClock()
-	c := newCache(10*time.Minute, clock.Now)
+	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
-	c.RecordStored("key-1", "ses-A", 5)
+	c.Record("key-1", "ses-A")
 	if c.Seen("key-2", "ses-A") {
 		t.Fatal("different dedupe key should not be seen")
 	}
-	mustBeStored(t, c, "key-1", "ses-A", 5)
 }
 
-// A recorded pair is not seen once the TTL has passed.
 func TestCache_ExpiryAfterTTL(t *testing.T) {
 	clock := newTestClock()
-	c := newCache(10*time.Minute, clock.Now)
+	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
-	c.RecordStored("key-1", "ses-A", 5)
-	mustBeStored(t, c, "key-1", "ses-A", 5)
+	c.Record("key-1", "ses-A")
 	clock.Advance(11 * time.Minute) // past 10min TTL
 
 	if c.Seen("key-1", "ses-A") {
@@ -107,7 +102,7 @@ func TestCache_ExpiryAfterTTL(t *testing.T) {
 // after the TTL.
 func TestCache_ForwardNamesTheNewestStoredCopyOfARequest(t *testing.T) {
 	clock := newTestClock()
-	c := newCache(10*time.Minute, clock.Now)
+	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
 	c.RecordStored("key-1", "ses-A", 5)
@@ -130,22 +125,19 @@ func TestCache_ForwardNamesTheNewestStoredCopyOfARequest(t *testing.T) {
 	}
 }
 
-// The TTL bound is inclusive: a pair exactly one TTL old is still seen, and one a nanosecond older
-// is not.
 func TestCache_NotSeenAtExactTTLBoundary(t *testing.T) {
 	clock := newTestClock()
 	ttl := 10 * time.Minute
-	c := newCache(ttl, clock.Now)
+	c := NewWithClock(ttl, clock.Now)
 	defer c.Stop()
 
-	c.RecordStored("key-1", "ses-A", 5)
+	c.Record("key-1", "ses-A")
 
 	// At exactly TTL: Sub(t) == ttl, which satisfies <= ttl
 	clock.Advance(ttl)
 	if !c.Seen("key-1", "ses-A") {
 		t.Fatal("at exact TTL boundary, entry should still be seen (<=)")
 	}
-	mustBeStored(t, c, "key-1", "ses-A", 5)
 
 	// One nanosecond past: now expired
 	clock.Advance(1)
@@ -154,36 +146,33 @@ func TestCache_NotSeenAtExactTTLBoundary(t *testing.T) {
 	}
 }
 
-// A read records nothing: only RecordStored writes a pair, once the delivery is confirmed.
 func TestCache_RecordOnlyAfterSuccess(t *testing.T) {
+	// Verify that Seen alone never records — only Record does.
 	clock := newTestClock()
-	c := newCache(10*time.Minute, clock.Now)
+	c := NewWithClock(10*time.Minute, clock.Now)
 	defer c.Stop()
 
-	// Multiple reads without RecordStored
+	// Multiple Seen calls without Record
 	c.Seen("key-1", "ses-A")
 	c.Seen("key-1", "ses-A")
-	c.Stored("key-1", "ses-A")
 
-	if n := entryCount(c); n != 0 {
-		t.Fatalf("Seen and Stored should not record entries, got %d", n)
+	if c.Len() != 0 {
+		t.Fatalf("Seen should not record entries, got len=%d", c.Len())
 	}
 }
 
-// Writes and reads of one pair from many goroutines at once race on nothing (the race detector
-// reads it).
 func TestCache_ConcurrentAccess(t *testing.T) {
 	c := New(10 * time.Minute)
 	defer c.Stop()
 
 	var wg sync.WaitGroup
-	for i := range 100 {
+	for i := 0; i < 100; i++ {
 		wg.Add(3)
 		key := "key"
 		session := "ses"
 		go func() {
 			defer wg.Done()
-			c.RecordStored(key, session, uint64(i))
+			c.Record(key, session)
 		}()
 		go func() {
 			defer wg.Done()
@@ -191,23 +180,21 @@ func TestCache_ConcurrentAccess(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			entryCount(c)
+			c.Len()
 		}()
 	}
 	wg.Wait()
 }
 
-// The background sweep drops a pair past its TTL.
 func TestCache_BackgroundCleanup(t *testing.T) {
 	clock := newTestClock()
 	// Short TTL so the real ticker fires quickly.
-	c := newCache(50*time.Millisecond, clock.Now)
+	c := NewWithClock(50*time.Millisecond, clock.Now)
 	defer c.Stop()
 
-	c.RecordStored("key-1", "ses-A", 5)
-	mustBeStored(t, c, "key-1", "ses-A", 5)
-	if n := entryCount(c); n != 1 {
-		t.Fatalf("expected 1 entry, got %d", n)
+	c.Record("key-1", "ses-A")
+	if c.Len() != 1 {
+		t.Fatalf("expected 1 entry, got %d", c.Len())
 	}
 
 	// Advance fake clock past TTL
@@ -217,25 +204,81 @@ func TestCache_BackgroundCleanup(t *testing.T) {
 	// any fixed number of periods: wait for the pass that removes the expired entry. The deadline
 	// bounds a failure; it is not how long cleanup takes.
 	deadline := time.Now().Add(10 * time.Second)
-	for entryCount(c) != 0 {
+	for c.Len() != 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("expected 0 entries after background cleanup, got %d", entryCount(c))
+			t.Fatalf("expected 0 entries after background cleanup, got %d", c.Len())
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 }
 
-// Stop ends the sweep and nothing else: a pair recorded after it is still seen and stored. The
-// clock is the test's, so the 10ms TTL does not lapse between the write and the reads.
 func TestCache_StopHaltsCleanup(t *testing.T) {
-	c := newCache(10*time.Millisecond, newTestClock().Now)
+	c := New(10 * time.Millisecond)
 	c.Stop()
 
 	// Should not panic on stop — goroutine exits cleanly.
-	// RecordStored after stop should still work (no cleanup, but functionally correct).
-	c.RecordStored("key-1", "ses-A", 5)
+	// Record after stop should still work (no cleanup, but functionally correct).
+	c.Record("key-1", "ses-A")
 	if !c.Seen("key-1", "ses-A") {
-		t.Fatal("RecordStored/Seen should still work after Stop")
+		t.Fatal("Record/Seen should still work after Stop")
 	}
-	mustBeStored(t, c, "key-1", "ses-A", 5)
+}
+
+func TestCache_Len(t *testing.T) {
+	clock := newTestClock()
+	c := NewWithClock(10*time.Minute, clock.Now)
+	defer c.Stop()
+
+	if c.Len() != 0 {
+		t.Fatalf("expected 0, got %d", c.Len())
+	}
+
+	c.Record("key-1", "ses-A")
+	c.Record("key-2", "ses-A")
+	c.Record("key-1", "ses-B")
+
+	if c.Len() != 3 {
+		t.Fatalf("expected 3, got %d", c.Len())
+	}
+}
+
+// TestCache_PreDeliveryAttemptDedupe validates the pattern used by the listener:
+// record BEFORE delivery so redeliveries of the same (dedupe_key, session_id)
+// are skipped even when the first attempt timed out (slow-204 case).
+func TestCache_PreDeliveryAttemptDedupe(t *testing.T) {
+	clock := newTestClock()
+	attempts := NewWithClock(5*time.Minute, clock.Now)
+	defer attempts.Stop()
+
+	dedupeKey := "publish.abc123"
+	sessionID := "ses-target"
+
+	// First delivery attempt: not yet seen
+	if attempts.Seen(dedupeKey, sessionID) {
+		t.Fatal("first attempt should not be seen")
+	}
+
+	// Record the attempt BEFORE the delivery it names is made
+	attempts.Record(dedupeKey, sessionID)
+
+	// Simulate JetStream redelivery (same dedupe_key) — should be skipped
+	if !attempts.Seen(dedupeKey, sessionID) {
+		t.Fatal("redelivery should be seen after attempt was recorded")
+	}
+
+	// Different dedupe_key to same session is still allowed
+	if attempts.Seen("publish.different", sessionID) {
+		t.Fatal("different dedupe_key should not be blocked")
+	}
+
+	// Same dedupe_key to different session is still allowed
+	if attempts.Seen(dedupeKey, "ses-other") {
+		t.Fatal("same dedupe_key to different session should not be blocked")
+	}
+
+	// After 5-min TTL, redelivery is allowed again
+	clock.Advance(5*time.Minute + 1)
+	if attempts.Seen(dedupeKey, sessionID) {
+		t.Fatal("attempt should expire after TTL")
+	}
 }

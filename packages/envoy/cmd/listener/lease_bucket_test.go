@@ -14,9 +14,8 @@ import (
 )
 
 // The bucket is created with the configured replicas, file storage, one value per key and a
-// MaxAge of 20 minutes (listenerStateMaxAge): it holds the lease, the hand-back marks and the
-// ledger, and no record that must outlive them (bus.LastSeenBucket holds the sessions' last-seen
-// records).
+// MaxAge of 20 minutes (listenerStateMaxAge): it holds the lease, and no record that must outlive
+// it.
 func TestListenerStateBucketIsCreatedAtTheConfiguredReplicas(t *testing.T) {
 	t.Parallel()
 	t.Run("one replica", func(t *testing.T) {

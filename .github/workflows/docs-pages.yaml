@@ -197,7 +197,6 @@ on:
       - 'packages/envoy/internal/clock/*'
       - 'packages/envoy/internal/contracts/*'
       - 'packages/envoy/internal/ctxlock/**'
-      - 'packages/envoy/internal/dedupe/**'
       - 'packages/envoy/internal/dispatch/access/**'
       - 'packages/envoy/internal/dispatch/accesslog/**'
       - 'packages/envoy/internal/dispatch/agentstream/**'

@@ -482,9 +482,7 @@ func (provedSessionHoldsTheRole) EntryState(entry session.SessionEntry) session.
 	return session.StateOf(entry, time.Now(), session.LiveWindow, session.GoneHorizon)
 }
 
-func (provedSessionHoldsTheRole) LastSeen(context.Context, string) int64 {
-	return time.Now().UnixMilli()
-}
+func (provedSessionHoldsTheRole) LastSeen(string) int64 { return time.Now().UnixMilli() }
 
 // bearerTokenRequest sends one request under a personal token, the credential a person's own
 // agent presents.

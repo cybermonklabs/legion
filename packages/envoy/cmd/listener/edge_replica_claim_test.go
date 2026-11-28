@@ -162,9 +162,9 @@ func TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission(t *testing
 	awaitAcked(t, rig.consumers, sessionID, firstSeq)
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.deps.consumers.admissions.prune(time.Now().Add(time.Hour), func(string) bool { return true })
-	rig.relays.setOwned(nil)
+	rig.relays.setOwned(false)
 	testwait.Eventually(t, "the session's relay to stop", func() bool { return count("INFO", stopped)+count("WARN", stopped) > 0 })
-	rig.relays.setOwned(endlessTerm())
+	rig.relays.setOwned(true)
 	testwait.Eventually(t, "the session's relay to end for want of an admission", func() bool { return count("INFO", held) > 0 })
 
 	claim := rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q}`, sessionID, role))

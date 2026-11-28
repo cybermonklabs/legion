@@ -609,7 +609,7 @@ func TestARowPastItsLiveWindowReadsUnresponsiveThroughAReadAndItsSweep(t *testin
 		if _, err := r.Get("ses_old"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 			t.Fatalf("Get(ses_old) %s = %v, want not found", when, err)
 		}
-		if got := r.LastSeen(context.Background(), "ses_old"); got != heartbeat.UpdatedAt {
+		if got := r.LastSeen("ses_old"); got != heartbeat.UpdatedAt {
 			t.Fatalf("LastSeen(ses_old) %s = %d, want its last heartbeat %d", when, got, heartbeat.UpdatedAt)
 		}
 	}

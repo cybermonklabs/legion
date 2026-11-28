@@ -73,18 +73,15 @@ const (
 	WebhookRedeliveryBucket = "envoy_webhook_redelivery"
 	// ListenerStateBucket holds the state every listener pod of a machine shares: the machine's
 	// delivery lease (ListenerLeaseKey, cmd/listener), the clean-hand-back marks of its stopping
-	// pods (ListenerHandBackPrefix) and its delivery ledger (ListenerLedgerPrefix,
-	// internal/dedupe). The listener keeps its keys 20 minutes past their last write
-	// (cmd/listener's listenerStateMaxAge).
+	// pods (ListenerHandBackPrefix) and its delivery ledger (ListenerLedgerPrefix). The listener
+	// keeps its keys 20 minutes past their last write (cmd/listener's listenerStateMaxAge).
 	ListenerStateBucket = "envoy_listener"
 	// LastSeenBucket holds every session's last-seen record (LastSeenPrefix, internal/session),
 	// the one answer every listener pod of the fleet gives for a lapsed session's last_seen. It
 	// is a bucket of its own because its records must outlive the session's last-seen window, 4
-	// hours at the default session settings, and the lease records beside them must not: the
-	// listener keeps its keys for that window and the interest reaper's allowance
-	// (cmd/listener's lastSeenAge), and ListenerStateBucket's for 20 minutes. Like
-	// ListenerStateBucket it is in no ListenerBuckets list: its grant is narrower than KVWrite
-	// (natsgrant.LastSeen), and the keeper keeps it only once the listener has opened it.
+	// hours at the default session settings, while the lease records beside them expire much
+	// sooner. Like ListenerStateBucket it is in no ListenerBuckets list: its grant is narrower than
+	// KVWrite (natsgrant.LastSeen), and the keeper keeps it only once the listener has opened it.
 	LastSeenBucket = "envoy_last_seen"
 	// PrivateProjectsBucket holds one key per private project, its value the repositories
 	// Dispatch names for it, and a key exists exactly while its project is private: Dispatch writes
@@ -136,12 +133,11 @@ func ListenerLedgerPrefix(durable string) string {
 // ListenerHandBackPrefix begins each clean-hand-back mark in ListenerStateBucket of the listeners
 // that bind durable (ListenerDurable): a pod that stopped gracefully writes
 // `handback.<durable>.<revision>` to vouch for the lease record it released at that revision, and
-// the pod that takes that record reads the mark before it shortens its settle hold
-// (cmd/listener, lease.MarkHandBack and lease.HandBackMarked). The listener's grant writes its own
-// machine's marks and no other's, and the bucket's MaxAge removes a mark nobody reads. A mark is
-// keyed by the revision it vouches for, not by the machine alone, so a stopping pod writes
-// nothing about the lease record once another pod has taken it. durable is spelled in the key as
-// listenerStateToken spells it.
+// the pod that takes that record reads the mark before it shortens its settle hold. The listener's
+// grant writes its own machine's marks and no other's, and the bucket's MaxAge removes a mark
+// nobody reads. A mark is keyed by the revision it vouches for, not by the machine alone, so a
+// stopping pod writes nothing about the lease record once another pod has taken it. durable is
+// spelled in the key as listenerStateToken spells it.
 func ListenerHandBackPrefix(durable string) string {
 	return "handback." + listenerStateToken(durable) + "."
 }

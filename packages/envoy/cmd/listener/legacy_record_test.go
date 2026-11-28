@@ -92,9 +92,7 @@ func TestTheSweepKeepsTheConsumerOfALiveSessionAnEarlierBuildRegistered(t *testi
 				session.WithSessionLiveWindow(time.Hour),
 				session.WithSessionGoneHorizon(time.Hour),
 			)
-			// A pass deletes only while its receive term is current (sessionRelays.termContext), so
-			// the relay set the pass reads holds an endless one, as the sweep rig's does.
-			relays := &sessionRelays{term: endlessTerm()}
+			relays := &sessionRelays{}
 			relays.owned.Store(true)
 			sweep := &sessionConsumerSweep{delivery: rig.deps.consumers, sessions: rig.harness.sessions, deps: rig.deps, relays: relays, logger: rig.harness.config.logger}
 			const sessionID = "ses_earlier_build_live"

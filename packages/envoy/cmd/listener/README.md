@@ -36,35 +36,19 @@ Every pod of a machine id, active or standby:
   the greatest time any report named (`RecordListenerReady`, `packages/daemon/internal/store/wake.go`), which one live reporter is enough to hold up.
 
 Only the pod holding the machine's **delivery lease** receives the durable consumer, writes its policy, and runs the loops one deliverer runs (`holderLoops`, `main.go`):
-the interest reaper, the role-claim reaper, the session reaper, the interest marker collector, the sweep of the kept role lanes with the takeover passes it runs (`startKeptRoleSweep`, `keptSweepConfig`), the session consumer sweep (`startSessionConsumerSweep`), on a listener with the GitHub webhook route the CI summary loop and, on an edge listener, the edge repository loop (`runEdgeRepositories`).
+the interest reaper, the role-claim reaper, the session reaper, the interest marker collector, the sweep of the kept role lanes with the takeover passes it runs (`startKeptRoleSweep`), the session consumer sweep (`startSessionConsumerSweep`), on a listener with the GitHub webhook route the CI summary loop and, on an edge listener, the edge repository loop (`runEdgeRepositories`).
 The one exception is a listener without a lease, whose NATS user lacks the grant for `envoy_listener` (`openDeliveryLease`, `main.go`):
-it does all three with no lease, and receives while no other subscriber holds the durable, until a grant lets it open that bucket and it joins the lease ("Without the grant: no-lease mode" below).
+it does all three with no lease, and receives while no other subscriber holds the durable ("Without the grant: no-lease mode" below).
 A standby runs none of them, never creates or updates the durable, and registers no JetStream subscription, so a NATS restart leaves it nothing to re-subscribe.
 
 ### The delivery lease
 
 The lease is the key `lease.<durable>` (`lease.listener-<machine id>`) in the KV bucket `envoy_listener` (`bus.ListenerStateBucket`), which the listener creates at `ENVOY_NATS_REPLICAS` replicas, file storage, one value per key and a 20 minute `MaxAge` (`listenerStateMaxAge`), raising a bucket an earlier build created with a shorter one on every open.
-The `<durable>` of every key of this bucket, the lease's, the hand-back marks' and the ledger's, is the durable's name as one KV key token (`bus.ListenerLeaseKey`, `bus.ListenerHandBackPrefix`, `bus.ListenerLedgerPrefix`): each byte outside nats.go's key alphabet, and a `.`, is `/` and two upper-case hex digits, since nats.go refuses the `%` a dotted machine id's durable spells its dots with.
+The `<durable>` of the lease's key is the durable's name as one KV key token (`bus.ListenerLeaseKey`): each byte outside nats.go's key alphabet, and a `.`, is `/` and two upper-case hex digits, since nats.go refuses the `%` a dotted machine id's durable spells its dots with.
 So `host.example.internal`, whose durable is `listener-host%2Eexample%2Einternal`, holds the lease `lease.listener-host/252Eexample/252Einternal`, and an id with none of the characters the durable escapes keeps the key it has always had.
 The 20 minutes are the lease's: a pod that starts within them after a killed holder's last renewal finds the holder's record and counts a push binding it finds as that holder's ("Two builds of the listener" below).
-The bucket holds the lease, the clean-hand-back marks and the delivery ledger alone, so no record of it outlives its 20 minutes; the sessions' last-seen records, which must outlive the session's last-seen window, are in a bucket of their own, `envoy_last_seen` ("State the pods share" below).
-The lease record's value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, `former_boots` (below), and `stale_binding`, `unsettled`, `ack_wait_owed` and `receiving` ("Take-over" below);
+The lease record's value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, and `stale_binding` and `unsettled` ("Take-over" below);
 a field this build does not know is kept across every rewrite.
-`former_boots` names the boots that held the lease before `holder` (`formerBoots`, `lease_record.go`):
-each entry holds `boot`, `stopped` and `released`.
-`stopped` is not the time that boot stopped holding the lease.
-It is the server time of the write that took the lease from that boot, the `acquired_at` of the record that write made (`acquire`, `lease.go`).
-`released` is `true` when that boot released the record, and is left out when a standby took the record after it expired.
-Each acquisition adds the boot of the record it replaces, and keeps only the boots that stopped less than 70 s before it (`leaseFormerBootAge`), at most the newest 16 (`leaseFormerBootsMax`).
-So the 70 s counts from that take, not from the release.
-A boot that released the record long before a pod took it is still named, and each successor whose record names it waits for its settle (`FormerHolder`, `FormerSettleWait`), as for a recent release.
-A renewal and a release leave the list as it stands.
-
-Beside the lease, a pod that stopped gracefully writes one key per hand-over it saw through:
-`handback.<durable>.<revision>` (`bus.ListenerHandBackPrefix`), the clean-hand-back mark, named for the revision of the lease record its own release wrote.
-Its value is JSON: `instance`, `boot` and `revision`.
-The pod that takes that very revision reads it inside its settle hold and ends the hold at the hand-back delay instead of an ack wait ("Take-over" below).
-Nothing deletes a mark: the bucket's 20 minute `MaxAge` drops it, no pod reads a mark for a revision it did not replace, and revisions never repeat, so an old mark is never read as a newer hand-over's.
 
 | Constant (`lease.go`) | Value | What it does |
 | --- | --- | --- |
@@ -118,22 +102,8 @@ it fails with messages missing on v2.10.29.
   the stopping pod stops handing messages to the handler, gives the message in hand its grace, and hands back everything it has not handled:
   it NAKs those messages with a 2 s delay (`handBackDelay`), as one batch in stream order, and releases the lease marked `unsettled`.
   A standby takes the released lease at its next poll and settles (below):
-  it subscribes at once and holds what it receives until every outstanding message is in its hands, or until the stopping pod's clean-hand-back mark is there and the hand-back delay and a second (3 s) have passed since it subscribed, then delivers in stream order, so per-session order is kept.
-  The stopping pod keeps its subscription meanwhile, since nats-server loses a message whose first delivery is still in its send queue when the deliver subject's last subscriber goes:
-  it NAKs with the same delay each message that reaches it after the stop, a repeat of one it already handed back included (three NAKs of one message at most, `handBackNaksMax`, then it drops it), and reads the lease record every 250 ms (`lingerPoll`) until it names another holder with `receiving` true (which the holder writes once its subscription is up), or for 3 s (`lingerMax`) after the batch at most.
-  When no other pod has taken the record, there is no standby to wait for and it stops waiting;
-  no end but a receiving holder comes before 1 s (`lingerUntaken`, two standby polls) and one poll have passed since the release, however far its 3 s cap has run, so a standby taking the record has the deliver subject held for it while it subscribes.
-  Then it drains the subscription.
-
-  Once that is done the stopping pod writes the mark, `handback.<durable>.<the revision its own
-  release wrote>`, and only when every part of the hand-over went through:
-  its own release wrote that record (a release its lease loop outlasted writes none), the term had no lost node's push binding open beside it (`stale_binding` false on the record it released), the message in hand's handler returned rather than ignoring its cancel, its linger ended by reading another holder `receiving`, and the server confirmed its drain rather than the 2 s drain wait running out.
-  So everything it handed back is back within the standby's 3 s hold.
-  A stop that falls short of any of that - no standby took the record, none was receiving when the linger ended, the successor's subscribe never reached the server, the release timed out and a later one wrote the record, a lost node's binding stood beside the term, or a handler was still running after its cancel, holding a message nothing keeps alive once the term stops - writes no mark, and what the durable pushed meanwhile may have gone to no subscriber, or to that binding alone, so the next holder settles for an ack wait instead (below).
-  A failed write of the mark costs the same and nothing more.
-  The stop's own line says which of those it was (`no_mark`).
-  The standby delivers about 2 to 3 s after the stop (the hand-back delay and a settle read), about 3 to 4 s after it when a message waits out a retry's delay and holds the hold to the mark, plus the message in hand's grace when it takes it.
-  The tests bound it at 10 s.
+  it subscribes at once and holds what it receives until every outstanding message is in its hands, then delivers in stream order, so per-session order is kept.
+  Then the stopping pod drains its subscription.
 
 - **Hard stop** (SIGKILL, node or network loss): a standby takes the expired lease about 5 to 6 s after the last renewal (the TTL and one poll).
   Its term must settle: it subscribes at once, beside the dead pod's push binding when the server still counts a lost node's connection, and holds every message it receives, keeping it alive with `InProgress`, until every message the durable has outstanding is in its hands.
@@ -147,25 +117,19 @@ it fails with messages missing on v2.10.29.
   The tests bound it at 15 s.
 
 - **Graceful stop after a hard one.**
-  The lease record carries three flags for the next holder.
-  `stale_binding` is set by a holder that subscribed beside a push binding it did not wait out (a lost node's lingering connection, or a stopping pod's subscription it keeps until this one receives), carried by every renewal, release and take-over, and cleared by a holder that finds the durable not push-bound, or, for a holder that took a hand-back candidate, by that hand-back's mark:
-  the mark says the binding it subscribed beside was the stopping pod's own linger.
+  The lease record carries two flags for the next holder.
+  `stale_binding` is set by a holder that subscribed beside a push binding it did not wait out (a lost node's lingering connection), carried by every renewal, release and take-over, and cleared by a holder that finds the durable not push-bound.
   `unsettled` is written from the acquiring write of a term that must settle until its hold ends, and a release keeps it, so a pod stopped mid-hold hands the hold on;
   a graceful stop that hands messages back always releases it set, and so does a stop taken while the term's renewals have lapsed, whatever its own flags stood at:
   the lapse dropped what it held without an ack.
-  `ack_wait_owed` is the ack wait the releasing term still owed its successor:
-  every term that must settle owes one from its acquiring write until its own settle hold ends, one taken from a hand-back included, so every release - a stop, a lapse, a give-up, a stop before the term ever subscribed - writes the debt as the term stands, a release during a lapse writing it set, and every take-over writes it false.
-  A release the lease's loop outlasts (`handBackReleaseWait`, 2 s) writes no record and records the debt instead, so the release that lands after the linger has let go of the deliver subject carries it, and that release is vouched for by no mark.
   A pod that takes a released record carrying `stale_binding` or `unsettled` settles too, subscribing at once beside any binding rather than waiting it out as a pre-lease build's.
-  Its hold ends at the hand-back delay and a second only when the record carries `unsettled` without `ack_wait_owed` and without `stale_binding` - which makes the term a hand-back candidate - and the mark for the revision it replaced is there, read every `settlePoll` inside the hold.
-  Otherwise the cap is one ack wait and a second:
-  the messages the stopping pod handed back come back after the hand-back delay to the next pod and to a lingering binding alike, but one that went to such a binding alone, or to no subscriber at all once the linger ended, or that a dead pod before the stopping one still held, comes back one ack wait later.
-  A mark that cannot be read leaves the ack wait's cap standing, so a bucket that does not answer costs 4 s of a hand-over and no message.
+  The cap is one ack wait and a second:
+  the messages the stopping pod handed back come back after the hand-back delay, but one that went to a lost node's binding alone, or to no subscriber at all, or that a dead pod before the stopping one still held, comes back one ack wait later.
 
 - **A holder that cannot use the durable.**
   A holder whose reads, creations, policy corrections or subscribes of the durable fail retries every second (`durableBindPoll`) and times the failures from the start of the first since its term began or an attempt last succeeded.
   Once they have lasted 135 s (`durableTakeoverAlarmAfter`) it logs `lease holder cannot deliver from the durable` at ERROR, with the failure as `reason` and `waited_ms`, which the AWS `subscribe-exhausted` alarm matches, and gives the lease up:
-  it releases the record, keeping `unsettled` and `ack_wait_owed` as its term left them, so the next holder settles as this one would have, and a standby takes the record at its next poll.
+  it releases the record, keeping `unsettled` as its term left it, so the next holder settles as this one would have, and a standby takes the record at its next poll.
   The pod goes back to standby and does not take back the record it released for two standby polls (1 s), so every other standby has its chance first;
   a pod that runs alone takes it back after that and tries again, alarming again at the end of each stuck term.
   A listener without a lease has no one to give it to: it keeps retrying and logs the line again every 5 min (`durableTakeoverAlarmEvery`).
@@ -178,13 +142,13 @@ it fails with messages missing on v2.10.29.
   the main client's link freezes or its hub stops answering, nats.go declares the connection stale two to three seconds later (`bus.WithSilentCutDetection`) and reconnects about a second after that, while the lease's own connection renews throughout.
   A holder whose receive signal has been down for `leaseReceiveLost` (3 s) stops renewing and releases the record with the WARN `listener lease released: the receive
   connection is down`, naming `down_ms`; a connection back inside those 3 s costs it nothing, not even a new term.
-  The release carries `unsettled`, `ack_wait_owed` and `stale_binding`, whatever the term's own flags stood at:
+  The release carries `unsettled` and `stale_binding`, whatever the term's own flags stood at:
   what the durable pushed to the lost connection comes back only at its ack wait, and that connection's subscription can still be bound at the server.
-  So the standby takes the released record at its next poll, subscribes at once beside that binding and holds its full 7 s cap, and no clean-hand-back mark vouches for a release no hand-over went through.
+  So the standby takes the released record at its next poll, subscribes at once beside that binding and holds its full 7 s cap.
   The receive loop ends the term as it ends any lost lease - it drops the subscription and leaves what it queued to come back at its ack wait - since nothing can be NAKed over a connection that is down.
   A message published as the connection was cut reaches its session about 14.5 s later at worst:
   up to 3 s before nats.go declares the connection stale (`bus.WithSilentCutDetection`), up to the holder's 1 s renewal round before the lease reads the signal down (`leaseRenewEvery`), the 3 s bound, the standby's 0.5 s poll (`leaseStandbyPoll`) and its 7 s settle hold (`consumerAckWait` and `settleMargin`), plus the standby's subscribe and the delivery itself, inside the 15 s a hard take-over is bounded at.
-  The settle hold is the durable's: a session's own messages ride its consumer, which the cut pod's relay still pulls until the term ends, so what waits is a message published between that end and the successor's first pull (the standby's poll, its start and what is left of `relayFormerSettle`), 1.257 s at worst in runs of `TestTwoPodsReceiveConnectionLostHandsOverWithin15s`.
+  The settle hold is the durable's: a session's own messages ride its consumer, which the cut pod's relay still pulls until the term ends, so what waits is a message published between that end and the successor's first pull (the standby's poll and its start).
   No standby takes the lease while its own receive connection is down - not an absent record, not a released one, not an expired one - so the cut pod does not take back what it just released;
   it stands by again, and may take the lease, once the connection is up.
   A holder whose renewals have lapsed still renews while its connection has been down less than those 3 s, and so resumes its own record; at 3 s it releases the record instead.
@@ -195,13 +159,10 @@ it fails with messages missing on v2.10.29.
   it reads atomics instead ("The delivery lease" above), and the release lands on its own bound.
 
 The lines to read are `listener lease acquired` (with `from`:
-`absent`, `released` or `expired`, and `settle`, `stale_binding`, `hand_back` - the term is a hand-back candidate - and `replaced`, the revision its mark would be keyed by), `listener lease term must settle; receiving at
-once and holding what arrives until the durable's outstanding messages are in hand` (with `cap` and `hand_back`, and `adopted` when a lease that joined holds the term it took over), `durable still push-bound by an earlier lease holder; receiving beside it`, `settle hold ended;
-delivering the held messages in stream order` (with `outcome` `settled`, `cap` or `handed back`, `held_ms`, `messages`, `ack_pending` and `hand_back_marked`), `settle hold: hand-back mark read
-failed; holding on` (with `error`), `durable receiving` (with `lease`, `waited_ms` and `settle`), `handed the durable's messages back to the next holder` (with `handed_back`, `lingered_ms`, `linger_end` `receiving holder seen`, `not taken` or `timeout`, `renaked_repeats`, `dropped_repeats`, `hand_back_marked` and, when that is false, `no_mark`:
-why no mark was written), `cancelling the message in hand after the shutdown grace` (with `grace`), `the message
-in hand was still being handled after its cancel`, `clean hand-back not marked; the next holder
-settles for an ack wait` (with `error`), `durable consumer read failed; retrying` and `durable subscribe failed;
+`absent`, `released` or `expired`, and `settle` and `stale_binding`), `listener lease term must settle; receiving at
+once and holding what arrives until the durable's outstanding messages are in hand` (with `cap`), `durable still push-bound by an earlier lease holder; receiving beside it`, `settle hold ended;
+delivering the held messages in stream order` (with `outcome` `settled` or `cap`, `held_ms`, `messages` and `ack_pending`), `durable receiving` (with `lease`, `waited_ms` and `settle`), `handed the durable's messages back to the next holder` (with `handed_back`, `renaked_repeats` and `dropped_repeats`), `cancelling the message in hand after the shutdown grace` (with `grace`), `the message
+in hand was still being handled after its cancel`, `durable consumer read failed; retrying` and `durable subscribe failed;
 retrying` (with `error`), `durable consumer refused by the NATS grant; retrying` (ERROR, with `subject`, `error` and `retry_in`), `lease holder cannot deliver from the durable` (ERROR, with `reason` and `waited_ms`), `giving the listener lease up: this pod cannot deliver from the durable`, `listener
 lease lost: another listener holds it`, `listener lease released: the receive connection is down` (WARN, with `down_ms` and the `revision` it released) and `listener lease released`.
 
@@ -213,17 +174,16 @@ On SIGTERM or SIGINT, once `/v1` serves (`shutdownListener`):
 
 2. receiving stops, inside a 10 s budget the HTTP stop shares:
    the holder-only loops are told to stop, the handler takes no more messages, the message in hand gets 3 s (`inflightGrace`) before its handling is cancelled (a cancelled handling is a retryable failure:
-   its ledger attempt is cleared and the message NAKed) and a second more (`inflightCancelWait`) for its handler to return, every message not handled (queued, or held by a settle hold) is NAKed with the 2 s hand-back delay in stream order, the lease is marked released and `unsettled`, the subscription stays until the next holder receives, 3 s after the NAKs at most and 1.25 s after the release at least (the floor that holds the deliver subject while a standby subscribes), then drains (2 s at most) and, when all of that went through, the clean-hand-back mark is written (one bucket call, 2 s at most):
-   11 s in all, and 12.25 s when the flush (1 s) and the release (2 s) both run to their bounds and leave that floor past the cap.
-   The session relays are not in that sum: the term's end only cancels them, and the shutdown's next step waits up to 750 ms (`relaySettleGrace`) for each stopped relay to settle the frame it had unanswered.
+   the message is NAKed) and a second more (`inflightCancelWait`) for its handler to return, every message not handled (queued, or held by a settle hold) is NAKed with the 2 s hand-back delay in stream order, the lease is marked released and `unsettled`, and the subscription drains (2 s at most):
+   9 s at most with the flush (1 s) and the release (2 s), besides a lease call that hangs.
+   The session relays are not in that sum: the term's end only cancels them.
    The budget bounds none of those waits: it is how long the shutdown waits for the receive stop.
    Past it the shutdown goes on to the relays and the HTTP stop with no time left, then to the NATS drains and `os.Exit(1)`, while the hand-back may still be running.
    The listener's own shutdown, not the runtime's kill, cuts that hand-back off:
-   `client.Drain` ends the subscription of a hand-back still lingering or draining, and `os.Exit(1)` ends only a mark write still in flight on the lease's own connection.
-   So a longer grace period in the runtime keeps no mark, and the next holder then settles at its 7 s cap, as it does after any stop that wrote none.
+   `client.Drain` ends the subscription of a hand-back still draining.
    A listener without a lease drains its subscription and NAKs what it has not handled at once, in stream order;
 
-3. each relay the term's end stopped settles the frame it had unanswered, up to 750 ms (`relaySettleGrace`), out of what the receive stop left of the budget;
+3. the session relays stop, and each returns with a nak what it still holds;
 
 4. the HTTP server shuts down within what is left of the budget;
 
@@ -261,7 +221,7 @@ This section is the one statement of that rule; the code and the other guides po
   A server answers some requests from its cluster's state and not from the request, even where the answer reads like a refused setting:
   no member can place the copies `ENVOY_NATS_REPLICAS` asks for (`no suitable peers for placement`, JetStream error code 10005; `replicas > 1 not supported in non-clustered mode`, 10074), JetStream is temporarily unavailable (the meta group has no leader, `JetStream system temporarily unavailable`, 10008; `insufficient resources`, 10023), or the member asked leads no longer (10009).
   A NATS rolling restart and a cluster that is still forming answer so, and the same start succeeds once the members are back, with no setting changed; the start reads the code, never the text (`bus.ClusterStateAnswer`).
-  The start's opens of the stream (the NATS connect, `connectListener`), the spent-proof bucket (`openSpentProofBucket`), the store buckets (`openStartStore`), the listener state bucket (`openDeliveryLease`) and the last-seen bucket (`startLastSeenBucket`) each log `start refused by the NATS cluster's state; retrying` at every such try, with what was refused (`stream`, `bucket` or `buckets`), the `setting` it asked (`ENVOY_NATS_REPLICAS=<n>`), the answer's `code`, the server's text in `error` and `retry_in`, and try again after a wait that starts at 1 s and doubles up to 30 s (`logClusterState`, `nextRefusedWait`).
+  The start's opens of the stream (the NATS connect, `connectListener`), the spent-proof bucket (`openSpentProofBucket`), the store buckets (`openStartStore`) and the listener state bucket (`openDeliveryLease`) each log `start refused by the NATS cluster's state; retrying` at every such try, with what was refused (`stream`, `bucket` or `buckets`), the `setting` it asked (`ENVOY_NATS_REPLICAS=<n>`), the answer's `code`, the server's text in `error` and `retry_in`, and try again after a wait that starts at 1 s and doubles up to 30 s (`logClusterState`, `nextRefusedWait`).
   The line is an ERROR from the first try, except for 10008 and 10023, what a routine JetStream leader change answers until its election ends: those are a WARN until the step's first of them came 30 s before, and an ERROR at each try after (`clusterUnavailableWarnFor`).
   A NATS grant that refuses the stream's read or create at the reconcile, or an edge listener's read of it once the 180 s credential wait is over (`notification stream refused by the NATS grant; retrying`, with the `stream` and the `grant` it lacks, the edge's own on an edge listener), the durable (`durable consumer refused by the NATS grant; retrying`, "A holder that cannot use the durable" above), the spent-proof bucket (`spent-proof bucket refused by the NATS grant; retrying`), a store bucket (`KV bucket refused by the NATS grant; retrying`, with the `bucket` and the `grant` it lacks), the role lane in both its queue groups (`role lane refused by the NATS grant; retrying`) or the session relay's reply subscription (`session relay reply subscription refused by the NATS grant; retrying`) keeps the pod up and backs off the same way, each try logging its line at ERROR with the refused `subject`, the server's text in `error` and `retry_in`:
   every pod of the machine connects as the same NATS user and would be refused alike, and an exit would only send each pod into a crash loop whose backoff delays the recovery by minutes once the grant is fixed.
@@ -276,25 +236,11 @@ This section is the one statement of that rule; the code and the other guides po
 
 - **A NATS that does not answer keeps the pod up, and the start waits for it.**
   A dial no server answers, a server that ends the handshake because the connect's CONNECT came after its `auth_timeout` (`nats: Authentication Timeout`), a request no server answers, an edge listener's read of the stream that drew no answer, a connection that closed under a step (the stream's ensure finding it closed as it reads the server's version among them), and a step the start's hang guard ends (36 s for one open of the stream or of a bucket, `bus.EnsureKeyValue`) are tried again every 2 s (`startRetry`, `natsConnectionError`) with a WARN, for as long as NATS takes:
-  `NATS connect failed; retrying`, `<store> open failed; retrying`, `spent-proof bucket open failed; retrying`, `listener state bucket open failed; retrying`, `last-seen bucket open failed; retrying`, and, once the ten dials of the session consumers' or the role lane's connection found no server, `session consumer connection failed; retrying` and `role lane connection failed; retrying`.
+  `NATS connect failed; retrying`, `<store> open failed; retrying`, `spent-proof bucket open failed; retrying`, `listener state bucket open failed; retrying`, and, once the ten dials of the session consumers' or the role lane's connection found no server, `session consumer connection failed; retrying` and `role lane connection failed; retrying`.
 
 Meanwhile the pod is live (`/livez` 204) and not ready (`/healthz` `503 starting`, or `503 unhealthy` naming the refusal while a connect waits out a refused credential), `/v1` stays closed, and a SIGTERM or SIGINT ends it at once, since the start installs no handler for either until `/v1` serves.
 
-The listener state bucket's grant refusal ends nothing either: the pod delivers without a lease, tries the bucket again by this rule, and joins the lease with no restart once a grant lets it open the bucket ("Without the grant: no-lease mode" below).
-
-The last-seen bucket, `envoy_last_seen` ("State the pods share" below), ends nothing and holds nothing back either.
-Its open starts once the session registry is open, on the main client's connection, in a loop of its own that neither the lease's open nor the lease's join waits on (`startLastSeenBucket`).
-The start waits only for the loop's first try to end, whatever it came to, before `/v1` opens, and that try ends within 6 s (`lastSeenOpenBound`), so a healthy start has the bucket before its first registration.
-Each try that fails is tried again by the rule above:
-
-- a grant that refuses the bucket logs `last-seen bucket refused by the NATS grant; keeping last-seen in process and retrying` at ERROR at each try, with the `bucket`, the `grant` it lacks, the refused `subject`, the server's text in `error` and `retry_in`, which starts at 1 s and doubles up to 30 s (`logGrantRefusal`);
-- an answer of the cluster's state logs `start refused by the NATS cluster's state; retrying` as above, with the `bucket`;
-- an account at one of its JetStream limits, or a server that fails the request, logs `last-seen bucket refused by the NATS account's limits or the server's state; keeping last-seen in process and retrying` at ERROR at each try, with the `bucket`, the answer's `code`, the server's text in `error` and `retry_in`, which starts at 1 s and doubles up to 30 s (`logAccountState`);
-- any other failure, a try that drew no answer within its 6 s included, logs `last-seen bucket open failed; retrying` at WARN, with the `bucket`, `retry_in` 2 s and the `error`.
-
-None of them keeps the pod unready, and none ends it: the pod serves, keeps last-seen times in its own process meanwhile, and opens the bucket with no restart once the grant, the cluster or the account takes it, logging `last-seen bucket opened: recording each session's last-seen time in it` at INFO.
-A try the shutdown cut logs nothing.
-An edge listener opens no last-seen bucket: its grant holds no call of it (`natsgrant.Edge`), so it logs `last-seen bucket not opened: an edge listener's grant holds no last-seen bucket; keeping last-seen in process` at INFO once and keeps last-seen times in process.
+The listener state bucket's grant refusal ends nothing either: the pod delivers without a lease ("Without the grant: no-lease mode" below).
 
 ## Readiness: `/healthz`
 
@@ -351,79 +297,36 @@ A probe contract that fits these answers:
 
 Every pod of a machine id reads and writes the same records, so a pod that takes over, or a standby answering `/v1`, answers as the active pod would:
 
-- **Delivery ledger** (`internal/dedupe`, `delivery.<durable>.<32 hex of sha256(dedupe key)>.<session token>` in `envoy_listener`, where the session token is the session id itself when the id is 1 to 128 characters of ASCII letters, digits, `_` and `-`, and otherwise `=` and the first 32 hex of the id's sha256, `dedupe.SessionToken`):
-  these ask it, and nothing else does — a role-lane forward, the kept lane's drain of a role's stored copies (`keptRoleForwardAttempt`), a fan-out refusal, an unplaceable agent delivery's give-up, an agent-subject delivery whose route to the session failed, which it reports `delivery_failed`, and the publish route's confirmation that the stream stored a forward it made.
-  No session receives from a plain NATS subscription any more (main's #2603 removed that path), so no copy is read off the bus outside this listener and nothing asks the ledger for one.
-  Before any of them, a pod records the pair attempted, and once it lands, delivered:
-  a pair another pod delivered is not delivered again.
-  A refusal or a give-up stays reported only in the process of the pod that reported it, which keeps that attempt (`dedupe.Ledger.Keep`, below):
-  another pod that reaches the same pair takes the attempt over once it is 35 s old, or sooner as a former holder's, and handles it again, so the same refusal or give-up is reported again under the same id ("Delivery exceptions" below).
-  That failed route's ask holds the message: while the ledger cannot answer, the message is NAKed and the failure retried every 30 s.
-  The relay of a session's own consumer asks it for nothing ("When a session can see a message twice" below).
-  A pod skips a pair as `listener attempt-dedupe skip` only for an attempt it holds itself:
-  one whose forward may still be running (less than 35 s old and not settled), or one a delivery kept (`dedupe.Ledger.Keep`:
-  a give-up, a fanout refusal) for 5 minutes.
-  An attempted record of its own boot that it holds no such attempt for (a clear that could not be written, a write whose reply was lost) is taken over and the pair delivered.
-  An attempt by a boot that held this machine's lease before the current holder (the lease record's `former_boots`) is taken over without that wait, so the settle hold delivers that message in stream order:
-  at once for a holder taken over by force (killed, its node lost, its record left to expire), which writes nothing more, and only after 2.25 s (`ledgerFormerSettle`, `roleForwardTimeout` + 250 ms, `lease_record.go`) for one that released the record, which is alive and whose role lane is finishing the forward it had in flight.
-  An attempt by a pod that still holds or renews a lease, or by a live pod's role lane, less than 35 s old (`deliveryHandlingLimit` and `ledgerTakeoverMargin`) is retried later on the durable lane;
-  an older one is taken over, since its writer died.
-  A ledger that cannot be read NAKs the durable message for a retry; the role lane then delivers without it and logs `delivery ledger unavailable`.
+- **When a session can see a message twice.**
+  The listener delivers a stored message to a session through that session's own consumer, relayed as a frame, and the consumer's ack floor is what says the session has it.
+  Every restart of a session's consumer (`bus.SessionConsumers.RestartAtFloor`) sends again every frame above the consumer's ack floor.
+  That includes a frame the session answered `done` out of order above one it is still holding:
+  the server cannot move the floor past a frame still unacked, so the frames acked after it are above the floor and come again.
+  A consumer with a message that awaits an ack is deleted and created again at the sequence after its ack floor.
+  A consumer with nothing that awaits an ack has no frame above its floor, so the restart updates it in place (`keepAtFloor`):
+  the sequence it examines next is already the one after its floor, and the restart sends no delete and no create.
+  The exception is a consumer whose next sequence is past the stream's end, which the restart deletes and creates again too.
+  Every repeat carries the message's own event id, and the client's dedupe writes it once
+  — it joins a copy of a frame it still holds, and drops one it has already written (`packages/envoy-client`'s consumer delivery).
 
-  - **When a session can see a message twice.**
-    The listener delivers a stored message to a session through that session's own consumer, relayed as a frame, and the consumer's ack floor
-    — not the ledger — is what says the session has it.
-    Every restart of a session's consumer (`bus.SessionConsumers.RestartAtFloor`) sends again every frame above the consumer's ack floor.
-    That includes a frame the session answered `done` out of order above one it is still holding:
-    the server cannot move the floor past a frame still unacked, so the frames acked after it are above the floor and come again.
-    A consumer with a message that awaits an ack is deleted and created again at the sequence after its ack floor.
-    A consumer with nothing that awaits an ack has no frame above its floor, so the restart updates it in place (`keepAtFloor`):
-    the sequence it examines next is already the one after its floor, and the restart sends no delete and no create.
-    The exception is a consumer whose next sequence is past the stream's end, which the restart deletes and creates again too.
-    Every repeat carries the message's own event id, and the client's dedupe writes it once
-    — it joins a copy of a frame it still holds, and drops one it has already written (`packages/envoy-client`'s consumer delivery).
+  A relay restarts when:
 
-    A relay restarts when:
+  - a receive term ends and the pod that takes over starts the session's relay:
+    every frame left above the consumer's ack floor is sent again, as above;
 
-    - a receive term ends and the pod that takes over starts the session's relay.
-      The stopping relay has `relaySettleGrace` (750 ms) to hear a `done` and ack the frame on it, and the successor waits what is left of `relayFormerSettle` (1 s from its acquisition) before it restarts, so a `done` that arrives inside the grace is acked in time to lift the ack floor as far as the frames still held below it allow;
-      every frame left above that floor is sent again, as above.
-      The successor waits whenever the record it took names in `former_boots` a pod that released the lease less than 70 s (`leaseFormerBootAge`) before it took the record, after a forced take too, and waits for nothing only when every pod named there was taken over by force.
-      A frame still unwritten when the grace ends is in doubt (`session relay left a frame in doubt`), whether or not its `received` came back:
-      the session answers `received` once it decodes a frame and `done` once its host wrote it, and only `done` says the message landed;
+  - its session-consumer link drops and comes back.
+    The frame's reply and the consumer's acknowledgement ride that one link, so a frame answered under the drop was recorded nowhere, and the relay restarts at the ack floor as soon as the link is back;
 
-    - its session-consumer link drops and comes back.
-      The frame's reply and the consumer's acknowledgement ride that one link, so a frame answered under the drop was recorded nowhere, and the relay restarts at the ack floor as soon as the link is back;
+  - a pod is killed or its node is lost: nothing settled the frames it had out, and the pod that takes the lease over restarts the consumer at the floor;
 
-    - a pod is killed or its node is lost: nothing settled the frames it had out, and the pod that takes the lease over restarts the consumer at the floor;
+  - a frame drew no reply inside the relay's receipt wait, so the relay pauses and probes again after 2, 4, 8, 16 and then every 30 s.
+    This one can therefore repeat a frame more than once;
 
-    - a frame drew no reply inside the relay's receipt wait, so the relay pauses and probes again after 2, 4, 8, 16 and then every 30 s.
-      This one can therefore repeat a frame more than once;
+  - a pull, a publish or a restart failed and the run retries;
 
-    - a pull, a publish or a restart failed and the run retries;
+  - the session registers again under a new epoch;
 
-    - the session registers again under a new epoch;
-
-    - the session leaves the set this pod relays and rejoins it.
-
-    Outside the relay, a repeat also comes from the role lane's take-over of a former boot's unresolved attempt, and from the kept lane's drain forwarding again a copy whose pod was killed before it settled the forward (`role_keep.go`).
-    Each of those carries its own event id too.
-
-- **Delivery exceptions** carry an id derived from the event id, the recipient session and the reason, so a redelivery that fails the same way publishes an exception with the same id and dedupe key, which the stream stores once.
-
-- **Clean-hand-back marks** (`handback.<durable>.<revision>` in `envoy_listener`):
-  a pod that stopped gracefully vouches for the lease record it released, and the pod that took that record reads the mark inside its settle hold ("Take-over" above).
-  A mark nobody reads leaves the bucket with its 20 minute `MaxAge`.
-
-- **Last seen** (`seen.<session token>` in the KV bucket `envoy_last_seen`, `bus.LastSeenBucket`, the same session token as in the ledger key above):
-  every session registration write records when the session was last seen, and every pod of every machine answers a lapsed session's `last_seen` out of that record alone, so two pods never answer one session differently - a pod that watched the session keeps no answer of its own.
-  The registry reports it for the session TTL and then its last-seen retention (`session.LastSeenMemory`, 2 hours, never less than the TTL) past the last write, 4 hours at the default 2 hour TTL (`session.SessionRegistry.LastSeenWindow`).
-  The listener creates the bucket at `ENVOY_NATS_REPLICAS` replicas, file storage, one value per key and a `MaxAge` of that window and the interest reaper's 15 minutes more (`store.InterestReapAllowance`), 4 h 15 min at the default session settings (`lastSeenMaxAge`), so that window, not the bucket, ends the answer on every pod at once.
-  A longer session TTL raises the age: `ENVOY_SESSION_MAX_AGE`, or a session bucket that already keeps its records longer, at 6 h makes it 12 h 15 min (`lastSeenAge`).
-  Each try of the bucket's open asks for that age, raises a bucket that keeps its keys for less (`bus.RaiseMaxAge`) and lowers none, and a TTL raised while the pods run reaches the bucket at the next pod's open.
-  The records are in a bucket of their own so that their age keeps no lease or ledger record: `envoy_listener` keeps its keys 20 minutes.
-  The bucket is opened on the main client's connection, by a loop of its own that never ends the process ("Start" above); until it opens, at the start or later, the pod keeps last-seen times in its own process, which a restart forgets.
-  With no record in the bucket - it was never written, a bucket with a shorter age removed it, or it could not be read within the request's budget - no pod answers one.
+  - the session leaves the set this pod relays and rejoins it.
 
 - **Role-claim grace** counts from the machine's service start, `service_since` in the lease record:
   the server's time of the write that took the lease when no pod of the machine was serving (no record, or one last written more than two TTLs before).
@@ -446,17 +349,15 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   - A takeover record (`bus.TakeoverSubject`, `cmd/listener/role_takeover.go`) is a message of the stream rather than a key, written by a pass only while its subject's newest message is the one its pass read (`bus.Client.WriteTakeoverRecordAt`), and never over a finished record (`bus.ErrTakeoverRecordFinished`); a write that lost that race, or whose record the stream removed meanwhile, stores nothing (`bus.ErrTakeoverRecordMoved`) unless the stream refused a resend after a first send nobody answered, which may have stored the record, and the record's next pass reads it again either way.
     The claim route's first write of a record stores only while the record's subject holds nothing (`bus.Client.WriteTakeoverRecord`), so no send of it lands over a pass's write, a finish included; a resend after a first send nobody answered, refused because the subject holds a message, counts as stored only when the subject's newest record names the same claim (role, previous holder and claim time), and fails the write otherwise.
     The claim route writes a new record and runs its passes on whichever pod served the claim, within its handover window (10 min, `roleKeepHandoverWindow`) and not the request's;
-    the kept lane's sweep runs the passes of every unfinished record on the lease holder alone, each copy and record write held to its receive term and the lease's loss deadline (`takeoverWriteContext`), as the reapers' deletes are.
+    the kept lane's sweep runs the passes of every unfinished record on the lease holder alone.
     Two pods' passes over one record store each copy once, under its message id (`takenFrameMsgID`), which the stream's 72-hour duplicate window keeps for as long as the frame it copies is stored.
 
   A pod whose cache has not seen a registration reads the bucket before `/v1/messages/send` or `/v1/roles/set` answers that the session is unknown.
 
-One record is each pod's own, deliberately:
-the **publish route's confirmation record** (`listenerDeps.confirmed`, `internal/dedupe`'s in-process cache), which holds each (dedupe key, session) the stream stored a forward of through `/v1/messages/publish` on this pod, with the stream sequence of that stored copy, and each such forward under the request that made it (`forwardRequest`: the source, the source session, the role topic and the dedupe key).
+Some records are each pod's own:
+the delivery caches of what the pod delivered and attempted (`listenerDeliveryHandlerConfig`'s `dedupeCache` and `attemptCache`, `internal/dedupe`'s in-process caches), so a pod that takes over can deliver again, under its own event id, a message the pod before it delivered;
+and, deliberately, the **publish route's confirmation record** (`listenerDeps.confirmed`, `internal/dedupe`'s in-process cache), which holds each (dedupe key, session) the stream stored a forward of through `/v1/messages/publish` on this pod, with the stream sequence of that stored copy, and each such forward under the request that made it (`forwardRequest`: the source, the source session, the role topic and the dedupe key).
 Only a forward the route itself made counts.
-The route's confirmation records its stored forward in the delivery ledger above too (`listenerDeps.confirm`), but a ledger record can also come from another pod, or from another lane's forward, refusal or give-up,
-so the ledger cannot show that this route forwarded the key to this holder, and the route reads its own record instead.
-The ledger cannot answer a repeat with the copy it repeats either: its record names neither the request nor the stream sequence of the stored copy, which the answer reads back (`storedCopy`).
 So a repeat of a role send to the same holder is answered from this record's sequence (`dedupe.Cache.Stored`), and an echo, the repeat of a sender that has since taken the role, from the forward recorded under its request (`dedupe.Cache.Forward`, `roleSend.settledBeforeForward`).
 No answer reads another pod's record.
 A send retried against another pod of the machine forwards again, and the stream keeps one copy of that forward under its `Nats-Msg-Id` (`bus.ForwardMsgID`), so that pod answers the duplicate from the copy the stream holds.
@@ -506,59 +407,28 @@ A rollback that stops every pod of this build before starting the old one carrie
 The listener's NATS user needs the `envoy_listener` bucket in its grant (`infra/core` `ListenerPermissions`, `DispatchPermissions` and `HostPermissions`, and the NATS auth service's answer to a listener or Dispatch connection, carry it from this release).
 That grant names only the machine's own keys, `lease.listener-<machine id>`, `handback.listener-<machine id>.*` and `delivery.listener-<machine id>.*.*` (each `listener-<machine id>` in the key spelling "The delivery lease" gives): it writes each of them and reads each by key, and its other calls on the bucket are the bucket stream's info, create and update, which the open and the raises send (`natsgrant.ListenerState` names the call behind each subject);
 that is a subject's reach, and what every listener user of the fleet can still do to the whole bucket is in `packages/envoy/infra/README.md` ("Permission sets").
-The same grants hold the `envoy_last_seen` bucket, every session's last-seen record, with the same rights each machine held on those records when they were in `envoy_listener`: the bucket stream's info, create and update, and a write and a read by key of every session's `seen.*` record (`natsgrant.LastSeen`).
-A hub's users gain it only when envoy-infra renders their grant again; a pod whose grant lacks it serves all the same, keeping last-seen in its own process, and opens the bucket once the grant carries it ("Start" above).
 The grant reads each of the listener's other buckets by key too, a direct get on the key's own subject, and on every bucket it refuses a get by revision, a direct get on the stream's bare subject.
 So the listener reads back each write it must stamp, the lease's acquiring write and a session registration in `envoy_sessions`, by key, and counts it as its own only at the revision it wrote;
 another revision there means a newer write landed first.
-A listener whose grant refuses `envoy_listener` does not exit: it logs one ERROR, `listener lease unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without a lease`, with the `retry_in` of its next try, and delivers as the machine's one deliverer, receiving from the durable only while no other subscriber holds it push-bound and waiting for as long as one does.
+A listener whose grant refuses `envoy_listener` does not exit: it logs one ERROR, `listener lease unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without a lease`, and delivers as the machine's one deliverer, receiving from the durable only while no other subscriber holds it push-bound and waiting for as long as one does.
 `/healthz` says so in `lease`: `"lease":"unavailable: missing NATS grant for KV bucket envoy_listener"`.
-The shared state above falls back to the pod's own: the ledger is in process, and the role-claim grace counts from the pod's own start.
-Last-seen is the last-seen bucket's, which a pod without the lease opens all the same when its grant carries it, and keeps in process when it does not.
+The shared state above falls back to the pod's own: the role-claim grace counts from the pod's own start.
 Run one pod per machine id in this mode: it has no fencing against a second deliverer after a reconnect in place.
 
-The pod tries the bucket again on the lease's own connection by the start rule ("Start" above), logging `listener state bucket refused by the NATS grant; delivering without a lease and retrying` at ERROR at each try, with the `bucket`, the `grant` it lacks, the refused `subject`, the server's text in `error` and `retry_in`, which starts at 2 s, twice the 1 s the start's ERROR names for the first try, and doubles up to 30 s (`joinDeliveryLease`).
-A grant applied after the pod started is so taken within one wait, with no restart, and the pod joins the lease:
-
-- The shared state follows: the keeper keeps the bucket, the role-claim grace counts from the lease's `service_since`, and the ledger is the machine's shared one.
-  Last-seen does not follow the join: it is recorded in the last-seen bucket from the moment that bucket opens, which its own loop does, before the join, after it or at the start ("Start" above).
-  A pair the pod delivered or attempted before the join is still answered from its own ledger for as long as that record stops a delivery, since the shared ledger holds nothing of it (`dedupe.Joining`).
-  Another pod that meets a repeat of such a message forwards it again with no pair in the shared ledger, and the stream stores that forward once: every forward to a session carries one `Nats-Msg-Id` however often it is sent (`bus.ForwardMsgID`), which the stream keeps for its 72 h duplicate window, so the session is handed the message once.
-
-- The pod tries to take the record before it gives anything up (`lease.Contend`).
-  A record that is absent or released it takes, and its subscription, its queue and the message in hand become the holder's: nothing is unsubscribed, so no message waits for the switch and no second pod delivers (`durableReceiver.joinTerm`, `durableReceiver.adopt`).
-  A record that is not released and that nobody writes, a dead holder's however long the bucket has kept it, it takes as any standby takes it, once its revision has stood unchanged for the TTL (5 s), delivering on its subscription until then, and that subscription becomes the holder's in the same way.
-  The term then settles as a term taken over an expired record does, on that subscription (`durableReceiver.adopt`): it holds what arrives until every message the durable has outstanding is in its hands, or for the settle cap (7 s), and delivers that in stream order, so what the dead holder received and never acked, which comes back at its ack wait, goes before newer messages;
-  where no other subscriber holds any, the hold ends at its first read of the durable.
-  `/healthz` drops `lease` and names the pod `active`, and the holder's loops start under the lease.
-
-- A record another pod holds it cannot take: that pod took the lease while this one delivered without it, and waits out this pod's push binding as a pre-lease build's ("Two builds of the listener" above).
-  The pod tells it from a dead holder's record by its revision alone, with no clock: it reads the record again until it finds it at another revision than its first read did, which that pod's next renewal writes, within the 1 s renewal and a 0.5 s poll of that first read.
-  It delivers until then, while that pod waits for its binding, and then stops delivering at once: from that read on, nothing its handler takes is forwarded or acked, so each such message comes back to the holder at its ack wait and is delivered there once, and the message in hand settles as normal, its ack included.
-  Its relays stop and are given `relayFormerSettle` (1 s) to settle the frames they forwarded, acks included, so the holder's relays, which restart each session's consumer at its ack floor, send none of them again;
-  then its subscription goes, which ends the holder's wait at its next poll (1 s), and the pod stands by under the lease.
-
-- A stop ends a join still trying before it stops receiving, and waits for it, within the receive stop's budget ("Graceful stop order" above): a lease the join took as the pod stopped is ended with the pod's receiving, its term handed back as any holder's is, or released by the stop when the pod had not taken it up yet, so no standby waits out the record of a pod that stopped gracefully (`durableReceiver.Stop`).
-  The join's wait for its next try of the bucket, up to 30 s, ends at the stop too, so it spends none of that budget, and an open that succeeds once the stop came makes no lease (`joinDeliveryLease`).
-  A try the stop cut, in that wait or in its open of the bucket, logs nothing of its own from the stop on, so a pod stopped while it still tries the bucket logs none of `listener state bucket refused by the NATS grant; delivering without a lease and retrying` at ERROR, `start refused by the NATS cluster's state; retrying` (`clusterStateLine`) and `listener state bucket open failed; retrying` at WARN for a retry it will not make.
-  A shutdown that comes as the lease joins ends the term the pod received on without a lease, its subscription drained and what it holds NAKed, rather than handing that term to the lease (`durableReceiver.receive`); one that comes once the lease has taken the term over ends it as the holder's term, with the hand-back a holder's stop makes (`durableReceiver.run`).
-
-Deploy prerequisite: render and apply the NATS grant carrying `envoy_listener` and `envoy_last_seen` (for a `gcp:NatsHub`, its users, which gain `envoy_last_seen` only when envoy-infra renders their grant again;
+Deploy prerequisite: render and apply the NATS grant carrying `envoy_listener` (for a `gcp:NatsHub`, its users;
 for a host, its NATS authorization) before running a second pod of a machine id.
 
 An edge listener (`ENVOY_EDGE_PROJECTS` set) always runs in this mode.
 Its grant (`natsgrant.Edge`) holds no call of `envoy_listener`, so it opens no lease connection, logs one INFO, `delivery lease not opened: an edge listener's grant holds no listener state bucket; delivering without a lease`, and never tries the bucket again (`main.go`).
-It holds no call of `envoy_last_seen` either, so it opens no last-seen bucket, logs one INFO, `last-seen bucket not opened: an edge listener's grant holds no last-seen bucket; keeping last-seen in process`, and keeps last-seen times in process.
 `/healthz` says `"lease":"unavailable: missing NATS grant for KV bucket envoy_listener"` as above.
 Run one edge pod per machine id, since a second one has no lease to stand by under:
 a second edge pod for one machine id, a rolling update's surge pod included, can deliver a message twice, as an edge listener of a build before this release can.
 So an edge Deployment runs one replica under the `Recreate` strategy.
-The relays of an edge listener acknowledge a frame they withhold (a GitHub event while no fresh repository answer stands, or a frame of no project the session's token lists, `edge_frames.go`), or give it back, with no check of the receive term (`acknowledgeWithheld`, `giveBackWithheld`, `session_relay.go`), because an edge listener holds no lease and runs one pod:
+The relays of an edge listener acknowledge a frame they withhold (a GitHub event while no fresh repository answer stands, or a frame of no project the session's token lists, `edge_frames.go`), or give it back (`acknowledgeWithheld`, `giveBackWithheld`, `session_relay.go`), because an edge listener holds no lease and runs one pod:
 an edge standby would need that withhold fenced by the lease, with the change to the edge's grant that its owner approves.
 An edge listener serves its sessions' relay sockets (`relay_socket.go`) on a NATS connection of their own, and opens that connection by the start rule, as it opens the session consumers' (`openStartConnection`, "Start: what ends it and what it waits out" above).
 A server that refuses that connection, or dials that find no server, log `relay socket connection failed; retrying` (and a grant refusal `relay socket connection refused by the NATS grant; retrying`) and the start waits, since an exit would only send the pod into a crash loop.
-At a stop the relay sockets close, each with 1012, after the session relays have settled (`shutdownListener`), and before the HTTP server shuts down, which does not wait for a hijacked connection.
-An edge session answers its frames over its socket alone, so a socket closed before the relays settled would leave each stopped relay's 750 ms settle (`relaySettleGrace`) nothing to hear, and every frame it had out would be given back and sent again.
+At a stop the relay sockets close, each with 1012, after the session relays stop (`shutdownListener`), and before the HTTP server shuts down, which does not wait for a hijacked connection.
 
 ## Environment
 
@@ -575,7 +445,7 @@ These concern the pods of one machine id:
   Go's text log lines carry no instance prefix, since the deployed text metric filters match by position.
 
 - `ENVOY_NATS_REPLICAS`:
-  Replicas of every bucket the listener creates, `envoy_listener` and `envoy_last_seen` included.
+  Replicas of every bucket the listener creates, `envoy_listener` included.
 
 ## Recreating the durable
 
@@ -604,4 +474,4 @@ To run it, set that variable to the path of a listener built from the commit beh
 CI's `listener-multiprocess` step does not set the variable and skips the row.
 Check `c-oldbinary` in the change's Verification records the run with the released build.
 
-The lease, receive and ledger rows that need no second process (`lease_test.go` and the `lease_*_test.go` files beside it, `receive_test.go` and the `receive_*_test.go` files beside it, `ledger_test.go`) run with the package's other tests.
+The lease and receive rows that need no second process (`lease_test.go` and the `lease_*_test.go` files beside it, `receive_test.go` and the `receive_*_test.go` files beside it) run with the package's other tests.

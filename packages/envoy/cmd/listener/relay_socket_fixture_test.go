@@ -178,7 +178,7 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 		t.Fatalf("the owner's edge grant: %v", err)
 	}
 	owner := newRelayRigUnownedAs(t, relayPauseFirst, relayPauseMax, grant)
-	owner.relays.setOwned(endlessTerm())
+	owner.relays.setOwned(true)
 
 	url := owner.url
 	var proxy *testnats.Proxy

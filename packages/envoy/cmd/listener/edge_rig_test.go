@@ -222,7 +222,7 @@ func newEdgeRigServing(t *testing.T, projects []string) *edgeRig {
 			<-done
 		})
 	}
-	rig.relays.setOwned(endlessTerm())
+	rig.relays.setOwned(true)
 	edge.broker = ciphertokentest.NewStubBroker(t)
 	edge.caller = ciphertokentest.NewCaller(t)
 	edge.handler = apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, edge.broker), edgeProjects: projects, logger: logger}, rig.mux)

@@ -124,11 +124,10 @@ func TestAnEdgeListenerWaitsForTheStreamUntilASharedListenerCreatesIt(t *testing
 // server refuses, and logs, every request the listener makes there: the lease's open, a delivery
 // ledger read or write, the last-seen bucket's open or a last-seen read or write. The admin made
 // both buckets before the edge started, as a shared listener's start does, so they are there to be
-// used. The edge starts, registers a session under a broker token of its project (a listener with
-// the last-seen bucket records the session's last-seen time there) and relays a send to it, and the
-// server logs no refusal on either bucket but one the edge's own user is refused, made last, which
-// shows the log is read. A request is the one route to a bucket, so a listener that sent none
-// holds no lease and records no last-seen time there.
+// used. The edge starts, registers a session under a broker token of its project and relays a send
+// to it, and the server logs no refusal on either bucket but one the edge's own user is refused,
+// made last, which shows the log is read. A request is the one route to a bucket, so a listener
+// that sent none holds no lease there.
 func TestAnEdgeListenerOpensNoLeaseAndSendsNothingOnTheListenerStateBucket(t *testing.T) {
 	t.Parallel()
 	const (
@@ -173,11 +172,6 @@ func TestAnEdgeListenerOpensNoLeaseAndSendsNothingOnTheListenerStateBucket(t *te
 	edge := startEdgeListenerProcess(t, cmdtest.Build(t, "envoy-listener"), granted.URL(), machineID, edgeProject, broker.Server.URL, edgeAccountToken,
 		bus.NkeySeedEnvVar+"="+seed, EnvPublicURL+"="+listenerBrokerOrigin)
 	edge.waitHealthy(t)
-	if got := countRecords(edge, lastSeenNotOpenedLine, func(record map[string]any) bool {
-		return record["level"] == "INFO" && record["bucket"] == bus.LastSeenBucket
-	}); got != 1 {
-		t.Fatalf("the edge listener logged %q naming %s %d times at INFO, want once:\n%s", lastSeenNotOpenedLine, bus.LastSeenBucket, got, edge.Output.String())
-	}
 
 	standIn := startSessionStandIn(t, granted.AdminURL, sessionID, answerDone)
 	if status, _, answer := signedListenerCall(t, edge.port, caller, token, "/v1/interests/subscribe",

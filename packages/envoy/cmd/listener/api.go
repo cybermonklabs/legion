@@ -35,11 +35,11 @@ type streamInfoLookup interface {
 // a session this listener watched reach the gone horizon is dead, while one it has no record and
 // no remembered registration for — the state a restart leaves, and the state of an id that never
 // registered here — may be alive on another listener (dispatch://INFRA-392, A6).
-func noLiveSession(ctx context.Context, sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry, state session.State) listenerwire.NoLiveSessionRefusal {
+func noLiveSession(sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry, state session.State) listenerwire.NoLiveSessionRefusal {
 	refusal := listenerwire.NoLiveSessionRefusal{
 		Error:    fmt.Sprintf("no live session %s", sessionID),
 		State:    state,
-		LastSeen: lastSeenOf(ctx, sessions, sessionID, entry),
+		LastSeen: lastSeenOf(sessions, sessionID, entry),
 	}
 	if refusal.LastSeen == 0 {
 		refusal.Error += "; this listener does not know when it last registered"
@@ -52,11 +52,11 @@ func noLiveSession(ctx context.Context, sessions *session.SessionRegistry, sessi
 // record has gone (session.SessionRegistry.LastSeen), else zero, which every caller reads as
 // "not known". Both a refused send and a role whose holder lapsed report it, so a caller told a
 // session is not answering can say how long it has been so.
-func lastSeenOf(ctx context.Context, sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry) int64 {
+func lastSeenOf(sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry) int64 {
 	if entry.UpdatedAt != 0 {
 		return entry.UpdatedAt
 	}
-	return sessions.LastSeen(ctx, sessionID)
+	return sessions.LastSeen(sessionID)
 }
 
 // roleSetResponse is POST /v1/roles/set's answer to a claim that landed: the claimant's interest
@@ -719,9 +719,7 @@ type forwardVerdict struct {
 // holds the role (an echo, never forwarded back), seen reports the holder already took this dedupe
 // key (a repeat), and the holder cannot take the payload's delivery mode (deliveryModeVerdict). The
 // role lane (roleTopicDelivery) and the publish route (roleSend.settledBeforeForward) both judge by
-// it, so both refuse and skip the same messages; the publish route passes its own record of what
-// the holder took as seen, the role lane a seen that answers no, since the delivery ledger reports
-// its repeats (ledgerAttempt) and it applies the mode verdict only after that check. Guarding
+// it, each with the record it trusts as seen, so both refuse and skip the same messages. Guarding
 // after the dedupe check keeps a delivered repeat from being judged by the holder's current
 // capabilities, which can have changed since the original forward and would misreport a delivered
 // message as failed — a false signal the Legion daemon treats as cause to probe and potentially
@@ -1011,7 +1009,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// sent nothing and costs nothing (senderCharge.published).
 			charge.woke()
 			if !recorded {
-				record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, noLiveSession(ctx, d.sessions, targetSession, target, recipientState))
+				record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, noLiveSession(d.sessions, targetSession, target, recipientState))
 				return
 			}
 		} else if err != nil {
@@ -1830,7 +1828,7 @@ func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, r *htt
 		// project, is answered as one no listener has heard of.
 		writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
 	case errors.Is(err, nats.ErrKeyNotFound):
-		writeJSON(w, http.StatusNotFound, noLiveSession(ctx, d.sessions, sessionID, entry, session.Gone))
+		writeJSON(w, http.StatusNotFound, noLiveSession(d.sessions, sessionID, entry, session.Gone))
 	case err != nil:
 		writeBusUnavailable(w, err)
 	default:
@@ -1960,7 +1958,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 			if writeUnshownSession(ctx, w, scope, d.sessions, sessionID, entry) {
 				return
 			}
-			writeJSON(w, http.StatusNotFound, noLiveSession(ctx, d.sessions, sessionID, entry, state))
+			writeJSON(w, http.StatusNotFound, noLiveSession(d.sessions, sessionID, entry, state))
 		case err != nil:
 			// The 503, its Retry-After: 1 and the busUnansweredPrefix body are written in one
 			// place for every route that answers a bus that did not answer, so the string a
@@ -1996,31 +1994,22 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 }
 
 // interestRowFor answers item with its session's last heartbeat: the live entry's UpdatedAt while
-// the session is live, else the final heartbeat still reported for it
-// (session.SessionRegistry.LastSeen), else none. That heartbeat is the session's `seen.` record in
-// the last-seen bucket, the one every pod of the fleet answers from, read within ctx: the
-// route passes its request's own budget, so a bucket that does not answer costs that budget once
-// for the whole answer and leaves the rows it could not read without a last heartbeat. A listener
-// without that bucket keeps the records in process, so one that restarted since the session died
-// reads it as unknown.
-func interestRowFor(ctx context.Context, sessions *session.SessionRegistry, item store.Interest) listenerwire.InterestRow {
+// the session is live, else the final heartbeat the cache still retains for it
+// (session.SessionRegistry.LastSeen), else none. A listener restart empties those records, so a
+// session that died before it reads as unknown.
+func interestRowFor(sessions *session.SessionRegistry, item store.Interest) listenerwire.InterestRow {
 	row := listenerwire.InterestRow{Interest: item.Wire()}
 	if entry, err := sessions.Get(item.SessionID); err == nil {
 		row.LastSeen = entry.UpdatedAt
 	} else {
-		row.LastSeen = sessions.LastSeen(ctx, item.SessionID)
+		row.LastSeen = sessions.LastSeen(item.SessionID)
 	}
 	return row
 }
 
 // adminInterestsHandler lists, reads and removes persisted interests. Each row a GET answers
-// carries its session's last heartbeat (interestRowFor), read from the last-seen bucket for
-// a session that has lapsed. GET /v1/interests/ answers from the interest cache and reads those
-// heartbeats within sendRequestBudget of the request's own context, the one budget for the whole
-// list: a bucket that stopped answering leaves the rows it could not read without a last
-// heartbeat rather than holding the answer open a read per row.
-// GET /v1/interests/<session_id> reads within sendRequestBudget of the request's own context: a
-// cache miss is read through to the
+// carries its session's last heartbeat (interestRowFor). GET /v1/interests/<session_id>
+// reads within sendRequestBudget of the request's own context: a cache miss is read through to the
 // bucket, the bucket's word that the key is absent is a 404, a record this build cannot decode is
 // the 500 writeInterestRecordUnreadable writes, and a read that did not answer is the
 // bus-unavailable 503 with Retry-After: 1 (a key NATS refuses is still the 413 or 400
@@ -2049,8 +2038,6 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 				return
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
-			defer cancel()
 			items, err := registry.List()
 			if errors.Is(err, kvwatch.ErrRefilling) {
 				writeListRefilling(w)
@@ -2062,7 +2049,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 			}
 			rows := make([]listenerwire.InterestRow, 0, len(items))
 			for _, item := range items {
-				rows = append(rows, interestRowFor(ctx, sessions, item))
+				rows = append(rows, interestRowFor(sessions, item))
 			}
 			writeJSON(w, http.StatusOK, rows)
 			return
@@ -2088,7 +2075,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 				return
 			}
 			item.Topics = edgeScopeOf(r, repositories).topics(sessionID, item.Topics)
-			writeJSON(w, http.StatusOK, interestRowFor(ctx, sessions, item))
+			writeJSON(w, http.StatusOK, interestRowFor(sessions, item))
 		case http.MethodDelete:
 			// The administrator's removal: it frees every role claim the session holds,
 			// whoever holds it (store.RoleReleaseAuthority.Force), and it is the only
@@ -2137,31 +2124,30 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // role is a 409, a refused key a 413 or 400, and an unreadable claim the 503 or 500 it was.
 //
 // A hard claim of a role no claim has held, by a claimant whose registration this listener's
-// cache does not hold yet, makes ten NATS round trips up to and including its claim write: the
+// cache does not hold yet, makes eight NATS round trips up to and including its claim write: the
 // read of the claimant's session (liveSessionEntry); the refresh of its registration, which is the
-// stream leader's read of the record, the write, the read of the registration back for the time
-// the server stamped on it, and the write of its last-seen record
-// (session.SessionRegistry.PutClearingGap, recordSeen), and whose leader read is also the read of
-// the claimant's record the predecessor rule's fallback takes its client instance id from where
-// that record is the session's own; the claim read and the read of the delete marker a role with
-// no claim record may hold (store.Registry.roleClaimToWrite, bus.KeyValue.GetLatest); the read
-// and the write of the claimant's interest record with the role's topic
-// (store.Registry.UpsertWithin); and the claim write. One more, the read that confirms that topic,
-// runs in the reserve after the claim's tries, as do the trips that narrow a former holder (below).
-// A claimant the cache holds saves the first read; a role a claim holds saves the marker read and
-// spends the write of a takeover record instead (takeoverTries.beforeTry); each conflict of a hard
-// claim's write adds a read and a write; and a soft claim adds the reads of its decision. The
-// ten must land before the claim's tries end (store's claimTriesContext): at the request's
-// deadline, sendRequestBudget (3.5 s) after it began, less a reserve of 1 s, or of a third of the
-// time left when the store is reached if that is less. At a latency of L a round trip, the five
-// trips before the store take 5L, so the tries end 2.5 s in while L is at most 100 ms and
-// (7 s + 5L)/3 in above that. The claim write fits while 10L is within that end, so while L is at
-// most 280 ms; at 300 ms it would land at 3.0 s, past the tries' end at 2.83 s. A claimant the
-// cache holds makes nine, four of them before the store, and fits while 9L is within
-// (7 s + 4L)/3, so while L is at most 304 ms. TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite
-// runs that claim behind a 250 ms link and TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails
-// this one behind a 150 ms link; each counts the claim's requests up to its write, at most nine
-// and ten, since a trip more still lands inside the tries at those links.
+// stream leader's read of the record and the write (session.SessionRegistry.PutClearingGap), and
+// whose leader read is also the read of the claimant's record the predecessor rule's fallback
+// takes its client instance id from where that record is the session's own; the claim read and
+// the read of the delete marker a role with no claim record may hold
+// (store.Registry.roleClaimToWrite, bus.KeyValue.GetLatest); the read and the write of the
+// claimant's interest record with the role's topic (store.Registry.UpsertWithin); and the claim
+// write. One more, the read that confirms that topic, runs in the reserve after the claim's tries,
+// as do the trips that narrow a former holder (below). A claimant the cache holds saves the first
+// read; a role a claim holds saves the marker read and spends the write of a takeover record
+// instead (takeoverTries.beforeTry); each conflict of a hard claim's write adds a read and a
+// write; and a soft claim adds the reads of its decision. The eight must land before the claim's
+// tries end (store's claimTriesContext): at the request's deadline, sendRequestBudget (3.5 s)
+// after it began, less a reserve of 1 s, or of a third of the time left when the store is reached
+// if that is less. At a latency of L a round trip, the three trips before the store take 3L, so
+// the tries end 2.5 s in while L is at most 166 ms and (7 s + 3L)/3 in above that. The claim
+// write fits while 8L is within that end, so while L is at most 333 ms; at 350 ms it would land at
+// 2.8 s, past the tries' end at 2.68 s. A claimant the cache holds makes seven, two of them before
+// the store, and fits while 7L is within (7 s + 2L)/3, so while L is at most 368 ms.
+// TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite runs that claim behind a 250 ms link
+// and TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails this one behind a 150 ms link; each
+// counts the claim's requests up to its write, at most seven and eight, since a trip more still
+// lands inside the tries at those links.
 //
 // A claim that carries if_claim_revision is conditional: it lands only while the role's claim
 // record is still at that revision, the one GET /v1/roles/<role> reported as claim_revision, and

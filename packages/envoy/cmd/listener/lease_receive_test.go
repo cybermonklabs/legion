@@ -66,8 +66,8 @@ func TestLeaseHolderReleasesTheRecordOnceItsReceiveConnectionHasBeenDownForTheBo
 		t.Fatal("the release signalled no change, so the receive loop would not end its term")
 	}
 	record, _ := readLease(t, kv)
-	if !record.Released || record.Holder != "pod-a" || !record.Unsettled || !record.AckWaitOwed || !record.StaleBinding || record.Receiving {
-		t.Fatalf("record = %+v, want pod-a's released record, unsettled, owing an ack wait, with a stale binding and not receiving", record.leaseFields)
+	if !record.Released || record.Holder != "pod-a" || !record.Unsettled || !record.StaleBinding {
+		t.Fatalf("record = %+v, want pod-a's released record, unsettled, with a stale binding", record.leaseFields)
 	}
 
 	// No bounce: this pod takes no record back while its receive connection is down, however long
@@ -85,8 +85,8 @@ func TestLeaseHolderReleasesTheRecordOnceItsReceiveConnectionHasBeenDownForTheBo
 	if !a.Holding() {
 		t.Fatal("the pod took no record once its receive connection was back")
 	}
-	if status := a.Status(); status.How != leaseTakenReleased || !status.Settle || status.HandBack {
-		t.Fatalf("status = %+v, want a term taken from the released record that must settle and is no hand-back candidate", status)
+	if status := a.Status(); status.How != leaseTakenReleased || !status.Settle {
+		t.Fatalf("status = %+v, want a term taken from the released record that must settle", status)
 	}
 }
 

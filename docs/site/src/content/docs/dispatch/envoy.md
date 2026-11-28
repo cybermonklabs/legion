@@ -17,8 +17,8 @@ Envoy carries events between GitHub, Slack, Dispatch, Legion, and agent sessions
   role. Envoy also keeps its own state in JetStream key-value buckets:
   which session is subscribed to what (`envoy_interests`), each session's registration and when it
   last registered (`envoy_sessions`), who holds each role (`envoy_roles`), pull request check
-  results (`envoy_ci_state`), and, per machine, which listener delivers and what it has delivered
-  (`envoy_listener`). The stream and every bucket are kept in at least as many copies as
+  results (`envoy_ci_state`), and, per machine, which listener delivers (`envoy_listener`). The
+  stream and every bucket are kept in at least as many copies as
   the deployment's `ENVOY_NATS_REPLICAS` says, when every Envoy program of the deployment carries
   the same value ([Keeping the stream](#keeping-the-stream)).
 - **The listener** is an HTTP service in front of it. It takes webhooks in, publishes them as

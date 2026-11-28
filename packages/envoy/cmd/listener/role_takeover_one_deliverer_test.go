@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -74,7 +75,7 @@ func newDelivererRig(t *testing.T) *delivererRig {
 		defer cancel()
 		relays.stop(ctx)
 	})
-	relays.setOwned(endlessTerm())
+	relays.setOwned(true)
 	consumers.deps.confirmed = newConfirmedRecord(t)
 	rig := &delivererRig{relayRig: &relayRig{sessionConsumerRig: consumers, relays: relays, url: url}, clock: clock}
 	setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{
@@ -779,6 +780,10 @@ func newRelayBench(b *testing.B) *relayBench {
 	if err := sessions.WaitForCacheReady(ready); err != nil {
 		b.Fatalf("wait for the session registry's cache: %v", err)
 	}
+	dedupeCache := dedupe.New(10 * time.Minute)
+	attemptCache := dedupe.New(5 * time.Minute)
+	b.Cleanup(dedupeCache.Stop)
+	b.Cleanup(attemptCache.Stop)
 	met := metrics.New()
 	logger := logging.NewWithWriter("relay-bench", io.Discard)
 	// The configuration newListenerDeliveryHarnessOn builds, which takes a *testing.T.
@@ -788,7 +793,8 @@ func newRelayBench(b *testing.B) *relayBench {
 		registry:            registry,
 		sessions:            sessions,
 		machineID:           "test-machine",
-		ledger:              testDeliveryLedger(b, client.Conn, "test-machine", "boot-bench"),
+		dedupeCache:         dedupeCache,
+		attemptCache:        attemptCache,
 		logger:              logger,
 		messagesReceived:    met.NewCounter("bench_messages_received", "bench"),
 		messagesDelivered:   met.NewCounter("bench_messages_delivered", "bench"),
@@ -822,7 +828,7 @@ func newRelayBench(b *testing.B) *relayBench {
 		defer cancel()
 		relays.stop(stopCtx)
 	})
-	relays.setOwned(endlessTerm())
+	relays.setOwned(true)
 	mux := http.NewServeMux()
 	registerV1Routes(mux, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: delivery, delivery: &cfg}, "test-machine", logger)
 

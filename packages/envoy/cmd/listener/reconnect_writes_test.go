@@ -380,10 +380,9 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 //
 // In the first outage the listener's connections are cut while the server runs on, as a network
 // that drops them does, so the relay still holds its two frames. The session answers one of them
-// done, so the relay acks that message, and the listener's receive term ends, so the relay settles
-// the other for its grace and then hands it back with a nak (settleStoppedFrames). The rows above
-// cannot reach either send through the routes. nats.go refuses both, since the client keeps no
-// reconnect buffer, and each line names the reconnect.
+// done, so the relay acks that message, and the listener's receive term ends, so the relay hands
+// the other back with a nak. The rows above cannot reach either send through the routes. nats.go
+// refuses both, since the client keeps no reconnect buffer, and each line names the reconnect.
 //
 // The second outage stops the server and starts it again. A stopping server ends each pull
 // request it holds with "409 Server Shutdown" (nats-server v2.15.1 signalPullConsumers), so a
@@ -411,7 +410,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frames
 	// it holds, before the row takes the session away.
 	rig.relays.receiptWait = time.Minute
-	rig.relays.setOwned(endlessTerm())
+	rig.relays.setOwned(true)
 	sessionID := "ses_relay_reconnect_" + id.New()
 	// A nil answer leaves the stand-in silent, so every frame stays outstanding with the relay.
 	standIn := startSessionStandIn(t, uri, sessionID, nil)
@@ -450,11 +449,11 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing
 		// The session's done for the first frame, handed to the relay as its reply subscription
 		// hands one on: with the listener's connections cut, no reply reaches it any other way.
 		rig.relays.onReply(&natsgo.Msg{Subject: frames[0].msg.Reply, Data: []byte(relayReplyDone)})
-		rig.relays.setOwned(nil)
+		rig.relays.setOwned(false)
 		awaitLogLine(t, rig, handOverFailed, 15*time.Second)
 		proxy.Restore()
 		reconnected(t)
-		rig.relays.setOwned(endlessTerm())
+		rig.relays.setOwned(true)
 		// The refused ack did not reach the server: the ack floor is still below the first
 		// message, so the relay that takes the session again, which restarts at that floor,
 		// delivers both. The second comes back at the floor whether or not its nak reached the
@@ -471,12 +470,12 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing
 		reconnecting(t)
 		// The relay stops until the session's stand-in is back on the server, so no frame goes
 		// out before something reads it.
-		rig.relays.setOwned(nil)
+		rig.relays.setOwned(false)
 		server.Start(t)
 		reconnected(t)
 		// The stand-in's own connection ended with the server, so the session is back on another.
 		again := startSessionStandIn(t, uri, sessionID, nil)
-		rig.relays.setOwned(endlessTerm())
+		rig.relays.setOwned(true)
 		requireFrames(t, again.collect(t, 2, 20*time.Second), first, second)
 	}) {
 		return

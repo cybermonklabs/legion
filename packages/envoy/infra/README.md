@@ -4157,11 +4157,11 @@ It publishes to:
   It retries the open in the background (1 s doubling to 5 min, and at once after each NATS
   reconnect), so it takes the grant without a restart;
 - for the bucket `envoy_listener` (the machine's delivery lease and the delivery state its
-  listeners share, `packages/envoy/cmd/listener/README.md`), the nine subjects the listener's
-  own calls on it send and no wider one (`natsgrant.ListenerState`, whose doc names the function
-  behind each call), where `<u>` is `listener-<m>`:
+  listeners share), the nine subjects the listener's own calls on it send and no wider one
+  (`natsgrant.ListenerState`, whose doc names the function behind each call), where `<u>` is
+  `listener-<m>`:
   - `$JS.API.STREAM.INFO.KV_envoy_listener`: the open's lookups and its read of a found bucket,
-    the copy and leader waits, the age raise's read (`bus.RaiseMaxAge`) and the keeper's raise;
+    the copy and leader waits, the read of an age raise and the keeper's raise;
   - `$JS.API.STREAM.CREATE.KV_envoy_listener`: the create of an absent bucket;
   - `$JS.API.STREAM.UPDATE.KV_envoy_listener`: the copy raise, the age raise, the keeper's raise
     and nats.go's update of a bucket another pod created first;
@@ -4191,17 +4191,12 @@ It publishes to:
   the raises need, and read every reply through `_INBOX.>`, another machine's direct-get answer
   included. So the bucket trusts all listener users of the fleet, as their shared `_INBOX.>`
   subscription already trusts them with every reply.
-  A listener whose grant lacks `envoy_listener` logs an ERROR naming it and delivers without a
-  lease, as its machine's only deliverer. An edge listener (`EdgePermissions`, below), whose grant
-  never holds the bucket, never asks for it: it logs one INFO naming the bucket and delivers
-  without a lease, one pod per machine id;
-- for the bucket `envoy_last_seen` (every session's last-seen record,
-  `packages/envoy/cmd/listener/README.md`, "State the pods share"), the five subjects the
+  An edge listener's grant (`EdgePermissions`, below) never holds the bucket;
+- for the bucket `envoy_last_seen` (every session's last-seen record), the five subjects the
   listener's own calls on it send and no wider one (`natsgrant.LastSeen`), the same for every
-  machine and the same rights each machine's grant held on these records when they were the
-  `seen.*` keys of `envoy_listener`:
+  machine:
   - `$JS.API.STREAM.INFO.KV_envoy_last_seen`: the open's lookups and its read of a found bucket,
-    the copy and leader waits, the age raise's read (`bus.RaiseMaxAge`) and the keeper's raise;
+    the copy and leader waits, the read of an age raise and the keeper's raise;
   - `$JS.API.STREAM.CREATE.KV_envoy_last_seen`: the create of an absent bucket;
   - `$JS.API.STREAM.UPDATE.KV_envoy_last_seen`: the copy raise, the age raise, the keeper's raise
     and nats.go's update of a bucket another pod created first;
@@ -4215,11 +4210,8 @@ It publishes to:
   session's record, whichever machine it registered through. So the bucket holds no machine's own
   state, and every listener user of the fleet writes and reads all of it, and can purge it or
   change its configuration as it can `envoy_listener`'s.
-  A hub's users gain these subjects only when envoy-infra renders their grant again. A listener
-  whose grant lacks `envoy_last_seen` logs an ERROR naming it at each try of the bucket, serves,
-  keeps last-seen times in its own process and opens the bucket with no restart once its grant
-  carries it. An edge listener (`EdgePermissions`, below), whose grant never holds the bucket,
-  never asks for it: it logs one INFO naming the bucket and keeps last-seen times in process;
+  A hub's users gain these subjects only when envoy-infra renders their grant again.
+  An edge listener's grant (`EdgePermissions`, below) never holds the bucket;
 - `$JS.API.STREAM.PURGE.KV_envoy_interests`, which the interest bucket's delete-marker collection
   sends, and `$JS.API.STREAM.PURGE.KV_envoy_known_sessions`, which the known-session store's
   purge of its replaced chunks' markers sends every five minutes (a user without it keeps those
@@ -4232,11 +4224,13 @@ It publishes to:
   Its one difference is that a purge of a live record leaves no marker a watcher is delivered, so
   a running listener keeps serving that record until it reads the bucket again.
 
-Each bucket in those two entries is granted to every user built on this set: the listener's own,
+Each bucket in the entries above is granted to every user built on this set: the listener's own,
 the host user a host's sessions share (`HostPermissions`) and Dispatch's.
-So every session on a host can write another session's record in any of those buckets, its
-session entry in `envoy_sessions` and its known-session record in `envoy_known_sessions` among
-them.
+So every session on a host can write another session's record in any of the first entry's
+buckets, its session entry in `envoy_sessions` and its known-session record in
+`envoy_known_sessions` among them, and any session's last-seen record in `envoy_last_seen`.
+In `envoy_listener` it can write the keys of the machine its host user names, and no other
+machine's.
 The auth service's per-session credentials, which give each session a NATS user of its own, are what narrow
 that reach; nothing here can, since one user serves every session on the host.
 
@@ -4377,16 +4371,15 @@ session and no other listener shares. It is `ListenerPermissions(machineID)` wit
 no other, its publish deny included: it denies Dispatch's lane and GitHub's lane, as every set
 built on the listener grant does, since an edge listener publishes neither. Its publish list names
 neither lane, so the deny refuses nothing that list admits today; it keeps both lanes refused if
-the list grows. It holds none of the subjects of the listener state bucket `envoy_listener` or of
-the last-seen bucket `envoy_last_seen`, which `ListenerPermissions` holds, so an edge listener
-opens no delivery lease and no last-seen bucket, keeps last-seen times in its own process and runs
-one pod per machine id (`cmd/listener/README.md`). It refuses a machine id that holds a wildcard,
-white space, a control character or `%`, and a project list that is empty or not project keys, sorted, each
-once. It takes a dotted machine id, such as a fully qualified host name, as a listener's durable
-does: its inbox prefix and its relay receipts spell the id as the durable spells it, each dot as
-`%2E`, so each is one subject token. An id with none of the characters that spelling escapes (a
-dot, `/` or `\` among those it takes) keeps its prefix byte for byte. In place of
-`notifications.>` it publishes this list and
+the list grows.
+It holds none of the subjects of the listener state bucket `envoy_listener` or of the last-seen
+bucket `envoy_last_seen`, which `ListenerPermissions` holds.
+It refuses a machine id that holds a wildcard, white space, a control character or
+`%`, and a project list that is empty or not project keys, sorted, each once. It takes a dotted
+machine id, such as a fully qualified host name, as a listener's durable does: its inbox prefix and
+its relay receipts spell the id as the durable spells it, each dot as `%2E`, so each is one subject
+token. An id with none of the characters that spelling escapes (a dot, `/` or `\` among those it
+takes) keeps its prefix byte for byte. In place of `notifications.>` it publishes this list and
 no other notification topic: `notifications.agent.>` (a send); `notifications.role.<KEY>.>` for
 each project (a role message in the form that names the project); `notifications.envoy.deliver.*`
 (a relay frame); `notifications.envoy.relayreply.>` (every edge machine's relay receipts, since the

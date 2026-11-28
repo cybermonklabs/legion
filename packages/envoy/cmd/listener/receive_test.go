@@ -19,35 +19,20 @@ import (
 const receiveTestSubject = "notifications.github.acme.widgets.push.branch.main"
 
 // testReceiveTiming is the receive loop's production timing with its waits shortened, so a test
-// sees each of them in well under a second; the settle hold's caps stay the production ones, one
-// of the durable's own ack waits and a second after a hard take-over and the hand-back delay and a
-// second after a graceful one, and so do a graceful stop's hand-back delay and linger cap. A
-// stopping holder waits 250 ms, five of testLeaseTiming's standby polls, for another pod to take
-// its released lease; a test of the hand-over itself takes handBackTiming.
+// sees each of them in well under a second; the settle hold's cap stays the production one, one of
+// the durable's own ack waits and a second, and so does a graceful stop's hand-back delay.
 func testReceiveTiming() receiveConfig {
 	production := productionReceiveConfig()
 	return receiveConfig{
-		settlePoll:        50 * time.Millisecond,
-		settleCap:         production.settleCap,
-		handBackSettleCap: production.handBackSettleCap,
-		bindPoll:          50 * time.Millisecond,
-		alarmAfter:        time.Hour,
-		alarmEvery:        time.Hour,
-		inProgressEvery:   inProgressEvery,
-		inflightGrace:     300 * time.Millisecond,
-		handBackDelay:     handBackDelay,
-		lingerPoll:        50 * time.Millisecond,
-		lingerMax:         lingerMax,
-		lingerUntaken:     250 * time.Millisecond,
+		settlePoll:      50 * time.Millisecond,
+		settleCap:       production.settleCap,
+		bindPoll:        50 * time.Millisecond,
+		alarmAfter:      time.Hour,
+		alarmEvery:      time.Hour,
+		inProgressEvery: inProgressEvery,
+		inflightGrace:   300 * time.Millisecond,
+		handBackDelay:   handBackDelay,
 	}
-}
-
-// handBackTiming is testReceiveTiming with the production wait for another pod to take the
-// released lease, for a stopping pod whose hand-over a test watches.
-func handBackTiming() receiveConfig {
-	timing := testReceiveTiming()
-	timing.lingerUntaken = lingerUntaken
-	return timing
 }
 
 // testLeaseTiming is a lease that a standby takes within a second of its holder going quiet, and
@@ -258,8 +243,7 @@ func subscribeListenerDurable(client *bus.Client, consumer string, handler natsg
 }
 
 // putLeaseRecord writes machineID's lease record as another pod would have left it, and returns
-// its revision: the one a pod taking that record replaces, which a clean-hand-back mark for it is
-// keyed by (putHandBackMark).
+// its revision: the one a pod taking that record replaces.
 func putLeaseRecord(t *testing.T, uri, machineID, record string) uint64 {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
@@ -292,7 +276,7 @@ func TestADurableMessageReceivedWithoutTheLeaseIsDroppedAndRedeliveredToTheHolde
 	if err != nil {
 		t.Fatalf("create the durable: %v", err)
 	}
-	if err := stray.receiver.begin(context.Background(), info.Config.DeliverSubject, 0, 0); err != nil {
+	if err := stray.receiver.begin(info.Config.DeliverSubject, 0, 0); err != nil {
 		t.Fatalf("subscribe the stray pod: %v", err)
 	}
 

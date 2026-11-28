@@ -1,39 +1,7 @@
 kind: Changed
 body: |-
-    A listener's pods share their delivery state through `envoy_listener`, so a pod that takes over,
-    or a standby answering `/v1`, answers as the active pod would. The delivery ledger
-    (`internal/dedupe`, `delivery.<durable>.<hash>.<session token>` keys, where the session token
-    is the session id itself when the id is 1 to 128 characters of ASCII letters, digits, `_` and
-    `-`, and otherwise `=` and a hash of the id) replaces the per-process attempt and dedupe caches
-    on the durable and role lanes: a pair another pod delivered is not delivered
-    again; an attempt by a former lease holder (`former_boots` in the lease record) is taken over
-    without the 35 s wait another pod's attempt earns: at once for a holder taken over by force
-    (killed, its node lost, its record left to expire), so a hard take-over keeps each session's
-    order, and 2.25 s after this pod took the lease for a holder that released it, whose role
-    lane may still be finishing the forward it had in flight; one a pod that still holds or renews
-    a lease, or a live pod's role lane, attempted less than 35 s ago is retried later; and an
-    older one is taken over. A ledger that cannot be read NAKs the durable message for
-    a retry, and the role lane delivers without it, logging `delivery ledger unavailable`.
-    A session's last-seen time is kept in `seen.<session token>` records in the new KV bucket
-    `envoy_last_seen`, which every pod of every machine answers a lapsed session's `last_seen` out
-    of alone, for the session TTL and its last-seen retention (2 hours, never less than the TTL)
-    past the last write: 4 hours at the default 2 hour TTL. The listener creates the bucket at
-    `ENVOY_NATS_REPLICAS`, one value per key, with a `MaxAge` of that window and the interest
-    reaper's 15 minutes more, 4 h 15 min; a longer session TTL (`ENVOY_SESSION_MAX_AGE`, or a session
-    bucket that already keeps its records longer) raises that age at each listener's open of the
-    bucket, which never lowers it. The records have a bucket of their own so that their age keeps
-    no lease or ledger record: `envoy_listener` keeps its keys for its 20 minute `MaxAge`. The
-    listener opens `envoy_last_seen` once its session registry is open, on its main NATS connection,
-    and tries it again until it opens, logging `last-seen bucket refused by the NATS grant; keeping
-    last-seen in process and retrying` or `last-seen bucket refused by the NATS account's limits or
-    the server's state; keeping last-seen in process and retrying` at ERROR, the cluster's state
-    line, or `last-seen bucket open failed; retrying` at WARN at each failed try. None of them ends
-    the process or keeps the pod unready, and neither the lease's open nor its join waits on them:
-    the start waits only for the first try, at most 6 s, before `/v1` opens, a pod keeps last-seen
-    times in its own process until a try opens the bucket, and an edge listener opens none. A role
-    claim's grace counts from the machine's service start
-    (`service_since` in the lease record) rather than each process's start, so every pod answers a
-    lapsed holder alike.
+    A role claim's grace counts from the machine's service start (`service_since` in the lease
+    record) rather than each process's start, so every pod answers a lapsed holder alike.
 time: 2026-10-28T10:25:04.166819217Z
 custom:
     Issue: pr2404
