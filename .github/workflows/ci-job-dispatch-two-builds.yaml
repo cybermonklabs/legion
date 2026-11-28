@@ -163,6 +163,9 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      - name: Install gotestsum
+        if: inputs.dispatch_two_builds_go == 'true'
+        uses: ./.github/actions/install-gotestsum
       # why: .github/ci-notes/ci.md#why-the-two-builds-jobs-restore-go-envoy-test
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -248,7 +251,7 @@ jobs:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
-          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+          gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/dispatch-two-builds.jsonl" --format standard-quiet --raw-command -- go test -json -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
       # dispatch-browser.yaml's shard job's step of this name, for the reason
       # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
@@ -339,6 +342,14 @@ jobs:
         with:
           name: dispatch-two-builds-browser-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
+
+      # Keep each Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always() && (inputs.dispatch_two_builds_go == 'true')
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -449,6 +460,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      - name: Install gotestsum
+        uses: ./.github/actions/install-gotestsum
       # why: .github/ci-notes/ci.md#why-the-two-builds-jobs-restore-go-envoy-test
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -479,8 +492,16 @@ jobs:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-same
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
-          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+          gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/dispatch-two-builds.jsonl" --format standard-quiet --raw-command -- go test -json -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
+
+      # Keep each Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
