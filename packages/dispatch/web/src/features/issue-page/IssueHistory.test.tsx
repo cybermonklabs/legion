@@ -368,8 +368,7 @@ test("a reader on one of two threads whose events are unread keeps their entry w
   }
 });
 
-// A turn's Reply is drawn only under the page's writer, and sets it to reply to that turn; the
-// page draws no box at the foot of the outline that sends it yet.
+// A turn's Reply is drawn only under the page's writer, and sets it to reply to that turn.
 test("a turn's Reply sets the writer to reply to that turn", async () => {
   const restoreReads = stubHistoryReads([], { messages: [agentMessage("m-turn", 60)] });
   const queryClient = new QueryClient({
@@ -445,35 +444,13 @@ test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
     await warmMarkdownRenderer();
     const restoreViewport = stubViewport(width);
     const restoreReads = stubHistoryReads([], { messages: [agentMessage("m-turn", 60)] });
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-    });
-    queryClient.setQueryData(["agents"], []);
-    const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
-    const history = (
-      <IssueHistory
-        activityFollowing={undefined}
-        issue={issue}
-        item={undefined}
-        state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
-        visitMark={99}
-      />
-    );
 
     try {
       for (const [preset, replies] of [
         ["threads", false],
         ["conversation", true],
       ] as const) {
-        const view = render(
-          <MemoryRouter initialEntries={[presetPath(KEY, preset)]}>
-            <QueryClientProvider client={queryClient}>
-              <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
-                {history}
-              </OutlineWriterProvider>
-            </QueryClientProvider>
-          </MemoryRouter>
-        );
+        const view = drawHistory(undefined, { at: presetPath(KEY, preset), writer: {} });
         try {
           const turn = await waitFor(() => {
             const drawn = document.querySelector<HTMLElement>('[data-history-item="m-turn"]');
@@ -617,24 +594,27 @@ test("a repaired block's words are a link to its question's address, and its id 
 const FOLLOWING = "default /issues/CORE-1/messages";
 
 /** The history of `KEY` with nothing above it but a query client that never retries, at the
- *  address of the turn `item` where one is given, and as its options say: drawn in `container`
- *  where one is given, under the names a page published of its batched read (`published`) where
- *  those are given, with the read mark `visitMark` of the visit (99,999 unless a case gives one),
- *  under the page's writer where `writer` is given, which holds that writer for the case, and in
- *  Details as the shell holds it where `details` is given, which holds whether Details is open:
- *  Details is open as the case starts, it wraps the writer, and the history is drawn only while
- *  it is open, as `details-more.tsx`'s `DetailsHistory` draws it, so a case that shuts Details
- *  takes the history off the page. The issue's newest event is past the read mark, so the
- *  history reads the first event past it, which `stubHistoryReads` answers with its `boundary`. */
+ *  address of the turn `item` where one is given, and as its options say: under a router that
+ *  starts at the address `at` where one is given, drawn in `container` where one is given, under
+ *  the names a page published of its batched read (`published`) where those are given, with the
+ *  read mark `visitMark` of the visit (99,999 unless a case gives one), under the page's writer
+ *  where `writer` is given, which holds that writer for the case, and in Details as the shell
+ *  holds it where `details` is given, which holds whether Details is open: Details is open as the
+ *  case starts, it wraps the writer, and the history is drawn only while it is open, as
+ *  `details-more.tsx`'s `DetailsHistory` draws it, so a case that shuts Details takes the history
+ *  off the page. The issue's newest event is past the read mark, so the history reads the first
+ *  event past it, which `stubHistoryReads` answers with its `boundary`. */
 function drawHistory(
   item: string | undefined,
   {
+    at,
     container,
     details,
     published,
     visitMark = 99999,
     writer,
   }: {
+    at?: string;
     container?: HTMLElement;
     details?: HeldDetails;
     published?: PublishedReferences;
@@ -679,7 +659,7 @@ function drawHistory(
       </OutlineWriterProvider>
     );
   const { unmount } = render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={at === undefined ? undefined : [at]}>
       <QueryClientProvider client={queryClient}>
         {details === undefined ? written : <ShellDetails held={details}>{written}</ShellDetails>}
       </QueryClientProvider>
@@ -2807,7 +2787,7 @@ async function drawLandingHistory({
     writer: held,
   });
   // alice signs in before any landing waits on her, which the history's read of who is signed
-  // in (`IssueHistory.tsx`'s `signedIn`) draws again.
+  // in (`history-landing.ts`'s `signedIn`) draws again.
   act(() => {
     queryClient.setQueryData(["whoami"], { kind: "user", login: ALICE.id });
   });
@@ -3109,6 +3089,62 @@ test("on a phone, a reply sent from a turn of a thread older than the first page
       queryClient.removeQueries({ queryKey: HISTORY_LOG });
     },
   });
+});
+
+// Decision 581, for a thread on a page of the log whose read fails. The history stopped reading
+// the log on for the landing's thread once a read failed, and drew the failure with its Retry,
+// but the landing waited on for that thread, which no read was then bringing, until its 10 s were
+// out (`LANDING_WAIT_MS`). It ends as the read fails, with the focus where it is: the reader has
+// the read's Retry line.
+test("on a phone, a reply's landing whose thread stands on a page of the log not read yet ends at once, the focus where it is, as the read of that page fails", async () => {
+  const { box, detailsOpen, field, queryClient, restore, writer } = await drawLandingHistory({
+    phone: true,
+  });
+  // The log's first page as it is read anew: a full page of claims made while the reader wrote,
+  // all of the last second, so every one is newer than the thread's first turn, two minutes old.
+  // The read of the page under it fails.
+  const readAnew = Array.from({ length: 200 }, (_, index) =>
+    claimAgo(220 - index, (index + 1) / 200)
+  );
+  const reads = api.getIssueEvents as Mock<typeof api.getIssueEvents>;
+
+  try {
+    await replyOnPhone(box, "m-root", field, detailsOpen);
+    act(() => {
+      reads.mockImplementation(async (_key, options) => {
+        if (options?.after !== undefined) return [];
+        if (options?.before === undefined) return [...readAnew];
+        throw new Error("the log's older page is down");
+      });
+      queryClient.removeQueries({ queryKey: HISTORY_LOG });
+    });
+
+    // The line sends, and asks the page to land its reply (`IssueComposer.tsx`'s `finish`).
+    act(() => {
+      writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } });
+      writer()?.clear();
+    });
+    expect(detailsOpen(), "the reply sent with Details shut on a phone did not open Details").toBe(
+      true
+    );
+    expect(
+      writer()?.landing,
+      "the reply's landing is not the history's, or is not marked as opening Details"
+    ).toMatchObject({ in: "history", opensDetails: true });
+    const failed = await within(box).findByRole("alert");
+    expect(failed).toHaveTextContent(ANSWER_LINES.history_unreadable);
+    expect(
+      reads.mock.calls.some(([, options]) => options?.before !== undefined),
+      "the history did not read the log on for the thread the reply answers"
+    ).toBe(true);
+    expect(
+      writer()?.landing,
+      "the landing waited on for its thread once the read of the page it stands on failed"
+    ).toBeUndefined();
+    expect(document.activeElement, "the landing that ended moved the focus").toBe(field);
+  } finally {
+    restore();
+  }
 });
 
 // Decision 581, for a reader who shuts Details again before the reply lands. The writer opened

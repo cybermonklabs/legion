@@ -331,8 +331,9 @@ async function seedHistoryThreads() {
 // agent's status note and the two comments agents wrote to each other, each once - and no event
 // of a node, no version of a document, no result against a check and no child's move. A person's
 // reply leaves the daemon's thread whole in the history, the reply among its turns, and moves the
-// agents' comment thread into the outline. The replies are sent by the API: the page draws no box
-// at the foot of the outline yet.
+// agents' comment thread into the outline. The replies are sent by the API: each is a person's
+// turn the row writes as data, and the act under test is where the history and the outline draw
+// its thread once a read brings it, not the send from the box at the foot.
 test("the conversation is the outline and the history is in the panel", async ({ browser }) => {
   // The whole issue's seed and two loads of its page, the history read to its end between.
   test.setTimeout(240_000);

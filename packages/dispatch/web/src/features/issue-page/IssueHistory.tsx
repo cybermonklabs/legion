@@ -4,20 +4,12 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import {
-  type ReactNode,
-  type RefObject,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigationType } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
-import { issueResultsQuery, whoAmIQuery } from "../../api/queries";
+import { issueResultsQuery } from "../../api/queries";
 import type { IssueDetails, UserState } from "../../api/types";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { dateKey } from "../activity/activity-model";
@@ -31,29 +23,20 @@ import { issueAsks } from "./agents-only";
 import { DetailsErrorLine, retryRead } from "./details-error";
 import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
 import { Entry, runKeys } from "./history-entries";
+import { drawnTurn, useHistoryLanding } from "./history-landing";
 import { historyLogKey, issueUnreadBoundaryQuery } from "./history-log";
 import {
   buildHistory,
   comparePlaces,
   HISTORY_EXCLUDED_TYPES,
   HISTORY_PAGE,
-  type HistoryDay,
   type HistoryPlace,
-  type HistoryTurn,
   historyBlocks,
   historyDownTo,
   placeUnder,
-  threadOf,
   turnPlace,
 } from "./history-model";
-import { useMarginDrawer } from "./margin-slot";
-import {
-  type HeldLanding,
-  LANDING_WAIT_MS,
-  type LandingSight,
-  newOwnNode,
-  useOutlineWriter,
-} from "./outline-writer";
+import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { abortOnReaderAct } from "./reader-acts";
@@ -301,6 +284,9 @@ export function IssueHistory({
     () => (reopenedFor === undefined ? undefined : turnPlace(days, reopenedFor)),
     [days, reopenedFor]
   );
+  // A landing the writer opened Details for whose thread the history does not draw yet: the log
+  // is read on for it (`seeksThread`), and the landing waits while it is (`useHistoryLanding`).
+  const landingUnread = reopenedFor !== undefined && landingPlace === undefined;
   const drawn = useMemo(() => historyDownTo(days, shownEnd), [days, shownEnd]);
   // Whether a press of Show more reads the log's next page before it draws the next entries:
   // while an older page is unread and `HISTORY_PAGE` or fewer entries are read and not drawn.
@@ -350,8 +336,7 @@ export function IssueHistory({
   // that failed over the pages held draws no line, which leaves the control under the entries to
   // read on.
   const seeksThread =
-    ((item !== undefined && itemPlace === undefined) ||
-      (reopenedFor !== undefined && landingPlace === undefined)) &&
+    ((item !== undefined && itemPlace === undefined) || landingUnread) &&
     comments.data !== undefined &&
     messages.data !== undefined &&
     log.hasNextPage &&
@@ -644,7 +629,9 @@ export function IssueHistory({
     anchor.current?.keepRow(null);
   });
   // A write from the line at the foot that answered a turn of a thread this history holds is the
-  // history's to land (`useHistoryLanding`).
+  // history's to land (`useHistoryLanding`). A landing whose thread is not drawn yet waits while
+  // the history reads the log on for that thread, and no longer: a read that failed stops that
+  // reading (`seeksThread`) and ends the landing, and the reader has that read's Retry line.
   useHistoryLanding({
     bringIntoBox,
     days,
@@ -652,7 +639,7 @@ export function IssueHistory({
     handTo,
     landing,
     list: anchorRoot,
-    older,
+    readsOnForThread: landingUnread && log.hasNextPage && !log.isError,
   });
   // The history draws the log it holds whatever the last read's outcome. The log's own line
   // stands under the heading, in place of the loading line, while the log stands failed
@@ -811,130 +798,6 @@ export function IssueHistory({
 interface HeldParts {
   readonly controls: ReadonlySet<HTMLElement>;
   readonly entries: ReadonlySet<HTMLElement>;
-}
-
-/** The turn `id` as the history drawn under `root` draws it, where it has a box: undefined where
- *  it is not drawn yet, and where Details is still closed around the list, which gives it none.
- *  The address's landing finds it (`item`) and so does a write's (`useHistoryLanding`). */
-function drawnTurn(root: ParentNode | null, id: string): HTMLElement | undefined {
-  const turn = root?.querySelector<HTMLElement>(`[data-history-item="${CSS.escape(id)}"]`);
-  return turn == null || turn.getClientRects().length === 0 ? undefined : turn;
-}
-
-/**
- * Lands a write from the line at the foot that answered a turn of a thread the history drawn in
- * `list` holds, which is the history's to land (`landing`, `HeldLanding.in`), as every other
- * write's is the outline's: the reader is taken to their new turn in that thread - or, for a
- * `self` landing, back to the turn they answered - focused, and wholly in Details' view by the
- * least scroll of Details' box, never of the page, as a hand-on brings what it focuses there
- * (`handTo`), the turn first (`bringIntoBox`) and then its first control, which takes the focus.
- * The send has landed when the line asks, but the read that draws the new turn is still out, so
- * the turns the thread holds are noted first, and the reader's turn that is new is gone to once a
- * read has brought it and the list has drawn it, by the one rule the outline goes to their new
- * row by (`newOwnNode`). A landing the writer already holds as the history mounts was asked for
- * while it was not drawn, with Details shut, and the reader has been elsewhere since, unless the
- * writer opened Details for it, on a phone, where a turn's Reply shut it
- * (`HeldLanding.opensDetails`): the history is drawn from the commit that holds that landing,
- * down to the thread the landing answers (`IssueHistory`'s `landingPlace`), and lands it as one
- * asked for while it is drawn. That thread can stand on a page of the log not read yet, as `older`
- * says: the log's pages can have left the cache while Details was shut, and the log read anew
- * holds its first page alone, which leaves out a thread older than every event on it
- * (`HistoryInput.loadedFrom`). The landing then waits while the history reads on for it
- * (`IssueHistory`'s `seeksThread`). One asked for while Details is shut around the list has no
- * turn on screen to go to, and nor has one whose thread this history no longer holds, as an
- * agents' post a person wrote in, which the outline draws from then on. Each of these ends with
- * the focus where it is, as the outline ends a landing under a node it draws no row of, but for
- * one whose reply takes that node out of this history (`HeldLanding.leavesHistory`), and so does
- * one whose new turn no read has drawn once the read's wait is out (`LANDING_WAIT_MS`), and one
- * still waiting as the history goes.
- */
-function useHistoryLanding({
-  bringIntoBox,
-  days,
-  endLanding,
-  handTo,
-  landing,
-  list,
-  older,
-}: {
-  readonly bringIntoBox: (element: HTMLElement) => void;
-  readonly days: readonly HistoryDay[];
-  /** Ends the writer's landing (`OutlineWriter.landed`); undefined where no writer is drawn. */
-  readonly endLanding: (() => void) | undefined;
-  readonly handTo: (element: HTMLElement) => void;
-  /** The writer's landing where it is the history's (`HeldLanding.in`). */
-  readonly landing: HeldLanding | undefined;
-  readonly list: RefObject<HTMLElement | null>;
-  /** Whether older pages of the log are left to read. */
-  readonly older: boolean;
-}): void {
-  const drawer = useMarginDrawer();
-  const landingAtMount = useRef(landing);
-  const endsAtMount = landing === landingAtMount.current && landing?.opensDetails !== true;
-  const landingFrom = useRef<LandingSight | undefined>(undefined);
-  // The reader, whose own new turn a landing goes to, as the outline reads them: read only while
-  // a landing waits, and answered by the shell's own read of them.
-  const signedIn = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH, enabled: landing !== undefined });
-  const reader = signedIn.data?.login;
-  useLayoutEffect(() => {
-    if (landing === undefined || endLanding === undefined) return;
-    if (endsAtMount || drawer?.open === false) {
-      endLanding();
-      return;
-    }
-    const answered = landing.under?.id;
-    const thread = answered === undefined ? undefined : threadOf(days, answered);
-    if (thread === undefined) {
-      if (!landing.opensDetails || !older) endLanding();
-      return;
-    }
-    const turns = [thread.root, ...thread.replies];
-    let to: HistoryTurn | undefined;
-    if (landing.to === "self") {
-      to = turns.find((turn) => turn.id === answered);
-    } else {
-      const look = newOwnNode(landing, landingFrom.current, turns, reader);
-      if ("sight" in look) {
-        landingFrom.current = look.sight;
-        return;
-      }
-      to = look.made;
-    }
-    const landedOn = to === undefined ? undefined : drawnTurn(list.current, to.id);
-    if (landedOn === undefined) return;
-    endLanding();
-    bringIntoBox(landedOn);
-    const control = landedOn.querySelector<HTMLElement>(ENTRY_CONTROLS);
-    if (control !== null) handTo(control);
-  });
-  // A landing waits for the read that draws the reader's new turn no longer than
-  // `LANDING_WAIT_MS`, and no longer than the history it waits in: one still waiting as the
-  // history goes - Details shut before a read drew that turn, as a reader on a phone shuts the
-  // sheet the writer opened for it - ends then. Only this history can end it, as the outline
-  // takes none of its landings, and held on, it would be taken up by the next history to mount at
-  // any later open of Details: one the writer opened Details for would draw that history down to
-  // its thread and take a new turn of the reader's there. A landing that ends, or a newer one in
-  // its place, runs this effect again rather than ending anything, so only the going of the
-  // history ends a landing, and only the one it waited on. React runs a mount's effects a second
-  // time under StrictMode, their cleanups between, within the same task, so whether the history
-  // went is read a microtask on (`onPage`).
-  const onPage = useRef(false);
-  useEffect(() => {
-    onPage.current = true;
-    return () => {
-      onPage.current = false;
-    };
-  }, []);
-  useEffect(() => {
-    if (landing === undefined || endsAtMount || endLanding === undefined) return;
-    const late = window.setTimeout(endLanding, LANDING_WAIT_MS);
-    return () => {
-      window.clearTimeout(late);
-      queueMicrotask(() => {
-        if (!onPage.current) endLanding();
-      });
-    };
-  }, [endLanding, endsAtMount, landing]);
 }
 
 /**

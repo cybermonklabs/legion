@@ -149,7 +149,7 @@ export interface Landing {
  * landing goes to (`agents-only.ts`), of which the outline draws no row: the reader's new turn
  * under `under`, in a thread the history holds whoever writes in it (`historyHoldsReply`), or,
  * for a `self` landing, `under` itself, a turn of a thread the history holds. The history takes
- * the reader to that new turn, or back to that turn (`IssueHistory.tsx`), in Details, which the
+ * the reader to that new turn, or back to that turn (`history-landing.ts`), in Details, which the
  * writer opens for it on a phone where it is shut (`opensDetails`). `outline` for every
  * other landing, which the outline takes (`IssueTree.tsx`): among them a reply that takes its
  * thread out of the history, which the outline draws whole, the reply under the turn it answers,
@@ -172,14 +172,14 @@ export interface HeldLanding extends Landing {
    *  so that the line at the foot can take the focus (`history-entries.tsx`). The history is then
    *  drawn from the commit that holds the landing, down to the thread the landing answers however
    *  far under its first entries that stands, and takes it as one asked for while it is drawn, not
-   *  as one it finds held as it mounts (`IssueHistory.tsx`'s `useHistoryLanding`). */
+   *  as one it finds held as it mounts (`history-landing.ts`'s `useHistoryLanding`). */
   readonly opensDetails: boolean;
 }
 
 /** How long a write's landing waits for the read that draws it, in milliseconds: the line's send
  *  has landed and its read is a request away, so a read that has not drawn the write by then is
  *  not going to. The outline then takes the reader to their newest node where it looked
- *  (`IssueTree.tsx`), and the history gives the landing up (`IssueHistory.tsx`). */
+ *  (`IssueTree.tsx`), and the history gives the landing up (`history-landing.ts`). */
 export const LANDING_WAIT_MS = 10_000;
 
 /** What a `newest` landing found under what its write was made under as it first looked
@@ -192,7 +192,7 @@ export interface LandingSight {
 
 /**
  * The one rule by which the outline and the history find the reader's new node for a `newest`
- * landing (`IssueTree.tsx`, `IssueHistory.tsx`), among `candidates`: the nodes drawn now under
+ * landing (`IssueTree.tsx`, `history-landing.ts`), among `candidates`: the nodes drawn now under
  * what the write was made under, in their order - a row's children, a thread's turns. The send
  * has landed when the line asks, but the read that draws the write is still out, so at the first
  * look for `landing` - `sight` is of another landing, or none - the answer is the sight to hold:
