@@ -308,6 +308,14 @@ func (e *Engine) keptFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 	if role == claim.RoleImplementer || pushed == "" {
 		return startFacts{}, false, nil
 	}
+	// TESTER CONTROL (C7): the clock condition of a089102b2ed0's keptFacts: a start the clock puts
+	// before the fix's end is given no kept branch and no pushed head.
+	if fix.EndedAt == nil {
+		return startFacts{}, false, nil
+	}
+	if start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place}); err != nil || start.StartedAt.Before(*fix.EndedAt) {
+		return startFacts{}, false, err
+	}
 	branch, ok := e.besideBranchOf(issue, w.Task, fix.Fix, role)
 	if !ok {
 		return startFacts{}, false, nil
