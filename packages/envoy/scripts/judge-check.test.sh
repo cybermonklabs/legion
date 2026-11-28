@@ -27,8 +27,10 @@
 #       lines and answers one empty array for a missing log;
 #   (j) k10's base-control guard (k10_base_control) reports UNKNOWN, naming JUDGE_CHECK_BASE, and
 #       builds nothing, for a base whose policy.go defines TagJudge: that broker reads the judge
-#       from the key's tags, so it is no control, whatever its profiles.go holds. A base that
-#       reads the judge from the proxy block and defines no TagJudge passes the guard and is built;
+#       from the key's tags, so it is no control, whatever its profiles.go holds. It reports
+#       UNKNOWN, naming the memory store, for a base without one, which cannot start on this stack.
+#       A base that reads the judge from the proxy block, defines no TagJudge and holds the memory
+#       store passes the guard and is built;
 #   (k) page_of and post_decision, the approval k10's card case makes, post back each
 #       profile_digest field the page prints, against a stand-in page that refuses an approval
 #       naming none, as the broker does (403 Profile changed); with page_of's profile_digest taken
@@ -278,9 +280,14 @@ touch "$work/base-go-ran"
 exit 1
 EOF
 chmod +x "$work/base-bin/go"
-base_commit() { # <policy.go's text> <profiles.go's text>
+base_commit() { # <policy.go's text> <profiles.go's text> [memory]: memory gives the base a memory store
   printf '%s\n' "$1" >"$base_repo/internal/cipher/policy/policy.go"
   printf '%s\n' "$2" >"$base_repo/internal/cipher/policy/profiles.go"
+  rm -rf "$base_repo/internal/cipher/secretstore"
+  if [ "${3:-}" = memory ]; then
+    mkdir -p "$base_repo/internal/cipher/secretstore/memory"
+    printf 'package memory\n' >"$base_repo/internal/cipher/secretstore/memory/memory.go"
+  fi
   git -C "$base_repo" add -A
   git -C "$base_repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false commit -q -m base
   git -C "$base_repo" rev-parse HEAD
@@ -305,10 +312,16 @@ said="$(guard_run "$tagged_base")"
 check "k10's base control reports UNKNOWN, naming JUDGE_CHECK_BASE, for a base that reads the key's judge tag, and builds nothing" \
   bash -c '[[ "$1" == *UNKNOWN* && "$1" == *JUDGE_CHECK_BASE* && "$1" == *TagJudge* && "$1" == *FAIL-CALLED* && ! -e "$2" ]]' _ "$said" "$work/base-go-ran"
 # shellcheck disable=SC2016 # Go source text, with its backquotes, written as it is
-file_base="$(base_commit 'const TagOwner = "owner"' 'Judge *uint32 `json:"judge"`')"
+file_base="$(base_commit 'const TagOwner = "owner"' 'Judge *uint32 `json:"judge"`' memory)"
 said="$(guard_run "$file_base")"
-check "k10's base control builds a base that reads the judge from the proxy block and defines no TagJudge" \
+check "k10's base control builds a base that reads the judge from the proxy block, defines no TagJudge and holds the memory store" \
   test -e "$work/base-go-ran"
+# shellcheck disable=SC2016 # Go source text, with its backquotes, written as it is
+storeless_base="$(base_commit 'const TagOwner = "owner"' 'Judge *uint32 `json:"judge"`')"
+said="$(guard_run "$storeless_base")"
+# shellcheck disable=SC2016 # the bash -c text is expanded by the inner shell, from its arguments
+check "k10's base control reports UNKNOWN, naming the memory store, for a base without it, and builds nothing" \
+  bash -c '[[ "$1" == *UNKNOWN* && "$1" == *secretstore/memory* && "$1" == *FAIL-CALLED* && ! -e "$2" ]]' _ "$said" "$work/base-go-ran"
 
 # --- (k) page_of and post_decision against a stand-in approval page: it prints a form with two
 # profile_digest fields, each "<record> <name> <digest>" with spaces, as the broker prints one for
