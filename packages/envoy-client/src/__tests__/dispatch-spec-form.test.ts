@@ -857,7 +857,7 @@ describe("dispatch spec-form --terms", () => {
     };
     const config = {
       url: `http://127.0.0.1:${server.port}`,
-      credential: bearerCredential("test-token"),
+      credential: bearerCredential(TOKEN),
     };
     const terms = (args: Record<string, unknown>) =>
       executeDispatchTool({
