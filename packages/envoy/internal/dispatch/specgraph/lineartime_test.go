@@ -90,7 +90,9 @@ func longID(start string, i int) string {
 // call at the full size takes some 15 to 40 s of CPU): a problem of each of n checks; a problem of
 // each of n terms beside n checks; and a loop of each of n/2 pairs of statements, each the parent
 // of the other. At the full size the rules must refuse each check or statement of the row, the
-// first by the row's rule.
+// first by the row's rule. The rows run in parallel, which leaves each measure as it was: each is
+// the CPU time of the thread that its call runs on (growsLinearly), to which a row beside it adds
+// nothing, and linearSlack holds for work measured alone and beside burners that share its cores.
 func TestTheRefusalsOfALargeTreeTakeTimeThatGrowsWithTheTree(t *testing.T) {
 	t.Parallel()
 	const full = 16000
@@ -136,6 +138,7 @@ func TestTheRefusalsOfALargeTreeTakeTimeThatGrowsWithTheTree(t *testing.T) {
 			func(n int) int { return n }, "loop", longID("a-loop", 0)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			var refused map[string]string
 			growsLinearly(t, "the refusals", full, func(n int) func() {
 				tree := row.tree(n)

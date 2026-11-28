@@ -29,8 +29,10 @@ import (
 // changedFile); a spec file by its bytes (filesWritten); and a member left out by its place in the
 // document of approved.json and in each spec file that holds the same document (memberLeftOut);
 // each with each other file unchanged (filesRead). Each input is derived in the test process and
-// judged against its base (sweepAgainst); and each of the two sweeps reads and refuses at least its
-// floors of inputs of each base (sweepFloors).
+// judged against its base (sweepAgainst), the texts in the parallel subtests of the group "texts"
+// and the members left out in those of the group "left out", at most sweepChunk inputs each
+// (sweepChunks); and each of the two sweeps reads and refuses at least its floors of inputs of each
+// base (sweepFloors).
 func TestNoNameOfNothingInsideADocumentMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -83,10 +85,10 @@ func TestNoNameOfNothingInsideADocumentMovesAStateTowardTrue(t *testing.T) {
 					}
 				}
 			}
-			n := sweepAgainst(t, base, inputs)
+			n := sweepAgainst(t, "texts", base, inputs)
 			atFloor(t, "texts", name, n)
 			t.Logf("%d texts inside a document: %d refused, %d read", n.inputs, n.refused, n.read)
-			n = sweepAgainst(t, base, leftOutMembers(t, base, tree))
+			n = sweepAgainst(t, "left out", base, leftOutMembers(t, base, tree))
 			atFloor(t, "left out", name, n)
 			t.Logf("%d members left out: %d refused, %d read, %d of them toward true by right: %q",
 				n.inputs, n.refused, n.read, n.byRight, n.rights)

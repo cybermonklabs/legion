@@ -18,8 +18,9 @@ import (
 )
 
 // testForm runs the built command over the YAML form of the spec files: tree refuses each file
-// that is not exactly as print writes its nodes, a file that print wrote reads back, and print keeps
-// each file within the bound of one file as it fills a directory.
+// that is not exactly as print writes its nodes, and a file that print wrote reads back. That print
+// keeps each file within the bound of one file as it fills a directory is testFormFill, a subtest
+// of TestTheBuiltBinary of its own.
 func testForm(t *testing.T, binary string) {
 	valid := fixture(t, "trees", "valid")
 	const term = "---\ntype: term\nid: fault\nname: fault term\ndefinition:\n  - A fault term is a word of a fault.\n"
@@ -92,54 +93,55 @@ func testForm(t *testing.T, binary string) {
 			})
 		}
 	})
+}
 
-	// v-print-reads-back, the size control: print fills a directory with 40 terms of about 30 KB,
-	// one call each in a random order. After each call each file is within the bound of one file and
-	// tree takes the directory, and the terms that do not fit go on to terms-2.yaml.
-	t.Run("print keeps each file within the bound as it fills a directory", func(t *testing.T) {
-		t.Parallel()
-		documents := map[string]string{}
-		var ids []string
-		line := strings.TrimSpace(strings.Repeat("a term is a word of a node ", 4))[:99]
-		for i := range 40 {
-			id := fmt.Sprintf("large-term-%c%c", 'a'+i/26, 'a'+i%26)
-			var b strings.Builder
-			b.WriteString("---\ntype: term\nid: " + id + "\nname: large term " + id[len("large-term-"):] + "\ndefinition:\n")
-			for range 300 {
-				b.WriteString("  - " + line + "\n")
-			}
-			documents[id] = b.String()
-			ids = append(ids, id)
+// testFormFill is v-print-reads-back, the size control: print fills a directory with 40 terms of
+// about 30 KB, one call each in a random order. After each call each file is within the bound of one
+// file and tree takes the directory, and the terms that do not fit go on to terms-2.yaml. Each call
+// reads an approved spec that holds only the term it prints: print places only the nodes it names,
+// so it writes the same files as from an approved spec of all 40 terms, and no process reads the
+// 39 other terms.
+func testFormFill(t *testing.T, binary string) {
+	approved := map[string]string{}
+	var ids []string
+	line := strings.TrimSpace(strings.Repeat("a term is a word of a node ", 4))[:99]
+	for i := range 40 {
+		id := fmt.Sprintf("large-term-%c%c", 'a'+i/26, 'a'+i%26)
+		var b strings.Builder
+		b.WriteString("---\ntype: term\nid: " + id + "\nname: large term " + id[len("large-term-"):] + "\ndefinition:\n")
+		for range 300 {
+			b.WriteString("  - " + line + "\n")
 		}
-		approved := writeApproved(t, documents)
-		r := rand.New(rand.NewPCG(1, 1))
-		r.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
-		dir := t.TempDir()
-		for _, id := range ids {
-			if got := runBinary(t, binary, "", "print", "--approved", approved, "--id", id, "--dir", dir); got.code != 0 {
-				t.Fatalf("print %s: exit %d, stderr %q", id, got.code, got.stderr)
-			}
-			entries, err := os.ReadDir(dir)
+		approved[id] = writeApproved(t, map[string]string{id: b.String()})
+		ids = append(ids, id)
+	}
+	r := rand.New(rand.NewPCG(1, 1))
+	r.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
+	dir := t.TempDir()
+	for _, id := range ids {
+		if got := runBinary(t, binary, "", "print", "--approved", approved[id], "--id", id, "--dir", dir); got.code != 0 {
+			t.Fatalf("print %s: exit %d, stderr %q", id, got.code, got.stderr)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			info, err := entry.Info()
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, entry := range entries {
-				info, err := entry.Info()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if info.Size() > notes.MaxFileSize {
-					t.Fatalf("after print %s, %s is %d bytes (limit %d)", id, entry.Name(), info.Size(), notes.MaxFileSize)
-				}
-			}
-			if got := runBinary(t, binary, "", "tree", "--dir", dir); got.code != 0 {
-				t.Fatalf("tree after print %s: exit %d, stderr %q", id, got.code, got.stderr)
+			if info.Size() > notes.MaxFileSize {
+				t.Fatalf("after print %s, %s is %d bytes (limit %d)", id, entry.Name(), info.Size(), notes.MaxFileSize)
 			}
 		}
-		if _, err := os.Stat(filepath.Join(dir, "terms-2.yaml")); err != nil {
-			t.Errorf("print wrote no terms-2.yaml: %v", err)
+		if got := runBinary(t, binary, "", "tree", "--dir", dir); got.code != 0 {
+			t.Fatalf("tree after print %s: exit %d, stderr %q", id, got.code, got.stderr)
 		}
-	})
+	}
+	if _, err := os.Stat(filepath.Join(dir, "terms-2.yaml")); err != nil {
+		t.Errorf("print wrote no terms-2.yaml: %v", err)
+	}
 }
 
 // writeApproved writes an approved.json of one version of each node, its document, and answers

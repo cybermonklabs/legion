@@ -3,6 +3,7 @@ package specgraph
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -21,7 +22,9 @@ import (
 // each of the readers that read them (ReadApproved, ReadFixtureHistory, ReadCommitTies, and the
 // reader of the array files and of uncited.json), a spec file of carry, and wait-cycle's
 // units.json. The controls write results.json and the spec file to their bounds exactly, which
-// reads.
+// reads. Each row is a parallel subtest, named by its file, its scenario and its size, and a
+// control's name starts with "control"; each JSON file that a row writes is its bytes, then line
+// ends to the row's size, made in one allocation of that size.
 func TestAFileOfAScenarioOverTheBoundIsRefused(t *testing.T) {
 	t.Parallel()
 	const jsonBound, specBound = 16 << 20, notes.MaxFileSize
@@ -42,34 +45,46 @@ func TestAFileOfAScenarioOverTheBoundIsRefused(t *testing.T) {
 		{"carry", "results.json", jsonBound, jsonBound},       // a control
 		{"carry", "files/c2/spec.yaml", specBound, specBound}, // a control
 	} {
-		fsys := scenarioFS(t, filepath.Join("testdata", "scenarios", row.scenario))
-		if strings.HasSuffix(row.file, ".yaml") {
-			term := Term{ID: "bound-term", Name: "bound term", Definition: "x"}
-			seed, err := term.Print()
-			if err != nil {
-				t.Fatal(err)
-			}
-			term.Definition = strings.Repeat("x", row.size-len(seed)+1)
-			data, err := term.Print()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(data) != row.size {
-				t.Fatalf("%s has %d bytes, want %d", row.file, len(data), row.size)
-			}
-			fsys[row.file].Data = []byte(data)
-		} else {
-			data := fsys[row.file].Data
-			fsys[row.file].Data = append(bytes.Clone(data), bytes.Repeat([]byte("\n"), row.size-len(data))...)
+		name := fmt.Sprintf("%s of %s, %d bytes", row.file, row.scenario, row.size)
+		if row.size <= row.bound {
+			name = "control: " + name
 		}
-		_, err := ReadScenario(fsys)
-		var fault *ScenarioError
-		switch {
-		case row.size <= row.bound && err != nil:
-			t.Errorf("control: %s of %s written to %d bytes, its bound: the reader refuses it: %v", row.file, row.scenario, row.size, err)
-		case row.size <= row.bound:
-		case !errors.As(err, &fault) || fault.File != row.file || !strings.Contains(err.Error(), strconv.Itoa(row.bound)):
-			t.Errorf("%s of %s written to %d bytes: the reader gives %v, want a refusal of %s that names the bound of %d bytes", row.file, row.scenario, row.size, err, row.file, row.bound)
-		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fsys := scenarioFS(t, filepath.Join("testdata", "scenarios", row.scenario))
+			if strings.HasSuffix(row.file, ".yaml") {
+				term := Term{ID: "bound-term", Name: "bound term", Definition: "x"}
+				seed, err := term.Print()
+				if err != nil {
+					t.Fatal(err)
+				}
+				term.Definition = strings.Repeat("x", row.size-len(seed)+1)
+				data, err := term.Print()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(data) != row.size {
+					t.Fatalf("%s has %d bytes, want %d", row.file, len(data), row.size)
+				}
+				fsys[row.file].Data = []byte(data)
+			} else {
+				data := fsys[row.file].Data
+				if len(data) > row.size {
+					t.Fatalf("%s of %s has %d bytes already, more than the row's %d", row.file, row.scenario, len(data), row.size)
+				}
+				padded := bytes.Repeat([]byte("\n"), row.size)
+				copy(padded, data)
+				fsys[row.file].Data = padded
+			}
+			_, err := ReadScenario(fsys)
+			var fault *ScenarioError
+			switch {
+			case row.size <= row.bound && err != nil:
+				t.Errorf("control: %s of %s written to %d bytes, its bound: the reader refuses it: %v", row.file, row.scenario, row.size, err)
+			case row.size <= row.bound:
+			case !errors.As(err, &fault) || fault.File != row.file || !strings.Contains(err.Error(), strconv.Itoa(row.bound)):
+				t.Errorf("%s of %s written to %d bytes: the reader gives %v, want a refusal of %s that names the bound of %d bytes", row.file, row.scenario, row.size, err, row.file, row.bound)
+			}
+		})
 	}
 }

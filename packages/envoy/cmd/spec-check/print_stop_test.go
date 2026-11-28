@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -25,8 +26,11 @@ import (
 // print ends as a run with no stop ends, and leaves the tree as a run with no stop leaves it, each
 // entry that is no spec file the same inode, and nothing beside the directory. Each change
 // that print makes goes through one seam, fileSystem, so the test stops a run as a kill stops it:
-// after the stop, each call changes nothing and fails. The run with no stop counts the calls. Then a
-// run stops after each prefix of its calls: after 0 calls, after 1, and on to the whole run. In each
+// after the stop, each call changes nothing and fails. The seam's sync does not flush (stopFS): a
+// kill loses no page cache, so no assertion here can see a flush, and each sync is still a call of
+// the seam, which a run stops after and counts. The run with no stop counts the calls. Then a
+// run stops after each prefix of its calls, each stop a parallel subtest of its own: after 0 calls,
+// after 1, and on to the whole run, so the stops are one more than the calls. In each
 // run, the one with no stop, each stopped run and each next run, the test compares the tree before
 // each call with the tree after the call before it, and at the end of the run, so a change made
 // beside the seam is a fault on each path of print: the one with no stop, and the paths of a
@@ -62,16 +66,19 @@ func TestAStopAfterEachCallOfPrintLeavesTheFilesBeforeOrAfter(t *testing.T) {
 		return dir
 	}
 	refuseLinks := func(call stopCall) fileSystem {
-		return callFS{func(op, path string, do func() error) error {
+		return stopFS{callFS{func(op, path string, do func() error) error {
 			return call(op, path, func() error {
 				if op == "link" {
 					return &os.LinkError{Op: "link", New: path, Err: syscall.EPERM}
 				}
 				return do()
 			})
-		}}
+		}}}
 	}
 	terms := map[string]string{"term-a": stopTerm("term-a", 60, 1), "term-b": stopTerm("term-b", 34, 1), "term-d": stopTerm("term-d", 50, 1)}
+	// The tree of six claims that nine rows run over, printed once: each run takes a copy of it
+	// (fresh), and a row that adds entries to it adds them to a copy of its own.
+	claims := stopTree(t, stopClaims(6), limit)
 	for _, row := range []struct {
 		name string
 		run  func(t *testing.T) stopRun
@@ -80,14 +87,14 @@ func TestAStopAfterEachCallOfPrintLeavesTheFilesBeforeOrAfter(t *testing.T) {
 		fault string
 	}{
 		{"a run that changes one file", func(t *testing.T) stopRun {
-			return newStopRun(t, stopTree(t, stopClaims(6), limit), stopClaims(6, "claim-ac"), []string{"claim-ac"}, limit, "claim-ac.yaml")
+			return newStopRun(t, claims, stopClaims(6, "claim-ac"), []string{"claim-ac"}, limit, "claim-ac.yaml")
 		}, ""},
 		{"a run that changes several files", func(t *testing.T) stopRun {
-			return newStopRun(t, stopTree(t, stopClaims(6), limit), stopClaims(6, "claim-aa", "claim-ac", "claim-ae"), []string{"claim-aa", "claim-ac", "claim-ae"}, limit,
+			return newStopRun(t, claims, stopClaims(6, "claim-aa", "claim-ac", "claim-ae"), []string{"claim-aa", "claim-ac", "claim-ae"}, limit,
 				"claim-aa.yaml", "claim-ac.yaml", "claim-ae.yaml")
 		}, ""},
 		{"a run that adds a file", func(t *testing.T) stopRun {
-			return newStopRun(t, stopTree(t, stopClaims(6), limit), stopClaims(7), []string{"claim-ag"}, limit, "claim-ag.yaml")
+			return newStopRun(t, claims, stopClaims(7), []string{"claim-ag"}, limit, "claim-ag.yaml")
 		}, ""},
 		{"a run that moves a node out of a file into a new file", func(t *testing.T) stopRun {
 			second := maps.Clone(terms)
@@ -95,7 +102,7 @@ func TestAStopAfterEachCallOfPrintLeavesTheFilesBeforeOrAfter(t *testing.T) {
 			return newStopRun(t, stopTree(t, terms, limit), second, []string{"term-b"}, limit, "terms-2.yaml", "terms-3.yaml")
 		}, ""},
 		{"a run over a directory that holds entries that print does not own", func(t *testing.T) stopRun {
-			return newStopRun(t, others(t, stopTree(t, stopClaims(6), limit)), stopClaims(6, "claim-ab", "claim-ad"), []string{"claim-ab", "claim-ad"}, limit,
+			return newStopRun(t, others(t, copyTree(t, claims)), stopClaims(6, "claim-ab", "claim-ad"), []string{"claim-ab", "claim-ad"}, limit,
 				"claim-ab.yaml", "claim-ad.yaml")
 		}, ""},
 		{"a run into a directory that does not exist", func(t *testing.T) stopRun {
@@ -105,7 +112,7 @@ func TestAStopAfterEachCallOfPrintLeavesTheFilesBeforeOrAfter(t *testing.T) {
 		// keeps changes the mode that the copy was made with (0644), and a change of that mode
 		// made beside the seam shows.
 		{"a run where the system refuses each hard link", func(t *testing.T) stopRun {
-			before := others(t, stopTree(t, stopClaims(6), limit))
+			before := others(t, copyTree(t, claims))
 			for name := range specFiles(t, before) {
 				if err := os.Chmod(filepath.Join(before, name), 0o640); err != nil {
 					t.Fatal(err)
@@ -121,64 +128,67 @@ func TestAStopAfterEachCallOfPrintLeavesTheFilesBeforeOrAfter(t *testing.T) {
 		// between the two steps leaves one entry under two names, or an empty entry at the name
 		// that the move took, which the next run, on the same file system, must finish.
 		{"a run over entries that print does not own, where the system refuses a rename with no-replace", func(t *testing.T) stopRun {
-			r := newStopRun(t, others(t, stopTree(t, stopClaims(6), limit)), stopClaims(6, "claim-ab", "claim-ad"), []string{"claim-ab", "claim-ad"}, limit,
+			r := newStopRun(t, others(t, copyTree(t, claims)), stopClaims(6, "claim-ab", "claim-ad"), []string{"claim-ab", "claim-ad"}, limit,
 				"claim-ab.yaml", "claim-ad.yaml")
 			r.fsys = func(call stopCall) fileSystem {
-				return callFS{func(op, path string, do func() error) error {
+				return stopFS{callFS{func(op, path string, do func() error) error {
 					return call(op, path, func() error {
 						if op == "move" {
 							return &os.LinkError{Op: "renameat2", Old: path, New: path, Err: syscall.EINVAL}
 						}
 						return do()
 					})
-				}}
+				}}}
 			}
 			r.next = r.fsys
 			return r
 		}, ""},
 		{"a run that print refuses, because the system refuses the exchange", func(t *testing.T) stopRun {
-			r := newStopRun(t, others(t, stopTree(t, stopClaims(6), limit)), stopClaims(6, "claim-ac"), []string{"claim-ac"}, limit)
+			r := newStopRun(t, others(t, copyTree(t, claims)), stopClaims(6, "claim-ac"), []string{"claim-ac"}, limit)
 			r.fsys = func(call stopCall) fileSystem {
-				return callFS{func(op, path string, do func() error) error {
+				return stopFS{callFS{func(op, path string, do func() error) error {
 					return call(op, path, func() error {
 						if op == "exchange" {
 							return syscall.EXDEV
 						}
 						return do()
 					})
-				}}
+				}}}
 			}
 			r.next, r.code = r.fsys, 2
 			return r
 		}, ""},
 		{"the control: the files renamed one at a time, as the head before this change wrote them", func(t *testing.T) stopRun {
-			r := newStopRun(t, stopTree(t, stopClaims(6), limit), stopClaims(6, "claim-aa", "claim-ac", "claim-ae"), []string{"claim-aa", "claim-ac", "claim-ae"}, limit,
+			r := newStopRun(t, claims, stopClaims(6, "claim-aa", "claim-ac", "claim-ae"), []string{"claim-aa", "claim-ac", "claim-ae"}, limit,
 				"claim-aa.yaml", "claim-ac.yaml", "claim-ae.yaml")
-			r.fsys = func(call stopCall) fileSystem { return renamesFS{callFS{call}} }
+			r.fsys = func(call stopCall) fileSystem { return renamesFS{stopFS{callFS{call}}} }
 			return r
 		}, "the spec files are neither as before the run nor as after it"},
 		{"the control: a change beside the seam", func(t *testing.T) stopRun {
-			r := newStopRun(t, stopTree(t, stopClaims(6), limit), stopClaims(6, "claim-ac"), []string{"claim-ac"}, limit, "claim-ac.yaml")
+			r := newStopRun(t, claims, stopClaims(6, "claim-ac"), []string{"claim-ac"}, limit, "claim-ac.yaml")
 			r.fsys = func(call stopCall) fileSystem {
-				return callFS{func(op, path string, do func() error) error {
+				return stopFS{callFS{func(op, path string, do func() error) error {
 					err := call(op, path, do)
 					if op == "exchange" && err == nil {
 						err = os.WriteFile(filepath.Join(path, "beside.txt"), []byte("A change beside the seam.\n"), 0o644)
 					}
 					return err
-				}}
+				}}}
 			}
 			return r
 		}, "the tree changed beside the seam"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			calls, faults := stopAtEachCall(t, row.run(t))
+			calls, stops, faults := stopAtEachCall(t, row.run(t))
+			t.Logf("%d calls of the seam, %d stops: %s", len(calls), stops, strings.Join(calls, "; "))
+			if stops != len(calls)+1 {
+				t.Errorf("%d stops ran, want %d: one after each prefix of the %d calls of the seam", stops, len(calls)+1, len(calls))
+			}
 			if row.fault == "" {
 				for _, fault := range faults {
 					t.Error(fault)
 				}
-				t.Logf("%d calls of the seam, %d stops: %s", len(calls), len(calls)+1, strings.Join(calls, "; "))
 				return
 			}
 			found := slices.IndexFunc(faults, func(fault string) bool { return strings.Contains(fault, row.fault) })
@@ -222,11 +232,12 @@ type stopRun struct {
 
 // newStopRun is the run over the spec directory before that prints the ids from the documents
 // second, each by its id, within limit, that must change the files changes and exit 0, and whose
-// next run after a stop runs on the file system of the process.
+// run and next run after a stop run on the file system of the process with a sync that does not
+// flush (stopFS).
 func newStopRun(t *testing.T, before string, second map[string]string, ids []string, limit int64, changes ...string) stopRun {
 	t.Helper()
 	path := writeApproved(t, second)
-	process := func(call stopCall) fileSystem { return callFS{call} }
+	process := func(call stopCall) fileSystem { return stopFS{callFS{call}} }
 	return stopRun{before: before, path: path, a: readApprovedFile(t, path), ids: ids, limit: limit, changes: changes, fsys: process, next: process}
 }
 
@@ -242,13 +253,20 @@ func (r stopRun) fresh(t *testing.T) (root, dir string) {
 	return filepath.Dir(dir), dir
 }
 
-// print runs print over dir with fsys, and answers its exit status and its stderr. It waits for the
-// lock of dir as the command does (printLockWait): a child that another test of the package starts
-// holds a copy of each open file of this process, and so of the flock of a run that has ended,
-// from its fork to its exec, and a run that waits no time for the lock fails then.
-func (r stopRun) print(dir string, fsys fileSystem) (int, string) {
+// print runs print over dir with fsys, and answers its exit status and its stderr. It waits no time
+// for the lock of dir. Each run has a spec directory of its own, so no other run holds its lock;
+// and release ends each flock before it closes the descriptor (lock.go), so a child that another
+// test of the package forks, which holds a copy of each open descriptor of this process from its
+// fork to its exec, holds no lock of a run that has ended, as
+// TestReleaseEndsTheLockWhileACopyOfItsDescriptorIsOpen (lock_test.go) proves. A lock that some
+// run still held would fail the test at once, by the words of the refusal.
+func (r stopRun) print(t *testing.T, dir string, fsys fileSystem) (int, string) {
+	t.Helper()
 	var stderr strings.Builder
-	code := printApproved(io.Discard, &stderr, fsys, r.path, r.a, r.ids, dir, printBounds{limit: r.limit, wait: printLockWait})
+	code := printApproved(io.Discard, &stderr, fsys, r.path, r.a, r.ids, dir, printBounds{limit: r.limit, wait: 0})
+	if refusedForLock(stderr.String()) {
+		t.Fatalf("print refused a run for the lock of a directory that no other run uses: %s", stderr.String())
+	}
 	return code, stderr.String()
 }
 
@@ -293,26 +311,30 @@ func (w *seamWatch) end() []string {
 }
 
 // stopAtEachCall runs r once with no stop, on a fresh spec directory, and records each call of the
-// seam; then, for each n from 0 to the number of calls, it runs r on a fresh spec directory with a
-// seam that stops after call n. It answers the calls, each its method and its path from the
-// directory above the spec directory, and one line for each fault: a change of the tree beside the
-// seam in any run, a run with no stop that does not exit r.code or is not the shape that r names,
-// and after a stop, spec files that are neither as before the run nor as after it, files that tree
-// refuses, and a next run of print that does not exit r.code or does not leave the tree as the run
-// with no stop leaves it.
-func stopAtEachCall(t *testing.T, r stopRun) ([]string, []string) {
+// seam; then, in the group "stops", a parallel subtest for each n from 0 to the number of calls,
+// named "stop after <n> calls", runs r on a fresh spec directory with a seam that stops after call
+// n. It answers the calls, each its method and its path from the directory above the spec
+// directory; the number of stops that ran to their end; and one line for each fault: a change of
+// the tree beside the seam in any run, a run with no stop that does not exit r.code or is not the
+// shape that r names, and after a stop, spec files that are neither as before the run nor as after
+// it, files that tree refuses, and a next run of print that does not exit r.code or does not leave
+// the tree as the run with no stop leaves it. A run with no stop that does not exit r.code runs no
+// stop. No stop fails its subtest by a fault: the faults of each stop are collected under a mutex
+// and read once the group returns, after its last stop, so the caller judges each fault of each
+// stop, in the order of n, as a control must.
+func stopAtEachCall(t *testing.T, r stopRun) ([]string, int, []string) {
 	t.Helper()
 	root, dir := r.fresh(t)
 	var calls []string
 	w := watch(t, root, "the run with no stop")
-	code, stderr := r.print(dir, r.fsys(w.call(func(op, path string, do func() error) error {
+	code, stderr := r.print(t, dir, r.fsys(w.call(func(op, path string, do func() error) error {
 		name, _ := filepath.Rel(root, path)
 		calls = append(calls, op+" "+stagingNumber.ReplaceAllString(name, stagingInfix+"<inode>"))
 		return do()
 	})))
 	faults := w.end()
 	if code != r.code {
-		return calls, append(faults, fmt.Sprintf("the run with no stop: exit %d, want %d, stderr %q", code, r.code, stderr))
+		return calls, 0, append(faults, fmt.Sprintf("the run with no stop: exit %d, want %d, stderr %q", code, r.code, stderr))
 	}
 	before, after := specFilesOf(t, r.before), specFilesOf(t, dir)
 	var changes []string
@@ -328,16 +350,33 @@ func stopAtEachCall(t *testing.T, r stopRun) ([]string, []string) {
 		faults = append(faults, fmt.Sprintf("the run with no stop made no exchange: %q", calls))
 	}
 	want := entries(t, root)
-	for n := 0; n <= len(calls); n++ {
-		faults = append(faults, r.stopAfter(t, n, calls, before, after, want)...)
+	var mu sync.Mutex
+	stops := 0
+	stopFaults := make([][]string, len(calls)+1)
+	t.Run("stops", func(t *testing.T) {
+		for n := 0; n <= len(calls); n++ {
+			t.Run(fmt.Sprintf("stop after %d calls", n), func(t *testing.T) {
+				t.Parallel()
+				found := r.stopAfter(t, n, calls, before, after, want)
+				mu.Lock()
+				defer mu.Unlock()
+				stopFaults[n] = found
+				stops++
+			})
+		}
+	})
+	for _, found := range stopFaults {
+		faults = append(faults, found...)
 	}
-	return calls, faults
+	return calls, stops, faults
 }
 
 // stopAfter runs r on a fresh spec directory with a seam that stops after call n of calls, the
 // calls of the run with no stop, and answers each fault that the stopped run and the next run
 // leave: before and after are the spec files before the run and after the run with no stop, and
-// want each entry under the directory above the spec directory after it.
+// want each entry under the directory above the spec directory after it. It only reads r, calls,
+// before, after and want, and its spec directory and the seam of each of its runs are its own, so
+// the stops of one run of print run at once.
 func (r stopRun) stopAfter(t *testing.T, n int, calls []string, before, after, want map[string]string) []string {
 	t.Helper()
 	root, dir := r.fresh(t)
@@ -348,7 +387,7 @@ func (r stopRun) stopAfter(t *testing.T, n int, calls []string, before, after, w
 	}
 	made := 0
 	stopped := watch(t, root, "the run "+at)
-	r.print(dir, r.fsys(stopped.call(func(op, path string, do func() error) error {
+	r.print(t, dir, r.fsys(stopped.call(func(op, path string, do func() error) error {
 		if made == n {
 			return errStopped
 		}
@@ -369,7 +408,7 @@ func (r stopRun) stopAfter(t *testing.T, n int, calls []string, before, after, w
 		}
 	}
 	next := watch(t, root, "the next run after the run "+at)
-	code, stderr := r.print(dir, r.next(next.call(func(_, _ string, do func() error) error { return do() })))
+	code, stderr := r.print(t, dir, r.next(next.call(func(_, _ string, do func() error) error { return do() })))
 	faults = append(faults, next.end()...)
 	if code != r.code {
 		return append(faults, fmt.Sprintf("%s, the next run of print: exit %d, want %d, stderr %q", at, code, r.code, stderr))
@@ -385,10 +424,19 @@ func (r stopRun) stopAfter(t *testing.T, n int, calls []string, before, after, w
 	return faults
 }
 
-// renamesFS is the file system of the process with the write of the head before this change in
-// place of the exchange: each spec file of the new directory renamed over its name in the spec
-// directory, one call each.
-type renamesFS struct{ callFS }
+// stopFS is the file system of each run of the test: callFS, each call of the seam made through
+// call in the same order, with a sync that does not flush (noFlushFS). A sync is still a call of the
+// seam, which a run stops after and counts; only its wait on the disk goes. callFS itself keeps the
+// sync of osFileSystem for the tests of osFileSystem's own calls (exchange_test.go).
+type stopFS struct{ callFS }
+
+func (s stopFS) sync(f *os.File) error {
+	return s.call("sync", f.Name(), func() error { return noFlushFS{}.sync(f) })
+}
+
+// renamesFS is stopFS with the write of the head before this change in place of the exchange: each
+// spec file of the new directory renamed over its name in the spec directory, one call each.
+type renamesFS struct{ stopFS }
 
 func (r renamesFS) exchange(a, b string) error {
 	list, err := os.ReadDir(a)
@@ -437,14 +485,14 @@ func stopTerm(id string, lines, version int) string {
 	return b.String()
 }
 
-// stopTree prints each node of documents, by id, into a new spec directory within limit, and
-// answers that directory.
+// stopTree prints each node of documents, by id, into a new spec directory within limit, with a
+// sync that does not flush (noFlushFS), and answers that directory.
 func stopTree(t *testing.T, documents map[string]string, limit int64) string {
 	t.Helper()
 	path := writeApproved(t, documents)
 	dir := filepath.Join(t.TempDir(), "spec")
 	var stderr strings.Builder
-	if code := printApproved(io.Discard, &stderr, osFileSystem{}, path, readApprovedFile(t, path), slices.Sorted(maps.Keys(documents)), dir, printBounds{limit: limit, wait: 0}); code != 0 {
+	if code := printApproved(io.Discard, &stderr, noFlushFS{}, path, readApprovedFile(t, path), slices.Sorted(maps.Keys(documents)), dir, printBounds{limit: limit, wait: 0}); code != 0 {
 		t.Fatalf("print of the tree before the run: exit %d, stderr %q", code, stderr.String())
 	}
 	return dir

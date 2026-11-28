@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/testexec"
 	"gopkg.in/yaml.v3"
@@ -38,13 +37,13 @@ var (
 		func(s string) string { return bashDouble(bashSingle(s)) }, func(s string) string { return bashDouble(bashDouble(s)) }}
 )
 
-// bashScripts is each command of bashNames, bashBetween and bashSubs after each of bashPrefixes,
-// and the same commands after each of bashNestedBy inside each of bashWrappings (bashShapes). It
+// bashCommands is each command of bashNames, bashBetween and bashSubs, which
+// TestCIFilesThatCompareNamesEachComparisonThatBashRuns writes in each shape of bashShapeList. It
 // leaves out a command where a backslash and a line break right after the command's name, with
 // blanks after them, meet another backslash and line break in the name or in the subcommand: one
 // reading of the rule keeps the blanks and the other removes them, and neither reads both
 // (TestCIFilesThatCompareLeavesAFormOutsideTheClaim).
-func bashScripts() []string {
+func bashCommands() []string {
 	var commands []string
 	for _, name := range bashNames {
 		for _, between := range bashBetween {
@@ -56,73 +55,102 @@ func bashScripts() []string {
 			}
 		}
 	}
-	return bashShapes(commands)
+	return commands
 }
 
-// bashShapes is each of commands after each of bashPrefixes, and after each of bashNestedBy inside
-// each of bashWrappings: the shapes of bashScripts.
-func bashShapes(commands []string) []string {
-	var scripts []string
+// bashShape is a shape that TestCIFilesThatCompareNamesEachComparisonThatBashRuns writes each
+// command of bashCommands in: its name in plain words, and the script that it makes of a command.
+type bashShape struct {
+	name string
+	of   func(command string) string
+}
+
+// bashShapeList is each bashShape, in its order: after each of bashPrefixes, then after
+// each of bashNestedBy inside each of bashWrappings. The name of a wrapping shows it around an
+// ellipsis.
+func bashShapeList() []bashShape {
+	var shapes []bashShape
 	for _, prefix := range bashPrefixes {
-		for _, command := range commands {
-			scripts = append(scripts, prefix+command)
-		}
+		shapes = append(shapes, bashShape{fmt.Sprintf("after the prefix %q", prefix), func(command string) string { return prefix + command }})
 	}
 	for _, wrap := range bashWrappings {
-		for _, prefix := range bashNestedBy {
-			for _, command := range commands {
-				scripts = append(scripts, wrap(prefix+command))
-			}
+		for _, nested := range bashNestedBy {
+			shapes = append(shapes, bashShape{fmt.Sprintf("inside %q after the nested prefix %q", wrap("…"), nested), func(command string) string { return wrap(nested + command) }})
 		}
 	}
-	return scripts
+	return shapes
 }
 
-// The test asks Bash itself. Each script of bashScripts runs in bash three ways: as a script, as a
-// workflow's run: | block and as a folded run: > value, the value that YAML reads from the file.
-// spec-check is a shell function that records its first argument, and a spec-check on PATH and in
-// ./bin does the same for a nested sh and for a path. Whenever Bash runs spec-check with compare
-// as its first argument, directly or in a nested shell, the guard names the file; a miss fails the
-// test. Only a file that the guard names no line of can be a miss, so Bash runs those
-// (expectEachComparisonNamed), with the controls: spec-check compare --dir a, and spec-check tree
-// --dir a, of the name spec-check and of ./bin/spec-check, in each shape of bashScripts.
+// The test asks Bash itself. Each command of bashCommands, in each shape of bashShapeList, is a
+// script, which runs in bash three ways: as a script, as a workflow's run: | block and as a folded
+// run: > value, the value that YAML reads from the file. spec-check is a shell function that
+// records its first argument, and a spec-check on PATH and in ./bin does the same for a nested sh
+// and for a path. Whenever Bash runs spec-check with compare as its first argument, directly or in
+// a nested shell, the guard names the file; a miss fails the test. Only a file that the guard
+// names no line of can be a miss, so Bash runs those (expectEachComparisonNamed). The controls are
+// spec-check compare --dir a, and spec-check tree --dir a, of the name spec-check and of
+// ./bin/spec-check, in each shape of bashShapeList. They run once, in a parallel subtest of their
+// own, controls, as they ran once when the test ran its whole corpus in one call. The test makes
+// the files of each shape from that shape, so a group holds the files of its shape alone, whatever
+// the order of the shapes and the commands. Each shape runs as three parallel subtests beside
+// controls, each with a third of the files of that shape, so that a part of the slowest shapes,
+// those inside two shells, is short too. Each part runs its scripts through the same
+// firstArguments as controls, whose batches give each script the same recorder. So the one check
+// of the controls covers every part, and no part's subtest proves the recorder by itself.
 func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		skipOutsideCI(t, fmt.Sprintf("bash is not on PATH, so no script can run in it: %v", err))
 	}
-	began := time.Now()
-	var files []bashFile
-	for _, script := range bashScripts() {
-		files = append(files, bashFile{"script", script, script})
-		for _, style := range []string{"|", ">"} {
-			raw := workflowSteps + "      - run: " + style + "\n          " + strings.ReplaceAll(script, "\n", "\n          ") + "\n"
-			var workflow struct {
-				Jobs map[string]struct{ Steps []struct{ Run string } }
+	commands := bashCommands()
+	shapes := bashShapeList()
+	var parts []bashGroup
+	for _, shape := range shapes {
+		g := bashGroup{name: shape.name}
+		for _, command := range commands {
+			script := shape.of(command)
+			g.files = append(g.files, bashFile{"script", script, script})
+			for _, style := range []string{"|", ">"} {
+				raw := workflowSteps + "      - run: " + style + "\n          " + strings.ReplaceAll(script, "\n", "\n          ") + "\n"
+				var workflow struct {
+					Jobs map[string]struct{ Steps []struct{ Run string } }
+				}
+				if err := yaml.Unmarshal([]byte(raw), &workflow); err != nil {
+					t.Fatalf("YAML cannot read %q: %v", raw, err)
+				}
+				g.files = append(g.files, bashFile{"run: " + style, raw, workflow.Jobs["spec"].Steps[0].Run})
 			}
-			if err := yaml.Unmarshal([]byte(raw), &workflow); err != nil {
-				t.Fatalf("YAML cannot read %q: %v", raw, err)
-			}
-			files = append(files, bashFile{"run: " + style, raw, workflow.Jobs["spec"].Steps[0].Run})
 		}
+		parts = append(parts, g.inParts(3)...)
 	}
 	var controls []bashControl
 	for _, sub := range []string{"compare", "tree"} {
-		for _, script := range bashShapes([]string{"spec-check " + sub + " --dir a", "./bin/spec-check " + sub + " --dir a"}) {
-			controls = append(controls, bashControl{script, sub == "compare"})
+		for _, shape := range shapes {
+			for _, command := range []string{"spec-check " + sub + " --dir a", "./bin/spec-check " + sub + " --dir a"} {
+				controls = append(controls, bashControl{shape.of(command), sub == "compare"})
+			}
 		}
 	}
-	expectEachComparisonNamed(t, bash, files, controls, began)
+	t.Run("controls", func(t *testing.T) {
+		t.Parallel()
+		expectEachComparisonNamed(t, bash, nil, controls)
+	})
+	for _, g := range parts {
+		t.Run(g.name, func(t *testing.T) {
+			t.Parallel()
+			expectEachComparisonNamed(t, bash, g.files, nil)
+		})
+	}
 }
 
-// bashEarlierParts and bashEarlierForms are the pieces of the scripts that the Bash test of the
-// round-6 reader (6823f4702b) built, whose comparisons each head of the text rule names too: a
-// part is a text before the command, and a form writes the command, with {w} the subcommand and
-// {h} and {t} its two halves. The forms that only that reader named are left out, since they are
-// outside the text rule's claim (TestCIFilesThatCompareLeavesAFormOutsideTheClaim): a $ and an
-// ANSI-C escape that a line continuation splits, and a redirection or a here-document between the
-// two words.
+// bashEarlierParts, bashEarlierForms and bashEarlierWords are the pieces of the scripts that the
+// Bash test of the round-6 reader (6823f4702b) built, whose comparisons each head of the text rule
+// names too: a part is a text before the command, a form writes the command, with {w} the
+// subcommand and {h} and {t} its two halves, and a word is a subcommand, in the order of the
+// scripts. The forms that only that reader named are left out, since they are outside the text
+// rule's claim (TestCIFilesThatCompareLeavesAFormOutsideTheClaim): a $ and an ANSI-C escape that a
+// line continuation splits, and a redirection or a here-document between the two words.
 var (
 	bashEarlierParts = []string{
 		": x; ", ": 'say \"x\"'; ", ": \"it's\"; ", ": $'it\\'s \"x\"'; ", ": a \\\nb; ", ": a\\\nb; ",
@@ -140,6 +168,7 @@ var (
 		": \"\nspec-check {w} --dir a\n\"\n", ": $'\nspec-check {w} --dir a\n'\n", "spec-check {w} --dir a # it's \\\n",
 		"spec-check {w} --dir a <<'END'\nit's\nEND\n", "spec-check {h}\\\n{t} --dir a\n",
 	}
+	bashEarlierWords = []string{"compare", "tree"}
 )
 
 // bashEarlierScripts is each form of bashEarlierForms after no part and after each part of
@@ -148,7 +177,7 @@ var (
 // two parts again inside each of bashWrappings, as the round-6 test gave them to nested shells.
 func bashEarlierScripts() []string {
 	var scripts, wrapped []string
-	for _, word := range []string{"compare", "tree"} {
+	for _, word := range bashEarlierWords {
 		head, tail := "com", "pare"
 		if word == "tree" {
 			head, tail = "tr", "ee"
@@ -185,45 +214,133 @@ func bashEarlierScripts() []string {
 // scripts, as that test ran them: whenever Bash runs the comparison, directly or in a nested shell,
 // the guard names the file. So no comparison that a head of the text rule named in that corpus is
 // lost. The controls are the first form, spec-check compare --dir a and spec-check tree --dir a,
-// after no part and after each part of bashEarlierParts, and inside each of bashWrappings.
+// after no part and after each part of bashEarlierParts, and inside each of bashWrappings. A script
+// of the corpus is a form after parts, or such a script in a wrapping's shells, so the controls see
+// the comparison in each shape of the corpus and tell it from another subcommand. They run once, in
+// a parallel subtest of their own, controls, as they ran once when the test ran its whole corpus in
+// one call. For each word, the three-part scripts after each first part, the forms with the
+// two-part scripts, and those again inside each of bashWrappings are each a group of parallel
+// subtests beside controls. Each part runs its scripts through the same firstArguments as
+// controls, whose batches give each script the same recorder. So the one check of the controls
+// covers every part, and no part's subtest proves the recorder by itself. A group is one subtest,
+// but for a tree group of the forms and the two-part scripts: the guard names few of those, so Bash
+// runs most, and each shell of the wrapping adds to each one's time, so such a group runs in three
+// parts and three more for each shell.
 func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		skipOutsideCI(t, fmt.Sprintf("bash is not on PATH, so no script can run in it: %v", err))
 	}
-	began := time.Now()
 	var files []bashFile
 	for _, script := range bashEarlierScripts() {
 		files = append(files, bashFile{"script", script, script})
 	}
+	// controls is the first form of each word after no part, after each part of bashEarlierParts and
+	// inside each of bashWrappings.
 	var controls []bashControl
-	for _, word := range []string{"compare", "tree"} {
-		command := strings.ReplaceAll(bashEarlierForms[0], "{w}", word)
-		scripts := []string{command}
+	for _, word := range bashEarlierWords {
+		first := strings.ReplaceAll(bashEarlierForms[0], "{w}", word)
+		controls = append(controls, bashControl{first, word == "compare"})
 		for _, p := range bashEarlierParts {
-			scripts = append(scripts, p+command)
+			controls = append(controls, bashControl{p + first, word == "compare"})
 		}
 		for _, wrap := range bashWrappings {
-			scripts = append(scripts, wrap(command))
-		}
-		for _, script := range scripts {
-			controls = append(controls, bashControl{script, word == "compare"})
+			controls = append(controls, bashControl{wrap(first), word == "compare"})
 		}
 	}
-	expectEachComparisonNamed(t, bash, files, controls, began)
+	// bashEarlierScripts writes the three-part scripts of compare and then of tree, each word's in
+	// runs of one first part, then the forms and the two-part scripts of each word, and then those
+	// again inside each of bashWrappings.
+	threePart := len(bashEarlierWords) * len(bashEarlierParts) * len(bashEarlierParts) * len(bashEarlierParts)
+	partsOf := func(w, shells int) int {
+		if bashEarlierWords[w] != "tree" {
+			return 1
+		}
+		return 3 * (1 + shells)
+	}
+	var groups []bashGroup
+	for w, ofWord := range inRuns(t, files[:threePart], len(bashEarlierWords)) {
+		for p, run := range inRuns(t, ofWord, len(bashEarlierParts)) {
+			name := fmt.Sprintf("%s in the three-part scripts after the first part %q", bashEarlierWords[w], bashEarlierParts[p])
+			for _, f := range run {
+				if !strings.HasPrefix(f.script, bashEarlierParts[p]) {
+					t.Fatalf("the group %s holds %q, so the subtests would not hold the groups that they name", name, f.script)
+				}
+			}
+			groups = append(groups, bashGroup{name: name, files: run})
+		}
+	}
+	sets := inRuns(t, files[threePart:], 1+len(bashWrappings))
+	unwrapped := inRuns(t, sets[0], len(bashEarlierWords))
+	for w, run := range unwrapped {
+		groups = append(groups, bashGroup{name: bashEarlierWords[w] + " in the forms and the two-part scripts", files: run}.inParts(partsOf(w, 0))...)
+	}
+	for i, wrap := range bashWrappings {
+		shells := strings.Count(wrap("…"), "sh ") // the shells that the wrapping starts, each a sh or a bash
+		for w, run := range inRuns(t, sets[1+i], len(bashEarlierWords)) {
+			name := fmt.Sprintf("%s in the forms and the two-part scripts inside %q", bashEarlierWords[w], wrap("…"))
+			for j, f := range run {
+				if want := wrap(unwrapped[w][j].script); f.script != want {
+					t.Fatalf("the group %s holds %q where %q is due, so the subtests would not hold the groups that they name", name, f.script, want)
+				}
+			}
+			groups = append(groups, bashGroup{name: name, files: run}.inParts(partsOf(w, shells))...)
+		}
+	}
+	t.Run("controls", func(t *testing.T) {
+		t.Parallel()
+		expectEachComparisonNamed(t, bash, nil, controls)
+	})
+	for _, g := range groups {
+		t.Run(g.name, func(t *testing.T) {
+			t.Parallel()
+			expectEachComparisonNamed(t, bash, g.files, nil)
+		})
+	}
 }
 
 // bashFile is one file of a Bash test: its kind, its text as the guard reads it, and the script
 // that Bash runs from it.
 type bashFile struct{ kind, raw, script string }
 
-// bashControl is a script that Bash runs beside the files of a Bash test, and whether Bash runs
-// the comparison in it: a control of the shape of the test's scripts, which runs spec-check
-// compare, or another subcommand, and nothing else.
+// bashControl is a script that Bash runs once in a Bash test, beside the parts that run its files,
+// and whether Bash runs the comparison in it: a control of a shape of the test's scripts, which
+// runs spec-check compare, or another subcommand, and nothing else.
 type bashControl struct {
 	script   string
 	compares bool
+}
+
+// bashGroup is files of a Bash test that run together: a subtest, or a group that the test cuts
+// into subtests (inParts).
+type bashGroup struct {
+	name  string
+	files []bashFile
+}
+
+// inParts is g cut into n parts of its files, in file order and of lengths that differ by one at
+// most, each named g's name, part i of n. It is g alone when n is 1.
+func (g bashGroup) inParts(n int) []bashGroup {
+	if n == 1 {
+		return []bashGroup{g}
+	}
+	parts := make([]bashGroup, n)
+	for i := range parts {
+		from, to := i*len(g.files)/n, (i+1)*len(g.files)/n
+		parts[i] = bashGroup{name: fmt.Sprintf("%s, part %d of %d", g.name, i+1, n), files: g.files[from:to:to]}
+	}
+	return parts
+}
+
+// inRuns is list cut into n runs of one length, in order. It fails the test unless the list holds
+// a whole number of such runs.
+func inRuns[T any](t *testing.T, list []T, n int) [][]T {
+	t.Helper()
+	if len(list)%n != 0 {
+		t.Fatalf("%d items make no %d runs of one length", len(list), n)
+	}
+	return slices.Collect(slices.Chunk(list, len(list)/n))
 }
 
 // expectEachComparisonNamed fails the test for each file of files where Bash runs the comparison
@@ -232,8 +349,11 @@ type bashControl struct {
 // line of, and of each of controls; the guard reads every file. The test fails as UNKNOWN unless
 // Bash, as firstArguments asks it, runs the comparison in each control that runs compare and in no
 // other control, so that an answer of no comparison comes from an instrument that sees one in each
-// shape of the files, and tells it from another subcommand. It logs how many files the guard names.
-func expectEachComparisonNamed(t *testing.T, bash string, files []bashFile, controls []bashControl, began time.Time) {
+// shape of the files, and tells it from another subcommand. A test may pass its controls alone in
+// one call and its files in others: each call asks Bash through firstArguments, whose batches give
+// each script the same recorder, so the controls of one call stand for the files of the others. It
+// logs how many files the guard names.
+func expectEachComparisonNamed(t *testing.T, bash string, files []bashFile, controls []bashControl) {
 	t.Helper()
 	var unnamed []bashFile
 	for _, f := range files {
@@ -262,8 +382,8 @@ func expectEachComparisonNamed(t *testing.T, bash string, files []bashFile, cont
 			}
 		}
 	}
-	t.Logf("%d files, in %v. The guard names %d; bash ran the other %d and %d controls, and runs the comparison in %d of those files, each a miss",
-		len(files), time.Since(began).Round(time.Millisecond), len(files)-len(unnamed), len(unnamed), len(controls), missed)
+	t.Logf("%d files. The guard names %d; bash ran the other %d and %d controls, and runs the comparison in %d of those files, each a miss",
+		len(files), len(files)-len(unnamed), len(unnamed), len(controls), missed)
 }
 
 // firstArguments runs each of scripts in bash and answers, for each, the first argument of each
