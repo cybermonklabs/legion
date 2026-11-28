@@ -215,6 +215,18 @@ func failedInRead(view closeView, check string) bool {
 	return false
 }
 
+// waitsInRead says whether the read the judge holds lists check among the checks the close still
+// waits for, in any state but a pass: a fail, no result, or unknown (record.CloseWaitOf lists every
+// check that does not pass). A check's reason of a next change resolves only once it is not listed.
+func waitsInRead(view closeView, check string) bool {
+	for _, waiting := range view.wait.Checks {
+		if waiting.Check == check {
+			return true
+		}
+	}
+	return false
+}
+
 // recordCheckReasons records a reason of the next change for each check the read answers as a
 // fail that the issue holds no reason of yet (D7): its kind is check, it names the check and the
 // deciding result Dispatch gave, and its head is the commit that result was recorded at. A check
@@ -307,8 +319,9 @@ func (e *Engine) changeOpenedNoPullRequest(ctx context.Context, tx pgx.Tx, issue
 }
 
 // changeResolved says whether each reason the issue's open change carries is resolved (D7, B08):
-// a check's reason by that check passing in a fresh read of the generation, a reported defect or
-// a request by a withdrawal that ended it, and a production reason by the check this end opens.
+// a check's reason by that check passing in a fresh read of the generation (waitsInRead: a check
+// with no result or an unknown answer has not passed, so it resolves nothing), a reported defect
+// or a request by a withdrawal that ended it, and a production reason by the check this end opens.
 // The other terms of the close are not asked: the open change, the superseded check and the check
 // not yet opened hold nothing here.
 func changeResolved(issue record.Issue, view closeView) bool {
@@ -322,7 +335,7 @@ func changeResolved(issue record.Issue, view closeView) bool {
 		switch defect.Kind {
 		case record.DefectKindProduction:
 		case record.DefectKindCheck:
-			if failedInRead(view, defect.Check) {
+			if waitsInRead(view, defect.Check) {
 				return false
 			}
 		default:
