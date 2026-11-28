@@ -3324,3 +3324,236 @@ test("a place right before or right after a node at a guessed place reads the ne
     PAGED,
   ]);
 });
+
+/** Answers each read of the issue's tree: `page` for the cursor it is asked with, and none for
+ *  R7's re-read, which is held out. Keeps each read's cursor, null where it names none. */
+function answerPagesHoldingReread(page: (cursor: string) => Response | Promise<Response>): {
+  readonly cursors: (string | null)[];
+} {
+  const cursors: (string | null)[] = [];
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get("cursor");
+      cursors.push(cursor);
+      return cursor === null ? new Promise<never>(() => {}) : page(cursor);
+    })
+  );
+  return { cursors };
+}
+
+/** A refusal of a next page. */
+function refusedPage(): Response {
+  return Response.json({ code: "UNAVAILABLE", error: "unavailable" }, { status: 503 });
+}
+
+/** Waits until R7's re-read has gone `count` times, and then a little, for a read more. */
+async function rereadsGone(cursors: readonly (string | null)[], count: number): Promise<void> {
+  await waitFor(() =>
+    expect(
+      cursors.filter((each) => each === null),
+      "R7's re-read did not go"
+    ).toHaveLength(count)
+  );
+  await waitInAct(50);
+}
+
+/** A block of the plan under the issue that an edit removed, gone, which keeps its rank and which
+ *  no page holds. */
+const GONE_PLAN = "<gone-plan-under-issue>";
+
+// On `memoAtRankEnds`, the plan task is placed under the issue after a block of the plan gone
+// since: last of the plan's blocks, past every child the read holds, on a read that goes on past
+// its pages, so the place is not shown and the task stands at a guessed place, last under the
+// issue; its next page is refused. Move down on the paragraph then names the memo, held at its
+// rank right after it, as `after`: the place right after the memo stands right before the plan
+// task, which shows nothing at its guessed place, but the paragraph, held where the walk stands
+// it, and the memo at its rank each show the place. No next page is read for it, the memo goes
+// first again, and R7's re-read, which is held out, is the one read.
+test("a guessed neighbour cancels neither the node nor a memo at its rank as evidence", async () => {
+  const { cursors } = answerPagesHoldingReread(refusedPage);
+  const parent = `issue/${KEY}`;
+  const body = { after: GONE_PLAN, parent };
+  answerPatches(
+    { body: { ...body, placement_seq: "<seq:plan-task>@2" }, status: 200 },
+    { body: { after: "<memo>", parent, placement_seq: "<seq:tree/paragraph>@2" }, status: 200 }
+  );
+  const { client, writes } = mount(memoAtRankEnds);
+  await act(async () => {
+    await placeNode(client, KEY, "<plan-task>", body, "new_below");
+  });
+  await rereadsGone(cursors, 1);
+  expect(cursors, "the reads after the plan task is placed").toEqual(["<cursor:third>", null]);
+  expect(heldChildIds(client, KEY), "the issue's children once the task is placed").toEqual([
+    "<question>",
+    "<message>",
+    PAGED,
+    "<memo>",
+    "<plan-task>",
+  ]);
+  await act(async () => {
+    await writes().move(PAGED, "move_down");
+  });
+  await rereadsGone(cursors, 2);
+  expect(cursors, "the reads after Move down").toEqual(["<cursor:third>", null, null]);
+  expect(heldChildIds(client, KEY), "the issue's children once Move down is taken").toEqual([
+    "<memo>",
+    "<question>",
+    "<message>",
+    PAGED,
+    "<plan-task>",
+  ]);
+});
+
+/** A block of the issue's own fragment under the issue that an edit removed, gone, which keeps its
+ *  rank and which no page holds: the last of that band there. */
+const GONE_OWN = "<gone-own-under-issue>";
+
+/** `ownMemo` ending right after the heading, with the read's context, naming a third page. */
+const headingEnds: TreeAnswer = {
+  ...ownMemo,
+  cursor: "<cursor:third>",
+  nodes: (ownMemo.nodes ?? []).filter(
+    (node, at, nodes) =>
+      at <= nodes.findIndex((each) => each.id === HEADING) || node.role === "context"
+  ),
+};
+
+/** The read's next page once the paragraph is placed last of the issue's own blocks and the
+ *  heading right after it: the issue's own blocks past the heading, then the paragraph, with its
+ *  next placement_seq, where the server's walk stands it, and the read's context, naming a fourth
+ *  page, which holds the heading. */
+const paragraphLastSecond: TreeAnswer = (() => {
+  const nodes = ownMemo.nodes ?? [];
+  const past = nodes.slice(nodes.findIndex((node) => node.id === HEADING) + 1);
+  return {
+    ...secondPage,
+    cursor: "<cursor:fourth>",
+    nodes: [
+      ...past.filter(
+        (node) => node.role !== "context" && node.id !== "<constraint>" && node.id !== "<child>"
+      ),
+      { ...nodeOf(ownMemo, PAGED), placement_seq: OUTDENT_SEQ as unknown as number },
+      ...past.filter((node) => node.role === "context"),
+    ],
+  };
+})();
+
+// On `headingEnds`, the paragraph is placed under the issue after a block of its own fragment gone
+// since: last of that band, past every child the read holds, so it stands at a guessed place,
+// right after the heading; its next page is refused. Move down on the heading then puts it right
+// after the paragraph, which shows nothing at its guessed place, so the next page is read. That
+// page holds the paragraph where the server's walk stands it, and not the heading: the paragraph's
+// guessed copy is taken out and its mark lifted, so the paragraph shows the heading's place, and
+// no fourth page is read. R7's re-read is held out.
+test("a next page that holds a node at a guessed place takes its copy out and lifts its mark", async () => {
+  let thirds = 0;
+  const { cursors } = answerPagesHoldingReread((cursor) => {
+    if (cursor !== "<cursor:third>") return Response.json({ ...secondPage, nodes: [], tuples: [] });
+    thirds += 1;
+    return thirds === 1 ? refusedPage() : Response.json(paragraphLastSecond);
+  });
+  const parent = `issue/${KEY}`;
+  const body = { after: GONE_OWN, parent };
+  const patches = answerPatches(
+    { body: { ...body, placement_seq: OUTDENT_SEQ }, status: 200 },
+    { body: { after: PAGED, parent, placement_seq: "<seq:tree/heading>@2" }, status: 200 }
+  );
+  const { client, writes } = mount(headingEnds);
+  await act(async () => {
+    await placeNode(client, KEY, PAGED, body, "new_below");
+  });
+  await rereadsGone(cursors, 1);
+  expect(heldChildIds(client, KEY), "the issue's children once the paragraph is placed").toEqual([
+    "<memo>",
+    "<question>",
+    "<message>",
+    HEADING,
+    PAGED,
+  ]);
+  await act(async () => {
+    await writes().move(HEADING, "move_down");
+  });
+  expect(patches.calls.map((call) => call.body)).toEqual([body, { after: PAGED, parent }]);
+  await rereadsGone(cursors, 2);
+  expect(cursors, "the reads after Move down").toEqual([
+    "<cursor:third>",
+    null,
+    "<cursor:third>",
+    null,
+  ]);
+  expect(
+    heldIds(client).filter((id) => id === PAGED),
+    "the held read holds the paragraph but once"
+  ).toHaveLength(1);
+});
+
+/** Three comments on the third statement older than any the read holds: the older comment page
+ *  `underQuestionOwnMemo` names once it names one (`comments_before`). */
+const olderComments: TreeAnswerNode[] = [1, 2, 3].map((at) => ({
+  ...nodeOf(firstPage, COMMENT_ON_TEXT),
+  id: `<older-comment-${at}>`,
+  made_at: `2025-01-0${at}T00:00:00Z`,
+}));
+
+// The outdent of round ten's case, its next page held out while an older comment page lands: its
+// three comments stand in the third statement's subtree, before the paragraph, so the paragraph
+// stands further on in the held read. The page then lands holding no node and naming a third
+// page, which is refused: the page did not hold the paragraph, so its mark stays. Move up then
+// reads the next page again, and the memo stays first. R7's re-read is held out.
+test("an older comment page that lands while a next page is out leaves a guessed mark", async () => {
+  const out = Promise.withResolvers<void>();
+  const { cursors } = answerPagesHoldingReread(async (cursor) => {
+    if (cursor !== firstPage.cursor) return refusedPage();
+    await out.promise;
+    return Response.json({ ...secondPage, cursor: "<cursor:third>", nodes: [], tuples: [] });
+  });
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, ({ request }) =>
+      new URL(request.url).searchParams.has("comments_before")
+        ? Response.json({
+            ...firstPage,
+            comments_before: null,
+            cursor: null,
+            nodes: olderComments,
+            tuples: [],
+          })
+        : undefined
+    )
+  );
+  const parent = `issue/${KEY}`;
+  const patches = answerPatches(
+    { body: { after: "<memo>", parent, placement_seq: OUTDENT_SEQ }, status: 200 },
+    { body: { after: null, parent, placement_seq: "<seq:tree/paragraph>@3" }, status: 200 }
+  );
+  const { client, writes } = mount({ ...underQuestionOwnMemo, comments_before: "<older>" });
+  await act(async () => {
+    await writes().move(PAGED, "outdent");
+  });
+  await waitFor(() => expect(cursors, "the page read for the outdent").toEqual([firstPage.cursor]));
+  await act(async () => {
+    await readOlderComments(client, KEY, "graph");
+  });
+  const ids = heldIds(client);
+  for (const comment of olderComments) {
+    expect(ids.indexOf(comment.id), comment.id).toBeLessThan(ids.indexOf(PAGED));
+  }
+  out.resolve();
+  await rereadsGone(cursors, 1);
+  await act(async () => {
+    await writes().move(PAGED, "move_up");
+  });
+  expect(patches.calls.map((call) => call.body)).toEqual([{ parent }, { after: null, parent }]);
+  await rereadsGone(cursors, 2);
+  expect(cursors, "the reads after Move up").toEqual([
+    firstPage.cursor,
+    "<cursor:third>",
+    null,
+    "<cursor:third>",
+    null,
+  ]);
+  expect(heldChildIds(client, KEY), "the issue's children once Move up is taken").toEqual([
+    "<memo>",
+    "<question>",
+    PAGED,
+  ]);
+});
