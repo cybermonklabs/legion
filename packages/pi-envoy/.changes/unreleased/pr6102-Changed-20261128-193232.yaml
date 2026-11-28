@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The `dispatch` command a session runs has `dispatch follow` and `dispatch unfollow`, each with
+  `--ask <id>` or `--comment <id>`, in place of `dispatch follow --action follow|unfollow`; a
+  session leaves a comment thread with `dispatch unfollow --comment <id>`.
+time: 2026-11-28T19:32:32Z
+custom:
+    Issue: pr6102
