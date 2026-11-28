@@ -22,6 +22,10 @@ import {
   pageKindTag,
   pageMutedText,
   pageOwnWordsRule,
+  pagePathRing,
+  pagePathRingFolded,
+  pagePointRing,
+  pagePointRingFolded,
   pageQuietText,
   pageRowAct,
   pageRowActs,
@@ -40,9 +44,13 @@ import { parseNodeReference, referenceHref } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { openChildEntry } from "./children-section";
 import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
+import type { PointMark } from "./current-point";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
 import { chipName } from "./first-line";
+import { lastHeldPath } from "./graph-edit/last-held";
+import { RowEditLine, RowMenu, RowMenuPlace } from "./graph-edit/RowMenu";
+import type { RowEdit } from "./graph-edit/row-edits";
 import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import { presetNodePath } from "./issue-address";
@@ -65,6 +73,7 @@ import {
   type AuthorKind,
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
+  CURRENT_POINT,
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
@@ -118,7 +127,9 @@ export function NodeRow({
   author,
   context,
   countsHeld = false,
+  current,
   document,
+  edit,
   editable = false,
   editing,
   expanded,
@@ -154,11 +165,20 @@ export function NodeRow({
    *  (`TreeRows.tsx`), so the counts are drawn into a line of their own height and move nothing
    *  under the row (the plan's "The places held", row 6). False unless the view passes it. */
   countsHeld?: boolean;
+  /** Whether this row carries the conversation's current point: `here` on the point's own row,
+   *  `path` on a row above it on its path while its own row is folded away (R12); undefined on
+   *  every other row. */
+  current?: PointMark;
   /** The document this row's node is a block of, which its face writes against: a decision's
    *  Keep and Change are writes on the document its `decision` block stands in, the spec or
    *  another of the issue's (R7). Undefined for a node that is no block of a document of this
    *  issue. */
   document?: Artifact;
+  /** The node menu the row draws in Graph (`graph-edit/RowMenu.tsx`): its control among the
+   *  row's acts, in place of the Lens act, which opens the menu on the focused row and keeps its
+   *  place on every other, and the line a refused write of the menu leaves. Undefined everywhere
+   *  else, where the row draws its acts as today. */
+  edit?: RowEdit;
   /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
    *  place and draws such a row its own way: part I's outline passes it, and its styles draw the
    *  cue that the row takes typing (decision 323); nothing in part G reads it. False unless the
@@ -251,10 +271,14 @@ export function NodeRow({
   const tagTo = tagView === undefined ? undefined : presetNodePath(tagView, node);
   return (
     <div
+      // The conversation's current point (R12), named by the screen reader's own words for the
+      // current location. It is no control: it takes no focus and answers no press.
+      aria-current={current === "here" ? CURRENT_POINT : undefined}
       aria-expanded={expanded}
       aria-labelledby={ids.labelledBy}
       aria-level={level}
       className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[761px]:pl-[calc(var(--row-depth)*17px)]"
+      data-current-point={current}
       data-editable={editable ? "" : undefined}
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
@@ -275,6 +299,7 @@ export function NodeRow({
       <div className={`${NODE_ROW_LAYOUT.box} ${focused ? pageFocusedRow : ""}`} data-node-card="">
         <Bullet
           collapsed={oneLine}
+          current={current}
           expanded={expanded}
           foldable={foldable}
           onToggle={onToggle}
@@ -407,6 +432,8 @@ export function NodeRow({
           )}
           {oneLine ? null : <LensChain node={node} tabStops={tabStops} />}
           <RowActs
+            edit={edit}
+            focused={focused}
             node={node}
             ownAnswer={ownAnswer}
             ownComment={own && node.type === "comment"}
@@ -414,6 +441,7 @@ export function NodeRow({
             tabStops={tabStops}
             writer={writer}
           />
+          {edit === undefined ? null : <RowEditLine edit={edit} node={node} tabStops={tabStops} />}
           {report === undefined ? null : (
             <p
               className={`text-xs leading-5 ${pageMutedText}`}
@@ -700,9 +728,14 @@ function stateTone(node: TreeNode): keyof typeof pageStateText {
  * A press leaves the focus where it is, as an option and the acts do: the fold it makes is the
  * whole of what the reader asked for (R11). On a phone the fold control's box is 24 px square,
  * the least target WCAG 2.5.8 allows (`NODE_ROW_LAYOUT.foldControl`).
+ *
+ * A row that carries the conversation's current point rings the dot (R12, `pointRing`): quietly
+ * on the point's own row, lighter on each row above it on its path while its own row is folded
+ * away. The ring is drawn, never a control, and moves no focus.
  */
 function Bullet({
   collapsed,
+  current,
   expanded,
   foldable,
   onToggle,
@@ -710,6 +743,7 @@ function Bullet({
   tone,
 }: {
   collapsed: boolean;
+  current?: PointMark;
   expanded?: boolean;
   foldable: boolean;
   onToggle: () => void;
@@ -719,7 +753,7 @@ function Bullet({
   const dot = (
     <i
       aria-hidden="true"
-      className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""}`}
+      className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""} ${pointRing(current, collapsed)}`}
     />
   );
   if (!foldable) {
@@ -750,6 +784,15 @@ function Bullet({
       {dot}
     </button>
   );
+}
+
+/** The ring on the bullet's dot of a row that carries the conversation's current point (R12): the
+ *  quiet ring on the point's own row and the lighter one on a row above it on its path, each set
+ *  outside the halo on a folded branch's dot; nothing on every other row. */
+function pointRing(current: PointMark | undefined, collapsed: boolean): string {
+  if (current === "here") return collapsed ? pagePointRingFolded : pagePointRing;
+  if (current === "path") return collapsed ? pagePathRingFolded : pagePathRing;
+  return "";
 }
 
 /** What a row's edited mark draws its element with (`EditedMark`): `data-node-edited`, and the
@@ -981,8 +1024,8 @@ function KindTag({ node }: { node: TreeNode }): ReactNode {
  * `tabStops` holds, as every other control inside a row is (R9).
  *
  * An open question's options are the choices of its answer (R16, the prototype's `button.opt`):
- * a press picks one, or lets it go, and sets the line at the foot of the outline to answer the
- * question, where the keyboard picks them too; the one picked is drawn on the waiting tint. A
+ * a press picks one, or lets it go, in the answer the writer holds (`OutlineWriter.answer`, which
+ * says what reads it), and the one picked is drawn on the waiting tint. A
  * reference inside such an option reads as a link and is none: the press is the option's.
  */
 export function NodeOptions({
@@ -1056,8 +1099,8 @@ export function NodeOptions({
             key={option.label}
           >
             {answering ? (
-              // Out of the tab order, as every control inside a row is: the line the press sets
-              // draws the same options as its own chips, which the keyboard reaches (R9). A
+              // Out of the tab order, as every control inside a row is, unless `tabStops` holds
+              // (R9); the line at the foot draws none of them (`OutlineWriter.answer`). A
               // press leaves the focus where it is until it ends, so the press ends on the option
               // it went down on, in a view whose body opens on focus as much as on the outline's
               // rows. Once the press has picked, the focus goes to the row: one press picks the
@@ -1104,6 +1147,10 @@ export function NodeOptions({
  * today's model, which holds no reply to a block, so it draws none; and with no writer
  * (`OutlineWriterProvider`) the row draws none of the four.
  *
+ * After Reply and Edit, Write a criterion on an ask, a comment or a message of this issue, on an
+ * issue that takes one (`OutlineWriter.takesCriterion`): it aims the line at the node to write a
+ * criterion under it. No key presses it, and `f` reaches it as it reaches every act.
+ *
  * Last, Copy reference copies the node's `dispatch://` address, as today's page offers it on the
  * same node (part G's R6, root R19). It writes nothing, so it is drawn whether or not a writer
  * is, and it carries a mark of its own (`data-row-copy`) rather than `data-row-act`, which names
@@ -1118,8 +1165,16 @@ export function NodeOptions({
  * A press leaves the focus where it is until the action moves it to the line, as the row's other
  * controls do, so the press never lands on a row that moved under it. Each is out of the tab
  * order unless `tabStops` holds (`NodeRow`'s).
+ *
+ * In Graph (`edit`), the row draws the node menu's control there instead
+ * (`graph-edit/RowMenu.tsx`), whose last entry is the Lens act, and no Lens act of its own. Only
+ * the focused row's control opens the menu (`RowMenu`); every other row draws it hidden and
+ * inert in the same place (`RowMenuPlace`), so a row's text and height do not change as the
+ * focus moves, as its other acts do not (part T's R11).
  */
 export function RowActs({
+  edit,
+  focused = false,
   node,
   ownAnswer,
   ownComment = false,
@@ -1127,6 +1182,11 @@ export function RowActs({
   tabStops = false,
   writer,
 }: {
+  /** The node menu of the row in Graph, which takes the Lens act into it (`RowMenu`). */
+  edit?: RowEdit;
+  /** Whether the row has the focus: in Graph only the focused row's control opens the node menu
+   *  (`RowMenu`), and every other row keeps its place (`RowMenuPlace`). */
+  focused?: boolean;
   node: TreeNode;
   ownAnswer: boolean;
   /** Whether the row is the reader's own comment, which carries Edit. */
@@ -1164,8 +1224,15 @@ export function RowActs({
       run: () => writer.edit(item.id, node.text),
     });
   }
+  if (writer?.takesCriterion(node) === true) {
+    acts.push({
+      act: "criterion",
+      label: CONTROL_LABELS.write_criterion,
+      run: () => writer.criterionUnder(node),
+    });
+  }
   const reference = node.reference;
-  if (acts.length === 0 && reference === undefined) return null;
+  if (acts.length === 0 && reference === undefined && edit === undefined) return null;
   return (
     <p className={pageRowActs} data-row-acts="">
       {acts.map(({ act, label, run }) => (
@@ -1204,7 +1271,13 @@ export function RowActs({
           {status === "copied" ? ANSWER_LINES.copied : ANSWER_LINES.copy_failed}
         </span>
       )}
-      <LensMenu node={node} tabStops={tabStops} />
+      {edit === undefined ? (
+        <LensMenu node={node} tabStops={tabStops} />
+      ) : focused ? (
+        <RowMenu edit={edit} node={node} tabStops={tabStops} />
+      ) : (
+        <RowMenuPlace edit={edit} node={node} />
+      )}
     </p>
   );
 }
@@ -1469,6 +1542,10 @@ function Chip({
         {mark}
       </>
     );
+  // A target the read answers gone with the version that last held it opens that version on the
+  // page (R9 of INFRA-5705), by the page's own address of it and never the address as written: a
+  // `last_held` the page cannot read opens nothing, and the chip draws as any gone one does.
+  const lastHeld = gone ? lastHeldPath(chip.lastHeld) : undefined;
   // The page's word for a document is the page's, and a target's own words are its author's.
   const marks = word === undefined ? authorText : pageChrome;
   return (
@@ -1478,7 +1555,20 @@ function Chip({
       {/* A sentence about the target, so a colon sets it apart from the target's own words. */}
       {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span> : null}
       {gone ? (
-        <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
+        lastHeld === undefined ? (
+          <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
+        ) : (
+          // Its words are the page's, as a gone chip's are, and it is out of the tab order as the
+          // chip's own link is (below).
+          <Link
+            className={`dispatch-inline-link font-medium whitespace-nowrap underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
+            tabIndex={tabStops ? undefined : -1}
+            to={lastHeld}
+            {...pageChrome}
+          >
+            {CONTROL_LABELS.target_gone}
+          </Link>
+        )
       ) : href === undefined ? (
         // An address as written may run longer than the line, so it alone may wrap.
         <span className={ambiguous ? undefined : "whitespace-nowrap"} data-chip-name="" {...marks}>

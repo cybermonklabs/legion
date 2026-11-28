@@ -1152,15 +1152,19 @@ func (b *issueTreeBuilder) visible(target refs.Target) bool {
 }
 
 // excluded reports whether the node is one no query of the tree returns (R2, R16): a document,
-// the issue's tree among them, and a document version, which no view draws; a block of a role
-// document - the spec, the Verification document, the plan - that is no typed block, its prose,
-// which stays a node of the issue that its document's versions render; and in the skeleton of the
-// read with no view, a block of one of the issue's other documents (R8).
+// the issue's tree among them, and a document version, which no view draws; in every document, a
+// typed block's own text (typedOwnText), which the typed block's node holds whole; a block of a
+// role document - the spec, the Verification document, the plan - that is no typed block, its
+// prose, which stays a node of the issue that its document's versions render; and in the skeleton
+// of the read with no view, a block of one of the issue's other documents (R8).
 func (b *issueTreeBuilder) excluded(target refs.Target) bool {
 	switch target.Kind {
 	case graphstore.KindArtifact, graphstore.KindVersion:
 		return true
 	case refs.BlockNodeKind:
+		if typedOwnText(target, b.ownTextNode, len(b.entries)) {
+			return true
+		}
 		row, held := b.blocks[target.ID]
 		if !held {
 			return false
@@ -1171,6 +1175,40 @@ func (b *issueTreeBuilder) excluded(target refs.Target) bool {
 		case refs.RankBandOther:
 			return b.skeleton != nil && treeIssueOf(target) == b.key
 		}
+	}
+	return false
+}
+
+// ownTextNode is what typedOwnText reads of target in the read: its type, its placement at the
+// read's cut and its parent, and whether the read holds it.
+func (b *issueTreeBuilder) ownTextNode(target refs.Target) (string, string, refs.Target, bool) {
+	entry, held := b.entries[target]
+	if !held {
+		return "", "", refs.Target{}, false
+	}
+	return entry.typ, b.facts[target].Values[refs.AttributePlacement], entry.parent, true
+}
+
+// typedOwnText reports whether the block target is a typed block's own text (R2, R7): a block that
+// is no typed block and stands in a typed block by the text - its placement is
+// refs.PlacementText, and its parent is a typed block or a block that is itself such text, as a
+// callout's list and the list's items are - which the typed block's node holds whole, since a
+// block's text value is its whole slice, its children's included (graphstore.AttributeText). A
+// typed block is none, nor is a block a move of the node route placed (refs.PlacementStored), nor
+// what its text holds. node answers a node's type (refs.TreeNodeType), its placement and its
+// parent as one read holds them, and whether that read holds the node; limit bounds the climb. The
+// tree read leaves such a block out in every document (issueTreeBuilder.excluded), and the delete
+// counts none (deletePlan.countRead).
+func typedOwnText(target refs.Target, node func(refs.Target) (string, string, refs.Target, bool), limit int) bool {
+	for steps := 0; steps <= limit; steps++ {
+		typ, placement, parent, held := node(target)
+		if !held || target.Kind != refs.BlockNodeKind || pmdoc.IsTypedBlock(typ) || placement != refs.PlacementText || parent.Kind != refs.BlockNodeKind {
+			return false
+		}
+		if above, _, _, held := node(parent); held && pmdoc.IsTypedBlock(above) {
+			return true
+		}
+		target = parent
 	}
 	return false
 }

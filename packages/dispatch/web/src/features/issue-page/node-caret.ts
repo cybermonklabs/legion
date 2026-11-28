@@ -4,11 +4,15 @@ import type { EditorState, Plugin, Transaction } from "@milkdown/kit/prose/state
 import type { EditorView } from "@milkdown/kit/prose/view";
 import type * as YProseMirror from "y-prosemirror";
 
+import type { DisplayTree } from "../../api/types";
+import { inputMethodKey } from "../../lib/input-method-key";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { refocusWhenSettled } from "../doc/refocus-when-settled";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { importWhenOnline } from "../shell/DeploymentResilience";
 import { canHoldFocus } from "./focus-keeper";
+import type { MoveEntry } from "./graph-edit/placement";
+import { GRAPH_EDIT_META } from "./graph-edit/room-writes";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 
 /**
@@ -62,7 +66,7 @@ export function caretInBlock(host: HTMLElement, blockId: string | undefined, at?
   const drawn = drawnBlock(host, blockId);
   if (drawn === null) return false;
   drawn.editable.focus({ preventScroll: true });
-  selectInEditor(at === undefined ? firstPlace(drawn.block) : placeAt(drawn.block, at));
+  placeCaret(at === undefined ? firstPlace(drawn.block) : placeAt(drawn.block, at));
   return true;
 }
 
@@ -70,6 +74,24 @@ export function caretInBlock(host: HTMLElement, blockId: string | undefined, at?
  *  (`caretInBlock`). */
 export function drawsBlock(host: HTMLElement, blockId: string | undefined): boolean {
   return drawnBlock(host, blockId) !== null;
+}
+
+/**
+ * Holds the box of the editor in `host` shut while it draws no block of a new row yet
+ * (INFRA-5705's R3), and, where `focus`, puts the focus in its editable, so the row stands empty
+ * until the reader's first character writes its block: the editor holds the whole document, and
+ * its box would draw the rest of it in the row. The editable takes the focus as `caretInBlock`
+ * gives it, and the key that types the first character is the row's to write (`confineKey`'s
+ * `onFirst`); its block drawn, the box is opened at it (`holdEditorAtBlock`). Answers whether the
+ * editor is drawn.
+ */
+export function caretForNewBlock(host: HTMLElement, focus: boolean): boolean {
+  const box = host.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  const editable = box?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
+  if (box === null || editable === null) return false;
+  box.style.maxHeight = "0px";
+  if (focus && !editable.contains(document.activeElement)) editable.focus({ preventScroll: true });
+  return true;
 }
 
 /**
@@ -150,6 +172,66 @@ export const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
 /** A place in the page, as each end of a selection is one. */
 export type Point = readonly [node: Node, offset: number];
 
+/** The two keys of a new node that Graph's editor takes with the caret at the end of a block's
+ *  text (INFRA-5705's R3): Enter, a new row below (`new_below`, the menu's entry), and
+ *  Shift+Enter, a paragraph inside the block (`paragraph`), which Enter makes there today. */
+export type EndKey = "new_below" | "paragraph";
+
+/**
+ * The key of a new node `event` asks for with the selection from `anchor` to `focus` inside
+ * `block`, or undefined: Enter or Shift+Enter, held with neither Alt, Ctrl nor Meta and with no
+ * input method's composition, while the caret is at the end of the block's text
+ * (`lastPlace`). Enter anywhere else in the text asks for none, and keeps today's behaviour.
+ */
+function endKeyOf(
+  event: KeyboardEvent,
+  block: HTMLElement,
+  anchor: Point,
+  focus: Point
+): EndKey | undefined {
+  if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey) return undefined;
+  if (inputMethodKey(event) || compare(anchor, focus) !== 0) return undefined;
+  if (compare(focus, lastPlace(block)) < 0) return undefined;
+  return event.shiftKey ? "paragraph" : "new_below";
+}
+
+/** Whether `event` is held with Ctrl or Meta, or is a key of an input method's composition or the
+ *  one that ends it (`inputMethodKey`, and the `Process` key an input method sends): a key that
+ *  types no word and asks for no move, so the input method keeps it. */
+function heldOrComposing(event: KeyboardEvent): boolean {
+  return event.ctrlKey || event.metaKey || inputMethodKey(event) || event.key === "Process";
+}
+
+/** The words `event` types where it types any: one character, held with neither Ctrl nor Meta,
+ *  and no input method's key. */
+function typedWordsOf(event: KeyboardEvent): string | undefined {
+  if (heldOrComposing(event)) return undefined;
+  return [...event.key].length === 1 ? event.key : undefined;
+}
+
+/** Runs the editor `view`'s own Enter on its selection, as its keymap answers the key
+ *  (`prosemirror-keymap`'s `handleKeyDown`): in a typed block, a paragraph inside it. */
+function enterInEditor(view: EditorView): void {
+  const enter = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" });
+  view.someProp("handleKeyDown", (handle) => handle(view, enter));
+}
+
+/**
+ * The move `event` asks for, or undefined: Tab indents, Shift+Tab outdents, Alt+Shift+Up moves
+ * up and Alt+Shift+Down moves down (R4), each held with neither Ctrl nor Meta. Each binds by the
+ * key itself, as part I's keys do (R10, decision 470 (3)). A key of an input method's
+ * composition, or the one that ends it, asks for no move (`heldOrComposing`), so the input method
+ * keeps it.
+ */
+function moveKeyOf(event: KeyboardEvent): MoveEntry | undefined {
+  if (heldOrComposing(event)) return undefined;
+  if (event.key === "Tab" && !event.altKey) return event.shiftKey ? "outdent" : "indent";
+  if (!event.altKey || !event.shiftKey) return undefined;
+  if (event.key === "ArrowUp") return "move_up";
+  if (event.key === "ArrowDown") return "move_down";
+  return undefined;
+}
+
 /** A press on the row's words: where it was on screen, its count of the editor's characters before
  *  it, the word pressed as drawn, and `next` where it began a drawn text after counted text, or
  *  fell after an atom that ends the words. */
@@ -182,6 +264,21 @@ type Word = readonly [before: string, word: string, after: string, into: number]
  * to the start of the line's paragraph (`prosemirror-commands`' `macBaseKeymap`), which stays in
  * the block, and is left to it.
  *
+ * In Graph, with the caret inside the block, the four keys of R4 (`moveKeyOf`) go first to
+ * `onMove`, which the page gives a row in Graph alone (`graph-edit/move-keys.ts`), after the editor
+ * has read the caret where it has not yet: one it takes - a move of the node, or an entry grey at
+ * its edge, whose reason the row shows - goes no further, so neither the editor (a list item's
+ * own sink and lift) nor the browser (the focus moving on) acts on it, and the caret stays where it
+ * is. One it does not take - a block R2 does not admit - goes on as every key does. Undefined
+ * everywhere else, Conversation and every filter among them, where the keys are today's.
+ *
+ * In Graph too, with the caret at the end of the block's text (`endKeyOf`), Enter and Shift+Enter
+ * go first to `onMove` (R3): Enter taken - a new row below, or an entry grey there - goes no
+ * further, and Shift+Enter taken - in a typed block - runs the editor's own Enter instead, which
+ * makes a paragraph inside it. And in a new row whose block the editor draws none of yet, the
+ * reader's first character goes to `onFirst`, which writes the block with it: taken, it goes no
+ * further, so the editor never types it outside the block.
+ *
  * `view` is that editor's view, as the page handed it to the row (`useNodeEditing.ts`), whose own
  * selection a key the editor answers acts on.
  */
@@ -189,7 +286,9 @@ export function confineKey(
   host: HTMLElement,
   blockId: string | undefined,
   event: KeyboardEvent,
-  view: EditorView | undefined
+  onMove: ((move: MoveEntry | EndKey) => boolean) | undefined,
+  view: EditorView | undefined,
+  onFirst?: (words: string) => boolean
 ): void {
   if (event.defaultPrevented || PASSING_KEYS[event.key] === true) return;
   const editable = editableHolding(host, event.target);
@@ -197,6 +296,12 @@ export function confineKey(
   const block = blockIn(editable, blockId);
   const selected = block === null ? null : selectionIn(block);
   if (block === null || selected === null) {
+    const words = block === null && onFirst !== undefined ? typedWordsOf(event) : undefined;
+    if (words !== undefined && onFirst?.(words) === true) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (event.key === "Tab") {
       // Tab is how the reader leaves an editor with no caret in the block, so its default - the
       // focus moving on - stays. But Milkdown answers Tab and Shift+Tab in a list item, on its own
@@ -214,6 +319,19 @@ export function confineKey(
       event.preventDefault();
     }
     return;
+  }
+  const key =
+    onMove === undefined ? undefined : (moveKeyOf(event) ?? endKeyOf(event, block, ...selected));
+  if (key !== undefined && onMove !== undefined) {
+    // The key keeps the caret the editor holds, which it reads now where the page's selection
+    // is not yet its own, as before any key it answers (below).
+    if (!holdsSelection(view, ...selected)) document.dispatchEvent(new Event("selectionchange"));
+    if (onMove(key)) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (key === "paragraph" && view !== undefined) enterInEditor(view);
+      return;
+    }
   }
   const taken = keyAtBlock(event, block, ...selected);
   if (taken === undefined) {
@@ -457,27 +575,76 @@ const BLOCK_ID_PROPERTY = "blockId";
  * (`sync-plugin.js`'s `_forceRerender`), as read in both libraries' sources. The tree lets go of
  * its hold as it goes (`useNodeEditing.ts`), on an editor the page is about to destroy, where
  * taking the plugin off drew the whole document - a spec of some 160 rows - again for nothing.
+ *
+ * A change of the document an edit of the reader's makes is reported once the editor has taken
+ * it (`onOwnEdit`), with the held block as the edit left it, as `Node.toJSON` writes it. An edit
+ * of the reader's is their typing, a paste, an undo, what the editor appends to one of them
+ * (ProseMirror's `appendedTransaction`), such as a block id stamped on a block the edit made, and
+ * a transaction kept out of the undo history (`addToHistory: false`) that starts from a document
+ * such an edit made. Milkdown writes a heading's `id` that way, in a transaction of its own after
+ * a change of the heading's words that moves its `id` (`syncHeadingIdPlugin`), dispatched from its
+ * plugin's view before this plugin's view hears of the change, so the document the editor has
+ * taken by then is the one with the `id`: such an edit of a heading, a decision's `## ` heading
+ * among them, is reported through it. An edit that leaves the `id` as it was - of the words' case
+ * alone, or of the spaces at their ends - writes none, and is reported itself. A transaction
+ * the collaboration brings is not the reader's, nor one appended to it, nor the `id` Milkdown
+ * writes after it, which starts from the collaboration's document. The hold notes each document
+ * such an edit makes, and its plugin's view reports the document the editor takes where it is
+ * one of them: a plugin's state may be worked out for a state the editor never takes, which
+ * leaves a note nobody reads. The report goes through this plugin, as a plugin of its own would
+ * change the editor's plugins (above). A hold let go reports nothing.
+ *
+ * A transaction of the editor's own that Graph makes on purpose applies wherever it lands too:
+ * one carrying `GRAPH_EDIT_META` (`graph-edit/room-writes.ts`) - a new row's block, written
+ * at the end of the document with the selection in it (INFRA-5705's R3), which `heldBlock`
+ * names already, so the reader's next letters keep to it; and a retype of the held block (R5),
+ * which leaves the selection at the end of the block's words, so what the editor appends to it
+ * keeps to the block.
  */
 export function holdEditsToBlock(
   view: EditorView,
   heldBlock: () => string | undefined,
   parts: Promise<HoldParts>,
-  onHeld: () => void
+  onHeld: () => void,
+  onOwnEdit?: (block: DisplayTree) => void
 ): () => void {
   let letGo = false;
   void parts.then(
     ([state, sync]) => {
       if (letGo || view.isDestroyed) return;
+      // Each document an edit of the reader's made (above).
+      const edited = new WeakSet<ProseMirrorNode>();
+      // The last document reported: Milkdown's dispatch of a heading's `id` from its plugin's
+      // view runs the plugins' views again inside the update that brought the edit, so both
+      // updates find the editor holding the same document.
+      let reported: ProseMirrorNode | undefined;
       const plugin: Plugin<number | undefined> = new state.Plugin<number | undefined>({
         filterTransaction: (transaction, editorState) =>
           letGo ||
           transaction.getMeta(sync.ySyncPluginKey) !== undefined ||
+          transaction.getMeta(GRAPH_EDIT_META) !== undefined ||
           (!transaction.docChanged && !transaction.selectionSet) ||
           keepsToBlock(transaction, editorState, heldBlock(), plugin.getState(editorState)),
         // The block's start, as last found: the guess a transaction checks before it searches.
         state: {
           apply: (transaction, start, _, { doc }) => {
             if (letGo) return undefined;
+            noteCaret(
+              view,
+              transaction,
+              heldBlock(),
+              start,
+              transaction.getMeta(sync.ySyncPluginKey) !== undefined
+            );
+            // A transaction appended to another is read as that one.
+            const root: Transaction = transaction.getMeta("appendedTransaction") ?? transaction;
+            if (
+              root.docChanged &&
+              root.getMeta(sync.ySyncPluginKey) === undefined &&
+              (root.getMeta("addToHistory") !== false || edited.has(root.before))
+            ) {
+              edited.add(doc);
+            }
             if (!transaction.docChanged) return start;
             return blockStart(
               doc,
@@ -487,6 +654,18 @@ export function holdEditsToBlock(
           },
           init: (_, { doc }) => blockStart(doc, heldBlock(), undefined),
         },
+        view: () => ({
+          update: (editor, before) => {
+            const { doc } = editor.state;
+            if (letGo || doc === before.doc || doc === reported || !edited.has(doc)) return;
+            // The held block, where the plugin's state last found it.
+            const start = plugin.getState(editor.state);
+            const block = start === undefined ? null : doc.nodeAt(start);
+            if (block === null) return;
+            reported = doc;
+            onOwnEdit?.(block.toJSON());
+          },
+        }),
       });
       view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
       onHeld();
@@ -516,6 +695,117 @@ function blockStart(
     return false;
   });
   return found;
+}
+
+/** The reader's caret in a held block, its anchor and its head each counted from the block's
+ *  start in the editor's document (`keptCaret`). */
+interface KeptCaret {
+  readonly anchor: number;
+  readonly head: number;
+}
+
+/** The caret each editor's hold last saw the reader hold inside its block, by the editor's view,
+ *  with that block's id (`noteCaret`). */
+const keptCarets = new WeakMap<EditorView, KeptCaret & { readonly block: string }>();
+
+/** How many carets the page itself is putting in a row's editor at once (`caretInBlock`,
+ *  `selectionIntoBlock`, `putKeptCaret`): a selection the page makes is no caret of the reader's,
+ *  and the hold keeps none of it (`noteCaret`). */
+let placingCaret = 0;
+
+/** Puts the selection from `anchor` to `focus` in the editor (`selectInEditor`) as a caret the
+ *  page makes: counted in `placingCaret` while it is put, and no longer once that ends, whether
+ *  it was put or the put threw, so the hold keeps the reader's carets after it (`noteCaret`). */
+function placeCaret(anchor: Point, focus: Point = anchor): void {
+  placingCaret += 1;
+  try {
+    selectInEditor(anchor, focus);
+  } finally {
+    placingCaret -= 1;
+  }
+}
+
+/**
+ * Keeps the reader's caret in the held block as `transaction` leaves it, from `guess`, the block's
+ * start before it: a selection inside the block, from the reader's own edit or move of the caret,
+ * or from one the collaboration brings (`remote`), which y-prosemirror keeps where the reader had
+ * it. A selection outside the block is kept nowhere: a change of the room that takes the reader's
+ * caret out of the block - a move of the node, whose text the server moves in the room - leaves
+ * the last caret kept, which the row puts back (`putKeptCaret`). Nor is one the page makes itself
+ * (`placingCaret`): the start of the block that `caretInBlock` puts the caret at, and the nearer
+ * end that `selectionIntoBlock` brings a stray end back to.
+ */
+function noteCaret(
+  view: EditorView,
+  transaction: Transaction,
+  blockId: string | undefined,
+  guess: number | undefined,
+  remote: boolean
+): void {
+  if (blockId === undefined || (placingCaret > 0 && !remote)) return;
+  const { doc, selection } = transaction;
+  const mapped =
+    transaction.docChanged && guess !== undefined ? transaction.mapping.map(guess, 1) : guess;
+  const start = blockStart(doc, blockId, mapped);
+  const block = start === undefined ? null : doc.nodeAt(start);
+  if (start === undefined || block === null) return;
+  if (selection.from <= start || selection.to >= start + block.nodeSize) return;
+  keptCarets.set(view, {
+    anchor: selection.anchor - start,
+    block: blockId,
+    head: selection.head - start,
+  });
+}
+
+/** The reader's caret in `blockId`'s block of the editor `view`, as its hold last saw it
+ *  (`noteCaret`), or undefined where it saw none there. */
+function keptCaret(
+  view: EditorView | undefined,
+  blockId: string | undefined
+): KeptCaret | undefined {
+  const kept = view === undefined ? undefined : keptCarets.get(view);
+  return kept !== undefined && kept.block === blockId ? kept : undefined;
+}
+
+/**
+ * Puts the caret back where the hold last saw the reader hold it (`keptCaret`) in `blockId`'s
+ * block of the editor in `host`, wherever the block stands in the document now, as the editor's
+ * own at once (`selectInEditor`), giving the editable the focus where it does not hold it; and
+ * answers whether it did. Nothing where the editor draws no such block, keeps no caret for it,
+ * holds an input method's composition, or where the place no longer stands in the block's text:
+ * the caller then places the caret as it does without this.
+ */
+export function putKeptCaret(
+  host: HTMLElement,
+  blockId: string | undefined,
+  view: EditorView | undefined
+): boolean {
+  const kept = keptCaret(view, blockId);
+  const drawn = drawnBlock(host, blockId);
+  if (drawn === null || view === undefined || kept === undefined) return false;
+  if (view.isDestroyed || view.composing) return false;
+  const { doc } = view.state;
+  const start = blockStart(doc, blockId, undefined);
+  const block = start === undefined ? null : doc.nodeAt(start);
+  if (start === undefined || block === null) return false;
+  const pointAt = (offset: number): Point | undefined => {
+    const at = Math.min(Math.max(start + offset, start + 1), start + block.nodeSize - 1);
+    if (!doc.resolve(at).parent.isTextblock) return undefined;
+    try {
+      const { node, offset: inNode } = view.domAtPos(at);
+      return drawn.block.contains(node) ? [node, inNode] : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const anchor = pointAt(kept.anchor);
+  const head = pointAt(kept.head);
+  if (anchor === undefined || head === undefined) return false;
+  if (!drawn.editable.contains(document.activeElement)) {
+    drawn.editable.focus({ preventScroll: true });
+  }
+  placeCaret(anchor, head);
+  return true;
 }
 
 /** Whether `transaction`, one of the editor's own in `state`, keeps to `blockId`'s block, found
@@ -659,7 +949,7 @@ export function selectionIntoBlock(host: HTMLElement, blockId: string | undefine
     if (block.contains(point[0])) return point;
     return compare(point, start) < 0 ? start : end;
   };
-  selectInEditor(inside([anchor, selection.anchorOffset]), inside([focus, selection.focusOffset]));
+  placeCaret(inside([anchor, selection.anchorOffset]), inside([focus, selection.focusOffset]));
 }
 
 /**

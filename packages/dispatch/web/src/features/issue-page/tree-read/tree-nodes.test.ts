@@ -896,8 +896,8 @@ test("a block keeps F's id where the read names its document", () => {
 // R1 (plan's map, `id`): a block of another issue keeps the read's id even where its
 // document carries this issue's slug, as a child's Verification document does, so it is never
 // taken for this issue's block; and a check of an issue under this one, which the read reaches
-// through its `serves`, is out of this part's scope and draws no row, here or under the
-// requirement it serves.
+// through its `serves`, is drawn by that id under the requirement it serves, addressed in its
+// own issue, and its result is drafted by its own read id.
 test("another issue's block keeps the read's id where its document has this issue's slug", () => {
   const tree = answer(
     [
@@ -924,10 +924,14 @@ test("another issue's block keeps the read's id where its document has this issu
     [blockNodeId("spec", "r1"), `${KEY}/spec#r1`],
     [blockNodeId("verification-md", "c1"), `${KEY}/verification-md#c1`],
     ["CORE-2", "CORE-2"],
+    ["c9", "CORE-2/verification-md#c9"],
+    ["result-9", "result-9"],
   ]);
   expect(nodeOf(root, blockNodeId("spec", "r1"))?.children.map((child) => child.id)).toEqual([
     blockNodeId("verification-md", "c1"),
+    "c9",
   ]);
+  expect(drafts.get("c9")?.reference).toBe("dispatch://CORE-2/artifact/verification-md#b-c9");
 });
 
 // R3: a person's comment the read hangs under a decision node, made after the decision's words
@@ -1629,6 +1633,8 @@ test("this issue's plan task is not placed by a child's plan task of the same bl
     `${blockNodeId("spec", "r1")} requirement`,
     `-${blockNodeId("plan-md", "t1")} plan_task`,
     `${blockNodeId("spec", "r2")} requirement`,
+    // The child's own task stands there itself, by its read id.
+    "-t1 plan_task",
     "CORE-2 child_issue",
   ]);
 });
@@ -1694,6 +1700,55 @@ test("an ask drawn in its block's row names what the ask shaped there", () => {
     // A chip addresses a block of the spec as `spec#b-<id>`.
     chips: [`dispatch://${KEY}/spec#b-r1`],
   });
+});
+
+// Part Y's R1 on the tree read: a criterion of this issue is a row of its own, by its kind, its
+// words and who wrote it and when, under the node the read hangs it from - an ask, drawn in the
+// row of the spec's block the asks read says it was indexed from, a comment, or the issue - and
+// what the read hangs under the criterion stands under its row. A criterion the read marks as
+// another issue's is a block of that issue's text, and makes no draft.
+test("a criterion of this issue is drawn under the ask, the comment or the issue the read hangs it from", () => {
+  const person = { id: "alice", kind: "user" };
+  const tree = answer(
+    [
+      block("q-block", "ask", KEY, SPEC, 0),
+      node("ask-1", "ask", KEY),
+      node("k1", "criterion", "ask-1", { author: [person], made_at: "2026-11-07T00:00:00Z" }),
+      node("p1", "block", "k1"),
+      personsComment("c1", KEY, "2026-11-06T00:00:00Z"),
+      node("k2", "criterion", "c1"),
+      node("k3", "criterion", KEY),
+      node("k9", "criterion", "CORE-0", { issue: "CORE-0" }),
+    ],
+    [],
+    { documents: { plan: null, spec: SPEC.id, verification: null } }
+  );
+  const reads: IssueTreeReads = {
+    asks: [question("ask-1", { artifact_id: SPEC.id, block_id: "q-block" })],
+    issue: issueDetails(),
+  };
+  const { drafts, root } = drawn(tree, reads);
+  const askRow = blockNodeId("spec", "q-block");
+
+  expect(nodeOf(root, askRow)?.children.map((child) => child.id)).toEqual(["k1"]);
+  const k1 = nodeOf(root, "k1");
+  expect({
+    at: k1?.at,
+    author: k1?.author,
+    children: k1?.children.map((child) => [child.id, child.type]),
+    reference: k1?.reference,
+    type: k1?.type,
+  }).toEqual({
+    at: "2026-11-07T00:00:00Z",
+    author: person,
+    children: [["p1", "prose"]],
+    reference: undefined,
+    type: "criterion",
+  });
+  expect(nodeOf(root, "c1")?.children.map((child) => child.id)).toEqual(["k2"]);
+  expect(placementsOf(root, "k3").map((one) => one.parent)).toEqual([KEY]);
+  expect(drafts.has("k9"), "another issue's criterion was drafted").toBe(false);
+  expect(nodeOf(root, "k9")).toBeUndefined();
 });
 
 // R1, root R4: a plan task's `needs` is a chip for each task its attribute names, as the outline
@@ -2118,6 +2173,7 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
     block("c1", "check", "r1", VERIFICATION, 0),
     node(lens, "lens", KEY),
     { ...node("f1", "block", lens), id: `lens/${lens}#f1` },
+    node("doc-1", "document", KEY),
     node(orphanLens, "lens", "doc-1"),
     node("f2", "block", orphanLens),
     node("p1", "block", KEY),
@@ -2140,8 +2196,8 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
     "the word and the shape its row draws"
   ).toEqual(["paragraph", "prose"]);
   expect(typeOf(blockNodeId("spec", "r1")), "the typed block keeps its step").toBe("requirement");
-  expect(typeOf("f1"), "a finding is drafted as prose").not.toBe("prose");
-  expect(typeOf("f2"), "a finding under a lens nothing drafts is drafted").toBeUndefined();
+  expect(typeOf("f1"), "a finding keeps its own step and is not drafted as prose").toBe("finding");
+  expect(typeOf("f2"), "a finding under an undrafted lens is not drafted as prose").toBeUndefined();
   expect(typeOf("cb1"), "a comment's own block is drafted as prose").toBeUndefined();
   expect(typeOf("c-1")).toBe("comment");
   expect(typeOf("q1"), "another issue's plain block is drafted as prose").toBeUndefined();

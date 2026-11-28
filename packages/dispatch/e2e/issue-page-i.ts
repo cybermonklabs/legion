@@ -122,7 +122,7 @@ export function pageStatus(page: Page): Locator {
   return tree(page).locator("[data-row-report]");
 }
 
-/** The outline's own rows, by the mark a row of the outline carries and no view's row does: a
+/** The outline's own rows, standing in the body's box, `[data-issue-body]`, which no view draws: a
  *  view's tree is named as the outline's is, so the tree alone does not say which is drawn. */
 export function outlineRows(page: Page): Locator {
   return issuePage(page).locator(SELECTORS.outlineRow);

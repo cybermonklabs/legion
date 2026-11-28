@@ -4,6 +4,7 @@ import { inputMethodKey } from "../../lib/input-method-key";
 import { type KeyBinding, useKeymap } from "../shell/keymap";
 import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
+import { ROW_MENU_ATTRIBUTE } from "./graph-edit/RowMenu";
 import { bringOnScreen } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import { type OutlineWriter, replyItemOf, takesAnswer } from "./outline-writer";
@@ -33,15 +34,16 @@ import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
  * tree is one tab stop, so the only tab stops inside a row are the focused row's scrolling
  * blocks, and Tab from a row leaves the tree past them. The arrows and `o` press the fold
  * control - in a view whose rows keep a body open, `o` presses the control that keeps it open -
- * `r` and `a` Reply and Answer - the line `a` sets draws an open question's options as chips of
- * its own - `Shift+K` presses Keep, `Shift+C` presses Change and puts the caret in the form it
+ * `r` and `a` Reply and Answer - `a` sets the writer's answer (`OutlineWriter.answer`) and picks
+ * no option - `Shift+K` presses Keep, `Shift+C` presses Change and puts the caret in the form it
  * opens, and `f` steps through the row's links and then through every other control no key
- * presses - Copy reference, Change answer, Edit, a command's Copy - where Enter follows or
- * presses the one it stopped on. The controls that draw more of the outline in place stand
- * beside the rows, and `j` and `k` press them from the row beside each (`tree-next`,
- * `tree-previous`). So every control of the focused row is reachable from the keyboard without
- * a second tab stop (WCAG 2.1.1), and `?` names each key by what it does, as it names every
- * other.
+ * presses - Copy reference, Change answer, Edit, a command's Copy, an open question's options,
+ * which its own row draws as controls (`NodeRow.tsx`'s `NodeOptions`) - where Enter follows the
+ * link it stopped on, presses the control or picks the option. The controls that draw more of
+ * the outline in place stand beside the rows, and `j` and `k` press them from the row beside
+ * each (`tree-next`, `tree-previous`). So every control of the focused row is reachable from the
+ * keyboard without a second tab stop (WCAG 2.1.1), and `?` names each key by what it does, as it
+ * names every other.
  *
  * Every block of the focused row's words whose content runs past its box - a code block, a
  * table, a diagram's preview - keeps a tab stop of its own, so a reader on the keyboard can
@@ -151,17 +153,22 @@ const SCROLL_KEYS: Record<string, true> = {
   Home: true,
 };
 
+/** The control of Graph's node menu a row draws (`graph-edit/RowMenu.tsx`), which `m` presses. */
+const MENU_CONTROL = `button[${ROW_MENU_ATTRIBUTE}]`;
+
 /** The marks of the controls a row draws that a key of this keymap presses, which `f` leaves to
- *  that key: the fold control (the arrows), Keep and Change (`Shift+K`, `Shift+C`), Reply and
- *  Answer (`r`, `a`), and an open question's options, which the line `a` sets draws as chips of
- *  its own (`NodeRow.tsx`'s `NodeOptions`). */
+ *  that key: the fold control (the arrows), Keep and Change (`Shift+K`, `Shift+C`), and Reply
+ *  and Answer (`r`, `a`). An open question's options are none of them: `a` sets the writer's
+ *  answer (`OutlineWriter.answer`) and picks no option, so `f` steps to each option and Enter
+ *  picks it. */
 const KEYED_CONTROLS = [
   "[data-node-bullet]",
   rowActionSelector("keep"),
   rowActionSelector("change"),
   '[data-row-act="reply"]',
   '[data-row-act="answer"]',
-  "[data-pick-option]",
+  // Graph's node menu control, which `m` presses (`tree-menu`).
+  MENU_CONTROL,
 ].join(", ");
 
 /** Whether a key of this keymap presses `control`: one of `KEYED_CONTROLS`, or the control that
@@ -324,6 +331,12 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       )
     );
     return [...chips, ...rest.filter((link) => !chips.includes(link)), ...controls];
+  };
+  /** The node menu's control of the row that holds the focus itself, or null where the focus is
+   *  on no row, on a control inside one, or on a row that draws none (`MENU_CONTROL`). */
+  const rowMenuControl = (): HTMLButtonElement | null => {
+    const { elements } = drawn();
+    return elements[onRowItself(elements)]?.querySelector<HTMLButtonElement>(MENU_CONTROL) ?? null;
   };
   /** Moves to the row `index`, clamped to the tree's ends (`moveToRow`), and clears whatever a
    *  key reported. Where that row is the one holding the focus itself, the key that asked for it
@@ -587,6 +600,19 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: () => rowStops().length > 0,
     },
     {
+      // The focused row's node menu, in Graph (`graph-edit/RowMenu.tsx`): `m` presses its
+      // control, as a press does, and the menu puts the focus on its first entry. It is offered
+      // from the row itself alone, while the row draws that control: from a control inside the
+      // row, from the caret, from anywhere else on the page and in every other view, `m` does
+      // nothing (R1, R10).
+      id: "tree-menu",
+      keys: "m",
+      label: CONTROL_LABELS.edit_menu_key,
+      palette: false,
+      run: () => rowMenuControl()?.click(),
+      when: () => rowMenuControl() !== null,
+    },
+    {
       id: "tree-zoom-in",
       keys: ".",
       label: "Zoom into the focused row",
@@ -691,7 +717,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       },
     },
     {
-      // Answer the focused open question: the line answers it, its options its chips.
+      // The focused open question's Answer: sets the writer's answer (`OutlineWriter.answer`).
       id: "tree-answer",
       keys: "a",
       label: `${CONTROL_LABELS.answer} the focused question`,

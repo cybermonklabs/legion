@@ -535,10 +535,14 @@ func (plan *deletePlan) refuse(ctx context.Context, q queryer, request nodeDelet
 // countRead is the number of nodes the plan takes that a read of the tree of key returns to the
 // caller (R7, R8): each node the walk of key takes at the head (docs.WalkIssueTree), so no node of
 // another issue, which that walk passes over; that the caller may see (readVisible); and that the
-// read answers, as the tree read leaves a node out (issueTreeBuilder.excluded): no block of a role
-// document - the spec, the Verification document, the plan - that is no typed block, such as a typed
-// block's own paragraph, and no block of another of the issue's documents, which the read with no
-// view does not open (plan.bands). The walk is read only where some node is left to count.
+// read answers, as the tree read leaves a node out (issueTreeBuilder.excluded): in every document,
+// no typed block's own text, such as its own paragraph, read off the walk's parents and types and
+// the placement of each block between the node and the typed block (typedOwnText), so a typed
+// block that holds nothing but its own words counts 1; no block of a role document - the spec, the
+// Verification document, the plan - that is no typed block; and no block of another of the issue's
+// documents, which the read with no view does not open (plan.bands). The walk is read only where
+// some node is left to count, and the placements only where a node left is a block that is no
+// typed block.
 func (plan *deletePlan) countRead(ctx context.Context, q queryer, key string) error {
 	var counted []deleteReached
 	for _, node := range plan.takes {
@@ -567,12 +571,45 @@ func (plan *deletePlan) countRead(ctx context.Context, q queryer, key string) er
 	if err != nil {
 		return err
 	}
-	walked := make(map[graphstore.NodeKey]bool, len(tree.Nodes))
-	for _, node := range tree.Nodes {
-		walked[graphstore.NodeKey{Kind: refs.StoredKindOf(node.Kind), ID: node.ID}] = true
-	}
+	wanted := make(map[graphstore.NodeKey]bool, len(counted))
 	for _, node := range counted {
-		if walked[node.key()] {
+		wanted[node.key()] = true
+	}
+	walked := make(map[refs.Target]docs.TreeNode, len(tree.Nodes))
+	for _, node := range tree.Nodes {
+		walked[refs.Target{Kind: node.Kind, ID: node.ID}] = node
+	}
+	// Each counted node the walk takes, once however often the walk names it, and each block that
+	// is no typed block from each such node up to the first node above it that is a typed block or
+	// no block, whose placements typedOwnText reads, each once, in one read at the walk's cut.
+	var taken, untyped []refs.Target
+	climbed := map[refs.Target]bool{}
+	for _, node := range tree.Nodes {
+		stored := graphstore.NodeKey{Kind: refs.StoredKindOf(node.Kind), ID: node.ID}
+		if !wanted[stored] {
+			continue
+		}
+		delete(wanted, stored)
+		taken = append(taken, refs.Target{Kind: node.Kind, ID: node.ID})
+		for at, held := node, true; held && at.Kind == refs.BlockNodeKind && !pmdoc.IsTypedBlock(at.Type); at, held = walked[at.Parent] {
+			target := refs.Target{Kind: at.Kind, ID: at.ID}
+			if climbed[target] {
+				break
+			}
+			climbed[target] = true
+			untyped = append(untyped, target)
+		}
+	}
+	facts, err := refs.TreeFactsOf(ctx, q, untyped, tree.Cut)
+	if err != nil {
+		return err
+	}
+	ownText := func(target refs.Target) (string, string, refs.Target, bool) {
+		at, held := walked[target]
+		return at.Type, facts[target].Values[refs.AttributePlacement], at.Parent, held
+	}
+	for _, target := range taken {
+		if !typedOwnText(target, ownText, len(tree.Nodes)) {
 			plan.count++
 		}
 	}

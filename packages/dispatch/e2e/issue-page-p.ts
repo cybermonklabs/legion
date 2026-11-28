@@ -186,6 +186,12 @@ export function issueHeader(page: Page): Locator {
   return page.locator("[data-issue-page] header[data-issue-header]");
 }
 
+/** The header's Edit title: the button laid over the title's heading that opens its editor
+ *  (`IssueTitleRow.tsx`), drawn while the issue is open and its title is not being edited. */
+export function editTitleButton(page: Page): Locator {
+  return issueHeader(page).getByRole("button", { exact: true, name: CONTROL_LABELS.edit_title });
+}
+
 /** The part of the header that stays at the top of the screen from 761 px up: the key's row
  *  and the title. */
 export function identityBand(page: Page): Locator {

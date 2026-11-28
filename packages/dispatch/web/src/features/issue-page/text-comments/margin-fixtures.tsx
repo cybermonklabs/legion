@@ -270,6 +270,10 @@ export function answerSeededReads(reads: SeededReads): { mockRestore(): void }[]
   restore.push(
     spyOn(api, "getIssue").mockResolvedValue(seededIssue()),
     spyOn(api, "getMyState").mockResolvedValue({}),
+    // The read mark at the end of the outline (`IssueReadMark`, drawn by `slots/foot.tsx` where
+    // the address names no view and no document) reads the issue's head: an issue with no event
+    // has none, so the end marks nothing read.
+    spyOn(api, "getIssueEvents").mockResolvedValue([]),
     spyOn(api, "getIssueCoverage").mockResolvedValue({
       gaps: [],
       has_plan: true,

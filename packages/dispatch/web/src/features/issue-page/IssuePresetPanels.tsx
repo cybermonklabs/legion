@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import type { Artifact, IssueDetails } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath } from "../refs/routes";
+import { useEditedTree } from "./model-rows/room-target";
 import { StagedDocument } from "./StagedDocument";
 import { useToolbarSink } from "./useDocumentToolbars";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
@@ -34,10 +35,13 @@ export function useOutlineEditing(issue: IssueDetails): {
       setEditing(artifactId === undefined ? undefined : { artifactId, onEditor }),
     []
   );
+  // A node written into the issue is edited in the tree artifact, which no document of the issue
+  // is, so its editor is drawn from the artifact read.
+  const tree = useEditedTree(issue.key, editing?.artifactId);
   const edited =
     editing === undefined
       ? undefined
-      : issue.artifacts?.find((artifact) => artifact.id === editing.artifactId);
+      : (issue.artifacts?.find((artifact) => artifact.id === editing.artifactId) ?? tree);
   return {
     onEditing,
     panels: (

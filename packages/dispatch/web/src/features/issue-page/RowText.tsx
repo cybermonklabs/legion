@@ -23,12 +23,14 @@ import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
+import { useKnownLastHeldReferences } from "./graph-edit/last-held-store";
 import { placedStorePath, placeStoreLinks } from "./lenses/store-link";
 import { documentWord } from "./node-row-chip";
 import { authorText } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import {
   knownIssueKeys,
+  linkLastHeldReferences,
   linkRowReferences,
   rowReferenceNames,
   rowReferences,
@@ -64,6 +66,10 @@ import { titleReading } from "./statement-rules";
  * one - keeps its link and reads as the words its author wrote (R8, issue page decision 350).
  * The row asks the server nothing for a reference the page reads (R21), so the body's own link
  * pass, which reads one target for each reference, is given nothing to link.
+ * One the read answered gone with the version that last held it, which the page publishes beside
+ * its names (`graph-edit/last-held-store.ts`' `useKnownLastHeldReferences`), reads the page's
+ * gone word instead, linked to that version, as the row's chip draws it (`NodeRow.tsx`'s `Chip`,
+ * R9 of Graph editing's spec).
  *
  * A reference to a post its author corrected reads as the page published it (INFRA-1523, R2 and
  * R3): a post its author edited by its words, cut, then ` · edited` (`rowReferenceWords`,
@@ -582,6 +588,14 @@ function DrawnText({
   const painted = useMemo(() => placeStoreLinks(reading, page.current), [reading]);
   const issue = record?.issue;
   const { ambiguous, deleted, drawn, edited, issues, names, reads } = useRowNames(words, issue);
+  // The versions that last held a gone reference, which the link pass reads at each paint, as it
+  // reads the page's address. The page publishes them apart from the names
+  // (`graph-edit/last-held-store.ts`), so a change of them alone runs the pass again (below).
+  const published = useKnownLastHeldReferences();
+  const lastHeld = useRef(published);
+  lastHeld.current = published;
+  /** The versions the pass last ran with, which a change of them alone is told by. */
+  const linkedHeld = useRef(published);
   // After every paint of the reading, and again when the references take their names. The
   // row's pass takes its links out of the tab order as it makes them; a view with tab stops
   // puts them back.
@@ -590,6 +604,8 @@ function DrawnText({
     if (element === null) return;
     dropDirectiveLines(element);
     linkRowReferences(element, names, issues, issue, ambiguous, edited);
+    linkedHeld.current = lastHeld.current;
+    linkLastHeldReferences(element, names, linkedHeld.current, CONTROL_LABELS.target_gone);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";
       const route = parseNodeReference(reference);
@@ -626,6 +642,13 @@ function DrawnText({
     }
   }, [ambiguous, deleted, edited, issue, issues, names, tabStops]);
   useLayoutEffect(link, [link]);
+  // A version that comes or goes while the names stand: the whole pass runs again, so a link
+  // that no longer opens a version takes its name back from the row's own pass.
+  useLayoutEffect(() => {
+    if (linkedHeld.current === published) return;
+    linkedHeld.current = published;
+    link();
+  }, [link, published]);
   useRedrawn(drawn, onRedrawn);
   useOutOfTabOrder(box, !tabStops, { keepScrollers: focused });
   const follow = useFollowInPlace();

@@ -23,6 +23,7 @@
 export type DispatchWritingBox =
   | "conversation-composer"
   | "phone-thread-composer"
+  | "issue-page-composer"
   | "inbox-thread-reply"
   | "margin-composer"
   | "margin-comment-edit"
@@ -65,7 +66,11 @@ export type DispatchWritingBox =
  * - `broadcast`: one message to each selected agent.
  * - `document-text`: the document's own text, which every reader of that document reads and
  *   which is sent to nobody.
+ * - `criterion`: a criterion, written into the issue's own text under the comment, question or
+ *   message it answers, which every reader of the issue reads and which is sent to nobody.
  * - `issue-spec`: the spec document a new issue is created with.
+ * - `issue-title`: an issue's title, which every reader of the issue reads and which is sent to
+ *   nobody.
  * - `approval-reason`: why a reviewer asked for changes on a document.
  * - `architecture-reason`: why an issue touches no component.
  * - `priority-description`: a priority's description, which every reader of the priority reads
@@ -86,6 +91,7 @@ export type DispatchWriting =
   | "agent-message"
   | "broadcast"
   | "document-text"
+  | "criterion"
   | "issue-spec"
   | "approval-reason"
   | "architecture-reason"
@@ -175,6 +181,9 @@ const PICKED_QUIET =
  * - a reason for asking changes answers the open approval request, which reaches whoever asked
  *   (`createArtifactReview`); with none open, it rides the review's own event alone, on the
  *   document's issue (`docs.WriteReview`);
+ * - a criterion is written into the issue's own text (an edit of the issue's tree artifact),
+ *   which opens no delivery: a comment on the issue tells a picked agent or role, since a reply
+ *   under a message is a message reply, which tells nobody it names;
  * - a priority's write is published to nobody (`priorityEvent`), and a priority takes no
  *   comment.
  */
@@ -186,6 +195,7 @@ export const DISPATCH_WRITING_HINT_QUIET = {
   "ask-decline": `${DOORS} ${PICKED_QUIET} The note goes to whoever asked.`,
   broadcast: `${DOORS} ${PICKED_QUIET} The message goes to each agent you selected.`,
   "comment-edit": `${DOORS} ${PICKED_QUIET} A new comment, not an edit, tells a picked agent or role.`,
+  criterion: `${DOORS} ${PICKED_QUIET} The criterion goes under the comment, question or message it answers. A comment on the issue tells a picked agent or role.`,
   "document-text": `${DOORS} ${PICKED_QUIET} A comment on the document tells a picked agent or role.`,
   "issue-spec": `${DOORS} ${PICKED_QUIET} A comment on the new issue tells a picked agent or role.`,
   "message-reply": `${DOORS} ${PICKED_QUIET} Your reply goes to whoever the thread is with.`,
@@ -272,6 +282,67 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reason:
       "No reader reaches it: a message's Reply on a phone is answered by the docked conversation composer, and this box opens over a comment thread alone.",
     write: "message-reply",
+  },
+  // The new issue page's one box, at the foot of its outline: with no target it writes a comment
+  // or a question on the issue; aimed at a row of the outline it writes a reply under it, which
+  // under a message goes to that thread's target; and on the reader's own comment it writes a new
+  // text of it. It answers no ask, and nothing sends the answer the page's writer holds yet
+  // (`OutlineWriter.answer` in `outline-writer.tsx`). The line's name changes with what it
+  // writes, so it is reached by the attribute its form carries for the purpose.
+  {
+    box: "issue-page-composer",
+    covered: true,
+    delivers: true,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
+    issueRows: true,
+    reach: "[data-issue-composer]",
+    write: "comment",
+  },
+  {
+    box: "issue-page-composer",
+    covered: true,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
+    issueRows: true,
+    reach: "[data-issue-composer]",
+    write: "ask",
+  },
+  {
+    box: "issue-page-composer",
+    covered: true,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
+    issueRows: true,
+    reach: "[data-issue-composer]",
+    write: "message-reply",
+  },
+  // Only an Edit of the reader's own comment opens the box's edit line, and the page draws no
+  // such control yet, so no reader reaches this write until one is under the box; the row is
+  // covered then, with a driver step through that Edit.
+  {
+    box: "issue-page-composer",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
+    issueRows: true,
+    reach: "[data-issue-composer]",
+    reason:
+      "No reader reaches it yet: only an Edit opens the box's edit line - part M's in the facts, or part T's on the row of the reader's own comment - and the row is covered, with a driver step through that Edit, once the first of them is under the box.",
+    write: "comment-edit",
+  },
+  // Its criterion line writes a criterion into the issue's own text, which tells nobody, and says
+  // so in words of its own rather than the document editor's. No row offers Write a criterion
+  // until the page reads the issue's tree, so no control reaches the line yet.
+  {
+    box: "issue-page-composer",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
+    issueRows: true,
+    reach: "[data-issue-composer]",
+    reason:
+      "No control reaches it yet: Write a criterion is offered only once the page reads the issue's tree.",
+    write: "criterion",
   },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread.
   {

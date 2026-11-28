@@ -641,7 +641,7 @@ export async function openSettledView(page: Page, seeded: WholeIssueSeed): Promi
 /** The block ids of statements A, B and C of row 3's spec, and of the issue's one check. */
 const LINKED_BLOCKS = { a: "r-a", b: "r-b", c: "r-c", check: "c-linked" } as const;
 
-/** Statement A: 200 words, which the view cuts at six lines. */
+/** Statement A: 200 words, which the view draws whole. */
 const STATEMENT_A_WORDS = longWords("stated", 200);
 
 /** Statement B: more than 32 characters, so the line that names it by its first words cuts

@@ -1,0 +1,1144 @@
+import type { DeleteCountMoved, NodeDeleted, NodeMoved } from "@legion/contracts";
+import { hashKey, type QueryClient, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
+
+import {
+  ApiError,
+  api,
+  REQUEST_DEADLINE_MS,
+  type WriteRequest,
+  withIfMatch,
+  writeRequest,
+} from "../../../api/client";
+import { type Query, routeUrl } from "../../../api/paths";
+import { refreshQueries } from "../../../api/query-refresh";
+import { newSendKey } from "../../../lib/send-key";
+import { plainWrite, writesOf } from "../../writes/write-store";
+import type { Outline } from "../lenses/lens-reads";
+import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
+import { nextTreeCursor } from "../tree-read/tree-nodes";
+import {
+  outlineQuery,
+  readNextTreePage,
+  type TreeAnswer,
+  type TreeAnswerNode,
+} from "../tree-read/tree-read";
+import {
+  type Entry,
+  type GreyReason,
+  type MoveBody,
+  type MoveEntry,
+  memoIn,
+  names,
+  type PlacementRow,
+  placementOf,
+  type SiblingPlace,
+  siblingPlace,
+  type TakenPlace,
+} from "./placement";
+
+/**
+ * The writes of Graph's node menu (R4, R6, R7 and R8 of INFRA-5705's spec): the moves of a node,
+ * its delete and the delete's dry run, the line a row draws for a write that did not go, and the
+ * re-read of the outline after them. The menu (`RowMenu.tsx`) and the editor's keys call these
+ * same writes.
+ *
+ * Every move and every delete is one write of the write store (`Writes.run`), kept for a reload
+ * with its request, its `If-Match` among it (`withIfMatch`), on the node's own line of the store
+ * (`node:<key>:<read id>`), and holding the issue's tree reads while it is out (`issue`). The dry
+ * run is no write: it goes with `api.send` beside the store, is kept nowhere, holds nothing and
+ * sends no `If-Match` (`dryRunDelete`).
+ *
+ * The acts of one node wait in one chain, in press order, whichever hook pressed them. A move's
+ * body is made by `placement.ts` as the move's turn comes, from Graph's held read with each
+ * earlier answer of the chain written into it (`movedIn`): the answer's `parent`, `after` and
+ * `placement_seq`, and nothing else, so every other field of the node stays as the read answered
+ * it. Where the read holds no node the answer's `after` names - a gone sibling, which no read
+ * holds, or one past the loaded pages - the node is written at the place its body asked for:
+ * first in its band where the body's `after` was null, last in its band otherwise, since the
+ * server answers a named `after` with that same sibling. An answer's `after` that names the
+ * issue's memo puts the node where the memo stands among the ranked children, after the issue's
+ * conversation, and the memo goes where the walk then stands it: right after the node where the
+ * place stands before it by rank and the read shows that place, first among the issue's children
+ * otherwise (`placement.ts`' `siblingPlace`). A move whose entry is grey by then is dropped with
+ * its reason, and so is each move after it; a refusal of an act drops each move after it too, and
+ * the row's line says why and how many moves were not sent. A delete waits its turn the same way
+ * and goes with the `placement_seq` the held read holds then. Where the body, or the node
+ * itself, stands on a page the page has not loaded, that page is read first (`readNextTreePage`).
+ * If a move's answer puts the node on a page not loaded, the chain reads up to that place before
+ * planning the next act (`readToPlace`), and reads for no place a read cannot hold: an `after`
+ * that names a gone sibling, which no read holds, where the loaded pages hold the parent's
+ * children that stand before the place the body asked for - each child of the earlier bands where
+ * the body's `after` was null, each child of the node's band otherwise. That is read on the read
+ * the answer is written into, as it stands before the node and the issue's memo move there
+ * (`movedIn`), and on each page read after it (`lacksPlace`). If no pages are needed, the next act
+ * goes out within the answer's own reaction, before the write store's hold on the tree reads ends
+ * (`subscribeTreeFreshness`). The editor's move keys check `NodeWrites.busy` so a key pressed
+ * while an act is out waits its turn, rather than being judged on the read that act's answer is
+ * about to change.
+ *
+ * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
+ * the place its entry gave it, under the `placement_seq` the read that first held it ranked
+ * answered, its answer written into the held read as a move's is and handed to `new-rows.ts`,
+ * which lets the new row go once the held read holds the node where the `PATCH` put it
+ * (`placement.ts`' `standsAt`): ranked under the parent the answer names, or, where no answer
+ * came, under the body's parent at the place the body asked for.
+ *
+ * Once a node's chain is empty after a taken act, or after a refusal that says the page read a
+ * stale tree or a node that is gone (412, `409 NODE_GONE`, 404), the page reads each outline read
+ * it holds again, once, its loaded pages included (`readOutlinesAgain`). This includes any pages
+ * read to find the moved node's place. After any other refusal it reads nothing. A retype, a
+ * write of the room that sends no request, has them read again once it is taken, or
+ * once its node's chain is empty where one waits (`readAfterRoomWrite`). No word of this file is
+ * a literal: each is `ANSWER_LINES`' or `CONTROL_LABELS`', from `page-words-r.ts`.
+ */
+
+/** The route of a node's move and of its delete (dispatch://INFRA-1253 R7). */
+const NODE_ROUTE = "/api/v1/issues/{key}/nodes/{id}";
+
+/** What the delete takes in its query: `dry_run`, or the `expected_count` the confirm named. */
+type DeleteQuery = Query<typeof NODE_ROUTE, "delete">;
+
+/** The refusal codes that do more than draw their words (R6, R8): a node that is gone, a
+ *  container a move or a delete would leave empty, and a delete whose count has moved. */
+const NODE_GONE = "NODE_GONE";
+const CONTAINER_WOULD_EMPTY = "CONTAINER_WOULD_EMPTY";
+const DELETE_COUNT_MOVED = "DELETE_COUNT_MOVED";
+
+/** The statuses that say the page's tree is stale: the node is not where the page read it
+ *  (412), or the reader may not see it (404). */
+const PRECONDITION_FAILED_STATUS = 412;
+const NOT_FOUND_STATUS = 404;
+
+/** The page's words by key, for the words of a refusal code: `refused_` and the code in lower
+ *  case. The words table is the one list of the codes that have words of their own. */
+const WORDS: Readonly<Record<string, string>> = ANSWER_LINES;
+
+/** The kind a refusal names a container by, from the type of the first block its node's text
+ *  holds: a list item, of a bulleted or a numbered list, or a callout. */
+const CONTAINER_KINDS: Readonly<Record<string, string>> = {
+  bullet_list: CONTROL_LABELS.container_list_item,
+  callout: CONTROL_LABELS.container_callout,
+  list_item: CONTROL_LABELS.container_list_item,
+  ordered_list: CONTROL_LABELS.container_list_item,
+};
+
+/** The outline reads the page may hold (`Outline`), each read again after the writes. */
+const OUTLINES: readonly Outline[] = ["graph", "conversation"];
+
+/** The two entries that make a new row (R3), whose node one `PATCH` places (`placeNode`). */
+export type NewEntry = Extract<Entry, "new_below" | "new_under">;
+
+/** The line a row draws for a write that did not go (R8). */
+export interface RefusalLine {
+  /** The whole line, in the page's words. */
+  readonly text: string;
+  /** The read id of the row a `409 CONTAINER_WOULD_EMPTY` links to, where the held tree shows the
+   *  node's parent as a list item or a callout. */
+  readonly container?: string;
+  /** Whether the page reads the tree again: a 412, a `409 NODE_GONE`, a 404. */
+  readonly reads: boolean;
+  /** Whether the row leaves where that read lacks it: a `409 NODE_GONE`, a 404. */
+  readonly gone: boolean;
+  /** Whether a press on the line tries the act again: the fallback line alone. */
+  readonly retry: boolean;
+}
+
+/** What `refusalLine` names a container from: the held outline read, and the read id of the
+ *  node that was written. */
+export interface RefusalContext {
+  readonly held: TreeAnswer;
+  readonly node: string;
+}
+
+/** The line of one row (`NodeWrites.lines`): `refusalLine`'s, then how many moves were dropped,
+ *  with the act made again (`again`) where it is the fallback line, answering how the act made
+ *  again ended, as `move` and `remove` do: a delete's `count_moved` opens the confirm again. */
+export interface NodeLine {
+  readonly text: string;
+  readonly container?: string;
+  readonly again?: {
+    /** Makes the act again. */
+    readonly act: () => Promise<MoveOutcome | DeleteOutcome>;
+    /** Whether `act` moves the node, a move or a new row's placing, and not a delete. */
+    readonly moves: boolean;
+  };
+}
+
+/** How a move ended: taken; refused, sent or with its page unread; or dropped unsent, with the
+ *  reason its entry turned grey, or with none behind a refusal or for a node the held read no
+ *  longer holds. */
+export type MoveOutcome =
+  | { readonly status: "taken" }
+  | { readonly status: "refused"; readonly line: RefusalLine }
+  | { readonly status: "dropped"; readonly reason?: GreyReason };
+
+/** How a new row's placing ended (`placeNode`): as a move ends, a taken one with the server's
+ *  answer, null for a landing that gave none. */
+export type PlaceOutcome =
+  | { readonly status: "taken"; readonly answer: NodeMoved | null }
+  | Exclude<MoveOutcome, { readonly status: "taken" }>;
+
+/** How a confirmed delete ended: taken; refused with the count the delete takes now, which the
+ *  confirm names when it opens again (`409 DELETE_COUNT_MOVED`); refused; or dropped unsent, for
+ *  a node the held read no longer holds. */
+export type DeleteOutcome =
+  | { readonly status: "taken" }
+  | { readonly status: "count_moved"; readonly count: DeleteCountMoved["count"] }
+  | { readonly status: "refused"; readonly line: RefusalLine }
+  | { readonly status: "dropped" };
+
+/** What the delete's dry run answered (R6): the count the delete takes; a refusal, with its
+ *  line; or no count read (a 5xx, any other code, no answer), which a press asks for again. */
+export type DeleteCount =
+  | { readonly status: "counted"; readonly count: NodeDeleted["count"] }
+  | { readonly status: "refused"; readonly line: RefusalLine }
+  | { readonly status: "failed" };
+
+/** The issue the writes are for, as the page holds it. */
+export interface NodeWritesIssue {
+  readonly closed: boolean;
+  readonly key: string;
+  readonly zoomRoot?: string;
+}
+
+/** The writes of Graph's node menu for one issue (`useNodeWrites`). */
+export interface NodeWrites {
+  /** Queues `entry` for the node of read id `node`, from `row` as `placementOf` takes it, and
+   *  answers once it is taken, refused or dropped. */
+  readonly move: (node: string, entry: MoveEntry, row?: PlacementRow) => Promise<MoveOutcome>;
+  /** The delete's dry run of the node (`dryRunDelete`). Once `signal` aborts it rejects with the
+   *  signal's reason, and its answer is dropped. A refusal that says the node is gone reads the
+   *  outline reads again. */
+  readonly count: (node: string, signal?: AbortSignal) => Promise<DeleteCount>;
+  /** The confirmed delete of the node: sent once each act queued before it has ended, with the
+   *  newest `placement_seq` and `expectedCount` as confirmed. It is never sent again by itself. */
+  readonly remove: (node: string, expectedCount: number) => Promise<DeleteOutcome>;
+  /** The line of each row of the issue a refusal or a drop wrote, by read id, until the next act
+   *  of that node. */
+  readonly lines: ReadonlyMap<string, NodeLine>;
+  /** Draws `reason`, why a move key's entry is grey for the node of read id `node`, as the line
+   *  of its rows (R4: at a grey edge a key writes nothing, and the row shows the entry's reason),
+   *  until the node's next act. Nothing is sent or queued. */
+  readonly grey: (node: string, reason: GreyReason) => void;
+  /** Whether an act of the node of read id `node` is out or waiting in its chain: until its last
+   *  act ends, the held read is one an answer of the chain is about to change, so a move pressed
+   *  then is judged at its turn (`move`), never on that read. */
+  readonly busy: (node: string) => boolean;
+}
+
+/** What a move carries from its press to its turn. */
+interface MovePress {
+  readonly closed: boolean;
+  readonly entry: MoveEntry;
+  readonly row: PlacementRow | undefined;
+  readonly zoomRoot: string | undefined;
+}
+
+interface MoveAct extends MovePress {
+  readonly kind: "move";
+  readonly done: (outcome: MoveOutcome) => void;
+}
+
+interface DeleteAct {
+  readonly kind: "delete";
+  readonly count: number;
+  readonly done: (outcome: DeleteOutcome) => void;
+}
+
+/** The one `PATCH` that places a new row's node where R3 puts it (`new-rows.ts`), from the entry
+ *  that made the row: its body is the place `placement.ts` gave the row as it was made, and it
+ *  goes under the node's `placement_seq` as the held read holds it at its turn. */
+interface PlaceAct {
+  readonly kind: "place";
+  readonly body: MoveBody;
+  readonly entry: NewEntry;
+  readonly done: (outcome: PlaceOutcome) => void;
+}
+
+type Act = MoveAct | DeleteAct | PlaceAct;
+
+/** The acts of one node of one issue, in press order, the first of them the one whose turn it
+ *  is. */
+interface Chain {
+  readonly issue: string;
+  readonly node: string;
+  readonly acts: Act[];
+  /** The place the last move or placing put the node at, where the read its answer was written
+   *  into did not show it (`movedIn`): its answer, and the body it answered (`TakenPlace`). The
+   *  chain reads for that place before planning its next act or refreshing the outlines; `advance`
+   *  clears it once a page read since shows it (`lacksPlace`), or where no read is held. */
+  place: TakenPlace | undefined;
+  /** Whether an act of the chain was taken, or refused with an answer that says the tree is
+   *  stale: what reads the outline reads again once the chain is empty. */
+  reads: boolean;
+}
+
+/** What the act whose turn it is does. */
+type Next =
+  | { readonly kind: "send"; readonly send: () => void }
+  | { readonly kind: "read_next" }
+  | { readonly kind: "drop"; readonly reason: GreyReason | undefined };
+
+/** A container a refusal names: its row's read id, its kind and its first line. */
+interface Container {
+  readonly id: string;
+  readonly kind: string;
+  readonly line: string;
+}
+
+/** The chains and the lines of one client, as `tree-read.ts` keeps the pages out: one for the
+ *  app, whichever hook pressed an act. `guessed` holds, by issue, the read ids of the nodes Graph's
+ *  held read holds at a guessed place: where a taken move's answer was written at a place the read
+ *  did not show (`movedIn`, `placeHeld`), until a read of the server holds them where its walk
+ *  stands them - a next page that holds one again (`readToPlace`), or a fetch of the outline
+ *  (`trustServerReads`). Such a node is no evidence that a place is shown, as the moved node, as a
+ *  neighbour or as the memo (`placement.ts`' `siblingPlace`), whatever write keeps it there. */
+interface NodeWriteState {
+  readonly chains: Map<string, Chain>;
+  readonly lines: Map<string, ReadonlyMap<string, NodeLine>>;
+  readonly listeners: Set<() => void>;
+  readonly guessed: Map<string, Set<string>>;
+}
+
+const states = new WeakMap<QueryClient, NodeWriteState>();
+
+const NO_LINES: ReadonlyMap<string, NodeLine> = new Map();
+const NO_GUESSES: ReadonlySet<string> = new Set();
+const TAKEN = { status: "taken" } as const;
+const DROPPED = { status: "dropped" } as const;
+const FAILED = { status: "failed" } as const;
+const READ_NEXT: Next = { kind: "read_next" };
+const GONE: Next = { kind: "drop", reason: undefined };
+
+/** `client`'s state, made on its first use, which then has the cache's reads of the server
+ *  clear its `guessed` (`trustServerReads`). */
+function stateOf(client: QueryClient): NodeWriteState {
+  let state = states.get(client);
+  if (state === undefined) {
+    state = { chains: new Map(), guessed: new Map(), lines: new Map(), listeners: new Set() };
+    states.set(client, state);
+    trustServerReads(client, state);
+  }
+  return state;
+}
+
+/**
+ * The line a row draws for a write that did not go (R8), from what the write store holds of it:
+ * an `ApiError`, a `NetworkError`, a `RequestTimeoutError`, or any other error. Each refusal code
+ * whose words the page holds (`ANSWER_LINES`, `refused_` and the code in lower case) draws them;
+ * any other code, a 5xx and no answer draw the line that the change was not made, with the code
+ * in brackets where there is one, and a press on it tries the act again. A
+ * `409 CONTAINER_WOULD_EMPTY` names the container by its kind and its first line, with its read
+ * id to link to, where `context`'s held read shows the node's parent as a list item or a callout,
+ * and else quotes the server's message after the code's words.
+ */
+export function refusalLine(error: unknown, context?: RefusalContext): RefusalLine {
+  const code = error instanceof ApiError && error.status < 500 ? error.code : undefined;
+  const words = code === undefined ? undefined : wordsOf(code);
+  if (!(error instanceof ApiError) || words === undefined) return notMade(error);
+  const gone = error.status === NOT_FOUND_STATUS || code === NODE_GONE;
+  const reads = gone || error.status === PRECONDITION_FAILED_STATUS;
+  if (code !== CONTAINER_WOULD_EMPTY) return { gone, reads, retry: false, text: words };
+  const container = context === undefined ? undefined : containerOf(context);
+  if (container === undefined) {
+    return { gone, reads, retry: false, text: `${words} “${error.message}”` };
+  }
+  const text = `${ANSWER_LINES.container_empties} ${container.kind}, ${container.line}`;
+  return { container: container.id, gone, reads, retry: false, text };
+}
+
+/** The page's words of refusal `code`, or undefined where it holds none. */
+function wordsOf(code: string): string | undefined {
+  const key = `refused_${code.toLowerCase()}`;
+  return Object.hasOwn(WORDS, key) ? WORDS[key] : undefined;
+}
+
+/** The fallback line: the change was not made, with the code where the refusal names one. */
+function notMade(error: unknown): RefusalLine {
+  const code = error instanceof ApiError ? error.code : undefined;
+  const text =
+    code === undefined || code === ""
+      ? ANSWER_LINES.not_made
+      : `${ANSWER_LINES.not_made} (${ANSWER_LINES.not_made_code} ${code})`;
+  return { gone: false, reads: false, retry: true, text };
+}
+
+/** The container the held read shows the node under, as a container refusal names it; undefined
+ *  where the parent is no list item and no callout, or the read gives no first line of it. */
+function containerOf({ held, node }: RefusalContext): Container | undefined {
+  const parent = held.nodes?.find((each) => each.id === node)?.parent;
+  if (parent === undefined || parent === null || parent.first_line === "") return undefined;
+  const top = topBlockOf(held.nodes?.find((each) => each.id === parent.id)) ?? "";
+  const kind = Object.hasOwn(CONTAINER_KINDS, top) ? CONTAINER_KINDS[top] : undefined;
+  return kind === undefined ? undefined : { id: parent.id, kind, line: parent.first_line };
+}
+
+/** The type of the first block of `node`'s text (`text_tree`), or undefined. */
+function topBlockOf(node: TreeAnswerNode | undefined): string | undefined {
+  const content = node?.text_tree?.content;
+  if (!Array.isArray(content)) return undefined;
+  const blocks: readonly { readonly type?: unknown }[] = content;
+  const type = blocks[0]?.type;
+  return typeof type === "string" ? type : undefined;
+}
+
+/** The `DELETE` of the node of read id `node` with `query`, as the contract types it. A node R2
+ *  admits is a block, which the route names by its read id. */
+function deleteRequest(key: string, node: string, query: DeleteQuery): WriteRequest<NodeDeleted> {
+  const params = { id: node, key };
+  return {
+    ...writeRequest("delete", NODE_ROUTE, params),
+    path: routeUrl(NODE_ROUTE, params, query),
+  };
+}
+
+/** `request` under the node's `placement_seq` as the held read holds it (`withIfMatch`); with no
+ *  precondition where the read gives it none, which the route refuses with words of its own. */
+function placed<T>(request: WriteRequest<T>, node: TreeAnswerNode): WriteRequest<T> {
+  const seq = node.placement_seq;
+  return seq === null || seq === undefined ? request : withIfMatch(request, seq);
+}
+
+/**
+ * The delete's dry run of the node of read id `node` (R6): `DELETE ?dry_run=true` with
+ * `api.send`, outside the write store, so it is kept nowhere, holds no tree read and shows in no
+ * write line. It sends no `If-Match`, goes under a key of its own, which a `DELETE` never sends,
+ * and gives up after the read deadline. Once `signal` aborts - the menu closed - it rejects with
+ * the signal's reason, and an answer that comes later is dropped.
+ */
+export function dryRunDelete(
+  key: string,
+  node: string,
+  signal?: AbortSignal
+): Promise<NodeDeleted> {
+  if (signal?.aborted === true) return Promise.reject(signal.reason);
+  const answer = api.send(deleteRequest(key, node, { dry_run: true }), {
+    deadlineMs: REQUEST_DEADLINE_MS,
+    key: newSendKey(),
+  });
+  if (signal === undefined) return answer;
+  const { promise, reject, resolve } = Promise.withResolvers<NodeDeleted>();
+  const drop = () => reject(signal.reason);
+  signal.addEventListener("abort", drop, { once: true });
+  void answer.then(resolve, reject).finally(() => signal.removeEventListener("abort", drop));
+  return promise;
+}
+
+/** Graph's held outline read of `issue`, which the moves are made on. */
+export function heldRead(client: QueryClient, issue: string): TreeAnswer | undefined {
+  return client.getQueryData<TreeAnswer>(outlineQuery(issue, "graph").queryKey);
+}
+
+/**
+ * Reads each outline read of `issue` the cache holds again, once, its loaded pages and older
+ * comment pages included (`readTree`), and marks it stale: each of `outlines`, both by default. A
+ * read a write of the issue holds (`subscribeTreeFreshness`, which leaves it no enabled observer)
+ * is only marked: the hold owes it, and reads it once the last write settles. The scheduler reads
+ * an observed outline after any older request settles, so that request's answer cannot pay for
+ * the refresh. A new row's wait reads Graph's alone (`new-rows.ts`).
+ */
+export function readOutlinesAgain(
+  client: QueryClient,
+  issue: string,
+  outlines: readonly Outline[] = OUTLINES
+): void {
+  const cache = client.getQueryCache();
+  for (const outline of outlines) {
+    const options = outlineQuery(issue, outline);
+    const { queryKey } = options;
+    const query = cache.find({ exact: true, queryKey });
+    if (query === undefined) continue;
+    void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
+    if (query.isActive()) refreshQueries(client, [{ exact: true, queryKey }]);
+    else if (!query.isDisabled()) void client.fetchQuery(options).catch(() => undefined);
+  }
+}
+
+/**
+ * R7's re-read after a write of the room that was taken (R5's retype of the node of read id
+ * `node`), which sent no request and so ends no chain: each outline read of `issue` is read again
+ * once (`readOutlinesAgain`), now where no act of the node waits in its chain, else once that
+ * chain is empty, as its own taken acts are.
+ */
+export function readAfterRoomWrite(client: QueryClient, issue: string, node: string): void {
+  const chain = stateOf(client).chains.get(hashKey([issue, node]));
+  if (chain === undefined) readOutlinesAgain(client, issue);
+  else chain.reads = true;
+}
+
+/** Whether `node` is one of the read's context nodes that end a page: a context node under no
+ *  parent. */
+function endsPage(node: TreeAnswerNode): boolean {
+  return node.role === "context" && node.parent === null;
+}
+
+/** The index after the subtree of `nodes[at]` in the walk: past the last node after it that
+ *  stands under it, as every parent comes before its children, a context node under a node of the
+ *  subtree too, such as a comment on a block's text. On a read of several pages the subtree can go
+ *  on to the next page, past the read's context nodes under no parent that end each page
+ *  (`endsPage`), which are no part of it; the subtree ends at the first other node. */
+function subtreeEnd(nodes: readonly TreeAnswerNode[], at: number): number {
+  const inside = new Set([nodes[at]?.id]);
+  let end = at + 1;
+  for (let next = at + 1; next < nodes.length; next += 1) {
+    const node = nodes[next];
+    if (node === undefined) break;
+    if (endsPage(node)) continue;
+    if (node.parent === null || !inside.has(node.parent.id)) break;
+    inside.add(node.id);
+    end = next + 1;
+  }
+  return end;
+}
+
+/** The subtree of `nodes[at]`, on every page it stands on (`subtreeEnd`), and `nodes` without it:
+ *  the read's context nodes under no parent that end a page inside the subtree's run (`endsPage`)
+ *  stay where they stand, and a context node under a node of the subtree is part of it. */
+function cutSubtree(
+  nodes: readonly TreeAnswerNode[],
+  at: number
+): { readonly rest: TreeAnswerNode[]; readonly subtree: TreeAnswerNode[] } {
+  const end = subtreeEnd(nodes, at);
+  const run = nodes.slice(at, end);
+  const context = run.filter(endsPage);
+  return {
+    rest: [...nodes.slice(0, at), ...context, ...nodes.slice(end)],
+    subtree: run.filter((node) => !endsPage(node)),
+  };
+}
+
+/** The parent reference the read gives `parent` on a node under it; where it holds none, one made
+ *  of the parent's own fields (`parentRefOf`). */
+function parentRef(
+  nodes: readonly TreeAnswerNode[],
+  parent: TreeAnswerNode
+): NonNullable<TreeAnswerNode["parent"]> {
+  const held = nodes.find((each) => each.parent?.id === parent.id)?.parent;
+  if (held !== undefined && held !== null) return held;
+  return parentRefOf(parent);
+}
+
+/** The parent reference of a node under `parent`, made of the parent's own fields, with no first
+ *  line, which the read gives only on a child. */
+export function parentRefOf(parent: TreeAnswerNode): NonNullable<TreeAnswerNode["parent"]> {
+  const { id, issue, kind, supertag } = parent;
+  return { first_line: "", id, kind, supertag, ...(issue === undefined ? {} : { issue }) };
+}
+
+/** The index in `nodes`, the held read's nodes with a moved subtree cut out, that subtree goes to
+ *  under the parent at `nodes[from]`, at `place`, among all of the parent's children on every page
+ *  (`placement.ts`' `siblingPlace`): right after the subtree of the child the place follows,
+ *  wherever that child stands, or right before the child the place stands before. Where it stands
+ *  before no child `nodes` holds, it is right after the parent's own subtree, the place past the
+ *  loaded pages, which ends with the subtree of its last child that `nodes` holds, and is the
+ *  parent alone where it holds none. */
+function placeIn(nodes: readonly TreeAnswerNode[], from: number, place: SiblingPlace): number {
+  if (place.kind === "after") return subtreeEnd(nodes, nodes.indexOf(place.child));
+  return place.child === undefined ? subtreeEnd(nodes, from) : nodes.indexOf(place.child);
+}
+
+/** Takes out of `state`'s `guessed` an issue's nodes once `client`'s cache holds a read of the
+ *  server of Graph's outline of that issue, which stands each node where the walk stands it, or no
+ *  longer holds that outline. A fetch's answer is no `manual` one. A next page's merge and an older
+ *  comment page are (`setQueryData`), and change no mark here: a mark is a read id, which each of
+ *  them keeps. This module's own writes set and lift marks where they write (`placeHeld`,
+ *  `readToPlace`). */
+function trustServerReads(client: QueryClient, state: NodeWriteState): void {
+  client.getQueryCache().subscribe((event) => {
+    const read =
+      event.type === "updated" && event.action.type === "success" && event.action.manual !== true;
+    if (!read && event.type !== "removed") return;
+    const [, issue] = event.query.queryKey;
+    if (typeof issue !== "string") return;
+    if (event.query.queryHash !== hashKey(outlineQuery(issue, "graph").queryKey)) return;
+    state.guessed.delete(issue);
+  });
+}
+
+/** `held` with `taken`, the taken move of `node` (its answer, and the body it answered), written
+ *  into it (`read`), whether `held` shows that place (`shown`, `placement.ts`' `SiblingPlace`),
+ *  and whether the node stands at a guessed place once written (`guessed`): the node's whole
+ *  subtree, on every page it stands on (`cutSubtree`), under the answer's `parent`, among all of
+ *  that parent's children the pages hold, after the answer's `after`, or at the place the body
+ *  asked for where the pages hold no child that `after` names (`placeIn`), in the walk's order,
+ *  so each later body reads it there, and the node's `placement_seq` the answer's. The issue's
+ *  memo, where that parent holds one (`SiblingPlace`'s `memo`), goes where the walk then stands
+ *  it: right after the node's subtree where the place stands before it by rank and is shown, and
+ *  first among the issue's children otherwise, until a page shows the place. The place and
+ *  whether `held` shows it are both read on `held` as it stands, the node set aside where it
+ *  stands there (`siblingPlace`), with no node among `guessedIds`, the issue's nodes at a guessed
+ *  place, as evidence. The node stands at a guessed place where the place is not shown. Where
+ *  `held` holds no such node, it is answered as it stands, and the node's mark stays as it was;
+ *  where it holds no such parent, the node keeps its place and takes the answer's
+ *  `placement_seq` alone, at a guessed place. Neither shows the place. */
+function movedIn(
+  held: TreeAnswer,
+  node: string,
+  taken: TakenPlace & { readonly answer: NodeMoved },
+  guessedIds: ReadonlySet<string>
+): { readonly read: TreeAnswer; readonly shown: boolean; readonly guessed: boolean } {
+  const { answer } = taken;
+  const nodes = held.nodes ?? [];
+  const at = nodes.findIndex((each) => each.id === node);
+  const own = nodes[at];
+  if (own === undefined) return { guessed: guessedIds.has(node), read: held, shown: false };
+  const renewed = { ...own, placement_seq: answer.placement_seq };
+  const { rest, subtree } = cutSubtree(nodes, at);
+  const from = rest.findIndex((each) => names(each, answer.parent));
+  const parent = rest[from];
+  if (parent === undefined) {
+    const read = { ...held, nodes: [...nodes.slice(0, at), renewed, ...nodes.slice(at + 1)] };
+    return { guessed: true, read, shown: false };
+  }
+  const ref = own.parent?.id === parent.id ? own.parent : parentRef(rest, parent);
+  const place = siblingPlace(held, parent.id, own, taken, guessedIds);
+  const { memo, shown } = place;
+  const to = placeIn(rest, from, place);
+  const top = { ...renewed, parent: ref };
+  const moved = [...rest.slice(0, to), top, ...subtree.slice(1), ...rest.slice(to)];
+  if (memo === undefined) return { guessed: !shown, read: { ...held, nodes: moved }, shown };
+  const cut = cutSubtree(moved, moved.indexOf(memo.node));
+  const end =
+    memo.first || !shown
+      ? cut.rest.indexOf(parent) + 1
+      : subtreeEnd(cut.rest, cut.rest.indexOf(top));
+  const read = {
+    ...held,
+    nodes: [...cut.rest.slice(0, end), ...cut.subtree, ...cut.rest.slice(end)],
+  };
+  return { guessed: !shown, read, shown };
+}
+
+/** Writes `answer` as Graph's held read of `issue`, keeping the stale mark an event or a write
+ *  put on it, as `readNextTreePage` does. */
+function writeHeld(client: QueryClient, issue: string, answer: TreeAnswer): void {
+  const { queryKey } = outlineQuery(issue, "graph");
+  const stale = client.getQueryCache().find({ exact: true, queryKey })?.state.isInvalidated;
+  client.setQueryData(queryKey, answer);
+  if (stale === true) {
+    void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
+  }
+}
+
+/** Writes `taken`, the taken move of `node` (its answer, and the body it answered), into Graph's
+ *  held read of `issue` (`movedIn`), marks the node as at a guessed place or no longer at one
+ *  (`NodeWriteState`'s `guessed`), and answers whether that read shows the place; false where no
+ *  read is held. */
+function placeHeld(
+  client: QueryClient,
+  issue: string,
+  node: string,
+  taken: TakenPlace & { readonly answer: NodeMoved }
+): boolean {
+  const held = heldRead(client, issue);
+  if (held === undefined) return false;
+  const { guessed } = stateOf(client);
+  const ids = guessed.get(issue) ?? new Set<string>();
+  const moved = movedIn(held, node, taken, ids);
+  if (moved.guessed) guessed.set(issue, ids.add(node));
+  else ids.delete(node);
+  writeHeld(client, issue, moved.read);
+  return moved.shown;
+}
+
+/** Whether `held` names a next page and lacks `place`, where a taken move put the node of read id
+ *  `node` (its answer, and the body it answered), which the read the answer was written into did
+ *  not show (`movedIn`): it lacks that node or the parent the answer names, or holds them and does
+ *  not show the place (`placement.ts`' `siblingPlace`), with no node among `guessedIds`, the
+ *  issue's nodes at a guessed place, as evidence. */
+function lacksPlace(
+  held: TreeAnswer,
+  node: string,
+  place: TakenPlace,
+  guessedIds: ReadonlySet<string>
+): boolean {
+  if (nextTreeCursor(held) === undefined) return false;
+  const moved = held.nodes?.find((each) => each.id === node);
+  const under = held.nodes?.find((each) => names(each, place.answer.parent));
+  if (moved === undefined || under === undefined) return true;
+  return !siblingPlace(held, under.id, moved, place, guessedIds).shown;
+}
+
+/** `held`, a read a next page was merged into, without the earlier copy of each node `ids` names
+ *  that the read holds twice (`read`), and the read ids of those nodes (`lifted`): the subtree of
+ *  the node's first place (`cutSubtree`), where a second copy stands after it, the one the page
+ *  holds where the server's walk stands it. Those are the moved node, which `movedIn` placed after
+ *  the last child the pages held, the issue's memo, which stays first where the place stands past
+ *  the loaded pages (`placement.ts`' `siblingPlace`), and each node at a guessed place. The read's
+ *  context nodes that end a page stay (`endsPage`). `read` is undefined where `held` holds no such
+ *  copy. No other node held twice is touched: a node placed in two places is held twice. */
+function withoutMovedCopies(
+  held: TreeAnswer,
+  ids: ReadonlySet<string>
+): { readonly read: TreeAnswer | undefined; readonly lifted: readonly string[] } {
+  const all = held.nodes ?? [];
+  let nodes = all;
+  const lifted: string[] = [];
+  for (const id of ids) {
+    const first = nodes.findIndex((each) => each.id === id);
+    if (first < 0 || !nodes.some((each, at) => at > first && each.id === id)) continue;
+    nodes = cutSubtree(nodes, first).rest;
+    lifted.push(id);
+  }
+  return { lifted, read: nodes === all ? undefined : { ...held, nodes } };
+}
+
+/** Sets the line of `node` on `issue`'s rows, or clears it, and tells each hook. A line that says
+ *  what the node's line says already - its words, its container and its act made again - changes
+ *  nothing, and tells none: a grey key held at an edge sets the same line on each repeat. */
+function setLine(
+  client: QueryClient,
+  issue: string,
+  node: string,
+  line: NodeLine | undefined
+): void {
+  const state = stateOf(client);
+  const now = state.lines.get(issue) ?? NO_LINES;
+  if (line === undefined && !now.has(node)) return;
+  const held = now.get(node);
+  if (
+    held !== undefined &&
+    line !== undefined &&
+    held.text === line.text &&
+    held.container === line.container &&
+    held.again === line.again
+  ) {
+    return;
+  }
+  const next = new Map(now);
+  if (line === undefined) next.delete(node);
+  else next.set(node, line);
+  state.lines.set(issue, next);
+  for (const listener of [...state.listeners]) listener();
+}
+
+/** Writes the row's line: `lead`, then how many moves were dropped, where any were. */
+function writeLine(
+  client: QueryClient,
+  chain: Chain,
+  lead: string | undefined,
+  dropped: number,
+  extra: Omit<NodeLine, "text"> = {}
+): void {
+  const count =
+    dropped === 0
+      ? undefined
+      : `${dropped} ${dropped === 1 ? ANSWER_LINES.dropped_move : ANSWER_LINES.dropped_moves}`;
+  const text = [lead, count].filter((part) => part !== undefined).join(" ");
+  if (text !== "") setLine(client, chain.issue, chain.node, { ...extra, text });
+}
+
+/** Takes every move queued in `chain` out of it; its deletes stay. */
+function takeMoves(chain: Chain): MoveAct[] {
+  const moves = chain.acts.filter((act): act is MoveAct => act.kind === "move");
+  const rest = chain.acts.filter((act) => act.kind !== "move");
+  chain.acts.splice(0, chain.acts.length, ...rest);
+  return moves;
+}
+
+/** The act whose turn it is was refused, sent or not: it ends with `error`'s line, every move
+ *  after it is dropped, and the row says why and how many. */
+function refuse(client: QueryClient, chain: Chain, error: unknown): void {
+  const act = chain.acts.shift();
+  if (act === undefined) return;
+  const held = heldRead(client, chain.issue);
+  const line = refusalLine(error, held === undefined ? undefined : { held, node: chain.node });
+  const dropped = takeMoves(chain);
+  act.done({ line, status: "refused" });
+  for (const move of dropped) move.done(DROPPED);
+  if (line.reads) chain.reads = true;
+  const again = {
+    act:
+      act.kind === "move"
+        ? () => pressMove(client, chain.issue, chain.node, act)
+        : act.kind === "place"
+          ? () => placeNode(client, chain.issue, chain.node, act.body, act.entry)
+          : () => pressDelete(client, chain.issue, chain.node, act.count),
+    moves: act.kind !== "delete",
+  };
+  writeLine(client, chain, line.text, dropped.length, {
+    ...(line.container === undefined ? {} : { container: line.container }),
+    ...(line.retry ? { again } : {}),
+  });
+}
+
+/** The act whose turn it is goes unsent: its entry is grey for `reason`, or the held read no
+ *  longer holds its node (no reason). It and every move after it are dropped; a new row's
+ *  placing (`PlaceAct`) answers as a move does. */
+function drop(client: QueryClient, chain: Chain, reason: GreyReason | undefined): void {
+  const act = chain.acts.shift();
+  if (act === undefined) return;
+  const dropped = [...(act.kind === "delete" ? [] : [act]), ...takeMoves(chain)];
+  if (act.kind === "delete") act.done(DROPPED);
+  const outcome: Extract<MoveOutcome, { readonly status: "dropped" }> =
+    reason === undefined ? DROPPED : { reason, status: "dropped" };
+  for (const move of dropped) move.done(outcome);
+  const lead = reason === undefined ? undefined : ANSWER_LINES[reason];
+  writeLine(client, chain, lead, dropped.length);
+}
+
+/** What the act whose turn it is does, from the held read as it stands now. */
+function nextOf(client: QueryClient, chain: Chain, act: Act): Next {
+  const held = heldRead(client, chain.issue);
+  if (held === undefined) return GONE;
+  const node = held.nodes?.find((each) => each.id === chain.node);
+  if (node === undefined) return nextTreeCursor(held) === undefined ? GONE : READ_NEXT;
+  if (act.kind === "delete") {
+    const query = { expected_count: act.count };
+    const request = placed(deleteRequest(chain.issue, chain.node, query), node);
+    return { kind: "send", send: () => sendDelete(client, chain, act, request) };
+  }
+  if (act.kind === "place") {
+    return { kind: "send", send: () => sendMove(client, chain, act, act.body, node) };
+  }
+  const verdict = placementOf({
+    closed: act.closed,
+    held,
+    node: chain.node,
+    row: act.row,
+    unplaced: false,
+    zoomRoot: act.zoomRoot,
+  })[act.entry];
+  switch (verdict.kind) {
+    case "grey":
+      return { kind: "drop", reason: verdict.reason };
+    case "read_next":
+      return READ_NEXT;
+    case "move":
+      return { kind: "send", send: () => sendMove(client, chain, act, verdict.body, node) };
+  }
+}
+
+/**
+ * Reads missing pages up to the last move's place before planning the next act (`readToPlace`).
+ * Drops each act that goes unsent and sends the first that goes, or reads the page that act
+ * needs. Each write or page read resumes the chain when it settles. Once the chain is empty,
+ * removes it and refreshes the outlines if an act requested a refresh.
+ */
+function advance(client: QueryClient, chain: Chain): void {
+  if (chain.place !== undefined) {
+    const held = heldRead(client, chain.issue);
+    const guessedIds = stateOf(client).guessed.get(chain.issue) ?? NO_GUESSES;
+    if (held !== undefined && lacksPlace(held, chain.node, chain.place, guessedIds)) {
+      readToPlace(client, chain, held);
+      return;
+    }
+    chain.place = undefined;
+  }
+  for (let act = chain.acts[0]; act !== undefined; act = chain.acts[0]) {
+    try {
+      const next = nextOf(client, chain, act);
+      if (next.kind === "drop") {
+        drop(client, chain, next.reason);
+        continue;
+      }
+      if (next.kind === "send") {
+        next.send();
+        return;
+      }
+      void readNextTreePage(client, chain.issue, "graph").then(
+        () => advance(client, chain),
+        (error: unknown) => {
+          refuse(client, chain, error);
+          advance(client, chain);
+        }
+      );
+      return;
+    } catch (error) {
+      // An act no request can be made for from the held read ends as a refused one does.
+      refuse(client, chain, error);
+    }
+  }
+  const { chains } = stateOf(client);
+  const id = hashKey([chain.issue, chain.node]);
+  if (chains.get(id) === chain) chains.delete(id);
+  if (chain.reads) readOutlinesAgain(client, chain.issue);
+}
+
+/**
+ * Reads the next page of `held` and resumes the chain. The chain reads one page at a time until
+ * the held read holds the last move's place (`lacksPlace`), runs out of pages, or a page is
+ * refused. Queued acts wait in the meantime. If a page holds the moved node, the issue's memo
+ * (`placement.ts`' `memoIn`) or a node at a guessed place again, removes the copy the held read
+ * held before (`withoutMovedCopies`) before TanStack notifies observers, so neither the next act
+ * nor the outline sees two copies; each node the page so holds stands where the walk stands it,
+ * at no guessed place (`NodeWriteState`'s `guessed`).
+ */
+function readToPlace(client: QueryClient, chain: Chain, held: TreeAnswer): void {
+  const memo = memoIn(held, chain.node);
+  void readNextTreePage(client, chain.issue, "graph").then(
+    () => {
+      try {
+        const merged = heldRead(client, chain.issue);
+        const guessed = stateOf(client).guessed.get(chain.issue);
+        const ids = new Set([chain.node, ...(guessed ?? NO_GUESSES)]);
+        if (memo !== undefined) ids.add(memo.id);
+        const kept = merged === undefined ? undefined : withoutMovedCopies(merged, ids);
+        for (const id of kept?.lifted ?? []) guessed?.delete(id);
+        if (kept?.read !== undefined) writeHeld(client, chain.issue, kept.read);
+      } finally {
+        advance(client, chain);
+      }
+    },
+    () => {
+      // Stop looking for this place. The outline refresh still waits for the chain to empty.
+      chain.place = undefined;
+      advance(client, chain);
+    }
+  );
+}
+
+/** The write of one act of `chain`, as the store makes and keeps it: on the node's own line, its
+ *  refusal drawn on the row (`inline`), holding the issue's tree reads while it is out. */
+function writeOf<T>(chain: Chain, label: string, request: WriteRequest<T>) {
+  return {
+    detail: null,
+    inline: true,
+    issue: chain.issue,
+    kind: plainWrite,
+    label,
+    presentation: "indicator",
+    request,
+    target: `node:${chain.issue}:${chain.node}`,
+  } as const;
+}
+
+/**
+ * Gives up Graph's read of `issue` where one is out, as an act's write is about to go: a read of
+ * several pages out then can read a page before the write moves or takes a node and another page
+ * after it, and so answer with the node on no page, or on two, in place of the read the write's
+ * answer was written into - a new row's node read under its new parent before the move and at the
+ * end of the issue's own blocks after it is on none. TanStack's `cancelQueries` ends it at once,
+ * its request aborted and the answer held before it put back (`revert`), so the write goes in the
+ * same turn, and nothing is done where no read is out. The read given up stays owed, marked
+ * stale: the read after a taken answer (R7) reads the tree again, and so does the read the settle
+ * of the issue's writes makes after a refused one (`subscribeTreeFreshness`).
+ */
+function giveUpGraphRead(client: QueryClient, issue: string): void {
+  const { queryKey } = outlineQuery(issue, "graph");
+  if ((client.getQueryState(queryKey)?.fetchStatus ?? "idle") === "idle") return;
+  void client.cancelQueries({ exact: true, queryKey });
+  void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
+}
+
+/** The `PATCH` of `body`, a move's or a new row's placing's, under the `placement_seq` the held
+ *  read gives `node` (`placed`), labelled with `act`'s entry in the write store: a taken answer is
+ *  written into the held read at its place, or at the place `body` asked for where the read holds
+ *  no node the answer's `after` names (`movedIn`), the chain reads for that place
+ *  (`Chain.place`), and goes on. */
+function sendMove(
+  client: QueryClient,
+  chain: Chain,
+  act: MoveAct | PlaceAct,
+  body: MoveBody,
+  node: TreeAnswerNode
+): void {
+  const request = placed(
+    writeRequest("patch", NODE_ROUTE, { id: chain.node, key: chain.issue }, body),
+    node
+  );
+  giveUpGraphRead(client, chain.issue);
+  const sent = writesOf(client).run(writeOf(chain, CONTROL_LABELS[`edit_${act.entry}`], request));
+  void sent.then(
+    (answer) => {
+      chain.acts.shift();
+      chain.reads = true;
+      if (act.kind === "place") act.done({ answer, status: "taken" });
+      else act.done(TAKEN);
+      try {
+        // A landing with no answer to give says nothing of the place: the next act goes from the
+        // read as it stands, and its refusal reads the tree again. The chain reads for a place the
+        // read the answer was written into does not show.
+        const taken = answer === null ? undefined : { answer, body };
+        const shown = taken !== undefined && placeHeld(client, chain.issue, chain.node, taken);
+        chain.place = shown ? undefined : taken;
+      } finally {
+        advance(client, chain);
+      }
+    },
+    (error: unknown) => {
+      refuse(client, chain, error);
+      advance(client, chain);
+    }
+  );
+}
+
+function sendDelete(
+  client: QueryClient,
+  chain: Chain,
+  act: DeleteAct,
+  request: WriteRequest<NodeDeleted>
+): void {
+  giveUpGraphRead(client, chain.issue);
+  const sent = writesOf(client).run(writeOf(chain, CONTROL_LABELS.edit_delete, request));
+  void sent.then(
+    () => {
+      chain.acts.shift();
+      chain.reads = true;
+      act.done(TAKEN);
+      advance(client, chain);
+    },
+    (error: unknown) => {
+      // The count moved: the confirm opens again with the server's count, and nothing more is
+      // sent for it until the reader confirms that one.
+      if (
+        error instanceof ApiError &&
+        error.code === DELETE_COUNT_MOVED &&
+        error.count !== undefined
+      ) {
+        chain.acts.shift();
+        act.done({ count: error.count, status: "count_moved" });
+      } else {
+        refuse(client, chain, error);
+      }
+      advance(client, chain);
+    }
+  );
+}
+
+/** Puts `act` at the back of its node's chain, clearing the row's line, and runs the chain where
+ *  it was empty. */
+function press(client: QueryClient, issue: string, node: string, act: Act): void {
+  setLine(client, issue, node, undefined);
+  const { chains } = stateOf(client);
+  const id = hashKey([issue, node]);
+  const chain = chains.get(id);
+  if (chain !== undefined) {
+    chain.acts.push(act);
+    return;
+  }
+  const begun: Chain = { acts: [act], issue, node, place: undefined, reads: false };
+  chains.set(id, begun);
+  advance(client, begun);
+}
+
+function pressMove(
+  client: QueryClient,
+  issue: string,
+  node: string,
+  move: MovePress
+): Promise<MoveOutcome> {
+  const { promise, resolve } = Promise.withResolvers<MoveOutcome>();
+  const { closed, entry, row, zoomRoot } = move;
+  press(client, issue, node, { closed, done: resolve, entry, kind: "move", row, zoomRoot });
+  return promise;
+}
+
+function pressDelete(
+  client: QueryClient,
+  issue: string,
+  node: string,
+  count: number
+): Promise<DeleteOutcome> {
+  const { promise, resolve } = Promise.withResolvers<DeleteOutcome>();
+  press(client, issue, node, { count, done: resolve, kind: "delete" });
+  return promise;
+}
+
+/**
+ * Places the node of read id `node`, a new row's (R3), with the one `PATCH` of `body` - the place
+ * `placement.ts` gave the row as `entry` made it - under the node's `placement_seq` as Graph's
+ * held read of `issue` holds it, on the node's own chain, as a move goes (`PlaceOutcome`): a taken
+ * answer is written into the held read at its `parent` and `after`, or at the place of `body`
+ * where the read holds no node that `after` names (`movedIn`), and answered, a refusal draws the
+ * row's line (R8), and once the chain is empty the outline reads are read again (R7).
+ */
+export function placeNode(
+  client: QueryClient,
+  issue: string,
+  node: string,
+  body: MoveBody,
+  entry: NewEntry
+): Promise<PlaceOutcome> {
+  const { promise, resolve } = Promise.withResolvers<PlaceOutcome>();
+  press(client, issue, node, { body, done: resolve, entry, kind: "place" });
+  return promise;
+}
+
+/** How a hook hears each change of the lines of `state`'s rows (`setLine`). */
+function useLineListener(state: NodeWriteState): (listener: () => void) => () => void {
+  return useCallback(
+    (listener: () => void) => {
+      state.listeners.add(listener);
+      return () => {
+        state.listeners.delete(listener);
+      };
+    },
+    [state]
+  );
+}
+
+/** The acts of Graph's node menu for one issue (`NodeWrites` without its `lines`), for a caller
+ *  that draws no line: it is drawn again for no line that changes (`useNodeActs`). */
+export type NodeActs = Omit<NodeWrites, "lines">;
+
+/**
+ * The acts of Graph's node menu for `issue` (`NodeActs`), under the page's query client, as
+ * `useNodeWrites` has them, with no line: the editor's move keys and the delete's confirm, which
+ * draw none, queue on the node's one chain and write its rows' lines all the same, and are drawn
+ * again for no line that changes.
+ */
+export function useNodeActs({ closed, key, zoomRoot }: NodeWritesIssue): NodeActs {
+  const queryClient = useQueryClient();
+  const move = useCallback(
+    (node: string, entry: MoveEntry, row?: PlacementRow) =>
+      pressMove(queryClient, key, node, { closed, entry, row, zoomRoot }),
+    [closed, key, queryClient, zoomRoot]
+  );
+  const remove = useCallback(
+    (node: string, expectedCount: number) => pressDelete(queryClient, key, node, expectedCount),
+    [key, queryClient]
+  );
+  const count = useCallback(
+    async (node: string, signal?: AbortSignal): Promise<DeleteCount> => {
+      try {
+        const { count: taken } = await dryRunDelete(key, node, signal);
+        return { count: taken, status: "counted" };
+      } catch (error) {
+        if (signal?.aborted === true) throw error;
+        const held = heldRead(queryClient, key);
+        const line = refusalLine(error, held === undefined ? undefined : { held, node });
+        if (line.retry) return FAILED;
+        if (line.reads) readOutlinesAgain(queryClient, key);
+        return { line, status: "refused" };
+      }
+    },
+    [key, queryClient]
+  );
+  const grey = useCallback(
+    (node: string, reason: GreyReason) =>
+      setLine(queryClient, key, node, { text: ANSWER_LINES[reason] }),
+    [key, queryClient]
+  );
+  const busy = useCallback(
+    (node: string) => stateOf(queryClient).chains.has(hashKey([key, node])),
+    [key, queryClient]
+  );
+  return useMemo(() => ({ busy, count, grey, move, remove }), [busy, count, grey, move, remove]);
+}
+
+/**
+ * The writes of Graph's node menu for `issue` (`NodeWrites`), under the page's query client,
+ * whose held tree is Graph's outline read. Every hook of one client shares each node's chain and
+ * each row's line, so the menu and the editor's keys queue on one chain, and a line outlives the
+ * menu that drew it. A move takes whether the issue is closed and its zoom root as they stood at
+ * its press; each act reads the held read as it stands at its turn, never one a render held.
+ */
+export function useNodeWrites(issue: NodeWritesIssue): NodeWrites {
+  const state = stateOf(useQueryClient());
+  const subscribe = useLineListener(state);
+  const lines = useSyncExternalStore(subscribe, () => state.lines.get(issue.key) ?? NO_LINES);
+  const acts = useNodeActs(issue);
+  return useMemo(() => ({ ...acts, lines }), [acts, lines]);
+}
+
+/** The line of the row of read id `node` of `issue` (`NodeWrites.lines`), or undefined where it
+ *  has none or `node` is undefined: the row that draws it is drawn again for its own line alone. */
+export function useNodeWriteLine(issue: string, node: string | undefined): NodeLine | undefined {
+  const state = stateOf(useQueryClient());
+  const subscribe = useLineListener(state);
+  return useSyncExternalStore(subscribe, () =>
+    node === undefined ? undefined : state.lines.get(issue)?.get(node)
+  );
+}

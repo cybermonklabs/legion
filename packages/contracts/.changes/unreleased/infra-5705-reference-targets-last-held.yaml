@@ -1,0 +1,6 @@
+kind: Added
+body: >-
+  A reference target can include `last_held`, a pinned reference to the last version that held a deleted document block.
+time: 2026-11-25T19:20:00Z
+custom:
+  Issue: INFRA-5705

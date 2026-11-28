@@ -246,6 +246,17 @@ export function deletedPostLine(deleted: PostDeletion): string {
 }
 
 /**
+ * The version that last held `target`, as a reference to it carries it (`NodeChip.lastHeld`):
+ * the `last_held` the batched reference read answers for a target that is gone (R9 of
+ * INFRA-5705), and nothing for a target something answers to, which the read never names one for
+ * and no chip carries one of. The one rule a chip (`treeContext`'s `chipOf`) and the names the
+ * page publishes (`graph-edit/last-held-chips.ts`' `targetLastHeld`) read it by.
+ */
+export function lastHeldOf(target: ReferenceTarget | undefined): string | undefined {
+  return target?.gone === true ? target.last_held : undefined;
+}
+
+/**
  * The reads as every builder reads them: the tree's (`buildIssueTree`) and the page's published
  * names (`targetNaming`) both, so a chip and a link name one target by one rule and cannot drift
  * apart.
@@ -407,6 +418,7 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
       // A deleted post's deleted line already says what became of its text, so it carries no
       // edit mark.
       const edited = deleted === null ? target?.edited_at : undefined;
+      const lastHeld = lastHeldOf(target);
       const reading = gone ? undefined : readingOf(reference, target, deleted);
       const chip: NodeChip = {
         ...(target?.ambiguous === true ? { ambiguous: true } : {}),
@@ -415,6 +427,7 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
         ...(deleted === null || deleted.by === null ? {} : { deletedBy: deleted.by }),
         ...(edited === undefined ? {} : { editedAt: edited }),
         gone,
+        ...(lastHeld === undefined ? {} : { lastHeld }),
         ...(reading === undefined ? {} : { reading }),
         ref: reference,
       };

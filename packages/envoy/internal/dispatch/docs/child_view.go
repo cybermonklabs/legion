@@ -62,6 +62,28 @@ var viewChainStatement = `
 	left join issue_views v on v.issue_key = c.key
 	order by c.depth`
 
+// ViewChainStatement is viewChainStatement, which a test outside docs reads to hold each reader
+// of one of its tests (ViewableSQL, RequirementHeldSQL) to the statement's own words.
+func ViewChainStatement() string { return viewChainStatement }
+
+// ViewableSQL is viewChainStatement's test of whether an issue's row of issue_views, the row the
+// SQL alias names, lets the issue be a view: it says born, or t19b with the conversion's view
+// mark, and holds no own-spec mark. It is false where the issue has no row.
+func ViewableSQL(alias string) string {
+	return `coalesce((` + alias + `.converted = 'born' or ` + alias + `.converted = 't19b' and ` + alias +
+		`.view_marked) and ` + alias + `.own_spec_at is null, false)`
+}
+
+// RequirementHeldSQL is viewChainStatement's test of whether the issue whose key the SQL issueKey
+// names holds a requirement node: a document_blocks row of type requirement of one of its
+// artifacts, its tree's among them. The text keeps the statement's line breaks, so the statement
+// holds it verbatim.
+func RequirementHeldSQL(issueKey string) string {
+	return `exists (
+	           select 1 from document_blocks d join artifacts doc on doc.id = d.artifact_id
+	           where doc.issue_key = ` + issueKey + ` and d.type = '` + requirementType + `')`
+}
+
 // chainIssue is what viewChainStatement reads of one issue of a chain.
 type chainIssue struct {
 	key                         string

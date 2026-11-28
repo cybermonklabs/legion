@@ -71,6 +71,12 @@ const WINDOW_STEPS: readonly WindowStep[] = [
     token: "max-[761px]",
   },
   {
+    file: "slots/foot.tsx",
+    lines: 1,
+    rule: "the box to write in at the foot stands 10 px from each side of the screen on a phone, where the column's own inset is 14 px (part L, after B0)",
+    token: "max-[761px]",
+  },
+  {
     file: "slots/view-plan.tsx",
     lines: 2,
     rule: "Plan's column is 1300 px at most, the column's width less 20 px on a phone (one line is the comment that names the class)",

@@ -1,0 +1,6 @@
+kind: Added
+body: >-
+  The Dispatch reference-targets read gives the last version that held a deleted document block when the caller can read it.
+time: 2026-11-25T19:20:00Z
+custom:
+  Issue: INFRA-5705

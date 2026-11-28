@@ -1,27 +1,35 @@
 import type { EditorView } from "@milkdown/kit/prose/view";
+import type { MouseEvent } from "react";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
-import type { Artifact } from "../../api/types";
+import type { Artifact, DisplayTree } from "../../api/types";
 import { inputMethodKey } from "../../lib/input-method-key";
 import { focusOnDocument } from "../shell/roving";
 import type { DocumentAdmissions } from "./document-admission";
+import { useDocumentAdmissions } from "./document-admission";
+import type { MoveEntry } from "./graph-edit/placement";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
+import { roomTarget, takesCaret, useRoomFacts } from "./model-rows/room-target";
 import {
   type CaretAt,
+  caretForNewBlock,
   caretInBlock,
   caretOutOfBlock,
   confineKey,
   drawsBlock,
   EDITOR_BOX_ATTRIBUTE,
+  type EndKey,
   type HoldParts,
   holdEditorAtBlock,
   holdEditsToBlock,
   loadEditsHold,
+  putKeptCaret,
   selectInEditor,
   selectionIntoBlock,
   tabStopsFrom,
 } from "./node-caret";
+import { useOutlineWriter } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import { trackPress } from "./press-focus";
 import { caretOnEnter } from "./text-comments/read-only-caret";
@@ -60,6 +68,32 @@ export interface NodeEditing {
   readonly edit: (row: string, node: TreeNode, at?: CaretAt) => void;
   /** Takes the caret out again and gives the row the focus back. */
   readonly stopEditing: () => void;
+}
+
+/**
+ * What the tree and Graph's move keys (`graph-edit/move-keys.ts`, INFRA-5705's R4) hand each other
+ * through a row's editing: `take`, Graph's, takes a move key pressed with the caret in the node's
+ * block of the edited row `row` and answers whether it took it (`node-caret.ts`'s `confineKey`),
+ * and so Enter and Shift+Enter with the caret at the end of that block (R3, `EndKey`);
+ * `follow`, the editing's own, moves the editing of row `from` onto row `to`, the same node drawn
+ * by a move under another row's key, with the document's one editor, and puts the caret back where
+ * the reader had it in the node's block; `restore`, the editing's own too, puts that caret back in
+ * the edited row with the focus, where a move's drawing dropped them. Graph's too
+ * (`graph-edit/new-row-editing.ts`, R3): `fresh`, whether `row` is a new row, whose block the
+ * document may not hold yet - its caret goes in the editor with none drawn, the box shut, and once
+ * the block is drawn where the reader's typing left it - and `write`, which writes that block with
+ * the reader's first character `words` in the editor `view`, and answers whether it did. And
+ * Graph's (R5): `caretIn`, told as the caret goes into the block `blockId` of the edited row
+ * `row`, the editor's hold on, with the editor's `view`, which a retype the node menu asked for
+ * writes in. Outside Graph nothing sets `take`, `fresh`, `write` or `caretIn`.
+ */
+export interface MoveKeyBridge {
+  take?: (row: string, move: MoveEntry | EndKey) => boolean;
+  follow?: (from: string, to: string) => void;
+  restore?: () => void;
+  fresh?: (row: string) => boolean;
+  write?: (row: string, words: string, view: EditorView) => boolean;
+  caretIn?: (row: string, blockId: string, view: EditorView) => void;
 }
 
 /** A reader's own acts, any of which ends the page's own placing of the focus - the tree's
@@ -103,6 +137,68 @@ export function nodeEditable(
   admissions: DocumentAdmissions
 ): boolean {
   return !isClosed && place !== undefined && admissions.get(place.artifact.id) !== true;
+}
+
+/** What takes a pointer's press inside a row's words as its own rather than the words': each
+ *  control a drawn text can hold - a link in the words, a code block's copy control, the link of
+ *  a parent line - a disclosure's summary, which a drawn diagram carries for its source, a label,
+ *  and an element that plays a button. It is `RowText.tsx`'s `FOCUSABLE` with `summary`, `label`
+ *  and `[role="button"]` added, which take a press of their own, and without its `[tabindex]`:
+ *  `RowText` gives each element of the words that scrolls, a wide code block or a table's wrapper,
+ *  a tab index of its own (`useOutOfTabOrder`), and such an element acts on no press, so a press
+ *  on its text is the words'. */
+const OWN_PRESS =
+  'a[href], area[href], button, input, select, textarea, iframe, summary, label, [role="button"]';
+
+/** Whether a pointer's click on a row's words asks for the caret in them, as Enter on the row
+ *  does, given the document the row's text is being edited in while it is the row edited
+ *  (`editing`). While the row is edited no click on its words asks: the editor is drawn in their
+ *  place, and its own presses never reach the words' handler, since React sends a portal's events
+ *  up the portal's own parents, so a click the handler hears then is on what stands beside the
+ *  editor. A click on a control inside the element that heard it (`OWN_PRESS`) is that control's
+ *  own. A click that ends a selection the reader made - a drag over the words, which leaves the
+ *  window's selection not collapsed - asks for nothing, nor does the second click of a double
+ *  click or a later one, which selects a word or a line: the editor drawn in the words' place
+ *  would drop that selection and put the caret at the start. The Verification and Decisions views
+ *  read it, and ask for the caret where the row takes one (`useWordsPress`). */
+export function pressAsksCaret(
+  event: MouseEvent<HTMLElement>,
+  editing: string | undefined
+): boolean {
+  if (editing !== undefined || event.detail > 1 || window.getSelection()?.isCollapsed === false) {
+    return false;
+  }
+  const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
+  return owner === null || !event.currentTarget.contains(owner);
+}
+
+/** A pointer's press on a row's words, as the Verification and Decisions views take it once it
+ *  asks for the caret (`pressAsksCaret`): the caret asked for in the node of the row with this key
+ *  (`edit`, `useNodeEditing`'s), as Enter asks for it, and what a key reported before let go
+ *  (`onReport`, with no line), but only where the row takes a caret, by the outline's one rule
+ *  (`room-target.ts`'s `takesCaret`): over the room of the issue the page's writer is of, read as
+ *  Enter reads it (`useNodeEditing`), and what each document's room admitted the page to
+ *  (`document-admission.tsx`), given each artifact of the issue by its slug (`artifacts`) and
+ *  whether the issue is closed (`isClosed`). A row that takes none keeps the focus the press gave
+ *  it, and nothing is said: Enter is what says why. */
+export function useWordsPress({
+  artifacts,
+  edit,
+  isClosed,
+  onReport,
+}: {
+  artifacts: ReadonlyMap<string, Artifact>;
+  edit: NodeEditing["edit"];
+  isClosed: boolean;
+  onReport: (report: string) => void;
+}): (row: string, node: TreeNode) => void {
+  const room = useRoomFacts(useOutlineWriter()?.issueKey);
+  const admissions = useDocumentAdmissions();
+  return (row, node) => {
+    if (!takesCaret(node, artifacts, room, isClosed, admissions)) return;
+    onReport("");
+    edit(row, node);
+  };
 }
 
 /**
@@ -189,37 +285,105 @@ export function nodeEditable(
 export function useNodeEditing({
   artifacts,
   container,
+  moveKeys,
   onEditing,
+  onOwnEdit,
   onReport,
+  readOnlyCaret = true,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
   /** The tree's own box, which the rows are found inside. */
   container: RefObject<HTMLElement | null>;
+  /** Graph's move keys and the editing's way of following a node they moved (`MoveKeyBridge`),
+   *  where the tree gives them. */
+  moveKeys?: MoveKeyBridge;
   /** Tells the page which document a row is editing, so it draws that document's one editor and
    *  hands it to the row. */
   onEditing: OnEditing;
+  /** Called at each edit of the row's editor's own that changes the document - the reader's
+   *  typing in a heading as in a paragraph, never a collaborator's (`holdEditsToBlock`'s
+   *  `onOwnEdit`) - with the key of the row being edited and the row's block as the edit left
+   *  it, so the tree reads a read that drops the row while its note of the edit lasts as the
+   *  reader's (`IssueTree.tsx`'s `ownAct`). A list that keeps no such note - the Spec filter's
+   *  editing of a statement in place (`spec-filter/SpecFilterBody.tsx`) - passes none. */
+  onOwnEdit?: (row: string, block: DisplayTree) => void;
   /** What a key reports when the node it was pressed on has no text to put a caret in, or its
    *  editor could not open. */
   onReport: (report: string) => void;
+  /** Whether Enter on the row of a node read-only in the room puts the read-only caret in its
+   *  words (R6, `read-only-caret.ts`) before it says the row has no text to put a caret in. The
+   *  outline and the Spec view take it; a view whose rows the margin part's caret waits on a gate
+   *  for (`text-comments/gates.ts`) passes that gate. */
+  readOnlyCaret?: boolean;
 }): NodeEditing {
   const [editing, setEditing] = useState<EditedRow | undefined>(undefined);
   // The row the reader has just left the caret in, so that row takes the focus back.
   const leaving = useRef<string | undefined>(undefined);
+  // The room of the issue's tree read, read through a ref so `edit` keeps its dependencies, by
+  // the issue the page's writer is of (`OutlineWriter.issueKey`); with no writer there is none,
+  // and a row is edited as it is without a room.
+  const room = useRoomFacts(useOutlineWriter()?.issueKey);
+  const roomNow = useRef(room);
+  roomNow.current = room;
+  // Graph's move keys, read as a key is pressed (`MoveKeyBridge`). The block a move key of this
+  // editing was taken in, whose caret the row puts back where a change takes it out of the block
+  // (`putKeptCaret`) rather than where Enter puts it; and the row a move drew the node at anew,
+  // whose caret comes back as it is placed there (`follow`). Enter on a row, and the editing's
+  // end, put the caret where they always do.
+  const bridge = useRef(moveKeys);
+  bridge.current = moveKeys;
+  const keyMoved = useRef<string | undefined>(undefined);
+  const followed = useRef<string | undefined>(undefined);
+  if (editing === undefined) keyMoved.current = undefined;
+  if (moveKeys !== undefined) {
+    moveKeys.follow = (from, to) => {
+      followed.current = to;
+      setEditing((held) => (held?.row === from ? { ...held, row: to } : held));
+    };
+    moveKeys.restore = () => {
+      const selector = editing === undefined ? undefined : rowSelectorOf(editing.row);
+      const row =
+        selector === undefined ? null : container.current?.querySelector<HTMLElement>(selector);
+      if (hold.current !== "on" || row === null || row === undefined) return;
+      putKeptCaret(row, editing?.blockId, editorView.current);
+    };
+  }
 
   const edit = useCallback(
     (row: string, node: TreeNode, at?: CaretAt) => {
-      const place = documentOfNode(node.id, artifacts);
-      if (place === undefined) {
-        // The row of a node read-only in the room - an ask, a comment, a message, a lens, a
-        // finding, a risk, a constraint or a result - takes a caret that moves and selects in its
-        // text and types nothing (R6, `read-only-caret.ts`); a row that draws none of its text
-        // still has nothing to put a caret in. Enter is taken on the row itself
-        // (`useTreeKeymap`'s `tree-edit`), so the row is the element that holds the focus.
+      keyMoved.current = undefined;
+      // A node with no text of a room or a document to put the caret in. The row of a node
+      // read-only in the room - an ask, a comment, a message, a lens, a finding, a risk, a
+      // constraint or a result - takes a caret that moves and selects in its text and types
+      // nothing, where the tree puts one in (`readOnlyCaret`); a row that draws none of its text
+      // still has nothing to put a caret in. Enter is taken on the row itself (`useTreeKeymap`'s
+      // `tree-edit`), so the row is the element that holds the focus.
+      const noText = () => {
         const focused = document.activeElement;
         const drawn = focused?.matches(rowSelectorOf(row)) === true ? focused : null;
-        if (caretOnEnter(drawn, node.type)) return;
+        if (readOnlyCaret && caretOnEnter(drawn, node.type)) return;
         onReport(KEY_REPORTS.no_text);
+      };
+      // An issue whose tree read the cache holds is edited in its room: a node of another issue,
+      // and on a converted issue the conversation, take no caret there.
+      const facts = roomNow.current;
+      if (facts !== undefined) {
+        const target = roomTarget(node, artifacts, facts);
+        if ("report" in target) {
+          if (target.report === "no_text") noText();
+          else onReport(KEY_REPORTS[target.report]);
+          return;
+        }
+        // Enter on the row already edited before the editor's hold is on leaves the first Enter's
+        // look for the caret under way, as it does on an issue with no room (below).
+        if (editing?.row === row && hold.current !== "on") return;
+        setEditing({ artifactId: target.artifactId, at, blockId: target.blockId, row });
+        return;
+      }
+      const place = documentOfNode(node.id, artifacts);
+      if (place === undefined) {
+        noText();
         return;
       }
       // Enter on the row already edited before the editor's hold is on leaves the first Enter's
@@ -227,7 +391,7 @@ export function useNodeEditing({
       if (editing?.row === row && hold.current !== "on") return;
       setEditing({ artifactId: place.artifact.id, at, blockId: place.blockId, row });
     },
-    [artifacts, editing, onReport]
+    [artifacts, editing, onReport, readOnlyCaret]
   );
   const stopEditing = useCallback(() => {
     setEditing((held) => {
@@ -263,6 +427,10 @@ export function useNodeEditing({
   const letGo = useRef<(() => void) | undefined>(undefined);
   // The view of the editor the page handed over last, while the page holds it.
   const editorView = useRef<EditorView | undefined>(undefined);
+  // The row each edit of the editor's own is reported for, and what hears of it (`onOwnEdit`),
+  // read as each edit is made.
+  const ownEdit = useRef({ onOwnEdit, row: editingRow });
+  ownEdit.current = { onOwnEdit, row: editingRow };
   const onEditor = useCallback((editor: RowEditor | undefined) => {
     letGo.current?.();
     letGo.current = undefined;
@@ -278,6 +446,10 @@ export function useNodeEditing({
       () => {
         hold.current = "on";
         holdChanged.current?.();
+      },
+      (block) => {
+        const { onOwnEdit: heard, row } = ownEdit.current;
+        if (row !== undefined) heard?.(row, block);
       }
     );
   }, []);
@@ -447,6 +619,16 @@ export function useNodeEditing({
     const confine = () => {
       if (!acts.signal.aborted) return;
       const row = box.querySelector<HTMLElement>(rowSelector);
+      // After a move key, a caret a change of the room took out of the block goes back where the
+      // reader had it, not to the block's nearer end (`keyMoved`).
+      if (
+        row !== null &&
+        keyMoved.current === blockId &&
+        caretOutOfBlock(row, blockId) &&
+        putKeptCaret(row, blockId, editorView.current)
+      ) {
+        return;
+      }
       if (row !== null) selectionIntoBlock(row, blockId);
     };
     // The focus coming back into the editor from outside it - Details' Close gives back the
@@ -531,6 +713,15 @@ export function useNodeEditing({
       if (settled !== undefined) {
         // An editor made again in the row's place is no editor a caret goes in until its own
         // hold is on.
+        // After a move key, the caret goes back where the reader had it (`keyMoved`).
+        if (
+          hold.current === "on" &&
+          keyMoved.current === blockId &&
+          (focusOnDocument() || caretOutOfBlock(row, blockId)) &&
+          putKeptCaret(row, blockId, editorView.current)
+        ) {
+          return acts.signal.aborted;
+        }
         if (hold.current === "on" && (focusOnDocument() || caretOutOfBlock(row, blockId))) {
           caretInBlock(row, blockId, editing.at);
         }
@@ -585,17 +776,46 @@ export function useNodeEditing({
         return hold.current === "on";
       }
       if (offRow || unheld) return endUnplaced(row, rowsFocus, offRow);
+      // A new row of Graph's (`MoveKeyBridge.fresh`, INFRA-5705's R3) whose block the editor does
+      // not draw yet takes the caret with none - the box shut, the editable focused once the hold
+      // is on - and is looked at again as the reader's first character draws the block; then the
+      // caret stays where their typing left it, in the block, rather than at its start.
+      const fresh = bridge.current?.fresh?.(rowKey) === true;
+      if (fresh && !drawsBlock(row, blockId)) {
+        caretForNewBlock(row, hold.current === "on");
+        return false;
+      }
       // No caret goes in an editor that does not hold its edits to the node's block yet: the
       // focus stays on the row, where no key edits the document, and the row is looked at
       // again as the hold goes on (`holdChanged`).
-      if (hold.current !== "on" || !caretInBlock(row, blockId, editing.at)) return false;
+      if (hold.current !== "on") return false;
+      const inNewBlock =
+        fresh &&
+        document.activeElement?.getAttribute("contenteditable") === "true" &&
+        row.contains(document.activeElement) &&
+        !caretOutOfBlock(row, blockId);
+      if (
+        !(inNewBlock || (fresh && putKeptCaret(row, blockId, editorView.current))) &&
+        !caretInBlock(row, blockId, editing.at)
+      ) {
+        return false;
+      }
       settled = holdEditorAtBlock(row, blockId, editing.at);
+      // The row a move drew the node at anew (`follow`): the caret goes back where the reader had
+      // it in the node's block, not to the block's start where Enter puts it (R4).
+      if (followed.current === rowKey) {
+        followed.current = undefined;
+        putKeptCaret(row, blockId, editorView.current);
+      }
       window.clearTimeout(look);
       looking.abort();
       // Only a selection moved after the caret was placed is the editor's doing.
       document.addEventListener("selectionchange", changed, { signal: acts.signal });
       document.addEventListener("selectionchange", confine, { signal: confining.signal });
       box.addEventListener("focusin", cameBack, { capture: true, signal: confining.signal });
+      // Graph's retype waits for this caret, and writes in the editor that holds it (R5).
+      const view = editorView.current;
+      if (view !== undefined) bridge.current?.caretIn?.(rowKey, blockId, view);
       return acts.signal.aborted;
     };
     const changed = () => {
@@ -688,7 +908,17 @@ export function useNodeEditing({
           editable.focus({ preventScroll: true });
           selectInEditor([anchor, anchorOffset], [focus, focusOffset]);
         } else {
-          caretInBlock(row, editingBlock);
+          // After a move key, the caret the reader had in the node's block (`keyMoved`).
+          if (
+            keyMoved.current === editingBlock &&
+            putKeptCaret(row, editingBlock, editorView.current)
+          ) {
+            return;
+          }
+          // A new row with no block drawn yet takes the focus back in its editor (R3).
+          if (!caretInBlock(row, editingBlock) && bridge.current?.fresh?.(editingRow) === true) {
+            caretForNewBlock(row, true);
+          }
         }
       });
     };
@@ -739,11 +969,31 @@ export function useNodeEditing({
       (event) => {
         const row = box.querySelector<HTMLElement>(rowSelector);
         if (row === null) return;
+        // Graph's move keys, where the tree gives them (`MoveKeyBridge`): a key taken in the
+        // node's block marks the block, so the caret comes back where the reader had it.
+        const take = bridge.current?.take;
+        const onMove =
+          take === undefined
+            ? undefined
+            : (move: MoveEntry | EndKey) => {
+                const taken = take(editingRow, move);
+                if (taken) keyMoved.current = editingBlock;
+                return taken;
+              };
+        // A new row's first character writes its block, where Graph gives the way (R3).
+        const write = bridge.current?.write;
+        const view = editorView.current;
+        const onFirst =
+          write === undefined || view === undefined || hold.current !== "on"
+            ? undefined
+            : (words: string) => write(editingRow, words, view);
         confineKey(
           row,
           hold.current === "on" ? editingBlock : undefined,
           event,
-          editorView.current
+          onMove,
+          view,
+          onFirst
         );
       },
       { capture: true, signal: listening.signal }

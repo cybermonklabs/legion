@@ -2,6 +2,7 @@ import { type ReactNode, useId } from "react";
 
 import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useTooltips } from "../../components/tooltips";
 import {
   dangerText,
   selectedCardBg,
@@ -24,6 +25,11 @@ import {
   type RefPickerRow,
 } from "./ref-picker";
 import type { RefPicker } from "./useRefPicker";
+
+/** A line a picker row draws whole where its surface draws no tooltips (the issue page), in the
+ *  stronger muted role: it breaks anywhere, since nothing on that surface could give back what an
+ *  ellipsis cut. */
+const WRAPPED_LINE = `overflow-hidden text-xs [overflow-wrap:anywhere] ${textOptionDescription}`;
 
 /**
  * What the agent and role rows' own source is, where those rows would be: the shared refilling
@@ -205,10 +211,31 @@ export function RefPickerList({
   picker: RefPicker;
 }): ReactNode {
   const headingPrefix = useId();
+  // A row's detail is cut to one line, and its `title` gives the whole detail back. A surface
+  // with no tooltips (the issue page) carries no `title` for it (`useTooltips`), so there the
+  // detail is drawn whole (`WRAPPED_LINE`).
+  const tooltips = useTooltips();
   if (!picker.open) return null;
   const take = (id: string) => {
     const insertion = picker.take(id);
     if (insertion !== undefined) onTake(insertion);
+  };
+  const sessionOf = (one: RefPickerRow) =>
+    one.kind === "agent" ? one.agent?.sessionId : undefined;
+  // A session's row on a surface with no tooltips draws the session's full id as a line of its
+  // own, under its detail, quiet and wrapped whole: no tooltip on that surface could give back
+  // what an ellipsis cut. The line is hidden from assistive technology, so its words are no part
+  // of the row's name. The row names it in `aria-describedby`, which reads a line it names even
+  // when that line is hidden, so the id is still the row's description.
+  const sessionLineId = (one: RefPickerRow) =>
+    !tooltips && sessionOf(one) !== undefined ? `${headingPrefix}-${one.id}` : undefined;
+  const sessionLine = (one: RefPickerRow) => {
+    const id = sessionLineId(one);
+    return id === undefined ? null : (
+      <span aria-hidden="true" className={WRAPPED_LINE} id={id}>
+        {sessionOf(one)}
+      </span>
+    );
   };
   const row = (one: RefPickerRow) => (
     // A row is a `div`, not a `button`: a row that holds parts carries the control that lists
@@ -216,7 +243,11 @@ export function RefPickerList({
     // full id as its title, which is its tooltip and, beside the words that name the row, its
     // accessible description: its name can be the short form `session:<8>…`, which two sessions
     // may share.
+    // That holds where the surface draws tooltips. Where it draws none (the issue page), the row
+    // carries no title. It draws the full id on screen instead, as a line under its detail
+    // (`sessionLine`), and that line is its description.
     <div
+      aria-describedby={sessionLineId(one)}
       aria-selected={one.id === picker.activeId}
       className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${surfaceMutedHoverBg} ${
         one.id === picker.activeId ? selectedCardBg : ""
@@ -233,18 +264,23 @@ export function RefPickerList({
       onMouseEnter={() => picker.highlight(one.id)}
       role="option"
       tabIndex={-1}
-      title={one.kind === "agent" ? one.agent?.sessionId : undefined}
+      title={tooltips ? sessionOf(one) : undefined}
     >
       <RefKindIcon kind={one.kind} />
       <span className="flex min-w-0 flex-1 flex-col">
         <RefRowLabel row={one} />
-        {one.detail === "" ? null : (
+        {one.detail === "" ? null : tooltips ? (
           // The stronger muted role, which clears AA over the sky fill a highlighted row wears
           // as well as over the list's own surface.
           <TruncatedText className={`text-xs ${textOptionDescription}`} title={one.detail}>
             <RefRowDetail row={one} />
           </TruncatedText>
+        ) : (
+          <span className={WRAPPED_LINE}>
+            <RefRowDetail row={one} />
+          </span>
         )}
+        {sessionLine(one)}
       </span>
       <RefPartsControl picker={picker} row={one} />
     </div>

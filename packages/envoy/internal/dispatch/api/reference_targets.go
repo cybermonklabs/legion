@@ -26,6 +26,7 @@ import (
 // The ids that the set writes short cost one statement per kind of item (refs.ResolvePrefixes),
 // except the blocks of a document, which cost two: one for the blocks of the latest version of
 // each document, and one for the blocks of the versions that the references pin.
+// Gone document blocks add one batched history statement, after resolving the caller's projects.
 //
 // The other bound on a batch is the request line itself, which this server sets no limit of its
 // own on. A proxy in front of the server can set one; 16 KB is one known such limit, an AWS load
@@ -49,11 +50,13 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // as it is; this read names no edges at all.
 //
 // A reference the grammar cannot read is refused by name (parseRequestRef, as the per-reference
-// route refuses its own), and so is a set past referenceTargetsMax, which is refused before
-// anything is parsed. A reference that reads but names nothing is answered, gone: a chip whose
-// target was deleted still has to draw. The read answers for the acting reader, as every read of
-// the graph does: a target reserved for an author who is not the reader, or at node state gone,
-// is answered gone, which is what an address nobody holds answers (refs.TargetNames).
+// route refuses its own), and so is a reference to a party - a person, an agent's session or a
+// role - which the grammar reads and the graph holds no node for (refs.TargetOf), and a set past
+// referenceTargetsMax, which is refused before anything is parsed. A reference that reads but
+// names nothing is answered, gone: a chip whose target was deleted still has to draw. The read
+// answers for the acting reader, as every read of the graph does: a target reserved for an author
+// who is not the reader, or at node state gone, is answered gone, which is what an address nobody
+// holds answers (refs.TargetNames).
 //
 // A member naming a comment or a message, or a block of one, carries its post's marks as every
 // read of the post does (refs.TargetName): edited_at where its author edited it, and deleted_at
@@ -76,13 +79,15 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // reader may not see is answered gone, as a target nothing addresses is (refs.TargetNames), and a
 // short id is resolved among the items the reader may see alone (refs.ResolvePrefixes), so an
 // item the reader may not see makes no short id ambiguous and names none.
+// A gone document block can also carry last_held, but only when the caller may see its history.
 //
 // A caller that sent `Dispatch-Trees: 1` is given each block's whole text as its text_tree
 // (blockTrees). The trees are resolved before the ETag is made, because the ETag hashes them: a
 // block's name stops at its stored excerpt, so a change past it moves the tree and not the name.
 func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
-	if !ok {
+	who, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
@@ -120,6 +125,11 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 // gone, as one nothing addresses is. trees is the request's own reader, nil for a caller that asked
 // for no tree, which then reads no block's text at all.
 func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displayTreeReader) ([]model.ReferenceTarget, error) {
+	// Short ids, names and block trees are read as the recorded actor (model.Actor.Recorded,
+	// as actingReader projects it); last_held checks access under the live credential
+	// (referenceTargetsLastHeld).
+	historyReader := who
+	who = who.Recorded()
 	raw := r.URL.Query()["ref"]
 	if len(raw) == 0 {
 		return nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "ref is required, once per reference to resolve")
@@ -165,6 +175,9 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 			answer.Name, answer.Gone = name.Name, name.Gone
 			answer.EditedAt, answer.DeletedAt, answer.DeletedBy = name.EditedAt, name.DeletedAt, name.DeletedBy
 		}
+	}
+	if err := s.referenceTargetsLastHeld(r.Context(), historyReader, answers, named, parsed); err != nil {
+		return nil, err
 	}
 	if err := s.blockTrees(r.Context(), who, answers, named, trees); err != nil {
 		return nil, err
@@ -571,12 +584,16 @@ func withoutBlankEnds(lines string) string {
 // target is deleted never share a tag, so a short id that stops being ambiguous, or starts to be,
 // changes the tag too. A caller given trees and one given none are answered different bodies
 // wherever a block is named, and different tags with them.
+// A last_held address is also hashed with its length.
 func referenceTargetsETag(targets []model.ReferenceTarget) string {
 	hash := sha256.New()
 	for _, target := range targets {
 		_, _ = fmt.Fprintf(hash, "%s %s %t %t %s %s %s %d %s %d %s\n", target.Ref, target.Kind, target.Gone,
 			target.Ambiguous, etagTime(target.EditedAt), etagTime(target.DeletedAt), etagActor(target.DeletedBy),
 			len(target.Name), target.Name, len(target.TextTree), target.TextTree)
+		if target.LastHeld != "" {
+			_, _ = fmt.Fprintf(hash, "%d %s\n", len(target.LastHeld), target.LastHeld)
+		}
 	}
 	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
 }

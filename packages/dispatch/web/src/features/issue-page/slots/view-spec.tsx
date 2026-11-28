@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo } from "react";
-import { useLocation } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
+import { useLastHeldOpening } from "../graph-edit/last-held-store";
 import { useOutlineEditing } from "../IssuePresetPanels";
 import { briefCounts } from "../IssueThreeThings";
 import { issueAddress } from "../issue-address";
@@ -56,6 +57,9 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
   // it (`useIssueTree`, `EVENT_FRESH`): staleness is per observer, so under the app's 30 s
   // `staleTime` the view opened later would ask for it again.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  // Where the address opens instead, which the page's names read publishes (R9 of INFRA-5705,
+  // `useLastHeldOpening`), so the view reads it with no tree of its own.
+  const lastHeldAddress = useLastHeldOpening(issue.key);
   // The address's own node, resolved against the whole tree and kept by the view
   // (`useAddressTarget`, as the outline reads it).
   const { named, reveal } = useAddressTarget(root, address);
@@ -95,6 +99,11 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
   const { onEditing, panels } = useOutlineEditing(issue);
   return (
     <NoTooltips>
+      {/* A block the address names by its `#b-` fragment that the read the view draws from lacks
+          opens the version that last held it, or the view without the block (R9 of INFRA-5705,
+          `useLastHeldOpening`). The view stays drawn until the router moves, so each tree beside
+          it keeps the names read it holds. */}
+      {lastHeldAddress === undefined ? null : <Navigate replace to={lastHeldAddress} />}
       {/* The view's measure, the prototype's `.spec`: at most 1080 px, in the middle of the
           column; on a phone 4 px from the left edge and 10 px from the right, as the outline. */}
       <div className="mx-auto flex w-full max-w-[1080px] min-w-0 flex-col max-[761px]:-mr-1 max-[761px]:-ml-2.5 max-[761px]:w-auto">

@@ -19,6 +19,7 @@ import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import type { PublishedReferences, ReferenceNameReading } from "../refs/reference-names";
 import type { TextSource } from "../refs/text-references";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
+import { addLastHeldChips } from "./graph-edit/last-held-chips";
 import type { LensFacts } from "./lenses/lens-drafts";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import { titleReading } from "./statement-rules";
@@ -99,6 +100,13 @@ export interface NodeChip {
   /** The page's word for the edge this chip is, where the edge has one: a plan task's `needs`
    *  (`BLOCK_ATTRIBUTE_LABELS`). Absent for an edge the chip's own name says enough about. */
   readonly label?: string;
+  /** The `dispatch://` address of the version that last held the target, where the batched
+   *  reference read answers it gone with one (`ReferenceTarget.last_held`, R9 of INFRA-5705): a
+   *  block of a document pinned to a version, which the row's chip draws as its gone word linked
+   *  to that version on the page (`NodeRow.tsx`'s `Chip`, `graph-edit/last-held.ts`). Absent for
+   *  every target something answers to, and for a gone one the read names no version of
+   *  (`tree-drafts.ts`' `lastHeldOf`). */
+  readonly lastHeld?: string;
   /** How the target is named, by the batched reference read and the issue's own documents
    *  (`treeContext`): the reading the page publishes for it, which the shared reader projects
    *  into the name every surface reads the target by, as a link to it reads it
@@ -597,6 +605,10 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   if (tree === undefined) return assemble(reads.issue, [], words.chipOf);
   const drafts = treeDraftsFrom(tree, reads, words);
   addDecisions(drafts, reads, words, () => askNodeIds(drafts, tree, reads));
+  // A node its words cite that the names read answers deleted, with the version that last held
+  // it, is a chip of the row as well (R9 of INFRA-5705), so the chip and the words open one
+  // version.
+  addLastHeldChips(drafts, reads, words);
   const root = assemble(reads.issue, [...drafts.values()], words.chipOf);
   return nextTreeCursor(tree) === undefined ? root : { ...root, moreToRead: true };
 }

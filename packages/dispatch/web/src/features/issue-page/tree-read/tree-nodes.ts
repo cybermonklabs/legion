@@ -36,6 +36,7 @@ import {
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import { lensChips, lensDrafts } from "../lenses/lens-drafts";
 import { storeWords } from "../lenses/store-words";
+import { modelDraftSteps } from "../model-rows/model-drafts";
 import {
   blockAttributeLabel,
   coverageNotes,
@@ -82,13 +83,15 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  * row reads as it read when the outline was built from the page's other reads; an `ask` block's
  * are its question as the asks read holds it (`draftAsk`).
  *
- * Each kind the page draws is one step of `treeDraftSteps`. A node of any other kind - a
- * criterion, a lens and its kind, a finding, a risk, a constraint, an interaction - reaches no
- * step of this part's, makes no draft and stays in the answer, which the page keeps whole (R7);
+ * Each kind the page draws is one step of `treeDraftSteps`. A node of any other kind - a lens and
+ * its kind, a finding, a risk, a constraint, an interaction - reaches no step of this part's,
+ * makes no draft and stays in the answer, which the page keeps whole (R7);
  * a later part draws a kind of its own with one line in that list, and adds a member to another
  * step's draft with one line in `treeDraftMarks`. A check of an issue under this one makes no
- * draft either, nor does its plan task but where the read answers its place in the plan
- * (`draftServing`), as the Plan view's read does.
+ * draft in this part's steps either, nor does its plan task but where the read answers its place
+ * in the plan (`draftServing`), as the Plan view's read does. Part Y's steps, first in that list
+ * (`model-rows/model-drafts.ts`), draw a criterion and a check, a plan task and a result of an
+ * issue under this one.
  *
  * `buildIssueTree` builds the tree from these drafts, so this module imports no code of
  * `issue-tree.ts`, which would close an import cycle (`biome.json`'s `noImportCycles`): the word
@@ -219,6 +222,7 @@ export type TreeDraftMark = (
  * (`isPlainBlock`), a reading, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
+  ...modelDraftSteps({ draftOf, isForeign, isStatementNode, madeBy }),
   lensDrafts,
   draftRequirement,
   draftServing,
@@ -857,9 +861,9 @@ function draftProse(
  * supertag (`typedNodeOf` reads the typed node of that reading), an ask's block's `ask` among
  * them, so a block of the supertag `block` opens none. A finding is a block whose id names its
  * lens (`lens/<uuid>#<block id>`, as `lenses/store-link.ts` reads a finding's read id) or whose
- * parent is a lens, so it is never drafted as prose, even where nothing drafts its lens. A block
- * of an ask, a comment or a message is a node of its item's own block kind (`comment_block`),
- * part of that item, and no block node.
+ * parent is a lens (`lensTypeOf`), so it is never drafted as prose, even where nothing drafts its
+ * lens. A block of an ask, a comment or a message is a node of its item's own block kind
+ * (`comment_block`), part of that item, and no block node.
  */
 function isPlainBlock(node: TreeAnswerNode, context: TreeDraftContext): boolean {
   if (node.kind !== "block" || node.supertag !== "block" || node.id.startsWith("lens/")) {
@@ -872,16 +876,19 @@ function isPlainBlock(node: TreeAnswerNode, context: TreeDraftContext): boolean 
 }
 
 /** A reading: an agent's reading of the ask or the decision it reads, never of the issue, drawn
- *  as the outline drew one, by its kind and its words and nothing more. It stands under the
- *  parent the read gives it, the ask or the decision its `part_of` reaches, as every draft whose
- *  step names no parent does (`placeOf`), and nowhere else. */
+ *  as the outline drew one, by its kind, its words, and the agent that wrote it and when, as the
+ *  read answers them (`madeBy`). It stands under the parent the read gives it, the ask or the
+ *  decision its `part_of` reaches, as every draft whose step names no parent does (`placeOf`),
+ *  and nowhere else. */
 function draftReading(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   if (node.supertag !== "reading") return undefined;
-  return draftOf(node, "reading", context);
+  const draft = draftOf(node, "reading", context);
+  madeBy(draft, node);
+  return draft;
 }
 
 /** A child issue, with its row as the issue read carries it (`TreeNode.child`). The issue itself
@@ -978,10 +985,10 @@ function pointersOf(node: TreeAnswerNode, name: string): readonly string[] {
 }
 
 /** When the node was made and who made it, as the read answers them: what the outline draws for
- *  an ask, a comment, a message and a result, and for no document block, decision or child
- *  issue. The read lists every author of the node's first version, whoever made it first ahead
- *  of the rest, and a row draws one name: the first, and none where the list is empty or null;
- *  and no time where the store records none. */
+ *  an ask, a comment, a message, a criterion, a result and a reading, and for no other document
+ *  block, nor a decision or a child issue. The read lists every author of the node's first
+ *  version, whoever made it first ahead of the rest, and a row draws one name: the first, and none
+ *  where the list is empty or null; and no time where the store records none. */
 function madeBy(draft: Draft, node: TreeAnswerNode): void {
   if (node.made_at !== null) draft.at = node.made_at;
   const author = node.author?.[0];

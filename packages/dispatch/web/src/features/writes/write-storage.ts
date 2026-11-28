@@ -78,7 +78,12 @@ export type KeptField =
 
 /** A request as it is kept: its method, its path and its JSON body, or an upload's form. */
 export type KeptRequest =
-  | { readonly method: WriteMethod; readonly path: string; readonly body?: unknown }
+  | {
+      readonly method: WriteMethod;
+      readonly path: string;
+      readonly body?: unknown;
+      readonly headers?: WriteRequest["headers"];
+    }
   | { readonly method: WriteMethod; readonly path: string; readonly form: readonly KeptField[] };
 
 /** One write as it is kept: everything a reload needs to make it again, show it and order it. */
@@ -151,6 +156,15 @@ const keptRequestShape = shape.either(
   shape.record({ body: shape.unknown, method: shape.oneOf(...WRITE_METHODS), path: shape.string })
 ) satisfies Shape<KeptRequest>;
 
+/** The precondition a kept request goes under (`KeptRequest.headers`): none, or `If-Match` alone,
+ *  a string. `keptRequestShape` reads no `headers`, and `send` sets every header the request
+ *  holds as it is (`api/client.ts`), so a kept one is checked apart, a header beside `If-Match`
+ *  among what does not fit (`load`). */
+const keptHeadersShape = shape.optional(
+  (value: unknown): value is NonNullable<WriteRequest["headers"]> =>
+    shape.record({ "If-Match": shape.string })(value) && Object.keys(value).length === 1
+) satisfies Shape<WriteRequest["headers"]>;
+
 /** An entry as it is read back: a kept write, whose `carried` and `keyed` can be missing, and
  *  the format's version. The version stands still while a field is only added: the release
  *  before this one writes `carried` and no `keyed`, and the one before that wrote neither, so an
@@ -222,9 +236,14 @@ export function refusalFrom(
 }
 
 /** `request` as it is kept: an upload's form by its fields, its file's place among them. */
-export function keptRequest({ body, method, path }: WriteRequest): KeptRequest {
+export function keptRequest({ body, headers, method, path }: WriteRequest): KeptRequest {
   if (!(body instanceof FormData))
-    return body === undefined ? { method, path } : { body, method, path };
+    return {
+      ...(body === undefined ? {} : { body }),
+      ...(headers === undefined ? {} : { headers }),
+      method,
+      path,
+    };
   const form: KeptField[] = [];
   for (const [name, value] of body) {
     form.push(typeof value === "string" ? { name, value } : { file: true, name });
@@ -325,6 +344,11 @@ export class WriteStorage {
         `${ENTRY_PREFIX}${entry.key}` !== name ||
         entry.login !== login
       ) {
+        removeEntry(storage, name);
+        continue;
+      }
+      // A kept request's precondition goes out as it is kept, so it is held to its type too.
+      if (entry.request !== null && !keptHeadersShape(Reflect.get(entry.request, "headers"))) {
         removeEntry(storage, name);
         continue;
       }

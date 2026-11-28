@@ -43,7 +43,13 @@ import {
   rowWords,
   tree,
 } from "./issue-page-g";
-import { activePreset, focusInside, identityBlockBottom, openPreset } from "./issue-page-i";
+import {
+  activePreset,
+  caretInNode,
+  focusInside,
+  identityBlockBottom,
+  openPreset,
+} from "./issue-page-i";
 import { refuseTreeRead, treeReadRoute } from "./issue-page-t-tree";
 import {
   asRecorder,
@@ -591,10 +597,10 @@ test("the Verification filter says an issue holds no checks, in its own column",
 // its target, never as its address. A result an agent recorded names it by its role's word. A
 // check that serves two statements is drawn under each, names the other by its first words, and
 // is counted once. A statement that only a child's check serves is covered, carries no gap, and
-// says so in one line. A statement of 200 words is cut at six lines, and its "more" is a tab stop
-// between the chips and the check's link. With A opened, and again with the check's facts open,
-// every element stays inside its card and no two texts overlap, this issue's cards being the only
-// ones that hold what the view adds to a card.
+// says so in one line. A statement of 200 words is drawn whole with no "more" control, Tab from
+// the chips reaches the check's link, and with A drawn whole, and again with the check's facts
+// open, every element stays inside its card and no two texts overlap, this issue's cards being
+// the only ones that hold what the view adds to a card.
 // SLOW(>=2s): an issue, its child and their two documents seeded and waited for in the coverage
 // read, then the view loaded and read at two widths, with a walk by Tab at the first.
 test("the Verification view draws a check's links, its agent's role and a child's checks @phone", async ({
@@ -603,10 +609,6 @@ test("the Verification view draws a check's links, its agent's role and a child'
   test.setTimeout(180_000);
   await phase(browser, seedLinkedChecks, async (page, seeded) => {
     const { a, b, c, check } = seeded.nodes;
-    const cut = new RegExp(
-      `^${CONTROL_LABELS.read_more} · [\\d,]+ ${CONTROL_LABELS.read_more_words}$`,
-      "u"
-    );
     for (const width of [1440, 390]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
       await openPreset(page, seeded.key, "verification");
@@ -632,63 +634,40 @@ test("the Verification view draws a check's links, its agent's role and a child'
         `the legend does not count the check it draws twice once, in its state, at ${width} px`
       ).toEqual([1, 1]);
 
-      // A is cut at six lines, and its "more" opens it whole: at 1440 px from the keyboard, Tab
-      // from the chip All reaching it and then the link in the check's words; at 390 px by a
-      // press.
+      // A is drawn whole with no "more" control, every element staying inside its card and no two
+      // texts overlapping, and at 1440 px Tab from the chip All reaches the link in the check's
+      // words.
       const words = rowWords(statementA);
       const more = rowMore(statementA);
-      // The page measures a statement's cut once the statement stands within a screen of the
-      // viewport, in the frame after it comes there, so A is brought there before its cut is read.
       await statementA.scrollIntoViewIfNeeded();
-      await expect(more, `statement A draws no "more" at ${width} px`).toHaveText(cut);
-      // The line has just matched its cut words above, so one reading of it is settled.
-      const heldBack = Number(/[\d,]+/u.exec(await more.innerText())?.[0]?.replace(/,/g, ""));
-      expect(
-        heldBack,
-        `statement A's cut holds back 20 words or fewer at ${width} px`
-      ).toBeGreaterThan(20);
-      // The words of A are set on 24 px lines, so six of them are more than five lines' height
-      // and no more than six.
-      const cutHeight = (await words.boundingBox())?.height ?? Number.NaN;
-      expect(cutHeight, `statement A is not cut at six lines at ${width} px`).toBeGreaterThan(
-        5 * 24
-      );
-      expect(cutHeight, `statement A is not cut at six lines at ${width} px`).toBeLessThanOrEqual(
-        6 * 24 + 1
-      );
+      await expect(more, `statement A draws a "more" control at ${width} px`).toHaveCount(0);
+      await expect(
+        words,
+        `statement A does not hold its whole seeded words at ${width} px`
+      ).toHaveText(longWords("stated", 200), { useInnerText: true });
       const link = statementA.locator(`[data-verification-check-words] a[href="${RUNBOOK}"]`);
-      const tabTo = tabWalk(page, 20);
-      if (width === 1440) {
-        await verificationChip(page, "all").focus();
-        await tabTo(
-          more,
-          `Tab from the chip All does not reach statement A's "more" at ${width} px`
-        );
-        await page.keyboard.press("Enter");
-      } else {
-        await more.click();
-      }
-      await expect(more, `"more" does not open statement A at ${width} px`).toHaveText(
-        CONTROL_LABELS.read_less
-      );
       expect(
-        await words.evaluate((element) => element.scrollHeight - element.clientHeight),
-        `statement A hides a word once "more" opened it at ${width} px`
+        await words.evaluate(
+          (element) => element.scrollHeight - element.getBoundingClientRect().height
+        ),
+        `statement A hides a word instead of drawing whole at ${width} px`
       ).toBeLessThanOrEqual(1);
-      // Opened, the words of A, the check's link and chip, its "Also under" line and the line of
-      // checks elsewhere on C stay inside their cards and draw no text over another.
+      // With A drawn whole, its words, the check's link and chip, its "Also under" line and the
+      // line of checks elsewhere on C stay inside their cards and draw no text over another.
       expect(
         await boxesPastTheirCard(page),
-        `an element reaches past its card with statement A opened at ${width} px`
+        `an element reaches past its card with statement A drawn whole at ${width} px`
       ).toEqual([]);
       expect(
         await overlappingTexts(page),
-        `two pieces of text are drawn over each other with statement A opened at ${width} px`
+        `two pieces of text are drawn over each other with statement A drawn whole at ${width} px`
       ).toEqual([]);
       if (width === 1440) {
+        const tabTo = tabWalk(page, 20);
+        await verificationChip(page, "all").focus();
         await tabTo(
           link,
-          `Tab from statement A's "more" does not reach the link in the check's words at ${width} px`
+          `Tab from the chip All does not reach the link in the check's words at ${width} px`
         );
       }
 
@@ -793,10 +772,13 @@ test("the Verification view draws a check's links, its agent's role and a child'
 // and the view's top on screen, and asks the server for nothing the first load did not: the view's
 // read of the tree came with the load, which R4 sends for this seed's issue, a parent whose
 // Conversation's read holds no check of its children. Tab alone then reaches the chips, a check's
-// words, the copy control its facts draw and its line of earlier results, in reading order, and
-// Enter works each one; the tree answers the outline's keys, and a press on a result's cell or on a
-// statement's words opens a check's facts; axe finds no break of the tree's structure; `t k` from a
-// row turns the view off; and the view's own address leaves the focus on the issue's row.
+// words, its Facts control, the copy control its facts draw and its line of earlier results, in
+// reading order, and Enter works each one; the tree answers the outline's keys, Facts shuts and
+// opens a check's facts while the focus stays and `o` keeps them drawn after `j` moves on; a press
+// on a result's cell focuses its check's row (facts drawn while focused and shut once `j` moves
+// on) and a press on a statement's words puts the caret in it, Escape giving the row back; axe
+// finds no break of the tree's structure; `t k` from a row turns the view off; and the view's own
+// address leaves the focus on the issue's row.
 // SLOW(>=2s): a whole seeded issue loaded and waited out to a quiet window twice, a walk of up to
 // 40 Tabs and some twenty keys and presses each waited on, an axe pass, and a third load.
 test("the Verification view is worked by the keyboard alone", async ({ browser }) => {
@@ -896,6 +878,12 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       rowBody(check1).first(),
       "the focus on check 1's words does not open its facts"
     ).toBeVisible();
+    const check1Facts = check1.locator("[data-verification-facts]");
+    await tabTo(check1Facts, "Tab does not reach check 1's Facts control");
+    await expect(check1Facts, "check 1's Facts control does not read open").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
     await tabTo(
       rowBody(check1)
         .getByRole("button", { exact: true, name: CONTROL_LABELS.copy_command })
@@ -934,50 +922,113 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       rowBody(check1).first(),
       "the focus on check 1's row does not draw its facts"
     ).toBeVisible();
+    await expect(check1, "check 1's row does not read expanded while focused").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await expect(
+      check1Facts,
+      "check 1's Facts control does not agree with its row while focused"
+    ).toHaveAttribute("aria-expanded", "true");
+    // `o` keeps check 1's facts drawn after `j` moves on.
+    await page.keyboard.press("o");
+    await page.keyboard.press("j");
+    await expect(check1, "j does not move on from check 1's row").not.toBeFocused();
+    await expect(check1, "j shut the facts that o kept open on check 1").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await expect(rowBody(check1).first(), "o does not keep check 1's facts drawn").toBeVisible();
+    await expect(
+      check1Facts,
+      "check 1's Facts control does not agree with its row after o and j"
+    ).toHaveAttribute("aria-expanded", "true");
+    // Facts shuts the facts while the focus stays in the row, and opens them again, its
+    // `aria-expanded` agreeing with the row's each time.
+    await check1Facts.focus();
+    await expect(check1Facts, "check 1's Facts control does not take the focus").toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(check1, "Enter on check 1's row does not shut its facts").toHaveAttribute(
+    await expect(check1, "Enter on check 1's Facts does not shut its facts").toHaveAttribute(
       "aria-expanded",
       "false"
     );
+    await expect(
+      check1Facts,
+      "check 1's Facts control does not read shut after Enter"
+    ).toHaveAttribute("aria-expanded", "false");
     await expect(rowBody(check1), "check 1 draws facts it shut").toHaveCount(0);
+    await expect(check1Facts, "shutting facts moved the focus off check 1's Facts").toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(check1, "a second Enter on check 1's row does not open its facts").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-    await page.keyboard.press("j");
-    await expect(check1, "j does not move on from check 1's row").not.toBeFocused();
-    await expect(check1, "j shut the facts that Enter opened on check 1").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
+    await expect(
+      check1,
+      "a second Enter on check 1's Facts does not open its facts"
+    ).toHaveAttribute("aria-expanded", "true");
+    await expect(
+      check1Facts,
+      "check 1's Facts control does not read open after a second Enter"
+    ).toHaveAttribute("aria-expanded", "true");
+    await expect(
+      rowBody(check1).first(),
+      "check 1 does not draw the facts Facts opened again"
+    ).toBeVisible();
     await page.keyboard.press("End");
     await expect(
       body.locator("[data-node-row]").last(),
       "End does not reach the view's last row"
     ).toBeFocused();
 
-    // A check's facts open from a press on its latest result's cell and on its statement's words.
+    // A click on check 2's latest result focuses check 2's row (its facts are drawn while the
+    // focus is there, and shut once `j` moves on); a click on statement 3's words puts the caret
+    // in statement 3, and Escape takes it out again and gives the row back.
     const check2 = verificationCheck(page, checkOf(2));
     await expect(check2, "check 2's facts are drawn before a press").toHaveAttribute(
       "aria-expanded",
       "false"
     );
     await check2.locator("[data-verification-result]").first().click();
+    await expect
+      .poll(() => focusInside(check2), {
+        message: "a click on check 2's latest result does not put the focus in check 2's row",
+      })
+      .toBe(true);
     await expect(
       check2,
-      "a click on check 2's latest result does not open its facts"
+      "check 2's facts are not drawn while the focus is in its row"
     ).toHaveAttribute("aria-expanded", "true");
+    await expect(rowBody(check2).first(), "check 2 does not draw its facts").toBeVisible();
+    await page.keyboard.press("j");
+    await expect(check2, "j does not move on from check 2's row").not.toBeFocused();
+    await expect(check2, "check 2's facts did not shut once j moved the focus on").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect(rowBody(check2), "check 2 draws facts after j moves on").toHaveCount(0);
+    const statement3 = verificationCard(page, nodeOf(3));
     const check3 = verificationCheck(page, checkOf(3));
     await expect(check3, "check 3's facts are drawn before a press").toHaveAttribute(
       "aria-expanded",
       "false"
     );
-    await rowWords(verificationCard(page, nodeOf(3))).click();
+    await rowWords(statement3).click();
+    await expect
+      .poll(async () => (await caretInNode(page)) && (await focusInside(rowWords(statement3))), {
+        message: "a click on statement 3's words does not put the caret in statement 3",
+      })
+      .toBe(true);
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(() => caretInNode(page), {
+        message: "Escape does not take the caret out of statement 3",
+      })
+      .toBe(false);
     await expect(
-      check3,
-      "a click on statement 3's words does not open check 3's facts"
-    ).toHaveAttribute("aria-expanded", "true");
+      statement3,
+      "Escape from statement 3's editor does not give statement 3's row back"
+    ).toBeFocused();
+    await expect(check3, "a click on statement 3's words opened check 3's facts").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
 
     // The tree's structure, by the rules that read it.
     const scan = await new AxeBuilder({ page })
@@ -1215,15 +1266,12 @@ test("the Verification view says nothing of a check's statements before the Veri
   });
 });
 
-// On a running build of the page, Tab from the first check's line of earlier results took 18
-// presses through the second statement's links before it reached that statement's
-// "more · 1,152 words", and the cut hid every one of them, so the focus was drawn nowhere on
-// screen. A statement cut at six lines keeps the controls of its hidden words out of the tab
-// order, and Tab in reading order reaches its "more" next; once "more" opens the words, a link in
-// them takes the focus where it is drawn.
+// A statement of 200 words is drawn whole in the Verification view with no "more" control, so
+// its last link is drawn inside its words' box and Tab from the issue's row reaches that link
+// where it is drawn rather than behind a cut.
 // SLOW(>=2s): an issue with one statement of 200 words seeded and its view loaded and walked by
 // Tab.
-test("the Verification view gives no tab stop to a link its cut statement hides", async ({
+test("the Verification view draws a long statement whole, and Tab reaches its last link where it is drawn", async ({
   browser,
 }) => {
   const seed = async () => {
@@ -1231,8 +1279,8 @@ test("the Verification view gives no tab stop to a link its cut statement hides"
     return await createIssue({
       force: true,
       project: PROJECT,
-      spec: `:::requirement{#r-cut}\n${longWords("stated", 200)} Read [the runbook](${RUNBOOK}) last.\n:::\n`,
-      title: "A cut statement hides its last link",
+      spec: `:::requirement{#r-long}\n${longWords("stated", 200)} Read [the runbook](${RUNBOOK}) last.\n:::\n`,
+      title: "A long statement draws its last link whole",
     });
   };
   await phase(browser, seed, async (page, seeded) => {
@@ -1242,12 +1290,19 @@ test("the Verification view gives no tab stop to a link its cut statement hides"
     const words = card.locator("[data-node-words]").first();
     const more = card.locator("[data-node-more]");
     const link = words.locator(`a[href="${RUNBOOK}"]`);
-    // The page measures a statement's cut once the statement stands within a screen of the
-    // viewport, in the frame after it comes there, so it is brought there before its cut is read.
     await card.scrollIntoViewIfNeeded();
-    await expect(more, "the statement of 200 words is not cut").toHaveText(/^more · /u);
-    // Whether the focused element is inside the statement's words and outside the box the cut
-    // draws them in.
+    await expect(more, 'the statement of 200 words draws a "more" control').toHaveCount(0);
+    await expect(words, "the long statement does not draw all its words").toHaveText(
+      `${longWords("stated", 200)} Read the runbook last.`,
+      { useInnerText: true }
+    );
+    expect(
+      await words.evaluate(
+        (element) => element.scrollHeight - element.getBoundingClientRect().height
+      ),
+      "the long statement's words are clipped"
+    ).toBeLessThanOrEqual(1);
+    // Whether the focused element is inside the statement's words and outside their drawn box.
     const focusHidden = () =>
       words.evaluate((element) => {
         const focused = document.activeElement;
@@ -1260,37 +1315,20 @@ test("the Verification view gives no tab stop to a link its cut statement hides"
     expect(
       await link.evaluate((element) => {
         const box = element.closest("[data-node-words]")?.getBoundingClientRect();
-        return box !== undefined && element.getBoundingClientRect().top >= box.bottom;
+        const rect = element.getBoundingClientRect();
+        return box !== undefined && rect.top >= box.top - 1 && rect.bottom <= box.bottom + 1;
       }),
-      "the cut does not hide the statement's last link"
+      "the statement's last link is not drawn inside its words' box"
     ).toBe(true);
 
-    // From the issue's row, where the view's own address leaves the focus, Tab to "more".
+    // From the issue's row, where the view's own address leaves the focus, Tab reaches the link
+    // where it is drawn.
     await expect(verificationIssueRow(page)).toBeFocused();
-    const hidden: string[] = [];
-    let reached = false;
-    for (let pressed = 0; pressed < 20 && !reached; pressed += 1) {
-      await page.keyboard.press("Tab");
-      // Tab moves the focus within the press itself, so the focus read just after it is settled.
-      const held = await focusHidden();
-      if (held !== null) hidden.push(held);
-      // Tab moves the focus within the press itself, so this one reading of it is settled.
-      reached = await more.evaluate((element) => element === document.activeElement);
-    }
-    expect(hidden, "Tab puts the focus on a link the cut statement hides").toEqual([]);
-    expect(reached, "Tab does not reach the cut statement's more in 20 presses").toBe(true);
-
-    // Opened, the words draw the link, and the focus reaches it where it is drawn.
-    await page.keyboard.press("Enter");
-    await expect(more, "Enter on more does not open the statement").toHaveText(
-      CONTROL_LABELS.read_less
-    );
-    await page.keyboard.press("Shift+Tab");
-    await expect(
+    await tabWalk(page, 20)(
       link,
-      "Shift+Tab from less does not reach the opened statement's link"
-    ).toBeFocused();
-    expect(await focusHidden(), "the opened statement's link is focused outside its words").toBe(
+      "Tab does not reach the long statement's last link in 20 presses"
+    );
+    expect(await focusHidden(), "the long statement's last link is focused outside its words").toBe(
       null
     );
   });
