@@ -7421,23 +7421,6 @@ func (p *dispatchProcess) sendInBackground(method, path, body string) {
 	go func() { _, _ = p.trySend(method, path, body, asUser(dispatchTestLogin)) }()
 }
 
-// backDatePendingAttempts moves every pending attempt's claim and creation two minutes back, past
-// both ages the delivery sweep judges an attempt owed by (api/delivery_sweep.go,
-// owedMessageAttempt): the one-minute claim lease, and the minute a row must have been open for,
-// so a row does not wait real minutes for its attempts to be owed.
-func backDatePendingAttempts(t *testing.T, database *store.Store) {
-	t.Helper()
-	for _, table := range []string{"message_deliveries", "comment_deliveries"} {
-		if _, err := database.Pool.Exec(context.Background(), `
-			update `+table+`
-			set claimed_at = claimed_at - interval '2 minutes', created_at = created_at - interval '2 minutes'
-			where state = 'pending'
-		`); err != nil {
-			t.Fatalf("back-date the pending attempts of %s: %v", table, err)
-		}
-	}
-}
-
 // sweepWait is the hang guard on the surviving process's delivery sweep sending what a killed
 // process left owed. The sweep is a pass of the maintenance loop (api.RunMaintenanceSweep), which
 // the processes of these rows run at quickMaintenanceSweep: attempts back-dated just after a tick

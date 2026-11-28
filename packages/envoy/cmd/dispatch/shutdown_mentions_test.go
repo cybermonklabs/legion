@@ -278,6 +278,23 @@ func waitForSent(
 	}
 }
 
+// backDatePendingAttempts moves every pending attempt's claim and creation two minutes back, past
+// both ages the delivery sweep judges an attempt owed by (api/delivery_sweep.go,
+// owedMessageAttempt): the one-minute claim lease, and the minute a row must have been open for,
+// so a row does not wait real minutes for its attempts to be owed.
+func backDatePendingAttempts(t *testing.T, database *store.Store) {
+	t.Helper()
+	for _, table := range []string{"message_deliveries", "comment_deliveries"} {
+		if _, err := database.Pool.Exec(context.Background(), `
+			update `+table+`
+			set claimed_at = claimed_at - interval '2 minutes', created_at = created_at - interval '2 minutes'
+			where state = 'pending'
+		`); err != nil {
+			t.Fatalf("back-date the pending attempts of %s: %v", table, err)
+		}
+	}
+}
+
 // A process killed with mention sends in flight - SIGKILL, an out-of-memory kill, a lost node -
 // leaves their attempts pending under its claim. The next process on the database sends the
 // comment queued behind them at once, and each of them on the first delivery sweep after the
