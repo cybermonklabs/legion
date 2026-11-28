@@ -1405,6 +1405,9 @@ function recordDoubts(script: string, id: string, issue: string): string[] {
   if (call.kind === "refused") {
     return [`dispatch refuses its dispatch result: ${call.problems.join("; ")}`];
   }
+  if (call.kind === "unstorable") {
+    return [`dispatch refuses its dispatch result: ${call.field} holds bytes that are not UTF-8`];
+  }
   const doubts: string[] = [];
   if (call.dryRun) doubts.push("its dispatch result records nothing with --dry-run");
   if (call.args.retract !== undefined) {
@@ -1998,8 +2001,8 @@ function parseArguments(argv: readonly string[]): Options {
   throw new Error(`no such mode: ${mode}. The modes are texts and rounds.`);
 }
 
-function dispatchConfig(): DispatchConfig {
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(
+async function dispatchConfig(): Promise<DispatchConfig> {
+  const { dispatch: resolution, warnings } = await sessionDispatchSettings(
     sessionConfigFile("command", process.env),
     process.env,
     { cwd: process.cwd() }
@@ -2019,8 +2022,8 @@ function dispatchConfig(): DispatchConfig {
 async function run(options: Options): Promise<number> {
   const report =
     options.mode === "texts"
-      ? await runTexts(dispatchConfig(), options)
-      : await runRounds(dispatchConfig(), options);
+      ? await runTexts(await dispatchConfig(), options)
+      : await runRounds(await dispatchConfig(), options);
   if (options.json) {
     // One object and nothing else on stdout, so a program can read the whole of it.
     console.log(JSON.stringify(report));
