@@ -532,13 +532,6 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 			if tick := w.client.beforeRequestFlush; tick != nil {
 				tick()
 			}
-			if ackWait != nil {
-				// The flush must not wait on wall time after the acknowledgement clock ended.
-				flushing, cancel := clock.WithShownDeadline(ackWait)
-				defer cancel()
-				flushed <- confirmedAfterFlush(flushing, w.conn, subject, before, w.conn.FlushWithContext(flushing))
-				return
-			}
 			ctx := context.Background()
 			if w.client.windowClock != nil {
 				// The request's real answer bound still ends this flush, even if the window
@@ -641,22 +634,10 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 				return lost()
 			}
 			if flushed != nil {
-				if ackWait == nil {
-					// FlushTimeout may have started late while waiting for nats.go's lock.
-					// Its result still belongs in the default timeout's answer.
-					if settled := settleFlush(<-flushed); settled != nil {
-						return settled
-					}
-				} else {
-					select {
-					case err := <-flushed:
-						if settled := settleFlush(err); settled != nil {
-							return settled
-						}
-					default:
-						// Do not wait for nats.go's lock past the acknowledgement bound.
-						unconfirmed = fmt.Errorf("%w: %w", ErrPublishUnconfirmed, cmp.Or(ackWait.Err(), context.DeadlineExceeded))
-					}
+				// The flush reports whether NATS accepted the send. Its own wait belongs to the
+				// connection, not to the clock for the stream's acknowledgement.
+				if settled := settleFlush(<-flushed); settled != nil {
+					return settled
 				}
 			}
 			// The callback can record a violation after the flush has returned.
