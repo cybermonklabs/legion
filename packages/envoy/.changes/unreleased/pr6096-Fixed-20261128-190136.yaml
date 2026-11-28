@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'Under an airlock grant in a Kubernetes pod, `agent-secrets NAME -- command` gives the command a `NO_PROXY` and `no_proxy` that end with the cluster API server''s address, the IP address in `KUBERNETES_SERVICE_HOST`, unless the grant binds it. A Service range can be public address space that no fixed entry covers (GKE''s default is `34.118.224.0/20`), so `kubectl` under a grant sent the API server''s address to the broker''s proxy, which refuses the broker cluster''s own ranges, and answered `Unable to connect to the server: Forbidden`. A value that is no IP address adds nothing, and no other entry is removed or moved.'
+time: 2026-11-28T19:01:36.467910033Z
+custom:
+    Issue: pr6096
