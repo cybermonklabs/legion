@@ -224,11 +224,14 @@ def give_none(sources) -> str:
 
 lines, filters, quantifiers = read_filters()
 
-# Each program is listed and each bundle built once, whichever pairs and listed blocks read it.
+# Each program is listed and each bundle built once, whichever pairs and listed blocks read it. A
+# program listing that holds a line resolving to the repository root is refused, with the line and
+# tsc's whole output (ci_ts_listing.program_files' refuse_root): this check holds every filter to
+# every file a program gives, where that line would be a file named `.` no filter selects.
 files_of: dict = {}
 for kind, name, path, why in PAIRS:
     if (kind, path) not in files_of and name in filters and (engine.REPO / path).exists():
-        files_of[kind, path] = listing.source_files(kind, path, problems)
+        files_of[kind, path] = listing.source_files(kind, path, problems, refuse_root=True)
 
 # Per LISTED entry's filter, the files its block must hold, or None where a source it is computed
 # from is unknown, a refusal having been recorded then; and per file of the block, the (source

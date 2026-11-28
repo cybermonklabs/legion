@@ -19,6 +19,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -168,15 +169,42 @@ def listed_paths(text: str) -> list:
     return [line.replace("\0", root) for line in text.replace(root, "\0").splitlines()]
 
 
-def program_files(project: str, problems: list) -> list | None:
+def names_root(line: str) -> bool:
+    """Whether a listed line, read as kept() reads it, resolves to the repository root itself."""
+    if not line.strip():
+        return False
+    path = Path(line.strip())
+    return relative(path if path.is_absolute() else REPO / path) == "."
+
+
+def program_files(project: str, problems: list, refuse_root: bool = False) -> list | None:
     """Every file of the project's tsc program that is inside the repository and outside
-    node_modules, repository-relative. None when the command fails."""
+    node_modules, repository-relative. None when the command fails, or, with refuse_root, when a
+    line it listed resolves to the repository root, which is no file a program compiles: the files
+    it holds are then unknown. check-ts-filters.sh holds every filter to every file its programs
+    give, where a `.` would be refused as a file the filter does not select, which says nothing of
+    where it came from; so it passes refuse_root, and the refusal names each such line as tsc
+    printed it, with its number, and the command's whole output goes to stderr, for the run that
+    meets it to name its cause. The generation keeps only the files under each listed block's
+    tree, which the root is not, so it reads such a listing as it is."""
     command = ["bunx", "tsc", "-p", project, "--noEmit", "--listFilesOnly"]
     result = subprocess.run(command, cwd=REPO, capture_output=True, text=True)
     if result.returncode != 0:
         failed(project, " ".join(command), result, "program holds", problems)
         return None
-    return kept(listed_paths(result.stdout))
+    lines = listed_paths(result.stdout)
+    roots = [(number, line) for number, line in enumerate(lines, 1) if names_root(line)] if refuse_root else []
+    if roots:
+        shown = " ".join(command)
+        print(f"`{shown}` printed {len(lines)} line(s) on stdout:", file=sys.stderr)
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", file=sys.stderr)
+        print(f"and on stderr:\n{result.stderr}", end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr)
+        named = "; ".join(f"line {number}, {line!r}" for number, line in roots[:5])
+        problems.append(error(project, f"`{shown}` exited 0 and listed {len(roots)} line(s) that resolve to the "
+                                       f"repository root, which is no file a program compiles ({named}), so the "
+                                       f"files its program holds are unknown; its whole output is above"))
+        return None
+    return kept(lines)
 
 
 def bundle_files(entry: str, problems: list) -> list | None:
@@ -216,18 +244,18 @@ def bundle_files(entry: str, problems: list) -> list | None:
     return files
 
 
-def listing(kind: str, path: str) -> tuple:
+def listing(kind: str, path: str, refuse_root: bool = False) -> tuple:
     """A program's files or a bundle's, by the kind ci_ts_programs.py pairs it as, with the
-    refusals its command raised; it records nothing."""
+    refusals its command raised; it records nothing. refuse_root is program_files'."""
     refused: list = []
-    files = program_files(path, refused) if kind == "program" else bundle_files(path, refused)
+    files = program_files(path, refused, refuse_root) if kind == "program" else bundle_files(path, refused)
     return files, refused
 
 
-def source_files(kind: str, path: str, problems: list) -> list | None:
+def source_files(kind: str, path: str, problems: list, refuse_root: bool = False) -> list | None:
     """A program's files or a bundle's, with what the listing resolved them with recorded in
-    RESOLVED."""
-    files, refused = listing(kind, path)
+    RESOLVED. refuse_root is program_files'."""
+    files, refused = listing(kind, path, refuse_root)
     problems += refused
     record_resolution(kind, path, files or [])
     return files
