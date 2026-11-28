@@ -190,6 +190,13 @@ function heldNode(client: QueryClient, id: string) {
   return held?.nodes?.find((node) => node.id === id);
 }
 
+/** The ids of the held read's nodes under `parent`, in the read's order. */
+function heldChildIds(client: QueryClient, parent: string) {
+  return (heldRead(client, KEY)?.nodes ?? []).flatMap((node) =>
+    node.parent?.id === parent ? [node.id] : []
+  );
+}
+
 /** The words of `ANSWER_LINES` by key, for a key a case writes out of a code. */
 const WORDS: Readonly<Record<string, string>> = ANSWER_LINES;
 
@@ -926,9 +933,7 @@ test("a placing answered with the placement_seq it went under lets the row go on
   expect(heldNode(client, WRITTEN)?.placement_seq, "the answer's placement_seq changed").toBe(
     sentSeq
   );
-  const underIssue = (heldRead(client, KEY)?.nodes ?? []).flatMap((node) =>
-    node.parent?.id === KEY ? [node.id] : []
-  );
+  const underIssue = heldChildIds(client, KEY);
   expect(underIssue, "the node stands elsewhere than right after the requirement").toEqual([
     "<owed-criterion>",
     from,
@@ -969,9 +974,7 @@ test("a placing whose answer names a gone sibling as after lets the row go once 
       "the new row whose answer names a gone sibling is placed"
     ).toEqual([])
   );
-  const underIssue = (heldRead(client, KEY)?.nodes ?? []).flatMap((node) =>
-    node.parent?.id === KEY ? [node.id] : []
-  );
+  const underIssue = heldChildIds(client, KEY);
   expect(underIssue, "the node stands elsewhere than right after the criterion").toEqual([
     "<owed-criterion>",
     WRITTEN,

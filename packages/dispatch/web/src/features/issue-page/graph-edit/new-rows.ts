@@ -35,10 +35,12 @@ import { ownPathTo } from "./row-reveal";
  * those 2 minutes that holds the node so sends the one `PATCH` to the row's place (`placingOf`)
  * on the node's chain (`node-writes.ts`' `placeNode`), the row `placing` from then on; a taken one
  * leaves the node where its answer puts it in the held read, where that read holds the node. The
- * row stays `placing` until the held read holds the node where the taken `PATCH` put it, under
- * the `parent` its answer names and at the place its body asked for, right after the body's
- * `after` or first in its band where that is null (`placement.ts`' `standsAt`): at once where
- * the answer was written into it, else at the first read after that which holds it so. Under the
+ * row stays `placing` until the held read holds the node where the taken `PATCH` put it: at once
+ * where the answer was written into it, else at the first read after that which holds it so.
+ * That place (`placement.ts`' `standsAt`) is ranked under the `parent` the answer names, or the
+ * body's where no answer came: under the body's parent, right after the body's `after` or first
+ * in its band where that is null; under another parent, right after the answer's `after`, or
+ * under that parent alone where the held read does not hold that `after`. Under the
  * body's parent the answer's `after` tells nothing of that, since the server answers a null one
  * with the last ranked sibling of an earlier band it holds, which can be a gone block no read
  * holds; nor does its `placement_seq`, since a `PATCH` that keeps the node under its parent is

@@ -179,9 +179,9 @@ var lastHeldBlocksStatement = `
 		join spec_chain ancestor on ancestor.subject = block.issue_key and ancestor.depth > 0
 		where foreign_parent.child_kind = '` + refs.BlockNodeKind + `'
 		  and (foreign_parent.kind = '` + refs.BlockNodeKind + `' and ancestor.key = split_part(foreign_parent.id, '/', 1)
-		    or ` + refs.ItemOfIssuesSQL(refs.ItemAsk, "asks", "foreign_parent.kind", "foreign_parent.id", "array[ancestor.key]") + `
-		    or ` + refs.ItemOfIssuesSQL(refs.ItemComment, "comments", "foreign_parent.kind", "foreign_parent.id", "array[ancestor.key]") + `
-		    or ` + refs.ItemOfIssuesSQL(refs.ItemMessage, "messages", "foreign_parent.kind", "foreign_parent.id", "array[ancestor.key]") + `)
+		    or ` + refs.ItemOfIssuesSQL(refs.ItemAsk, "foreign_parent.kind", "foreign_parent.id", "array[ancestor.key]") + `
+		    or ` + refs.ItemOfIssuesSQL(refs.ItemComment, "foreign_parent.kind", "foreign_parent.id", "array[ancestor.key]") + `
+		    or ` + refs.ItemOfIssuesSQL(refs.ItemMessage, "foreign_parent.kind", "foreign_parent.id", "array[ancestor.key]") + `)
 		  and exists (
 		      select 1 from artifacts d
 		      cross join lateral (` + refs.AsOfPlacement(`'`+graphstore.KindArtifact+`'`, "d.ref_key", lastHeldCut) + `) top

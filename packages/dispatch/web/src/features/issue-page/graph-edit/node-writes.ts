@@ -65,8 +65,11 @@ import {
  * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
  * the place its entry gave it, under the `placement_seq` the read that first held it ranked
  * answered, its answer written into the held read as a move's is and handed to `new-rows.ts`,
- * which lets the new row go once the held read holds the node under the answer's `parent`, at the
- * place the body asked for (`placement.ts`' `standsAt`).
+ * which lets the new row go once the held read holds the node where the `PATCH` put it
+ * (`placement.ts`' `standsAt`): where the answer names the body's parent, or no answer came,
+ * under the body's parent at the place the body asked for; where it names another parent, under
+ * that parent right after the answer's `after`, or under it alone where the held read does not
+ * hold that `after`.
  *
  * Once a node's chain is empty after a taken act, or after a refusal that says the page read a
  * stale tree or a node that is gone (412, `409 NODE_GONE`, 404), the page reads each outline read

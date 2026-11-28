@@ -563,12 +563,14 @@ func itemOfIssuesSQL(kind ItemKind, table, issues string) string {
 }
 
 // ItemOfIssuesSQL is itemOfIssuesSQL for a statement outside refs: true of the node whose kind and
-// id the SQL nodeKind and nodeID name where it is an item of kind, whose rows table holds, or a
-// block of one, of one of the issues the SQL text array issues names, as the walk of an issue's
-// tree reads the parent of a node placed under an issue above it (treePlacedAboveStatement).
-func ItemOfIssuesSQL(kind ItemKind, table, nodeKind, nodeID, issues string) string {
+// id the SQL nodeKind and nodeID name where it is an item of kind, whose rows the table
+// ItemKind.tables maps kind to holds, or a block of one, of one of the issues the SQL text array
+// issues names, as the walk of an issue's tree reads the parent of a node placed under an issue
+// above it (treePlacedAboveStatement).
+func ItemOfIssuesSQL(kind ItemKind, nodeKind, nodeID, issues string) string {
+	tables, _ := kind.tables()
 	return `exists (select 1 from (select ` + nodeKind + ` as to_kind, ` + nodeID + ` as to_id) placed
-		where ` + itemOfIssuesSQL(kind, table, issues) + `)`
+		where ` + itemOfIssuesSQL(kind, tables.items, issues) + `)`
 }
 
 // TreePlacedAbove is, at cut, each block of the issue issueKey that stands under a node of one of
