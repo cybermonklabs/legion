@@ -183,9 +183,10 @@ func TestEveryStreamSubjectIsALiteralPrefixAndWildcard(t *testing.T) {
 }
 
 // An ad-hoc topic, one no stream subject captures, is published over core NATS: the publish
-// answers at once, a subscriber receives the envelope, and the stream retains nothing for it. Before
-// the fix the publish went to JetStream, which never answers it while a core subscriber holds the
-// subject, so it failed at its five-second acknowledgement deadline.
+// answers with no error and no reply inbox, a subscriber receives the envelope, and the stream
+// retains nothing for it. Before the fix the publish went to JetStream, which never answers it
+// while a core subscriber holds the subject, so it failed at its five-second acknowledgement
+// deadline.
 func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T) {
 	uri := testnats.URL(t)
 	client, err := ConnectOwningStream([]string{uri})

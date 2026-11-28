@@ -250,17 +250,17 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 	subject := "notifications.role.reviewer"
 	conn := answeringServer(t, subject, "")
 	client := &Client{Conn: conn}
+	// testnats.Context reports a deadline even under -timeout 0, so publishConfirmed does not
+	// read the window as spent, and the flush below accepts it.
+	ctx := testnats.Context(t)
 	// A publish whose own flush has the server's violation recorded before it returns.
 	answered := func(msg *nats.Msg) error {
 		if err := conn.PublishMsg(msg); err != nil {
 			return err
 		}
-		return conn.FlushWithContext(testnats.Context(t))
+		return conn.FlushWithContext(ctx)
 	}
 
-	// testnats.Context reports a deadline even under -timeout 0, so publishConfirmed does not
-	// read the window as spent.
-	ctx := testnats.Context(t)
 	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered)
 	if !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a publish the server denied while it ran returned %v, want ErrPublishDenied", err)

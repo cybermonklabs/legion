@@ -48,8 +48,7 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	if stored.Sequence != third || stored.Subject != "notifications.dispatch.issue.KEY-1.ask.answered" || string(stored.Data) != `{"n":3}` {
 		t.Fatalf("stored = %+v, want seq %d on the answered subject with its body", stored, third)
 	}
-	// Compare with the stream's own timestamp for that sequence.
-	raw, err := js.GetMsg(Stream, third)
+	raw, err := js.GetMsg(Stream, third, nats.Context(ctx))
 	if err != nil {
 		t.Fatalf("read sequence %d back: %v", third, err)
 	}

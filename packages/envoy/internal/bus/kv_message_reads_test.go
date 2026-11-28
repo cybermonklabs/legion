@@ -21,9 +21,9 @@ import (
 func TestAClientWithStreamMessageReadsReadsAndCreatesWithNoDirectGet(t *testing.T) {
 	const bucket = "kv_message_reads"
 	const key = "ses_live"
-	// The watcher's direct-get subscription sees this mark. It names no stream, so
-	// nothing answers it.
-	const directGetMark = "$JS.API.DIRECT.GET.MARK_" + bucket
+	// The watcher's direct-get subscription sees this marker. It names a stream that does not
+	// exist and carries no reply subject, so nothing answers it.
+	const directGetMarker = "$JS.API.DIRECT.GET.MARK_" + bucket
 	stream := "KV_" + bucket
 	uri := testnats.URL(t)
 	client, err := Connect([]string{uri}, WithStreamMessageReads())
@@ -88,22 +88,22 @@ func TestAClientWithStreamMessageReadsReadsAndCreatesWithNoDirectGet(t *testing.
 		t.Fatalf("Create(%s) over a live value answered %v, want nats.ErrKeyExists", key, err)
 	}
 
-	// The same connection sends the mark after its last read, so any direct get it sent
-	// reaches the watcher before the mark.
-	requests := testwait.Context(t)
-	if err := client.Conn.Publish(directGetMark, nil); err != nil {
-		t.Fatalf("publish the mark after the reads: %v", err)
+	// The same connection sends the marker after its last read, so any direct get it sent
+	// reaches the watcher before the marker.
+	ctx := testwait.Context(t)
+	if err := client.Conn.Publish(directGetMarker, nil); err != nil {
+		t.Fatalf("publish the marker after the reads: %v", err)
 	}
 	for {
-		sent := nextRequest(t, requests, directGets, "the mark the client published after its reads")
-		if sent.Subject == directGetMark {
+		sent := nextRequest(t, ctx, directGets, "the marker the client published after its reads")
+		if sent.Subject == directGetMarker {
 			break
 		}
 		if strings.Contains(sent.Subject, stream) {
 			t.Fatalf("the client that reads with stream message gets sent the direct get %s", sent.Subject)
 		}
 	}
-	awaitRequestOf(t, requests, streamMsgGets, stream, "a stream message get of "+stream+" from the client that reads with stream message gets")
+	awaitRequestOf(t, ctx, streamMsgGets, stream, "a stream message get of "+stream+" from the client that reads with stream message gets")
 
 	other, err := watcher.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
@@ -116,7 +116,7 @@ func TestAClientWithStreamMessageReadsReadsAndCreatesWithNoDirectGet(t *testing.
 	if _, err := plain.Get(key); err != nil {
 		t.Fatalf("the plain client's Get(%s): %v", key, err)
 	}
-	awaitRequestOf(t, requests, directGets, stream, "the direct get of the plain client's Get("+key+"), which checks that the watcher can see one")
+	awaitRequestOf(t, ctx, directGets, stream, "the direct get of the plain client's Get("+key+"), which checks that the watcher can see one")
 }
 
 // nextRequest fails the test with what it was waiting for if the subscription read fails.

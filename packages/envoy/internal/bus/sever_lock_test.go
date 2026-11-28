@@ -148,7 +148,7 @@ func TestASeverableDialerKeepsNoSocketItsConnectionDropped(t *testing.T) {
 			if ended[i] {
 				continue
 			}
-			_ = peer.SetReadDeadline(testwait.Now().Add(5 * time.Millisecond))
+			_ = peer.SetReadDeadline(testwait.WallTime(testwait.Now().Add(5 * time.Millisecond)))
 			_, err := peer.Read(make([]byte, 1))
 			switch {
 			case errors.Is(err, io.EOF):
