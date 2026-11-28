@@ -112,12 +112,12 @@ func (s *Service) IdleForTest(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		busy, settling, armed, due := s.roomWorkForTest(ctx)
+		busy, settling, armed, left := s.roomWorkForTest(ctx)
 		switch {
 		case settling != "":
 			return fmt.Errorf("a settlement of document %s is running", settling)
 		case armed != "":
-			return fmt.Errorf("a settlement of document %s is armed to run in %s", armed, time.Until(due).Round(time.Millisecond))
+			return fmt.Errorf("a settlement of document %s is armed to run in %s", armed, left.Round(time.Millisecond))
 		case len(busy) == 0:
 			return nil
 		}
@@ -134,9 +134,10 @@ func (s *Service) IdleForTest(ctx context.Context) error {
 
 // roomWorkForTest answers every room whose record counts an update its persistence has not taken
 // or an append that has not landed (IdleForTest), a room a settlement runs on, and a room whose
-// settlement timer is armed and due before ctx's deadline (settlesBeforeForTest) with the time it
-// is due, "" when none is. Each record is read under its own lock, as every lookup reads one.
-func (s *Service) roomWorkForTest(ctx context.Context) (busy []string, settling, armed string, due time.Time) {
+// settlement timer is armed and due before ctx's deadline (settlesBeforeForTest) with what is left
+// of its delay on the service's clock, "" when none is. Each record is read under its own lock, as
+// every lookup reads one.
+func (s *Service) roomWorkForTest(ctx context.Context) (busy []string, settling, armed string, left time.Duration) {
 	var rooms []string
 	s.rooms.Range(func(key, _ any) bool {
 		rooms = append(rooms, key.(string))
@@ -150,15 +151,17 @@ func (s *Service) roomWorkForTest(ctx context.Context) (busy []string, settling,
 		if state.settling > 0 && settling == "" {
 			settling = room
 		}
-		if armed == "" && s.isSettleTimerArmed(state.settle) && settlesBeforeForTest(ctx, state.settleDue) {
-			armed, due = room, state.settleDue
+		if armed == "" && s.isSettleTimerArmed(state.settle) {
+			if remaining := state.settleDue.Sub(s.clock.Now()); settlesBeforeForTest(ctx, remaining) {
+				armed, left = room, remaining
+			}
 		}
 		if state.pendingLocked() || state.appendingLocked() {
 			busy = append(busy, room)
 		}
 		s.unlockState(room, state)
 	}
-	return busy, settling, armed, due
+	return busy, settling, armed, left
 }
 
 // noDeadlineWindowForTest is how far ahead of a read settlesBeforeForTest looks under a ctx with
@@ -166,23 +169,25 @@ func (s *Service) roomWorkForTest(ctx context.Context) (busy []string, settling,
 // that names no -timeout has.
 const noDeadlineWindowForTest = 10 * time.Minute
 
-// settlesBeforeForTest reports whether a settlement armed to fire at due counts as work for
-// IdleForTest. It does when due comes before ctx's deadline, the test binary's deadline less
-// testwait's margin for a ctx testwait.Context gives. The due time is when the timer was armed
-// plus its delay, so a timer armed earlier counts though now plus its delay is past the deadline.
-// Under go test -timeout 0 ctx has no deadline, and it counts when due is less than
-// noDeadlineWindowForTest after now: a 20 ms settlement counts in every mode, and one a fixture
-// arms a day out (package api's xidFixtureSettlesNothing) in none. An armed settlement is counted
-// at all because ignoring it let a wait return beside one about to run: in 2 of 5 runs of the
-// setup of package api's route window row for an issue reopen (readyIssueReopen), the settlement
-// the close armed took its owner lock after a wait that counted only running settlements had
-// returned.
-func settlesBeforeForTest(ctx context.Context, due time.Time) bool {
+// settlesBeforeForTest reports whether a settlement due in left counts as work for IdleForTest:
+// what is left of its delay, read on the service's clock (Deps.Clock) as its due time
+// (roomState.settleDue) less that clock's now. It does when that span ends before ctx's deadline,
+// the test binary's deadline less testwait's margin for a ctx testwait.Context gives, which is a
+// wall-clock moment. The due time is when the timer was armed plus its delay, so a timer armed
+// earlier counts though now plus its delay is past the deadline. Under go test -timeout 0 ctx has
+// no deadline, and it counts when left is less than noDeadlineWindowForTest: a 20 ms settlement
+// counts in every mode, and one a fixture arms a day out (package api's xidFixtureSettlesNothing)
+// in none. Under a clocktest.Fake the span is the fake's, which only the test moves. An armed
+// settlement is counted at all because ignoring it let a wait return beside one about to run: in
+// 2 of 5 runs of the setup of package api's route window row for an issue reopen
+// (readyIssueReopen), the settlement the close armed took its owner lock after a wait that counted
+// only running settlements had returned.
+func settlesBeforeForTest(ctx context.Context, left time.Duration) bool {
 	deadline, bounded := ctx.Deadline()
 	if !bounded {
-		deadline = time.Now().Add(noDeadlineWindowForTest)
+		return left < noDeadlineWindowForTest
 	}
-	return due.Before(deadline)
+	return time.Now().Add(left).Before(deadline)
 }
 
 // AppendRenderOnlySchemaViolationForTest appends to artifactID's stored history a tree the
