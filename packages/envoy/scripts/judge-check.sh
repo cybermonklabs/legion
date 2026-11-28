@@ -819,8 +819,9 @@ k10_pair_calls() {
 # judge became its own tag, when it read the judge from the profiles file's proxy block. It runs
 # on the stack's own database, profiles file, memory store and identities, with the stack's two
 # fronts pointed at it, so the only difference is where the broker reads the judge from. The
-# base tree is first read for the field it reads the judge from; a tree without it is not the
-# broker this control is about, and the control reports UNKNOWN rather than a pass.
+# base tree is first read for the field it reads the judge from and for the memory store; a tree
+# without either is not a broker this control can run, and the control reports UNKNOWN rather
+# than a pass.
 k10_base_control() {
 	local base tree="$WORK_DIR/base-src" binary="$WORK_DIR/broker-base" built=0
 	base="${JUDGE_CHECK_BASE:-$(git -C "$ENVOY_DIR" merge-base HEAD origin/main 2>/dev/null)}"
@@ -842,6 +843,15 @@ k10_base_control() {
 	fi
 	if ! grep -q 'json:"judge"' "$tree/internal/cipher/policy/profiles.go" 2>/dev/null; then
 		control "UNKNOWN: the base tree at $base reads no judge from a proxy block (no json:\"judge\" field in internal/cipher/policy/profiles.go), so it is not the broker this control is about; set JUDGE_CHECK_BASE to a commit whose profiles file sets the judge"
+		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control was not run"
+		return
+	fi
+	# The base broker starts on this stack's environment, whose store is the memory store
+	# (BROKER_SECRETS_STORE=memory) and whose profiles file declares its kinds. A base without
+	# internal/cipher/secretstore/memory refuses that store at start, which would end this run
+	# with no verdict, so it is no control here either.
+	if [ ! -d "$tree/internal/cipher/secretstore/memory" ]; then
+		control "UNKNOWN: the base tree at $base has no memory store (internal/cipher/secretstore/memory), which this stack's brokers run on, so its broker cannot start on this stack; set JUDGE_CHECK_BASE to a commit with the memory store whose profiles file sets the judge"
 		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control was not run"
 		return
 	fi
