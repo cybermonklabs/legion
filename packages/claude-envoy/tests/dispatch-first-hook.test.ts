@@ -48,10 +48,17 @@ test("with Dispatch configured, puts the plugin's dispatch-first skill into the 
     expect(output.hookSpecificOutput.hookEventName).toBe("SessionStart")
     const context: string = output.hookSpecificOutput.additionalContext
     expect(context.startsWith(DISPATCH_FIRST_MARKER)).toBe(true)
-    // The skill arrives whole from the plugin's own skills/ link, frontmatter dropped.
+    // The skill arrives whole from the plugin's own skills/ link, frontmatter dropped. The
+    // frontmatter is cut by its syntax — the `---` block the file opens with — so this reads no
+    // word of the skill: the block must be found and must not arrive, and the bytes after it must
+    // arrive whole.
     const skill = await readFile(join(packageRoot, "skills", "dispatch-first", "SKILL.md"), "utf8")
-    expect(context).toContain(skill.slice(skill.indexOf("# Dispatch first")).trim())
-    expect(context).not.toContain("name: dispatch-first")
+    const frontmatter = /^---\n[\s\S]*?\n---\n/.exec(skill)?.[0] ?? ""
+    expect(frontmatter).not.toBe("")
+    const body = skill.slice(frontmatter.length).trim()
+    expect(body).not.toBe("")
+    expect(context).toContain(body)
+    expect(context).not.toContain(frontmatter)
     // Claude Code keeps an additionalContext string whole only up to 10,000 characters.
     expect(context.length).toBeLessThan(10_000)
   } finally {

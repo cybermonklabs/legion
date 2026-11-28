@@ -25,6 +25,7 @@ import {
   useDialog,
   useMediaQuery,
 } from "../shell/useDialog";
+import { useDetailsFocusKeeper } from "./details-focus-keeper";
 import { MarginSheet, type MarginSheetModel } from "./MarginSheet";
 import { useMargin } from "./margin-context";
 import {
@@ -257,11 +258,14 @@ function DetailsDrawer({
   const closeButton = useRef<HTMLButtonElement>(null);
   const box = useRef<HTMLElement | null>(null);
   const { open, page, setOpen } = drawer;
+  useDetailsFocusKeeper(box, open);
   // The shell hands a new `setOpen` whenever its drawer changes - a new `page` among them - so
-  // the effects below read the latest through this ref and run on `open` alone: a drawer that
+  // the effects below read the latest through these refs and run on `open` alone: a drawer that
   // stays open neither moves the focus nor records a new opener.
   const setOpenNow = useRef(setOpen);
   setOpenNow.current = setOpen;
+  const pageNow = useRef(page);
+  pageNow.current = page;
   // The phone's sheet covers the page, so it is a dialog: the focus stays inside it, the page
   // under it does not scroll, and Escape closes it and gives the focus back (`useDialog`).
   const sheet = useDialog<HTMLElement>({
@@ -288,12 +292,17 @@ function DetailsDrawer({
       : []
   );
   // From the phone's width up the drawer sits beside the page the reader keeps working in, so it
-  // holds no focus of its own: opening it puts the focus on its Close, and closing it - by Close,
-  // by Escape, or by the page's own control - gives the focus back to where it was taken from
-  // when that focus is still in the drawer or nowhere. Both happen in the commit that opens or
-  // closes it, so a focus the reader moves the moment it has closed is never taken back.
+  // holds no focus of its own: opening it puts the focus on its Close - unless the page asked this
+  // one open to leave the focus where it is (`MarginDrawerPage.takesLeaveFocus`), as the new
+  // page's Details control does - and closing it - by Close, by Escape, or by the page's own
+  // control - gives the focus back to where it was taken from when that focus is still in the
+  // drawer or nowhere. Both happen in the commit that opens or closes it, so a focus the reader
+  // moves the moment it has closed is never taken back.
   const opener = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
+    // A request the open did not take - the phone's sheet takes the focus as a dialog - is
+    // answered here, so that it leaves no later open the focus where it is.
+    const leavesFocus = pageNow.current?.takesLeaveFocus() === true;
     if (!open || isPhoneViewport) return;
     // The drawer as it is now: the commit that closes it detaches the `aside`'s ref before this
     // effect's cleanup runs, so the cleanup cannot read `box`.
@@ -303,7 +312,7 @@ function DetailsDrawer({
       active instanceof HTMLElement && active !== document.body && !drawerBox?.contains(active)
         ? active
         : null;
-    closeButton.current?.focus({ preventScroll: true });
+    if (!leavesFocus) closeButton.current?.focus({ preventScroll: true });
     // Escape closes the drawer before the page's own Escape does anything else: the press is the
     // drawer's alone. A field keeps its own Escape, which leaves the field, wherever it is -
     // inside the drawer or beside it. So does a layer over the drawer or inside it: an open

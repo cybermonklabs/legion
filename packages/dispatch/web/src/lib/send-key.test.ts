@@ -1,6 +1,12 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 
 import { keyMintedAt, newSendKey } from "./send-key";
+
+// A row that pins the clock (`setSystemTime`) and is ended by the command's guard never reaches
+// its own `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  setSystemTime();
+});
 
 // A browser exposes `crypto.randomUUID` only in a secure context, so on a plain-HTTP origin reached
 // by a non-loopback name it is undefined, and a key built from it would throw on the first send
@@ -25,10 +31,14 @@ test("a send key is a fresh v7 UUID even where crypto.randomUUID is missing", ()
 });
 
 test("a send key carries the millisecond it was minted", () => {
-  const before = Date.now();
-  const minted = keyMintedAt(newSendKey());
-  expect(minted).toBeGreaterThanOrEqual(before);
-  expect(minted).toBeLessThanOrEqual(Date.now());
+  // The clock is held at a moment of the row's own, so the key must carry that very millisecond.
+  const minted = Date.UTC(2026, 10, 14, 15, 30, 12, 345);
+  setSystemTime(minted);
+  try {
+    expect(keyMintedAt(newSendKey())).toBe(minted);
+  } finally {
+    setSystemTime();
+  }
 });
 
 // Every key the shipping release minted is a v4, and a page reloaded after this release still
