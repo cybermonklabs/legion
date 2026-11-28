@@ -78,6 +78,17 @@
  * block editor to a row and let it go again. With `ISSUE_PAGE_LOAD_TRACE_FUNCTIONS=1`, the trace
  * holds V8's samples too, and each traced task prints its script by function on the trace's own
  * clock (`printTraceFunctions`), which needs no anchor to line a profile's clock up with the page's.
+ * With `ISSUE_PAGE_LOAD_TRACE_ACTS=<regular expression>`, the acts after the load that are traced
+ * are those whose label it matches (`after-a-press-on-spec`) rather than the fold and the unfold.
+ *
+ * With `ISSUE_PAGE_LOAD_TRACE=1`, `the acts made during the load, profiled` traces too, from before
+ * each cold load's navigation to its act's result. Each traced act, during the load or after it,
+ * prints what the page's main thread ran from the answer of the read its result needed, or from its
+ * event where it needed none, to the time the frame that showed its result was shown
+ * (`printAnswerTasks`), on the page's clock lined up by a mark the trace holds (`clockedTrace`).
+ * `ISSUE_PAGE_LOAD_ACTS=<regular expression>` names the acts made during the load by their labels
+ * (`during-a-press-on-spec`), and `ISSUE_PAGE_LOAD_ACT_RUNS=<n>` how many cold loads each is made in
+ * (`ACT_RUNS` where it is not set).
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -1132,12 +1143,15 @@ function printCommits(
 // `(program)` is split by what the engine did in it.
 // ---------------------------------------------------------------------------------------------
 
-/** The acts the trace probe records, after the load. */
+/** The acts the trace probe records after the load, where `ISSUE_PAGE_LOAD_TRACE_ACTS` names none
+ *  (`tracedAfter`). */
 const TRACE_ACTS: Readonly<Partial<Record<LoadAct["kind"], true>>> = { fold: true, unfold: true };
 
 /** The trace's categories: the timeline's events (style, layout, paint, script, an input's
- *  dispatch) and each task of the thread (`RunTask`). */
+ *  dispatch), each task of the thread (`RunTask`), and the page's user timing marks, which line
+ *  its clock up with the trace's (`clockedTrace`). */
 const TRACE_CATEGORIES = [
+  "blink.user_timing",
   "devtools.timeline",
   "disabled-by-default-devtools.timeline",
   "toplevel",
@@ -1157,6 +1171,36 @@ const INVALIDATION_CATEGORIES = [
  *  clock, so each traced task's script is split by function with no anchor to line two clocks
  *  up (`printTraceFunctions`). */
 const TRACE_FUNCTION_CATEGORIES = ["disabled-by-default-v8.cpu_profiler"];
+
+/** What the variables ask of the trace: its categories, and whether it reads the invalidations
+ *  and the functions; undefined where `ISSUE_PAGE_LOAD_TRACE=1` is not set. */
+function traceAsked():
+  | {
+      readonly categories: readonly string[];
+      readonly functions: boolean;
+      readonly invalidations: boolean;
+    }
+  | undefined {
+  if (process.env.ISSUE_PAGE_LOAD_TRACE !== "1") return undefined;
+  const invalidations = process.env.ISSUE_PAGE_LOAD_INVALIDATIONS === "1";
+  const functions = process.env.ISSUE_PAGE_LOAD_TRACE_FUNCTIONS === "1";
+  return {
+    categories: [
+      ...TRACE_CATEGORIES,
+      ...(invalidations ? INVALIDATION_CATEGORIES : []),
+      ...(functions ? TRACE_FUNCTION_CATEGORIES : []),
+    ],
+    functions,
+    invalidations,
+  };
+}
+
+/** Whether the act after the load labelled `label` is traced: where `ISSUE_PAGE_LOAD_TRACE_ACTS`
+ *  is set, each act whose label it matches (`after-a-press-on-spec`), else a fold and an unfold. */
+function tracedAfter(act: LoadAct, label: string): boolean {
+  const named = process.env.ISSUE_PAGE_LOAD_TRACE_ACTS;
+  return named === undefined ? TRACE_ACTS[act.kind] === true : new RegExp(named).test(label);
+}
 
 /** How many functions `printTraceFunctions` prints of a task, by self time and by total time. */
 const TRACE_FUNCTIONS = 12;
@@ -1323,12 +1367,13 @@ function pressTasks(spans: readonly TraceSpan[]): PressTasks | null {
   if (first === undefined) return null;
   const thread = spans.filter((span) => span.pid === first.pid && span.tid === first.tid);
   const runs = thread.filter((span) => span.name === "RunTask");
+  // The dispatches are few and a whole load's trace holds many tasks, so each task is held to them
+  // first.
   const tasks = runs.filter(
     (task) =>
-      !runs.some((outer) => outer !== task && within(task, outer)) &&
       inputs.some(
         (input) => input.pid === task.pid && input.tid === task.tid && within(input, task)
-      )
+      ) && !runs.some((outer) => outer !== task && within(task, outer))
   );
   return { first, inputs, tasks, thread };
 }
@@ -1536,6 +1581,255 @@ function printTraceFunctions(head: string, task: TraceSpan, sampled: TraceSample
       `TRACE-FN-TOTAL ${head} ${shown(entry.ms)} ${entry.mapped.name} ${entry.mapped.place}`
     );
   }
+}
+
+/** The name of the mark that lines the page's clock up with a trace's (`clockedTrace`). */
+const CLOCK_MARK = "load-probe-clock";
+
+/** A trace's events, with the page's performance time of the mark they hold (`CLOCK_MARK`). */
+interface ClockedTrace {
+  readonly events: readonly unknown[];
+  readonly markedAt: number;
+}
+
+/** Marks the page's clock in the trace `end` ends - a user timing mark (`blink.user_timing`) and a
+ *  `console.timeStamp` (`devtools.timeline`), both at one performance time - then ends it. */
+async function clockedTrace(
+  page: Page,
+  end: () => Promise<readonly unknown[]>
+): Promise<ClockedTrace> {
+  const markedAt = await page.evaluate((name) => {
+    const at = performance.now();
+    performance.mark(name, { startTime: at });
+    console.timeStamp(name);
+    return at;
+  }, CLOCK_MARK);
+  return { events: await end(), markedAt };
+}
+
+/** Where the page's performance time `ms` stands on the trace's clock, in µs: lined up by the
+ *  user timing mark `clockedTrace` made, else by its `console.timeStamp`. Null where the trace
+ *  holds neither. */
+function traceClock(trace: ClockedTrace): ((ms: number) => number) | null {
+  let mark: number | undefined;
+  let stamp: number | undefined;
+  for (const raw of trace.events) {
+    const event = objectOf(raw);
+    const { name, ts } = event;
+    if (typeof ts !== "number") continue;
+    const data = objectOf(objectOf(event.args).data);
+    if (name === CLOCK_MARK) mark ??= ts;
+    if (name === "TimeStamp" && (data.message === CLOCK_MARK || data.name === CLOCK_MARK)) {
+      stamp ??= ts;
+    }
+  }
+  const at = mark ?? stamp;
+  return at === undefined ? null : (ms) => at + (ms - trace.markedAt) * 1000;
+}
+
+/** The network's events of a trace that `printAnswerTasks` names a task's work by, and those that
+ *  give a request's address by its id. */
+const ANSWER_NETWORK: Readonly<Record<string, string>> = {
+  ResourceFinish: "finish",
+  ResourceReceiveResponse: "response",
+  ResourceReceivedData: "data",
+};
+const REQUEST_SENT: Readonly<Record<string, true>> = {
+  ResourceSendRequest: true,
+  ResourceWillSendRequest: true,
+};
+
+/** The events of the engine that name the work a task ran, each with how a line names it. */
+function workOf(name: string, data: Readonly<Record<string, unknown>>): string | undefined {
+  switch (name) {
+    case "TimerFire":
+      return "timer";
+    case "RunPostTaskCallback":
+      return `postTask:${String(data.priority ?? "?")}`;
+    case "FireAnimationFrame":
+      return "animation-frame";
+    case "FireIdleCallback":
+      return "idle-callback";
+    case "EventDispatch":
+      return `event:${String(data.type ?? "?")}`;
+    case "HandlePostMessage":
+      return "post-message";
+    case "ParseHTML":
+      return "parse-html";
+    case "EvaluateScript":
+      return `script:${basename(String(data.url ?? ""))}`;
+    case "RunMicrotasks":
+      return "microtasks";
+    case "BeginMainThreadFrame":
+      return "begin-frame";
+    case "MinorGC":
+    case "MajorGC":
+      return "gc";
+    default:
+      return undefined;
+  }
+}
+
+/** A task's time in the engine's events of `names`, and the part of it a script forced. */
+function engineTime(
+  inside: readonly TraceSpan[],
+  script: readonly TraceSpan[],
+  names: readonly string[]
+): string {
+  const own = inside.filter((span) => names.includes(span.name));
+  const forced = own.filter((span) => script.some((outer) => within(span, outer)));
+  return `${traceMs(coveredUs(own))}(js ${traceMs(coveredUs(forced))})`;
+}
+
+/** The shortest task `printAnswerTasks` prints a line of, in µs; it counts the others. */
+const ANSWER_TASK_US = 100;
+
+/** The shortest task `printAnswerTasks` prints the script of by function, in µs. */
+const ANSWER_FUNCTIONS_US = 1_000;
+
+/**
+ * Prints, from the trace of an act (`ClockedTrace`), what the page's main thread ran from the
+ * answer of the last read the act's result needed (`actReading`'s `read`; from the act's event
+ * where it needed none) to the time the frame that showed the result was shown, so a reading of
+ * `read-drawn-ms`, or of `result-ms` drawn from what the page held, is split by task: `ANSWER`
+ * with the window and how much of it the thread was busy; `ANSWER-FRAME` for each frame the record
+ * holds there (its animation callback's time and the time it was shown, the result's frame
+ * marked); and `ANSWER-TASK` for each top-level task of the thread there of `ANSWER_TASK_US` or
+ * more, in the order they ran - its start from the window's, its duration, its script (`js`), its
+ * style, layout and paint, each with the part a script forced, the work it ran by the engine's
+ * events (a timer, a `postTask` callback and its priority, an event and its type, a frame's
+ * callbacks, a request's response, data or finish by its path, the outermost functions it called,
+ * mapped) and where the browser posted it from - and where `functions` holds, each such task of
+ * `ANSWER_FUNCTIONS_US` or more by function (`printTraceFunctions`). Each time is in ms.
+ */
+function printAnswerTasks(
+  label: string,
+  width: number,
+  run: number,
+  made: ProfiledAct,
+  traced: ClockedTrace,
+  functions: boolean
+): void {
+  const line = `${width} ${label} ${run}`;
+  const { record } = made.load;
+  const armed = record.acts[made.index];
+  const event = armed?.event ?? null;
+  const reading = actReading(record, made.index);
+  if (event === null || reading.shown === null) {
+    console.log(`ANSWER ${line} no result was shown`);
+    return;
+  }
+  const clock = traceClock(traced);
+  const spans = traceSpans(traced.events);
+  const press = pressTasks(spans);
+  if (clock === null || press === null) {
+    console.log(
+      `ANSWER ${line} the trace holds ${clock === null ? "no clock mark" : "no press event"}`
+    );
+    return;
+  }
+  const shownAt = event.timeStamp + reading.shown;
+  const from = reading.read === null ? event.timeStamp : shownAt - reading.read.drawn;
+  const start = clock(from);
+  const end = clock(shownAt);
+  const { pid, tid } = press.first;
+  const runs = press.thread.filter((span) => span.name === "RunTask");
+  const tasks = runs.filter(
+    (task) =>
+      task.end > start &&
+      task.start < end &&
+      !runs.some((outer) => outer !== task && within(task, outer))
+  );
+  const busy = tasks.reduce(
+    (sum, task) => sum + Math.max(0, Math.min(task.end, end) - Math.max(task.start, start)),
+    0
+  );
+  console.log(
+    `ANSWER ${line} from=${reading.read === null ? "event" : "answer"} ` +
+      `at=${shown(from - event.timeStamp)} shown=${shown(reading.shown)} ` +
+      `window=${shown(shownAt - from)} tasks=${tasks.length} busy=${traceMs(busy)} ` +
+      `idle=${traceMs(end - start - busy)} read=${reading.read?.url ?? "none"}`
+  );
+  for (const [index, frame] of record.frames.entries()) {
+    if (frame.at < from - 20 || frame.at > shownAt) continue;
+    const marks = [
+      index === armed?.loading ? " loading" : "",
+      index === armed?.result ? " result" : "",
+    ].join("");
+    console.log(
+      `ANSWER-FRAME ${line} at=${shown(frame.at - from)} ` +
+        `shown=${frame.shown === null ? "none" : shown(frame.shown - from)}${marks}`
+    );
+  }
+  const network = traceMarks(
+    traced.events,
+    new Set([...Object.keys(ANSWER_NETWORK), ...Object.keys(REQUEST_SENT)])
+  );
+  const paths = new Map<string, string>();
+  for (const mark of network) {
+    if (REQUEST_SENT[mark.name] !== true || typeof mark.data.url !== "string") continue;
+    const address = mark.data.url;
+    const path = URL.canParse(address)
+      ? new URL(address).pathname + new URL(address).search
+      : address;
+    paths.set(String(mark.data.requestId), path.slice(0, 120));
+  }
+  const sampled = functions ? traceSamples(traced.events, pid, tid) : undefined;
+  let small = 0;
+  let smallUs = 0;
+  for (const [at, task] of tasks.entries()) {
+    if (task.end - task.start < ANSWER_TASK_US) {
+      small += 1;
+      smallUs += task.end - task.start;
+      continue;
+    }
+    const inside = press.thread.filter((span) => span !== task && within(span, task));
+    const script = inside.filter((span) => TRACE_SCRIPT[span.name] === true);
+    const calls = inside.filter((span) => span.name === "FunctionCall");
+    const work: { readonly at: number; readonly what: string }[] = [];
+    for (const span of inside) {
+      const data = objectOf(span.args.data);
+      if (span.name === "FunctionCall") {
+        if (calls.some((outer) => outer !== span && within(span, outer))) continue;
+        const mapped = mapFrame({
+          columnNumber: Math.max(0, Number(data.columnNumber ?? 1) - 1),
+          functionName: typeof data.functionName === "string" ? data.functionName : "",
+          lineNumber: Math.max(0, Number(data.lineNumber ?? 1) - 1),
+          url: typeof data.url === "string" ? data.url : "",
+        });
+        work.push({ at: span.start, what: `fn:${mapped.name}@${mapped.place}` });
+        continue;
+      }
+      const what = workOf(span.name, data);
+      if (what !== undefined) work.push({ at: span.start, what });
+    }
+    for (const mark of network) {
+      const kind = ANSWER_NETWORK[mark.name];
+      if (kind === undefined || mark.pid !== pid || mark.tid !== tid) continue;
+      if (mark.ts < task.start || mark.ts > task.end) continue;
+      work.push({
+        at: mark.ts,
+        what: `${kind}:${paths.get(String(mark.data.requestId)) ?? "?"}`,
+      });
+    }
+    const ran = [...new Set(work.sort((a, b) => a.at - b.at).map((entry) => entry.what))];
+    const posted = [task.args.src_func, task.args.src_file]
+      .filter((part) => typeof part === "string" && part !== "")
+      .join("@");
+    console.log(
+      `ANSWER-TASK ${line} task=${at + 1} start=${traceMs(task.start - start)} ` +
+        `duration=${traceMs(task.end - task.start)} js=${traceMs(coveredUs(script))} ` +
+        `style=${engineTime(inside, script, ["UpdateLayoutTree"])} ` +
+        `layout=${engineTime(inside, script, ["Layout"])} ` +
+        `paint=${engineTime(inside, script, ["PrePaint", "Paint", "Layerize", "UpdateLayer"])} ` +
+        `gc=${traceMs(coveredUs(inside.filter((span) => workOf(span.name, {}) === "gc")))} ` +
+        `posted=${posted || "none"} ran=${ran.slice(0, 12).join(" ") || "none"}`
+    );
+    if (sampled !== undefined && task.end - task.start >= ANSWER_FUNCTIONS_US) {
+      printTraceFunctions(`${line} answer-task=${at + 1}`, task, sampled);
+    }
+  }
+  console.log(`ANSWER-SMALL ${line} tasks=${small} total=${traceMs(smallUs)}`);
 }
 
 /** The invalidation tracking's events `printInvalidations` reads: a change on an element that
@@ -1969,8 +2263,21 @@ async function printInvalidations(
 // with every layout shift's sources and every box that changed its size.
 // ---------------------------------------------------------------------------------------------
 
-/** How many cold loads each act made during the load is profiled over. */
+/** How many cold loads each act made during the load is profiled over, and how many the shift
+ *  probe makes of each address. */
 const ACT_RUNS = 2;
+
+/** How many cold loads each act made during the load is profiled over: `ISSUE_PAGE_LOAD_ACT_RUNS`
+ *  where it is set, else `ACT_RUNS`. */
+function actRuns(): number {
+  const set = process.env.ISSUE_PAGE_LOAD_ACT_RUNS;
+  if (set === undefined) return ACT_RUNS;
+  const runs = Number(set);
+  if (!Number.isInteger(runs) || runs < 1) {
+    throw new Error(`ISSUE_PAGE_LOAD_ACT_RUNS=${set} is no whole number above 0`);
+  }
+  return runs;
+}
 
 /** One act, profiled. */
 interface ProfiledAct {
@@ -1982,18 +2289,23 @@ interface ProfiledAct {
 }
 
 /** `act` made at its first moment in a cold load of its address, as Row 4 makes it, with the
- *  profiler running from before the navigation to the load's end. */
+ *  profiler running from before the navigation to the load's end, and where `trace` names its
+ *  categories, Chrome's trace from before the navigation to the act's result, its clock marked
+ *  (`clockedTrace`). */
 async function profiledAct(
   browser: Browser,
   rate: number,
   address: string,
-  act: LoadAct
-): Promise<ProfiledAct> {
+  act: LoadAct,
+  trace: readonly string[] | undefined
+): Promise<ProfiledAct & { readonly traced: ClockedTrace | undefined }> {
   const load = await openLoad(browser, rate, address, "none");
   try {
     await load.cdp.send("Profiler.start");
+    const endTrace = trace === undefined ? undefined : await startTrace(load.cdp, trace);
     await load.goto();
     const made = await makeSteps(load.page, 0, act.steps, act.when);
+    const traced = endTrace === undefined ? undefined : await clockedTrace(load.page, endTrace);
     await waitForLoadEnd(load.page, load.requests);
     const record = await recordOf(load.page);
     const anchoredAt = await anchor(load.page);
@@ -2002,6 +2314,7 @@ async function profiledAct(
       index: made.last,
       load: { anchoredAt, profile, record },
       spans: load.requests.spans(record.timeOrigin),
+      traced,
     };
   } finally {
     await load.context.close();
@@ -2183,8 +2496,8 @@ function printActParts(
   endStretch();
 }
 
-// SLOW(>=2s): two cold loads for each act of the width, each act made at its first moment and the
-// load profiled to its end.
+// SLOW(>=2s): two cold loads (`actRuns`) for each act of the width, each act made at its first
+// moment and the load profiled to its end.
 test("the acts made during the load, profiled", async ({ browser, loadSeeds }, testInfo) => {
   test.skip(
     process.env.ISSUE_PAGE_LOAD_LONGEST !== "1",
@@ -2200,16 +2513,23 @@ test("the acts made during the load, profiled", async ({ browser, loadSeeds }, t
   const width = loadWidth(testInfo);
   const seeded = await loadSeeds.shape();
   const only = process.env.ISSUE_PAGE_LOAD_ACTS;
+  const runs = actRuns();
+  const trace = traceAsked();
   for (const act of LOAD_ACTS[width]) {
     const label = `during-${boundWord(act.name)}`;
     if (only !== undefined && !new RegExp(only).test(label)) continue;
-    for (let run = 1; run <= ACT_RUNS; run += 1) {
-      printAct(
-        label,
-        width,
-        run,
-        await profiledAct(browser, rate, actAddress(seeded.key, act), act)
+    for (let run = 1; run <= runs; run += 1) {
+      const made = await profiledAct(
+        browser,
+        rate,
+        actAddress(seeded.key, act),
+        act,
+        trace?.categories
       );
+      printAct(label, width, run, made);
+      if (made.traced !== undefined) {
+        printAnswerTasks(label, width, run, made, made.traced, trace?.functions === true);
+      }
     }
   }
 });
@@ -2232,14 +2552,7 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
   const seeded = await loadSeeds.shape();
   const load = await openLoad(browser, rate, presetPath(seeded.key, "conversation"), "none");
   const readCommits = process.env.ISSUE_PAGE_LOAD_COMMITS === "1";
-  const readTrace = process.env.ISSUE_PAGE_LOAD_TRACE === "1";
-  const readInvalidations = readTrace && process.env.ISSUE_PAGE_LOAD_INVALIDATIONS === "1";
-  const readFunctions = readTrace && process.env.ISSUE_PAGE_LOAD_TRACE_FUNCTIONS === "1";
-  const traceCategories = [
-    ...TRACE_CATEGORIES,
-    ...(readInvalidations ? INVALIDATION_CATEGORIES : []),
-    ...(readFunctions ? TRACE_FUNCTION_CATEGORIES : []),
-  ];
+  const trace = traceAsked();
   try {
     if (readCommits) await load.page.addInitScript(commitProbe);
     await load.goto();
@@ -2271,16 +2584,16 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
       if (commits) await load.page.evaluate(() => window.__commitProbe?.arm());
       await load.cdp.send("Profiler.start");
       const endTrace =
-        readTrace && TRACE_ACTS[act.kind] === true
-          ? await startTrace(load.cdp, traceCategories)
+        trace !== undefined && tracedAfter(act, label)
+          ? await startTrace(load.cdp, trace.categories)
           : undefined;
       // Whatever the invalidation categories make the engine redo once they are on is done here,
       // before the act's first event, so the press's tasks hold only what the press changed.
-      if (endTrace !== undefined && readInvalidations) {
+      if (endTrace !== undefined && trace?.invalidations === true) {
         await load.page.evaluate(() => document.documentElement.getBoundingClientRect().height);
       }
       const made = await makeSteps(load.page, next, act.steps, "now");
-      const traced = await endTrace?.();
+      const traced = endTrace === undefined ? undefined : await clockedTrace(load.page, endTrace);
       const anchoredAt = await anchor(load.page);
       const { profile } = await load.cdp.send("Profiler.stop");
       const record = await recordOf(load.page);
@@ -2290,9 +2603,12 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
         spans: load.requests.spans(record.timeOrigin),
       };
       printAct(label, width, 1, profiled);
-      if (traced !== undefined) printTrace(label, width, traced, readFunctions);
-      if (traced !== undefined && readInvalidations) {
-        await printInvalidations(label, width, traced, load.cdp);
+      if (traced !== undefined) {
+        printTrace(label, width, traced.events, trace?.functions === true);
+        printAnswerTasks(label, width, 1, profiled, traced, trace?.functions === true);
+      }
+      if (traced !== undefined && trace?.invalidations === true) {
+        await printInvalidations(label, width, traced.events, load.cdp);
       }
       if (commits) {
         // The act has shown its result and the probe was armed for it alone, so this one read
