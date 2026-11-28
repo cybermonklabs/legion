@@ -610,6 +610,11 @@ func (s *memStore) fail(method string, err error) {
 func (s *memStore) load(token claim.Token) Claim {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadLocked(token)
+}
+
+// loadLocked is load for a caller that holds mu.
+func (s *memStore) loadLocked(token claim.Token) Claim {
 	c := copyClaim(s.claims[token])
 	if d, ok := s.deliveries[token]; ok {
 		c.Pending = &d
@@ -621,13 +626,14 @@ func (s *memStore) load(token claim.Token) Claim {
 // reads them, false for a token no row holds, and the error a test injected (fail("ReadClaim")).
 func (s *memStore) ReadClaim(_ context.Context, token claim.Token) (Claim, bool, error) {
 	s.mu.Lock()
-	err := s.failures["ReadClaim"]
-	_, held := s.claims[token]
-	s.mu.Unlock()
-	if err != nil || !held {
+	defer s.mu.Unlock()
+	if err := s.failures["ReadClaim"]; err != nil {
 		return Claim{}, false, err
 	}
-	return s.load(token), true, nil
+	if _, held := s.claims[token]; !held {
+		return Claim{}, false, nil
+	}
+	return s.loadLocked(token), true, nil
 }
 
 func (s *memStore) delivery(token claim.Token) (Delivery, bool) {

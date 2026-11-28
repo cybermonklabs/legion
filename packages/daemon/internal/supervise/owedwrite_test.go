@@ -223,6 +223,23 @@ func checkRefusal() *pgconn.PgError {
 		Severity: "ERROR", ConstraintName: "claims_state_check"}
 }
 
+// claimWriteFailure is one failure of a claim write a case runs under: a refusal of the row
+// (checkRefusal), or a failure the rule owes (brokenConnection, owed).
+type claimWriteFailure struct {
+	name string
+	err  error
+	owed bool
+}
+
+// claimWriteFailures is the refusal and the owed failure a case that holds for each kind runs
+// under, each a fresh value.
+func claimWriteFailures() []claimWriteFailure {
+	return []claimWriteFailure{
+		{name: "refused", err: checkRefusal()},
+		{name: "owed", err: brokenConnection(), owed: true},
+	}
+}
+
 // serverError is one answer a server gives about something other than the statement it was
 // given, written as pgx returns it from a live connection: the code's class is the whole of what
 // the rule reads, and each row below says which class it is holding and what that class is in

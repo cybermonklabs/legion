@@ -306,14 +306,7 @@ func TestARefusalOfATaskRetiredUnderItHasNothingToDo(t *testing.T) {
 			return id
 		}},
 	} {
-		for _, failure := range []struct {
-			name string
-			err  error
-			owed bool
-		}{
-			{name: "refused", err: checkRefusal()},
-			{name: "owed", err: brokenConnection(), owed: true},
-		} {
+		for _, failure := range claimWriteFailures() {
 			t.Run(tc.name+", "+failure.name, func(t *testing.T) {
 				h := newHarness(t)
 				h.reach(StateReady)
@@ -598,14 +591,7 @@ func TestALateAcknowledgementOfATaskWhoseTurnRanWaitsForItsResult(t *testing.T) 
 // (retirePending), which the next event's repair makes. The acknowledgement then has no task to
 // mark, and it must record nothing rather than end the daemon.
 func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
-	for _, failure := range []struct {
-		name string
-		err  error
-		owed bool
-	}{
-		{name: "refused", err: checkRefusal()},
-		{name: "owed", err: brokenConnection(), owed: true},
-	} {
+	for _, failure := range claimWriteFailures() {
 		t.Run(failure.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateReady)

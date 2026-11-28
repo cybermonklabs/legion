@@ -92,7 +92,7 @@ func (m *Machine) ReadProcess(ctx context.Context) ProcessRead {
 	// While a read of the claim's row is owed after a refused claim write, the claim decides
 	// nothing and asks the runtime nothing (Machine.rereadOwed): the answer is no statement about
 	// the process, as for a runtime that could not be asked.
-	if m.rereadOwed {
+	if m.rereadOwed != "" {
 		m.log.Info("supervise: the process is not read while the claim waits for a read of its row after a refused claim write")
 		return ProcessUnanswered
 	}

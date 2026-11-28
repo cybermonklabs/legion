@@ -1665,14 +1665,21 @@ func (m *Machine) retirePending(ctx context.Context) error {
 		m.recorded(ctx, err)
 		return err
 	}
-	m.rowState = retired.State
+	m.retirementLanded(ctx, retired.State)
+	return nil
+}
+
+// retirementLanded is a retirement that landed (Store.RetireDelivery), whose claim write left the
+// row in state: the row holds no delivery now, so no retirement the owed mark held is left to
+// make, the claim write the mark owed is made good (settleOwedWrite), and what waits for the
+// claim's record acts (recorded). It is retirePending's end and the repair's (repairRetirement).
+func (m *Machine) retirementLanded(ctx context.Context, state ClaimState) {
+	m.rowState = state
 	if m.owedWrite != nil {
-		// The row holds no delivery now, so no retirement the mark held is left to make.
 		m.owedWrite.retire = ""
 	}
 	m.settleOwedWrite(ctx, "RetireDelivery")
 	m.recorded(ctx, nil)
-	return nil
 }
 
 // saved records the outcome of a write of the pending delivery that memory changed first, since
@@ -2064,6 +2071,11 @@ func (m *Machine) settle(ctx context.Context) error {
 	if m.unsaved {
 		if err := m.saved(m.writeFailed(m.pendingWriteMethod(), m.putClaimAndPending(ctx))); err != nil {
 			m.log.Warn("supervise: the pending delivery is still not written", "delivery", p.ID, "error", err)
+			// A refused write ends the decision, as a refused repair does (handle): its caller
+			// returns, so no fence, row or send acts over a claim the rebuild is about to replace.
+			if m.refusal != nil {
+				return err
+			}
 		}
 	}
 	turnOver := !p.ConfirmedAt.IsZero() && m.claim.State != StateWorking && !m.resultPending()

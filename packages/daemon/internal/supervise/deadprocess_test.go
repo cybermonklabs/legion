@@ -399,14 +399,7 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 // the session stopped behind a refused suspension, and the cause not put back, which leaves the
 // claim naming a death it did not take back.
 func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		err  error
-		owed bool
-	}{
-		{name: "refused", err: checkRefusal()},
-		{name: "owed", err: brokenConnection(), owed: true},
-	} {
+	for _, tc := range claimWriteFailures() {
 		t.Run(tc.name, func(t *testing.T) {
 			h, stopped := sessionStops(t)
 			h.reach(StateReady)

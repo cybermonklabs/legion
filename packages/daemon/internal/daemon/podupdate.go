@@ -2591,11 +2591,11 @@ func claimsOf(claims []supervise.Claim, issue string) []supervise.Claim {
 // liveGroup is one read of the group as its claims' own machines hold them now, in the group's
 // order, given twice: as the claims hold their answers (told, which noticeGroup gives alone), and
 // masked (live, masked). A caller that decides from live and asks or reports from told reads both
-// at one moment, and the mask is applied in liveGroupDeciding alone, so no caller pairs a claim
-// with another claim's machine.
+// at one moment, and the mask is applied here and in liveGroupDeciding alone, so no caller pairs a
+// claim with another claim's machine.
 func (s *supervision) liveGroup(group []supervise.Claim) (told, live []supervise.Claim) {
-	told, live, _ = s.liveGroupDeciding(group)
-	return told, live
+	told, deciding := s.roundGroup(group)
+	return told, masked(told, deciding)
 }
 
 // liveGroupDeciding is liveGroup with the claims of told whose machine was deciding something at

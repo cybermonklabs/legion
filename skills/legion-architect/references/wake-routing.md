@@ -11,7 +11,7 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | --- | --- |
 | `catch-up` | Start or resume from it as your role prompt says. Accept each issue its `reason` names as waiting for you (section 6), a parent only after its last round. |
 | `design-approved` | One gated step opened; `gatedSteps` in `read_record` says which. Once every step is `approved`, release the children (section 2). A task saying "this resume is your design-approved wake" is this wake. On a `handed_over` root, or a version a person's answer to a decision block wrote, start nothing. |
-| `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested` as the reason asks, then request approval again ("The armed gate" in design-gate.md) and end your turn. A late one for an older version: answer its reason if the latest does not. |
+| `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested` as the reason asks, then request approval again ("The armed gate" in `skill://legion-architect/references/design-gate.md`) and end your turn. A late one for an older version: answer its reason if the latest does not. |
 | `carried-gate-opened` | Start and release nothing. |
 | `phase-finished` | The next phase started, or `retro-held` came too. Read `dispatch results`, the pull request and its review; tell the working role of any gap. A departure in `plan.md` under `## Departures from the spec`: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting no surface reaches the changed path: build one in this tree, then tell it to continue. |
 | `retro-held`, `task-stopped`, `plan-not-taken` | Act as "The notices" in `skill://legion-architect/references/plan-changes.md` says. |
@@ -37,7 +37,7 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `message-refused` | Post what a person still needs yourself. Where Dispatch refused the status itself, ask a person to set it. |
 | `status-reasserted` | Ask a person when the status write the daemon set back reads as a wish to stop the tree. |
 | `volume-near-full` | The issue volume stayed above its low mark after a cache sweep; read the issue and pod it names, then free or report the bytes as "A full issue volume" in wake-routing-steps.md says. |
-| A reply on an ask you follow | Answer in its thread (`dispatch comment --reply-to <comment id>`) when it carries a question, a disagreement, a correction or a fact you lack. Under an approval request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`, since a default reply gives the turn to the person. An approval or a settled answer draws no reply. Relay it to the responsible role. |
+| A reply on an ask you follow | Act as "A reply on an ask you follow" in wake-routing-steps.md says. |
 
 ## A capped pull request
 

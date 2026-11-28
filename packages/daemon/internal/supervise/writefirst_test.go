@@ -18,7 +18,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
 // stopCounter is a Registrar that counts the pod-session registrations a machine starts and the
@@ -98,15 +97,6 @@ func recordFirstHarness(t *testing.T, c Claim) *recordFirst {
 	return r
 }
 
-// inPod is the process of the claim's launch at generation in the issue pod pod-uid-4099.
-func inPod(h *harness, generation uint64) fake.SpawnResult {
-	const pod = "pod-uid-4099"
-	return fake.SpawnResult{Locator: runtime.Locator{
-		Runtime: runtime.RuntimeSandbox, Claim: h.token, Incarnation: runtime.SandboxIncarnation(pod, generation),
-		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-209", PodUID: pod, Container: "roles", Generation: generation},
-	}}
-}
-
 // reachEnrolled walks the claim to state, its process in the issue pod, its agent's capability
 // enrolled at the broker and its session registered for the pod: launched, the shim's hello with
 // the pod's identity, registered, ready, and through a task for working and idle, as reach walks
@@ -115,8 +105,8 @@ func inPod(h *harness, generation uint64) fake.SpawnResult {
 func (r *recordFirst) reachEnrolled(state ClaimState) {
 	h := r.harness
 	h.t.Helper()
-	h.rt.ScriptSpawn(inPod(h, h.generation()+1))
-	h.rt.ScriptResume(inPod(h, h.generation()+1))
+	h.rt.ScriptSpawn(inIssuePod(h.token, h.generation()+1))
+	h.rt.ScriptResume(inIssuePod(h.token, h.generation()+1))
 	h.launch()
 	h.helloWithIdentity()
 	steps := []ClaimState{StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle}
@@ -703,4 +693,38 @@ func TestADecisionInTheWindowAfterARefusalActsOnlyOnceItsRecordIsWritten(t *test
 		}
 		r.wantMemoryIsTheRow()
 	})
+}
+
+// A write the window after a refused claim write holds back (D5 of dispatch://INFRA-4099's plan)
+// owes nothing where its decision leaves nothing to do outside the machine: a queue of a task of the
+// outbox's changes memory only once the store takes its write, so the window leaves no owed mark,
+// and the first decision after the window makes no claim write for it and logs no write made good,
+// whose line an operator reads only as the close of a write that did not take.
+func TestAWriteTheWindowHeldWithNothingToActOnOwesNothing(t *testing.T) {
+	h, s := refusingHarness(t, queuedClaim())
+	h.reach(StateReady)
+	s.refuseCalls("PutClaim")
+	if err := h.handle(StreamTurnStart{Claim: h.token}); !errors.Is(err, s.err) {
+		t.Fatalf("control: the refused turn start answered %v, want the store's refusal", err)
+	}
+	s.refuseWhere(nil)
+	if err := h.handle(RequestDeliver{Claim: h.token, ID: "row-7", Task: "read the plan", Row: 7}); !errors.Is(err, errWritesWait) {
+		t.Fatalf("the queue in the window answered %v, want its write held", err)
+	}
+	h.m.mu.Lock()
+	owed := h.m.owedWrite
+	h.m.mu.Unlock()
+	if owed != nil {
+		t.Fatalf("the queue in the window left the owed mark %+v, want none: its decision changed nothing of memory", *owed)
+	}
+
+	mark := s.mark()
+	h.advance(testProbe)
+	_ = h.staleTimer()
+	if asked := s.since(mark); len(asked) != 0 {
+		t.Fatalf("the decisions after the window asked for the claim writes %v, want none", asked)
+	}
+	if lines := h.records.of(repairedWriteLine); len(lines) != 0 {
+		t.Fatalf("the decisions after the window logged %d writes made good, want none", len(lines))
+	}
 }

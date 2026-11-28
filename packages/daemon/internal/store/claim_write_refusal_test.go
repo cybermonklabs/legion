@@ -161,17 +161,14 @@ func TestTheStoresOwnRefusalsCarryTheRefusalType(t *testing.T) {
 // onlyClaimOf is the stored claim of token.
 func onlyClaimOf(t *testing.T, st *Store, token claim.Token) supervise.Claim {
 	t.Helper()
-	claims, err := st.Claims(context.Background())
+	c, found, err := st.ReadClaim(context.Background(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range claims {
-		if c.Token == token {
-			return c
-		}
+	if !found {
+		t.Fatalf("the store holds no claim %s", token)
 	}
-	t.Fatalf("the store holds no claim %s", token)
-	return supervise.Claim{}
+	return c
 }
 
 // readOnlyStore is a store on st's database through a pool whose every transaction is read-only

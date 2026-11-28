@@ -1952,9 +1952,9 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 
 // claimWriteRefused tells who must know that the store refused a claim write for good
 // (intake.ClaimWriteRefused): the architect the notice's walk reaches, unless the claim is the
-// tree root's own architect, and the controller, in a row of its own queued here as
-// sessionStoreFault queues one. The roles told are those a run of provider errors tells (the
-// daemon's providerErrorRunReached):
+// tree root's own architect, and the controller, in a row of its own (noticeWithController, or
+// that row alone where no architect is told). The roles told are those a run of provider errors
+// tells (the daemon's providerErrorRunReached):
 //
 //   - a phase worker's claim tells the architect that owns the issue and the controller;
 //   - the tree root's architect's own claim tells the controller alone, since its notice would
@@ -1974,9 +1974,7 @@ func (e *Engine) claimWriteRefused(ctx context.Context, tx pgx.Tx, fact intake.C
 	notice := record.Notice{Kind: record.ClaimWriteRefusedNotice, Role: fact.Role,
 		Reason: claimWriteRefusedReason(issue.Key, fact, tellsArchitect)}
 	if tellsArchitect {
-		if err := e.notice(ctx, tx, issue.Key, notice); err != nil {
-			return intake.Result{}, err
-		}
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, notice)
 	}
 	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(notice))
 }

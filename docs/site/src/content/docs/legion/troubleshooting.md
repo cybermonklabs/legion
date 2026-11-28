@@ -1717,8 +1717,8 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   makes it, so a claim whose every write is refused tries one write in each probe interval and
   starts no process. The daemon asks the claim's agent for its state before it sends it anything.
   A read that fails or finds no row writes `supervise: the claim could not be read again from the
-  store after a refused write` at Warn instead, with `found=`, `error=` and `retry=`. The claim
-  then decides nothing until a read lands, and the read is tried again every
+  store after a refused write` at Warn instead, with `store=`, `found=`, `error=` and `retry=`.
+  The claim then decides nothing until a read lands, and the read is tried again every
   `probe_interval_seconds`. A request to the claim is answered with a wait. Every other event is
   dropped and counted, and the line of the read that lands names them (`dropped=`,
   `droppedEvents=`). If the Warn line keeps coming, look at the database.

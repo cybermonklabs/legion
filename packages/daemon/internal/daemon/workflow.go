@@ -3036,7 +3036,7 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 func (w *workflowRuntime) sessionLost(c supervise.Claim, cause supervise.SessionLoss, detail string) {
 	w.applySessionFact(c, fmt.Sprintf("session-lost:%s:%s", c.Token, c.Abandoned.Session),
 		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail, Cause: cause, Session: c.Abandoned.Session},
-		"apply a claim's lost session")
+		"apply a claim's lost session", false)
 }
 
 // sessionStoreFault applies the fact that a start could not reach the session store at all
@@ -3045,7 +3045,7 @@ func (w *workflowRuntime) sessionLost(c supervise.Claim, cause supervise.Session
 // is a report, and the event id names the moment rather than the launch.
 func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 	w.applySessionFact(c, fmt.Sprintf("session-store-fault:%s:%d", c.Token, time.Now().UnixNano()),
-		intake.SessionStoreFault{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a session store fault")
+		intake.SessionStoreFault{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a session store fault", false)
 }
 
 // claimWriteRefused applies the fact that the store refused a claim write for good (supervise's
@@ -3054,25 +3054,29 @@ func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 // claimWriteRefused). The machine tells it inside the refused decision, once for each refusal,
 // with the claim as memory held it; the event id names the claim, the refused claim's generation,
 // the SQLSTATE and the constraint, so a second refusal with the same key, made again at the next
-// window or by the next boot's machine over the same row, is marked applied already
-// (intake.ApplyFact) and tells nobody. A refusal the store made in Go has no SQLSTATE, and its
-// rule word stands in the constraint's place (supervise.RowRefusedError.Rule), so its id has an
-// empty SQLSTATE between two colons. The controller's own claim and a claim with no issue are told
-// to nobody (applySessionFact): the refusal's line in the machine's log is the whole of its record.
+// window or by the next boot's machine over the same row, tells nobody. A claim whose every write
+// is refused makes that second refusal at each probe interval, so it is read as applied first
+// (intake.Applied) and opens no fact transaction, which would wait on the daemon's one fact lock
+// only to skip it. A refusal the store made in Go has no SQLSTATE, and its rule word stands in the
+// constraint's place (supervise.RowRefusedError.Rule), so its id has an empty SQLSTATE between
+// two colons. The controller's own claim and a claim with no issue are told to nobody
+// (applySessionFact): the refusal's line in the machine's log is the whole of its record.
 func (w *workflowRuntime) claimWriteRefused(r supervise.WriteRefusal) {
 	c := r.Claim
-	w.applySessionFact(c, fmt.Sprintf("claim-write-refused:%s:%d:%s:%s", c.Token, r.Generation, r.SQLState, r.Constraint),
-		intake.ClaimWriteRefused{Issue: c.Issue, Role: c.Role, Tree: c.Tree, Store: r.Store, Stored: r.Stored, Refused: r.Refused,
-			Generation: r.Generation, SQLState: r.SQLState, Constraint: r.Constraint},
-		"apply a claim write the store refused")
+	w.applySessionFact(c, fmt.Sprintf("claim-write-refused:%s:%d:%s:%s", c.Token, c.Generation, r.SQLState, r.Constraint),
+		intake.ClaimWriteRefused{Issue: c.Issue, Role: c.Role, Tree: c.Tree, Store: r.Store, Stored: r.Stored, Refused: c.State,
+			Generation: c.Generation, SQLState: r.SQLState, Constraint: r.Constraint},
+		"apply a claim write the store refused", true)
 }
 
 // applySessionFact applies one of the facts a machine tells inside its own decision — the two
 // session facts and a refused claim write — on a goroutine of its own, bounded by
 // readyReleaseTimeout, so none of them waits for the database. A failure is logged and is not the
 // daemon's end — the report is a report, and what it describes has already been decided. A claim
-// on no issue, the daemon's own controller, has nobody to tell.
-func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact intake.Fact, what string) {
+// on no issue, the daemon's own controller, has nobody to tell. repeats is a fact whose id the
+// machine tells again and again: one already applied is read so first (intake.Applied), outside
+// the fact lock, and not applied again.
+func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact intake.Fact, what string, repeats bool) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return
 	}
@@ -3081,6 +3085,12 @@ func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact in
 		// hold mark of its own (store.ForConcurrentWorker).
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
+		// A read that fails decides nothing: the apply below skips an applied id under the lock.
+		if repeats {
+			if applied, err := intake.Applied(ctx, w.pool, "supervise", []string{id}); err == nil && applied[id] {
+				return
+			}
+		}
 		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {
 			w.log.Warn(what, "claim", c.Token, "error", err)
 		}

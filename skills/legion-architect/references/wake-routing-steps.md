@@ -16,3 +16,10 @@ On `volume-near-full`, sort the bytes by where they are:
 - Bytes warm across the clone, workspaces and caches: open a finding ask with the sizes, since `issue_volume` is the operator's.
 
 - Carry a trimmer that switched itself off as `skill://legion-worker/references/findings.md` says.
+
+## A reply on an ask you follow
+
+Answer in its thread (`dispatch comment --reply-to <comment id>`) when it carries a question, a disagreement, a correction or a fact you lack.
+Under an approval request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`, since a default reply gives the turn to the person.
+An approval or a settled answer draws no reply.
+Relay it to the responsible role.

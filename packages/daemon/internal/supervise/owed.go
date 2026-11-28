@@ -116,13 +116,13 @@ const claimWriteAgainLine = "supervise: a claim write the bound cut short; makin
 //
 // It is split out of claimWriteFailed for the callers that owe a write without putting the
 // failure to the rule here. One is a caller that has already put it to the rule and keeps the
-// owed failure its own way (repair, retirePending, markRound, ReleaseUncertainLaunch,
-// suspendOverADeadProcess). The other is a retirement the store refused because it had already
-// made it (retirePending), which knows from the refusal itself that the claim write of that same
-// transaction was rolled back with the delete — a fact about the store's transaction rather than
-// about the shape of the error. Asking the rule there would be asking the wrong question, and
-// would answer by accident: the sentinel carries no SQLSTATE, so the rule owes it, but it would
-// stop owing it the day the refusal is spelled as a server error.
+// owed failure its own way (repair, retirePending, suspendOverADeadProcess). The other is a
+// retirement the store refused because it had already made it (retirePending), which knows from
+// the refusal itself that the claim write of that same transaction was rolled back with the
+// delete — a fact about the store's transaction rather than about the shape of the error. Asking
+// the rule there would be asking the wrong question, and would answer by accident: the sentinel
+// carries no SQLSTATE, so the rule owes it, but it would stop owing it the day the refusal is
+// spelled as a server error.
 //
 // A write the daemon's own stop cut short is logged at Info instead. The stop cancels the context
 // the machine was built with (supervision.halt in internal/daemon), and the context of each
@@ -214,14 +214,13 @@ func (m *Machine) refusedWrite(method string, err error, more ...any) {
 		return
 	}
 	sqlstate, constraint := refusalOf(err)
-	m.refusal = &claimRefusal{store: method, err: err, sqlstate: sqlstate, constraint: constraint,
-		state: m.claim.State, generation: m.claim.Generation}
+	m.refusal = &claimRefusal{store: method, err: err}
 	attrs := append([]any{"store", method, "stored", m.rowState, "refused", m.claim.State,
 		"generation", m.claim.Generation, "sqlstate", sqlstate, "constraint", constraint, "error", err}, more...)
 	m.log.Error(RefusedWriteLine, attrs...)
 	if m.deps.ClaimWriteRefused != nil {
 		m.deps.ClaimWriteRefused(WriteRefusal{Claim: copyClaim(m.claim), Store: method, Stored: m.rowState,
-			Refused: m.claim.State, Generation: m.claim.Generation, SQLState: sqlstate, Constraint: constraint, Err: err})
+			SQLState: sqlstate, Constraint: constraint, Err: err})
 	}
 }
 
@@ -305,17 +304,14 @@ func (m *Machine) repair(ctx context.Context) {
 // repairWrite is repair's write of the claim, the claim with its pending delivery where one is
 // pending, and answers whether it landed.
 func (m *Machine) repairWrite(ctx context.Context) bool {
-	method, pending := "PutClaim", m.claim.Pending
-	if pending != nil {
-		method = "PutClaimAndDelivery"
-	}
-	if len(m.owedWrite.stops) > 0 {
-		method = "PauseStopped"
-	}
+	// The store call is named before the write, which can settle what names it.
+	var method string
 	var err error
-	if pending != nil {
+	if m.claim.Pending != nil {
+		method = m.pendingWriteMethod()
 		err = m.putClaimAndPending(ctx)
 	} else {
+		method = m.claimWriteMethod()
 		err = m.putClaim(ctx)
 	}
 	// A write that landed settled the mark inside the helper that made it, reports and all.
@@ -344,10 +340,7 @@ func (m *Machine) repairRetirement(ctx context.Context) {
 	err := m.writeClaim(ctx, func(ctx context.Context) error { return m.deps.Store.RetireDelivery(ctx, c, id) })
 	switch {
 	case err == nil:
-		m.rowState = c.State
-		m.owedWrite.retire = ""
-		m.settleOwedWrite(ctx, "RetireDelivery")
-		m.recorded(ctx, nil)
+		m.retirementLanded(ctx, c.State)
 	case errors.Is(err, ErrNoSuchDelivery):
 		m.log.Warn("supervise: the owed retirement's delivery is no longer in the row; the claim write it carried is made alone",
 			"delivery", id, "error", err)
@@ -528,7 +521,7 @@ var errWritesWait = errors.New("supervise: the claim's writes wait out the probe
 
 // WriteRefusal is one claim write the rule refused, as the machine tells it (Deps.ClaimWriteRefused,
 // D10 of dispatch://INFRA-4099's plan): the fields of RefusedWriteLine, and the claim the store
-// refused.
+// refused, whose state and generation are the line's refused state and generation.
 type WriteRefusal struct {
 	// Claim is the claim as memory held it at the refusal: the claim the write tried to record.
 	Claim Claim
@@ -537,10 +530,6 @@ type WriteRefusal struct {
 	Store string
 	// Stored is the state the claim's row last held (Machine.rowState).
 	Stored ClaimState
-	// Refused is the state memory held at the refusal.
-	Refused ClaimState
-	// Generation is the claim's generation in memory at the refusal.
-	Generation uint64
 	// SQLState is the server's code, and empty for a refusal the store made in Go.
 	SQLState string
 	// Constraint is the constraint the server names, or the store's rule word

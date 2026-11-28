@@ -67,6 +67,11 @@ func (a afterRecord) join(b afterRecord) afterRecord {
 	return a
 }
 
+// empty is whether a acts on nothing at all.
+func (a afterRecord) empty() bool {
+	return len(a.stops) == 0 && !a.stopPrevious && len(a.revoke) == 0 && !a.forgetProcess && a.lost == nil
+}
+
 // processStop is one process a decision ended, as its record leaves it to the acts that follow
 // (afterRecord.stops): a suspension's Runtime.Suspend of loc, or a retirement's Runtime.Release of
 // the claim and loc, made once the record is written, best effort (stopRecorded) — or, where made
@@ -136,8 +141,13 @@ func (m *Machine) recorded(ctx context.Context, err error) {
 // holdAfterRecord keeps after on the owed mark (owedClaimWrite.after) while the window after a
 // refused claim write holds the write back (D5 of dispatch://INFRA-4099's plan): the write that
 // makes the owed write acts on them (settleOwedWrite, recorded), and a refusal of it drops them with
-// the mark.
+// the mark. An after that acts on nothing makes no mark: a write whose decision holds nothing for
+// its record changes memory only once the store takes it, or keeps a mark of its own (oweWrite, or
+// the delivery's unsaved), so a mark made here alone would owe a write that records nothing.
 func (m *Machine) holdAfterRecord(after afterRecord) {
+	if after.empty() {
+		return
+	}
 	if m.owedWrite == nil {
 		m.owedWrite = &owedClaimWrite{}
 	}

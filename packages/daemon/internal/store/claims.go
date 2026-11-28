@@ -882,19 +882,7 @@ func (s *Store) HasLegacySandboxClaims(ctx context.Context, project string) (boo
 // ClaimByBootTokenHash finds the claim whose current launch minted the boot token with this hash
 // — how a shim's hello and an agent's registration find the claim they belong to.
 func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervise.Claim, bool, error) {
-	var c supervise.Claim
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		c, err = scanClaim(tx.QueryRow(ctx, claimSelect+" where c.boot_token_hash = $1", hash))
-		return err
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return supervise.Claim{}, false, nil
-	}
-	if err != nil {
-		return supervise.Claim{}, false, err
-	}
-	return c, true, nil
+	return s.claimWhere(ctx, "c.boot_token_hash = $1", hash)
 }
 
 // ReadClaim is the claim of token with its pending delivery, read as Claims reads each claim at a
@@ -902,17 +890,28 @@ func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervis
 // read a machine makes after a claim write the store refused, to build itself again over the row
 // the store holds (supervise.Store.ReadClaim).
 func (s *Store) ReadClaim(ctx context.Context, token claim.Token) (supervise.Claim, bool, error) {
+	c, found, err := s.claimWhere(ctx, "c.token = $1", string(token))
+	if err != nil {
+		return supervise.Claim{}, false, fmt.Errorf("read claim %s: %w", token, err)
+	}
+	return c, found, nil
+}
+
+// claimWhere is the one claim, with its pending delivery, that the condition where holds for with
+// arg as its $1, read in a read-only transaction as Claims reads each claim (claimSelect,
+// scanClaim), and false with no error where no row does.
+func (s *Store) claimWhere(ctx context.Context, where string, arg any) (supervise.Claim, bool, error) {
 	var c supervise.Claim
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		c, err = scanClaim(tx.QueryRow(ctx, claimSelect+" where c.token = $1", string(token)))
+		c, err = scanClaim(tx.QueryRow(ctx, claimSelect+" where "+where, arg))
 		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, false, nil
 	}
 	if err != nil {
-		return supervise.Claim{}, false, fmt.Errorf("read claim %s: %w", token, err)
+		return supervise.Claim{}, false, err
 	}
 	return c, true, nil
 }

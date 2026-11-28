@@ -112,14 +112,7 @@ func TestARefusedRelaunchOfAReleasedLaunchLeavesTheStoreAndTheMachineAgreeing(t 
 // write first (repair). A release the rule refuses is undone: the claim stays launch_uncertain in
 // memory as it is in the store, so nothing launches on a release no restart would find.
 func TestAReleaseTheStoreDoesNotTakeIsUndone(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		err  error
-		owed bool
-	}{
-		{name: "owed", err: brokenConnection(), owed: true},
-		{name: "refused", err: checkRefusal()},
-	} {
+	for _, tc := range claimWriteFailures() {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newBareHarness(t)
 			uncertain := queuedClaim()

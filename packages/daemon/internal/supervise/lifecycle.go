@@ -49,13 +49,13 @@ import (
 // A revive in the window after a refused claim write's read (D5 of dispatch://INFRA-4099's plan)
 // makes no write and is made again at the window's end (reviveAfterWindow).
 func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, admitted func()) error {
-	if until, waits := m.writesWait(); waits && m.refused() == nil {
+	if until, waits := m.writesWait(); waits {
 		m.reviveAfterWindow(until, exempt, admitted)
 		return nil
 	}
 	// The admission writes the claim row alone, so a take-back the claim must carry goes first
 	// (carryPending, writeCarried).
-	if err := m.writeFailed(m.pendingWriteMethod(), m.writeCarried(ctx)); err != nil {
+	if err := m.writeCarried(ctx); err != nil {
 		return err
 	}
 	c := m.stored()

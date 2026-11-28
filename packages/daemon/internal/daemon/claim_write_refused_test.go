@@ -50,12 +50,12 @@ func refusalWorkflow(pool *store.Pool, log *slog.Logger) *workflowRuntime {
 	return &workflowRuntime{pool: pool, records: records, log: log, handlers: []intake.Handler{engine}}
 }
 
-// toldAgain hands w the refusal r while the test holds the lock every fact applies under
+// toldNew hands w the refusal r while the test holds the lock every fact applies under
 // (intake.SerializeFacts), and returns once the apply that call started has ended: the apply runs
 // on a goroutine of its own (applySessionFact), so it waits on the held lock, the test lets the
 // lock go, and then takes it itself, which it is granted only once that apply's transaction has
-// ended. What the outbox holds after it is what the second telling wrote.
-func toldAgain(t *testing.T, pool *store.Pool, w *workflowRuntime, r supervise.WriteRefusal) {
+// ended. What the outbox holds after it is what the telling wrote.
+func toldNew(t *testing.T, pool *store.Pool, w *workflowRuntime, r supervise.WriteRefusal) {
 	t.Helper()
 	held := holdFactLock(t, pool)
 	w.claimWriteRefused(r)
@@ -70,6 +70,28 @@ func toldAgain(t *testing.T, pool *store.Pool, w *workflowRuntime, r supervise.W
 	}
 }
 
+// toldAgainWithin is how long toldAgain watches for a fact transaction of a refusal told again. An
+// apply of a new key waits on the held lock within milliseconds (toldNew), so a second with no
+// waiter is an apply that took no fact transaction.
+const toldAgainWithin = time.Second
+
+// toldAgain hands w the refusal r, which the records hold as applied already, while the test holds
+// the lock every fact applies under: the workflow reads the fact as applied (intake.Applied) and
+// opens no fact transaction, so nothing waits on the held lock. A claim whose every write is
+// refused tells the same refusal at each probe interval, and an apply of each would hold the
+// daemon's fact lock for nothing.
+func toldAgain(t *testing.T, pool *store.Pool, w *workflowRuntime, r supervise.WriteRefusal) {
+	t.Helper()
+	held := holdFactLock(t, pool)
+	w.claimWriteRefused(r)
+	if factLockWaitedWithin(pool, toldAgainWithin) {
+		t.Error("the refusal told again waited on the fact lock the test held: it opened a fact transaction for a fact already applied")
+	}
+	if err := held.Rollback(context.Background()); err != nil {
+		t.Fatalf("let the fact lock go: %v", err)
+	}
+}
+
 // A refused claim write is told once for each claim, generation, SQLSTATE and constraint
 // (c-refusal-told of dispatch://INFRA-4099's verification), to the roles a run of provider errors
 // tells (providerErrorRunReached): a phase worker's claim reaches the issue's architect and the
@@ -78,7 +100,8 @@ func toldAgain(t *testing.T, pool *store.Pool, w *workflowRuntime, r supervise.W
 // each refusal (supervise's refusedWrite), so the same refusal made again — at the next decision
 // after the window, or by the next daemon's machine over the same row — is told again with the
 // same key: it adds no row, from the same runtime or from a new one reading the same records, as
-// a restart's does. A refusal of the next generation is a new key, and is told. A refusal the
+// a restart's does, and it opens no fact transaction, since the workflow reads it as applied
+// first. A refusal of the next generation is a new key, and is told. A refusal the
 // store made in Go names no SQLSTATE, and its rule word stands where the constraint stands.
 func TestARefusedClaimWriteIsToldOnce(t *testing.T) {
 	t.Parallel()
@@ -142,7 +165,7 @@ func TestARefusedClaimWriteIsToldOnce(t *testing.T) {
 			refusal := supervise.WriteRefusal{
 				Claim: supervise.Claim{Token: mustClaimToken(t, tc.issue, tc.role), Project: "legion", Tree: "LEGION-1", Issue: tc.issue,
 					Role: tc.role, Generation: 3, State: supervise.StateSuspended},
-				Store: "PutClaim", Stored: supervise.StateIdle, Refused: supervise.StateSuspended, Generation: 3,
+				Store: "PutClaim", Stored: supervise.StateIdle,
 				SQLState: tc.sqlstate, Constraint: tc.constraint, Err: err,
 			}
 
@@ -217,11 +240,8 @@ func TestARefusedClaimWriteIsToldOnce(t *testing.T) {
 
 			// The next generation's refusal is a key of its own, which the new runtime tells.
 			next := refusal
-			next.Claim.Generation, next.Generation = 4, 4
-			refusalWorkflow(pool, log).claimWriteRefused(next)
-			testwait.Eventually(t, "the notices of the next generation's refusal to commit", func() bool {
-				return refusedWriteNotices(t, pool, record.OutboxKindControllerNotice) == 1
-			})
+			next.Claim.Generation = 4
+			toldNew(t, pool, refusalWorkflow(pool, log), next)
 			wantRows("after a refusal of the next generation")
 		})
 	}

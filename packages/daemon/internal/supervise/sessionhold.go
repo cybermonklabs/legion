@@ -298,7 +298,7 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	}
 	// The release writes the claim row alone, so a take-back the claim must carry goes first
 	// (carryPending, writeCarried).
-	if err := m.writeFailed(m.pendingWriteMethod(), m.writeCarried(ctx)); err != nil {
+	if err := m.writeCarried(ctx); err != nil {
 		return ReleasedNames{}, err
 	}
 	c := m.stored()

@@ -68,7 +68,12 @@ func (s *refusingStore) refuseWhere(refuse func(method string, c Claim) bool) {
 
 // refuseCalls refuses every call of method from now on.
 func (s *refusingStore) refuseCalls(method string) {
-	s.refuseWhere(func(asked string, _ Claim) bool { return asked == method })
+	s.refuseWhere(refuseMethod(method))
+}
+
+// refuseMethod picks every call of method, for refuseWhere.
+func refuseMethod(method string) func(string, Claim) bool {
+	return func(asked string, _ Claim) bool { return asked == method }
 }
 
 // refusedCall marks a call the store answered with its refusal in the calls it counts (since).
@@ -329,7 +334,7 @@ var rebuildFields = map[string]string{
 	"podLoad":               "kept: where the row records its process, since a load has a bound once started",
 	"askDelivered":          "kept: a publish of an update round's ask that happened and whose mark the store refused (D9)",
 	"refusal":               "set by the rebuild: the state of the rule itself, cleared as the rebuild begins",
-	"rereadOwed":            "set by the rebuild: the state of the rule itself, set while no read of the row has landed (D5)",
+	"rereadOwed":            "set by the rebuild: the state of the rule itself, the refused store call while no read of the row has landed (D5)",
 	"rereadDropped":         "set by the rebuild: the events a read owed dropped, named when the read lands (D5)",
 	"writesWaitUntil":       "set by the rebuild: the state of the rule itself, the end of the window after a read that lands (D5)",
 	"registeredPods":        built + ": the row's joined with memory's, and no fake process registers in a pod",
@@ -527,9 +532,6 @@ func TestARefusedWriteLeavesTheMachineAsADaemonStartBuildsIt(t *testing.T) {
 	retired.State, retired.Generation = StateRetired, 1
 	uncertain := queuedClaim()
 	uncertain.State, uncertain.Generation = StateLaunchUncertain, 1
-	writes := func(method string) func(string, Claim) bool {
-		return func(asked string, _ Claim) bool { return asked == method }
-	}
 	for _, tc := range []struct {
 		name  string
 		claim Claim
@@ -543,12 +545,12 @@ func TestARefusedWriteLeavesTheMachineAsADaemonStartBuildsIt(t *testing.T) {
 	}{
 		{
 			name: "queued: a spawn's launching write", claim: queuedClaim(),
-			refuse: writes("PutClaim"),
+			refuse: refuseMethod("PutClaim"),
 			decide: func(h *harness) error { return h.handle(RequestSpawn{Claim: h.token}) },
 		},
 		{
 			name: "launch_uncertain: the release of an uncertain launch", claim: uncertain,
-			refuse: writes("PutClaim"),
+			refuse: refuseMethod("PutClaim"),
 			decide: func(h *harness) error {
 				_, err := h.m.ReleaseUncertainLaunch(h.ctx)
 				return err
@@ -557,7 +559,7 @@ func TestARefusedWriteLeavesTheMachineAsADaemonStartBuildsIt(t *testing.T) {
 		{
 			name: "launching: the shim's hello", claim: queuedClaim(),
 			before: func(h *harness) *orderedConn { h.launch(); return nil },
-			refuse: writes("PutClaim"),
+			refuse: refuseMethod("PutClaim"),
 			decide: func(h *harness) error {
 				h.conns.Register(h.token, h.conn)
 				return h.handle(StreamHello{Claim: h.token, Generation: h.generation()})
@@ -566,7 +568,7 @@ func TestARefusedWriteLeavesTheMachineAsADaemonStartBuildsIt(t *testing.T) {
 		{
 			name: "shim_connected: the registration", claim: queuedClaim(),
 			before: func(h *harness) *orderedConn { h.reach(StateShimConnected); return nil },
-			refuse: writes("PutClaim"),
+			refuse: refuseMethod("PutClaim"),
 			decide: func(h *harness) error {
 				return h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
 					CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
@@ -575,7 +577,7 @@ func TestARefusedWriteLeavesTheMachineAsADaemonStartBuildsIt(t *testing.T) {
 		{
 			name: "registered: the ready", claim: queuedClaim(),
 			before: func(h *harness) *orderedConn { h.reach(StateRegistered); return nil },
-			refuse: writes("PutClaim"),
+			refuse: refuseMethod("PutClaim"),
 			decide: func(h *harness) error {
 				return h.handle(RequestReady{Claim: h.token, Generation: h.generation(), Session: session})
 			},
@@ -589,35 +591,35 @@ func TestARefusedWriteLeavesTheMachineAsADaemonStartBuildsIt(t *testing.T) {
 				conn.take()
 				return conn
 			},
-			refuse: writes("PutClaimAndDelivery"),
+			refuse: refuseMethod("PutClaimAndDelivery"),
 			decide: func(h *harness) error { return h.handle(StreamTurnStart{Claim: h.token}) },
 		},
 		{
 			name: "working: a turn's end", claim: queuedClaim(),
 			before: func(h *harness) *orderedConn { h.reach(StateWorking); return nil },
-			refuse: writes("PutClaim"),
+			refuse: refuseMethod("PutClaim"),
 			decide: func(h *harness) error { return h.handleQuiet(StreamTurnEnd{Claim: h.token}) },
 		},
 		{
 			name: "idle: an operator's suspension", claim: queuedClaim(),
 			before: func(h *harness) *orderedConn { h.reach(StateIdle); return nil },
-			refuse: writes("PutClaim"),
+			refuse: refuseMethod("PutClaim"),
 			decide: func(h *harness) error { return h.handle(RequestSuspend{Claim: h.token, By: SuspendedByOperator}) },
 		},
 		{
 			name: "suspended: an operator's resume", claim: queuedClaim(),
 			before: func(h *harness) *orderedConn { h.reach(StateSuspended); return nil },
-			refuse: writes("AdmitClaim"),
+			refuse: refuseMethod("AdmitClaim"),
 			decide: func(h *harness) error { return h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator}) },
 		},
 		{
 			name: "failed: a retry", claim: failed,
-			refuse: writes("AdmitClaim"),
+			refuse: refuseMethod("AdmitClaim"),
 			decide: func(h *harness) error { return h.handle(RequestRetry{Claim: h.token}) },
 		},
 		{
 			name: "retired: a retry", claim: retired,
-			refuse: writes("AdmitClaim"),
+			refuse: refuseMethod("AdmitClaim"),
 			decide: func(h *harness) error { return h.handle(RequestRetry{Claim: h.token}) },
 		},
 		{
@@ -730,10 +732,9 @@ func TestAClaimWriteRefusedForGoodIsLogged(t *testing.T) {
 			t.Fatalf("after refusal %d the daemon was told %d refusals, want %d", n, len(heard), n)
 		}
 		got := heard[n-1]
-		want := WriteRefusal{Store: "PutClaim", Stored: StateReady, Refused: StateWorking, Generation: generation,
-			SQLState: "23514", Constraint: "claims_state_check"}
-		if got.Claim.Token != h.token || got.Store != want.Store || got.Stored != want.Stored || got.Refused != want.Refused ||
-			got.Generation != want.Generation || got.SQLState != want.SQLState || got.Constraint != want.Constraint || !errors.Is(got.Err, s.err) {
+		want := WriteRefusal{Store: "PutClaim", Stored: StateReady, SQLState: "23514", Constraint: "claims_state_check"}
+		if got.Claim.Token != h.token || got.Store != want.Store || got.Stored != want.Stored || got.Claim.State != StateWorking ||
+			got.Claim.Generation != generation || got.SQLState != want.SQLState || got.Constraint != want.Constraint || !errors.Is(got.Err, s.err) {
 			t.Fatalf("refusal %d was told as %+v, want %+v of claim %s", n, got, want, h.token)
 		}
 	}
@@ -831,9 +832,6 @@ func TestNothingReadsARefusedDecisionBeforeTheRead(t *testing.T) {
 	type heard struct {
 		reports, confirmed, backstopped, lost int
 	}
-	calls := func(method string) func(string, Claim) bool {
-		return func(asked string, _ Claim) bool { return asked == method }
-	}
 	for _, tc := range []struct {
 		name  string
 		claim Claim
@@ -846,7 +844,7 @@ func TestNothingReadsARefusedDecisionBeforeTheRead(t *testing.T) {
 			name: "a refused turn start", claim: queuedClaim(),
 			decide: func(_ *testing.T, h *harness, refuse func(func(string, Claim) bool)) error {
 				h.reach(StateReady)
-				refuse(calls("PutClaim"))
+				refuse(refuseMethod("PutClaim"))
 				return h.handle(StreamTurnStart{Claim: h.token})
 			},
 		},
@@ -855,7 +853,7 @@ func TestNothingReadsARefusedDecisionBeforeTheRead(t *testing.T) {
 			decide: func(_ *testing.T, h *harness, refuse func(func(string, Claim) bool)) error {
 				h.reach(StateReady)
 				h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
-				refuse(calls("PutClaimAndDelivery"))
+				refuse(refuseMethod("PutClaimAndDelivery"))
 				return h.handle(StreamTurnStart{Claim: h.token})
 			},
 		},
@@ -881,7 +879,7 @@ func TestNothingReadsARefusedDecisionBeforeTheRead(t *testing.T) {
 			name: "a refused turn outcome", claim: queuedClaim(),
 			decide: func(t *testing.T, h *harness, refuse func(func(string, Claim) bool)) error {
 				h.reach(StateReady)
-				refuse(calls("PutClaim"))
+				refuse(refuseMethod("PutClaim"))
 				answer, err := h.m.HandleTurnOutcome(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(),
 					Sequence: 1, Refused: true, HTTPStatus: 429})
 				if want := h.store.load(h.token).RefusedRun(); answer.RefusedRun != want || answer.Failed {
@@ -955,6 +953,43 @@ func TestARebuiltClaimAsksBeforeItSends(t *testing.T) {
 		t.Fatalf("the rebuilt claim's task is confirmed at %s, want it unconfirmed as the row holds it", p.ConfirmedAt)
 	}
 	h.wantAskedBeforeSent(conn)
+}
+
+// A decision whose settle meets a refusal ends there, as one whose repair does (handle): the
+// settle's write of a delivery a failed write left unsaved is the decision's first claim write, and
+// once the store refuses it nothing more of the decision is made. Here the turn a prompt asked for
+// does not start in time, and the store does not take the take-back's write, so the task is left
+// unsaved under its id (takeBackPending); an observation of the live process, whose row would send
+// that task again, then meets the refusal of the settle's write. No prompt goes to the agent, no
+// other claim write is asked for, and memory is the row.
+func TestARefusedSettleEndsItsDecision(t *testing.T) {
+	h, s := refusingHarness(t, queuedClaim())
+	conn := h.connectOrdered()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+	h.store.fail("PutDelivery", brokenConnection())
+	h.advance(2 * testRPC)
+	h.store.fail("PutDelivery", nil)
+	h.m.mu.Lock()
+	unsaved := h.m.unsaved
+	h.m.mu.Unlock()
+	if !unsaved {
+		t.Fatal("control: the take-back left the delivery saved, so no settle writes it: this test proves nothing")
+	}
+	conn.take()
+	mark := s.mark()
+	s.refuseCalls("PutClaimAndDelivery")
+
+	alive := RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Alive, At: h.clock.Now()}}
+	if err := h.handle(alive); !errors.Is(err, s.err) {
+		t.Fatalf("the observation returned %v, want the store's refusal of the settle's write", err)
+	}
+
+	if asked := conn.take(); len(asked) != 0 {
+		t.Fatalf("the refused decision asked the agent %v, want nothing", asked)
+	}
+	s.wantOneRefusalLast(t, mark, "PutClaimAndDelivery")
+	h.wantMemoryIsTheRow()
 }
 
 // A refused claim write whose read of the row fails, or finds no row, decides nothing until a read
@@ -1034,6 +1069,9 @@ func TestARefusedWriteWhoseReadFailsDecidesNothingUntilARead(t *testing.T) {
 		}
 		if dropped, ok := lines[0].attr("dropped"); !ok || dropped.String() != "2" {
 			t.Fatalf("the read's line names %v (%t) events dropped while it was owed, want the observation and the turn start, 2", dropped, ok)
+		}
+		if store, ok := lines[0].attr("store"); !ok || store.String() != "PutClaim" {
+			t.Fatalf("the line of the read tried again names store=%v (%t), want the refused call, PutClaim", store, ok)
 		}
 	})
 

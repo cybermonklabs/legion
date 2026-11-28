@@ -3,7 +3,6 @@ package supervise
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -32,15 +31,12 @@ const RereadLine = "supervise: the claim was read again from the store after a r
 const rereadFailedLine = "supervise: the claim could not be read again from the store after a refused write"
 
 // claimRefusal is a claim write the rule refused (refusedWrite), as the decision that met it holds
-// it until its end (Machine.refusal): the store call, the store's error, which every later claim
-// write of the decision answers (Machine.write), the SQLSTATE and the constraint (refusalOf), and
-// the state and the generation of the claim the store refused.
+// it until its end (Machine.refusal): the store call, which the lines of the read after it name
+// (reread), and the store's error, which every later claim write of the decision answers
+// (Machine.write).
 type claimRefusal struct {
-	store                string
-	err                  error
-	sqlstate, constraint string
-	state                ClaimState
-	generation           uint64
+	store string
+	err   error
 }
 
 // refused is the claim write the store refused in the decision now running, nil for none: the
@@ -107,12 +103,13 @@ func (m *Machine) settleRefusal(ctx context.Context) {
 	}
 	m.refusal = nil
 	m.giveBackHeld()
-	m.reread(ctx, "store", refusal.store)
+	m.reread(ctx, refusal.store)
 }
 
 // reread reads the claim and its pending delivery from the store (Store.ReadClaim), once, under
 // the claim-write bound (bounded), after a refused claim write: settleRefusal's read, and each try
-// of it again while it is owed (awaitRead). attrs name the refused write, for the lines.
+// of it again while it is owed (awaitRead). store is the refused write's store call, which each
+// line names.
 //
 // A read that lands builds the machine again over the row it read (rebuild, D3), and opens the
 // window of D5 of dispatch://INFRA-4099's plan: until a probe interval from now no claim write
@@ -129,27 +126,23 @@ func (m *Machine) settleRefusal(ctx context.Context) {
 // lands (awaitRead). What the refused decision held is given back all the same, and that
 // decision's end gives back the rest (unlock's endPodPark, endRefreshLane and tellWakeQueue); it
 // publishes nothing, so every reader reads the claim as it was published before that decision.
-func (m *Machine) reread(ctx context.Context, attrs ...any) {
+func (m *Machine) reread(ctx context.Context, store string) {
 	reading, cancel := m.bounded(ctx)
 	row, found, err := m.deps.Store.ReadClaim(reading, m.claim.Token)
 	cancel()
 	probe := m.deps.Timeouts.Probe
 	if err != nil || !found {
-		m.rereadOwed = true
+		m.rereadOwed = store
 		m.arm(TimerReread, probe, "")
-		m.log.Warn(rereadFailedLine, append(attrs, "found", found, "error", err, "retry", probe)...)
+		m.log.Warn(rereadFailedLine, "store", store, "found", found, "error", err, "retry", probe)
 		return
 	}
-	owed, dropped := m.rereadOwed, m.rereadDropped
-	m.rereadOwed, m.rereadDropped = false, nil
+	owed, dropped := m.rereadOwed != "", m.rereadDropped
+	m.rereadOwed, m.rereadDropped = "", nil
 	m.rebuild(ctx, row)
 	m.writesWaitUntil = m.deps.Clock.Now().Add(probe)
-	delivery := ""
-	if row.Pending != nil {
-		delivery = row.Pending.ID
-	}
-	attrs = append(attrs, "state", row.State, "generation", row.Generation, "delivery", delivery,
-		"writesWaitUntil", m.writesWaitUntil)
+	attrs := []any{"store", store, "state", row.State, "generation", row.Generation, "delivery", pendingID(row.Pending),
+		"writesWaitUntil", m.writesWaitUntil}
 	if owed {
 		total := 0
 		for _, n := range dropped {
@@ -171,7 +164,7 @@ func (m *Machine) awaitRead(ctx context.Context, ev Event) error {
 		if pass, err := m.fence(ctx, ev); !pass {
 			return err
 		}
-		m.reread(ctx)
+		m.reread(ctx, m.rereadOwed)
 		return nil
 	}
 	_, request := requestName(ev)
@@ -190,7 +183,7 @@ func (m *Machine) awaitRead(ctx context.Context, ev Event) error {
 // at which the caller asks again, nothing of its ask having happened. It is nil when no read is
 // owed.
 func (m *Machine) rereadWait() error {
-	if !m.rereadOwed {
+	if m.rereadOwed == "" {
 		return nil
 	}
 	next := m.timers[TimerReread].due
@@ -284,8 +277,8 @@ func (m *Machine) giveBackHeld() {
 // stops it. A stop the runtime refuses is logged at Error and leaves stopUnconfirmed set. A
 // process a refused decision let go after the runtime stopped it, which the row still records
 // (suspendNow, end), is no such process: memory's claim records none any more, so it is not
-// stopped again. And a row that names a launch no process carries — a live state with no process,
-// or a released launch (Claim.ReleasedLaunch), the two shapes a daemon start repairs as
+// stopped again. And a row that names a launch no process carries (Claim.UnfinishedLaunch) — a
+// live state with no process, or a released launch, the two shapes a daemon start repairs as
 // unfinished — is left to be launched again at the probe interval (relaunchLater), uncharged and
 // paced, since nothing else would relaunch it; the launch's first step is its own claim write
 // (writeTry), so a store that refuses every write starts no process.
@@ -306,7 +299,7 @@ func (m *Machine) rebuild(ctx context.Context, row Claim) {
 				"incarnation", process.Incarnation, "error", err)
 		}
 	}
-	if (row.Locator == nil && slices.Contains(live, row.State)) || row.ReleasedLaunch() {
+	if row.UnfinishedLaunch() {
 		m.relaunchLater(m.deps.Timeouts.Probe, WakeLaunch, m.launchFromTop(launchTry{}))
 		m.publish()
 	}

@@ -205,14 +205,14 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 		}, err)
 	}
 	cause := failureCause(o)
-	// A death an earlier raise of this relaunch charged is in the count already: this raise counts
-	// nothing, and fails the claim only where that count spent the budget.
-	var spent bool
-	if m.deathLaunchFailureCharged(cause) {
-		spent = m.launchBudgetSpent()
-	} else {
+	// Whether the count spends the budget is read before the count is made, by the one rule the
+	// registration deadline reads too (relaunchSpends). A death an earlier raise of this relaunch
+	// charged is in the count already: this raise counts nothing, and fails the claim only where
+	// that count spent the budget.
+	spent := m.relaunchSpends(o)
+	if !m.deathLaunchFailureCharged(cause) {
 		m.claim.PendingCause = cause
-		spent = m.chargeLaunch(o)
+		m.chargeLaunch(o)
 	}
 	if spent {
 		return m.fail(ctx, cause, "launch failures ran out")
@@ -256,12 +256,13 @@ func (m *Machine) launchBudgetSpentAt(failures int) bool {
 	return failures >= m.deps.Limits.LaunchFailures
 }
 
-// relaunchSpends is whether relaunchAfterFailure's count of o would spend the launch budget, and
-// so fail the claim rather than relaunch it, read before anything of the count is made. The
-// registration deadline reads it before it stops anything: a deadline whose count fails the claim
-// writes that failure before its process is stopped, as every failure does, and one that
-// relaunches stops its process first, the relaunch's launching write being its record
-// (registrationDeadline; D6 of dispatch://INFRA-4099's plan).
+// relaunchSpends is whether relaunchAfterFailure's count of o spends the launch budget, and so
+// fails the claim rather than relaunch it, read before anything of the count is made: it is the
+// one rule of it, which relaunchAfterFailure reads before it counts. The registration deadline
+// reads it before it stops anything: a deadline whose count fails the claim writes that failure
+// before its process is stopped, as every failure does, and one that relaunches stops its process
+// first, the relaunch's launching write being its record (registrationDeadline; D6 of
+// dispatch://INFRA-4099's plan).
 func (m *Machine) relaunchSpends(o runtime.Outcome) bool {
 	if !Charges(o) {
 		return false

@@ -471,7 +471,7 @@ func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseSt
 		if stops != stopSent {
 			s.session, s.sessionFile = session, file
 		}
-		after.stops = append([]processStop{s}, after.stops...)
+		after.stops = []processStop{s}
 	}
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
 	m.awaitRecord(after)

@@ -1724,14 +1724,15 @@ type Machine struct {
 	// ends by reading the claim's row and building the machine again over it (settleRefusal), which
 	// clears it.
 	refusal *claimRefusal
-	// rereadOwed is a read of the claim's row after a refused claim write that failed or found no
-	// row (settleRefusal, D5 of dispatch://INFRA-4099's plan), false once one lands. While it
-	// stands the machine decides nothing: memory is what the refused decision left, given back of
-	// what it held (giveBackHeld), and no reader reads it — Claim answers the view published
-	// before that decision, and unlock publishes nothing. Its one timer (TimerReread) tries the
-	// read at each probe interval; a request, and every other locked section, answers a wait
-	// until that try (rereadWait), and every other event is dropped (awaitRead).
-	rereadOwed bool
+	// rereadOwed is the store call of a refused claim write whose read of the claim's row then
+	// failed or found no row (settleRefusal, D5 of dispatch://INFRA-4099's plan), "" for none and
+	// once a read lands: the line of each read tried again names that call, as the first one's
+	// does. While it stands the machine decides nothing: memory is what the refused decision left,
+	// given back of what it held (giveBackHeld), and no reader reads it — Claim answers the view
+	// published before that decision, and unlock publishes nothing. Its one timer (TimerReread)
+	// tries the read at each probe interval; a request, and every other locked section, answers a
+	// wait until that try (rereadWait), and every other event is dropped (awaitRead).
+	rereadOwed string
 	// rereadDropped is how many events of each kind a read owed dropped (awaitRead), named in the
 	// line of the read that lands (RereadLine) and cleared with it; nil for none.
 	rereadDropped map[eventKind]int
@@ -2434,8 +2435,9 @@ func (m *Machine) HandleTurnOutcome(ctx context.Context, r RequestTurnOutcome) (
 		// While a read of the claim's row is owed, memory holds what a refused decision left, so
 		// the run is read off the claim published before it, as Claim reads it (Machine.rereadOwed).
 		c := &m.claim
-		if m.rereadOwed {
-			c = &m.view.Load().Claim
+		if m.rereadOwed != "" {
+			published := m.Published()
+			c = &published
 		}
 		answer = TurnOutcomeAnswer{RefusedRun: c.RefusedRun(), Failed: m.turnOutcomeFailed}
 		m.turnOutcomeFailed = false
@@ -2523,7 +2525,7 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func(), launched ch
 	// While the read of the claim's row after a refused claim write is owed, nothing is decided over
 	// the memory that decision left: not the repair, not the settle, no row (D5 of
 	// dispatch://INFRA-4099's plan).
-	if m.rereadOwed {
+	if m.rereadOwed != "" {
 		return m.awaitRead(ctx, ev)
 	}
 	// The write a decision owes is made before anything reads or writes the claim again: settle
@@ -2642,12 +2644,7 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 		return false, writesHeldUntil(until)
 	}
 	m.claim.State = StateQueued
-	method := m.claimWriteMethod()
-	if err := m.putClaim(ctx); err != nil {
-		if m.sortWriteFailure(method, err) == WriteOwed {
-			m.oweWrite(method, err)
-			return true, nil
-		}
+	if err := m.persist(ctx); err != nil && SortClaimWriteFailure(err) == WriteRefused {
 		m.claim.State = StateLaunchUncertain
 		return false, err
 	}
@@ -2855,12 +2852,7 @@ func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time)
 	}
 	at := m.deps.Clock.Now()
 	*mark = &at
-	method := m.claimWriteMethod()
-	if err := m.putClaim(ctx); err != nil {
-		if m.sortWriteFailure(method, err) == WriteOwed {
-			m.oweWrite(method, err)
-			return true, nil
-		}
+	if err := m.persist(ctx); err != nil && SortClaimWriteFailure(err) == WriteRefused {
 		*mark = nil
 		return false, err
 	}
@@ -2873,6 +2865,14 @@ func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time)
 // the daemon's next boot counts such a claim as a launch to finish.
 func (c Claim) ReleasedLaunch() bool {
 	return c.State == StateQueued && c.Generation > 0 && c.Locator == nil
+}
+
+// UnfinishedLaunch is whether a stored claim names a launch no process carries: live with no
+// process recorded, or a released launch (ReleasedLaunch). It is the one reading of that shape:
+// the daemon's boot restores such a claim as launch_uncertain (internal/daemon's
+// supervisor.restore), and the rebuild after a refused claim write launches it again (rebuild).
+func (c Claim) UnfinishedLaunch() bool {
+	return (c.Locator == nil && slices.Contains(live, c.State)) || c.ReleasedLaunch()
 }
 
 // StartedBy records the outbox row of the start being run against this claim, so a stop written
@@ -3111,8 +3111,8 @@ func serving[T comparable](pending *Delivery, carried func(Delivery) T, retired 
 func (m *Machine) Claim() Claim {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.rereadOwed {
-		return copyClaim(m.view.Load().Claim)
+	if m.rereadOwed != "" {
+		return copyClaim(m.Published())
 	}
 	return m.current()
 }
@@ -3326,7 +3326,7 @@ func (m *Machine) unlock() {
 	m.endPodPark()
 	m.endPodLoad()
 	m.tellWakeQueue()
-	if !m.rereadOwed {
+	if m.rereadOwed == "" {
 		m.publish()
 	}
 	m.decide(nil)
@@ -5167,7 +5167,7 @@ func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) erro
 	loc := cloneLocator(m.claim.Locator)
 	after := m.letGo(ctx, endFailed(why))
 	if loc != nil {
-		after.stops = append([]processStop{{loc: loc}}, after.stops...)
+		after.stops = []processStop{{loc: loc}}
 	}
 	m.claim.State, m.claim.Failure = StateFailed, why
 	m.claim.FailureCause, m.claim.FailedAt = cause, m.deps.Clock.Now()
@@ -5281,7 +5281,7 @@ func (m *Machine) retire(ctx context.Context, cause string, released bool) error
 	loc := cloneLocator(m.claim.Locator)
 	after := m.letGo(ctx, cause)
 	if !released {
-		after.stops = append([]processStop{{loc: loc, release: true}}, after.stops...)
+		after.stops = []processStop{{loc: loc, release: true}}
 	}
 	m.awaitRecord(after)
 	m.claim.State = StateRetired
@@ -5753,8 +5753,7 @@ func (m *Machine) bounded(ctx context.Context) (context.Context, context.CancelF
 
 // putClaim writes the claim alone, under the claim-write deadline, and marks nothing owed and
 // puts nothing to the rule: its caller does, since what an owed failure leaves is the caller's
-// own — persist owes the write, and a locked section that writes one mark of its own keeps it
-// owed and undoes it only where the rule refuses the write (markRound, ReleaseUncertainLaunch).
+// own — persist owes the write, and the repair keeps the mark it makes the write for (repairWrite).
 // Every write first normalizes state that is valid only while the claim records a running
 // process: a capability belongs to a registered agent, a suspension source belongs to a
 // suspended claim, and an enrollment belongs to the process it names. A confirmation and a retire
@@ -5769,11 +5768,11 @@ func (m *Machine) bounded(ctx context.Context) (context.Context, context.CancelF
 //
 // After a let-go's take-back of a confirmation the claim is never written alone (carriesPending):
 // the delivery goes in the same transaction (putClaimAndPending), whichever caller writes the
-// claim — a decision's persist, a direct mark (markRound), a pause's stop (persistStop). Written
-// apart, a stop between the writes would restore the stopped claim beside a delivery still
-// confirmed by a turn that may have been another input's, which a restart reads as served. Every
-// other claim write leaves the delivery to its own write, so an outage on the delivery's table
-// does not hold the claim's writes too.
+// claim — persist, which a decision and an update round's mark (markRound) write through, and a
+// pause's stop (persistStop). Written apart, a stop between the writes would restore the stopped
+// claim beside a delivery still confirmed by a turn that may have been another input's, which a
+// restart reads as served. Every other claim write leaves the delivery to its own write, so an
+// outage on the delivery's table does not hold the claim's writes too.
 func (m *Machine) putClaim(ctx context.Context) error {
 	if m.carriesPending() {
 		return m.putClaimAndPending(ctx)
@@ -5827,11 +5826,13 @@ func (m *Machine) wroteCarried() {
 // and writes nothing otherwise. The store calls that write the claim row by themselves — an
 // admission (revive), a release of session names — call it first, so no such write lands the
 // claim beside a delivery the store still holds confirmed. putClaim carries the delivery itself.
+// Its failure is put to the rule (writeFailed), and an owed one keeps the obligation, so the
+// next claim write carries the delivery still.
 func (m *Machine) writeCarried(ctx context.Context) error {
 	if !m.carriesPending() {
 		return nil
 	}
-	return m.putClaimAndPending(ctx)
+	return m.writeFailed(m.pendingWriteMethod(), m.putClaimAndPending(ctx))
 }
 
 // putDelivery writes one delivery of this claim under the claim-write deadline, as putClaim
