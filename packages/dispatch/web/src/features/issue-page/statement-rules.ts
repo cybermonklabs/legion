@@ -95,8 +95,10 @@ export function coverageStatements(
  * a check other than `checkStanding` does. Whether it passed is the server's own answer over
  * every result of the check (`pass_stands`, main's e98fc56ef8): a pass recorded before a later
  * fail still stands, while a retracted pass, a pass recorded against an older wording of the
- * check and a pass at a commit the check no longer compares with stand for nothing. The other
- * states read what no pass standing is:
+ * check and a pass at a commit the check no longer compares with stand for nothing. A check that
+ * reads the live deploy never comes here: `checkStanding` reads it from `pass_stands` alone
+ * (`liveStanding`), as the server's `liveResultStands` decides it. The other states read what no
+ * pass standing is:
  *
  * - **`no-result`,** no result recorded at all, which the results say by themselves.
  * - **`unreadable`,** a payload carrying no `pass_stands` at all, which is a server that does
@@ -140,12 +142,17 @@ function checkState(check: CheckStateReads): CheckState {
   return standing.commit_stands?.answer === "other_commit" ? "older" : "failed";
 }
 
-/** What a check's state is read from: the server's answer over its results and the results
- *  themselves. `pass_stands` is declared required by the API types and is missing from what
- *  the deployed server sends, so it is optional here and the page reads a payload without it
- *  rather than throwing over the whole issue page. */
+/** What a check's state is read from: the server's answer over its results, the results
+ *  themselves, and what the check reads and when it runs (`subject`, `when`), which say whether
+ *  that answer is read against its program's current deploy (`readsTheLiveDeploy`). The page
+ *  passes the check's own `CheckBlock`, which carries all of them. `pass_stands` is declared
+ *  required by the API types and is missing from what the deployed server sends, so it is
+ *  optional here and the page reads a payload without it rather than throwing over the whole
+ *  issue page. */
 export type CheckStateReads = Pick<CheckBlock, "results"> & {
   readonly pass_stands?: CheckBlock["pass_stands"];
+  readonly subject?: CheckBlock["subject"];
+  readonly when?: CheckBlock["when"];
 };
 
 /** How one check stands, as the server reads the commit each of its results ran at. */
@@ -154,8 +161,9 @@ export interface CheckStanding {
   readonly state: CheckState;
   /** The result that state stands on: the newest result over the check's words now at its
    *  basis, a pass or a fail, where one is there; else the newest result that stands at all,
-   *  and none for a check the server says passed with no pass at its basis in the read. Absent
-   *  where none stands. */
+   *  and none for a check the server says passed with no pass at its basis in the read. For a
+   *  check that reads the live deploy it is the result the server's answer names
+   *  (`pass_stands.results`), where the read holds it. Absent where none stands. */
   readonly stands?: CheckResult;
 }
 
@@ -180,6 +188,22 @@ export interface CheckStanding {
  * at the basis only where nobody withdrew it and its check's words have not moved since it was
  * recorded.
  *
+ * **A check that reads the live deploy is the server's answer alone.** A check of production or
+ * of the graph, run after the merge or on the default branch (`readsTheLiveDeploy`, the page's
+ * form of the server's function of that name in `results_deploys.go`), is decided by the
+ * current deploy of the program it reads and not by its basis: the server counts only the
+ * results recorded at the commit that deploy runs and after it went out, marks every other one
+ * `not_counted` (`markNotCounted`), and answers over the rest (`liveResultStands` in
+ * `results_pass_stands.go`). So such a check takes its state from `pass_stands`, with or without
+ * results: `yes` is Passed and `no` for a fail is Failed, each standing on the result the answer
+ * names (`pass_stands.results`) where the read holds it; `no` for no result is No result; and
+ * `unknown` is Cannot tell, whatever its reason - no deploy of the program, no result since its
+ * deploy, a program the check leaves unnamed, a deploy at a commit that does not hold the merge,
+ * or a read that failed. A pass at its basis says nothing of it, so with no deploy, or after a
+ * deploy at another commit, the page says what the route says: it cannot tell. One whose payload
+ * carries no `pass_stands` reads Could not read, whatever results it holds. Every other check is
+ * read as the rest of this says.
+ *
  * **The latest evidence at the basis decides.** A check with no result reads No result, and one
  * whose payload carries no `pass_stands` reads Could not read, as `checkState` reads them. Else,
  * where a result stands for something at the basis, the newest of them is the check's state: a
@@ -194,6 +218,7 @@ export interface CheckStanding {
  * Cannot tell, or Failed for a newest fail at a commit Dispatch could not place.
  */
 export function checkStanding(check: CheckStateReads): CheckStanding {
+  if (readsTheLiveDeploy(check)) return liveStanding(check);
   const standing = newestFirst(standingResults(check));
   // The newest result that stands for something at the commit the server names for the check:
   // over the check's words now and at its basis (`standingCommit`). A check with no result has
@@ -209,14 +234,47 @@ export function checkStanding(check: CheckStateReads): CheckStanding {
   return { state, ...(stands === undefined ? {} : { stands }) };
 }
 
+/** Whether `check` is read against the current deploy of the program it reads: a check of
+ *  production or of the graph, run after the merge or on the default branch, as the server's
+ *  `readsTheLiveDeploy` (`results_deploys.go`) decides which checks it compares so. */
+function readsTheLiveDeploy(check: CheckStateReads): boolean {
+  return (
+    (check.subject === "production" || check.subject === "graph") &&
+    (check.when === "after_merge" || check.when === "default_branch")
+  );
+}
+
+/** How a check that reads the live deploy stands: the server's answer over the results its
+ *  program's current deploy counts (`liveResultStands`), and nothing the page reads of the
+ *  results itself, since which of them that deploy counts is the server's to say
+ *  (`markNotCounted`). It stands on the result the answer names, the newest one that deploy
+ *  counts, and on none where the answer names none or the read does not hold the one named. */
+function liveStanding(check: CheckStateReads): CheckStanding {
+  const answer = check.pass_stands;
+  if (answer === undefined) return { state: "unreadable" };
+  if (answer.answer === "unknown") return { state: "unmarked" };
+  if (answer.answer === "no" && answer.reason === "no_result") return { state: "no-result" };
+  const named = answer.results?.[0];
+  const stands = (check.results ?? []).find((result) => result.id === named);
+  const state = answer.answer === "yes" ? "passed" : "failed";
+  return { state, ...(stands === undefined ? {} : { stands }) };
+}
+
 /** Whether `result` stands at its check's basis: recorded against the check's words now
- *  (`check_words_moved`) and at the commit the server names for the check (`commit_stands` is
- *  `at_basis`), as the server's `standingCommit` reads it. It is the one reading of "this result
- *  stands at its check's basis" that a check's state (`checkStanding`) and its body's mark
- *  (`statement-state.ts`'s `atBasis`) share, so the two never disagree. Whether anybody withdrew
- *  the result is no part of it: both read it only of a result that stands (`standingResults`). */
+ *  (`check_words_moved`), at the commit the server names for the check (`commit_stands` is
+ *  `at_basis`), as the server's `standingCommit` reads it, and counted: a result the server
+ *  marks `not_counted`, one that names a commit its live check's current deploy does not run or
+ *  that was recorded before that deploy went out (`markNotCounted`), stands at no basis,
+ *  whatever commit it ran at. It is the one reading of "this result stands at its check's basis"
+ *  that a check's state (`checkStanding`) and its body's mark (`statement-state.ts`'s `atBasis`)
+ *  share, so the two never disagree. Whether anybody withdrew the result is no part of it: both
+ *  read it only of a result that stands (`standingResults`). */
 export function standsAtBasis(result: CheckResult): boolean {
-  return result.check_words_moved !== true && result.commit_stands?.answer === "at_basis";
+  return (
+    result.not_counted === undefined &&
+    result.check_words_moved !== true &&
+    result.commit_stands?.answer === "at_basis"
+  );
 }
 
 /** Every result of `check` nobody withdrew, which is every result that stands as evidence: the

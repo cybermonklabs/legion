@@ -183,6 +183,27 @@ async function seedProjectSurroundings(issueKey: string, repository: string): Pr
   }
 }
 
+/** The address of the seeded pull request of `repository`, which an issue links as its own and
+ *  the fake GitHub answers as merged at `HEAD_SHA` (`seedProjectSurroundings`). */
+function pullRequestUrl(repository: string): string {
+  return `https://github.com/${repository}/pull/${PULL_NUMBER}`;
+}
+
+/** The landed merge alone, for a row that reads an issue's after-merge checks and nothing else of
+ *  the whole issue: `seedProjectSurroundings` in a repository of the issue's own, read afresh as
+ *  `seedIssueWithDocuments` reads its own, and the issue linked to that repository and its pull
+ *  request, so an after-merge check compares with the default branch, which holds the merge at
+ *  `HEAD_SHA`. Answers the repository. */
+export async function seedLandedMerge(issueKey: string): Promise<string> {
+  const repository = `${WHOLE_REPO}-${crypto.randomUUID().slice(0, 8)}`;
+  await seedProjectSurroundings(issueKey, repository);
+  await patchIssue(issueKey, {
+    external_links: [{ kind: "github_pr", url: pullRequestUrl(repository) }],
+    repo: repository,
+  });
+  return repository;
+}
+
 /** The sessions a seeded issue routes to, is claimed by and is subscribed by. A subscriber is a
  *  fake Envoy interest, because Dispatch stores none. */
 export async function seedSessions(
@@ -319,9 +340,7 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
   await patchIssue(issue.key, {
     assignee: "alice",
     components: { ids: COMPONENT_IDS, mode: "explicit" },
-    external_links: [
-      { kind: "github_pr", url: `https://github.com/${repository}/pull/${PULL_NUMBER}` },
-    ],
+    external_links: [{ kind: "github_pr", url: pullRequestUrl(repository) }],
     labels: ["dispatch", "layout", "redesign"],
     priority: 1,
     repo: repository,

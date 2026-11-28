@@ -67,6 +67,17 @@ test("a result under a check whose words moved since does not read as up to date
   ).toBe("Out of date");
 });
 
+// A result the server counts for nothing (`not_counted`, `markNotCounted`) names a commit its
+// live check's current deploy does not run, or was recorded before that deploy went out, so it
+// speaks for no build that runs now: it does not read as up to date at its basis, as its check's
+// row reads it standing at no basis (`standsAtBasis`).
+test("a result at its basis that the server counts for nothing does not read as up to date", () => {
+  const notCounted =
+    "it names a commit that the current deploy of the program this check reads does not run";
+  expect(standsWord(recorded({ not_counted: notCounted }))).toBe("Out of date");
+  expect(standsWord(recorded())).toBe("Up to date");
+});
+
 test("a result whose commit Dispatch could not place draws no word for where it stands", () => {
   expect(standsWord(recorded({ commit_stands: { answer: "unknown" } }))).toBeUndefined();
   expect(standsWord(recorded({ commit_stands: undefined }))).toBeUndefined();
