@@ -376,6 +376,13 @@ const BLOCKED_ROW = absentRow(
   [{ href: BLOCKED_HREF, label: "commit 1a2b3c4", recorded_at: "2026-10-08T00:00:00Z", rel: "via" }]
 );
 
+/** The absent row of the project's default repository, which the App cannot read. */
+const UNREADABLE_ROW = absentRow(
+  "repo_unreadable@acme/widgets",
+  { cause: "repo_unreadable", reason: "404 Not Found", repo: "acme/widgets" },
+  "/projects/ACME/settings"
+);
+
 /** `count` absent rows of one day a force-push marked, each of a repository of its own. */
 function markedRows(count: number): EvalItemRow[] {
   return Array.from({ length: count }, (_, index) => {
@@ -510,16 +517,23 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
       }),
     ],
     [
-      '3 no answer | an answer with no measured day | "No data: N days still waiting", never 0',
+      '3 no answer | an answer with no day row, whose absent rows name no unreadable repository | "No data: N days still waiting", never 0',
       row(async (context) => {
-        await painted(
+        const { socket } = await painted(
           context,
           card,
           codeEval(card, [blank("agents"), blank("people")], { measured: 0, waiting: 28 })
         );
-        expect(noData(card)).toEqual(["No data: 28 days still waiting"]);
+        // The status cannot say whether the App can read the default repository of a window with
+        // no day row: until its absent rows say, "No data", and no day counted as waiting yet.
+        await waitFor(() => expect(noData(card)).toEqual(["No data"]));
+        expect(within(cardOf(card)).getByRole("status").textContent).toBe("Reading why…");
+        const absent = await absentView(socket, card.slug);
+        serve(socket, snapshotFrame(absent.sub, itemsPage([])));
+        await waitFor(() => expect(noData(card)).toEqual(["No data: 28 days still waiting"]));
         expect(waiting(card)).toBeNull();
         expectNoNumber(card);
+        expect(within(cardOf(card)).queryByRole("status")).toBeNull();
       }),
     ],
     [
@@ -704,19 +718,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
           })
         );
         const absent = await absentView(socket, card.slug);
-        serve(
-          socket,
-          snapshotFrame(
-            absent.sub,
-            itemsPage([
-              absentRow(
-                "repo_unreadable@acme/widgets",
-                { cause: "repo_unreadable", reason: "404 Not Found", repo: "acme/widgets" },
-                "/projects/ACME/settings"
-              ),
-            ])
-          )
-        );
+        serve(socket, snapshotFrame(absent.sub, itemsPage([UNREADABLE_ROW])));
         await waitFor(() =>
           expect(noData(card)).toEqual(["No data: Dispatch's GitHub App cannot read acme/widgets"])
         );
@@ -816,7 +818,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
       }),
     ],
     [
-      '15 no data | the project has no default repository and no change | "No data: set this project\'s default repository", linked to its settings, and no absent row read',
+      '15 no data | the project has no default repository and no change | "No data: set this project\'s default repository", linked to its settings, no day counted as waiting, and no absent row read',
       row(async (context) => {
         const { socket } = await painted(
           context,
@@ -831,6 +833,8 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
           within(cardOf(card)).getByRole("link", { name: "set this project's default repository" })
         ).toHaveAttribute("href", "/projects/ACME/settings");
         expectNoNumber(card);
+        // No run measures a day of a project with no default repository and no change (R7, R11).
+        expect(waiting(card)).toBeNull();
         // The settings say it in full: the card reads no absent row for it.
         expect(absentViews(socket, card.slug)).toEqual([]);
         expect(within(cardOf(card)).queryByRole("status")).toBeNull();
@@ -864,6 +868,27 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
             "No data: GitHub did not give the whole patch of commit 1a2b3c4 (3 files)",
           ])
         );
+        expectNoNumber(card);
+        expect(within(cardOf(card)).queryByRole("status")).toBeNull();
+      }),
+    ],
+    [
+      '17 no data | the eval holds no day row and its absent rows name an unreadable repository | "No data: Dispatch\'s GitHub App cannot read <repo>", and no day counted as waiting',
+      row(async (context) => {
+        const { socket } = await painted(
+          context,
+          card,
+          codeEval(card, [blank("agents"), blank("people")], null, null)
+        );
+        // With no day row the status names no repository: the absent rows name it (R11).
+        await waitFor(() => expect(noData(card)).toEqual(["No data"]));
+        const absent = await absentView(socket, card.slug);
+        serve(socket, snapshotFrame(absent.sub, itemsPage([UNREADABLE_ROW])));
+        await waitFor(() =>
+          expect(noData(card)).toEqual(["No data: Dispatch's GitHub App cannot read acme/widgets"])
+        );
+        expect(waiting(card)).toBeNull();
+        expect(cardOf(card).textContent ?? "").not.toContain("still waiting");
         expectNoNumber(card);
         expect(within(cardOf(card)).queryByRole("status")).toBeNull();
       }),

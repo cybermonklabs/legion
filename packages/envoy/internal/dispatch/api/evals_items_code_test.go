@@ -827,6 +827,45 @@ func TestAnAbsentRowNamesEachReason(t *testing.T) {
 	t.Logf("%d absent rows named their reasons", named)
 }
 
+// TestAnUnreadableDefaultRepositoryWithNoDayRowIsNamed (R11, the code cards' no-row case): HIDDEN's
+// default repository is one the App cannot read, and none of its issues holds a change in any
+// repository, so it holds no day row: over the 28 days its list read's status names no first day
+// and no row of a repository the App cannot read. Its items read still names that repository: in
+// both code evals, every row of the range, and every row of its absent rows, is one absent row,
+// keyed repo_unreadable@<repo>, naming the repository and why the App cannot read it, and none
+// names no default repository.
+func TestAnUnreadableDefaultRepositoryWithNoDayRowIsNamed(t *testing.T) {
+	t.Parallel()
+	r := newCodeItemsRig(t)
+	for slug, item := range r.codeList(t, codeItemsHide, 0, codeItemsStored) {
+		status := seriesValues(t, item, fold.SeriesStatus)
+		if unreadable := status.Window["repo_unreadable"]; status.DataSince != nil || (unreadable != nil && *unreadable != 0) {
+			t.Errorf("%s/%s's status names the first day %v and %s rows of a repository the App cannot read, want no row", codeItemsHide, slug, status.DataSince, figureWords(unreadable))
+		}
+	}
+	want := []string{"absent repo_unreadable@" + codeItemsHiddenRepo + ": unreadable " + codeItemsHiddenRepo}
+	for slug := range codeSlugs {
+		for _, kind := range []string{"", "absent"} {
+			query := codeWindow(0, codeItemsStored)
+			if kind != "" {
+				query.Set("row_kind", kind)
+			}
+			var got []string
+			for _, row := range r.items(t, codeItemsHide, slug, query) {
+				named := row.RowKind + " " + row.RowKey
+				if row.RowKind == "absent" {
+					r.checkCodeRow(t, codeItemsHide, row)
+					named += ": " + absentWords(t, row)
+				}
+				got = append(got, named)
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("%s/%s over days 0 to %d with row_kind %q answers %q, want %q", codeItemsHide, slug, codeItemsStored, kind, got, want)
+			}
+		}
+	}
+}
+
 // The seed of TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository: acme/stray,
 // HOME's default repository, and LONE, a project with no default repository, whose one issue
 // LONE-1 is of acme/stray.
