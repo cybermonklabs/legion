@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A listener whose session-consumer connection reconnects now ends each session relay's pull and
+  restarts it at the session consumer's ack floor at once (after the relay's first retry wait,
+  1 s), where it waited up to 30 s for the pull to stall: a pull request the server lost with the
+  old connection held the session's next messages that long. The stall stays as the fallback for
+  a pull request lost with no reconnect, and what a session is delivered is unchanged: a repeat
+  keeps its first id, as after a stall.
+time: 2026-11-28T17:42:19Z
+custom:
+    Issue: INFRA-6371
