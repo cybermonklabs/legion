@@ -701,8 +701,9 @@ func writeLegacyRemote(t *testing.T, dir, kind, name, content string) {
 // hook clears (an absolute path, one from ./ and from ../, and a file URL with no host), each from
 // a repository with no remote and from one whose remotes origin and upstream are local paths; a
 // push from a bare repository, where git runs the hook in the git directory; a push with GIT_DIR
-// naming the repository from another directory, as `jj git push` runs git; and a push from a
-// repository whose legacy remote files name local paths.
+// naming the repository from another directory, as `jj git push` runs git; a push from a
+// repository whose legacy remote files name local paths; and a push under GIT_SSH_COMMAND, which
+// release-push.sh exports for every deploy push and which no push to a local path runs (R1 (e)).
 func TestLeakCheckPrePushClearsAPushThatCanOnlyWriteToALocalPath(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	type row struct {
@@ -749,6 +750,12 @@ func TestLeakCheckPrePushClearsAPushThatCanOnlyWriteToALocalPath(t *testing.T) {
 			_, dir, line := aPushOfARefusedLine(t, root)
 			t.Setenv("GIT_DIR", filepath.Join(dir, ".git"))
 			t.Chdir(t.TempDir())
+			return line, filepath.Join(root, "remote.git")
+		}},
+		row{"an absolute path under GIT_SSH_COMMAND, as .github/scripts/release-push.sh exports it", func(t *testing.T, root string) (string, string) {
+			_, dir, line := aPushOfARefusedLine(t, root)
+			t.Setenv("GIT_SSH_COMMAND", "ssh -F /dev/null -o BatchMode=yes")
+			t.Chdir(dir)
 			return line, filepath.Join(root, "remote.git")
 		}},
 		row{"an absolute path from a repository whose .git/remotes and .git/branches files name local paths", func(t *testing.T, root string) (string, string) {
@@ -824,14 +831,18 @@ func (r localPush) holding(t *testing.T) string {
 // let it reach. The rows are a local URL with each condition of R1 broken alone: another remote at
 // a host, a pushurl at a host, a rewrite to a host by insteadOf and by pushInsteadOf,
 // remote.<name>.vcs and remote.<name>.receivepack in the repository's configuration and on git's
-// command line, the git wrapper's mark, GIT_EXEC_PATH at another directory, and a legacy remote
-// file at a host; and every URL that is not one of the four spellings of a local path the hook
-// clears. The rows of a push that can write somewhere other than its URL, those of
-// remote.<name>.vcs, remote.<name>.receivepack, the mark and GIT_EXEC_PATH, push to a bare clone
-// of the repository (localPush.holding), whose answers to the guard's reads of what a destination
-// holds would pass the push. Each expected text is the one the same row printed with the base's
-// code (f57cfa7e), which clears no push, but for one: with the stand-in that passes, the push to
-// `.` exits 0 and prints nothing, where the base's guard refused it. That verdict is R10's
+// command line, the git wrapper's mark, GIT_EXEC_PATH at another directory, a legacy remote file
+// at a host, and inputs the guard does not know (R1 (e)): GIT_CONFIG=/dev/null over a
+// remote.origin.receivepack that writes to another bare repository, a GIT_ name and a
+// remote.origin. key; and every URL that is not one of the four spellings of a local path the hook
+// clears. The rows of a push that can write somewhere other than its URL, or that holds an input
+// the guard does not know, push to a bare clone of the repository (localPush.holding), whose
+// answers to the guard's reads of what a destination holds would pass the push. Where the hook
+// clears the GIT_CONFIG row's push, which the base never did, the row makes the push as git makes
+// it once its hook exits 0, and fails where that push wrote to the other repository. Each expected
+// text is the one the same row printed with the base's code (f57cfa7e, and 2e7e4bda for the rows
+// of R1 (e)), which clears no push, but for one: with the stand-in that passes, the push to `.`
+// exits 0 and prints nothing, where the base's guard refused it. That verdict is R10's
 // (dispatch://INFRA-3524's spec, under its plan's decision 18): the destination is the repository
 // itself, whose refs the guard's reads of what a destination holds answer, so the push adds no
 // commit to it and the rules read no commit, as they read none of a push the destination holds
@@ -849,6 +860,10 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 		// holdsThePush is whether the destination holds every commit of the push, as the reads of
 		// what it holds answer, so that with the stand-in that passes the push passes (R10).
 		holdsThePush bool
+		// cleared, where it is not nil, is what git does once its hook exits 0: it makes the push.
+		// The row calls it where the hook cleared the push, and it answers what that push wrote
+		// that the hook's URL does not name, "" for nothing.
+		cleared func(t *testing.T, r localPush) string
 	}{
 		{name: "a local URL in a repository that also has a remote at the host URL", push: func(t *testing.T, r localPush) string {
 			r.fixture.Run(r.dir, "git", "remote", "add", "origin", r.local)
@@ -898,6 +913,33 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 			t.Setenv("GIT_CONFIG_KEY_0", "remote.origin.vcs")
 			t.Setenv("GIT_CONFIG_VALUE_0", "invented")
 			return url
+		}},
+		{name: "GIT_CONFIG=/dev/null over a remote.origin.receivepack that writes to another bare repository", push: func(t *testing.T, r localPush) string {
+			r.fixture.Run(r.root, fixturegit.InitBare(filepath.Join(r.root, "other.git"), "main")...)
+			r.fixture.Run(r.dir, "git", "remote", "add", "origin", r.local)
+			r.fixture.Run(r.dir, "git", "config", "remote.origin.receivepack", "git-receive-pack '"+filepath.Join(r.root, "other.git")+"' #")
+			url := r.holding(t)
+			// Of the gits a push runs, only `git config` reads GIT_CONFIG, as the one file it reads:
+			// under it, `git config --list` lists no remote.origin.receivepack, and the push runs it.
+			t.Setenv("GIT_CONFIG", os.DevNull)
+			return url
+		}, cleared: func(t *testing.T, r localPush) string {
+			other := filepath.Join(r.root, "other.git")
+			r.fixture.With("GIT_CONFIG="+os.DevNull).Run(r.dir, "git", "-c", "core.hooksPath=/dev/null", "push", "--quiet", "origin", "main")
+			if refs := r.fixture.Run(other, "git", "for-each-ref"); refs != "" {
+				return other + " took " + refs
+			}
+			return ""
+		}},
+		{name: "GIT_INVENTED_NAME, a GIT_ name the guard does not know", push: func(t *testing.T, r localPush) string {
+			url := r.holding(t)
+			t.Setenv("GIT_INVENTED_NAME", "1")
+			return url
+		}},
+		{name: "origin sets remote.origin.inventedkey, a key the guard does not know", push: func(t *testing.T, r localPush) string {
+			r.fixture.Run(r.dir, "git", "remote", "add", "origin", r.local)
+			r.fixture.Run(r.dir, "git", "config", "remote.origin.inventedkey", "invented")
+			return r.holding(t)
 		}},
 		{name: "the mark is set", push: func(t *testing.T, r localPush) string {
 			url := r.holding(t)
@@ -986,12 +1028,20 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 				t.Run(check.name, func(t *testing.T) {
 					root := t.TempDir()
 					fixture, dir, line := aPushOfARefusedLine(t, root)
-					url := tc.push(t, localPush{root: root, dir: dir, local: filepath.Join(root, "remote.git"), fixture: fixture})
+					r := localPush{root: root, dir: dir, local: filepath.Join(root, "remote.git"), fixture: fixture}
+					url := tc.push(t, r)
 					t.Chdir(dir)
 					code, want := check.set(t)
 					t.Setenv(leakguard.RulesFileVar, leakguardtest.WriteRules(t, t.TempDir()))
-					if gotCode, printed := leakCheck(t, line, "pre-push", "origin", url); gotCode != code || printed != want {
+					gotCode, printed := leakCheck(t, line, "pre-push", "origin", url)
+					if gotCode != code || printed != want {
 						t.Errorf("legion leak-check pre-push origin %s = exit %d, stderr\n%s\nwant exit %d and\n%s", url, gotCode, printed, code, want)
+					}
+					if gotCode != 0 || tc.cleared == nil {
+						return
+					}
+					if wrote := tc.cleared(t, r); wrote != "" {
+						t.Errorf("the hook cleared the push, and git's push then wrote to a repository its URL does not name: %s", wrote)
 					}
 				})
 			}

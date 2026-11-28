@@ -44,8 +44,10 @@ const execPathVar = "GIT_EXEC_PATH"
 //     because no push needs them (git-push(1), "GIT URLS"; measured by dispatch://INFRA-3309's
 //     architect on 2026-11-13).
 //   - The push can write only to url (writesOnlyToItsURL): the guard's environment carries no
-//     mark of the git wrapper's, git's exec path is its own, and no configuration names a
-//     remote's own receive-pack program or remote helper.
+//     mark of the git wrapper's, git's exec path is its own, and every GIT_ name of that
+//     environment and every remote.<name>.<variable> key of the configuration is one the guard
+//     knows (knowsEveryInput), which leaves out a remote's own receive-pack program and remote
+//     helper.
 //   - Every remote of the repository has a URL, and each URL `git remote get-url --all` and `git
 //     remote get-url --push --all` print for it is one localURL takes. Those print the URL after
 //     url.<base>.insteadOf, pushInsteadOf and remote.<name>.pushurl, which is the URL git hands
@@ -57,7 +59,8 @@ const execPathVar = "GIT_EXEC_PATH"
 //     remotes and branches directories (remoteNames).
 //
 // Its git reads after ownExecPath's go through Guard.git in dir, with the package's pins and the
-// guard's environment. It resolves no shared check and reads no commit.
+// guard's environment, but for the read of the configuration (Guard.pushConfiguration), which takes
+// GIT_CONFIG out of that environment. It resolves no shared check and reads no commit.
 func (g *Guard) StaysLocal(ctx context.Context, dir, url string) bool {
 	if !localURL(url) || !g.writesOnlyToItsURL(ctx, dir, url) {
 		return false
@@ -107,34 +110,48 @@ func (g *Guard) StaysLocal(ctx context.Context, dir, url string) bool {
 //     with `git --exec-path=<dir> push`, a `<dir>/git-receive-pack` that ran the real one on a
 //     second bare repository made `git push <bare A> main:e1` write e1 there, while the hook got
 //     bare A's path and saw GIT_EXEC_PATH=<dir>.
-//   - No key of `git config -z --list`, which holds every scope down to the command line's
-//     (GIT_CONFIG_PARAMETERS, which `git -c` hands the hook, and a GIT_CONFIG_COUNT block), is
-//     remote.<name>.receivepack or remote.<name>.vcs (namesItsOwnTransport). The first writes where
-//     its program writes, as `--receive-pack` does (measured by both reviews of
-//     dispatch://INFRA-3309's spec), and the second makes git push through a remote helper
-//     whatever the URL holds.
+//   - Every name of the guard's environment that begins GIT_ is one knownGitNames holds, and the
+//     variable of every key remote.<name>.<variable> of the push's configuration, as
+//     Guard.pushConfiguration reads it, is one knownRemoteKeys holds (knowsEveryInput, R1 (e) of
+//     dispatch://INFRA-3524's spec). That configuration holds every scope down to the command
+//     line's (GIT_CONFIG_PARAMETERS, which `git -c` hands the hook, and a GIT_CONFIG_COUNT
+//     block). knownRemoteKeys holds neither receivepack nor vcs: remote.<name>.receivepack writes
+//     where its program writes, as `--receive-pack` does (measured by both reviews of
+//     dispatch://INFRA-3309's spec), and remote.<name>.vcs makes git push through a remote helper
+//     whatever the URL holds. Each review round of cybermonklabs/legion#5914 found one more input
+//     of that kind, so the guard takes only the inputs it knows, and one it does not know, or one
+//     a later git adds, can only keep the push guarded.
 //
-// Its reads go through Guard.git in dir, with the package's pins and the guard's environment:
-// ownExecPath's first (receivesAtItsURL), so that no git of a foreign exec path runs for it, and
-// then `git config -z --list`, a read of its own. Guard.StaysLocal, which asks it, is a step of
-// the hook before Guard.Push and shares no read with it, so a push whose configuration this reads
-// and which the hook then does not clear has its configuration read twice: once here, and once by
-// Guard.pushRecords, which hands that read to Guard.readsReachItsRepository, where these
-// conditions are asked again of it.
+// Its first git is ownExecPath's (receivesAtItsURL), which does not go through Guard.git: it runs
+// the git it looks up itself, by its absolute path, under base's PATH with GIT_EXEC_PATH's entries
+// taken out and with no GIT_EXEC_PATH (withoutExecPath), so that no git of a foreign exec path runs
+// for it. Its one read after that is the push's configuration (Guard.pushConfiguration), a read of
+// its own. Guard.StaysLocal, which asks it, is a step of the hook before Guard.Push and shares no
+// read with it, so a push whose configuration this reads and which the hook then does not clear
+// has its configuration read twice: once here, and once by Guard.pushRecords, which hands that
+// read to Guard.readsReachItsRepository, where these conditions are asked again of it.
 func (g *Guard) writesOnlyToItsURL(ctx context.Context, dir, url string) bool {
-	if !g.receivesAtItsURL(ctx, dir, url, g.base()) {
+	base := g.base()
+	if !g.receivesAtItsURL(ctx, dir, url, base) {
 		return false
 	}
-	config, err := g.git(ctx, dir, "config", "-z", "--list")
-	return err == nil && !namesItsOwnTransport(config)
+	config, err := g.pushConfiguration(ctx, dir)
+	if err != nil {
+		return false
+	}
+	// R1 (e): every input that can change where git writes is one the guard knows.
+	if !knowsEveryInput(base, config) {
+		return false
+	}
+	return true
 }
 
-// receivesAtItsURL is whether, by all writesOnlyToItsURL asks but the configuration
-// (namesItsOwnTransport), git's own git-receive-pack of url's repository receives the push under
-// base, the guard's environment: base does not set PushNamesReceivePackVar, url holds no `::`,
-// and the exec path is git's own (ownExecPath, which runs a git). Guard.writesOnlyToItsURL and
-// Guard.readsReachItsRepository each ask it, and each asks namesItsOwnTransport of the
-// configuration it holds.
+// receivesAtItsURL is whether, by all writesOnlyToItsURL asks but the inputs it reads in the
+// environment and the configuration (knowsEveryInput), git's own git-receive-pack of url's
+// repository receives the push under base, the guard's environment: base does not set
+// PushNamesReceivePackVar, url holds no `::`, and the exec path is git's own (ownExecPath, which
+// runs a git). Guard.writesOnlyToItsURL and Guard.readsReachItsRepository each ask it, and each
+// asks knowsEveryInput of base and of the configuration it holds.
 func (g *Guard) receivesAtItsURL(ctx context.Context, dir, url string, base []string) bool {
 	if _, marked := lookup(base, PushNamesReceivePackVar); marked || strings.Contains(url, "::") {
 		return false
@@ -266,24 +283,168 @@ func (g *Guard) remoteStaysLocal(ctx context.Context, dir, name string) bool {
 	return urls > 0
 }
 
-// namesItsOwnTransport is whether config, the output of `git config -z --list`, holds a key
-// remote.<name>.receivepack or remote.<name>.vcs for any name. A name can hold dots, so the key is
-// read by its first and its last dot-part, each without case, as git reads a section and a
-// variable name.
-func namesItsOwnTransport(config string) bool {
+// knowsEveryInput is R1 (e) of dispatch://INFRA-3524's spec: whether every name of env, the
+// guard's environment, that begins GIT_ is one knownGitNames holds (knownGitName), and the
+// variable of every key remote.<name>.<variable> of config, the push's configuration as `git
+// config -z --list` writes it (Guard.pushConfiguration), is one knownRemoteKeys holds. A remote's
+// name can hold dots, so the key is read by its first and its last dot-part (keyParts), the
+// section without case and the variable as git writes it, in lower case; a key of the section
+// remote with no subsection, such as remote.pushDefault, is no remote's own and is not asked of.
+// Guard.StaysLocal clears no push it answers false for (writesOnlyToItsURL), and
+// Guard.readsReachItsRepository makes neither read of what the destination holds for one.
+func knowsEveryInput(env []string, config string) bool {
+	for _, entry := range env {
+		if name, _, _ := strings.Cut(entry, "="); strings.HasPrefix(name, "GIT_") && !knownGitName(name) {
+			return false
+		}
+	}
 	for entry := range strings.SplitSeq(config, "\x00") {
-		key, _, _ := strings.Cut(entry, "\n")
-		section, rest, ok := strings.Cut(key, ".")
-		if !ok || !strings.EqualFold(section, "remote") {
-			continue
+		name, _, _ := strings.Cut(entry, "\n")
+		key, ok := keyParts(name)
+		if ok && strings.EqualFold(key.section, "remote") && key.subsection != "" && !slices.Contains(knownRemoteKeys, key.variable) {
+			return false
 		}
-		last := strings.LastIndex(rest, ".")
-		if last < 0 {
-			continue
-		}
-		if variable := rest[last+1:]; strings.EqualFold(variable, "receivepack") || strings.EqualFold(variable, "vcs") {
+	}
+	return true
+}
+
+// knownGitName is whether name is one an entry of knownGitNames stands for: the entry itself; for
+// an entry ending in `*`, any name that begins with what comes before it; and for one ending in
+// `<n>`, any name that is what comes before it and one or more decimal digits.
+func knownGitName(name string) bool {
+	for _, known := range knownGitNames {
+		if prefix, ok := strings.CutSuffix(known, "*"); ok {
+			if strings.HasPrefix(name, prefix) {
+				return true
+			}
+		} else if prefix, ok := strings.CutSuffix(known, "<n>"); ok {
+			if digits, ok := strings.CutPrefix(name, prefix); ok && digits != "" && strings.Trim(digits, "0123456789") == "" {
+				return true
+			}
+		} else if name == known {
 			return true
 		}
 	}
 	return false
+}
+
+// knownGitNames are the names beginning GIT_ that the guard's environment may hold for a push
+// Guard.StaysLocal clears or whose destination Guard.readsReachItsRepository reads (R1 (e) of
+// dispatch://INFRA-3524's spec, knowsEveryInput). An entry ending in `*` stands for every name
+// that begins with what comes before it, and one ending in `<n>` for every name that is what
+// comes before it and one or more decimal digits (knownGitName). Each is a name that an issue
+// pod's push, jj's push, a script of this repository or a fixture of its tests hands the hook, and
+// none changes where a push the guard clears or reads writes in a way the guard does not read as
+// the push does: the guard's gits inherit each one, and its read of the configuration reads every
+// scope the push reads (Guard.pushConfiguration). Measured by dispatch://INFRA-3524's implementer
+// and tester on 2026-11-28 in an issue pod, with git 2.47.3 and jj 0.46.0, through the pod's git
+// and jj wrappers and a pre-push hook that recorded the GIT_ names of its environment: the pushes
+// of check c2, a `git push` and a `jj git push` among them, and the rows of R4, each in the role's
+// environment and with no shared check; and the rows of checks c1 and c10, through the guard they
+// call.
+//
+// Absent on purpose, among the names git reads: GIT_CONFIG, which of the gits a push and the guard
+// run only `git config` reads, as the one file it reads in place of every scope, so that a read of
+// the configuration under it would not see what the push runs by (Guard.pushConfiguration);
+// GIT_NAMESPACE, which moves every ref a push writes under refs/namespaces/<name>/;
+// GIT_OBJECT_DIRECTORY and GIT_ALTERNATE_OBJECT_DIRECTORIES, which name where git reads and writes
+// objects; and GIT_PROXY_COMMAND, the proxy command of a git:// URL, a program between git and
+// the server that sees whether it serves a read (git-upload-pack) or the push (git-receive-pack)
+// and can send the two to different repositories, as core.gitProxy can (routedKeys).
+var knownGitNames = []string{
+	// The repository the hook runs in, which git sets for `git --git-dir` and `git --work-tree`:
+	// jj's push through the pod's wrappers handed the hook GIT_DIR (c2, measured), as c1's and
+	// c10's rows of a push from another directory do. The guard's gits inherit both, so they read
+	// the repository the push is made from.
+	"GIT_DIR", "GIT_WORK_TREE",
+	// git's exec path, which git sets in every hook's environment (each push of c2, measured) and
+	// R1 (d) reads (ownExecPath).
+	"GIT_EXEC_PATH",
+	// The configuration of the command line, which `git -c` hands the hook (the pod's git
+	// wrapper's `-c core.hooksPath`, each push of c2 through it, measured), and a GIT_CONFIG_COUNT
+	// block (an issue pod's role environment holds GIT_CONFIG_KEY_0 to GIT_CONFIG_KEY_8 and their
+	// values, measured). The read of the configuration holds both.
+	"GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_<n>", "GIT_CONFIG_VALUE_<n>",
+	// The configuration files git reads, which the read of the configuration reads as the push
+	// does: fixtureenv.Isolated sets GIT_CONFIG_GLOBAL and GIT_CONFIG_NOSYSTEM for every fixture's
+	// git, and c10's rows hand both to the guard; c10's eleventh case sets GIT_CONFIG_SYSTEM to put
+	// a url.<base>.insteadOf in the system file.
+	"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_SYSTEM",
+	// The directory below the repository's top that the command was run from, which git set in
+	// the hook's environment of each push of c2 (measured).
+	"GIT_PREFIX",
+	// A commit's identity: an issue pod's role environment sets GIT_AUTHOR_NAME,
+	// GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME and GIT_COMMITTER_EMAIL (measured), and so does
+	// fixtureenv.Isolated.
+	"GIT_AUTHOR_*", "GIT_COMMITTER_*",
+	// The programs git runs for a person at a terminal, and whether it may prompt one: an issue
+	// pod's role environment sets all four (measured), and fixtureenv.Isolated sets
+	// GIT_TERMINAL_PROMPT.
+	"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "GIT_TERMINAL_PROMPT",
+	// git's traces, which write what git does and change none of it: c9's push under GIT_TRACE=1
+	// is judged as without it (TestAPushUnderGitTraceIsJudgedAsWithoutIt).
+	"GIT_TRACE*",
+	// The transports git may use, which can only refuse one: fixtureenv.Guard sets it to file in
+	// every test process of packages/daemon, and c1's and c10's rows hand it to the guard.
+	"GIT_ALLOW_PROTOCOL",
+	// The ssh program git runs for a URL over ssh, which .github/scripts/release-push.sh exports
+	// for every deploy push (GIT_SSH_COMMAND): the hook of each push of release-push.test.sh, whose
+	// GIT_CONFIG_COUNT block rewrites the deploy remote git@github.com:example/repo.git to a local
+	// bare repository, held it in both environments of R4 (measured by dispatch://INFRA-3524's
+	// tester, dispatch://INFRA-3524/comment/1ed5511a-e269-4411-9612-4a5c7ba1874d). Neither names
+	// a program for a push the guard clears or reads: R1 clears only a push to a local path, for
+	// which git runs no ssh, and the reads are made only over a transport git serves itself
+	// (gitServesItsTransport), where neither acts, while a URL over ssh keeps the base's bound.
+	"GIT_SSH_COMMAND", "GIT_SSH",
+	// Whether git checks an https server's certificate: c10's tenth case sets it for its
+	// https_proxy row, whose proxy answers with a certificate of the test's own
+	// (TestAPushThatNamesAProgramOrProxyBetweenGitAndTheServerKeepsTheBasesBound, measured through
+	// the guard). It names no destination, and the reads, which inherit it, check the server's
+	// certificate, or leave it unchecked, as the push does.
+	"GIT_SSL_NO_VERIFY",
+}
+
+// knownRemoteKeys are the variables that a key remote.<name>.<variable> of the push's
+// configuration may have for a push Guard.StaysLocal clears or whose destination
+// Guard.readsReachItsRepository reads (R1 (e) of dispatch://INFRA-3524's spec, knowsEveryInput),
+// each as `git config -z --list` writes a variable, in lower case. Each is one that git, jj, gh or
+// a fixture of this repository's tests writes, and none names a program, or a place a push writes
+// to but the URLs that R1 (a) reads (remoteStaysLocal) and the refs the hook's update lines name,
+// or makes a read of a URL go elsewhere.
+//
+// Absent on purpose: receivepack, a program of the remote's own that a push runs in place of the
+// URL's git-receive-pack and that writes where it writes, as `--receive-pack` does, and vcs,
+// which makes git push through a remote helper whatever the URL holds (R1 (b) of the spec); and
+// proxy and proxyauthmethod, which a push by the remote's name applies and a read of a URL does
+// not (R10 of the spec): such a proxy sees whether it serves a read (git-upload-pack) or the push
+// (git-receive-pack) and can send the two to different repositories, as the remote.origin.proxy
+// row of c10's tenth case shows
+// (TestAPushThatNamesAProgramOrProxyBetweenGitAndTheServerKeepsTheBasesBound). uploadpack, a
+// program that a read by the remote's name runs in place of the URL's git-upload-pack, stays out
+// too: c10's row of a remote named the push's URL with an uploadpack sets it, and gets no read
+// (urlNamesARemote).
+var knownRemoteKeys = []string{
+	// What `git remote add`, `git clone` and `jj git remote add` write: each repository of c2's
+	// pushes held both (measured), and an issue pod's clone of this repository holds both.
+	"url", "fetch",
+	// Where and what a push by the remote's name pushes: pushurl, whose URLs R1 (a) reads with the
+	// fetch URLs (remoteStaysLocal) and which c1's row of a pushurl at a host sets, and push,
+	// refspecs whose refs the hook's update lines name. Both are R1 (e)'s own minimum.
+	"pushurl", "push",
+	// Which tags a fetch takes, which `git remote add --tags` and `--no-tags` write: R1 (e)'s own
+	// minimum.
+	"tagopt",
+	// The repository gh resolved the remote to, which gh writes when it resolves one: an issue
+	// pod's clone of this repository held remote.origin.gh-resolved on 2026-11-28, measured by
+	// dispatch://INFRA-3118's architect and by dispatch://INFRA-3524's.
+	"gh-resolved",
+	// A partial clone's remote: the one git fetches an object the clone lacks from (promisor), and
+	// the filter its fetches ask for (partialclonefilter). `git clone --filter=blob:none` wrote
+	// both (measured with git 2.47.3 on 2026-11-28), and so do the fixtures of c10's
+	// TestTheReadOfWhatTheDestinationHoldsFetchesNothing, whose reads of what the destination holds
+	// in a blobless clone are what that row holds, and of
+	// TestAPushToAURLReadsOnlyWhatTheRemoteWithThatURLDoesNotHold (measured through the guard).
+	// Neither names where a push writes, and the reads of what the destination holds fetch nothing
+	// from a promisor, since they run under GIT_NO_LAZY_FETCH=1 (fetchesNothing).
+	"promisor", "partialclonefilter",
 }

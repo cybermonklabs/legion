@@ -106,27 +106,38 @@ func (g *Guard) destinationHolds(ctx context.Context, dir, url string, tips []st
 //     server of any other URL through a program, an ssh program, the first `ssh` on PATH where the
 //     push names none, or a git-remote-<scheme> found on PATH, which sees whether it serves a read
 //     or the push and can send the two to different repositories.
+//   - An input of the guard's environment or of the configuration is one the guard does not know
+//     (knowsEveryInput, R1 (e) of the spec, which decides the reads too): a GIT_ name that
+//     knownGitNames does not hold, among them GIT_CONFIG, under which `git config` reads another
+//     configuration than the push's, and GIT_PROXY_COMMAND, a program between git and a git://
+//     server; or a remote.<name>.<variable> key whose variable knownRemoteKeys does not hold, among
+//     them receivepack and vcs, by which the push can write somewhere other than url, and proxy
+//     and proxyauthmethod, which a push by that remote's name applies and a read of a URL does not.
 //   - The push can write somewhere other than url, as writesOnlyToItsURL reads it, by
-//     Guard.receivesAtItsURL and namesItsOwnTransport: a receive-pack program of its own, a remote
-//     helper or another exec path's git-receive-pack writes where that program writes, and what
-//     url holds says nothing of that repository.
+//     Guard.receivesAtItsURL: a receive-pack program the git wrapper marked, a remote helper or
+//     another exec path's git-receive-pack writes where that program writes, and what url holds
+//     says nothing of that repository.
 //   - A key of the configuration is one routedKeys names: a program or a proxy between git and
-//     the server, or a transport key of a remote that a read of a URL does not apply.
-//   - The guard's environment sets one of routedNames: a program or a proxy between git and the
-//     server, named by the variable git or libcurl reads it from.
+//     the server.
+//   - The guard's environment sets one of routedNames: a proxy between git and an http(s) server,
+//     named by a variable git or libcurl reads it from.
 //   - A url.<base>.insteadOf of the configuration rewrites url (rewritesURL).
 //   - url is also the name of a remote of the repository (urlNamesARemote).
 //
-// config is the output of `git config -z --list` in dir through Guard.git, which pushRecords reads
-// once for the push and hands heldRemotes too. It holds the configuration as the push's own gits
-// read it: every scope down to the command line's (GIT_CONFIG_PARAMETERS, which `git -c` hands the
-// hook, and a GIT_CONFIG_COUNT block), under the guard's whole environment, a GIT_DIR there
+// config is the push's configuration as Guard.pushConfiguration reads it, which pushRecords reads
+// once for the push and hands heldRemotes too: the configuration as the push's own gits read it,
+// every scope down to the command line's (GIT_CONFIG_PARAMETERS, which `git -c` hands the hook,
+// and a GIT_CONFIG_COUNT block), under the guard's environment with no GIT_CONFIG, a GIT_DIR there
 // included.
 func (g *Guard) readsReachItsRepository(ctx context.Context, dir, url, config string) bool {
-	if !gitServesItsTransport(url) || namesItsOwnTransport(config) {
+	if !gitServesItsTransport(url) {
 		return false
 	}
 	base := g.base()
+	// R1 (e): every input that can change where git writes is one the guard knows.
+	if !knowsEveryInput(base, config) {
+		return false
+	}
 	if !g.receivesAtItsURL(ctx, dir, url, base) {
 		return false
 	}
@@ -156,11 +167,11 @@ func (g *Guard) readsReachItsRepository(ctx context.Context, dir, url, config st
 //     program, the one the push names (core.sshCommand, GIT_SSH_COMMAND or GIT_SSH) or else the
 //     first `ssh` on PATH, and hands it the service as its remote command. Those three settings
 //     act on no URL but one over ssh, which gets no read whatever names its program, so neither
-//     routedKeys nor routedNames names them. Measured by dispatch://INFRA-3524's tester on
-//     2026-11-28 at 33a24deb, through the head's git wrapper and hook: with no setting at all and
-//     an `ssh` first on PATH that routed by service, a push to ssh://example.invalid<path> landed
-//     a commit the rules refuse in a second repository while the reads answered for the hook's
-//     URL, and main's hook refused it.
+//     routedKeys nor routedNames names them, and knownGitNames holds GIT_SSH_COMMAND and GIT_SSH.
+//     Measured by dispatch://INFRA-3524's tester on 2026-11-28 at 33a24deb, through the head's
+//     git wrapper and hook: with no setting at all and an `ssh` first on PATH that routed by
+//     service, a push to ssh://example.invalid<path> landed a commit the rules refuse in a second
+//     repository while the reads answered for the hook's URL, and main's hook refused it.
 //   - Any other <scheme>:// git serves through the remote helper git-remote-<scheme>, which it
 //     looks up on PATH after its own exec path, and which, where it answers `connect`, it hands
 //     the service in `connect <service>` (gitremote-helpers(7)). git's own exec path holds
@@ -195,7 +206,9 @@ type configKey struct{ section, subsection, variable string }
 
 // routedKeys are the configuration keys under which the two reads of what a push's destination
 // holds need not reach the repository the push writes to (readsReachItsRepository), set in any
-// scope with any value, empty included.
+// scope with any value, empty included. A key of a remote's own that a read of a URL does not
+// apply, remote.<name>.proxy and remote.<name>.proxyAuthMethod, is none knownRemoteKeys holds, so
+// knowsEveryInput already answers for it.
 var routedKeys = []configKey{
 	// A program between git and the server, which git runs for the connection and hands the
 	// service it asks for: the proxy command of a git:// URL (core.gitProxy). Such a program sees
@@ -206,25 +219,17 @@ var routedKeys = []configKey{
 	// over ssh, which gets no read (gitServesItsTransport).
 	{"core", "", "gitproxy"},
 	// A proxy between git and an http(s) server, which sees each request's service in its path and
-	// can do the same: http.proxy, an http.<url>.proxy of any URL, and a remote.<name>.proxy of
-	// any remote, which a push by that remote's name applies and a read of a URL does not.
+	// can do the same: http.proxy, and an http.<url>.proxy of any URL.
 	{"http", "", "proxy"},
 	{"http", "*", "proxy"},
-	{"remote", "*", "proxy"},
-	// A transport key of a remote that a read of a URL does not apply, so that a push by that
-	// remote's name connects in a way neither read does: remote.<name>.proxyAuthMethod, beside
-	// remote.<name>.proxy above.
-	{"remote", "*", "proxyauthmethod"},
 }
 
 // routedNames are the environment variables under which the two reads of what a push's
 // destination holds need not reach the repository the push writes to (readsReachItsRepository),
-// each set in the guard's environment with any value, empty included.
+// each set in the guard's environment with any value, empty included. GIT_PROXY_COMMAND, the
+// proxy command of a git:// URL, for core.gitProxy's reason (routedKeys), is a GIT_ name
+// knownGitNames leaves out, so knowsEveryInput already answers for it.
 var routedNames = []string{
-	// A program between git and the server, for core.gitProxy's reason (routedKeys), as git reads
-	// one from its environment: the proxy command of a git:// URL. GIT_SSH_COMMAND and GIT_SSH,
-	// an ssh command, act only on a URL over ssh, which gets no read (gitServesItsTransport).
-	"GIT_PROXY_COMMAND",
 	// A proxy between git and an http(s) server, for http.proxy's reason, as git and libcurl
 	// read one from the environment.
 	"http_proxy", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY",

@@ -64,15 +64,6 @@ import (
 // gets no read whatever names its program: the thirteenth case holds those pushes
 // (TestAPushOverATransportGitDoesNotServeItselfKeepsTheBasesBound).
 func TestAPushThatNamesAProgramOrProxyBetweenGitAndTheServerKeepsTheBasesBound(t *testing.T) {
-	const class = leakguardtest.RulesHostClass
-	refused := "the runner answers at " + leakguardtest.RulesHost + "\n"
-	// proxied is the forward proxy of an http(s) case, routing by service between the
-	// destination's directory and the second's.
-	proxied := func(t *testing.T, r routes) string {
-		t.Helper()
-		return forwardProxy(t, byService(gitHTTP(t, r.root), gitHTTP(t, r.elsewhere)))
-	}
-	const httpURL, httpsURL = "http://example.invalid/destination.git", "https://example.invalid/destination.git"
 	for _, tc := range []struct {
 		name string
 		// route makes the case's router for r and answers the URL git hands the hook, the clone's
@@ -129,61 +120,152 @@ func TestAPushThatNamesAProgramOrProxyBetweenGitAndTheServerKeepsTheBasesBound(t
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root, elsewhere := t.TempDir(), t.TempDir()
-			r := routes{
-				root:        root,
-				elsewhere:   elsewhere,
-				destination: filepath.Join(root, "destination.git"),
-				second:      filepath.Join(elsewhere, "destination.git"),
-			}
-			fixture := fixturegit.Isolated(t, t.TempDir())
-			seed, repo := filepath.Join(root, "seed"), filepath.Join(root, "repo")
-			fixture.Run(root, fixturegit.InitBare(r.destination, "main")...)
-			fixture.Run(elsewhere, fixturegit.InitBare(r.second, "main")...)
-			// git's smart HTTP takes a push only into a repository that says it takes one.
-			fixture.Run(r.second, "git", "config", "http.receivepack", "true")
-			fixture.Run(root, fixturegit.InitWorkTree(seed, "main")...)
-			commitFiles(t, fixture, seed, map[string]string{"README.md": "one\n"}, "the destination's first commit")
-			fixture.Run(seed, "git", "push", "--quiet", r.destination, "main")
-			fixture.Run(root, "git", "clone", "--quiet", r.destination, repo)
-			commitFiles(t, fixture, seed, map[string]string{"held.md": refused}, "a commit of the destination's that adds the refused line")
-			fixture.Run(seed, "git", "push", "--quiet", r.destination, "main")
-			fixture.Run(repo, "git", "fetch", "--quiet", r.destination, "main")
-			start := fixture.Run(repo, "git", "rev-parse", "FETCH_HEAD")
-			url, config, extra := tc.route(t, r)
-			fixture.Run(repo, "git", "remote", "set-url", "origin", url)
-			for i := 0; i+1 < len(config); i += 2 {
-				fixture.Run(repo, "git", "config", config[i], config[i+1])
-			}
-			fixture.Run(repo, "git", "checkout", "--quiet", "-b", "work", start)
-			own := commitFiles(t, fixture, repo, map[string]string{"work.md": "a line of the branch's own\n"}, "the branch's own commit")
-			env := append(withoutNoProxy(fixtureenv.Isolated(t.TempDir())), extra...)
-			routed := fixturegit.Runner{TB: t, Env: env}
-			if listed, want := routed.Out(repo, "git", "ls-remote", "--heads", url), start+"\trefs/heads/main\n"; listed != want {
-				t.Fatalf("git ls-remote of %s through %s lists %q, want the destination's main %q: the router does not route git-upload-pack there, and the case would prove nothing", url, tc.name, listed, want)
-			}
-			routed.Run(repo, "git", "-c", "core.hooksPath=/dev/null", "push", "--quiet", "origin", "work")
-			if landed, _ := fixture.Try(r.second, "git", "rev-parse", "--verify", "--quiet", "refs/heads/work"); strings.TrimSpace(landed) != own {
-				t.Fatalf("the push through %s left the second repository's work at %q, want %s: the router does not route git-receive-pack there, and the case would prove nothing", tc.name, landed, own)
-			}
-			fixture.Run(r.second, "git", "update-ref", "-d", "refs/heads/work")
-			fixture.Run(repo, "git", "update-ref", "-d", "refs/remotes/origin/work")
-			before := fixture.Raw(r.second, "git", "for-each-ref")
-			guard := New(Options{Check: leakguardtest.Write(t, t.TempDir(), passes), Visibility: answers(Public, nil), Env: withRules(t, env)})
-			err := guard.Push(bound(t), PushRequest{
-				Dir:     repo,
-				Remote:  "origin",
-				URL:     url,
-				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: own, RemoteRef: "refs/heads/work", RemoteSHA: noSHA}},
-			})
-			if err == nil {
-				t.Fatalf("the push through %s passed: the guard read what %s holds through the router, which sends the push elsewhere, and took the refused commit as held", tc.name, url)
-			}
-			reports(t, refusal(t, err).Lines, "held.md: "+class)
-			if after := fixture.Raw(r.second, "git", "for-each-ref"); after != before {
-				t.Errorf("the second repository's refs were %q before the guard's read of the push and are %q after it", before, after)
-			}
+			guardsARoutedPush(t, tc.name, tc.route, true)
 		})
+	}
+}
+
+// A push that holds an input the guard does not know keeps the base's bound (R1 (e) of
+// dispatch://INFRA-3524's spec, which decides R10's reads too, and the seventeenth case of its
+// check c10): the guard makes neither read of what the hook's URL holds where a name of its
+// environment that begins GIT_ is not one of knownGitNames, or the variable of a
+// remote.<name>.<variable> key of the push's configuration is not one of knownRemoteKeys
+// (knowsEveryInput). The cases are built as the tenth case's are (guardsARoutedPush): the
+// destination holds a commit that adds the refused line, which no remote-tracking ref holds, and
+// the new branch starts from it, so reads that reached the destination would take that commit as
+// held and pass the push, while the base reads it and refuses the push.
+//
+// The first case is the tenth case's http.proxy, which routes git-upload-pack to the destination
+// and git-receive-pack to a second repository, under GIT_CONFIG=/dev/null, which only `git config`
+// reads: a read of the configuration under it lists no http.proxy, while the push and the reads,
+// which do not read it, go through the proxy, so that reads made then would pass the push and land
+// the refused commit in the second repository. The review of cybermonklabs/legion#5914
+// reproduced that at 31a219d1. The other two reach the destination by its own URL, a server of the
+// test's own on 127.0.0.1 with no router, so that git-receive-pack reaches the destination too and
+// the case shows only that no read is made: once under GIT_INVENTED_NAME=1, and once with
+// remote.origin.inventedkey in the clone's configuration.
+func TestAPushWithAnInputTheGuardDoesNotKnowKeepsTheBasesBound(t *testing.T) {
+	direct := func(t *testing.T, r routes) string {
+		t.Helper()
+		server := httptest.NewServer(gitHTTP(t, r.root))
+		t.Cleanup(server.Close)
+		return server.URL + "/destination.git"
+	}
+	for _, tc := range []struct {
+		name string
+		// route is as the tenth case's is (guardsARoutedPush).
+		route func(t *testing.T, r routes) (url string, config, env []string)
+		// routed is whether the case's push goes through the router to the second repository.
+		routed bool
+	}{
+		{
+			name: "GIT_CONFIG=/dev/null over an http.proxy that routes by service",
+			route: func(t *testing.T, r routes) (string, []string, []string) {
+				return httpURL, []string{"http.proxy", proxied(t, r)}, []string{"GIT_ALLOW_PROTOCOL=file:http", "GIT_CONFIG=" + os.DevNull}
+			},
+			routed: true,
+		},
+		{
+			name: "GIT_INVENTED_NAME, a GIT_ name the guard does not know",
+			route: func(t *testing.T, r routes) (string, []string, []string) {
+				return direct(t, r), nil, []string{"GIT_ALLOW_PROTOCOL=file:http", "GIT_INVENTED_NAME=1"}
+			},
+		},
+		{
+			name: "remote.origin.inventedkey, a key the guard does not know",
+			route: func(t *testing.T, r routes) (string, []string, []string) {
+				return direct(t, r), []string{"remote.origin.inventedkey", "invented"}, []string{"GIT_ALLOW_PROTOCOL=file:http"}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guardsARoutedPush(t, tc.name, tc.route, tc.routed)
+		})
+	}
+}
+
+// httpURL and httpsURL are the hook's URL of a case whose http(s) proxy routes by service
+// (proxied): the invented host example.invalid, which only the proxy reaches.
+const httpURL, httpsURL = "http://example.invalid/destination.git", "https://example.invalid/destination.git"
+
+// proxied is the forward proxy of an http(s) case, routing by service between the destination's
+// directory and the second's.
+func proxied(t *testing.T, r routes) string {
+	t.Helper()
+	return forwardProxy(t, byService(gitHTTP(t, r.root), gitHTTP(t, r.elsewhere)))
+}
+
+// guardsARoutedPush is the case what of
+// TestAPushThatNamesAProgramOrProxyBetweenGitAndTheServerKeepsTheBasesBound or of
+// TestAPushWithAnInputTheGuardDoesNotKnowKeepsTheBasesBound. It builds the case's two
+// repositories (routes): the destination, which holds a commit that adds the refused line, and a
+// clone of it that fetched that commit by the destination's URL, so that no remote-tracking ref
+// holds it, and whose branch work starts from it and adds a commit of its own; and the second
+// repository, which holds nothing. route sets the clone's origin to the hook's URL, its
+// configuration, and the push's environment. Before the guard runs, the case shows that git
+// ls-remote of the hook's URL in the clone, under the case's setting, lists the destination's
+// main, and, where routed, that a real git push of the branch by origin's name under it, with no
+// hook, lands the branch in the second repository, which the case then undoes, or the case would
+// prove nothing. The guard must then refuse the push over the destination's commit, which reads of
+// the hook's URL would take as held, and leave the second repository unchanged.
+func guardsARoutedPush(t *testing.T, what string, route func(t *testing.T, r routes) (url string, config, env []string), routed bool) {
+	t.Helper()
+	refused := "the runner answers at " + leakguardtest.RulesHost + "\n"
+	root, elsewhere := t.TempDir(), t.TempDir()
+	r := routes{
+		root:        root,
+		elsewhere:   elsewhere,
+		destination: filepath.Join(root, "destination.git"),
+		second:      filepath.Join(elsewhere, "destination.git"),
+	}
+	fixture := fixturegit.Isolated(t, t.TempDir())
+	seed, repo := filepath.Join(root, "seed"), filepath.Join(root, "repo")
+	fixture.Run(root, fixturegit.InitBare(r.destination, "main")...)
+	fixture.Run(elsewhere, fixturegit.InitBare(r.second, "main")...)
+	// git's smart HTTP takes a push only into a repository that says it takes one.
+	fixture.Run(r.second, "git", "config", "http.receivepack", "true")
+	fixture.Run(root, fixturegit.InitWorkTree(seed, "main")...)
+	commitFiles(t, fixture, seed, map[string]string{"README.md": "one\n"}, "the destination's first commit")
+	fixture.Run(seed, "git", "push", "--quiet", r.destination, "main")
+	fixture.Run(root, "git", "clone", "--quiet", r.destination, repo)
+	commitFiles(t, fixture, seed, map[string]string{"held.md": refused}, "a commit of the destination's that adds the refused line")
+	fixture.Run(seed, "git", "push", "--quiet", r.destination, "main")
+	fixture.Run(repo, "git", "fetch", "--quiet", r.destination, "main")
+	start := fixture.Run(repo, "git", "rev-parse", "FETCH_HEAD")
+	url, config, extra := route(t, r)
+	fixture.Run(repo, "git", "remote", "set-url", "origin", url)
+	for i := 0; i+1 < len(config); i += 2 {
+		fixture.Run(repo, "git", "config", config[i], config[i+1])
+	}
+	fixture.Run(repo, "git", "checkout", "--quiet", "-b", "work", start)
+	own := commitFiles(t, fixture, repo, map[string]string{"work.md": "a line of the branch's own\n"}, "the branch's own commit")
+	env := append(withoutNoProxy(fixtureenv.Isolated(t.TempDir())), extra...)
+	routedRunner := fixturegit.Runner{TB: t, Env: env}
+	if listed, want := routedRunner.Out(repo, "git", "ls-remote", "--heads", url), start+"\trefs/heads/main\n"; listed != want {
+		t.Fatalf("git ls-remote of %s through %s lists %q, want the destination's main %q: the reads would not reach the destination, and the case would prove nothing", url, what, listed, want)
+	}
+	if routed {
+		routedRunner.Run(repo, "git", "-c", "core.hooksPath=/dev/null", "push", "--quiet", "origin", "work")
+		if landed, _ := fixture.Try(r.second, "git", "rev-parse", "--verify", "--quiet", "refs/heads/work"); strings.TrimSpace(landed) != own {
+			t.Fatalf("the push through %s left the second repository's work at %q, want %s: the router does not route git-receive-pack there, and the case would prove nothing", what, landed, own)
+		}
+		fixture.Run(r.second, "git", "update-ref", "-d", "refs/heads/work")
+		fixture.Run(repo, "git", "update-ref", "-d", "refs/remotes/origin/work")
+	}
+	before := fixture.Raw(r.second, "git", "for-each-ref")
+	guard := New(Options{Check: leakguardtest.Write(t, t.TempDir(), passes), Visibility: answers(Public, nil), Env: withRules(t, env)})
+	err := guard.Push(bound(t), PushRequest{
+		Dir:     repo,
+		Remote:  "origin",
+		URL:     url,
+		Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: own, RemoteRef: "refs/heads/work", RemoteSHA: noSHA}},
+	})
+	if err == nil {
+		t.Fatalf("the push through %s passed: the guard read what %s holds, which the push need not write to, and took the refused commit as held", what, url)
+	}
+	reports(t, refusal(t, err).Lines, "held.md: "+leakguardtest.RulesHostClass)
+	if after := fixture.Raw(r.second, "git", "for-each-ref"); after != before {
+		t.Errorf("the second repository's refs were %q before the guard's read of the push and are %q after it", before, after)
 	}
 }
 

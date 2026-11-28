@@ -192,10 +192,10 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 // url.<base>.insteadOf, or a remote whose name is the URL, would lead the reads elsewhere than the
 // push went. For each, neither read is made: not is empty and the remote-tracking refs bound the
 // range alone, with the remote's commit where the repository holds it, as they bounded every push
-// before these reads. The push's configuration is read once, `git config -z --list` in its
-// repository, and handed to heldRemotes and readsReachItsRepository both; that read failing is a
-// setup failure of the push, as each failed read of heldRemotes is. Guard.StaysLocal, which the
-// hook asks before Guard.Push, makes a read of its own (writesOnlyToItsURL).
+// before these reads. The push's configuration is read once, as the push reads it
+// (Guard.pushConfiguration), and handed to heldRemotes and readsReachItsRepository both; that read
+// failing is a setup failure of the push, as each failed read of heldRemotes is. Guard.StaysLocal,
+// which the hook asks before Guard.Push, makes a read of its own (writesOnlyToItsURL).
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Record) error) error {
 	read := map[string]bool{}
 	var held []string
@@ -217,7 +217,7 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 			continue
 		}
 		if !heldRead {
-			config, err := g.git(ctx, req.Dir, "config", "-z", "--list")
+			config, err := g.pushConfiguration(ctx, req.Dir)
 			if err != nil {
 				return err
 			}
@@ -254,6 +254,47 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 		}
 	}
 	return nil
+}
+
+// pushConfiguration is the configuration of the push in dir as the push reads it: `git config -z
+// --list`, with the package's pins (gitArgv), under the guard's environment with no GIT_CONFIG
+// (withoutConfigFile), its standard error read apart and quoted where it fails, as Guard.git's
+// is. It holds every scope down to the command line's (GIT_CONFIG_PARAMETERS, which `git -c` hands
+// the hook, and a GIT_CONFIG_COUNT block). Of the gits a push and the guard run, only `git config`
+// reads GIT_CONFIG, as the one file it reads in place of every scope, the command line's too:
+// measured with git 2.47.3 on 2026-11-28, `GIT_CONFIG=/dev/null git -c a.b=c config -z --list`
+// printed nothing, while under it `git remote get-url --all origin` printed origin's URL and a push
+// by origin ran the remote.origin.receivepack the repository's own file set, which wrote to
+// another repository. A read under it would see none of the settings the push runs by, which the
+// review of cybermonklabs/legion#5914 reproduced through the hook: GIT_CONFIG=/dev/null over a
+// remote.origin.receivepack had such a push cleared, and its receive-pack wrote the refused commit
+// to another repository. Guard.StaysLocal (writesOnlyToItsURL) and Guard.pushRecords each read it
+// once, and R1 (e) keeps a push under GIT_CONFIG guarded all the same (knownGitNames).
+func (g *Guard) pushConfiguration(ctx context.Context, dir string) (string, error) {
+	var stderr strings.Builder
+	status, out, err := g.run(ctx, child{
+		argv:    gitArgv("config", "-z", "--list"),
+		dir:     dir,
+		inherit: withoutConfigFile,
+		stderr:  &stderr,
+	})
+	if err != nil {
+		return "", procgroup.Said(err, gitSaid(stderr.String()))
+	}
+	if status != 0 {
+		return "", gitExited("git config", status, stderr.String())
+	}
+	return out, nil
+}
+
+// configFileVar is the variable `git config` reads the one file it reads from in place of every
+// scope, and which no other git reads (Guard.pushConfiguration).
+const configFileVar = "GIT_CONFIG"
+
+// withoutConfigFile is the inherit of pushConfiguration's child: every entry of the base but
+// GIT_CONFIG, so that `git config` reads every scope the push reads.
+func withoutConfigFile([]string) func(name, value string) bool {
+	return func(name, _ string) bool { return name != configFileVar }
 }
 
 // pushTips are the local commits of updates that add commits, each once, in the updates' order:
@@ -300,9 +341,9 @@ func addsCommits(update Update) bool {
 // The URLs are read with `git remote get-url`, which prints one URL a line and nothing else, and
 // not from `git remote -v`, which writes a blobless clone's filter after its fetch URL. The
 // refspecs are read from config, the push's configuration as `git config -z --list` writes it,
-// which pushRecords reads once for the push and which, unlike a `--get-regexp` that matches
-// nothing, exits 0 whatever the configuration holds, and from the legacy files under
-// .git/remotes (legacyFetchDestinations).
+// which pushRecords reads once for the push, as the push reads it (Guard.pushConfiguration), and
+// which, unlike a `--get-regexp` that matches nothing, exits 0 whatever the configuration holds,
+// and from the legacy files under .git/remotes (legacyFetchDestinations).
 func (g *Guard) heldRemotes(ctx context.Context, req PushRequest, config string) (held []string, named bool, err error) {
 	out, err := g.git(ctx, req.Dir, "remote")
 	if err != nil {
