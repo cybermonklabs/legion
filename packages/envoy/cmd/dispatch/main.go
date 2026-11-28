@@ -214,10 +214,9 @@ type bootConfig struct {
 	// httpDrainBeforeDocuments (outboxStopBudget).
 	HTTPDrain time.Duration
 	// ShutdownProbe bounds each health probe by which the shutdown learns that the database has
-	// stopped answering (silenceBounds.probeTimeout), zero for the store's own two-second probe and
-	// drainPollInterval's 250 ms between two; set, main pauses an eighth of it between two probes,
-	// the ratio of drainPollInterval to the store's probe, and never longer than drainPollInterval.
-	// Only DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT, under the test hooks, sets it, since a test whose
+	// stopped answering, zero for the store's own two-second probe and drainPollInterval between
+	// two; shutdownProbes turns it into the shutdown's silenceBounds. Only
+	// DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT, under the test hooks, sets it, since a test whose
 	// database stops answering waits silentProbes probes out before the process exits; it can only
 	// shorten a probe, since store.Pool.HealthyWithin keeps its own bound past a longer context.
 	ShutdownProbe time.Duration
@@ -1523,16 +1522,8 @@ func main() {
 	if boot.HTTPDrain > 0 {
 		httpDrain = boot.HTTPDrain
 	}
-	// The shutdown's health probes run at production's bounds (the zero silenceBounds) unless a test
-	// process shortens each probe (bootConfig.ShutdownProbe); the pause between two probes then
-	// keeps drainPollInterval's ratio to the store's two-second probe, 250 ms to 2 s, an eighth, and
-	// is never longer than drainPollInterval, so the setting can only shorten the wait.
-	var probes silenceBounds
-	if boot.ShutdownProbe > 0 {
-		probes = silenceBounds{probeTimeout: boot.ShutdownProbe, pause: min(boot.ShutdownProbe/8, drainPollInterval)}
-	}
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
-		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain, probes); err != nil {
+		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain, shutdownProbes(boot.ShutdownProbe)); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
 	}

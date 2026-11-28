@@ -129,7 +129,8 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // as short as that rule lets it be: a build-cluster Job runs the row 20 times and reads, from the
 // row's line "the title change queued behind the issue lock ... after the edit", the largest time
 // from the edit to that point, and the delay is at least five times that largest value, 400 ms
-// while it is at most 80 ms. 20 runs on CI's runner size (4 CPU) read at most 6.7 ms.
+// while it is at most 80 ms. Two Jobs of 20 runs on CI's runner size (4 CPU) read at most 6.7 ms
+// and 13.6 ms.
 const inFlightSettleDelay = 400 * time.Millisecond
 
 // A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
@@ -1077,18 +1078,17 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 const quickFillRelease = 90 * time.Millisecond
 
 // quickShutdownProbe bounds each health probe by which the shutdown learns that the database has
-// stopped answering (silenceBounds.probeTimeout; DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT for a
-// process) in the row below, in place of the store's two seconds, with an eighth of it between
-// two probes (silenceBounds.pause), the ratio of drainPollInterval to the store's probe:
-// silentProbes failed probes in a row decide it at either length.
+// stopped answering (DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT) in the row below, in place of the
+// store's two seconds, with shutdownProbes' pause between two: silentProbes failed probes in a row
+// decide it at either length.
 const quickShutdownProbe = 120 * time.Millisecond
 
 // quickShutdownSlack is what the row below allows past its drain and its probes: the shutdown's
 // fixed part on this real binary - the signal reaching the process, the document service returning
 // with no room to settle, the waits between the drain and the first probe, and the exit after the
 // warning. The rule that sizes it is twice the largest fixed part 20 runs of the row measure, and
-// at least 250 ms: 20 runs on CI's runner size (4 CPU) exited 594 to 596 ms after the signal, a
-// fixed part of at most 6 ms past the drain and the probes, so the floor holds.
+// at least 250 ms: two Jobs of 20 runs on CI's runner size (4 CPU) exited 594 to 597 ms after the
+// signal, a fixed part of at most 7 ms past the drain and the probes, so the floor holds.
 const quickShutdownSlack = 250 * time.Millisecond
 
 // A database that stops answering - a failover, a partition - holds every connection waiting on it,
@@ -1149,9 +1149,10 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	t.Logf("SIGTERM at %s; exited %v after it", signalled.Format(time.RFC3339Nano), exited)
 	// The request in flight holds the HTTP drain for its whole share, and the keyword fill's release
 	// ends inside it; then the document service returns at once with no room to settle, and each
-	// failed probe takes its quickShutdownProbe and the pause after it, an eighth of that.
-	// quickShutdownSlack is the rest of the exit on this real binary.
-	if bound := quickHTTPDrain + silentProbes*(quickShutdownProbe+quickShutdownProbe/8) + quickShutdownSlack; exited > bound {
+	// failed probe takes its quickShutdownProbe and the pause after it, as the process sets them
+	// (shutdownProbes). quickShutdownSlack is the rest of the exit on this real binary.
+	probes := shutdownProbes(quickShutdownProbe)
+	if bound := quickHTTPDrain + silentProbes*(probes.probeTimeout+probes.betweenProbes()) + quickShutdownSlack; exited > bound {
 		t.Errorf("Dispatch exited %v after SIGTERM with the database unanswering, want within %v", exited, bound)
 	}
 	output := process.Output.String()

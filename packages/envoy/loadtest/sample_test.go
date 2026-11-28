@@ -410,10 +410,9 @@ func TestSamplerMarksNoReadThatFailedOnceTheStepEnded(t *testing.T) {
 // the fake one deadline at a time, each only once the code has armed it: the loop's next tick,
 // which its clock.Ticker arms once the sample before it is stored; the heap endpoint's answer;
 // readHeaps' next slot, which it arms once it has handed the ended read to the loop; and the run's
-// end. The fake stands still while the loop works, so each sample's time is its tick's exactly,
-// where the row on the wall clock let a sample be up to a second late. A loop that waited for the
-// heap read would arm its next tick only once the read had ended, which nothing but the row's move
-// to 7 s ends, so the row's wait for that tick fails naming it.
+// end. The fake stands still while the loop works, so each sample's time is its tick's exactly. A
+// loop that waited for the heap read would arm its next tick only once the read had ended, which
+// nothing but the row's move to 7 s ends, so the row's wait for that tick fails naming it.
 func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
 	const (
 		heapDelay = 7 * time.Second  // how long the heap endpoint takes to answer

@@ -111,6 +111,14 @@ type sampler struct {
 	clock clock.Clock
 }
 
+// clk is the clock the sampler's cadence runs on: clock, or clock.Real() where that is nil.
+func (s *sampler) clk() clock.Clock {
+	if s.clock == nil {
+		return clock.Real()
+	}
+	return s.clock
+}
+
 // stackExit is a stack process that exited during the step: the first check that found it gone.
 type stackExit struct {
 	Name          string    `json:"name"`
@@ -408,14 +416,11 @@ func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.
 	pprofErrs := readErrors{name: "sampler: pprof", lg: lg}
 	natsErrs := readErrors{name: "sampler: nats", lg: lg}
 	heaps, heapsDone := make(chan heapRead, 1), make(chan struct{})
-	clk := s.clock
-	if clk == nil {
-		clk = clock.Real()
-	}
+	clk := s.clk()
 	if s.heapSamples {
 		go func() {
 			defer close(heapsDone)
-			s.readHeaps(ctx, clk, heaps)
+			s.readHeaps(ctx, heaps)
 		}()
 	} else {
 		close(heapsDone)
@@ -545,11 +550,12 @@ type heapRead struct {
 	err            error
 }
 
-// readHeaps reads Dispatch's heap at once, then at each heapReadEvery slot after on clk, one read
-// at a time: a slot that falls while a read is in flight, or waits for a sample to take it, is
-// skipped. It hands each ended read to out, stamped with clk's moment, and returns once ctx has
-// ended.
-func (s *sampler) readHeaps(ctx context.Context, clk clock.Clock, out chan<- heapRead) {
+// readHeaps reads Dispatch's heap at once, then at each heapReadEvery slot after on the sampler's
+// clock, one read at a time: a slot that falls while a read is in flight, or waits for a sample to
+// take it, is skipped. It hands each ended read to out, stamped with the clock's moment, and
+// returns once ctx has ended.
+func (s *sampler) readHeaps(ctx context.Context, out chan<- heapRead) {
+	clk := s.clk()
 	for next := clk.Now(); sleepUntilOn(ctx, clk, next); {
 		var h heapRead
 		h.bytes, h.objects, h.err = heapLive(ctx, s.pprof)

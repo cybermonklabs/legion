@@ -95,8 +95,8 @@ type Config struct {
 // releaseBound is how long the holder's release of its hold may take (runner.end): one renewal
 // interval, holdOptions.Renew, or c.ReleaseTimeout where that is set and shorter.
 func (c Config) releaseBound() time.Duration {
-	if c.ReleaseTimeout > 0 && c.ReleaseTimeout < holdOptions.Renew {
-		return c.ReleaseTimeout
+	if c.ReleaseTimeout > 0 {
+		return min(c.ReleaseTimeout, holdOptions.Renew)
 	}
 	return holdOptions.Renew
 }

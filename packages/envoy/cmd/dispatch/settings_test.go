@@ -2236,12 +2236,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HTTP_DRAIN": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{}); boot.ShutdownProbe != 0 {
-				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT unset: ShutdownProbe = %v, want 0 (the store's two-second probe and drainPollInterval between two)", boot.ShutdownProbe)
+			if boot := resolveWith(t, map[string]string{}); boot.ShutdownProbe != 0 || shutdownProbes(boot.ShutdownProbe) != (silenceBounds{}) {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT unset: ShutdownProbe = %v and the shutdown's probes %+v, want 0 and the zero silenceBounds (the store's two-second probe and drainPollInterval between two)",
+					boot.ShutdownProbe, shutdownProbes(boot.ShutdownProbe))
 			}
 			const quick = 120 * time.Millisecond
-			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": quick.String()}); boot.ShutdownProbe != quick {
-				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT: ShutdownProbe = %v, want %v", boot.ShutdownProbe, quick)
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": quick.String()}); boot.ShutdownProbe != quick ||
+				shutdownProbes(boot.ShutdownProbe) != (silenceBounds{probeTimeout: quick, pause: quick / 8}) {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT=%s: ShutdownProbe = %v and the shutdown's probes %+v, want %v and a probe of %v with an eighth of it between two",
+					quick, boot.ShutdownProbe, shutdownProbes(boot.ShutdownProbe), quick, quick)
+			}
+			if got, want := shutdownProbes(4*time.Second), (silenceBounds{probeTimeout: 4 * time.Second, pause: drainPollInterval}); got != want {
+				t.Errorf("a 4s shutdown probe gives the shutdown's probes %+v, want %+v: the pause is never longer than drainPollInterval", got, want)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": invalid},

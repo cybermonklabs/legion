@@ -76,6 +76,18 @@ func (b silenceBounds) betweenProbes() time.Duration {
 	return drainPollInterval
 }
 
+// shutdownProbes is the silenceBounds a process's shutdown probes with, from its
+// bootConfig.ShutdownProbe: zero, as every deployment leaves it, is the zero silenceBounds,
+// production's; a test process's probe bounds each probe, and the pause between two keeps
+// drainPollInterval's ratio to the store's two-second probe, an eighth, and is never longer than
+// drainPollInterval, so the setting can only shorten the wait.
+func shutdownProbes(probe time.Duration) silenceBounds {
+	if probe <= 0 {
+		return silenceBounds{}
+	}
+	return silenceBounds{probeTimeout: probe, pause: min(probe/8, drainPollInterval)}
+}
+
 // outboxStopBudget is how long after shutdown starts it waits, at most, for the events outbox to
 // stop before it closes the pool: until the latest the document service's budget can end, 5 s
 // inside stopGrace, since the drain before that budget is never longer than
