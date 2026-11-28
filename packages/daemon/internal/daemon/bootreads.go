@@ -191,9 +191,8 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 type natsConnection struct {
 	seed       string              // the seed the connection presents; "" for the service token or no credential
 	user       string              // seed's user's public key, or the account the service token names; "" with neither
-	source     natsauth.Source     // where the credential came from, as the boot line names it
 	paneUser   bool                // whether user is the pane seed's user, as when the daemon seed is the pane seed; false for the service token
-	credential natsauth.Credential // the credential resolved: the service token's file and setting (natsauth.ConnectService), and the start's wait decision (Credential.WaitsOut)
+	credential natsauth.Credential // the credential resolved: where it came from, as the boot line names it (Credential.Source), the service token's file and setting (natsauth.ConnectService), and the start's wait decision (Credential.WaitsOut)
 }
 
 // chooseNATSConnection is the connection over credential, the daemon's own as
@@ -205,17 +204,17 @@ func chooseNATSConnection(credential natsauth.Credential, paneUser string) (nats
 	switch credential.Source() {
 	case natsauth.SourceServiceToken:
 		_, _, account := credential.ServiceToken()
-		return natsConnection{user: account, source: natsauth.SourceServiceToken, credential: credential}, nil
+		return natsConnection{user: account, credential: credential}, nil
 	case natsauth.SourceDaemonSeed:
 		user, err := natsauth.PublicKey(credential.Seed())
 		if err != nil {
 			return natsConnection{}, err
 		}
-		return natsConnection{seed: credential.Seed(), user: user, source: natsauth.SourceDaemonSeed, paneUser: user == paneUser, credential: credential}, nil
+		return natsConnection{seed: credential.Seed(), user: user, paneUser: user == paneUser, credential: credential}, nil
 	case natsauth.SourcePaneSeed:
-		return natsConnection{seed: credential.Seed(), user: paneUser, source: natsauth.SourcePaneSeed, paneUser: true, credential: credential}, nil
+		return natsConnection{seed: credential.Seed(), user: paneUser, paneUser: true, credential: credential}, nil
 	default:
-		return natsConnection{source: natsauth.SourceNone, credential: credential}, nil
+		return natsConnection{credential: credential}, nil
 	}
 }
 
@@ -223,7 +222,7 @@ func chooseNATSConnection(credential natsauth.Credential, paneUser string) (nats
 // user by public key, whether that is the pane user, and where the seed came from; for the service
 // token, the account the token names, paneUser=false, and seed=service-token.
 func (c natsConnection) log(log *slog.Logger) {
-	log.Info("legion daemon connects to NATS", "user", c.user, "paneUser", c.paneUser, "seed", string(c.source))
+	log.Info("legion daemon connects to NATS", "user", c.user, "paneUser", c.paneUser, "seed", string(c.credential.Source()))
 }
 
 // tmuxReads is what a daemon on this host needs that readBoot reads: a launch for each harness its
@@ -320,7 +319,7 @@ func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (CheckedN
 		return CheckedNATS{}, pgdsn.ConnectError(store.DSNSetting, cfg.PostgresDSN, err)
 	}
 	checked := CheckedNATS{PaneUser: r.paneNatsUser}
-	switch r.nats.source {
+	switch r.nats.credential.Source() {
 	case natsauth.SourceDaemonSeed:
 		checked.DaemonUser = r.nats.user
 	case natsauth.SourceServiceToken:

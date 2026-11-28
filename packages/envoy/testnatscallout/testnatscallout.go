@@ -21,8 +21,6 @@ package testnatscallout
 import (
 	"context"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -296,10 +294,8 @@ func (h *Hub) Tokens() []string {
 // goroutine, so a counter line it cannot read is reported with Errorf, never FailNow.
 func (h *Hub) Refused(t testing.TB, label string) int {
 	t.Helper()
-	recorder := httptest.NewRecorder()
-	h.registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	total := 0
-	for line := range strings.SplitSeq(recorder.Body.String(), "\n") {
+	for line := range strings.SplitSeq(string(h.registry.Text("broker_nats_callout_decisions_total")), "\n") {
 		if !strings.HasPrefix(line, "broker_nats_callout_decisions_total{") || !strings.Contains(line, `outcome="refused",reason="`+label+`"}`) {
 			continue
 		}

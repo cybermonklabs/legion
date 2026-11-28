@@ -11,7 +11,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/natsconn"
 	"github.com/sjawhar/envoy/natscred"
 )
 
@@ -94,12 +93,12 @@ func (c Credential) WaitsOut(err error) bool {
 // the daemon hands the pane seed to the agents it launches and does not connect with it beside the
 // token.
 func RefuseServiceTokenBesideDaemonSeed(seedFile, tokenFile string, lookup func(string) (string, bool)) error {
-	_, token, tokenSet := serviceTokenSetting(tokenFile, lookup)
+	_, tokenSetting, tokenSet := serviceTokenSetting(tokenFile, lookup)
 	seed, seedSet := resolve(daemonSeed, seedFile, lookup, nil)
 	if !tokenSet || !seedSet {
 		return nil
 	}
-	return fmt.Errorf("%s and %s are both set; the daemon's own NATS connection presents one credential, so set one", token, seed.setting)
+	return fmt.Errorf("%s and %s are both set; the daemon's own NATS connection presents one credential, so set one", tokenSetting, seed.setting)
 }
 
 // serviceTokenSetting is the path the service token's setting names, and that setting: tokenFile
@@ -240,10 +239,9 @@ func ConnectService(urls []string, tokenFile, setting, name string, options ...n
 		return nil, err
 	}
 	credential, keeper := natscred.Service(natscred.ServiceFile(tokenFile, setting))
-	options = append(options, credential, reportRefusals(time.Now), detectSilentCuts, nats.Name(name))
-	conn, err := nats.Connect(strings.Join(urls, ","), options...)
+	conn, err := dial(urls, name, append(options, credential, reportRefusals(time.Now)))
 	if err != nil {
-		return nil, natsconn.ConnectionError(err)
+		return nil, err
 	}
 	// Keep returns once the connection closes, so this goroutine ends with it.
 	go keeper.Keep(context.Background(), conn)

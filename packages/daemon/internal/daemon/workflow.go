@@ -1313,13 +1313,15 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 // paths, never after: WithLastError only looks once the connection reports itself closed, and
 // Close does not clear what the connection last recorded.
 func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc natsConnection) error {
+	name := natsauth.ConnectionName("legion-daemon "+cfg.Project, cfg.Revision)
+	options := []nats.Option{natsauth.LogEvents(w.log), natsauth.ReconnectForever()}
 	var conn *nats.Conn
 	var err error
 	if nc.credential.Source() == natsauth.SourceServiceToken {
 		file, setting, _ := nc.credential.ServiceToken()
-		conn, err = natsauth.ConnectService(cfg.NatsURLs, file, setting, natsauth.ConnectionName("legion-daemon "+cfg.Project, cfg.Revision), natsauth.LogEvents(w.log), natsauth.ReconnectForever())
+		conn, err = natsauth.ConnectService(cfg.NatsURLs, file, setting, name, options...)
 	} else {
-		conn, err = natsauth.Connect(cfg.NatsURLs, nc.seed, natsauth.ConnectionName("legion-daemon "+cfg.Project, cfg.Revision), natsauth.LogEvents(w.log), natsauth.ReconnectForever())
+		conn, err = natsauth.Connect(cfg.NatsURLs, nc.seed, name, options...)
 	}
 	if err != nil {
 		return fmt.Errorf("connect Envoy NATS: %w", err)
