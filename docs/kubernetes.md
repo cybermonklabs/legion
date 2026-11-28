@@ -1904,9 +1904,14 @@ A row starts at the accepted `todo` of the request, and ends where `close-wait.m
 Each row is in one category:
 
 - `checks_written`: an actor other than the daemon changed a check block of the Verification document within the row.
+
 - `request_withdrawn`: the owner withdrew the request before the change ended.
-- `instruction_not_followed`: the change ended with neither of those. A version that changed no check block is no coverage.
+
+- `instruction_not_followed`: the change ended with neither of those.
+  A version that changed no check block is no coverage.
+
 - `pending`: the change is still open.
+
 - `not_assessable`: an event, a version or the evidence could not be read.
 
 Each line is a name, the issue and its values: `row`, `start`, `change`, `end`, `version`, `withdrawal` and `unread`.
