@@ -3816,6 +3816,36 @@ async function lateThenStop(cell: TableCell, tried: () => number): Promise<void>
   await stop.first().click();
 }
 
+/** Holds each read of the priorities the page sends, `GET /api/v1/priorities` with no query,
+ *  from her first write of the field until her next one leaves after `stopped`: the first write
+ *  of the field the page sends once the row has said her write stopped. It stands for a live feed
+ *  slow to tell the page of her stopped write, so her next write goes before the page has read
+ *  what that write left on the server. A read with a query, as the rail's counts
+ *  (`?summary=true`), and a read of one priority's history go on unheld. The page closes at the
+ *  end of every row, failed or not, and its close lets the held reads go too, so a row that fails
+ *  leaves none held. Set before she types. */
+async function holdTableReads(cell: TableCell) {
+  let armed = false;
+  let stopped = false;
+  const release = Promise.withResolvers<void>();
+  await cell.page.route("**/api/v1/priorities", async (route) => {
+    if (armed && route.request().method() === "GET") await release.promise;
+    return route.fallback();
+  });
+  cell.page.on("request", (request) => {
+    if (request.method() !== "PATCH" || !request.url().endsWith(`/api/v1/priorities/${cell.id}`))
+      return;
+    if (stopped) release.resolve();
+    else armed = true;
+  });
+  cell.page.once("close", () => release.resolve());
+  return {
+    stopped: () => {
+      stopped = true;
+    },
+  };
+}
+
 const tableCells: {
   readonly name: string;
   readonly field: TableField;
@@ -4098,6 +4128,26 @@ const tableCells: {
     },
   },
   {
+    field: "description",
+    name: "a write whose answer was lost stopped, she edits again before the page reads the priorities",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, true);
+      // The server takes her first write, and the page's reads of the priorities wait from then
+      // until her next write leaves, as they would behind a live feed slow to tell the page of
+      // the write: her next write goes before the page has read the text the stopped one left
+      // on the server. Had it named only the text the field last read, it would name the one
+      // from before her stopped write, which the server no longer holds, and be refused 409 as
+      // another person's change; it names her texts whose end is unknown too (rule 1), and lands.
+      const reads = await holdTableReads(cell);
+      await typeAndLeave(cell, " five-j");
+      await busy.stop();
+      reads.stopped();
+      await typeAndLeave(cell, " five-k");
+      await checkClean(cell, " five-j five-k");
+    },
+  },
+  {
     field: "title",
     name: "a title write that never reached the server stopped, she edits again",
     slow: true,
@@ -4354,6 +4404,39 @@ const tableCells: {
       await cell.page.unroute(`**/api/v1/priorities/${cell.id}`);
       await typeAndLeave(cell, " five-h");
       await checkClean(cell, " five-g five-h");
+    },
+  },
+  {
+    field: "description",
+    name: "a write stopped while out lands late, she edits again before the page reads the priorities",
+    slow: true,
+    run: async (cell) => {
+      const late = Promise.withResolvers<void>();
+      let tried = 0;
+      await cell.page.route(`**/api/v1/priorities/${cell.id}`, async (route) => {
+        if (route.request().method() !== "PATCH") return route.fallback();
+        tried += 1;
+        await late.promise;
+        // The page gave the write up; it reaches the server all the same, as a slow network's
+        // would, and its answer goes nowhere.
+        await route.fetch().catch(() => undefined);
+        await route.abort().catch(() => undefined);
+      });
+      // Her stopped write lands late, and the page's reads of the priorities wait from her first
+      // write until her next one leaves, as they would behind a live feed slow to tell the page
+      // of the landing: her next write goes before the page has read her late text. Had it named
+      // only the text the field last read, it would name the one from before her stopped write,
+      // which the server no longer holds, and be refused 409 as another person's change; it
+      // names her texts whose end is unknown too (rule 1), and lands.
+      const reads = await holdTableReads(cell);
+      await typeAndLeave(cell, " five-l");
+      await lateThenStop(cell, () => tried);
+      late.resolve();
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" five-l");
+      await cell.page.unroute(`**/api/v1/priorities/${cell.id}`);
+      reads.stopped();
+      await typeAndLeave(cell, " five-m");
+      await checkClean(cell, " five-l five-m");
     },
   },
 ];
