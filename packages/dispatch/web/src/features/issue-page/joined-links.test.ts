@@ -65,6 +65,28 @@ test("a link whose words carry a mark is one anchor", async () => {
   }
 });
 
+// A mark that holds more than one run of the link's words, such as bold words around a code span,
+// draws anchors inside the mark and anchors around it: the anchors inside the mark join into one,
+// and that one joins the anchors around the mark, so the link is still one stop and one link.
+test("a link whose marked words hold a second mark is one anchor", async () => {
+  const { body, unmount } = await painted("[s **t `u`** v](https://example.com/v)");
+  try {
+    const anchors = [...body.querySelectorAll("a")];
+    expect(
+      anchors.map((anchor) => anchor.outerHTML),
+      "the link whose marked words hold a second mark was drawn as more than one anchor"
+    ).toHaveLength(1);
+    const [anchor] = anchors;
+    expect(anchor).toHaveAttribute("href", "https://example.com/v");
+    expect(anchor?.textContent).toBe("s t u v");
+    expect(anchor?.querySelector("strong code")?.textContent, "the anchor lost its marks").toBe(
+      "u"
+    );
+  } finally {
+    unmount();
+  }
+});
+
 test("two links to the same address split by plain words stay two", async () => {
   const { body, unmount } = await painted(
     "[one](https://example.com/x) and [two](https://example.com/x)"
