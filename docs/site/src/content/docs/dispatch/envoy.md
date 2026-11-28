@@ -268,10 +268,12 @@ A send or a role publish that no live session takes can go to a stopped Legion a
 instead. Where the Legion agent registry names the target session (for a role, the role's newest
 session) and the answering record of its project last said it answers, the listener hands the
 message off on `notifications.legion.<project>.agents.<session>`. It does so in place of the
-`404`, the stored `stopped` answer, the `202` keep or the exception, and the caller reads the same
-`200` a delivered message gets. No Legion daemon writes an answering record yet, so until one
-does the listener hands nothing off. A role is handed off to its newest session whether its issue
-has left the workflow or not. A message handed off raises no wake report, and costs its sender
+`404`, the stored `stopped` answer, the `202` keep or the exception. The caller reads a `200` with
+`recipient` set to the session. A send's `200` also carries `recipient_state: "gone"` and an empty
+`state`, and a role publish's `200` carries no `holder`. No Legion daemon writes an answering
+record yet, so until one does the listener hands nothing off. A role is handed off to its newest
+session whether its issue has left the workflow or not. A message handed off raises no wake
+report, and costs its sender
 what its publish stored, as a send's own publish does. For a role the registry holds no entry
 for, the listener keeps the message for the role's first holder and wakes the role. A kept copy
 of a publish that names a Dispatch post can end with no session taking it: its hour ends, or the

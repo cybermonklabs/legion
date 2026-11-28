@@ -10,8 +10,9 @@ body: |-
   `{original_topic, target_session, role_token, project, envelope}` when the Legion agent
   registry names the session (for a role, the role token's newest session), the project's
   answering record last said it answers, the session registry reports that session gone, the
-  source is not `envoy`, and the body does not carry `"handoff": false`. The caller gets the 200
-  a delivered message gets, with `recipient` set to the session; the hand-off's JetStream MsgId
+  source is not `envoy`, and the body does not carry `"handoff": false`. The caller gets a `200`
+  with `recipient` set to the session. A send's `200` also carries `recipient_state: gone` and an
+  empty `state`, and a role publish's `200` carries no `holder`. The hand-off's JetStream MsgId
   comes from the envelope's dedupe key, so the copies two listeners hand off for one bus message
   are stored once, a send or role publish repeated under one key answers `duplicate: true` as a
   live session's repeat does, and a bus

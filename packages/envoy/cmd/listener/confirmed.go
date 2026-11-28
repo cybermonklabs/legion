@@ -64,9 +64,9 @@ const (
 	sendFailed sendOutcome = "failed"
 	// sendHandedOff is a role send with no live holder that the daemon of the role's newest Legion
 	// session took (roleSend.noHolder, handOffToLegion), answered 200 with that session as
-	// recipient. It is counted and logged handed_off, the label the agent subject's hand-off takes
-	// (offerAgentDeliveryToLegion), and its line names that session.
-	sendHandedOff sendOutcome = "handed_off"
+	// recipient. It is counted and logged under the label the agent subject's hand-off takes
+	// (legionHandedOffDeliveryStatus, offerAgentDeliveryToLegion), and its line names that session.
+	sendHandedOff sendOutcome = sendOutcome(legionHandedOffDeliveryStatus)
 )
 
 // deliveryStatus is the label the role lane gives the same outcome, which the route counts under
@@ -358,12 +358,12 @@ func (s *roleSend) resolve(ctx context.Context) (roles.Resolution, error) {
 // issue has left the workflow or not: that agent has stopped, failed or been suspended with the
 // role unclaimed, the daemon's idle release among what suspends it, and the daemon answers this
 // message now from its own conversation, or wakes the agent for it. It is answered 200 with the
-// envelope and the stopped agent's session as recipient, in place of the holder a delivered send
-// names: the sender reads the answer a delivered message gets, so no client of this route
-// changes. A repeat under one dedupe key whose hand-off the stream already held is answered that
-// hand-off's envelope, read back as a stored forward is and with duplicate where it is another
-// request's (answerHandedOff). Its delivery line counts and logs it handed_off, naming the session
-// it was handed to rather than the holder the resolution found (sendHandedOff, settle). It raises
+// envelope, the stopped agent's session as recipient and no holder: recipient takes the place of
+// the holder a delivered send names (listenerwire.PublishResponse.Recipient). A repeat under one
+// dedupe key whose hand-off the stream already held is answered that hand-off's envelope, read
+// back as a stored forward is and with duplicate where it is another request's
+// (answerHandedOff). Its delivery line counts and logs it handed_off, naming the session it was
+// handed to rather than the holder the resolution found (sendHandedOff, settle). It raises
 // no refusal exception and no wake report either, since nothing was refused and the daemon
 // decides what wakes the agent. A hand-off whose publish failed, and one whose stored copy cannot
 // be read back, are answered as any publish the bus refused is (refused). The hand-off costs the
@@ -436,7 +436,7 @@ func (s *roleSend) resolve(ctx context.Context) (roles.Resolution, error) {
 // nothing.
 func (s *roleSend) noHolder(result roles.Resolution) {
 	handed, duplicate, err := s.d.handoff.handOffForRequest(s.ctx, legionHandoffTarget{
-		envelope: s.item, roleToken: s.role, optedOut: s.optedOut, confirmMiss: s.missConfirmed,
+		roleToken: s.role, optedOut: s.optedOut, confirmMiss: s.missConfirmed,
 	}, s.record, s.sender, &s.item)
 	switch {
 	case err != nil:

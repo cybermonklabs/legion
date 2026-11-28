@@ -993,13 +993,14 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// A stopped Legion agent whose daemon answers for it takes the message through that
 			// daemon (handOffToLegion), ahead of the known-session record below: that record
 			// stores the message for a session that runs again, and a stopped Legion agent's
-			// daemon answers it now from the agent's own conversation. The sender reads the 200 a
-			// delivered message gets. An agent whose idle issue pod the daemon released is handed
+			// daemon answers it now from the agent's own conversation. The sender reads a 200
+			// with the agent's session as recipient, recipient_state gone and an empty state
+			// (handedOffSendResponse). An agent whose idle issue pod the daemon released is handed
 			// off too, and its daemon decides whether the message wakes it. A connected-only send
 			// is not handed off: it asks for a stopped target to be refused, and a daemon answering
 			// in the agent's place is not the agent connected.
 			handed, duplicate, handoffErr := d.handoff.handOffForRequest(ctx, legionHandoffTarget{
-				envelope: item, session: targetSession, stampSender: true,
+				session: targetSession, stampSender: true,
 				optedOut: optedOutOfHandoff(body) || request.ConnectedOnly,
 			}, record, senderOf(r, item), &item)
 			if handoffErr != nil {

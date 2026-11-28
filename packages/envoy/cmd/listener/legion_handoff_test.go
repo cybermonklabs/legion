@@ -505,6 +505,70 @@ func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 	}
 }
 
+// A role token names its project (legionagents.RoleTokenParts), and the hand-off of a role's
+// message reads that project's flag alone (answeringAgent). The registry's scan of the token's
+// keys checks only that each entry's key and role token agree, and any writer of the bucket can
+// store any entry under any key. So the hand-off answers the token's newest entry only when that
+// entry names the token's own project, with both projects answering:
+//
+//   - case: an entry a raw bucket write stored under role.<token of project infra>.<session>, whose
+//     legion_project is other, is not handed off, on the subject of either project;
+//   - control: the same raw write with legion_project infra is handed off on infra's subject.
+func TestHandOffToLegionHandsARoleOnlyToItsTokensOwnProject(t *testing.T) {
+	const stray = "ses-stray"
+	rig := newHandoffRig(t, 0)
+	rig.beat(t, true, time.Now())
+	rig.want(t, http.StatusOK, http.MethodPut, "/v1/legion/projects/other",
+		fmt.Sprintf(`{"answering":true,"updated_at":%q}`, time.Now().UTC().Format(time.RFC3339)))
+	kv, err := rig.client.JS().KeyValue(bus.LegionAgentBucket)
+	if err != nil {
+		t.Fatalf("open the bucket: %v", err)
+	}
+	key := "role." + handoffRoleToken + "." + stray
+	storeUnder := func(project string) {
+		t.Helper()
+		entry := strings.Replace(legionEntry(stray, "INFRA-204", "architect", "2026-10-26T03:00:00Z"),
+			`"legion_project":"infra"`, `"legion_project":"`+project+`"`, 1)
+		if _, err := kv.Put(key, []byte(entry)); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+	storedFor := func(project string) uint64 {
+		t.Helper()
+		subject := listenerwire.LegionHandoffSubject(project, stray)
+		info, err := rig.client.JS().StreamInfo(bus.Stream, &nats.StreamInfoRequest{SubjectsFilter: subject})
+		if err != nil {
+			t.Fatalf("stream info: %v", err)
+		}
+		return info.State.Subjects[subject]
+	}
+	hand := func(dedupeKey string) (*legionHandedOff, error) {
+		t.Helper()
+		return rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{
+			envelope: envelopeFor(contracts.RoleTopicPrefix+handoffRoleToken, dedupeKey, "agent"), roleToken: handoffRoleToken,
+		})
+	}
+
+	storeUnder("other")
+	if handed, err := hand("publish.other"); err != nil || handed != nil {
+		t.Fatalf("case: a role publish whose newest entry under %s names the project other = %v, %v; want nothing handed off", key, handed, err)
+	}
+	for _, project := range []string{"other", "infra"} {
+		if count := storedFor(project); count != 0 {
+			t.Fatalf("case: the stream holds %d hand-offs for %s on project %s's subject, want none", count, stray, project)
+		}
+	}
+
+	storeUnder("infra")
+	handed, err := hand("publish.infra")
+	if err != nil || handed == nil || handed.TargetSession != stray || handed.Project != "infra" {
+		t.Fatalf("control: a role publish whose newest entry under %s names the project infra = %v, %v; want it handed to %s on infra", key, handed, err, stray)
+	}
+	if count := storedFor("infra"); count != 1 {
+		t.Fatalf("control: the stream holds %d hand-offs for %s on infra's subject, want 1", count, stray)
+	}
+}
+
 // The counterpart of TestAMessageToAStoppedAgentWhoseInterestNamesThisListenerIsHandedToItsDaemon
 // (stopped_agent_thread_reply_test.go): the same interest-path miss - a stored row naming this
 // listener, no session entry behind it - for a session the Legion agent registry does not hold is

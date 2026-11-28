@@ -156,7 +156,7 @@ func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listen
 	}
 	if !live {
 		handed, duplicate, err := d.handoff.handOffForRequest(ctx, legionHandoffTarget{
-			envelope: *item, roleToken: item.Role, stampSender: true,
+			roleToken: item.Role, stampSender: true,
 			optedOut: optedOutOfHandoff(request.MessageBody),
 		}, record, sender, item)
 		if err != nil {
