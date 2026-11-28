@@ -611,22 +611,23 @@ start_waiter() {
   done
   check "the wait says it is waiting" "$waiting"
 }
-# A cancel's INT alone first.
+# A cancel's INT alone first: 143, as for a TERM, since the runner sends a step an INT, then a
+# TERM, on a cancel and on a shutdown alike, and a step shell that traps neither ends with 143.
 start_waiter "$m/int.out"
 kill -INT -- "-$waiter"
 status=0
 wait "$waiter" || status=$?
 out=$(cat "$m/int.out")
-check "an INT alone stops the wait, which exits 130, 128 plus the INT's number" "$(is "$status" 130)"
+check "an INT alone stops the wait, which exits 143" "$(is "$status" 143)"
 check "naming the harness still running" "$(contains "$out" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
-# A TERM alone, as a runner shutdown sends: 143, the status .github/scripts/runner-shutdown.sh
-# reads a shutdown by, which an exit 1 would hide.
+# A TERM alone: 143 too, the status .github/scripts/runner-shutdown.sh reads a shutdown by, which
+# an exit 1 would hide.
 start_waiter "$m/term.out"
 kill -TERM -- "-$waiter"
 status=0
 wait "$waiter" || status=$?
 out=$(cat "$m/term.out")
-check "a TERM alone stops the wait, which exits 143, 128 plus the TERM's number" "$(is "$status" 143)"
+check "a TERM alone stops the wait, which exits 143" "$(is "$status" 143)"
 check "naming the harness still running" "$(contains "$out" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
 # A TERM to the wait's own pid, as the runner signals a step (actions/runner's ProcessInvoker
 # kills the step's process, not its group, so the poll's sleep does not end), and an INT 0.2 s
@@ -664,7 +665,7 @@ check "and leaves that record as a part, not as a whole one" "$(is "$hung_record
 check "--now fails at once" "$(is "$status_now" 1)"
 check "and says the job was cancelled" "$(contains "$out_now" '^harness-pool: the job was cancelled; judging the 3 harnesses queued as they are now$')"
 check "naming the harness still running" "$(contains "$out_now" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
-check "the stopped wait exits 130, for the INT that stopped it first, whatever TERMs followed" "$(is "$status" 130)"
+check "the stopped wait exits 143, whatever TERMs followed the INT" "$(is "$status" 143)"
 check "it names the harness still running, with its seconds" "$(contains "$out" '^::group::hung: still running after [0-9.]* s when the wait was stopped; its log so far$')"
 check "and prints its log so far" "$(contains "$out" '^before the hang$')"
 check "and an error naming it" "$(contains "$out" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"

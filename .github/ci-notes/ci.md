@@ -2436,10 +2436,12 @@ It runs after a failed step too (`!cancelled()`), so a harness queued before the
 still judged. A cancel or the job's timeout during the wait signals it: the step `exec`s it, and
 the runner signals a running step only when its condition no longer holds, which with
 `always()` it would always hold. The wait then names each harness still running with its log so
-far, and exits 128 plus the number of the signal that stopped it first: 130 for an INT, 143 for
-a TERM. A runner shutdown sends the step a TERM, and .github/scripts/runner-shutdown.sh reads a
-job as shut down from the annotations `The runner has received a shutdown signal` and
-`Process completed with exit code 143`, so an exit 1 there would hide the shutdown. A job
+far, and exits 143, whichever signal stopped it and whatever signal follows. The runner stops a
+step the same way on a cancel and on its own shutdown: an INT to the step's pid, a TERM 7.5 s
+later, and a kill of its process tree 2.5 s after that. A step shell that traps neither signal
+and waits on a command ends at that TERM with 143, and .github/scripts/runner-shutdown.sh reads
+a job as shut down from the annotations `The runner has received a shutdown signal` and
+`Process completed with exit code 143`, so an exit 1 or 130 there would hide the shutdown. A job
 cancelled before the wait began runs "Name the script harnesses a cancelled job left"
 (`wait --now`, which exits 1) instead. A recorder killed before its harness ended is a failure,
 and the pool ends that harness's session before its slot goes to another. `start

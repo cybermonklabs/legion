@@ -35,13 +35,14 @@
 #     so far of each harness still running, names each as unfinished with its seconds, names each
 #     that had ended while its recorder had not yet written its status, and names each still
 #     waiting for a slot, so a harness that hung is named in the job's log rather than lost with
-#     the step. It then exits 128 plus the number of the signal that stopped it first, 130 for an
-#     INT and 143 for a TERM, whatever signal follows (the runner follows a cancel's INT with a
-#     TERM 7.5 s later). A runner shutdown sends the step a TERM, and
+#     the step. It then exits 143, whichever signal stopped it and whatever signal follows. The
+#     runner stops a step the same way on a cancel and on its own shutdown: an INT to the step's
+#     pid, a TERM 7.5 s later, and a kill of its process tree 2.5 s after that. A step shell that
+#     traps neither signal and waits on a command ends at that TERM with 143, and
 #     .github/scripts/runner-shutdown.sh reads a job as shut down from the annotations
 #     `The runner has received a shutdown signal` and `Process completed with exit code 143`, so
-#     a wait that turned that TERM into exit 1 would hide the shutdown. --now does the same at
-#     once and exits 1, since no signal stopped it, for a job cancelled before its wait step began
+#     a wait that exited 1 or 130 there would hide the shutdown. --now does the same at once and
+#     exits 1, since no signal stopped it, for a job cancelled before its wait step began
 #     (a step of its own, `if: cancelled()`). The wait step runs the wait with `exec` under
 #     `if: ${{ !cancelled() }}`, so a cancel's signal reaches the wait itself: the runner signals
 #     a running step only when its condition no longer holds.
@@ -432,10 +433,9 @@ wait_all() {
     exit 2
   fi
   echo "${#entries[@]}" > "$dir/judged" 2> /dev/null || true
-  # The first INT or TERM stops the wait and decides its status, 128 plus that signal's number,
-  # whatever signal follows it; --now, which no signal stopped, keeps 1 (the header says why).
-  trap '[[ -n $stopped ]] || { stopped=1; stop_status=130; }' INT
-  trap '[[ -n $stopped ]] || { stopped=1; stop_status=143; }' TERM
+  # An INT or a TERM stops the wait and makes it exit 143, as a step shell that traps neither
+  # would end, which runner-shutdown.sh reads as a shutdown (the header says why); --now keeps 1.
+  trap '[[ -n $stopped ]] || { stopped=1; stop_status=143; }' INT TERM
   # Said once the traps are set, so a reader of the log, and the test, know the wait now answers a
   # TERM with its report.
   if [[ -n $stopped ]]; then
