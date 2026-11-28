@@ -16,7 +16,7 @@ request and the merge queue get), it refuses:
     starts, the upload comes after the job's next step that runs `harness-pool.sh wait`, since the
     run writes its report when it ends in the pool. The reader finds a job's bun tests by that
     step's name, and the artifact by that id;
-  - when a job holds that upload, an upload-artifact step of UPLOAD_ACTION's own action.yml whose
+  - when a job runs bun test, an upload-artifact step of UPLOAD_ACTION's own action.yml whose
     `name` is not PREFIX followed by `${{ inputs.check-run-id }}`, whose `path` is not
     `${{ runner.temp }}/` followed by REPORTS_DIR and `/`, or that does not set
     `include-hidden-files: true`; or an action.yml with no such step, or none at all. The
@@ -24,8 +24,8 @@ request and the merge queue get), it refuses:
     copy of the two is held to the record's.
 
 A step's refusal names the file, job, step number and name, and line. An action's refusal names
-its file and line, or only its file if it cannot be read. A line is read as written, lines
-continued with `\\` joined first, and a line whose first word is `#` is a comment.
+its file and line, or only its file if it cannot be read. A line whose first non-space character
+is `#` is a comment unless it follows a continuation. Other lines continued with `\\` are joined.
 The wrapper behind quotes (`"$GITHUB_WORKSPACE/.github/scripts/bun_test_run.py"`) is not read as
 the wrapper, so its bun test is refused as a bare one. These forms are not read, and pass unread:
 bun's own options before `test` (`bun --cwd x test`); a bun given by its path
@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
-from bun_test_record import NAME, PREFIX, REPORTS_DIR, UPLOAD_ACTION, UPLOAD_STEP, WRAPPER
+from bun_test_record import NAME, PREFIX, REPORTS_DIR, UPLOAD_ACTION, UPLOAD_ACTION_DIR, UPLOAD_STEP, WRAPPER
 from workflow_paths import mapping_get, scalar
 
 BUN_TEST = re.compile(r"(?<![\w./$-])bun\s+(?:test(?![\w:.-])|run\s+test[\w:.-]*)")
@@ -53,7 +53,7 @@ POOL_START = re.compile(r"harness-pool\.sh\s+start\s.*" + re.escape(WRAPPER))
 POOL_WAIT = re.compile(r"harness-pool\.sh\s+wait\b")
 CHECK_RUN_ID = "${{ job.check_run_id }}"
 # What UPLOAD_ACTION's own upload-artifact step must be given, in the record's names.
-ACTION_FILE = Path(UPLOAD_ACTION.removeprefix("./")) / "action.yml"
+ACTION_FILE = Path(UPLOAD_ACTION_DIR) / "action.yml"
 ACTION_WITH = {
     "name": PREFIX + "${{ inputs.check-run-id }}",
     "path": "${{ runner.temp }}/" + REPORTS_DIR + "/",
@@ -74,6 +74,8 @@ def logical_lines(text: str, first: int):
     held, start = "", None
     for offset, line in enumerate(text.split("\n")):
         if start is None:
+            if line.lstrip().startswith("#"):
+                continue
             start = first + offset
         if line.endswith("\\"):
             held += line[:-1] + " "
@@ -104,6 +106,7 @@ def check_bun_test_steps(path: Path, root: object, problem, census: Census) -> N
         job_id = scalar(job_name)
         # The index the job's upload must come after: each bun test step's own, or, for a run the
         # pool starts, its next wait's.
+        # If two steps share a wait, use the later step in the diagnostic.
         anchors = []
         for index, step in enumerate(steps.value):
             run = mapping_get(step, "run")
@@ -114,7 +117,7 @@ def check_bun_test_steps(path: Path, root: object, problem, census: Census) -> N
             run_line = run.start_mark.line + 1
             found = pooled = False
             for line_number, line in logical_lines(run.value, first_line(run)):
-                # A run is one wrapper the line starts, or one bun test it runs without one.
+                # Count each wrapper the line starts.
                 wrapped = len(WRAPPED.findall(line))
                 census.commands += wrapped
                 found = found or wrapped > 0
@@ -123,7 +126,6 @@ def check_bun_test_steps(path: Path, root: object, problem, census: Census) -> N
                     found = True
                     if UNDER_WRAPPER.search(line[:match.start()]):
                         continue
-                    census.commands += 1
                     problem(
                         path,
                         f"{path}:{line_number}: {where} runs `{match.group(0)}` other than under {WRAPPER}, so "
@@ -137,7 +139,7 @@ def check_bun_test_steps(path: Path, root: object, problem, census: Census) -> N
                 continue
             census.steps += 1
             if not pooled:
-                anchors.append((index, label, run_line))
+                anchors.append((index, index, label, run_line))
                 continue
             wait = next((later for later in range(index + 1, len(steps.value))
                          if POOL_WAIT.search(scalar(mapping_get(steps.value[later], "run")) or "")), None)
@@ -150,11 +152,11 @@ def check_bun_test_steps(path: Path, root: object, problem, census: Census) -> N
                     line=run_line,
                 )
                 wait = index
-            anchors.append((wait, label, run_line))
+            anchors.append((wait, index, label, run_line))
         if not anchors:
             continue
         census.jobs += 1
-        last, label, line = max(anchors)
+        last, _, label, line = max(anchors)
         uploads = [(index, step) for index, step in enumerate(steps.value)
                    if scalar(mapping_get(step, "uses")) == UPLOAD_ACTION]
         after = [(index, step) for index, step in uploads if index > last]

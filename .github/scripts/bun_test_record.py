@@ -57,6 +57,7 @@ from pathlib import Path
 
 WRAPPER = ".github/scripts/bun_test_run.py"
 UPLOAD_ACTION = "./.github/actions/bun-test-reports-upload"
+UPLOAD_ACTION_DIR = UPLOAD_ACTION.removeprefix("./")
 UPLOAD_STEP = "Keep the bun test reports"
 REPORTS_DIR = "bun-test-reports"
 PREFIX = f"{REPORTS_DIR}-"
@@ -87,6 +88,10 @@ def report_of(directory: Path, name: str) -> Path:
     return directory / f"{name}{REPORT}"
 
 
+def beside(report: Path, suffix: str) -> Path:
+    return report.with_name(report.name + suffix)
+
+
 def runs(directory: Path) -> list:
     """Every run under `directory`, as its report's path, found by its report or its marker."""
     return sorted({p for p in directory.rglob(f"*{REPORT}") if p.is_file()}
@@ -115,7 +120,10 @@ def read_exit(path: Path):
     """The wrapper's `.exit`, None when there is none, or the reason it is not the wrapper's."""
     if not path.is_file():
         return None, None
-    text = path.read_text()
+    try:
+        text = path.read_text()
+    except (OSError, UnicodeDecodeError) as error:
+        return None, f"its exit status file {path.name} cannot be read: {error}"
     try:
         record = json.loads(text)
     except (ValueError, RecursionError):
@@ -181,49 +189,51 @@ def cases(suite):
 
 def read_report(path: Path, report: str):
     """(rows, clause 4's reasons, clause 2's reason) for one report; `report` is its path in the
-    artifact, whose directory is put before each test's file. Raise ReportNestingError if the
-    report exceeds the suite nesting bound."""
+    artifact, whose directory is put before each test's file."""
     try:
         root = ElementTree.parse(path).getroot()
     except (ElementTree.ParseError, OSError) as error:
         return None, [], f"the report does not parse: {error}"
     if root.tag != "testsuites":
         return None, [], f"the report's root is <{root.tag}>, not <testsuites>"
-    pattern, why = read_pattern(path.with_name(path.name + PATTERN))
+    pattern, why = read_pattern(beside(path, PATTERN))
     if why:
         return None, [], why
     directory = os.path.dirname(report)
     rooted = lambda file: f"{directory}/{file}" if directory else file
     rows, failed, entries = [], [], 0
-    for top in root.findall("testsuite"):
-        for names, case in cases(top):
-            entries += 1
-            skipped, failure = case.find("skipped") is not None, case.find("failure") is not None
-            if case.get("line") is None and names[-1] in (HOOK, CRASH) and skipped != failure:
-                if failure and names[-1] == CRASH:
-                    failed.append(f"the --parallel worker running {rooted(case.get('file'))} crashed: the tests of "
-                                  "that file it had not reported are not in the report")
-                elif failure:
-                    where = f"of {' > '.join(names[:-1])!r}" if len(names) > 1 else "at the top"
-                    scope = "describe" if len(names) > 1 else "file"
-                    failed.append(f"a beforeAll or afterAll hook {where} in {rooted(case.get('file'))} threw: the "
-                                  f"tests of that {scope} may not have run, and those that did not are not in the "
-                                  "report")
-                continue
-            missing = [a for a in CASE_ATTRIBUTES if case.get(a) is None]
-            if missing:
-                return None, [], (f"the report does not parse: its entry {' > '.join(names)!r} has no "
-                                  f"{' or '.join(missing)} attribute, and is neither a test nor an entry bun "
-                                  "writes with no line")
-            try:
-                seconds, line = float(case.get("time")), int(case.get("line"))
-            except ValueError:
-                return None, [], (f"the report does not parse: its test {' > '.join(names)!r} has time "
-                                  f"{case.get('time')!r} and line {case.get('line')!r}, not numbers")
-            rows.append({"file": rooted(case.get("file")), "name": " > ".join(names),
-                         "status": status_of(case, " ".join(names), pattern), "seconds": seconds, "line": line})
+    try:
+        for top in root.findall("testsuite"):
+            for names, case in cases(top):
+                entries += 1
+                skipped, failure = case.find("skipped") is not None, case.find("failure") is not None
+                if case.get("line") is None and names[-1] in (HOOK, CRASH) and skipped != failure:
+                    if failure and names[-1] == CRASH:
+                        failed.append(f"the --parallel worker running {rooted(case.get('file'))} crashed: the tests of "
+                                      "that file it had not reported are not in the report")
+                    elif failure:
+                        where = f"of {' > '.join(names[:-1])!r}" if len(names) > 1 else "at the top"
+                        scope = "describe" if len(names) > 1 else "file"
+                        failed.append(f"a beforeAll or afterAll hook {where} in {rooted(case.get('file'))} threw: the "
+                                      f"tests of that {scope} may not have run, and those that did not are not in the "
+                                      "report")
+                    continue
+                missing = [a for a in CASE_ATTRIBUTES if case.get(a) is None]
+                if missing:
+                    return None, [], (f"the report does not parse: its entry {' > '.join(names)!r} has no "
+                                      f"{' or '.join(missing)} attribute, and is neither a test nor an entry bun "
+                                      "writes with no line")
+                try:
+                    seconds, line = float(case.get("time")), int(case.get("line"))
+                except ValueError:
+                    return None, [], (f"the report does not parse: its test {' > '.join(names)!r} has time "
+                                      f"{case.get('time')!r} and line {case.get('line')!r}, not numbers")
+                rows.append({"file": rooted(case.get("file")), "name": " > ".join(names),
+                             "status": status_of(case, " ".join(names), pattern), "seconds": seconds, "line": line})
+    except ReportNestingError as error:
+        return None, [], str(error)
     declared = root.get("tests")
-    if declared is None or not declared.isdigit() or int(declared) != entries:
+    if declared is None or not declared.isdecimal() or int(declared) != entries:
         return None, [], f"the report says {declared} tests and holds {entries} entries"
     return rows, failed, None
 
@@ -231,7 +241,7 @@ def read_report(path: Path, report: str):
 def read_run(path: Path, report: str):
     """One run's rows (empty when its report cannot be read) and its reasons: one per clause of the
     rule it breaks, but clause 4, which gives one per failed entry."""
-    ended, why = read_exit(path.with_name(path.name + EXIT))
+    ended, why = read_exit(beside(path, EXIT))
     reasons = []
     if why:
         reasons.append(f"clause 1: {why}")
@@ -252,10 +262,7 @@ def read_run(path: Path, report: str):
             f": bun exited {ended['status']} and wrote none (an outfile it could not write, a test that called "
             "process.exit, a signal or a crash)" if started else ""))
         return [], reasons
-    try:
-        rows, failed, why = read_report(path, report)
-    except ReportNestingError as error:
-        return [], [*reasons, f"clause 2: {error}"]
+    rows, failed, why = read_report(path, report)
     if why:
         reasons.append(f"clause 2: {why}")
         return [], reasons

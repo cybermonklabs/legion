@@ -365,9 +365,9 @@ itself, whose tests import its sources by relative path.
   characters. It also refuses a reporter of the command's or the script's own, a `bun run` from
   a directory with no `package.json`, and a script with a line break or any other form that is
   not one `bun test` command. bun runs a script at its package's root and gives the reporter
-  flags to the last command alone. A step that runs a chained script, as dispatch-ui's "Test
-  dispatch dashboard" does, runs each command under the wrapper and holds the script to the
-  commands it runs.
+  flags to the last command alone. For a chained `test` script, CI runs each test command under
+  its own wrapper invocation. The "Test dispatch dashboard" and "Test Envoy client" steps check
+  that the package's chained script matches the commands CI runs.
 - The job uploads that directory, its hidden files included, as the artifact
   `bun-test-reports-<job id>` in its step "Keep the bun test reports"
   (`.github/actions/bun-test-reports-upload`), under `if: always()`, after its last bun test step

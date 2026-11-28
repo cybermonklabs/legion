@@ -54,7 +54,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bun_test_record import (  # noqa: E402
-    EXIT, MARKER, NAME, PATTERN, REPORTS_DIR, literal_fault, read_run, report_of, write_exit)
+    EXIT, MARKER, NAME, PATTERN, REPORTS_DIR, beside, literal_fault, read_run, report_of, write_exit)
 
 PATTERN_FLAGS = ("-t", "--test-name-pattern")
 # One `bun test` command with no shell operator: the only script `bun run` may run here.
@@ -152,11 +152,13 @@ def main(argv: list) -> int:
         return refuse(f"the working directory {os.getcwd()} is outside GITHUB_WORKSPACE {workspace}")
     directory = Path(temp) / REPORTS_DIR / ("" if where == "." else where)
     report = report_of(directory, name)
-    marker, ended, selection = (report.with_name(report.name + suffix) for suffix in (MARKER, EXIT, PATTERN))
-    if marker.exists():
-        return refuse(f"another run of this job already wrote {marker}: give this run a name of its own")
+    marker, ended, selection = (beside(report, suffix) for suffix in (MARKER, EXIT, PATTERN))
     directory.mkdir(parents=True, exist_ok=True)
-    marker.write_text(shlex.join(command) + "\n")
+    try:
+        with marker.open("x") as file:
+            file.write(shlex.join(command) + "\n")
+    except FileExistsError:
+        return refuse(f"another run of this job already wrote {marker}: give this run a name of its own")
     if patterns:
         selection.write_text(patterns[0])
 

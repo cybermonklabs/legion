@@ -153,6 +153,10 @@ jobs:
         run: .github/scripts/bun_test_run.py aé bun test
       - name: A bare one chained after a wrapped one
         run: .github/scripts/bun_test_run.py one bun test a && bun test b
+      - name: Test after a comment ending in a backslash
+        run: |
+          # run the suite \
+          bun test src
       - id: harness-wait
         run: exec .github/scripts/harness-pool.sh wait
       - name: Keep the bun test reports
@@ -178,7 +182,9 @@ check "refuses one under a report name the wrapper refuses, as the wrapper's NAM
   "$(contains "$out" "step 6 ('Test under a name the wrapper refuses') of job package runs \`bun test\`")"
 check "refuses a bare one chained on the line after a wrapped one, and not the wrapped one" \
   "$(is "$(grep -c "step 7 ('A bare one chained after a wrapped one') of job package runs" <<<"$out")" 1)"
-check "refuses those seven and nothing else" "$(is "$(errors "$out")" 7)"
+check "refuses a bare bun test after a comment ending in a backslash" \
+  "$(contains "$out" "line=$(line_of "$file" '          bun test src')::.*step 8 ('Test after a comment ending in a backslash') of job package runs \`bun test\`")"
+check "refuses those eight and nothing else" "$(is "$(errors "$out")" 8)"
 
 echo "case: a job that runs bun test and keeps no reports, or keeps them wrongly, is refused"
 root=$(fixture upload)

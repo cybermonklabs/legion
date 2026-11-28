@@ -72,6 +72,7 @@ CUT_SHORT = ("cancelled", "timed_out")
 ARTIFACT_LIMIT = 64 * 1024 * 1024
 # The most members one of those 17 artifacts holds is 38, envoy-session-stall's.
 MEMBER_LIMIT = 10_000
+PARTIAL = ".partial"
 
 
 def gh(repo: str, path: str, paginate: bool = False):
@@ -137,7 +138,7 @@ def download(repo: str, artifact: dict, into: Path):
     except OSError as error:
         return f"could not be downloaded: gh could not start: {error}"
     # A download cut short leaves its .partial directory behind; the next one starts it again.
-    partial = into.with_name(into.name + ".partial")
+    partial = into.with_name(into.name + PARTIAL)
     shutil.rmtree(partial, ignore_errors=True)
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zipped:
@@ -239,7 +240,7 @@ def main() -> int:
     # A job's artifact is found by the job's upload step, so an artifact of a job whose step has
     # another name, or of no job the run lists, would be passed over; it is named instead.
     named = set(artifacts or ()) | {p.name for p in store.iterdir() if p.is_dir() and p.name.startswith(PREFIX)
-                                    and not p.name.endswith(".partial")}
+                                    and not p.name.endswith(PARTIAL)}
     for name in sorted(named - read):
         print(json.dumps({"run": args.run, "unknown": f"the artifact {name} is named for no job of the run with a "
                                                       f"step named {UPLOAD_STEP!r}, so its reports are not read"}))

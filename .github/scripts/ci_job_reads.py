@@ -73,7 +73,9 @@ from typing import NamedTuple
 
 from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, repo_files, run
 from ci_filter_coverage import at as at_in, gate as gate_in
-from bun_test_record import UPLOAD_ACTION, WRAPPER as BUN_TEST_RUN
+# Rule 8 of check-workflow-files.sh requires this wrapper for each bun test step of ci.yaml's
+# run and this upload action for each such job. bun_test_record.py defines both paths.
+from bun_test_record import UPLOAD_ACTION, UPLOAD_ACTION_DIR, WRAPPER as BUN_TEST_WRAPPER
 from ci_filter_sources import excluded, load_directives, load_gate_files
 from go_build_tags import compiled, go_skips_dir, tag_sets
 import go_legs
@@ -348,9 +350,7 @@ def bun_job(job, workflow=""):
     )
 
 
-# The wrapper every bun test step of ci.yaml's run runs its bun test under (check-workflow-files.sh's
-# rule 8 holds each such step to it), and the upload step every such job ends with, as
-# bun_test_record.py spells them.
+# The module that defines the record and checks whether a run's record is whole.
 BUN_TEST_RECORD = ".github/scripts/bun_test_record.py"
 
 
@@ -358,8 +358,8 @@ def bun_test_step(job, step, workflow=""):
     """What `step`, a bun test step of `job`, reads to run its bun test: the wrapper and the
     record's module it imports."""
     return reads(
-        (BUN_TEST_RUN, f"{at(job, step, workflow)} runs its bun test under it, which writes the report"),
-        (BUN_TEST_RECORD, f"{BUN_TEST_RUN} imports the record's names and its rule from it"),
+        (BUN_TEST_WRAPPER, f"{at(job, step, workflow)} runs its bun test under it, which writes the report"),
+        (BUN_TEST_RECORD, f"{BUN_TEST_WRAPPER} imports the record's names and its rule from it"),
     )
 
 
@@ -367,7 +367,7 @@ def bun_test_run(job, step, workflow=""):
     """bun_test_step for one of the job's bun test steps (the rest run the same two files), and
     the job's upload of what they write."""
     return bun_test_step(job, step, workflow) + reads(
-        (f"{UPLOAD_ACTION.removeprefix('./')}/**", at(job, UPLOAD_ACTION, workflow)),
+        (f"{UPLOAD_ACTION_DIR}/**", at(job, UPLOAD_ACTION, workflow)),
     )
 
 

@@ -246,6 +246,16 @@ check "deep JSON: exits 1, naming clause 1 with no traceback" \
 check "the reader still prints tests from both jobs" \
   "$(is "$(contains "$out" '"job_id": 101, .*"status": "pass"'):$(contains "$out" '"job_id": 102, .*"status": "pass"')" true:true)"
 
+echo "case: clause 1: an exit status file that is not UTF-8 does not stop the reader"
+binary_exit_store="$work/s-binary-exit"
+cp -r "$deep_exit_store" "$binary_exit_store"
+printf '\xff\xfe' > "$binary_exit_store/bun-test-reports-101/packages/ok/test.xml.exit"
+read_store "$binary_exit_store"
+check "non-UTF-8 exit: exits 1, naming clause 1 with no traceback" \
+  "$(is "$status:$(contains "$out" '"job_id": 101, .*"unknown": "clause 1: its exit status file test.xml.exit cannot be read:'):$(contains "$out" Traceback)" 1:true:false)"
+check "after a non-UTF-8 exit status, the reader still prints the next job's test" \
+  "$(contains "$out" '"job_id": 102, .*"status": "pass"')"
+
 echo "case: a process a test leaves holding bun's standard error keeps the wrapper at most DRAIN_SECONDS"
 package holder holder.test.ts "$imports
 test(\"leaves a child\", async () => {
@@ -352,6 +362,18 @@ EOF
 read_store "$work/s5"
 check "a count off by one: exits 1, naming the two counts" \
   "$(is "$status:$(contains "$out" '"unknown": "clause 2: the report says 5 tests and holds 4 entries"')" 1:true)"
+
+echo "case: clause 2: the report's test count is a digit but not a decimal"
+store "$work/s-nondecimal-count" "$work/t-ok"
+python3 - "$work/s-nondecimal-count/bun-test-reports-101/packages/ok/test.xml" <<'EOF'
+import sys, xml.etree.ElementTree as ET
+tree = ET.parse(sys.argv[1])
+tree.getroot().set("tests", "²")
+tree.write(sys.argv[1], encoding="utf-8")
+EOF
+read_store "$work/s-nondecimal-count"
+check "non-decimal count: exits 1, naming clause 2 and the two counts with no traceback" \
+  "$(is "$status:$(contains "$out" '"unknown": "clause 2: the report says \\u00b2 tests and holds 1 entries"'):$(contains "$out" Traceback)" 1:true:false)"
 
 echo "case: clause 2: suite nesting beyond the bound does not stop the reader"
 store "$work/s-deep-report" "$work/t-ok"

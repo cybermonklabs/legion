@@ -58,10 +58,21 @@ jobs:
       # take their directories from @legion/test-fixtures, whose rules are docs/testing.md's "Bun
       # tests". It is exported on the command line rather than set in `env:` so the reading step
       # can name the same path.
+      # The wrapper records one bun test command per run. Run the two scripts separately and
+      # check that their order matches the package's test script.
       - name: Test Envoy client
         run: |
+          main=test:main
+          long=test:long
+          want="bun run $main && bun run $long"
+          got=$(jq -r .scripts.test package.json)
+          if [ "$got" != "$want" ]; then
+            echo "::error::packages/envoy-client/package.json's test script is '$got', but this step runs '$want'." >&2
+            exit 1
+          fi
           mkdir -p "$RUNNER_TEMP/envoy-client-tmp"
-          TMPDIR="$RUNNER_TEMP/envoy-client-tmp" ../../.github/scripts/bun_test_run.py test bun run test
+          TMPDIR="$RUNNER_TEMP/envoy-client-tmp" ../../.github/scripts/bun_test_run.py test bun run "$main"
+          TMPDIR="$RUNNER_TEMP/envoy-client-tmp" ../../.github/scripts/bun_test_run.py long bun run "$long"
         working-directory: packages/envoy-client
         env:
           LEGION_E2E: "1"
