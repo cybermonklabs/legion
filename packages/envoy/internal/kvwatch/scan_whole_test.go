@@ -180,6 +180,91 @@ func TestAScanKeepsAKeyWrittenAgainDuringIt(t *testing.T) {
 	}
 }
 
+// TestAScanVisitsAKeyDeletedAndWrittenAgainDuringIt checks that both scans hand over a listed key
+// that another client deletes after the list and writes again before the watch's first delivery
+// ends, so the bucket holds the key when the scan starts and when it returns. The first delivery
+// carries the key's delete marker, and its new put comes after the nil entry: a scan that takes a
+// delivered marker as the key's newest message leaves the key out.
+func TestAScanVisitsAKeyDeletedAndWrittenAgainDuringIt(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name    string
+		filters []string
+	}{
+		{name: "existing"},
+		{name: "filtered", filters: []string{"left.*", "right.*"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			kv := wholeScanBucket(t, "scan_deleted_and_written_again")
+			const flapping = "right.flapping"
+			putScanKeys(t, kv, "left.steady", flapping)
+			handle := bus.NewKeyValue(kv.Legacy(), deleteThenRewrite{KeyValue: kv.WatchHandle(), kv: kv, key: flapping, t: t}, kv.Streams())
+
+			got := make(scanVisits)
+			scan, err := runWholeScan(testwait.Context(t), handle, row.filters, "visit a key deleted and written again", got)
+			if err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			held, err := kv.Get(flapping)
+			if err != nil {
+				t.Fatalf("read %s after the scan: %v", flapping, err)
+			}
+			if got[flapping] == 0 {
+				t.Errorf("scan counted %+v and visited %v, without %q, which the bucket held when the scan listed it and holds at revision %d after the scan returned",
+					scan, got, flapping, held.Revision())
+			}
+		})
+	}
+}
+
+// deleteThenRewrite deletes key when the scan makes its watch, after the scan listed the bucket,
+// and writes key again once the watch's first delivery has ended, before it forwards the nil entry
+// that ends that delivery.
+type deleteThenRewrite struct {
+	jetstream.KeyValue
+	kv  bus.KeyValue
+	key string
+	t   *testing.T
+}
+
+func (k deleteThenRewrite) Watch(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+	k.deleteKey()
+	return k.forward(k.KeyValue.Watch(ctx, keys, opts...))
+}
+
+func (k deleteThenRewrite) WatchFiltered(ctx context.Context, keys []string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+	k.deleteKey()
+	return k.forward(k.KeyValue.WatchFiltered(ctx, keys, opts...))
+}
+
+func (k deleteThenRewrite) deleteKey() {
+	if err := k.kv.Delete(k.key); err != nil {
+		k.t.Errorf("delete %s: %v", k.key, err)
+	}
+}
+
+func (k deleteThenRewrite) forward(watcher jetstream.KeyWatcher, err error) (jetstream.KeyWatcher, error) {
+	if err != nil {
+		return nil, err
+	}
+	updates := make(chan jetstream.KeyValueEntry)
+	go func() {
+		defer close(updates)
+		initial := true
+		for entry := range watcher.Updates() {
+			if entry == nil && initial {
+				initial = false
+				if _, err := k.kv.Put(k.key, []byte("again")); err != nil {
+					k.t.Errorf("put %s again: %v", k.key, err)
+				}
+			}
+			updates <- entry
+		}
+	}()
+	return &forwardedWatcher{KeyWatcher: watcher, updates: updates}, nil
+}
+
 // TestAScanReadsNoDeletedKeyFromTheLeader checks that both scans count 10,000 delete markers and
 // visit the live keys without reading any key individually.
 func TestAScanReadsNoDeletedKeyFromTheLeader(t *testing.T) {
