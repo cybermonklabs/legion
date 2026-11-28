@@ -272,7 +272,7 @@ func (r *approvalRig) outOfWorkflowApproval(status string, version int) {
 		Mark: mark(r.next()), Actor: approvalPerson, Issue: &dispatch.Issue{Key: ownRoot, Project: approvalProject, Title: ownRoot,
 			Status: status, Labels: []string{dispatch.LegionLabel}, HandedOver: true, PrimaryArtifactID: ownDocument}})
 	pending := r.handoverPending(ownRoot)
-	_, _, noticed := r.notice(ownRoot, "design-approved")
+	row, notice, noticed := r.notice(ownRoot, "design-approved")
 	switch status {
 	case "backlog", "icebox":
 		if !pending || noticed {
@@ -284,7 +284,7 @@ func (r *approvalRig) outOfWorkflowApproval(status string, version int) {
 			r.t.Fatalf("the approval of %s in %s left a handover pending = %v and a design-approved notice queued = %v, want the notice and no handover",
 				ownRoot, status, pending, noticed)
 		}
-		r.relayKept()
+		r.relayKept(row, notice)
 	default:
 		r.t.Fatalf("no path of an approval is known for the status %s", status)
 	}
@@ -325,16 +325,12 @@ func (r *approvalRig) notice(key string, kind record.NoticeKind) (record.OutboxR
 	return row, decoded.(record.Notice), true
 }
 
-// relayKept is the outbox's relay of ownRoot's design-approved notice, whose architect it finds
-// stopped with the root's lingering tree (the daemon's parkDecision): the one rule for a decision
-// nobody in its tree hears (record.RelayParkedDecision), run in a transaction of its own, keeps
-// the decision for the root's next start and sends the controller a notice of it.
-func (r *approvalRig) relayKept() {
+// relayKept is the outbox's relay of row, ownRoot's design-approved notice, whose architect it
+// finds stopped with the root's lingering tree (the daemon's parkDecision): the one rule for a
+// decision nobody in its tree hears (record.RelayParkedDecision), run in a transaction of its own,
+// keeps the decision for the root's next start and sends the controller a notice of it.
+func (r *approvalRig) relayKept(row record.OutboxRow, notice record.Notice) {
 	r.t.Helper()
-	row, notice, found := r.notice(ownRoot, "design-approved")
-	if !found {
-		r.t.Fatalf("no design-approved notice is queued on %s", ownRoot)
-	}
 	decision, ok := record.SpecDecision(notice.Kind)
 	if !ok {
 		r.t.Fatalf("a notice of kind %s carries no spec decision", notice.Kind)

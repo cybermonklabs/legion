@@ -9133,7 +9133,7 @@ The sweep keeps five records of its own in memory and none in the store, and a r
 
 - the waits it told the operator's side of (`podUpdateWaitsTold`), by claim: a restart forgets the wait and its notice, so the first refusal after a restart can be told again;
 
-- the breaking-drift rounds whose pod held work kept at the last replacement attempt (`podUpdateHeld`), so the sweep can lift an answer before the next replacement attempt: a restart reads the keep from the stored marks of the answers it lifted, or finds the keep at the next replacement attempt;
+- the breaking-drift rounds whose pod held work kept at the last replacement attempt (`podUpdateHeldWork`), so the sweep can lift an answer before the next replacement attempt: a restart reads the keep from the stored marks of the answers it lifted, or finds the keep at the next replacement attempt;
 
 - what the launches into an issue's pod decided of the round over it (`podUpdateLaunchReplaced`): a daemon that has just booted finishes a pod that a launch replaced as the round's own from that replacement's record in the store (above).
 

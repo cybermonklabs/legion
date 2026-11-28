@@ -102,10 +102,10 @@ func (m *Machine) WorkHoldRefusal(ctx context.Context, by SuspendSource) error {
 // answer wraps ErrHeldByWorkHold and names the two ways out, the gate's opening and an operator's
 // own act. It is nil for every asker but the controller — the operator's own act overrides the
 // hold — and for an architect or the controller's own claim, which the hold never holds: it holds
-// every role but those two (claim.IsWorkerRole), decided by the role alone. A read of the tree's
+// every role but those two (claim.HeldByWorkHold), decided by the role alone. A read of the tree's
 // hold that fails is an error the caller refuses with: a start the read did not clear may not run.
 func (m *Machine) workHoldRefuses(ctx context.Context, c Claim, by SuspendSource) error {
-	if by != SuspendedByController || !claim.IsWorkerRole(c.Role) {
+	if by != SuspendedByController || !claim.HeldByWorkHold(c.Role) {
 		return nil
 	}
 	if !c.WorkHeld() {

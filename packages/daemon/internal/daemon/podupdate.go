@@ -130,8 +130,8 @@ import (
 //     read again (above).
 //   - Which waiting launches the operator's side was told of (podUpdateWaitsTold), by claim.
 //     A restart forgets both the wait and its notice, so a new wait can be told.
-//   - Which breaking-drift rounds held work kept at their last attempt (podUpdateHeld). A restart
-//     reads that keep from the marks of answers it lifted, or finds it at the next attempt.
+//   - Which breaking-drift rounds held work kept at their last attempt (podUpdateHeldWork). A
+//     restart reads that keep from the marks of answers it lifted, or finds it at the next attempt.
 //
 // The sweep walks the issues in key order, decides each of them, and only then makes the pod
 // replacements those decisions left it, also in key order. Before its issues the walk finishes
@@ -644,23 +644,8 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		// A round open here is over the pod the claims record, the one round this issue can be
 		// in: a round over any other pod has ended above.
 		terms, repository := roundReasons(group, open), roundRepository(group, open)
-		if runtime.Breaks(terms) {
-			lifted := holdToldClaims(told, open)
-			if len(lifted) > 0 || s.heldWorkKept(issue, open) {
-				earlierWork := s.roundPodHoldsEarlierWork(ctx, issue, open)
-				held := heldWorkClaims(told, open, clock, earlierWork)
-				if len(held) == 0 {
-					if len(lifted) > 0 {
-						s.askRoundAgain(ctx, issue, open, pod, lifted, clock)
-						return nil
-					}
-					s.forgetHeldWork(issue, open)
-				} else {
-					// A role that just started in the kept pod can owe a report that
-					// its next turn sends. Release its task before waiting for that report.
-					s.liftAnswerHolds(ctx, issue, told, open)
-				}
-			}
+		if runtime.Breaks(terms) && s.settleHeldWork(ctx, issue, open, pod, told, clock) {
+			return nil
 		}
 		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, terms, clock); decided {
 			return replace
@@ -2023,42 +2008,71 @@ func (s *supervision) tellWaitingLaunches(ctx context.Context, issue string, tol
 	}
 }
 
-// keepHeldWork records that held work keeps round's pod of issue from its replacement
-// (podUpdateHeld), in place of whatever was kept for the issue before.
-func (s *supervision) keepHeldWork(issue, round string) {
-	s.podUpdateHeldMu.Lock()
-	defer s.podUpdateHeldMu.Unlock()
-	if s.podUpdateHeld == nil {
-		s.podUpdateHeld = map[string]string{}
+// settleHeldWork is the walk's step, at each sweep, over round, a breaking-drift round of issue
+// open over pod whose answers the work hold lifted (holdToldClaims) or whose last replacement
+// attempt found held work keeping the pod (heldWorkKept). While the hold still stops a claim whose
+// work may be on the pod's disk (heldWorkClaims), it lifts the hold of each answer given since
+// (liftAnswerHolds), and does not wait for the round to reach its replacement again. Once the
+// hold stops none, it asks again each claim whose answer it lifted (askRoundAgain) and reports
+// true, so the walk decides nothing more of the round at this sweep; with no answer lifted, it
+// forgets the keep (forgetHeldWork). It reports false wherever it asked nothing again.
+func (s *supervision) settleHeldWork(ctx context.Context, issue, round, pod string, told []supervise.Claim, clock roundClock) (askedAgain bool) {
+	lifted := holdToldClaims(told, round)
+	if len(lifted) == 0 && !s.heldWorkKept(issue, round) {
+		return false
 	}
-	s.podUpdateHeld[issue] = round
+	earlierWork := s.roundPodHoldsEarlierWork(ctx, issue, round)
+	held := heldWorkClaims(told, round, clock, earlierWork)
+	switch {
+	case len(held) > 0:
+		// A role that just started in the kept pod can owe a report that its next turn sends.
+		// Release its task before waiting for that report.
+		s.liftAnswerHolds(ctx, issue, told, round)
+	case len(lifted) > 0:
+		s.askRoundAgain(ctx, issue, round, pod, lifted, clock)
+		return true
+	default:
+		s.forgetHeldWork(issue, round)
+	}
+	return false
+}
+
+// keepHeldWork records that held work keeps round's pod of issue from its replacement
+// (podUpdateHeldWork), in place of whatever was kept for the issue before.
+func (s *supervision) keepHeldWork(issue, round string) {
+	s.podUpdateHeldWorkMu.Lock()
+	defer s.podUpdateHeldWorkMu.Unlock()
+	if s.podUpdateHeldWork == nil {
+		s.podUpdateHeldWork = map[string]string{}
+	}
+	s.podUpdateHeldWork[issue] = round
 }
 
 // heldWorkKept is whether the last replacement attempt of round of issue found held work keeping
-// the pod (podUpdateHeld).
+// the pod (podUpdateHeldWork).
 func (s *supervision) heldWorkKept(issue, round string) bool {
-	s.podUpdateHeldMu.Lock()
-	defer s.podUpdateHeldMu.Unlock()
-	return s.podUpdateHeld[issue] == round
+	s.podUpdateHeldWorkMu.Lock()
+	defer s.podUpdateHeldWorkMu.Unlock()
+	return s.podUpdateHeldWork[issue] == round
 }
 
-// forgetHeldWork drops what podUpdateHeld keeps for issue where it is round's.
+// forgetHeldWork drops what podUpdateHeldWork keeps for issue where it is round's.
 func (s *supervision) forgetHeldWork(issue, round string) {
-	s.podUpdateHeldMu.Lock()
-	defer s.podUpdateHeldMu.Unlock()
-	if s.podUpdateHeld[issue] == round {
-		delete(s.podUpdateHeld, issue)
+	s.podUpdateHeldWorkMu.Lock()
+	defer s.podUpdateHeldWorkMu.Unlock()
+	if s.podUpdateHeldWork[issue] == round {
+		delete(s.podUpdateHeldWork, issue)
 	}
 }
 
-// forgetHeldWorks drops what podUpdateHeld keeps for each issue this sweep finds in another round
-// or in none (openPodRound).
+// forgetHeldWorks drops what podUpdateHeldWork keeps for each issue this sweep finds in another
+// round or in none (openPodRound).
 func (s *supervision) forgetHeldWorks(byIssue map[string][]supervise.Claim) {
-	s.podUpdateHeldMu.Lock()
-	defer s.podUpdateHeldMu.Unlock()
-	for issue, round := range s.podUpdateHeld {
+	s.podUpdateHeldWorkMu.Lock()
+	defer s.podUpdateHeldWorkMu.Unlock()
+	for issue, round := range s.podUpdateHeldWork {
 		if openPodRound(byIssue[issue]) != round {
-			delete(s.podUpdateHeld, issue)
+			delete(s.podUpdateHeldWork, issue)
 		}
 	}
 }

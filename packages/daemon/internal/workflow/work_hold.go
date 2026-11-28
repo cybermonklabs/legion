@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -165,20 +164,17 @@ func lastOpening(hold *record.WorkHold, root record.Issue) *record.WorkHold {
 	return hold
 }
 
-// workHoldStands is whether the work hold of issue's tree stands in the record (record.WorkHold):
-// a hold of the tree root's generation that no opening has ended. The close writes it in the
-// transaction that closes the gate under `work`, and the opening ends it in the transaction that
-// opens the gate, so a reader of the record in a fact's transaction reads the hold as that fact
-// moves it; under `merge` no close writes one. A tree root the record does not hold has no hold.
-func workHoldStands(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue) (bool, error) {
-	root := &issue
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		var err error
-		if root, err = store.Issue(ctx, tx, issue.Tree); err != nil || root == nil {
-			return false, err
-		}
+// workHoldStands is whether the work hold of root's tree stands in the record (record.WorkHold):
+// a hold of root's generation that no opening has ended. The close writes it in the transaction
+// that closes the gate under `work`, and the opening ends it in the transaction that opens the
+// gate, so a reader of the record in a fact's transaction reads the hold as that fact moves it;
+// under `merge` no close writes one. root is the tree root as the caller read it in tx
+// (TreeCatchUp), nil where the record does not hold it, and such a tree has no hold.
+func workHoldStands(ctx context.Context, tx pgx.Tx, store record.Store, root *record.Issue) (bool, error) {
+	if root == nil {
+		return false, nil
 	}
-	hold, err := store.TreeWorkHold(ctx, tx, issue.Tree)
+	hold, err := store.TreeWorkHold(ctx, tx, root.Tree)
 	if err != nil {
 		return false, err
 	}
@@ -244,7 +240,7 @@ func (c treeClaim) live() bool {
 // treeClaims reads the claims of every member of root's tree that is in the workflow
 // (record.InWorkflow), members by key: each role of claim.Roles, in that order, the architect
 // first, and then each other claim the store holds of the member whose role is one the hold holds
-// (claim.IsWorkerRole), in token order (record.Store.StoredClaims), with the role's queued rows
+// (claim.HeldByWorkHold), in token order (record.Store.StoredClaims), with the role's queued rows
 // and claim at the member's generation, in batches (RoleRuns). A role of claim.Roles is read
 // whether or not the store holds a claim of it, since a start under way or a holder owed news can
 // have none yet (workHoldClose, heldOpeningMessage). A stored claim is read by the token and role
@@ -273,8 +269,9 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 		return nil, err
 	}
 	var claims []treeClaim
+	listed := make(map[claim.Token]bool, len(claim.Roles))
 	for _, member := range members {
-		listed := make(map[claim.Token]bool, len(claim.Roles))
+		clear(listed)
 		for _, role := range claim.Roles {
 			token, err := claim.NewToken(project, member.Key, role)
 			if err != nil {
@@ -286,7 +283,7 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 			listed[token] = true
 		}
 		for _, held := range stored[member.Key] {
-			if claim.IsWorkerRole(held.Role) && !listed[held.Token] {
+			if claim.HeldByWorkHold(held.Role) && !listed[held.Token] {
 				claims = append(claims, treeClaim{issue: member, role: held.Role, token: held.Token})
 			}
 		}
@@ -316,7 +313,7 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //     on, and a step that you report starts nothing until every gated step stands open again.":
 //     the hold stops no architect;
 //   - every live phase worker that is not a merger, a claim of every role the hold holds but the
-//     merger's (claim.IsWorkerRole, treeClaims), idle claims of a finished phase among them, the
+//     merger's (claim.HeldByWorkHold, treeClaims), idle claims of a finished phase among them, the
 //     close and "End your turn now.", carrying its stop (record.RoleMessage.Stop), which the outbox
 //     posts once the message reached the claim, with the deadline HoldStopGrace on;
 //   - every merger it reaches the same message, marked to wait for the merger's session
@@ -571,9 +568,9 @@ func (e *Engine) tellOwnersAcceptance(ctx context.Context, tx pgx.Tx, root recor
 
 // ownersAcceptanceNotice is the phase-finished notice that moved issue, standing in its owner's
 // acceptance, there: the notice of the step before the acceptance on its walk (acceptedRoleOn, the
-// review on today's line), at the phase that step's role runs as (plan.BuiltinRoles, the roles the
-// walk's deployment is built from), with the handoff that step's phases row keeps, as the move
-// wrote it (noticeFor).
+// review on today's line), at the phase that step's role runs as (record.BuiltinDeployment, the
+// roles a step of this release runs as), with the handoff that step's phases row keeps, as the
+// move wrote it (noticeFor).
 func (e *Engine) ownersAcceptanceNotice(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.Notice, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
@@ -587,7 +584,7 @@ func (e *Engine) ownersAcceptanceNotice(ctx context.Context, tx pgx.Tx, issue re
 	if err != nil {
 		return record.Notice{}, err
 	}
-	return record.Notice{Kind: "phase-finished", Role: role, Phase: plan.BuiltinRoles()[string(role)].Phase,
+	return record.Notice{Kind: "phase-finished", Role: role, Phase: record.BuiltinDeployment.Roles[string(role)].Phase,
 		Summary: row.Summary, Verdict: row.Verdict}, nil
 }
 

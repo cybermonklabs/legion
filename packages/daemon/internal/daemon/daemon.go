@@ -2043,29 +2043,29 @@ type supervision struct {
 	// start of the wait (supervise's startWaitsForPodRound). The next refusal begins a new wait.
 	podUpdateWaitsMu   sync.Mutex
 	podUpdateWaitsTold map[claim.Token]time.Time
-	// podUpdateHeldMu guards podUpdateHeld, what the update-round sweep keeps between ticks of the
-	// breaking-drift rounds whose pod the work hold keeps: by issue, the round whose last
-	// replacement attempt found work or failed to read the workspace (heldWorkKeepsPod).
-	// While the hold still stops a claim
-	// of that round, the walk lifts the hold of an answer given since on its claim's tasks at each
-	// sweep (liftAnswerHolds), and does not wait for the round to reach its replacement again.
+	// podUpdateHeldWorkMu guards podUpdateHeldWork, what the update-round sweep keeps between
+	// ticks of the breaking-drift rounds whose pod the work hold keeps: by issue, the round whose
+	// last replacement attempt found work or failed to read the workspace (heldWorkKeepsPod).
+	// While the hold still stops a claim of that round, the walk lifts the hold of an answer given
+	// since on its claim's tasks at each sweep (liftAnswerHolds), and does not wait for the round
+	// to reach its replacement again.
 	//
 	// The walk reads the keep from the store where the store holds it: the marks of the answers
 	// the keep lifted (supervise.Claim.UpdateHoldToldAt). It is kept here for the one case the
 	// store cannot say: a keep that lifted no answer yet. The store holds the claims the hold
-	// stopped, but not what the read found. The replacement attempt reads the workspace through
-	// a role or through the pod's launcher (readPodWorkspace). A round whose pod had no role
-	// process at its keep is the case: a claim that answered
-	// before it was released and is woken into the kept pod holds its task behind its answer, and
-	// its process has sent no report yet, which holds the round from its replacement, and so from
-	// the read, until the bound. The entry goes where the round asks its claims again
-	// (askRoundAgain), where the sweep ends the round (endPodUpdates), and where the sweep finds the
-	// issue in another round or in none (forgetHeldWorks). A restart forgets it, and the walk reads
-	// the keep from the stored marks alone then: a round whose keep lifted an answer is read kept
-	// from them, and one that lifted none is kept again at its next replacement attempt, which
-	// writes the entry again. The sweep and the launch hook share this record.
-	podUpdateHeldMu sync.Mutex
-	podUpdateHeld   map[string]string
+	// stopped, but not what the read found. The replacement attempt reads the workspace through a
+	// role or through the pod's launcher (readPodWorkspace). A round whose pod had no role process
+	// at its keep is the case: a claim that answered before it was released and is woken into the
+	// kept pod holds its task behind its answer, and its process has sent no report yet, which
+	// holds the round from its replacement, and so from the read, until the bound. The entry goes
+	// where the round asks its claims again (askRoundAgain), where the sweep ends the round
+	// (endPodUpdates), and where the sweep finds the issue in another round or in none
+	// (forgetHeldWorks). A restart forgets it, and the walk reads the keep from the stored marks
+	// alone then: a round whose keep lifted an answer is read kept from them, and one that lifted
+	// none is kept again at its next replacement attempt, which writes the entry again. The sweep
+	// and the launch hook share this record.
+	podUpdateHeldWorkMu sync.Mutex
+	podUpdateHeldWork   map[string]string
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore

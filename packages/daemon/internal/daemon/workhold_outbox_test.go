@@ -230,11 +230,7 @@ func (r *workHoldRig) supervise(clock *heldClock) {
 
 func (r *workHoldRig) token(role claim.Role) claim.Token {
 	r.t.Helper()
-	token, err := claim.NewToken(r.tokenProject, r.tree.key, role)
-	if err != nil {
-		r.t.Fatalf("the %s token of %s: %v", role, r.tree.key, err)
-	}
-	return token
+	return r.tokenOf(r.tree.key, role)
 }
 
 func (r *workHoldRig) machine(role claim.Role) *supervise.Machine {
@@ -417,11 +413,11 @@ func (r *workHoldRig) launches(role claim.Role) int {
 // stored is role's claim of the root as the store holds it: its state and its suspension's source.
 func (r *workHoldRig) stored(role claim.Role) (supervise.ClaimState, supervise.SuspendSource) {
 	r.t.Helper()
-	return r.storedOf(r.token(role))
+	return r.storedStateOf(r.token(role))
 }
 
-// storedOf is the claim token as the store holds it: its state and its suspension's source.
-func (r *workHoldRig) storedOf(token claim.Token) (supervise.ClaimState, supervise.SuspendSource) {
+// storedStateOf is the claim token as the store holds it: its state and its suspension's source.
+func (r *workHoldRig) storedStateOf(token claim.Token) (supervise.ClaimState, supervise.SuspendSource) {
 	r.t.Helper()
 	var state, by string
 	if err := r.pool.QueryRow(r.ctx, `select state, coalesce(suspended_by, '') from claims where token = $1`, string(token)).Scan(&state, &by); err != nil {
@@ -834,7 +830,7 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 		left []record.OutboxKind
 		// rig is the tree the writer acts in, heldAtTheClose where it is nil, and held is every
 		// phase worker of it the hold stops and its opening starts, the tester and the implementer
-		// where rig is nil.
+		// where held is nil.
 		rig  func(t *testing.T) *workHoldRig
 		held []claim.Role
 		// woken is how often the close's message launched each of held before the hold stopped it:
@@ -4523,7 +4519,7 @@ func (r *workHoldRig) wantSuspendedBy(token claim.Token, by supervise.SuspendSou
 	if c.State != supervise.StateSuspended || c.SuspendedBy != by || c.WorkHeld() != (by == supervise.SuspendedByHold) {
 		r.t.Fatalf("%s %s is %s by %q, held by the hold %v, want it suspended by %q", when, token, c.State, c.SuspendedBy, c.WorkHeld(), by)
 	}
-	if state, stored := r.storedOf(token); state != supervise.StateSuspended || stored != by {
+	if state, stored := r.storedStateOf(token); state != supervise.StateSuspended || stored != by {
 		r.t.Fatalf("%s %s is stored %s by %q, want it suspended by %q", when, token, state, stored, by)
 	}
 	if c.Pending != nil {

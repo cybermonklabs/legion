@@ -5531,7 +5531,7 @@ func (r *outbox) mergerNewsWait(ctx context.Context, issue record.Issue) error {
 // and what may merge is what that review decides (dispatch://INFRA-714/spec R5). It answers a
 // wait, which leaves the row on its backoff as a check start waits on its look (checkLookHolds),
 // and nil for every start the gate does not hold. Under `work` it holds the start of every role of
-// the tree but the architect's and the controller's as well (claim.IsWorkerRole), from the close.
+// the tree but the architect's and the controller's as well (claim.HeldByWorkHold), from the close.
 // It decides by the role alone, not by the list of roles (claim.Roles), so a kind of step that a
 // later change adds, and that starts a worker through the outbox, is held with no new code here.
 // No phase of the tree starts while the gate is closed, so its member's first phase, the next
@@ -5551,7 +5551,7 @@ func (r *outbox) mergerNewsWait(ctx context.Context, issue record.Issue) error {
 // (64 seconds at most), and tells every phase worker of the tree and the root's architect as well
 // (workflow's tellGateMoved).
 func (r *outbox) startWaitsForTheHold(ctx context.Context, issue record.Issue, role claim.Role, checkLook int) error {
-	if !r.holdIsWork() || checkLook != 0 || !claim.IsWorkerRole(role) {
+	if !r.holdIsWork() || checkLook != 0 || !claim.HeldByWorkHold(role) {
 		return r.mergerWaitsForTheDesignGate(ctx, issue, role)
 	}
 	gate, err := r.treeGate(ctx, issue.Tree)
@@ -5689,12 +5689,12 @@ func (r *outbox) startOfAHeldClaim(ctx context.Context, row record.OutboxRow, pa
 // openingMayBeInFlight is whether a start that carries no opening's sentences, of held, a claim the
 // work hold does not hold, reads whether the claim's own start of the opening is in flight
 // (waitForOpeningInFlight): only under `work` (holdIsWork), only for a role the hold stops, every
-// role but the architect's and the controller's (claim.IsWorkerRole), and only where a start ran
+// role but the architect's and the controller's (claim.HeldByWorkHold), and only where a start ran
 // against the claim before this row (supervise.Claim.LastStartRow), since the opening's start in
 // flight is the claim's last start. That read is one transaction at each attempt of such a start,
 // and a `merge` deployment makes none.
 func (r *outbox) openingMayBeInFlight(held supervise.Claim, row record.OutboxRow) bool {
-	return r.holdIsWork() && claim.IsWorkerRole(held.Role) && held.LastStartRow != 0 && held.LastStartRow < row.ID
+	return r.holdIsWork() && claim.HeldByWorkHold(held.Role) && held.LastStartRow != 0 && held.LastStartRow < row.ID
 }
 
 // openingGoesFirst is whether a start that carries no opening's sentences, of held, a claim the
@@ -5719,7 +5719,7 @@ func openingGoesFirst(held supervise.Claim, read heldStartRecord) bool {
 // claim is given the operator's task, then the opening's task, then this start's task. It answers
 // a routine wait, or nil where no such start stands.
 func (r *outbox) waitForOpeningInFlight(ctx context.Context, payload record.SuperviseRequest, issue record.Issue, held supervise.Claim) error {
-	stands, err := r.openingStartStands(ctx, payload, issue, held)
+	stands, err := r.openingStartStands(ctx, payload.Role, payload.Generation, issue, held)
 	if err != nil || !stands {
 		return err
 	}
@@ -5729,20 +5729,19 @@ func (r *outbox) waitForOpeningInFlight(ctx context.Context, payload record.Supe
 // openingStartStands is whether held's last start is a queued start of the work hold's opening,
 // or a newer one stands (workflow.OpeningStartStands, with no phase and after held's last start
 // less one): the claim's own start of the opening, which ended the hold over an operator's task
-// the claim kept, is still in flight. It reads the queued rows of payload's role at payload's
-// generation and the tree root in one read-only transaction (roleRunAndRoot). It is the one
-// statement of that read and that rule, and two readers ask it: a start that waits for that start
-// (waitForOpeningInFlight), and a kept role message whose row that start holds past its hour
-// (wakeComing).
-func (r *outbox) openingStartStands(ctx context.Context, payload record.SuperviseRequest, issue record.Issue, held supervise.Claim) (bool, error) {
+// the claim kept, is still in flight. It reads the queued rows of role at generation and the tree
+// root in one read-only transaction (roleRunAndRoot). It is the one statement of that read and
+// that rule, and two readers ask it: a start that waits for that start (waitForOpeningInFlight),
+// and a kept role message whose row that start holds past its hour (wakeComing).
+func (r *outbox) openingStartStands(ctx context.Context, role claim.Role, generation uint64, issue record.Issue, held supervise.Claim) (bool, error) {
 	var run record.RoleRun
 	var root record.Issue
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		run, root, err = r.roleRunAndRoot(ctx, tx, payload, issue, held.Token)
+		run, root, err = r.roleRunAndRoot(ctx, tx, role, generation, issue, held.Token)
 		return err
 	}); err != nil {
-		return false, fmt.Errorf("read the queued starts and the tree root of %s's %s: %w", issue.Key, payload.Role, err)
+		return false, fmt.Errorf("read the queued starts and the tree root of %s's %s: %w", issue.Key, role, err)
 	}
 	return workflow.OpeningStartStands(run, root, "", held.LastStartRow-1), nil
 }
@@ -5770,7 +5769,7 @@ func (r *outbox) heldStartRead(ctx context.Context, payload record.SuperviseRequ
 	var read heldStartRecord
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		if read.run, read.root, err = r.roleRunAndRoot(ctx, tx, payload, issue, token); err != nil {
+		if read.run, read.root, err = r.roleRunAndRoot(ctx, tx, payload.Role, payload.Generation, issue, token); err != nil {
 			return err
 		}
 		read.hold, err = r.records.TreeWorkHold(ctx, tx, issue.Tree)
@@ -5781,12 +5780,12 @@ func (r *outbox) heldStartRead(ctx context.Context, payload record.SuperviseRequ
 	return read, nil
 }
 
-// roleRunAndRoot reads, in tx, the queued rows and the claim of token's role of issue at the
-// generation of payload, a start of that role, and the tree root. A tree root the record does not
-// hold is an error, and the row asks again on its backoff.
-func (r *outbox) roleRunAndRoot(ctx context.Context, tx pgx.Tx, payload record.SuperviseRequest, issue record.Issue,
+// roleRunAndRoot reads, in tx, the queued rows and the claim of token's role of issue at
+// generation, the generation of a start of that role, and the tree root. A tree root the record
+// does not hold is an error, and the row asks again on its backoff.
+func (r *outbox) roleRunAndRoot(ctx context.Context, tx pgx.Tx, role claim.Role, generation uint64, issue record.Issue,
 	token claim.Token) (record.RoleRun, record.Issue, error) {
-	run, err := r.records.RoleRun(ctx, tx, token, issue.Key, payload.Role, payload.Generation)
+	run, err := r.records.RoleRun(ctx, tx, token, issue.Key, role, generation)
 	if err != nil {
 		return record.RoleRun{}, record.Issue{}, err
 	}

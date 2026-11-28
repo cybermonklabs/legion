@@ -120,14 +120,7 @@ func (r *workHoldRig) storedClaimOf(role claim.Role) supervise.Claim {
 	if err != nil {
 		r.t.Fatalf("read the stored claims: %v", err)
 	}
-	token := r.token(role)
-	for _, c := range claims {
-		if c.Token == token {
-			return c
-		}
-	}
-	r.t.Fatalf("the store holds no claim %s", token)
-	return supervise.Claim{}
+	return storedOf(r.t, claims, r.token(role))
 }
 
 // claimAsItStands is what a refused start changes nothing of: role's claim as its machine holds it

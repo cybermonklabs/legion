@@ -20,11 +20,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// The hold over an owner's plan (t-17's rows on main's code): a plan whose first step is not
-// planning (H37), the starts a move back and a restart of a stopped task write (H38), what the
-// owner's acceptance starts (H43), and the architect's own acceptance, which no notice and no
-// catch-up asks for while the hold stands (H45, decision 21). Each runs the daemon's engine,
-// admission and outbox over the work-hold rig (newWorkHoldRig).
+// The hold over an owner's plan: a plan whose first step is not planning (H37), the starts a move
+// back and a restart of a stopped task write (H38), what the owner's acceptance starts (H43), and
+// the architect's own acceptance, which no notice and no catch-up asks for while the hold stands
+// (H45, decision 21). Each runs the daemon's engine, admission and outbox over the work-hold rig
+// (newWorkHoldRig).
 
 // ownersChild is the child of LEGION-208 the rows that need one stand it in.
 const ownersChild = "LEGION-209"
@@ -192,29 +192,17 @@ func noticesAmong(notices []record.Notice, kind record.NoticeKind) []record.Noti
 	return of
 }
 
-// noticeRowsOf is how many notices of kind the outbox holds for the root.
+// noticeRowsOf is how many notices of kind the outbox holds for the root (noticesOfKind).
 func (r *workHoldRig) noticeRowsOf(kind record.NoticeKind) int {
 	r.t.Helper()
-	var n int
-	if err := r.pool.QueryRow(r.ctx, `select count(*) from outbox where issue = $1 and kind = $2 and payload->>'kind' = $3`,
-		r.tree.key, string(record.OutboxKindNotice), string(kind)).Scan(&n); err != nil {
-		r.t.Fatalf("count the %s notices: %v", kind, err)
-	}
-	return n
+	return len(noticesOfKind(r.t, r.pool, r.tree.key, kind))
 }
 
-// builtCatchUps is every catch-up the outbox holds for the root, as it was composed.
+// builtCatchUps is every catch-up the outbox holds for the root, as it was composed
+// (noticesOfKind).
 func (r *workHoldRig) builtCatchUps() []record.Notice {
 	r.t.Helper()
-	var notices []record.Notice
-	for _, row := range catchUpRows(r.t, r.pool, r.tree.key) {
-		var notice record.Notice
-		if err := json.Unmarshal(row.Payload, &notice); err != nil {
-			r.t.Fatalf("decode the catch-up row %d: %v", row.ID, err)
-		}
-		notices = append(notices, notice)
-	}
-	return notices
+	return noticesOfKind(r.t, r.pool, r.tree.key, "catch-up")
 }
 
 // wantNoAcceptanceAsked fails t where notice, in its text or in any field of it, asks its

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -111,9 +112,10 @@ type noticeRoute struct {
 // treeSnapshot is one read of a notice's tree: its route, the fence, the tree's unfinished notices
 // written before the row, oldest first, and whether the tree holds its work (holdsWork: the
 // deployment's hold is `work` and the tree's standing design gate stands closed,
-// record.TreeGate.Standing). The owner walk, the fence, the linger check and the work hold's wait
-// of a notice of the owner's acceptance all see this one state, so a reparent or a move of the
-// issue committing meanwhile cannot show them half of itself.
+// record.TreeGate.Standing). holdsWork is read only where the delivery asks it (asksTheGate), and
+// is false where it is not read. The owner walk, the fence, the linger check and the work hold's
+// wait of a notice of the owner's acceptance all see this one state, so a reparent or a move of
+// the issue committing meanwhile cannot show them half of itself.
 type treeSnapshot struct {
 	noticeRoute
 	earlier   []record.OutboxRow
@@ -129,6 +131,24 @@ func (tree treeSnapshot) heldForTheOwner(issue record.Issue, notice record.Notic
 	return tree.holdsWork && workflow.TellsOwnersAcceptance(issue, notice)
 }
 
+// asksTheGate is whether the delivery of notice, of issue, reads holdsWork: the strip of a
+// catch-up's acceptance clause reads it (notice.CatchUp, deliverNotice), and heldForTheOwner reads
+// it of issue and of the issue of each earlier row (earlierNoticeFor), and is false of an issue
+// that does not stand in accepting (workflow.TellsOwnersAcceptance). So the tree's gate needs no
+// read where the notice is no catch-up and neither issue nor any earlier row's issue stands in
+// accepting.
+func (tree treeSnapshot) asksTheGate(issue record.Issue, notice record.Notice) bool {
+	if notice.CatchUp != nil || issue.Phase == phase.Accepting {
+		return true
+	}
+	for _, earlier := range tree.earlier {
+		if tree.issues[earlier.Issue].Phase == phase.Accepting {
+			return true
+		}
+	}
+	return false
+}
+
 // recomposedCatchUp is what the delivery's own read states of a catch-up in place of what the row
 // was written with: the record half (workflow.TreeCatchUp), the notice's reason, and Decided.
 type recomposedCatchUp struct {
@@ -140,10 +160,11 @@ type recomposedCatchUp struct {
 // readNoticeTree reads row's tree in one repeatable-read transaction: whether the row's publish is
 // still owed (stillOwed: the row is still in the outbox under its lease, and a changes request is
 // still the person's word), row's issue and the tree's route (readNoticeRoute), the fence, and,
-// under `work`, the tree's standing design gate, the live gate every fence of the hold reads
-// (treeGate), read here in the same snapshot as the issue whose phase the hold's wait reads. A
-// row deleted under its lease is errNoticeRowGone, a changes request the person's approval
-// followed is changesSuperseded, and a notice it cannot route is errNoticeUnroutable.
+// under `work` and where the delivery reads it (asksTheGate), the tree's standing design gate, the
+// live gate every fence of the hold reads (treeGate), read here in the same snapshot as the issue
+// whose phase the hold's wait reads. A row deleted under its lease is errNoticeRowGone, a changes
+// request the person's approval followed is changesSuperseded, and a notice it cannot route is
+// errNoticeUnroutable.
 // For a catch-up (payload.CatchUp) the same transaction composes again what the architect of
 // row's issue owns (workflow.TreeCatchUp, a pure read, for the issue the row is queued on, as
 // workflow.QueueCatchUp composed it: a root's whole tree, a child's own issue and every issue
@@ -176,7 +197,7 @@ func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, paylo
 		if tree.earlier, err = r.records.EarlierNotices(ctx, tx, tree.root.Key, row.ID); err != nil {
 			return err
 		}
-		if r.holdIsWork() {
+		if r.holdIsWork() && tree.asksTheGate(issue, payload) {
 			gate, err := r.treeGateTx(ctx, tx, tree.root.Key)
 			if err != nil {
 				return err

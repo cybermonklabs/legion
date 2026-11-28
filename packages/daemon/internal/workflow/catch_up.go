@@ -216,8 +216,11 @@ func acceptanceWaits(awaiting []string) string {
 // CatchUpWithoutAcceptance is reason, the reason of a catch-up (QueueCatchUp), without the clause
 // that asks its architect to accept the issues waiting in accepting (acceptanceWaits), and reason
 // itself where it holds no such clause. The outbox delivers a catch-up so while the tree's standing
-// gate stands closed under `work` (internal/daemon's deliverNotice), for a catch-up composed before
-// the gate closed: no architect is told to start its own acceptance while the work hold stands.
+// gate stands closed under `work` (internal/daemon's deliverNotice), and strips the reason it
+// composed again at that delivery (TreeCatchUp), which leaves the clause out already where the
+// record's work hold stands (workHoldStands). So the strip holds the clause back only where the
+// gate stands closed under `work` and no hold record exists yet: no architect is told to start its
+// own acceptance while the tree holds its work.
 func CatchUpWithoutAcceptance(reason string) string {
 	lead := strings.Index(reason, acceptanceWaitsLead)
 	if lead < 0 {
@@ -500,7 +503,16 @@ func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		reason = fmt.Sprintf("the issues under %s, which you own, at generation %d as the daemon records them now; start or resume your issue as your role says", issue.Key, issue.Generation)
 	}
 	if len(awaiting) > 0 {
-		held, err := workHoldStands(ctx, tx, store, issue)
+		// The hold is read against the tree root: issue itself, or the member of this read
+		// (store.TreeIssues) whose key is the tree's, nil where the record does not hold it.
+		treeRoot := &issue
+		if !root {
+			treeRoot = nil
+			if i := slices.IndexFunc(members, func(member record.Issue) bool { return member.Key == issue.Tree }); i >= 0 {
+				treeRoot = &members[i]
+			}
+		}
+		held, err := workHoldStands(ctx, tx, store, treeRoot)
 		if err != nil {
 			return record.CatchUpTree{}, "", err
 		}

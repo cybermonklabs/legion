@@ -2699,10 +2699,7 @@ func (m *Machine) PodUpdateHoldTold(ctx context.Context, round string, tell func
 	if err := tell(ctx); err != nil {
 		return false, err
 	}
-	at := m.deps.Clock.Now()
-	m.claim.UpdateHoldToldAt = &at
-	if err := m.putClaim(ctx); err != nil {
-		m.claim.UpdateHoldToldAt = nil
+	if err := m.stampMark(ctx, &m.claim.UpdateHoldToldAt); err != nil {
 		return false, err
 	}
 	return true, m.sendPending(ctx)
@@ -2875,13 +2872,23 @@ func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time)
 	if m.claim.UpdateRound != round || *mark != nil {
 		return false, nil
 	}
+	if err := m.stampMark(ctx, mark); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// stampMark stamps mark, one of this claim's own update-round marks, at the clock and writes the
+// claim (putClaim), under the machine's lock, which its caller holds (markRound,
+// PodUpdateHoldTold). A write the store refuses takes the stamp back and is returned.
+func (m *Machine) stampMark(ctx context.Context, mark **time.Time) error {
 	at := m.deps.Clock.Now()
 	*mark = &at
 	if err := m.putClaim(ctx); err != nil {
 		*mark = nil
-		return false, err
+		return err
 	}
-	return true, nil
+	return nil
 }
 
 // ReleasedLaunch is whether a stored claim is an uncertain launch ReleaseUncertainLaunch released

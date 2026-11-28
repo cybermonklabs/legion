@@ -16,8 +16,7 @@ package daemon
 //
 // The cases drive the work-hold rig of workhold_outbox_test.go, whose close, opening and outbox
 // are the daemon's own, with the update-round sweep of supervision bound over its supervisor and
-// runtime (heldRoundRig). The texts they read are written out here rather than read from the code,
-// so each case reads the same over the code before the change.
+// runtime (heldRoundRig). The texts they read are written out here rather than read from the code.
 
 import (
 	"context"
@@ -254,7 +253,7 @@ func (h *heldRoundRig) reports(role claim.Role) {
 	}
 }
 
-// published is every message role's topic was given that holds text.
+// publishedHolding is every message role's topic was given that holds text.
 func (h *heldRoundRig) publishedHolding(role claim.Role, text string) []string {
 	var of []string
 	for _, message := range h.published(role) {
@@ -388,7 +387,6 @@ func architectAnsweredUnderTheHold(t *testing.T) *heldRoundRig {
 	h.asked(architect)
 	h.answers(architect)
 	h.keeps("over the architect's answer")
-	h.wantNotReplaced("while the workspace holds the held work")
 
 	h.takesTask(architect, "A person answered your question: keep the field optional.", "the person's answer after its answer to the round")
 	h.sweep()
@@ -489,7 +487,6 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 		h.wantHeld(implementer, 1, "after the close")
 		h.rt.ScriptIssuePod(h.tree.key, podUpdatePod)
 		h.keeps("with no role process in the pod")
-		h.wantNotReplaced("with no role process in the pod")
 
 		// A person's message to the architect's role topic while it is released: the listener's
 		// report wakes it, and the wake's start launches it into the pod the hold keeps.
@@ -580,7 +577,6 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 		h.diesRefused(architect)
 
 		h.keeps("through the claim whose launch waits on it")
-		h.wantNotReplaced("while every launch is refused")
 		notices := h.waitNotices()
 		if len(notices) != 1 {
 			t.Fatalf("the operator's side was told of %d waiting launches, want the architect's one: %+v", len(notices), notices)

@@ -438,8 +438,7 @@ func (r *outbox) wakeComing(ctx context.Context, issue string, wake claimWake) (
 		}
 		// The role's queued rows are read at the issue's generation, which the opening's start
 		// carries (workflow's openHeldClaims).
-		start := record.SuperviseRequest{Role: wake.view.Role, Generation: recorded.Generation}
-		if stands, err := r.openingStartStands(ctx, start, recorded, wake.view.Claim); err != nil || stands {
+		if stands, err := r.openingStartStands(ctx, wake.view.Role, recorded.Generation, recorded, wake.view.Claim); err != nil || stands {
 			return stands, err
 		}
 	}
