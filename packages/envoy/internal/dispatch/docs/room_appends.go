@@ -33,8 +33,8 @@ import (
 // appendRoomTx calls gateAppend, which decides which updates of a document whose issue has closed
 // are stored: the prefix of the run that observedBeforeClose admits. gateAppend refuses the run
 // (ErrIssueClosed) when that prefix is empty. Otherwise appendRoomTx writes the prefix, and once
-// the commit has answered it records the rest of a flush's run on the flush (RoomFlush.cut); those
-// classes stay queued, not marked stored.
+// the writes pipeline and its commit have returned without error it records the rest of a flush's
+// run on the flush (RoomFlush.cut); those classes stay queued, not marked stored.
 //
 // A nil return. A nil return from StoreUpdateContext does not mean its update is durable. The
 // call returns nil without storing its update when the room has failed (its roomFailed checks),
@@ -60,10 +60,10 @@ const (
 // BrowserUpdate is one update an append stores (appendWrites): its bytes, whether it changes the
 // document's rendered content, its browser edit's in-flight credit (nil for none), and Observed,
 // when the room's observer took it, which gateAppend judges against the document's issue close in
-// a browser's append (appendBrowser, observedBeforeClose). Observed is zero for an update no room
-// observer took, such as the parked bytes AppendParkedUpdate stores; once the issue has closed,
-// gateAppend does not admit such an update to a browser's append. Its fields are exported so a
-// test store in another package can hand a batch on.
+// a browser's append (appendBrowser, observedBeforeClose). Observed is zero for an update that
+// carries no observed time, such as the parked bytes AppendParkedUpdate stores; once the issue has
+// closed, gateAppend does not admit such an update to a browser's append. Its fields are exported
+// so a test store in another package can hand a batch on.
 type BrowserUpdate struct {
 	Update         []byte
 	ContentChanged bool
@@ -119,14 +119,16 @@ func (p *PgVersioned) appendUpdates(ctx context.Context, room string, updates []
 // (store.Pool.RoomAppends), through holdRoom, and sends on that connection, in order: a pipeline
 // that takes the document's session-level advisory lock, begins and reads the gate
 // (queueAppendGate); the gate read again under a prune checkpoint's ceiling when the first read
-// finds one; and, once gateAppend has passed the run where a room cursor gates it, a pipeline of
-// the writes (appendWrites) and the commit. It takes no pg_advisory_xact_lock: the session holds
+// finds one; the reads gateAppend makes of a replaced history (storedHistoryHolds); and, once
+// gateAppend has passed the run where a room cursor gates it, a pipeline of the writes
+// (appendWrites) and the commit. It takes no pg_advisory_xact_lock: the session holds
 // the document's lock already.
 //
-// Once the commit has answered, before the unlock, it records what it stored: for a flush, the
-// run and its cut on flush (RoomFlush.appendedRun, RoomFlush.cut), the versions on the instance's
-// cursor, the stored classes marked stored with each credit held and landed (RoomFlush.markStored),
-// the room's shadow dropped if drained (dropDrainedShadowLocked) and the batch counted
+// Once the writes pipeline and its commit have returned without error, before the unlock, it
+// records what it stored: for a flush, the run and its cut on flush (RoomFlush.appendedRun,
+// RoomFlush.cut), the versions on the instance's cursor, the stored classes marked stored with
+// each credit held and landed (RoomFlush.markStored), the room's shadow dropped if drained
+// (dropDrainedShadowLocked) and the batch counted
 // (committed); for given updates, their credits held and the versions on ctx's room cursor. Then
 // finish, which runs once the opening pipeline was sent unless that pipeline failed with a
 // context error, lands the credits, attempts a rollback of a transaction still open and calls
@@ -172,8 +174,7 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 	}
 	open := false
 	// land lands credit and the credits of given (UpdateCredit.landed, which lands a credit once).
-	// finish calls it before the unlock, so the credits leave the room's in-flight credits while
-	// this call holds the document's lock. Deferred here, it also lands them where a context error
+	// finish calls it before freeRoomLock. Deferred here, it also lands them where a context error
 	// of the opening pipeline skips finish. A holdRoom failure returns before this defer and lands
 	// nothing here.
 	land := func() {
@@ -274,8 +275,8 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 		}
 	}
 	// A closed issue's gate admits a prefix of the run (gateAppend). For a flush, the cut classes
-	// stay queued, not marked stored, and are recorded on it once the commit has answered
-	// (RoomFlush.cut); given updates past the prefix are not stored.
+	// stay queued, not marked stored, and are recorded on it once the writes and commit return
+	// without error (RoomFlush.cut); given updates past the prefix are not stored.
 	updates = updates[:admitted]
 	var cut []*queuedClass
 	if flush != nil {
@@ -313,8 +314,8 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 		for index, update := range updates {
 			update.Credit.held(first + persistence.Version(index))
 		}
-		// The cursor advances before the unlock, so a writer that takes the document's lock next
-		// does not read this instance's cursor behind the versions this commit stored.
+		// The versions this commit stored are recorded on this instance's cursor before the
+		// unlock (advanceRoomCursor).
 		cursor := roomCursorFrom(ctx)
 		for version := head + 1; version <= int64(last); version++ {
 			advanceRoomCursor(cursor, persistence.Version(version))
@@ -343,7 +344,8 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 // full, it answers instead the channel to wait on and how long to wait, until roomAppendLinger
 // after class was observed, unless the service is stopping, room is shutting down, the record
 // counts an append waiter (appendWaiters) or its appends were asked to go after class was
-// observed (appendsFlushed). StoreUpdateContext waits and then calls it again without linger.
+// observed (appendsFlushed). StoreUpdateContext waits, and then returns or calls it again without
+// linger.
 func (s *Service) roomBatchThrough(room string, class *queuedClass, linger bool) (through uint64, wake <-chan struct{}, wait time.Duration) {
 	state := s.lockExistingState(room)
 	if state == nil {

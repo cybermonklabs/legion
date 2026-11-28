@@ -246,14 +246,14 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 	return a.StoreUpdateContext(context.Background(), room, update)
 }
 
-// StoreUpdateContext stores a room's update, which ygo's persistence hands it: it appends, in one
-// transaction under the document's advisory lock, the updates of the same room instance its update
-// observer recorded before this one whose classes are not marked stored, this one, and the run of
-// updates the room recorded after it that its batch takes (roomBatchThrough), in the room's commit
-// order, each with the in-flight credit and the class its observer recorded (AppendRoomFlush,
-// flushRun). So the order of the calls does not decide the order the updates are stored in, and
-// an update whose class is marked stored is skipped. A nil return does not mean the update is
-// durable (room_appends.go, "A nil return").
+// StoreUpdateContext stores a room's update, which ygo's persistence hands it. For an update with
+// a class, it runs a batch (AppendRoomFlush, flushRun): one transaction under the document's
+// advisory lock over the run of the same room instance's updates whose classes are not marked
+// stored, recorded up to the position its batch runs through (roomBatchThrough), in the room's
+// commit order, each with the in-flight credit and the class its observer recorded. On a closed
+// issue the gate stores only the prefix of that run it admits (room_appends.go, "The gate"). So
+// the order of the calls does not decide the order the updates are stored in. A nil return does
+// not mean the update is durable (room_appends.go, "A nil return").
 //
 // Unless something waits on the room, the call lingers for the room's queue to fill before its
 // batch goes, at most roomAppendLinger from the update's recording (room_appends.go).
