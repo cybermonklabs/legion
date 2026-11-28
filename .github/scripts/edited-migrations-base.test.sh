@@ -2,18 +2,18 @@
 # Tests for `edited-migrations-base.sh`: the base envoy-go-build's edited-migrations check
 # compares a run's tree with, for each event the job runs on.
 #
-# Each case clones a fixture origin the way actions/checkout leaves a run's tree, one commit deep
-# at the commit the run tests (over file://, so git honours --depth), and runs the script there
-# with the event, sha, ref and migration-base Actions would hand it. The fixture's history has
-# the real shapes: a main that is one line of commits, as the queue lands them; a branch forked
-# from it 100 commits below both tips, past the script's first fetch depth; a branch that merged
-# main after it forked; branches that hold a newer commit of main only along a path longer than
-# the second fetch, or than the third, beside a short path to an older one; a merge-group entry on
-# top of main's tip; and a history that shares no commit with main. One case breaks the checkout's
-# object store once the fetch has written main's ref, so git merge-base fails with 128 rather than
-# answers. The last cases run the script in a whole clone, as a developer's clone or worktree is,
-# where a fetch with a depth would make the clone shallow: each finds the same base and leaves the
-# clone whole.
+# Each case but the last three clones a fixture origin the way actions/checkout leaves a run's
+# tree, one commit deep at the commit the run tests (over file://, so git honours --depth), and
+# runs the script there with the event, sha, ref and migration-base Actions would hand it. The
+# fixture's history has the real shapes: a main that is one line of commits, as the queue lands
+# them; a branch forked from it 100 commits below both tips, past the script's first fetch depth;
+# a branch that merged main after it forked; branches that hold a newer commit of main only along
+# a path longer than the second fetch, or than the third, beside a short path to an older one; a
+# merge-group entry on top of main's tip; and a history that shares no commit with main. One case
+# breaks the checkout's object store once the fetch has written main's ref, so git merge-base
+# fails with 128 rather than answers. The last three cases run the script in a whole clone
+# instead, as a developer's clone or worktree is, where a fetch with a depth would make the clone
+# shallow: each finds the same base and leaves the clone whole.
 #
 # Run from anywhere: .github/scripts/edited-migrations-base.test.sh
 # CI runs it in ci.yaml's test job.
