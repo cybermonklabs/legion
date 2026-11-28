@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -236,16 +237,19 @@ func TestALeasedImportPassRecordsTheRetryOfASupersededTryNotItsFailure(t *testin
 // It is written, holding the row's lock, before the pass begins, so that load reads the row
 // without it, and it commits once the try's head lookup has arrived, after that load. The record
 // takes the row's lock (lockSourceRow), so it waits for the commit however late the commit comes,
-// and then finds the row written since the load.
+// and then finds the row written since the load. The flight's bound runs on the importer's clock
+// (Importer.Clock), a fake that the test moves past syncTimeout once the flight has armed it, so
+// the bound ends when the test says and not when the machine has waited it out.
 func TestALeasedImportPassKeepsASupersededTrysFailureWhenItsRetryAsksGitHubNothing(t *testing.T) {
-	// Not parallel: it writes the package variable syncTimeout, which every sync of the parallel
-	// tests reads.
-	previous := syncTimeout
-	syncTimeout = time.Second
-	t.Cleanup(func() { syncTimeout = previous })
+	// Parallel: the bound ends where the test moves its own fake clock, so the test leaves the
+	// package variable syncTimeout, which every sync of the parallel tests reads, as it is.
+	t.Parallel()
 	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles()})
 	branch.holdNextHeadLookup()
 	importer, other, database := twoProcesses(t, branch)
+	start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
+	deadlines := clocktest.New(start)
+	importer.Clock = deadlines
 	pass, reads := leasedImports(t, importer, database)
 	save := beginReSave(t, other)
 
@@ -256,16 +260,15 @@ func TestALeasedImportPassKeepsASupersededTrysFailureWhenItsRetryAsksGitHubNothi
 	}()
 	// The first try loaded the row before its head lookup, so the save's commit once the lookup
 	// has arrived makes that try's record of its failure stale. The lookup is released only once
-	// the pass has ended, so GitHub answers it nothing within the flight's bound.
+	// the pass has ended, so GitHub answers it nothing within the flight's bound, which ends once
+	// the test moves the fake past it.
 	branch.waitHeld(t)
 	if err := save.Commit(context.Background()); err != nil {
 		t.Fatalf("commit the settings save: %v", err)
 	}
-	select {
-	case <-passed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the leased import pass did not end within 30s")
-	}
+	deadlines.AwaitArmedAt(t, "the flight's deadline, syncTimeout after it began", start.Add(syncTimeout))
+	deadlines.Advance(syncTimeout)
+	testwait.Receive(t, "the leased import pass to end once the flight's deadline has passed", passed)
 	branch.releaseHeld()
 
 	if got := reads.take(); len(got) != 1 || got[0].read != githubreads.ArchitectureImport || got[0].succeeded ||

@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -105,6 +106,12 @@ type Importer struct {
 	// route, `dispatch architecture-sync` or the import a push starts (Importer.Pushed's worker)
 	// runs records nothing. Nil records nothing.
 	GitHubReads githubreads.Recorder
+
+	// Clock is the clock each flight's deadline (syncTimeout) runs on. Nil, which every
+	// deployment leaves it, is clock.Real(); a test hands a clocktest.Fake and moves it past the
+	// deadline once the flight has armed it, rather than waiting the deadline out on the wall
+	// clock.
+	Clock clock.Clock
 
 	// owner outlives every caller: the process stopping (Close) is the only
 	// thing that cancels a flight, since a flight runs on behalf of callers
