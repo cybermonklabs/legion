@@ -2434,9 +2434,10 @@ its own headed by its exit status, wall seconds, CPU seconds and seconds waiting
 fails with an `::error` naming each that failed, and writes the same table to the job summary.
 It runs after a failed step too (`!cancelled()`), so a harness queued before the failure is
 still judged. A cancel or the job's timeout during the wait signals it: the step `exec`s it, and
-the runner signals a running step only when its condition no longer holds, which with
-`always()` it would always hold. The runner sends an INT first when it cancels a step, when the
-step times out and when the runner itself shuts down (actions/runner's ProcessInvoker,
+the runner signals a running step only when its condition no longer holds (on a cancel or the
+job's timeout), which with `always()` it would always hold; on its own shutdown and on a step's
+own timeout, whatever its condition. The runner sends an INT first when it cancels a step, when
+the step times out and when the runner itself shuts down (actions/runner's ProcessInvoker,
 CancelAndKillProcessTree). An INT stops the wait: it names each harness still running with its
 log so far and exits 1. A TERM that reaches the wait while it still waits ends it at once, with
 status 143 and no report, as a TERM ends the shell of a plain step; once the report has begun,

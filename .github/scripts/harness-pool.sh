@@ -48,7 +48,8 @@
 #     exits 1, for a job cancelled before its wait step began (a step of its own, under
 #     `if: cancelled()`). The wait step runs the wait with `exec` under `if: ${{ !cancelled() }}`,
 #     so a cancel's signal reaches the wait itself: the runner signals a running step only when
-#     its condition no longer holds.
+#     its condition no longer holds, on a cancel or the job's timeout; on its own shutdown and on
+#     a step's own timeout it signals the step whatever its condition.
 #
 # Each harness inherits the starting step's environment, `env:` included, and its working
 # directory, but for the runner's per-step files: the step that queued it has ended by the time
