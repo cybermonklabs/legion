@@ -1044,7 +1044,22 @@ var goingReadTools = map[string]goingReadTool{
 	"dispatch_read_event_log":                    {},
 }
 
-// The reasons a route a person may call has no tool: the routes the command bar's spec leaves out.
+// The kinds of reason goingExcludedRoutes gives a route a person's credential may call that no
+// tool calls. Each value of it is one kind alone, built by the kind's constant or its
+// constructor, and goingRouteInventory tells the kind by that value and holds it to the route:
+//
+//   - R12's six, the routes the command bar's spec leaves out: a credential
+//     (goingExcludedCredential), an agent token (goingExcludedAgentToken), a sign-in
+//     (goingExcludedSignIn), a test hook (goingExcludedTestHook), the bar's own route
+//     (goingExcludedBar), and a route only the Legion daemon writes (goingExcludedDaemon, or
+//     goingExcludedDaemonRefusing where the reason names the code that refuses every other
+//     writer);
+//   - reached through another tool (goingExcludedThrough): a route whose need another tool of
+//     the bar meets, the reason naming that tool, which must be one goingWriteTools or
+//     goingReadTools names and going.UnofferedTools does not leave out;
+//   - no person may call it (goingExcludedNoPerson): a route whose auth passes a person's
+//     credential and whose declaration states ResultsScope, the route a CI run's results token
+//     writes, whose handler refuses every other credential.
 const (
 	goingExcludedCredential = "a credential: the bar never reads, grants or revokes one"
 	goingExcludedAgentToken = "an agent token: the bar never mints, lists, changes or revokes one"
@@ -1052,13 +1067,35 @@ const (
 	goingExcludedTestHook   = "a test hook, which a deployment serves only with its test hooks on"
 	goingExcludedBar        = "the command bar's own route"
 	goingExcludedDaemon     = "only the Legion daemon writes it: every other caller is refused (403)"
-	// The status change writes several issues, each in a transaction of its own, so no landing of
-	// one request records it and no Undo walks it back. The bar never calls it: a plan that sets
-	// an option of dispatch_issue_update is written out as one update row for each issue the
-	// option reaches (expandStatusOptions), each with its own landing and its own Undo.
-	goingExcludedStatusChange = "a status change with an option: the bar reaches its outcome through one update row for each issue it reaches"
+	goingExcludedNoPerson   = "no person may call it: only a CI run's results token writes it"
+	// goingExcludedThroughWords starts every reason goingExcludedThrough builds.
+	goingExcludedThroughWords = "reached through "
 )
 
+// goingExcludedDaemonRefusing is goingExcludedDaemon for a route whose refusal of every other
+// writer is code, such as STEP_WRITER (codeStepWriter).
+func goingExcludedDaemonRefusing(code string) string {
+	return goingExcludedDaemon + " " + code
+}
+
+// goingExcludedThrough is the reason of a route the bar reaches through tool, another tool of its
+// own that meets the route's need: the tool's name, then why it meets that need.
+func goingExcludedThrough(tool, why string) string {
+	return goingExcludedThroughWords + tool + ": " + why
+}
+
+// goingExcludedStatusChange is why dispatch_issue_update meets the need of the status change.
+// The status change writes several issues, each in a transaction of its own, so no landing of
+// one request records it and no Undo walks it back. The bar never calls it: a plan that sets
+// an option of dispatch_issue_update is written out as one update row for each issue the
+// option reaches (expandStatusOptions), each with its own landing and its own Undo.
+const goingExcludedStatusChange = "a status change with an option: the bar reaches its outcome through one update row for each issue it reaches"
+
+// Each value of goingExcludedRoutes is one of the eight kinds of reason above, and
+// goingRouteInventory refuses, naming the route, a value of no kind, a route reached through a
+// tool the bar does not offer, and a route no person may call whose declaration does not state
+// ResultsScope.
+//
 // goingExcludedRoutes is every route a person's credential may call that no tool calls, by
 // "<METHOD> <pattern>", each with its reason.
 var goingExcludedRoutes = map[string]string{
@@ -1096,18 +1133,18 @@ var goingExcludedRoutes = map[string]string{
 	"GET " + goingCataloguePath:                                     goingExcludedBar,
 	"GET /api/v1/me/going-runs":                                     goingExcludedBar,
 	"GET /api/v1/me/going-plans":                                    goingExcludedBar,
-	"GET /api/v1/agents/known":                                      "the reference renderer checks whether specific unlisted agent addresses exist; the bar reads the agent roster instead",
-	"GET /api/v1/agents/{session_id}/artifacts":                     "the reference picker lists a conversation's newest files and images; the bar reads a named agent artifact through dispatch_read",
-	"POST /api/v1/markdown/file-round-trip":                         "the check of a local file's bytes before their upload: the bar opens no file, so it checks a text through dispatch_check_markdown",
+	"GET /api/v1/agents/known":                                      goingExcludedThrough(going.ReadRoster, "the reference renderer checks whether specific unlisted agent addresses exist; the bar reads the agent roster instead"),
+	"GET /api/v1/agents/{session_id}/artifacts":                     goingExcludedThrough("dispatch_doc_read", "the reference picker lists a conversation's newest files and images; the bar reads a named agent artifact through dispatch_doc_read"),
+	"POST /api/v1/markdown/file-round-trip":                         goingExcludedThrough("dispatch_check_markdown", "the check of a local file's bytes before their upload: the bar opens no file, so it checks a text through dispatch_check_markdown"),
 	"PUT /api/v1/issues/{key}/design-gates":                         goingExcludedDaemon,
 	"PUT /api/v1/projects/{key}/gated-steps":                        goingExcludedDaemon,
 	"PUT /api/v1/issues/{key}/role-holders":                         goingExcludedDaemon,
-	"PUT /api/v1/issues/{key}/steps/{id}":                           goingExcludedDaemon + " STEP_WRITER",
-	"PUT /api/v1/issues/{key}/steps/{id}/rating":                    goingExcludedDaemon + " STEP_WRITER",
-	"PUT /api/v1/issues/{key}/steps/{id}/experiment":                goingExcludedDaemon + " STEP_WRITER",
-	"PUT /api/v1/issues/{key}/plans/{id}":                           goingExcludedDaemon + " STEP_WRITER",
-	"POST /api/v1/projects/{key}/results":                           "only a CI job's results token writes it, and the going loop acts as an agent session, so no tool of the catalogue performs it",
-	"POST /api/v1/issues/{key}/status-change":                       goingExcludedStatusChange,
+	"PUT /api/v1/issues/{key}/steps/{id}":                           goingExcludedDaemonRefusing(codeStepWriter),
+	"PUT /api/v1/issues/{key}/steps/{id}/rating":                    goingExcludedDaemonRefusing(codeStepWriter),
+	"PUT /api/v1/issues/{key}/steps/{id}/experiment":                goingExcludedDaemonRefusing(codeStepWriter),
+	"PUT /api/v1/issues/{key}/plans/{id}":                           goingExcludedDaemonRefusing(codeStepWriter),
+	"POST /api/v1/projects/{key}/results":                           goingExcludedNoPerson,
+	"POST /api/v1/issues/{key}/status-change":                       goingExcludedThrough("dispatch_issue_update", goingExcludedStatusChange),
 	"POST /api/v1/live/_test/disconnect":                            goingExcludedTestHook,
 	"POST /api/v1/live/_test/rotate":                                goingExcludedTestHook,
 	"POST /api/v1/artifacts/_test/quiesce":                          goingExcludedTestHook,

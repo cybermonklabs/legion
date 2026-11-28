@@ -223,10 +223,13 @@ func (rig goingAgentRig) endFrame(t *testing.T, run string) agentwire.EndFrame {
 
 // TestTheAgentActsAsThePerson: the agent acts as the person who started the run, with a tool for
 // each thing the person can read or change (check c12): every route of the table a person's
-// credential can call is a row of a tool, or a route R12 leaves out; a run of A reads the Inbox
-// through its tool, and the answer holds A's rows and no row of B's; a read of
-// http://169.254.169.254/, and of an address in no word and no tool result, are refused; and a
-// GitHub read of a repository no project maps is refused.
+// credential can call is a row of a tool, or a route goingExcludedRoutes leaves out for one of
+// R12's six kinds, for another tool the bar offers, which it names and which meets its need, or
+// because no person may call it, its declaration stating ResultsScope, and a route left out for
+// any other reason fails (goingRouteInventory); a run of A reads the Inbox through its tool, and
+// the answer holds A's rows and no row of B's; a read of http://169.254.169.254/, and of an
+// address in no word and no tool result, are refused; and a GitHub read of a repository no
+// project maps is refused.
 func TestTheAgentActsAsThePerson(t *testing.T) {
 	t.Parallel()
 	t.Run("every route a person can call has a tool, or is left out with its reason", goingRouteInventory)

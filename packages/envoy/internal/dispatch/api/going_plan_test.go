@@ -282,6 +282,7 @@ func TestWhatWaitsInEachMode(t *testing.T) {
 		fixtures := newGoingRowFixtures(t, rig.goingWritesRig)
 		cases := goingRowCases(fixtures)
 		routed, claimed := rig.issue(t, "Routed to a session"), rig.issue(t, "Claimed by a session")
+		project := rig.provenSessionsProject(t, "PSWAITS", false)
 		rig.exec(t, `update issues set route = 'session:s-route' where key = $1`, routed)
 		rig.exec(t, `update issues set claimed_by = '{"kind": "session", "id": "s-claim"}', claimed_at = now() where key = $1`, claimed)
 		rows := []struct {
@@ -295,6 +296,7 @@ func TestWhatWaitsInEachMode(t *testing.T) {
 			}), string(goingClassDecision)},
 			{goingChange("dispatch_result", cases["dispatch_result POST /api/v1/results/{id}/retract"].arguments), string(goingClassResult)},
 			{goingChange("dispatch_architecture_sync", cases["dispatch_architecture_sync POST /api/v1/projects/{key}/architecture-sources/sync"].arguments), string(goingClassSetting)},
+			{goingChange("dispatch_project_update", map[string]any{"project": project, "proven_sessions": "on"}), string(goingClassSetting)},
 			{goingChange("dispatch_issue_update", map[string]any{"issue": routed, "priority": 2}), goingWaitsDelivery},
 			{goingChange("dispatch_issue_update", map[string]any{"issue": claimed, "status": "done", "reason": "Finished."}), goingWaitsClaimed},
 			{goingChange("dispatch_message", cases["dispatch_message POST /api/v1/issues/{key}/messages"].arguments), string(goingClassMessage)},

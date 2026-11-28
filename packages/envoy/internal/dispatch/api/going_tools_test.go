@@ -5,6 +5,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -52,7 +54,9 @@ func goingCalledRoutes(t *testing.T) map[string][]string {
 // goingRouteInventory holds the route table, its test hooks in, to the tool tables: every route
 // whose auth class a person's credential passes is a row of a tool or a route
 // goingExcludedRoutes names, and never both; every excluded route and every row a tool names is
-// a route of the table. It fails naming each route that breaks one.
+// a route of the table; and every excluded route's reason is one of the eight kinds
+// going_tools.go names, which holds of the route (goingExclusionProblem). It fails naming each
+// route that breaks one.
 func goingRouteInventory(t *testing.T) {
 	t.Helper()
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
@@ -77,6 +81,11 @@ func goingRouteInventory(t *testing.T) {
 		case len(tools) > 0 && excluded:
 			t.Errorf("%s: %s call it, and goingExcludedRoutes leaves it out (%s)", name, strings.Join(tools, ", "), reason)
 		}
+		if excluded {
+			if problem := goingExclusionProblem(route, reason); problem != "" {
+				t.Errorf("%s: %s", name, problem)
+			}
+		}
 	}
 	for name := range goingExcludedRoutes {
 		if !served[name] {
@@ -88,6 +97,47 @@ func goingRouteInventory(t *testing.T) {
 			t.Errorf("%s: a row of %s, which is no route of the table", name, strings.Join(tools, ", "))
 		}
 	}
+}
+
+// goingErrorCode is the shape of the code of a refusal, such as STEP_WRITER.
+var goingErrorCode = regexp.MustCompile(`^[A-Z]+(_[A-Z]+)*$`)
+
+// goingExclusionProblem is what is wrong with reason, the value goingExcludedRoutes gives route,
+// "" for a value of one of the eight kinds going_tools.go names that holds of route: one of R12's
+// six constants, or goingExcludedDaemon followed by nothing but the code of a refusal
+// (goingExcludedDaemonRefusing); a route reached through another tool, naming a tool the bar
+// offers - one goingWriteTools or goingReadTools names and going.UnofferedTools does not leave
+// out - and why (goingExcludedThrough); and goingExcludedNoPerson for a route whose declaration
+// states ResultsScope, the route a CI run's results token writes.
+func goingExclusionProblem(route apiRoute, reason string) string {
+	switch reason {
+	case goingExcludedCredential, goingExcludedAgentToken, goingExcludedSignIn, goingExcludedTestHook, goingExcludedBar, goingExcludedDaemon:
+		return ""
+	case goingExcludedNoPerson:
+		if !route.ResultsScope {
+			return "goingExcludedRoutes says no person may call it, and its declaration does not state ResultsScope, so a person's credential reaches its handler"
+		}
+		return ""
+	}
+	if code, refusing := strings.CutPrefix(reason, goingExcludedDaemon+" "); refusing && goingErrorCode.MatchString(code) {
+		return ""
+	}
+	if named, through := strings.CutPrefix(reason, goingExcludedThroughWords); through {
+		tool, why, _ := strings.Cut(named, ": ")
+		_, writes := goingWriteTools[tool]
+		_, reads := goingReadTools[tool]
+		_, unoffered := going.UnofferedTools[tool]
+		switch {
+		case strings.TrimSpace(why) == "":
+			return fmt.Sprintf("goingExcludedRoutes says another tool meets its need (%q), and does not say which tool and why: build it with goingExcludedThrough", reason)
+		case !writes && !reads:
+			return fmt.Sprintf("goingExcludedRoutes says %s meets its need, which neither goingWriteTools nor goingReadTools names", tool)
+		case unoffered:
+			return fmt.Sprintf("goingExcludedRoutes says %s meets its need, which going.UnofferedTools leaves out of the bar", tool)
+		}
+		return ""
+	}
+	return fmt.Sprintf("goingExcludedRoutes leaves it out for %q, which is none of the eight kinds of reason going_tools.go names: give it a kind's constant or constructor", reason)
 }
 
 // TestEveryPersonRouteHasATool: a route a person may call is one a run can read or write
