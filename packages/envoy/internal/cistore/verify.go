@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -56,7 +55,8 @@ const (
 	// key. A record key always has four tokens (Key), so a request key has five, and no record of
 	// an owner named "verify" is ever taken for one (isVerifyKey, verifyRequestKeys).
 	verifyKeyPrefix = "verify"
-	// verifyRequestKeys is the watch filter of every verify request and of nothing else.
+	// verifyRequestKeys is the key pattern of every verify request and of nothing else, which
+	// VerifyRequests lists the requests under (bus.KeyValue.HeldEntries).
 	verifyRequestKeys = verifyKeyPrefix + ".*.*.*.*"
 
 	// verifyTimeout is how long the summary loop waits for an answer before it writes the
@@ -242,27 +242,24 @@ func streamIdentity(ctx context.Context, kv bus.KeyValue) (int64, error) {
 
 // VerifyRequests lists every verify request the bucket holds, each with the revision it holds it
 // at, the episode it asks for, and the identity of the stream it was read in: what an answer to it
-// carries (MarkVerified). It reads the stream's identity, then the requests in one watch, within
-// ctx and RecordWait, and a watch that ends before it has delivered every request is an error.
+// carries (MarkVerified). It reads them through bus.KeyValue.HeldEntries, within ctx and
+// RecordWait, so a request the listener writes again while the list is read, as it does when a
+// request goes unanswered for verifyTimeout, is still listed and is read in this pass: the
+// jetstream watcher's first delivery could leave it out until the next pass, one
+// cireconcile.VerifyInterval (five seconds) later. HeldEntries reads the stream's state before
+// it lists the keys and answers that state, so the stream's identity is taken from it, as
+// streamIdentity takes it, and the stream is read once.
 func (w *Writer) VerifyRequests(ctx context.Context) ([]contracts.CIVerifyRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, RecordWait)
 	defer cancel()
 	kv := w.store.kv()
-	stream, err := streamIdentity(ctx, kv)
+	state, entries, err := kv.HeldEntries(ctx, verifyRequestKeys)
 	if err != nil {
 		return nil, err
 	}
-	watcher, err := kv.WatchKeys(ctx, verifyRequestKeys, jetstream.IgnoreDeletes())
-	if err != nil {
-		return nil, err
-	}
+	stream := state.Created.UnixNano()
 	var requests []contracts.CIVerifyRequest
-	for entry := range watcher.Updates() {
-		if entry == nil {
-			_ = watcher.Stop()
-			go bus.DrainWatcher(watcher)
-			return requests, nil
-		}
+	for _, entry := range entries {
 		var request verifyRequest
 		if err := json.Unmarshal(entry.Value(), &request); err != nil ||
 			entry.Key() != verifyKey(request.Owner, request.Repo, request.Number, request.SHA) {
@@ -276,7 +273,7 @@ func (w *Writer) VerifyRequests(ctx context.Context) ([]contracts.CIVerifyReques
 			Stream:   stream,
 		})
 	}
-	return nil, fmt.Errorf("cistore: the watch of the verify requests ended before it delivered them all: %w", ctx.Err())
+	return requests, nil
 }
 
 // errStreamChanged is MarkVerified's refusal of an answer read in a stream the bucket is no longer

@@ -272,6 +272,51 @@ func TestAReadyHeadIsPublishedByTheFirstVerifyPassAfterItsRequest(t *testing.T) 
 	}
 }
 
+// VerifyRequests lists every request the bucket holds while the listener writes one of them
+// again, as it does when a request goes unanswered: the jetstream watcher it listed through before
+// could leave such a request out of a pass (INFRA-6356), whose head then waited for the next one.
+// Here the test writes the request again, with the bytes the bucket holds for it.
+func TestVerifyRequestsListsARequestWrittenAgainDuringTheRead(t *testing.T) {
+	t.Parallel()
+	h := newVerifyHarness(t, reviewerAppID)
+	pulls := []fakePull{head(21), head(22)}
+	for i, pull := range pulls {
+		run := runAt(pull, int64(100+i), "ci-ok", "completed", "success", "2026-11-22T00:05:00Z")
+		h.post("check_run", webhookFor("check_run", run, pull.number), fmt.Sprintf("d%d", i))
+	}
+	var asked contracts.CIVerifyRequest
+	for _, pull := range pulls {
+		asked = h.waitForRequestOf(pull.sha, 0)
+	}
+	kv, err := h.bus.JS().KeyValue(bus.CIStateBucket)
+	if err != nil {
+		t.Fatalf("open the CI bucket: %v", err)
+	}
+	requestKey := "verify." + cistore.Key(asked.Head.Owner, asked.Head.Repo, asked.Head.Number, asked.Head.SHA)
+	stored, err := kv.Get(requestKey)
+	if err != nil {
+		t.Fatalf("read the request %s: %v", requestKey, err)
+	}
+	writer, err := h.reconciler.Open()
+	if err != nil {
+		t.Fatalf("open a writer: %v", err)
+	}
+
+	h.whileWrittenAgain(requestKey, stored.Value(), func() {
+		for call := range 100 {
+			requests, err := writer.VerifyRequests(h.ctx)
+			if err != nil {
+				t.Fatalf("call %d of VerifyRequests: %v", call, err)
+			}
+			for _, pull := range pulls {
+				if !slices.ContainsFunc(requests, func(listed contracts.CIVerifyRequest) bool { return listed.Head.SHA == pull.sha }) {
+					t.Fatalf("call %d of VerifyRequests left out the request of head %s of pull request %d, which the bucket holds: it listed %+v", call, pull.sha, pull.number, requests)
+				}
+			}
+		}
+	})
+}
+
 // A verify read whose write of what GitHub answered fails writes no answer: the record holds no
 // verified_rev, the request stays, and nothing is published. A later answer -- here another
 // Dispatch process, whose writes land -- publishes.
