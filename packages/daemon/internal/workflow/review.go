@@ -444,11 +444,14 @@ func (v settledView) line() string {
 // addsOnlySkipped says whether v, the settlement now standing for the head, says nothing that
 // told, the one that stood before it applied, did not say but checks new to the head that it names
 // skipped: the two stand for the same head, each check told names keeps the word told names it by,
-// the two name the same commit statuses alike, and each check v adds is named skipped, by GitHub's
-// word or by the daemon's conclusion, the two being spelled alike (record.RunSkipped). A head's
-// first settlement, where none stood before it (told.head "") or the one that stood is another
-// head's, adds the head itself and is never this; nor is one in which a skipped run replaces a run
-// told by another word, since that check's word changed.
+// the two name the same commit statuses alike, and v adds at least one check new to the head, each
+// it adds named skipped, by GitHub's word or by the daemon's conclusion, the two being spelled
+// alike (record.RunSkipped). A settlement that adds no check is never this, whatever else it
+// leaves alike: tellChecks tells none whose line is told's already, and the wake
+// (wakeOnSettlement) still wakes on a newer settlement of the same checks, as it did before this
+// rule. A head's first settlement, where none stood before it (told.head "") or the one that stood
+// is another head's, adds the head itself and is never this; nor is one in which a skipped run
+// replaces a run told by another word, since that check's word changed.
 func (v settledView) addsOnlySkipped(told settledView) bool {
 	if told.head == "" || v.head != told.head || v.statuses != told.statuses {
 		return false
@@ -457,6 +460,10 @@ func (v settledView) addsOnlySkipped(told settledView) bool {
 		if now, kept := v.shown[name]; !kept || now != word {
 			return false
 		}
+	}
+	// Every name told shows, v shows too, so v adds a name exactly where it shows more of them.
+	if len(v.shown) == len(told.shown) {
+		return false
 	}
 	for name, word := range v.shown {
 		if _, said := told.shown[name]; !said && word != string(record.RunSkipped) {
