@@ -33,7 +33,7 @@
 // result. Output goes to WALKTHROUGH_RAW_DIR, default docs/site/media/broker/walkthrough/raw.
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
@@ -90,8 +90,9 @@ interface Section {
 }
 const sections: Section[] = [];
 
-/** Notes that a named on-screen event has just happened in the section being recorded. */
-type Mark = (name: string) => void;
+/** Notes that a named on-screen event has just happened in the section being recorded, and returns
+ *  its wall-clock milliseconds. */
+type Mark = (name: string) => number;
 
 /** A section's marks as they happen, in wall-clock milliseconds; `seconds` converts them to the
  *  file's own seconds once its wall-clock time zero is known. */
@@ -100,7 +101,9 @@ function marker(file: string): { mark: Mark; seconds: (zeroMs: number) => Record
   return {
     mark: (name) => {
       if (wall.has(name)) throw new Error(`${file}: the mark ${name} is set twice`);
-      wall.set(name, Date.now());
+      const at = Date.now();
+      wall.set(name, at);
+      return at;
     },
     seconds: (zeroMs) =>
       Object.fromEntries(
@@ -370,8 +373,8 @@ async function saveTabs(tabs: Tab[], file: string): Promise<void> {
     await recording(tabs[0]).saveAs(file);
     return;
   }
-  const parts = tabs.map((_, i) => join(rawDir, ".video", `${basename(file)}.tab${i}.webm`));
-  for (const [i, tab] of tabs.entries()) await recording(tab).saveAs(parts[i]);
+  // The context is closed, so each tab's recording is a finished file in the recording directory.
+  const parts = await Promise.all(tabs.map((tab) => recording(tab).path()));
   const cuts = tabs.map((tab, i) => {
     const next = tabs[i + 1];
     const trim =
@@ -517,8 +520,7 @@ test("record the broker walkthrough's raw footage", async ({ browser }) => {
     // T1: the machine login prints its code.
     let code = "";
     await terminalSection("t1-login.cast", async (mark) => {
-      const typingAt = Date.now();
-      mark("typing");
+      const typingAt = mark("typing");
       await type("agent-secrets machine login");
       await enter();
       code = (await waitForScreen(printed.loginCode, "a login code"))[1];
@@ -600,8 +602,7 @@ test("record the broker walkthrough's raw footage", async ({ browser }) => {
       let keyShownAt = 0;
       const keyShown = waitForScreen(printed.keyReached, "the command's output", 180_000).then(
         () => {
-          keyShownAt = Date.now();
-          markTerminal("key");
+          keyShownAt = markTerminal("key");
         }
       );
       // B2: the request in the Inbox, its page on the broker in the tab the row opens, and the
@@ -616,8 +617,7 @@ test("record the broker walkthrough's raw footage", async ({ browser }) => {
           await page.goto("/");
           const row = dispatch.inboxRequest(page);
           await expect(row).toBeVisible();
-          const inboxAt = Date.now();
-          mark("inbox");
+          const inboxAt = mark("inbox");
           // Long enough to name the Inbox's link and the sign-in it passes through.
           await sleep(3_500);
           const [tab] = await Promise.all([

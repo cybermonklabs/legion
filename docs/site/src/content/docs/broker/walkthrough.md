@@ -82,7 +82,8 @@ She clicks **Approve** on the broker's page, and the page says what became of th
 The waiting command checks the broker every few seconds, waiting at most 10 seconds between two
 checks, so it carries on within seconds of the approval: it receives `DEMO_API_KEY` in its
 environment and runs. In the recording its output came 0.1 seconds after the click. The demo
-command prints the key's length and last four characters to show it arrived. `agent-secrets status <request>` names who decided the request.
+command prints the key's length and last four characters to show it arrived.
+`agent-secrets status <request>` names who decided the request.
 
 ## 6. The live grant
 
