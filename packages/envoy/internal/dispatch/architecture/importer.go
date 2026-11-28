@@ -150,6 +150,17 @@ type Importer struct {
 	afterFlightTaken func()
 	afterSyncRefusal func()
 	afterCalledAt    func()
+
+	// afterFailureSuperseded runs in recordFailure each time it finds the source row superseded
+	// (another write committed since this sync's load) and so drops the import failure it was
+	// handed, whatever failed (a GitHub read, the model or the projection), answering
+	// errSuperseded in its place. The flight then retries, and a retry that succeeds leaves that
+	// failure on no row, in no event and in no caller's answer: this is the one place it is seen.
+	// Nil, which every deployment leaves it, observes nothing. The package's test of two
+	// processes syncing one source counts it, because a projection that failed under the other
+	// process's sync, which the source row's lock is there to prevent, would otherwise pass as a
+	// retry.
+	afterFailureSuperseded func()
 }
 
 // NewImporter wires the importer to the database, the GitHub App client (nil
@@ -906,6 +917,9 @@ func (i *Importer) recordFailure(ctx context.Context, source loadedSource, failu
 	}
 	if locked.superseded {
 		// Another write committed since this sync's load: a failure met before it is stale.
+		if i.afterFailureSuperseded != nil {
+			i.afterFailureSuperseded()
+		}
 		return model.ArchitectureSource{}, errSuperseded
 	}
 

@@ -879,11 +879,13 @@ func TestCloseWaitsForTheSyncItLeftRunning(t *testing.T) {
 	}
 }
 
-// Two server processes (two Importer instances, no shared mutex) syncing one
-// project while its head keeps moving: each projection takes the source's
-// row lock first, so delete+reinsert never deadlocks in Postgres, every sync
-// succeeds, and the projection is always one whole snapshot's worth of
-// components.
+// Two server processes (two Importer instances, no shared mutex) syncing one project while its
+// head keeps moving: the two processes' projections serialize on the source row, so none fails;
+// a sync that finds the other process committed first is superseded and retried; and each round
+// leaves one whole snapshot's worth of components. A projection that failed would not show in a
+// round's answers: recordFailure finds the row superseded and drops the failure, and the flight
+// retries. So both importers count each failure recordFailure drops (afterFailureSuperseded),
+// and the test wants none.
 func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -912,6 +914,11 @@ func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 		NewImporter(database, client, events.NewBroker()),
 		NewImporter(database, client, events.NewBroker()),
 	}
+	// Set before any sync runs, since every sync of either process reads it.
+	var dropped atomic.Int64
+	for _, process := range processes {
+		process.afterFailureSuperseded = func() { dropped.Add(1) }
+	}
 
 	for round := range 30 {
 		var wait sync.WaitGroup
@@ -929,22 +936,25 @@ func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 				t.Fatalf("round %d process %d: %v", round, n, err)
 			}
 		}
-	}
 
-	var components, snapshotsInUse int
-	var lastCommit, projectedCommit string
-	if err := database.Pool.QueryRow(ctx, `
-		select (select count(*) from components where project_key = 'CORE'),
-		       (select count(distinct snapshot_id) from components where project_key = 'CORE'),
-		       (select last_commit from architecture_sources where project_key = 'CORE'),
-		       (select s.commit from architecture_snapshots s
-		          where s.id = (select max(snapshot_id) from components where project_key = 'CORE'))
-	`).Scan(&components, &snapshotsInUse, &lastCommit, &projectedCommit); err != nil {
-		t.Fatalf("read projection: %v", err)
+		var components, snapshotsInUse int
+		var lastCommit, projectedCommit string
+		if err := database.Pool.QueryRow(ctx, `
+			select (select count(*) from components where project_key = 'CORE'),
+			       (select count(distinct snapshot_id) from components where project_key = 'CORE'),
+			       (select last_commit from architecture_sources where project_key = 'CORE'),
+			       (select s.commit from architecture_snapshots s
+			          where s.id = (select max(snapshot_id) from components where project_key = 'CORE'))
+		`).Scan(&components, &snapshotsInUse, &lastCommit, &projectedCommit); err != nil {
+			t.Fatalf("round %d: read projection: %v", round, err)
+		}
+		if components != 60 || snapshotsInUse != 1 || lastCommit != projectedCommit {
+			t.Fatalf("round %d: components=%d snapshots in use=%d last_commit=%s projected=%s; want 60 components from one snapshot at last_commit",
+				round, components, snapshotsInUse, lastCommit, projectedCommit)
+		}
 	}
-	if components != 60 || snapshotsInUse != 1 || lastCommit != projectedCommit {
-		t.Fatalf("components=%d snapshots in use=%d last_commit=%s projected=%s; want 60 components from one snapshot at last_commit",
-			components, snapshotsInUse, lastCommit, projectedCommit)
+	if got := dropped.Load(); got != 0 {
+		t.Fatalf("%d failures were dropped as superseded: a projection failed under a sync the other process committed, which the source row's lock is there to prevent; want none", got)
 	}
 }
 
