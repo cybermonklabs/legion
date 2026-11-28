@@ -73,9 +73,9 @@ func branchBasis(branch, merge string) afterMergeBasis {
 // TestAnAfterMergeResultCountsOnlyAtACommitThatHoldsTheMerge: v-after-merge, cases 1, 2 and 3. An
 // `after_merge` check counts a result only at a commit of the branch that holds the merge, and the
 // newest that counts decides; a `default_branch` check of an issue with no merged pull request
-// counts any commit of the default branch. It is serial: its live case raises the block schema's
-// manifest, which parallel tests read.
+// counts any commit of the default branch.
 func TestAnAfterMergeResultCountsOnlyAtACommitThatHoldsTheMerge(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
 	issue := rig.issue(t, "A merged change", afterMergeChecks)
 	rig.github.carry("main", afterMergeC0, afterMergeM, afterMergeC1)
@@ -107,9 +107,7 @@ func TestAnAfterMergeResultCountsOnlyAtACommitThatHoldsTheMerge(t *testing.T) {
 	wantStands(t, "a second pass at C1", k5().PassStands, "unknown", "pass_and_fail", []string{secondAtC1, failAtC1}, afterMergeC1)
 
 	// Case 2: a late observation names an old commit, not the program's current deploy.
-	restore := useTheNextReleasesManifest(t)
 	liveIssue := rig.issue(t, "A live observation after its deploy", ":::check{#live when=\"after_merge\" subject=\"production\" program=\"renderer\"}\nThe running program answers.\n:::\n")
-	restore()
 	writeKnownMergeOnBase(t, rig.database, "acme/widgets", 71, afterMergeH1, liveIssue, "main", afterMergeM)
 	current := postDeploy(t, rig.handler, deployBody("renderer", afterMergeC1), http.StatusCreated)
 	latePass := rig.record(t, liveIssue, "live", "tester", "pass", afterMergeC0)
