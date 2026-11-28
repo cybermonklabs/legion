@@ -1566,7 +1566,8 @@ test("a named look's report leaves the phase open and a step's completion closes
   ]);
   await tool.execute(
     "",
-    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    // A testing phase's completion carries no verdict: Dispatch's check states decide it.
+    { op: "handoff_complete", summary: "tested" },
     undefined,
     undefined,
     context()

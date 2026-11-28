@@ -3312,7 +3312,13 @@ describe("heads_fixture", () => {
         { id: late.checkRun, status: "in_progress", conclusion: null },
       ],
     });
-    expect(lateRoute(logOf(late.checkRun))).toBeUndefined();
+    // A job still going has no log yet: its log read answers what gh answers then, a refusal
+    // (heads-routes.ts), never a log.
+    expect(lateRoute(logOf(late.checkRun))).toMatchObject({
+      stderr: `job ${late.checkRun} is still in progress; logs will be available when it is complete\n`,
+      exit: 1,
+    });
+    expect(lateRoute(logOf(late.checkRun))).not.toHaveProperty("stdout");
     const lateBody = bodyOf(lateRoute("^gh pr view")?.stdout);
     expect(lateBody).toContain(`**Checks:**\n${k1Line}\n${lateLine}\n`);
     expect(lateRoute("^gh pr list")?.stdout).toHaveLength(1);
