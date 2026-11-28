@@ -128,9 +128,18 @@ func buildPrioritiesReadCorpus(t *testing.T, databaseURL string) error {
 		return fmt.Errorf("open the corpus's template: %w", err)
 	}
 	defer database.Pool.Close()
+	// Each phase prints what it took, so every run's log says where the corpus's time goes. No
+	// verdict reads these lines; readCorpusBuilt.took, which the census's line prints, still
+	// counts from the SQL file's start.
+	phaseStarted := time.Now()
+	logPhase := func(phase string) {
+		t.Logf("the corpus's build: %s took %s", phase, time.Since(phaseStarted).Round(time.Millisecond))
+		phaseStarted = time.Now()
+	}
 	if err := database.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrate the corpus's template: %w", err)
 	}
+	logPhase("the migrate")
 	at := time.Now().UTC().Add(-62 * 24 * time.Hour).Truncate(time.Second)
 	projects := append(slices.Clone(readCorpusProjects), readCorpusAdvancesProject)
 	projectRows := make([][]any, 0, len(projects))
@@ -148,6 +157,7 @@ func buildPrioritiesReadCorpus(t *testing.T, databaseURL string) error {
 	copySeededRows(t, database, "projects", seededProjectColumns, projectRows)
 	copySeededRows(t, database, "issues", seededIssueColumns, issueRows)
 	copySeededRows(t, database, "events", seededEventColumns, eventRows)
+	logPhase("the three COPYs of the four projects, their first issues and those issues' events")
 
 	// The file reads its projects from two settings and keeps its working tables as temporary
 	// ones, both of which belong to one session, so it runs on one connection after them.
@@ -167,9 +177,13 @@ func buildPrioritiesReadCorpus(t *testing.T, databaseURL string) error {
 		return fmt.Errorf("write the corpus (testdata/priorities-read-corpus.sql): %w", err)
 	}
 	connection.Release()
+	logPhase("the SQL file (testdata/priorities-read-corpus.sql) and its two set_configs")
 	fillNewestEventPairs(t, database)
+	logPhase("the fill of the newest-event pairs (fillNewestEventPairs)")
 	settleSpeedCorpus(t, database)
+	logPhase("the settle (settleSpeedCorpus's vacuum (analyze))")
 	readCorpusBuilt = readCorpusCensusOf(t, database)
+	logPhase("the census (readCorpusCensusOf)")
 	readCorpusBuilt.took = time.Since(began)
 	return nil
 }

@@ -742,6 +742,34 @@ type gitHubRoute struct {
 	handler http.HandlerFunc
 }
 
+// fixtureAppKey is the App key of every results stand-in (resultsGitHubOptions) and of every rig
+// of spec_results_test.go: the PEM text of an RSA-2048 key in the PKCS1 form githubapptest.Key
+// writes, generated once per test binary rather than once per server, since generating one costs
+// more under -race than many of the tests that build such a server. No server needs a key of its
+// own: each stand-in GitHub mints an installation token for any request to its token route and
+// checks no signature (resultsGitHubOptions, specGitHub.serve), so the key need only be one the
+// App client parses and signs with. The servers only read the text, and each parses it into a key
+// of its own (githubappjwt.ParseKey); signing with one crypto/rsa key from many goroutines at once
+// is safe as well. A failed generation's error is kept and reported by each caller that asks for
+// the key.
+var fixtureAppKey = sync.OnceValues(func() (string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})), nil
+})
+
+// fixtureAppPEM is fixtureAppKey's PEM text, failing t when the key could not be generated.
+func fixtureAppPEM(t testing.TB) string {
+	t.Helper()
+	pemText, err := fixtureAppKey()
+	if err != nil {
+		t.Fatalf("generate fixture key: %v", err)
+	}
+	return pemText
+}
+
 // resultsGitHubOptions is the server resultsGitHubServed builds, as options a test can add to
 // before it builds the server itself: its own store and the rename pairs read from it
 // (renamedRepositoryStore).
@@ -754,11 +782,7 @@ func resultsGitHubOptions(
 	routes ...gitHubRoute,
 ) testServerOptions {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate fixture key: %v", err)
-	}
-	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	pemText := fixtureAppPEM(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
 		if !repos[r.PathValue("owner")+"/"+r.PathValue("repo")] {

@@ -675,41 +675,55 @@ func (a *mergeBaseAdvancesScan) resolve() []model.IssueAdvance {
 // On the corpus it compares in each of the three states of the newest-event pairs
 // (mergeBaseCorpusStates), one subtest each, in order: after the fill, every pair null, and after
 // an append of the release before. Before the first, it holds the fill (holdNewestEventFill).
+//
+// The two parts, the subtests "the corpus" and "a store with no live priority", run beside each
+// other. They can: each has a database of its own, the corpus a clone of its template
+// (seedPrioritiesReadCorpus) and the store with no live priority a clone of storetest.Open's
+// template that seedNoLivePriority writes, and neither reads or writes the other's. go test starts
+// a parallel subtest only once its parent's body has returned, so the corpus's part is a parallel
+// subtest too: left in the test's body, it would run to its end before the other part started.
 func TestThePrioritiesReadAnswersAsTheMergeBaseAnswers(t *testing.T) {
 	t.Parallel()
-	corpus := seedPrioritiesReadCorpus(t)
-	t.Log(corpus.census)
-	corpus.census.hold(t)
-	requireReadCorpusJITOff(t, corpus.database, "the merge base's comparison")
-	t.Logf("the read below this change is readPriorities at %s, frozen in priority_read_merge_base_test.go", prioritiesReadMergeBase)
-	holdNewestEventFill(t, corpus.database)
+	t.Run("the corpus", func(t *testing.T) {
+		t.Parallel()
+		corpus := seedPrioritiesReadCorpus(t)
+		t.Log(corpus.census)
+		corpus.census.hold(t)
+		requireReadCorpusJITOff(t, corpus.database, "the merge base's comparison")
+		t.Logf("the read below this change is readPriorities at %s, frozen in priority_read_merge_base_test.go", prioritiesReadMergeBase)
+		holdNewestEventFill(t, corpus.database)
 
-	largest := readCorpusLargestProjects(t, corpus.database, 2)
-	for _, state := range mergeBaseCorpusStates {
-		t.Run(state.name, func(t *testing.T) {
-			if state.setup != nil {
-				state.setup(t, corpus.database)
-			}
-			compareReadsWithMergeBase(t, corpus.database, "the corpus "+state.name, [][]string{{}, largest[:1], largest}, func(form prioritiesReadForm, projects []string, want model.Priorities) {
-				switch {
-				case len(projects) == 0:
-					holdReadCorpusAnswer(t, want, form, "the read below this change")
-				case want.PriorityWorkParked.Count == 0:
-					t.Errorf("%s with %s answers no parked work in the read below this change, so its comparison proves little", form.called, projectsNamed(projects))
+		largest := readCorpusLargestProjects(t, corpus.database, 2)
+		for _, state := range mergeBaseCorpusStates {
+			t.Run(state.name, func(t *testing.T) {
+				// Not parallel: each state's setup makes it from the one before on the one clone
+				// (mergeBaseCorpusStates), so the three run one after another, in order.
+				if state.setup != nil {
+					state.setup(t, corpus.database)
 				}
+				compareReadsWithMergeBase(t, corpus.database, "the corpus "+state.name, [][]string{{}, largest[:1], largest}, func(form prioritiesReadForm, projects []string, want model.Priorities) {
+					switch {
+					case len(projects) == 0:
+						holdReadCorpusAnswer(t, want, form, "the read below this change")
+					case want.PriorityWorkParked.Count == 0:
+						t.Errorf("%s with %s answers no parked work in the read below this change, so its comparison proves little", form.called, projectsNamed(projects))
+					}
+				})
 			})
+		}
+	})
+	t.Run("a store with no live priority", func(t *testing.T) {
+		t.Parallel()
+		empty := seedNoLivePriority(t)
+		compareReadsWithMergeBase(t, empty.database, "a store with no live priority", [][]string{{}, empty.projects[:1], empty.projects}, func(form prioritiesReadForm, projects []string, want model.Priorities) {
+			if want.Empty != mergeBasePriorityNoneWritten || len(want.Priorities) != 0 {
+				t.Errorf("%s with %s on a store with no live priority answers %d priorities and empty %q in the read below this change, want none and the sentence saying why",
+					form.called, projectsNamed(projects), len(want.Priorities), want.Empty)
+			}
+			if want.WorkUnderNoPriority.Count == 0 {
+				t.Errorf("%s with %s on a store with no live priority counts no work under none in the read below this change, so its comparison proves little", form.called, projectsNamed(projects))
+			}
 		})
-	}
-
-	empty := seedNoLivePriority(t)
-	compareReadsWithMergeBase(t, empty.database, "a store with no live priority", [][]string{{}, empty.projects[:1], empty.projects}, func(form prioritiesReadForm, projects []string, want model.Priorities) {
-		if want.Empty != mergeBasePriorityNoneWritten || len(want.Priorities) != 0 {
-			t.Errorf("%s with %s on a store with no live priority answers %d priorities and empty %q in the read below this change, want none and the sentence saying why",
-				form.called, projectsNamed(projects), len(want.Priorities), want.Empty)
-		}
-		if want.WorkUnderNoPriority.Count == 0 {
-			t.Errorf("%s with %s on a store with no live priority counts no work under none in the read below this change, so its comparison proves little", form.called, projectsNamed(projects))
-		}
 	})
 }
 

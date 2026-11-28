@@ -101,20 +101,46 @@ func mainListStatement(t *testing.T, sent string) string {
 // whose filter can match must answer an issue in the merge base's text, and the counts the corpus
 // was built to must hold there: 598 issues under the largest priority, 7,677 under any and the
 // rest under none.
+//
+// Each filter is a subtest of its own, its three pagings in turn, and so is the page past the
+// end. The subtests run beside each other on the one corpus, since nothing they do writes a row a
+// listing statement reads: building a server records alice and bob (seedPeople), a request
+// records the person it acts as (headerIdentity), the boot mark a server takes writes no row
+// (events.Horizon.Mark), and no listing statement reads a person. Each subtest makes its requests
+// of a server of its own, because the trace a request's statement is read back from
+// (listingRequest) holds every statement its server sent since the last read, and runs that
+// statement again on pools of its own, because the package runs eight tests at once
+// (apiTestParallelism) and a pool every subtest shared would hold four connections.
 func TestAPriorityListAnswersAsTheMergeBaseAnswers(t *testing.T) {
 	t.Parallel()
 	corpus := seedListCorpus(t)
 	t.Log(corpus.String())
-	trace := &speedTrace{}
-	handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{store: corpus.database, tracer: trace, identity: headerIdentity(corpus.database)})
-	mergeBase := &server{deps: Deps{Store: planCacheStore(t, corpus.database, "force_custom_plan", 4)}}
-	generic := &server{deps: Deps{Store: planCacheStore(t, corpus.database, "force_generic_plan", 4)}}
+	// comparing builds what one subtest's comparisons run on, all of it the subtest's own: a
+	// server over the corpus with the trace its requests are read back from, and the merge base's
+	// and the generic plan's pools each request's statement is run again on.
+	comparing := func(t *testing.T) func(target string) listAnswer {
+		t.Helper()
+		trace := &speedTrace{}
+		handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{store: corpus.database, tracer: trace, identity: headerIdentity(corpus.database)})
+		mergeBase := &server{deps: Deps{Store: planCacheStore(t, corpus.database, "force_custom_plan", 4)}}
+		generic := &server{deps: Deps{Store: planCacheStore(t, corpus.database, "force_generic_plan", 4)}}
+		return func(target string) listAnswer {
+			t.Helper()
+			return compareWithMergeBase(t, handler, trace, mergeBase, generic, target)
+		}
+	}
 
 	largest, second, third := corpus.priorities[0], corpus.priorities[1], corpus.priorities[2]
+	// The corpus starts thirty days before the run, so a moment's text changes from run to run. A
+	// subtest's name writes each moment as its distance from the corpus's start instead, so every
+	// leaf keeps one name across runs: moment records each moment's text beside that name.
+	var moments []string
 	moment := func(place int) string {
-		return url.QueryEscape(corpus.start.Add(time.Duration(place) * time.Minute).Format(time.RFC3339))
+		text := url.QueryEscape(corpus.start.Add(time.Duration(place) * time.Minute).Format(time.RFC3339))
+		moments = append(moments, text, fmt.Sprintf("start+%dm", place))
+		return text
 	}
-	for _, filter := range []struct {
+	filters := []struct {
 		query string
 		// total is the count the merge base's answer must carry, 0 for any count above none, and
 		// empty marks a filter that matches no issue.
@@ -159,32 +185,46 @@ func TestAPriorityListAnswersAsTheMergeBaseAnswers(t *testing.T) {
 		{query: "advances=any&own=true"},
 		{query: "advances=none&own=true", empty: true},
 		{query: "advances=any&own=true&status=backlog&status=icebox&moved=true"},
-	} {
-		for _, paging := range []string{"", "limit=50", "limit=50&offset=100"} {
-			if filter.query == "" && paging == "" {
-				// Every issue resolved, three times over, proves nothing the paged reads do not.
-				continue
-			}
-			target := "/api/v1/issues?" + strings.Trim(filter.query+"&"+paging, "&")
-			want := compareWithMergeBase(t, handler, trace, mergeBase, generic, target)
-			switch {
-			case filter.empty && want.total != 0:
-				t.Errorf("%s answers %d issues in the merge base's text, want none", target, want.total)
-			case !filter.empty && want.total == 0:
-				t.Errorf("%s answers no issue in the merge base's text, so its comparison proves nothing", target)
-			case filter.total != 0 && want.total != filter.total:
-				t.Errorf("%s answers %d issues in the merge base's text, want the corpus's %d", target, want.total, filter.total)
-			}
+	}
+	stable := strings.NewReplacer(moments...)
+	for _, filter := range filters {
+		name := "filter (none)"
+		if filter.query != "" {
+			name = "filter " + stable.Replace(filter.query)
 		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			compare := comparing(t)
+			for _, paging := range []string{"", "limit=50", "limit=50&offset=100"} {
+				if filter.query == "" && paging == "" {
+					// Every issue resolved, three times over, proves nothing the paged reads do not.
+					continue
+				}
+				target := "/api/v1/issues?" + strings.Trim(filter.query+"&"+paging, "&")
+				want := compare(target)
+				switch {
+				case filter.empty && want.total != 0:
+					t.Errorf("%s answers %d issues in the merge base's text, want none", target, want.total)
+				case !filter.empty && want.total == 0:
+					t.Errorf("%s answers no issue in the merge base's text, so its comparison proves nothing", target)
+				case filter.total != 0 && want.total != filter.total:
+					t.Errorf("%s answers %d issues in the merge base's text, want the corpus's %d", target, want.total, filter.total)
+				}
+			}
+		})
 	}
-	if want := compareWithMergeBase(t, handler, trace, mergeBase, generic,
-		fmt.Sprintf("/api/v1/issues?advances=%s&limit=50&offset=%d", largest, listCorpusLargest+2)); want.total != listCorpusLargest || len(want.keys) != 0 {
-		t.Errorf("a page past the end answers %d issues of %d in the merge base's text, want none of %d", len(want.keys), want.total, listCorpusLargest)
-	}
+	t.Run("a page past the end", func(t *testing.T) {
+		t.Parallel()
+		compare := comparing(t)
+		if want := compare(fmt.Sprintf("/api/v1/issues?advances=%s&limit=50&offset=%d", largest, listCorpusLargest+2)); want.total != listCorpusLargest || len(want.keys) != 0 {
+			t.Errorf("a page past the end answers %d issues of %d in the merge base's text, want none of %d", len(want.keys), want.total, listCorpusLargest)
+		}
+	})
 }
 
 // listAnswer is one listing answer: the bytes the route writes for it, its issues' keys in
-// order, and the count of every issue its filters match.
+// order, and the count of every issue its filters match. The server's answer carries its keys and
+// count only where its bytes are not the merge base's (compareWithMergeBase).
 type listAnswer struct {
 	body  []byte
 	keys  []string
@@ -208,7 +248,12 @@ func compareWithMergeBase(t *testing.T, handler http.Handler, trace *speedTrace,
 	}
 	want := listStatementAnswer(t, mergeBase, mainListStatement(t, listing.sql), listing.arguments, page)
 	served := listAnswer{body: response.Body.Bytes()}
-	served.keys, served.total = listAnswerKeys(t, served.body, page != nil)
+	if !bytes.Equal(served.body, want.body) {
+		// Only holdToMergeBase's failure message reads the served answer's keys and count, so its
+		// body is decoded only where it differs: an unpaged answer can hold every issue of the
+		// corpus, and decoding it is work no passing comparison reads.
+		served.keys, served.total = listAnswerKeys(t, served.body, page != nil)
+	}
 	holdToMergeBase(t, target, "the server's answer", served, want)
 	holdToMergeBase(t, target, "the answer of its text under the generic plan", listStatementAnswer(t, generic, listing.sql, listing.arguments, page), want)
 	return want

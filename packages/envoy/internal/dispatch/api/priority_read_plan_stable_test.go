@@ -35,9 +35,15 @@ const prioritiesReadPlanRatio float64 = planBuffersRatio
 // its time on both plans, their ratio, and both plans. Buffers are what a plan reads, not how
 // fast the machine reads them, so the bound holds on any machine.
 func TestThePrioritiesReadKeepsItsPlansWithAProjectNamed(t *testing.T) {
-	// Not parallel: it holds shared-buffer counts of its own statements to a ratio, and the
-	// shared buffers and their caching are the whole Postgres server's, which the package's
-	// parallel tests use at the same time, as TestPrioritiesReadKeepsItsPlans says.
+	// Not parallel: its margin is under the three shared buffers that a catalog lookup alone
+	// added to a node's count, the case TestThePrioritiesReadWalksIssuesOnceOnTheCorpus records.
+	// In CI run 46136512207 (job 140952909371, main at a8532f5c, 2026-11-28), where no plan of it
+	// held a Gather or Parallel node, the live priorities statement read 1 shared buffer on each
+	// plan, in the full read and in the summary with PRDW named, against its bound of at most 2
+	// times: a margin of 1 buffer. Its full statements read 5648 against 6461 and its summary
+	// statements 7812 against 5087. A test beside it would change the catalog the server shares:
+	// the package's parallel tests create and drop databases on the same Postgres server all the
+	// time, and with a margin of 1 buffer one catalog lookup in a node's count fails the test.
 	corpus := seedPrioritiesReadCorpus(t)
 	t.Log(corpus.census)
 	corpus.census.hold(t)
@@ -128,10 +134,14 @@ func TestThePrioritiesReadKeepsItsPlansWithAProjectNamed(t *testing.T) {
 // connection (PostgreSQL 18.6, 2026-11-25). Those three were neither the relations' read nor the
 // walk's, and the hold counted them as the walk's.
 func TestThePrioritiesReadWalksIssuesOnceOnTheCorpus(t *testing.T) {
-	// Not parallel: it holds shared-buffer counts, as the two other corpus tests that hold them
-	// (TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan and
-	// TestThePrioritiesReadKeepsItsPlansWithAProjectNamed) are not; the merge base's comparison
-	// holds none and runs in parallel.
+	// Not parallel: its margin is under the three shared buffers that a catalog lookup alone
+	// added to a node's count, the case the comment above records. In CI run 46136512207 (job
+	// 140952909371, main at a8532f5c, 2026-11-28), where no plan of it held a Gather or Parallel
+	// node, the walk read 1262 shared buffers against main's walk's 1262 under each plan, with no
+	// project named and with PRDW named: a margin of 0 buffers. A test beside it would change the
+	// catalog the server shares: the package's parallel tests create and drop databases on the same
+	// Postgres server all the time, and with a margin of 0 buffers one catalog lookup in a node's
+	// count fails the test.
 	if !strings.Contains(priorityReadQuery, mainNewestEventWalk) {
 		t.Fatalf("the priorities read's statement does not carry main's walk as mainNewestEventWalk freezes it, so the walk holds hold no text the read runs")
 	}

@@ -46,6 +46,8 @@ func roomForOneAnswer() string {
 // test makes only the two that show writes adding up: the first still fits beside the text before
 // it, and the second, no bigger, passes the bound only with the first. Each insert costs time in the
 // size of the whole document, and making the earlier ones one at a time took most of a minute.
+// The seven kinds of growth run beside each other: each has a server and a database of its own
+// (newTestHandler), and what they share is the table's rows, which none of them writes.
 func TestRepeatedInsertsCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 	t.Parallel()
 	tableSpec := "| a | b |\n| - | - |\n| A10 | b |\n"
@@ -71,6 +73,7 @@ func TestRepeatedInsertsCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T
 		{"a thousand table rows", tableSpec + strings.Repeat("| x | y |\n", 4_000), "A10", strings.Repeat("| x | y |\n", 1_000)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			handler := newTestHandler(t)
 			issue := createInteractionIssue(t, handler, "TEST", "Repeated growth", test.spec)
 			const inserts = 2
@@ -279,9 +282,12 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 // is written without it, saying who answered and when, so no answer grows the document past what
 // one upload may hold: one choice of a 1,000,000-character option took a 1 MB document to 8 MB,
 // and an answer of 900 KB to a document with no room for it was refused and recorded nowhere.
+// The two cases run beside each other: each has a server and a database of its own
+// (blockAskHandler), so neither reads what the other writes.
 func TestAnAnswerTheDocumentHasNoRoomForIsKeptOnItsAskAndLeftOutOfItsBlock(t *testing.T) {
 	t.Parallel()
 	t.Run("words", func(t *testing.T) {
+		t.Parallel()
 		prose := boundedAnswer()
 		handler, _ := blockAskHandler(t)
 		const asks = 3
@@ -311,6 +317,7 @@ func TestAnAnswerTheDocumentHasNoRoomForIsKeptOnItsAskAndLeftOutOfItsBlock(t *te
 		}
 	})
 	t.Run("a choice of an option at the ask bound", func(t *testing.T) {
+		t.Parallel()
 		handler, _ := blockAskHandler(t)
 		// The label takes the ask bound less the question, since an upload is held to an ask's
 		// wording as a route is (validateWrittenAskBlocks). Each ">" renders escaped as seven
@@ -444,6 +451,11 @@ func literalRequest(t *testing.T, handler http.Handler, method, target string, b
 // dozens of comments, suggestions and replies of everyday length - is taken whole. Without the
 // bound, thirty-two suggestions of 900 KB were taken and one cold websocket load of their document
 // took 296 MiB.
+//
+// The refusals and ordinary use run beside each other on the one server, each on an issue of a
+// project of its own. Neither reads the other's issue or anything over the whole server - the
+// near-copy gate each create passes weighs it against its own project's issues alone - so neither
+// can see what the other writes.
 func TestSuggestionsCannotGrowADocumentsMarginPastWhatItMayHold(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -452,61 +464,68 @@ func TestSuggestionsCannotGrowADocumentsMarginPastWhatItMayHold(t *testing.T) {
 		fmt.Fprintf(&words, "q%02dx ", index)
 	}
 	spec := words.String() + "\n"
-	suggest := func(issue string, quote int, replacement string) *httptest.ResponseRecorder {
+	// suggest is handed the t of the case that calls it: a parallel case runs once the test's own
+	// function has returned, on a goroutine of its own, and only its own t may fail it there.
+	suggest := func(t *testing.T, issue string, quote int, replacement string) *httptest.ResponseRecorder {
 		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{
 			"body":       "a suggestion",
 			"anchor":     map[string]any{"artifact": "spec", "quote": fmt.Sprintf("q%02dx", quote)},
 			"suggestion": map[string]string{"replace_with": replacement},
 		}, "alice")
 	}
-	refused := func(response *httptest.ResponseRecorder, want string) {
-		t.Helper()
-		if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), `"code":"CAP_EXCEEDED"`) || !strings.Contains(response.Body.String(), want) {
-			t.Fatalf("status=%d body=%.500s, want 413 CAP_EXCEEDED saying %q", response.Code, response.Body.String(), want)
-		}
-	}
 
-	issue := createInteractionIssue(t, handler, "TEST", "Margin", spec)
-	stored := documentMarkdown(t, handler, issue.PrimaryArtifactID)
-	refused(suggest(issue.Key, 0, strings.Repeat("a", 300_000)), "holds at most 256 KiB (262144 bytes) of text")
-	for index := range 4 {
-		if response := suggest(issue.Key, index+1, strings.Repeat("a", 230_000)); response.Code != http.StatusCreated {
-			t.Fatalf("suggestion %d of four that fit the margin: status=%d body=%.300s", index+1, response.Code, response.Body.String())
-		}
-	}
-	refused(suggest(issue.Key, 5, strings.Repeat("a", 230_000)), "a document's margin holds at most 1 MiB (1048576 bytes)")
-	for _, read := range []string{"/text", "/blocks"} {
-		if response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+read, nil, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("%s after the refused suggestion: status=%d body=%.300s", read, response.Code, response.Body.String())
-		}
-	}
-	if text := documentMarkdown(t, handler, issue.PrimaryArtifactID); text != stored {
-		t.Fatalf("the document after the suggestions reads %q, want it as it was, %q", text, stored)
-	}
-
-	ordinary := createInteractionIssue(t, handler, "ORD", "Ordinary margin", spec)
-	sentence := strings.Repeat("A sentence of ordinary length. ", 16)
-	for index := range 60 {
-		var response *httptest.ResponseRecorder
-		if index%3 == 0 {
-			response = suggest(ordinary.Key, index, sentence)
-		} else {
-			response = dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+ordinary.Key+"/comments", map[string]any{
-				"body":   sentence,
-				"anchor": map[string]any{"artifact": "spec", "quote": fmt.Sprintf("q%02dx", index)},
-			}, "alice")
-		}
-		if response.Code != http.StatusCreated {
-			t.Fatalf("ordinary comment %d: status=%d body=%.300s", index+1, response.Code, response.Body.String())
-		}
-		if index%5 == 0 {
-			root := decodeBody[model.Comment](t, response)
-			reply := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+ordinary.Key+"/comments", map[string]any{"body": sentence, "reply_to": root.ID}, "alice")
-			if reply.Code != http.StatusCreated {
-				t.Fatalf("a reply to comment %d: status=%d body=%.300s", index+1, reply.Code, reply.Body.String())
+	t.Run("a suggestion past either bound", func(t *testing.T) {
+		t.Parallel()
+		refused := func(response *httptest.ResponseRecorder, want string) {
+			t.Helper()
+			if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), `"code":"CAP_EXCEEDED"`) || !strings.Contains(response.Body.String(), want) {
+				t.Fatalf("status=%d body=%.500s, want 413 CAP_EXCEEDED saying %q", response.Code, response.Body.String(), want)
 			}
 		}
-	}
+		issue := createInteractionIssue(t, handler, "TEST", "Margin", spec)
+		stored := documentMarkdown(t, handler, issue.PrimaryArtifactID)
+		refused(suggest(t, issue.Key, 0, strings.Repeat("a", 300_000)), "holds at most 256 KiB (262144 bytes) of text")
+		for index := range 4 {
+			if response := suggest(t, issue.Key, index+1, strings.Repeat("a", 230_000)); response.Code != http.StatusCreated {
+				t.Fatalf("suggestion %d of four that fit the margin: status=%d body=%.300s", index+1, response.Code, response.Body.String())
+			}
+		}
+		refused(suggest(t, issue.Key, 5, strings.Repeat("a", 230_000)), "a document's margin holds at most 1 MiB (1048576 bytes)")
+		for _, read := range []string{"/text", "/blocks"} {
+			if response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+read, nil, "alice"); response.Code != http.StatusOK {
+				t.Fatalf("%s after the refused suggestion: status=%d body=%.300s", read, response.Code, response.Body.String())
+			}
+		}
+		if text := documentMarkdown(t, handler, issue.PrimaryArtifactID); text != stored {
+			t.Fatalf("the document after the suggestions reads %q, want it as it was, %q", text, stored)
+		}
+	})
+	t.Run("ordinary use", func(t *testing.T) {
+		t.Parallel()
+		ordinary := createInteractionIssue(t, handler, "ORD", "Ordinary margin", spec)
+		sentence := strings.Repeat("A sentence of ordinary length. ", 16)
+		for index := range 60 {
+			var response *httptest.ResponseRecorder
+			if index%3 == 0 {
+				response = suggest(t, ordinary.Key, index, sentence)
+			} else {
+				response = dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+ordinary.Key+"/comments", map[string]any{
+					"body":   sentence,
+					"anchor": map[string]any{"artifact": "spec", "quote": fmt.Sprintf("q%02dx", index)},
+				}, "alice")
+			}
+			if response.Code != http.StatusCreated {
+				t.Fatalf("ordinary comment %d: status=%d body=%.300s", index+1, response.Code, response.Body.String())
+			}
+			if index%5 == 0 {
+				root := decodeBody[model.Comment](t, response)
+				reply := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+ordinary.Key+"/comments", map[string]any{"body": sentence, "reply_to": root.ID}, "alice")
+				if reply.Code != http.StatusCreated {
+					t.Fatalf("a reply to comment %d: status=%d body=%.300s", index+1, reply.Code, reply.Body.String())
+				}
+			}
+		}
+	})
 }
 
 // refusedTooLarge reports whether response is a write refused as too large to store: 413

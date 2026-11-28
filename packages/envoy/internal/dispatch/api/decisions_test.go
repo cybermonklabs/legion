@@ -71,14 +71,17 @@ func linkTargets(decision model.Decision) []string {
 
 // decisionsFixture is one issue whose spec holds two linkable blocks and whose decisions.md holds
 // an agent decision linking both, a person's decision linking an answered ask and one of them, an
-// unsure decision, and a replaced one.
+// unsure decision, and a replaced one. spec and decisionsMarkdown are the markdown the fixture
+// created its issue's spec and decisions.md with; the decisions markdown names the fixture's own
+// issue and ask in its links.
 type decisionsFixture struct {
-	handler   http.Handler
-	database  *store.Store
-	deps      Deps
-	issue     model.Issue
-	decisions model.Artifact
-	askID     string
+	handler                 http.Handler
+	database                *store.Store
+	deps                    Deps
+	issue                   model.Issue
+	decisions               model.Artifact
+	askID                   string
+	spec, decisionsMarkdown string
 }
 
 const (
@@ -94,8 +97,8 @@ func newDecisionsFixture(t *testing.T) decisionsFixture {
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	createReferenceAPIProject(t, handler, "CORE")
-	issue := createSpecIssue(t, handler, "CORE",
-		shipIt("Ship it.")+"\n\n"+holdIt("Hold it.")+"\n\nOther paragraph.\n")
+	specText := shipIt("Ship it.") + "\n\n" + holdIt("Hold it.") + "\n\nOther paragraph.\n"
+	issue := createSpecIssue(t, handler, "CORE", specText)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 		"question": "Which name do we use?",
 	}, "alice")
@@ -125,7 +128,10 @@ Unsure: a measurement of the hit rate would change this.
 Replaced by the table above.
 `, tableDecision, tableParagraph, spec, spec, nameDecision, issue.Key, askID, spec, cacheDecision, fileDecision)
 	decisions := uploadIssueDocument(t, handler, issue.Key, "decisions.md", markdown)
-	return decisionsFixture{handler: handler, database: database, deps: deps, issue: issue, decisions: decisions, askID: askID}
+	return decisionsFixture{
+		handler: handler, database: database, deps: deps, issue: issue, decisions: decisions, askID: askID,
+		spec: specText, decisionsMarkdown: markdown,
+	}
 }
 
 // specVersionCount is how many versions the issue's spec has.
@@ -552,6 +558,7 @@ func TestADecisionKeptBeforeARendererChangeStaysKept(t *testing.T) {
 		{"stamped with none", nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			keptAcrossARendererChange(t, test.stamp)
 		})
 	}
@@ -726,6 +733,7 @@ func TestADecisionKeptInsideOrOutsideATypedBlockStaysKeptAcrossARendererChange(t
 		{"kept inside a callout and standing inside it now", true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newDecisionsFixture(t)
 			section := listSection(calloutDecision, fixture.issue.Key)
 			place := func(text string, inside bool) string {
@@ -774,6 +782,7 @@ func TestADecisionKeptRunningPastItsCalloutsClosingLineWaitsAcrossARendererChang
 		{"a callout after list items opening with fenced code", "- ```\n  code\n  ```\n\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newDecisionsFixture(t)
 			text := listSection(calloutDecision, fixture.issue.Key) + "\n:::\n\nAfter the callout."
 			place := func(text string) string {
@@ -1254,19 +1263,20 @@ var decisionCutCorpusLeftOut = map[string]string{
 // a list item, a quote or a footnote definition ends holds that whole list, quote or footnote
 // definition, and an empty paragraph, which writes no text, ends after the blank line before it.
 // Each document of decisionCutShapes and of the parser's corpus (markdownCorpus) is stored as the
-// decisions document in turn, the paragraphs its shape names emptied by an edit, and its stored
-// version is cut. Each decision of the view whose heading stands at the document's level or inside
-// a typed block has a cut of its heading whose text and sum are the view's, standing alone unless
-// the view's text runs past the closing line of the innermost typed block that holds its heading,
-// and no other cut is made. A decision whose heading a list item, a quote or a footnote definition
-// holds has no cut (noCut). Where each heading stands is read from the view's own blocks: the
-// lists, quotes, footnote definitions and typed blocks whose ranges hold the heading's, a list
-// standing for its items, which record no range of their own. The corpus documents an upload
-// refuses are left out (decisionCutCorpusLeftOut), each refused as that list says.
+// decisions document of an issue of its own, over the decisions.md the fixture writes, the
+// paragraphs its shape names emptied by an edit, and its stored version is cut. Each decision of
+// the view whose heading stands at the document's level or inside a typed block has a cut of its
+// heading whose text and sum are the view's, standing alone unless the view's text runs past the
+// closing line of the innermost typed block that holds its heading, and no other cut is made. A
+// decision whose heading a list item, a quote or a footnote definition holds has no cut (noCut).
+// Where each heading stands is read from the view's own blocks: the lists, quotes, footnote
+// definitions and typed blocks whose ranges hold the heading's, a list standing for its items,
+// which record no range of their own. The corpus documents an upload refuses are left out
+// (decisionCutCorpusLeftOut), each refused as that list says.
 func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
 	t.Parallel()
 	fixture := newDecisionsFixture(t)
-	ctx, id := context.Background(), fixture.decisions.ID
+	ctx := context.Background()
 	documents := slices.Clone(decisionCutShapes)
 	for _, path := range markdownCorpus(t) {
 		markdown, err := os.ReadFile(path)
@@ -1282,20 +1292,32 @@ func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
 			leftOut++
 		}
 		t.Run(document.name, func(t *testing.T) {
+			t.Parallel()
+			// Each document is stored in an issue of its own, so the documents run side by side and
+			// none reads what another wrote. Every such issue holds the fixture's spec, so it is
+			// forced past the check that would refuse it as a duplicate of the fixture's. The
+			// fixture's decisions.md is written there first, so the document's upload replaces a
+			// document the issue holds, as an upload into the fixture's own issue would, and is
+			// refused as such a replacement is.
+			issue := requireCreatedIssue(t, createIssueRequest(t, fixture.handler, map[string]any{
+				"project": fixture.issue.Project, "title": document.name, "spec": fixture.spec, "force": true,
+			}))
+			decisions := uploadIssueDocument(t, fixture.handler, issue.Key, "decisions.md", fixture.decisionsMarkdown)
+			id := decisions.ID
 			if left {
-				response := issueDocumentUpload(t, fixture.handler, fixture.issue.Key, "decisions.md", document.markdown)
+				response := issueDocumentUpload(t, fixture.handler, issue.Key, "decisions.md", document.markdown)
 				expectRefusal(t, "upload "+document.name+" as decisions.md", response, http.StatusBadRequest, code)
 				return
 			}
-			uploadIssueDocument(t, fixture.handler, fixture.issue.Key, "decisions.md", document.markdown)
+			uploadIssueDocument(t, fixture.handler, issue.Key, "decisions.md", document.markdown)
 			if document.emptied != nil {
 				ops := make([]map[string]any, 0, len(document.emptied))
 				for _, text := range document.emptied {
 					ops = append(ops, map[string]any{"op": "replace", "find": text, "with": ""})
 				}
-				editIssueDocument(t, fixture.handler, fixture.issue.Key, fixture.decisions.Slug, ops)
+				editIssueDocument(t, fixture.handler, issue.Key, decisions.Slug, ops)
 			}
-			view := readIssueDecisions(t, fixture.handler, fixture.issue.Key)
+			view := readIssueDecisions(t, fixture.handler, issue.Key)
 			markdown, blocks, err := fixture.deps.Docs.TextWithBlocks(ctx, id)
 			if err != nil {
 				t.Fatalf("read the decisions document's blocks: %v", err)
@@ -1898,11 +1920,11 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
 // spec's ask blocks, and until it has the issue holds none. Its one bound is the test binary's
-// deadline (testwait.UntilPolling), and its failure prints the questions it last read.
+// deadline (testwait.Until), and its failure prints the questions it last read.
 func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want int) (issueDecisions, []string) {
 	t.Helper()
 	var view issueDecisions
-	questions := testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the issue's decisions to hold %d open questions (the questions last read)", want), func() ([]string, bool) {
+	questions := testwait.Until(t, fmt.Sprintf("the issue's decisions to hold %d open questions (the questions last read)", want), func() ([]string, bool) {
 		view = readIssueDecisions(t, handler, key)
 		questions := []string{}
 		for _, question := range view.OpenQuestions {
