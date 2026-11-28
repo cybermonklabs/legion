@@ -49,6 +49,7 @@ func endedLines(records []map[string]any, name string) int {
 // meet the two is held: the result before an ended context, the result at the context's end, a
 // context ended with no result, and a closed channel, as End's wait for a watch sees one.
 func TestEndsWaitTakesAResultSentAsItsContextEnded(t *testing.T) {
+	t.Parallel()
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
 	for attempt := range 1000 {
@@ -79,16 +80,20 @@ func TestEndsWaitTakesAResultSentAsItsContextEnded(t *testing.T) {
 	}
 }
 
-// testConsumers lists the test bucket's consumers.
-func testConsumers(t *testing.T, conn *natsgo.Conn) []string {
+// testConsumers lists the test bucket's consumers and fails if the server cannot list them.
+func testConsumers(t *testing.T, ctx context.Context, kv bus.KeyValue) []string {
 	t.Helper()
-	js, err := conn.JetStream(testnats.MaxWait(t))
+	stream, err := kv.Streams().Stream(ctx, "KV_"+kv.Bucket())
 	if err != nil {
-		t.Fatalf("jetstream: %v", err)
+		t.Fatalf("read the bucket's stream: %v", err)
 	}
+	lister := stream.ConsumerNames(ctx)
 	var names []string
-	for name := range js.ConsumerNames("KV_kvwatch-test") {
+	for name := range lister.Name() {
 		names = append(names, name)
+	}
+	if err := lister.Err(); err != nil {
+		t.Fatalf("list the bucket's consumers: %v", err)
 	}
 	return names
 }
@@ -97,8 +102,9 @@ func testConsumers(t *testing.T, conn *natsgo.Conn) []string {
 // waits for that watch and ends its watcher too, deleting its consumer, so nothing is left for the
 // connection's drain to delete.
 func TestEndEndsAWatcherArmedAfterTheStop(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
-	conn, kv := bucket(t, uri)
+	_, kv := bucket(t, uri)
 	held := holdWatch(kv)
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
@@ -114,7 +120,7 @@ func TestEndEndsAWatcherArmedAfterTheStop(t *testing.T) {
 	}()
 	close(held.release)
 	testwait.Receive(t, "End to return once the watch it waited for armed and ended its watcher", ended)
-	if consumers := testConsumers(t, conn); len(consumers) != 0 {
+	if consumers := testConsumers(t, testwait.Context(t), kv); len(consumers) != 0 {
 		t.Fatalf("consumers after End = %v, want none", consumers)
 	}
 	if got := warnings(records()); len(got) != 0 {
@@ -129,18 +135,24 @@ func TestEndEndsAWatcherArmedAfterTheStop(t *testing.T) {
 // was ended within it. The watch ends its watcher itself once it arms it, so its consumer is still
 // deleted.
 func TestAWatchStillStartingAtEndsDeadlineIsAnError(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
-	conn, kv := bucket(t, uri)
+	_, kv := bucket(t, uri)
 	held := holdWatch(kv)
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
 	armedWatch(t, held, "the watch to arm its watcher")
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	// The watch cannot finish until released. Give End an elapsed deadline.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Time{})
 	defer cancel()
 	w.End(ctx)
 	close(held.release)
-	eventually(t, "the late watch to delete its consumer", func() bool { return len(testConsumers(t, conn)) == 0 })
+	listCtx := testwait.Context(t)
+	testwait.Until(t, "the late watch to delete its consumer", func() ([]string, bool) {
+		consumers := testConsumers(t, listCtx, kv)
+		return consumers, len(consumers) == 0
+	})
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end found a watch still starting: context deadline exceeded"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
 	}
@@ -186,6 +198,7 @@ func (w failingStop) Stop() error {
 // which nats.go refuses as "connection draining" once the connection's drain begins: the consumer
 // is left to the server, as End's own are, so the stop is a warning, never an error.
 func TestALateWatchAfterALostConnectionIsAWarning(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	held := failingStopKV{heldWatchKV: holdWatch(kv), stopErr: natsgo.ErrConnectionDraining}
@@ -197,7 +210,10 @@ func TestALateWatchAfterALostConnectionIsAWarning(t *testing.T) {
 	cancel(bus.ErrConnectionLost)
 	w.End(ctx)
 	close(held.release)
-	eventually(t, "the late watch's stop to be logged", func() bool { return len(warnings(records())) == 2 })
+	testwait.Until(t, "the late watch's stop to be logged", func() ([]string, bool) {
+		logged := warnings(records())
+		return logged, len(logged) == 2
+	})
 	lost := "WARN test cache watcher end found a watch still starting: " + bus.ErrConnectionLost.Error()
 	late := "WARN test cache watcher's consumer was left to the server: the connection was lost before its delete: " +
 		bus.ErrConnectionLost.Error() + ": " + natsgo.ErrConnectionDraining.Error()
@@ -210,6 +226,7 @@ func TestALateWatchAfterALostConnectionIsAWarning(t *testing.T) {
 // the request) is a lost connection, logged at WARN: the server deletes a consumer whose interest
 // is gone on its own. Without ErrDisconnected in lostConnection, it falls to ERROR.
 func TestADeleteConsumerAnsweredErrDisconnectedDuringEndIsAWarning(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	held := failingStopKV{heldWatchKV: holdWatch(kv), stopErr: natsgo.ErrDisconnected}
@@ -231,13 +248,15 @@ func TestADeleteConsumerAnsweredErrDisconnectedDuringEndIsAWarning(t *testing.T)
 	}
 }
 
-// endsWaiting counts the goroutines parked inside End: waiting for a watch, or for another End.
-func endsWaiting() int {
+// endsWaiting counts the recorded End callers parked waiting for a watch or for another End.
+func endsWaiting(ids []uint64) int {
+	traces := goroutinetest.Traces()
 	n := 0
-	for _, goroutine := range goroutinetest.Traces() {
-		header, _, _ := strings.Cut(goroutine, "\n")
+	for _, id := range ids {
+		trace := traceIn(traces, id)
+		header, _, _ := strings.Cut(trace, "\n")
 		parked := strings.Contains(header, "[select") || strings.Contains(header, "[sync.Mutex.Lock")
-		if parked && strings.Contains(goroutine, "kvwatch.(*Watcher).End(") {
+		if parked && strings.Contains(trace, "kvwatch.(*Watcher).End(") {
 			n++
 		}
 	}
@@ -248,28 +267,38 @@ func endsWaiting() int {
 // caller returns once it has, so a second End beside a first still waiting on a watch never takes
 // the first's wake-up.
 func TestEndCalledTwiceAtOnceReturnsForBoth(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
-	conn, kv := bucket(t, uri)
+	_, kv := bucket(t, uri)
 	held := holdWatch(kv)
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", held.handle(), newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
 	armedWatch(t, held, "the watch to arm its watcher")
 	ended := make(chan struct{}, 2)
+	calling := make(chan uint64, 2)
 	for range 2 {
 		go func() {
+			calling <- goroutinetest.ID()
 			// Under the test's own context, which has no deadline: each End's return is the fact
 			// the row waits for, and only the wait below ends that wait.
 			w.End(t.Context())
 			ended <- struct{}{}
 		}()
 	}
-	eventually(t, "both Ends to wait for the watch", func() bool { return endsWaiting() == 2 })
+	ids := make([]uint64, 0, 2)
+	for range 2 {
+		ids = append(ids, testwait.Receive(t, "an End caller's goroutine id", calling))
+	}
+	testwait.Until(t, "both Ends to wait for the watch", func() (int, bool) {
+		n := endsWaiting(ids)
+		return n, n == len(ids)
+	})
 	close(held.release)
 	for range 2 {
 		testwait.Receive(t, "both Ends to return once the watch they waited for had finished", ended)
 	}
-	if consumers := testConsumers(t, conn); len(consumers) != 0 {
+	if consumers := testConsumers(t, testwait.Context(t), kv); len(consumers) != 0 {
 		t.Fatalf("consumers after both Ends = %v, want none", consumers)
 	}
 	if got := warnings(records()); len(got) != 0 {
@@ -280,6 +309,7 @@ func TestEndCalledTwiceAtOnceReturnsForBoth(t *testing.T) {
 // A delete that fails for any reason but its consumer being gone stays an ERROR: here the bucket's
 // stream was deleted under the watcher, so the server answers "stream not found".
 func TestAFailedConsumerDeleteAtTheEndIsAnError(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	logger, records := jsonLogger(t)
@@ -293,33 +323,49 @@ func TestAFailedConsumerDeleteAtTheEndIsAnError(t *testing.T) {
 	if err := js.DeleteKeyValue("kvwatch-test"); err != nil {
 		t.Fatalf("delete bucket: %v", err)
 	}
-	w.End(testContext(t))
+	w.End(testwait.Context(t))
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: nats: stream not found"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
 	}
 }
 
-// End is bounded by its context: against a server that does not answer, it returns at the
-// deadline and logs the unanswered delete as an ERROR rather than holding the shutdown.
+// End is bounded by its context. Cancel it while the consumer delete is held unanswered.
+// End must report that cause as an ERROR without waiting for the delete to finish.
 func TestEndIsBoundedByItsContext(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	_, kv := bucket(t, uri)
+	held := newHeldStopKV(kv.WatchHandle())
+	defer close(held.release)
 	logger, records := jsonLogger(t)
-	w := kvwatch.New("test cache", kv, newSeen(), kvwatch.WithLogger(logger))
+	w := kvwatch.New("test cache", bus.NewKeyValue(kv.Legacy(), held, kv.Streams()), newSeen(),
+		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc((&pending{}).afterFunc()))
+	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
 
 	thaw := srv.Freeze(t)
-	t.Cleanup(thaw)
+	defer thaw()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	w.End(ctx)
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("End took %s against an unresponsive server, want it to return at its deadline", elapsed)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	ended := make(chan struct{})
+	go func() {
+		w.End(ctx)
+		close(ended)
+	}()
+	testwait.Receive(t, "End to enter the held stop", held.entered)
+	cause := errors.New("shutdown canceled while the consumer delete was unanswered")
+	cancel(cause)
+	testwait.Receive(t, "End to return on cancellation", ended)
+	select {
+	case <-held.returned:
+		t.Fatal("the stop returned before its unanswered delete was released")
+	default:
 	}
-	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: delete its consumer: context deadline exceeded"; got != want {
+	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: delete its consumer: "+cause.Error(); got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
 	}
 	// The stop is still waiting on its delete, so End cannot say the watcher ended.

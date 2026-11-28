@@ -152,20 +152,22 @@ const (
 // interest, session and CI caches read theirs, so readiness costs one pass over the bucket rather
 // than a round trip per stored claim. Each run starts from an empty result, so a claim an earlier
 // run read reaches the start only if this run reads it too. A claim whose key this build cannot
-// read gets a revision here; it still gets no grace, because the grace is read by
-// releaseReadExpiredRoleClaim, the only reader of these revisions, over a claim its caller has read
-// from the bucket, and no caller can read that one.
+// read gets a revision here where the scan's watch delivers it; it still gets no grace, because the
+// grace is read by releaseReadExpiredRoleClaim, the only reader of these revisions, over a claim its
+// caller has read from the bucket, and no caller can read that one. Where the watch left such a key
+// out, the scan cannot read it from the stream's leader, and the run fails.
 //
 // A snapshot short of the bucket is missing claims that are in it, and each one it misses is a
 // restored holder that loses its grace and is released a session TTL early, so an incomplete run
 // returns an error and no revisions. A run that delivers nothing for idle is one, and so is one
 // whose ctx ended, which is how scanRoleClaims ends a run, and one whose watch could not be made.
 // Every error it returns names the role claim scan (roleClaimScanName): kvwatch.ScanExistingKeys
-// puts that name at the head of each error of a watch it made, and returns the error of a watch it
-// could not make as nats.go gave it, which this names. Beside the revisions it returns what the
-// scan delivered (kvwatch.KeyScan), whose count of delete markers the log line of the run Open
-// keeps carries. handed, which only this package's tests set (roleScanSeams), is called after each
-// claim the run is handed with how many it has been handed so far.
+// puts that name at the head of each error of its reads of the bucket's stream and of a watch it
+// made, and returns the error of a watch it could not make as nats.go gave it, which this names.
+// Beside the revisions it returns what the scan delivered (kvwatch.KeyScan), whose count of delete
+// markers the log line of the run Open keeps carries. handed, which only this package's tests set
+// (roleScanSeams), is called after each claim the run is handed with how many it has been handed so
+// far.
 func roleRevisions(ctx context.Context, kv bus.KeyValue, idle time.Duration, log *slog.Logger, handed func(claims int)) (map[string]uint64, kvwatch.KeyScan, error) {
 	revisions := map[string]uint64{}
 	claims := 0
@@ -176,7 +178,7 @@ func roleRevisions(ctx context.Context, kv bus.KeyValue, idle time.Duration, log
 			handed(claims)
 		}
 		return nil
-	}, jetstream.MetaOnly())
+	}, kvwatch.ScanMetaOnly())
 	if err != nil {
 		if !strings.HasPrefix(err.Error(), roleClaimScanName+": ") {
 			err = fmt.Errorf("%s: the bucket's watch could not be made: %w", roleClaimScanName, err)
@@ -636,9 +638,9 @@ type scannedRoleClaim struct {
 }
 
 // roleClaimsUntil lists every role claim the role bucket holds, sorted by role, from one scan of
-// its existing keys (kvwatch.ScanExistingKeys) with delete markers left out: nats.go's Keys runs
-// its legacy watcher (bus.KeyValue says why none may run). An empty bucket lists no claim. A scan
-// short of the bucket fails the caller rather than list part of it, where nats.go's Keys would
+// its existing keys (kvwatch.ScanExistingKeys), which hands over no delete marker: nats.go's Keys
+// runs its legacy watcher (bus.KeyValue says why none may run). An empty bucket lists no claim. A
+// scan short of the bucket fails the caller rather than list part of it, where nats.go's Keys would
 // hand over what had arrived when its watcher gave up, so a sweep never takes a partial list for
 // every claim.
 //
@@ -680,7 +682,7 @@ func (r *Registry) roleClaimsUntil(ctx context.Context) ([]scannedRoleClaim, err
 		claim.Revision = entry.Revision
 		claims[entry.Key] = scannedRoleClaim{Role: entry.Key, Claim: claim, Err: decodeErr}
 		return nil
-	}, jetstream.IgnoreDeletes())
+	})
 	if err != nil {
 		return nil, err
 	}

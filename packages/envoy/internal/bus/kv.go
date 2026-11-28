@@ -397,9 +397,14 @@ func (kv KeyValue) Bucket() string {
 // follows the bucket takes a ctx without one, and the caller cancels ctx once it has stopped the
 // watcher, or the goroutine nats.go parks on ctx.Done() outlives the watch. A ctx without a
 // deadline still bounds the create by the JetStream request wait of the handle's legacy push
-// context, 5 s (js.go:303, jsm.go:1844-1846). The watcher sends a nil entry once it has delivered
-// every existing key, and closes its updates only once its subscription has ended; whoever stops it
-// keeps reading it until then, since nats.go's delivery blocks on a full 256-entry buffer.
+// context, 5 s (js.go:303, jsm.go:1844-1846).
+//
+// A nil entry ends only the watch's first delivery. If another client writes a key again during
+// that delivery, its new message can come after the nil entry even if the watch did not deliver
+// the old one. A reader that must see every key reads the stream's key list (StoredKeys), as
+// kvwatch.ScanExistingKeys does. The watcher closes its updates only when its subscription ends.
+// Whoever stops it keeps reading until then, since nats.go's delivery blocks on a full 256-entry
+// buffer.
 func (kv KeyValue) WatchKeys(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
 	if err := kv.check(keys, watchOverhead(kv.Bucket())); err != nil {
 		return nil, err

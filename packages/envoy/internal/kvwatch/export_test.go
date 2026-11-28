@@ -6,6 +6,9 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
+// AbandonedDrain is the bound on draining a discarded watcher after its stop returns.
+const AbandonedDrain = abandonedDrain
+
 // WatchOn installs a new read on kv as Rewatch does once it has opened its handle. Rewatch opens
 // that handle itself (bus.OpenKeyValue), so a test that holds, times out or ends a re-read's scan
 // installs that read through here, on a handle that does so.

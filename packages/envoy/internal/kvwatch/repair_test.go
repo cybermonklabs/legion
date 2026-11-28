@@ -2,13 +2,16 @@ package kvwatch_test
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // armed stands in for time.AfterFunc and records what the watcher asked of it: how long it wanted
@@ -17,14 +20,14 @@ import (
 // all. Each callback is kept, not just the last, because a real one can still run after a later
 // stop has armed its own: time.Timer.Stop does not wait for a callback already started. A test
 // that counts or fires its waits turns the stream probe off (kvwatch.WithStreamProbeInterval(0)),
-// whose waits it would otherwise record among them. A read's scan idle wait, armed for
-// kvwatch.ScanIdleTimeout, is kept apart (idles), since every read arms one: waits, asked and
-// fireIt count and fire the others, and fireIdle fires the last idle wait.
+// whose waits it would otherwise record among them. Scan idle waits are kept apart (idles) and
+// discarded-watch drains are not recorded: waits, asked and fireIt track only the other waits,
+// and fireIdle fires the last idle wait.
 type armed struct {
-	mu    sync.Mutex
-	delay time.Duration
-	fires []func()
-	idles []func()
+	mu     sync.Mutex
+	delays []time.Duration
+	fires  []func()
+	idles  []func()
 }
 
 // afterFunc is the AfterFunc WithAfterFunc takes.
@@ -36,24 +39,37 @@ func (a *armed) afterFunc() kvwatch.AfterFunc {
 			a.idles = append(a.idles, f)
 			return (*armedTimer)(a)
 		}
-		a.delay = d
+		if d == kvwatch.AbandonedDrain {
+			return (*armedTimer)(a)
+		}
+		a.delays = append(a.delays, d)
 		a.fires = append(a.fires, f)
 		return (*armedTimer)(a)
 	}
 }
 
-// waits reports how many waits the watcher armed, scan idle waits aside.
+// waits reports how many waits the watcher armed, excluding scan idle waits and discard bounds.
 func (a *armed) waits() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return len(a.fires)
 }
 
-// asked is the delay of the last wait the watcher armed, scan idle waits aside.
+// asked is the last delay the watcher asked for, excluding scan idle waits and discard bounds.
 func (a *armed) asked() time.Duration {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.delay
+	if len(a.delays) == 0 {
+		return 0
+	}
+	return a.delays[len(a.delays)-1]
+}
+
+// askedDelays returns the delays of the waits counted by waits, in the order they were armed.
+func (a *armed) askedDelays() []time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.delays)
 }
 
 // fireIdle runs the last scan idle wait's callback, and fails when none was armed.
@@ -129,8 +145,32 @@ func jetStream(t *testing.T, conn *natsgo.Conn) natsgo.JetStreamContext {
 	return js
 }
 
-// deleteTestBucket deletes the test bucket, which deletes the stream the running watcher's ordered
-// consumer reads and so ends that watcher while the connection to NATS stays up.
+// ending lets a test end a real subscription without waiting for nats.go to notice a lost stream.
+// Each step sends the cancel function of the subscription it starts.
+type ending chan context.CancelFunc
+
+func (e ending) step() watchStep {
+	return func(ctx context.Context, kv jetstream.KeyValue) (jetstream.KeyWatcher, error) {
+		ctx, cancel := context.WithCancel(ctx)
+		watcher, err := kv.WatchAll(ctx)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		e <- cancel
+		return watcher, nil
+	}
+}
+
+// end cancels the context nats.go's subscription lives in. nats.go v1.55.0 (js.go:2072-2077)
+// starts a goroutine that unsubscribes on ctx.Done; the watcher's closed handler closes updates.
+func (e ending) end(t *testing.T) {
+	t.Helper()
+	testwait.Receive(t, "the subscription to start", e)()
+}
+
+// deleteTestBucket deletes the test bucket and the stream its ordered consumer reads. It does not
+// close the subscription; a test that needs it to end does that separately.
 func deleteTestBucket(t *testing.T, js natsgo.JetStreamContext) {
 	t.Helper()
 	if err := js.DeleteKeyValue(testBucketName); err != nil {
@@ -138,36 +178,41 @@ func deleteTestBucket(t *testing.T, js natsgo.JetStreamContext) {
 	}
 }
 
-// waitForStopWarns waits until the stops' WARNs number want: each stop writes one. nats.go's
-// ordered consumer reports its stream gone only after two missed 5 s idle heartbeats (against a
-// real nats-server v2.11.4 the notice was measured at about 10 s, 10.017 s, 10.022 s and 10.006 s,
-// and at 18.81 s twice), so the wait ends on the WARNs themselves, as each of eventually's does,
-// and on no span of its own.
+// waitForStopWarns waits for want WARN records from the watcher's own subscription-close path.
 func waitForStopWarns(t *testing.T, records func() []map[string]any, want int) {
 	t.Helper()
-	eventually(t, "the stopped watchers' WARNs", func() bool { return len(matching(records(), "WARN", stoppedWarn)) == want })
+	testwait.Until(t, "the stopped watchers' WARNs", func() (int, bool) {
+		got := len(matching(records(), "WARN", stoppedWarn))
+		return got, got == want
+	})
 }
 
 // A stop a Rewatch repairs a moment later is a WARN and nothing more. The repair disarms the wait,
 // so even firing it afterwards writes no ERROR. Without that, every reconnect and every
 // self-health rebuild left an ERROR an operator had to learn to ignore (INFRA-182).
 func TestAWatcherRepairedAfterItsConsumerWentLogsOneWarn(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	into := newSeen()
 	arm := &armed{}
 	logger, records := jsonLogger(t)
-	w := kvwatch.New("test cache", kv, into,
+	end := make(ending, 1)
+	w := kvwatch.New("test cache", scripted(kv, end.step()).handle(), into,
 		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
+	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
+		t.Fatalf("the first scan: %v", err)
+	}
 
 	js := jetStream(t, conn)
 	deleteTestBucket(t, js)
+	end.end(t)
 	waitForStopWarns(t, records, 1)
 
 	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: testBucketName})
-	if err := w.Rewatch(context.Background(), conn); err != nil {
+	if err := w.Rewatch(testwait.Context(t), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	arm.fireIt(t)
@@ -186,19 +231,25 @@ func TestAWatcherRepairedAfterItsConsumerWentLogsOneWarn(t *testing.T) {
 // armed and makes the one report when its minute passes, and a second failed Rewatch adds no
 // second ERROR.
 func TestAWatcherWhoseBucketIsGoneReportsOnlyWhenItsWaitPasses(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	arm := &armed{}
 	logger, records := jsonLogger(t)
-	w := kvwatch.New("test cache", kv, newSeen(),
+	end := make(ending, 1)
+	w := kvwatch.New("test cache", scripted(kv, end.step()).handle(), newSeen(),
 		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
+	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
+		t.Fatalf("the first scan: %v", err)
+	}
 
 	deleteTestBucket(t, jetStream(t, conn))
+	end.end(t)
 	waitForStopWarns(t, records, 1)
 
-	if err := w.Rewatch(context.Background(), conn); err == nil {
+	if err := w.Rewatch(testwait.Context(t), conn); err == nil {
 		t.Fatal("a rewatch onto a deleted bucket succeeded")
 	}
 	if errs := matching(records(), "ERROR", unrepairedErr); len(errs) != 0 {
@@ -208,7 +259,7 @@ func TestAWatcherWhoseBucketIsGoneReportsOnlyWhenItsWaitPasses(t *testing.T) {
 		t.Fatalf("the stop armed %d repair waits after a failed repair, want one", got)
 	}
 
-	if err := w.Rewatch(context.Background(), conn); err == nil {
+	if err := w.Rewatch(testwait.Context(t), conn); err == nil {
 		t.Fatal("a second rewatch onto a deleted bucket succeeded")
 	}
 	if errs := matching(records(), "ERROR", unrepairedErr); len(errs) != 0 {
@@ -230,16 +281,22 @@ func TestAWatcherWhoseBucketIsGoneReportsOnlyWhenItsWaitPasses(t *testing.T) {
 // minute the watcher waits for a repair has passed, and not before: an ERROR at the stop itself
 // could not tell this apart from a stop a rebuild repairs a moment later (INFRA-182).
 func TestAWatcherNothingRepairsLogsWhenItsMinutePasses(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	arm := &armed{}
 	logger, records := jsonLogger(t)
-	w := kvwatch.New("test cache", kv, newSeen(),
+	end := make(ending, 1)
+	w := kvwatch.New("test cache", scripted(kv, end.step()).handle(), newSeen(),
 		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
+	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
+		t.Fatalf("the first scan: %v", err)
+	}
 
 	deleteTestBucket(t, jetStream(t, conn))
+	end.end(t)
 	waitForStopWarns(t, records, 1)
 
 	if errs := matching(records(), "ERROR", unrepairedErr); len(errs) != 0 {
@@ -266,26 +323,40 @@ func TestAWatcherNothingRepairsLogsWhenItsMinutePasses(t *testing.T) {
 // the second stop's report: an ERROR saying no repair came within a minute of a stop moments
 // old, and the second wait, finding the stop reported, then said nothing when its minute passed.
 func TestAWaitARepairClearedReportsNotTheNextStop(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	arm := &armed{}
 	logger, records := jsonLogger(t)
-	w := kvwatch.New("test cache", kv, newSeen(),
+	end := make(ending, 1)
+	w := kvwatch.New("test cache", scripted(kv, end.step()).handle(), newSeen(),
 		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
+	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
+		t.Fatalf("the first scan: %v", err)
+	}
 
 	js := jetStream(t, conn)
 	deleteTestBucket(t, js)
+	end.end(t)
 	waitForStopWarns(t, records, 1)
 	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: testBucketName})
-	if err := w.Rewatch(context.Background(), conn); err != nil {
+	live := testnats.Connect(t, uri)
+	if err := w.Rewatch(testwait.Context(t), live); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
+	// The replacement's read completes, its stream confirmed, while the bucket still exists: a
+	// delete during that confirmation would make it arm a re-read of its own (rereadDelay), a wait
+	// neither stop armed. WaitComplete would not do here: the copy stays servable through its
+	// stale episode, so it can answer before the replacement's read has completed.
+	eventually(t, "the replacement's read to complete", w.Following)
 	deleteTestBucket(t, js)
+	// Rewatch opens its own handle, so end the replacement's subscription by closing its connection.
+	live.Close()
 	waitForStopWarns(t, records, 2)
 	if got := arm.waits(); got != 2 {
-		t.Fatalf("two stops armed %d repair waits, want two", got)
+		t.Fatalf("two stops armed %d waits (%v), want two repair waits", got, arm.askedDelays())
 	}
 
 	// The repair cleared the first wait; its callback runs now, as one already started would.
@@ -310,6 +381,7 @@ func TestAWaitARepairClearedReportsNotTheNextStop(t *testing.T) {
 // shutdown test greps its whole output for ERROR across ten runs
 // (cmd/listener/shutdown_test.go), so an arm left by an ordered stop would fail it.
 func TestAWatcherStoppedOnPurposeLogsNeither(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	arm := &armed{}
@@ -319,7 +391,7 @@ func TestAWatcherStoppedOnPurposeLogsNeither(t *testing.T) {
 	w.Start()
 	eventually(t, "the first scan", w.Ready)
 
-	w.End(testContext(t))
+	w.End(testwait.Context(t))
 
 	if warns := matching(records(), "WARN", stoppedWarn); len(warns) != 0 {
 		t.Fatalf("an ordered stop logged %d %q warnings, want none: %v", len(warns), stoppedWarn, warns)

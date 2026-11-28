@@ -17,15 +17,11 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// blockedInWaitComplete reports whether a goroutine is parked in WaitComplete, which is the select
-// it waits on: a wait that has read the state and found the copy not servable.
-func blockedInWaitComplete() bool {
-	for _, goroutine := range goroutinetest.Traces() {
-		if strings.Contains(goroutine, "[select") && strings.Contains(goroutine, "kvwatch.(*Watcher).WaitComplete(") {
-			return true
-		}
-	}
-	return false
+// blockedInWaitComplete reports whether this caller is waiting for a servable copy.
+func blockedInWaitComplete(id uint64) bool {
+	trace := traceOf(id)
+	header, _, _ := strings.Cut(trace, "\n")
+	return strings.Contains(header, "[select") && strings.Contains(trace, "kvwatch.(*Watcher).WaitComplete(")
 }
 
 // waitCompleteBlocked starts WaitComplete under ctx in the background and returns the channel its
@@ -35,8 +31,13 @@ func blockedInWaitComplete() bool {
 func waitCompleteBlocked(t *testing.T, ctx context.Context, w *kvwatch.Watcher) <-chan error {
 	t.Helper()
 	answers := make(chan error, 1)
-	go func() { answers <- w.WaitComplete(ctx) }()
-	eventually(t, "WaitComplete to block on its wake-up", blockedInWaitComplete)
+	calling := make(chan uint64, 1)
+	go func() {
+		calling <- goroutinetest.ID()
+		answers <- w.WaitComplete(ctx)
+	}()
+	id := testwait.Receive(t, "the WaitComplete caller's goroutine id", calling)
+	eventually(t, "WaitComplete to block on its wake-up", func() bool { return blockedInWaitComplete(id) })
 	return answers
 }
 
@@ -64,7 +65,10 @@ func refillingWatcher(t *testing.T, kv bus.KeyValue) (*kvwatch.Watcher, *armed) 
 		kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read to begin", func() bool { return len(into.reads()) == 1 })
+	testwait.Until(t, "the first read to begin", func() ([]kvwatch.Read, bool) {
+		reads := into.reads()
+		return reads, len(reads) == 1
+	})
 	now.advance(kvwatch.ScanIdleTimeout)
 	arm.fireIdle(t)
 	eventually(t, "the first read to end as timed out", w.Ready)
@@ -77,6 +81,7 @@ func refillingWatcher(t *testing.T, kv bus.KeyValue) (*kvwatch.Watcher, *armed) 
 // A first start that fails with no watcher current completes no read until a Rewatch, so a caller
 // waiting for a servable copy is answered its error at once rather than waiting its own bound out.
 func TestWaitCompleteReturnsOnAFailedFirstStart(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	conn.Close()
@@ -133,6 +138,7 @@ func anotherBucketsStream(t *testing.T, conn *natsgo.Conn) string {
 // then (store.Registry.RolesHeldBy reads the error first too), so answering such a wait nil would
 // release a caller onto a view that answers nothing.
 func TestWaitCompleteReturnsWhenCheckFindsTheBucketRecreated(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	recreated := &atomic.Bool{}
@@ -156,6 +162,7 @@ func TestWaitCompleteReturnsWhenCheckFindsTheBucketRecreated(t *testing.T) {
 // caller waiting for a servable copy is answered the end's terminal error rather than waiting its
 // own bound out.
 func TestWaitCompleteReturnsWhenTheWatcherEndsOnItsOwn(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	w, _ := refillingWatcher(t, kv)
@@ -173,6 +180,7 @@ func TestWaitCompleteReturnsWhenTheWatcherEndsOnItsOwn(t *testing.T) {
 // A stopped watcher arms nothing and completes no read, so a caller waiting for a servable copy at
 // a shutdown is answered at once rather than holding the shutdown for its own bound.
 func TestWaitCompleteReturnsWhenStopRetiresTheWatcher(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	w, _ := refillingWatcher(t, kv)
@@ -191,6 +199,7 @@ func TestWaitCompleteReturnsWhenStopRetiresTheWatcher(t *testing.T) {
 // ordinary case: its completion makes the copy servable, and the waiter is released then, with no
 // Rewatch and no poll of its own.
 func TestWaitCompleteReturnsWhenTheWatchersOwnReReadCompletes(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	if _, err := kv.Put("key", []byte("1")); err != nil {
@@ -214,6 +223,7 @@ func TestWaitCompleteReturnsWhenTheWatchersOwnReReadCompletes(t *testing.T) {
 // against it, and the wait ends with its caller's own deadline, which is what bounds a listener's
 // startup gate.
 func TestWaitCompleteReturnsItsContextsErrorWhileTheCopyIsRefilling(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	w, _ := refillingWatcher(t, kv)

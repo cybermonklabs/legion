@@ -14,30 +14,15 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// natsContextWaits counts the goroutines nats.go parks on a subscription's context for its life
-// (nats.go v1.55.0 js.go:2070-2076), one per watch until its context is cancelled. The trace names
-// the package nats%2ego, so the function is matched without its package.
-func natsContextWaits() int {
+// natsContextWaits counts the subscribing goroutine's children waiting on the watch context.
+func natsContextWaits(creator uint64) int {
 	n := 0
-	for _, goroutine := range goroutinetest.Traces() {
-		if strings.Contains(goroutine, ".(*js).subscribe.func") && strings.Contains(goroutine, "/js.go:") {
+	for _, trace := range startedIn(creator, "") {
+		if strings.Contains(trace, ".(*js).subscribe.func") && strings.Contains(trace, "/js.go:") {
 			n++
 		}
 	}
 	return n
-}
-
-// deliveryBlocked reports whether a jetstream watcher's delivery is parked on its full updates
-// buffer: nats.go's message callback blocked in its send, holding the watcher's lock. That is the
-// moment nats.go's legacy watcher could panic when its subscription ended (subscription_end_test.go).
-func deliveryBlocked() bool {
-	for _, goroutine := range goroutinetest.Traces() {
-		header, _, _ := strings.Cut(goroutine, "\n")
-		if strings.Contains(header, "[chan send") && strings.Contains(goroutine, "jetstream.(*kvs).WatchFiltered.func") {
-			return true
-		}
-	}
-	return false
 }
 
 // A watcher's subscription can end while its scan is under way and its idle wait armed: a watch
@@ -49,24 +34,28 @@ func deliveryBlocked() bool {
 // nothing: no timed-out warm-up, no re-read; and the goroutine nats.go parks on the watch's context
 // is released once the watcher has been stopped or has ended.
 func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *testing.T) {
+	t.Parallel()
 	const records = 600
 	for _, test := range []struct {
 		name string
 		// end ends the subscription of w, whose scan is held, and returns once it has asked for
 		// that end. release lets the held record go.
 		end func(t *testing.T, w *kvwatch.Watcher, conn *natsgo.Conn, uri string, release func())
-		// replaced is set when the end leaves a newer watcher running, with a context of its own.
-		replaced bool
 		// stopped is the terminal error the end leaves, "" for none.
 		stopped string
 	}{
-		{name: "a replacing watch stops it", replaced: true, end: func(t *testing.T, w *kvwatch.Watcher, _ *natsgo.Conn, uri string, release func()) {
+		{name: "a replacing watch stops it", end: func(t *testing.T, w *kvwatch.Watcher, _ *natsgo.Conn, uri string, release func()) {
 			_, other := bucket(t, uri)
 			done := make(chan error, 1)
+			watching := make(chan uint64, 1)
 			// The switch waits for the held apply (applyMu), so the release comes once the watch is
 			// parked on it, and the watch stops the replaced watcher while its scan is under way.
-			go func() { done <- kvwatch.WatchOn(w, other) }()
-			eventually(t, "the replacing watch waiting for the held apply", waitingForTheApplyLock)
+			go func() {
+				watching <- goroutinetest.ID()
+				done <- kvwatch.WatchOn(w, other)
+			}()
+			id := testwait.Receive(t, "the replacing watch's goroutine id", watching)
+			eventually(t, "the replacing watch waiting for the held apply", func() bool { return parkedOnTheApplyLock(id) })
 			release()
 			if err := testwait.Receive(t, "the replacing watch to return", done); err != nil {
 				t.Fatalf("the replacing watch: %v", err)
@@ -77,11 +66,12 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 			release()
 		}},
 		{name: "End stops it at shutdown", end: func(t *testing.T, w *kvwatch.Watcher, _ *natsgo.Conn, _ string, release func()) {
-			w.End(testContext(t))
+			w.End(testwait.Context(t))
 			release()
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			uri := testnats.URL(t)
 			_, seed := bucket(t, uri)
 			for i := range records {
@@ -90,42 +80,52 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 				}
 			}
 			conn, kv := bucket(t, uri)
-			baseline := natsContextWaits()
+			ids := make(chan uint64, 1)
+			consume := make(chan uint64, 1)
+			holdCtx := testwait.Context(t)
 
-			held, released := make(chan struct{}), make(chan struct{})
+			released := make(chan struct{})
 			var holdOnce, releaseOnce sync.Once
 			release := func() { releaseOnce.Do(func() { close(released) }) }
-			t.Cleanup(release)
 			into := withApply{seen: newSeen(), before: func(natsgo.KeyValueEntry) {
 				holdOnce.Do(func() {
-					close(held)
-					<-released
+					consume <- goroutinetest.ID()
+					select {
+					case <-released:
+					case <-holdCtx.Done():
+					}
 				})
 			}}
 			timers := &pending{}
 			now := newClock()
 			logger, logged := jsonLogger(t)
-			w := kvwatch.New("test cache", kv, into, kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithNow(now.Now),
+			w := kvwatch.New("test cache", scripted(kv, subscribing(ids)).handle(), into, kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithNow(now.Now),
 				kvwatch.WithStreamProbeInterval(0), kvwatch.WithLogger(logger))
 			t.Cleanup(w.Stop)
+			t.Cleanup(release)
 			w.Start()
-			wait(t, held, "the scan's first record")
+			creator := testwait.Receive(t, "the subscribing goroutine id", ids)
+			consumeID := testwait.Receive(t, "the scan's first record", consume)
 			idle := timers.last(t, kvwatch.ScanIdleTimeout)
-			eventually(t, "nats.go's delivery to park on the full updates buffer", deliveryBlocked)
-			if natsContextWaits() <= baseline {
+			eventually(t, "nats.go's delivery to park on the full updates buffer", func() bool {
+				_, blocked := deliveryBlocked(creator, "")
+				return blocked
+			})
+			if natsContextWaits(creator) == 0 {
 				t.Fatal("no goroutine of nats.go's waits on the running watch's context: the release checked below would prove nothing")
 			}
 
 			test.end(t, w, conn, uri, release)
 
-			live := 0
-			if test.replaced {
-				live = 1
-			}
-			eventually(t, "nats.go's goroutine on the ended watch's context to be released",
-				func() bool { return natsContextWaits() <= baseline+live })
+			testwait.Until(t, "nats.go's goroutine on the ended watch's context to be released", func() (int, bool) {
+				n := natsContextWaits(creator)
+				return n, n == 0
+			})
 			if test.stopped != "" {
-				eventually(t, "the ended watcher's error", func() bool { return w.Err() != nil })
+				testwait.Until(t, "the ended watcher's error", func() (error, bool) {
+					err := w.Err()
+					return err, err != nil
+				})
 			}
 			if !idle.stopped.Load() {
 				t.Fatal("the ended scan's idle wait was left armed")
@@ -136,7 +136,7 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 			rereads := len(timers.armed(5 * time.Second))
 			now.advance(2 * kvwatch.ScanIdleTimeout)
 			idle.fire()
-			time.Sleep(200 * time.Millisecond)
+			returned(t, "the ended watcher to finish consuming", consumeID)
 			if timedOut := matching(logged(), "WARN", "test cache cache warm-up"); len(timedOut) != 0 {
 				t.Fatalf("the late idle callback timed the ended scan out: %v", timedOut)
 			}

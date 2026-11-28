@@ -252,10 +252,10 @@ const abandonedDrain = time.Second
 // run returns with its watcher stopped and one whose run ended does not wait out the stop's
 // consumer delete, a request that takes no context (the class of the previous watcher's stop,
 // watch). The rest goes on by itself (drainWithin): nothing of the watcher outlives the stop by
-// more than bound.
-func (s *subscription) retireWithin(run context.Context, bound time.Duration) {
+// more than abandonedDrain, a wait armed through after, the watcher's AfterFunc (WithAfterFunc).
+func (s *subscription) retireWithin(run context.Context, after AfterFunc) {
 	stopped := make(chan struct{})
-	go s.drainWithin(bound, stopped)
+	go s.drainWithin(after, stopped)
 	select {
 	case <-stopped:
 	case <-run.Done():
@@ -265,16 +265,17 @@ func (s *subscription) retireWithin(run context.Context, bound time.Duration) {
 // drainWithin stops the watcher (stop, which unsubscribes it, deleting its consumer, then cancels
 // its context, releasing the goroutine nats.go parks on it) and closes stopped when that returns.
 // It reads and drops the watcher's entries while the stop runs, as discard does, and after it until
-// nats.go closes them or bound passes, whichever comes first. So nothing of the watcher outlives
-// the stop by more than bound.
-func (s *subscription) drainWithin(bound time.Duration, stopped chan<- struct{}) {
+// nats.go closes them or abandonedDrain passes, whichever comes first. So nothing of the watcher
+// outlives the stop by more than abandonedDrain. The wait is armed through after once the stop
+// returns, signals without blocking (notify), and is stopped when the drain ends.
+func (s *subscription) drainWithin(after AfterFunc, stopped chan<- struct{}) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_ = s.stop()
 	}()
 	updates, waiting := s.watcher.Updates(), (<-chan struct{})(done)
-	var expired <-chan time.Time
+	var expired <-chan struct{}
 	for updates != nil {
 		select {
 		case _, open := <-updates:
@@ -283,7 +284,11 @@ func (s *subscription) drainWithin(bound time.Duration, stopped chan<- struct{})
 			}
 		case <-waiting:
 			close(stopped)
-			waiting, expired = nil, time.After(bound)
+			waiting = nil
+			signal := make(chan struct{}, 1)
+			timer := after(abandonedDrain, notify(signal))
+			defer timer.Stop()
+			expired = signal
 		case <-expired:
 			updates = nil
 		}

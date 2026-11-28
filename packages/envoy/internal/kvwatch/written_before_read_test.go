@@ -81,6 +81,7 @@ func (s *seen) holdAt(key string, revision uint64) {
 // the next read when the connection closed first. A key the copy held from before, at a revision
 // the stream had reached by then and which the bucket no longer holds, is still swept.
 func TestAKeyWrittenThroughBetweenAReadsCreateAndItsBeginSurvivesTheRead(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	putKeys(t, kv, "one")
@@ -100,10 +101,7 @@ func TestAKeyWrittenThroughBetweenAReadsCreateAndItsBeginSurvivesTheRead(t *test
 		t.Fatalf("the write into the copy came to outcome %d, want Applied (%d)", outcome, kvwatch.Applied)
 	}
 	held.let()
-	testwait.Until(t, "the read's completion", func() (bool, bool) {
-		following := w.Following()
-		return following, following
-	})
+	eventually(t, "the read's completion", w.Following)
 	if !into.has("written-through") || into.has("gone-from-the-bucket") || !into.has("one") {
 		t.Fatalf("after the read: written-through key %v, gone key %v, bucket key %v; want the written key and the bucket's kept, the gone key swept",
 			into.has("written-through"), into.has("gone-from-the-bucket"), into.has("one"))
@@ -119,8 +117,7 @@ func TestAKeyWrittenThroughBetweenAReadsCreateAndItsBeginSurvivesTheRead(t *test
 // read until one begins past its revision, which for a cache that reads only at a start or a
 // rewatch can be never.
 func TestAKeyTakenBeforeAReadsStreamReadIsNoEvidenceForIt(t *testing.T) {
-	uri := testnats.URL(t)
-	_, kv := bucket(t, uri)
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		takenAfter bool
@@ -129,6 +126,8 @@ func TestAKeyTakenBeforeAReadsStreamReadIsNoEvidenceForIt(t *testing.T) {
 		{name: "taken after the read's stream read", takenAfter: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, kv := bucket(t, testnats.URL(t))
 			w := kvwatch.New("test cache", kv, newSeen())
 			copied := kvwatch.NewCopy(kvwatch.Rows[bool]{Decode: func(kvwatch.Entry) (bool, bool, error) { return true, true, nil }})
 			kvwatch.SetStreamReads(w, 1)
@@ -156,6 +155,7 @@ func TestAKeyTakenBeforeAReadsStreamReadIsNoEvidenceForIt(t *testing.T) {
 // read's BeginRead must leave its take for the later one, which the earlier read's stream read came
 // before. A copy that dropped every take at each BeginRead would sweep it at the later read's end.
 func TestAWriteInTheLaterOfTwoOverlappingWatchesGapSurvivesWhenTheyInstallInOrder(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	w := kvwatch.New("test cache", kv, newSeen())
@@ -184,6 +184,7 @@ func TestAWriteInTheLaterOfTwoOverlappingWatchesGapSurvivesWhenTheyInstallInOrde
 // hold. A copy that kept only takes stamped with the installing read's own count would sweep it.
 // The next read, whose stream read comes after the take, finds no evidence in it.
 func TestATakeAfterADiscardedWatchsStreamReadIsEvidenceForTheReadThatInstalls(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	w := kvwatch.New("test cache", kv, newSeen())
@@ -212,6 +213,7 @@ func TestATakeAfterADiscardedWatchsStreamReadIsEvidenceForTheReadThatInstalls(t 
 // swept when the read does not find it, and its record, if the new bucket holds one, is taken when
 // the watcher delivers it. Marking first would keep the old bucket's value.
 func TestARecreatedBucketsFirstReadMarksNothingOfTheOldBucket(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	w := kvwatch.New("test cache", kv, newSeen())
@@ -244,8 +246,7 @@ func TestARecreatedBucketsFirstReadMarksNothingOfTheOldBucket(t *testing.T) {
 // dropped write would mark the key on the fence's 40, keep its value from before the restore, and
 // drop the bucket's own update until its revision passed 40.
 func TestAWriteTheFenceDropsIsNoEvidenceForARead(t *testing.T) {
-	uri := testnats.URL(t)
-	_, kv := bucket(t, uri)
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		write func(*testing.T, *kvwatch.Copy[string], *kvwatch.Watcher) kvwatch.Outcome
@@ -265,6 +266,8 @@ func TestAWriteTheFenceDropsIsNoEvidenceForARead(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, kv := bucket(t, testnats.URL(t))
 			w := kvwatch.New("test cache", kv, newSeen())
 			copied := kvwatch.NewCopy(kvwatch.Rows[string]{Decode: func(entry kvwatch.Entry) (string, bool, error) {
 				return string(entry.Value), true, nil

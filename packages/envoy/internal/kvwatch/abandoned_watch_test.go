@@ -2,14 +2,13 @@ package kvwatch_test
 
 import (
 	"context"
-	"runtime"
-	"strings"
 	"sync"
 	"testing"
 
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -28,6 +27,8 @@ type abandonKV struct {
 	stopping chan struct{}
 	release  chan struct{}
 	stopped  chan struct{}
+	reading  chan uint64
+	updates  chan jetstream.KeyValueEntry
 	begin    sync.Once
 	once     sync.Once
 }
@@ -40,16 +41,18 @@ func (k *abandonKV) Watch(ctx context.Context, keys string, opts ...jetstream.Wa
 	if k.end != nil {
 		k.end()
 	}
-	return &unclosedWatcher{KeyWatcher: watcher, updates: make(chan jetstream.KeyValueEntry), kv: k}, nil
+	return &unclosedWatcher{KeyWatcher: watcher, kv: k}, nil
 }
 
 type unclosedWatcher struct {
 	jetstream.KeyWatcher
-	updates chan jetstream.KeyValueEntry
-	kv      *abandonKV
+	kv *abandonKV
 }
 
-func (w *unclosedWatcher) Updates() <-chan jetstream.KeyValueEntry { return w.updates }
+func (w *unclosedWatcher) Updates() <-chan jetstream.KeyValueEntry {
+	w.kv.reading <- goroutinetest.ID()
+	return w.kv.updates
+}
 
 func (w *unclosedWatcher) Stop() error {
 	w.kv.begin.Do(func() { close(w.kv.stopping) })
@@ -57,26 +60,6 @@ func (w *unclosedWatcher) Stop() error {
 	err := w.KeyWatcher.Stop()
 	w.kv.once.Do(func() { close(w.kv.stopped) })
 	return err
-}
-
-// subscriptionGoroutines counts the goroutines running one of kvwatch's subscription methods.
-func subscriptionGoroutines() int {
-	buf := make([]byte, 1<<20)
-	for {
-		n := runtime.Stack(buf, true)
-		if n < len(buf) {
-			buf = buf[:n]
-			break
-		}
-		buf = make([]byte, 2*len(buf))
-	}
-	count := 0
-	for _, stack := range strings.Split(string(buf), "\n\n") {
-		if strings.Contains(stack, "kvwatch.(*subscription).") {
-			count++
-		}
-	}
-	return count
 }
 
 // A watch discards a watcher it made and never installed: one whose run ended while its consumer's
@@ -88,6 +71,7 @@ func subscriptionGoroutines() int {
 // own watcher is untouched. A watch under a live run that overtakes still returns with its watcher
 // stopped (TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds).
 func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		ends    bool
@@ -107,34 +91,31 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			uri := testnats.URL(t)
-			conn, kv := bucket(t, uri)
+			_, kv := bucket(t, uri)
 			into := newSeen()
-			w := kvwatch.New("test cache", kv, into, kvwatch.WithStreamProbeInterval(0))
+			timers := &pending{}
+			w := kvwatch.New("test cache", kv, into, kvwatch.WithStreamProbeInterval(0),
+				kvwatch.WithAfterFunc(timers.afterFunc()))
 			t.Cleanup(w.Stop)
 			w.Start()
 			eventually(t, "the first read's completion", w.Following)
 
-			js, err := jetstream.New(conn, testnats.RequestTimeout(t))
-			if err != nil {
-				t.Fatalf("jetstream: %v", err)
-			}
-			consumers := func() int {
-				stream, err := js.Stream(context.Background(), "KV_"+kv.Bucket())
-				if err != nil {
-					t.Fatalf("read the bucket's stream: %v", err)
-				}
-				info, err := stream.Info(context.Background())
-				if err != nil {
-					t.Fatalf("read the bucket's stream: %v", err)
-				}
-				return info.State.Consumers
-			}
-			goroutines, held := subscriptionGoroutines(), consumers()
+			ctx := testwait.Context(t)
+			held := len(testConsumers(t, ctx, kv))
 
-			run, end := context.WithCancel(context.Background())
+			run, end := context.WithCancel(ctx)
 			t.Cleanup(end)
-			abandon := &abandonKV{KeyValue: kv.WatchHandle(), stopping: make(chan struct{}), release: make(chan struct{}), stopped: make(chan struct{})}
+			abandon := &abandonKV{
+				KeyValue: kv.WatchHandle(),
+				stopping: make(chan struct{}),
+				release:  make(chan struct{}),
+				stopped:  make(chan struct{}),
+				reading:  make(chan uint64, 1),
+				updates:  make(chan jetstream.KeyValueEntry),
+			}
+			t.Cleanup(func() { close(abandon.updates) })
 			if tc.ends {
 				abandon.end = end
 			} else {
@@ -151,7 +132,7 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 			t.Cleanup(release)
 			watched := make(chan error, 1)
 			go func() { watched <- tc.install(w, run, bus.NewKeyValue(kv.Legacy(), abandon, kv.Streams())) }()
-			err = testwait.Receive(t, "the watch to return while the discarded watcher's stop is held", watched)
+			err := testwait.Receive(t, "the watch to return while the discarded watcher's stop is held", watched)
 			if tc.ends && err == nil {
 				t.Fatal("a watch whose run ended while its create was in flight answered nil, want the run's end")
 			}
@@ -159,10 +140,52 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 				t.Fatalf("an overtaken watch answered %v, want nil", err)
 			}
 
+			drainID := testwait.Receive(t, "the discarded watcher's reader to start", abandon.reading)
+			wait(t, abandon.stopping, "the discarded watcher's stop to start")
+			if waits := timers.armed(kvwatch.AbandonedDrain); len(waits) != 0 {
+				t.Fatalf("the drain armed %d waits while the stop was still held, want none", len(waits))
+			}
 			release()
 			testwait.Receive(t, "the discarded watcher to be stopped", abandon.stopped)
-			eventually(t, "the discard's goroutine to end", func() bool { return subscriptionGoroutines() <= goroutines })
-			eventually(t, "the discarded watcher's consumer to be gone", func() bool { return consumers() <= held })
+			drain := testwait.Until(t, "the discarded watcher's drain to arm its bound", func() (*pendingWait, bool) {
+				live := goroutinetest.Live(drainID)
+				waits := timers.armed(kvwatch.AbandonedDrain)
+				if len(waits) > 1 {
+					t.Fatalf("the drain armed %d bounds, want one", len(waits))
+				}
+				if len(waits) == 1 {
+					return waits[0], true
+				}
+				if !live {
+					t.Fatal("the discarded watcher's drain returned without arming its bound on after")
+				}
+				return nil, false
+			})
+			testwait.Until(t, "the stopped watcher's drain to keep reading until its bound passes", func() (string, bool) {
+				select {
+				case abandon.updates <- fakeEntry{key: "discarded"}:
+					return "", true
+				default:
+					trace := traceOf(drainID)
+					if trace == "" {
+						t.Fatal("the drain returned before its bound passed")
+					}
+					return trace, false
+				}
+			})
+			drain.fire()
+			returned(t, "the discard's drain goroutine to return", drainID)
+			testwait.Until(t, "the goroutines the discard's drain started to return", func() ([]string, bool) {
+				children := startedIn(drainID, "")
+				return children, len(children) == 0
+			})
+			if !drain.stopped.Load() {
+				t.Error("the drain returned without stopping its timer")
+			}
+			testwait.Until(t, "the discarded watcher's consumer to be gone", func() (int, bool) {
+				got := len(testConsumers(t, ctx, kv))
+				return got, got <= held
+			})
 
 			if err := w.Err(); err != nil {
 				t.Fatalf("the cache's watcher ended: %v", err)
@@ -170,7 +193,7 @@ func TestAnAbandonedWatchersDiscardEnds(t *testing.T) {
 			if _, err := kv.Put("after-the-discarded-watch", []byte("1")); err != nil {
 				t.Fatalf("put: %v", err)
 			}
-			eventually(t, "the cache's own watcher's delivery", func() bool { return into.has("after-the-discarded-watch") })
+			eventually(t, "the cache's own watcher to deliver a new record", func() bool { return into.has("after-the-discarded-watch") })
 		})
 	}
 }

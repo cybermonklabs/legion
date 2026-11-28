@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -128,10 +127,10 @@ func sortOpenRecords(open []openRecord) {
 // holds, and pays three days of records for it. The index's back-fill reads it too
 // (backfillIndex).
 //
-// The jetstream watcher ends a scan two ways and only one of them is a complete read -- the watch
-// that delivered its nil end marker -- so this reads it through the one place that tells them
-// apart (kvwatch.ScanExistingKeys). A scan its idle timer ended is an error here and not a bucket
-// with nothing more in it, which would under-report the open deliveries and say nothing.
+// This reads the records through kvwatch.ScanExistingKeys, which is whole only once it has handed
+// over every listed record the bucket still holds, and fails otherwise. A scan its idle timer ended
+// is an error here and not a bucket with nothing more in it, which would under-report the open
+// deliveries and say nothing.
 func (s *Sweeper) scanOpenRecords(listed map[string][]githubapp.Delivery) ([]openRecord, error) {
 	var open []openRecord
 	if _, err := kvwatch.ScanExistingKeys(context.Background(), s.state, recordPrefix+"*", "webhook redelivery records", kvwatch.ScanIdleTimeout, s.Logger, func(entry kvwatch.Entry) error {
@@ -151,7 +150,7 @@ func (s *Sweeper) scanOpenRecords(listed map[string][]githubapp.Delivery) ([]ope
 		}
 		open = append(open, openRecord{guid: guid, record: current, revision: entry.Revision})
 		return nil
-	}, jetstream.IgnoreDeletes()); err != nil {
+	}); err != nil {
 		return nil, fmt.Errorf("list the redelivery records: %w", err)
 	}
 	sortOpenRecords(open)

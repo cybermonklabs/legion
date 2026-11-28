@@ -206,7 +206,7 @@ func (h *harness) keys() []string {
 	if _, err := kvwatch.ScanExistingKeys(context.Background(), h.state, jetstream.AllKeys, "redelivery state", kvwatch.ScanIdleTimeout, slog.Default(), func(entry kvwatch.Entry) error {
 		held = append(held, entry.Key)
 		return nil
-	}, jetstream.MetaOnly(), jetstream.IgnoreDeletes()); err != nil {
+	}, kvwatch.ScanMetaOnly()); err != nil {
 		h.t.Fatalf("read the state bucket: %v", err)
 	}
 	return held
@@ -1486,7 +1486,7 @@ func TestDryRunReportsWithoutActing(t *testing.T) {
 	if _, err := kvwatch.ScanExistingKeys(context.Background(), h.state, jetstream.AllKeys, "redelivery state", kvwatch.ScanIdleTimeout, slog.New(slog.DiscardHandler), func(entry kvwatch.Entry) error {
 		written = append(written, entry.Key)
 		return nil
-	}, jetstream.MetaOnly(), jetstream.IgnoreDeletes()); err != nil || len(written) != 0 {
+	}, kvwatch.ScanMetaOnly()); err != nil || len(written) != 0 {
 		t.Fatalf("a dry run wrote state %v (listing: %v)", written, err)
 	}
 	if h.logs.count("webhook delivery expired undelivered") != 0 {

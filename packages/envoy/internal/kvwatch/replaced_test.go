@@ -10,6 +10,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -28,6 +29,8 @@ type fakeWatcher struct {
 	stopped chan struct{}
 	stopOne sync.Once
 	endOne  sync.Once
+	reader  sync.Once
+	readID  atomic.Uint64
 	mu      sync.Mutex
 	ctx     context.Context
 }
@@ -38,7 +41,10 @@ func newFakeWatcher(t *testing.T) *fakeWatcher {
 	return f
 }
 
-func (f *fakeWatcher) Updates() <-chan jetstream.KeyValueEntry { return f.updates }
+func (f *fakeWatcher) Updates() <-chan jetstream.KeyValueEntry {
+	f.reader.Do(func() { f.readID.Store(goroutinetest.ID()) })
+	return f.updates
+}
 
 func (f *fakeWatcher) Stop() error {
 	f.stops.Add(1)
@@ -57,14 +63,7 @@ func (f *fakeWatcher) end() {
 // binary's deadline ends it.
 func (f *fakeWatcher) deliver(t *testing.T, entry jetstream.KeyValueEntry) {
 	t.Helper()
-	testwait.Until(t, "the watcher's reader to take an entry", func() (bool, bool) {
-		select {
-		case f.updates <- entry:
-			return true, true
-		default:
-			return false, false
-		}
-	})
+	offer(t, "the watcher's reader to take an entry", f.updates, entry)
 }
 
 // step is the watch that hands out f, keeping the context it was created in.
@@ -151,12 +150,13 @@ func scanningFirst(t *testing.T, kv bus.KeyValue, f *fakeWatcher, into kvwatch.C
 // and its end, when nats.go closes it, records nothing and logs nothing. End, which ends what
 // kvwatch still holds, does not stop it again.
 func TestAReplacedWatcherStillScanningIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	logger, records := jsonLogger(t)
 	scanning := newFakeWatcher(t)
 	into := newSeen()
-	w := scanningFirst(t, kv, scanning, into, kvwatch.WithLogger(logger))
+	w := scanningFirst(t, kv, scanning, into, kvwatch.WithLogger(logger), kvwatch.WithAfterFunc((&pending{}).afterFunc()))
 
 	if err := kvwatch.WatchOn(w, scripted(kv).handle()); err != nil {
 		t.Fatalf("the replacing watch: %v", err)
@@ -168,12 +168,12 @@ func TestAReplacedWatcherStillScanningIsStoppedAtOnceAndReadUntilItEnds(t *testi
 	scanning.deliver(t, fakeEntry{key: "from-the-replaced-watcher"})
 	scanning.deliver(t, nil)
 	scanning.end()
-	time.Sleep(200 * time.Millisecond)
+	returned(t, "the replaced watcher to finish consuming", scanning.readID.Load())
 	if into.has("from-the-replaced-watcher") || w.Err() != nil || len(warnings(records())) != 0 || !w.Following() {
 		t.Fatalf("after the replaced watcher delivered and ended: its record applied %v, Err %v, logged %q, Following %v; want nothing applied, recorded or logged, the copy following",
 			into.has("from-the-replaced-watcher"), w.Err(), warnings(records()), w.Following())
 	}
-	w.End(testContext(t))
+	w.End(testwait.Context(t))
 	scanning.stopCount(t, 1, "after End")
 }
 
@@ -181,6 +181,7 @@ func TestAReplacedWatcherStillScanningIsStoppedAtOnceAndReadUntilItEnds(t *testi
 // watcher's, or it re-reads a generation since overtaken -- is stopped at once, its context
 // cancelled, and read until it ends, what it delivers dropped. End does not stop it again.
 func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		// older, when set, runs ahead of the watcher's start: it recreates the bucket and returns
@@ -193,7 +194,7 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 			older: func(t *testing.T, conn *natsgo.Conn, kv bus.KeyValue) *jetstream.StreamInfo {
 				// The handle's stream client is the product's: the read takes the test's context,
 				// which ends near the test binary's deadline, not the client's own bound.
-				stream, err := kv.Streams().Stream(testContext(t), "KV_"+kv.Bucket())
+				stream, err := kv.Streams().Stream(testwait.Context(t), "KV_"+kv.Bucket())
 				if err != nil {
 					t.Fatalf("stream: %v", err)
 				}
@@ -207,6 +208,7 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 		{name: "a re-read of an overtaken generation"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			uri := testnats.URL(t)
 			conn, kv := bucket(t, uri)
 			var old *jetstream.StreamInfo
@@ -214,7 +216,8 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 				old = test.older(t, conn, kv)
 			}
 			into := newSeen()
-			w := kvwatch.New("test cache", kv, into, kvwatch.WithStreamProbeInterval(0))
+			w := kvwatch.New("test cache", kv, into, kvwatch.WithStreamProbeInterval(0),
+				kvwatch.WithAfterFunc((&pending{}).afterFunc()))
 			t.Cleanup(w.Stop)
 			w.Start()
 			eventually(t, "the first read's completion", w.Following)
@@ -243,7 +246,7 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 				t.Fatalf("after the discarded watch delivered: %d reads begun (%d before it), Err %v, its record applied %v; want it discarded",
 					got, reads, w.Err(), into.has("from-the-discarded-watcher"))
 			}
-			w.End(testContext(t))
+			w.End(testwait.Context(t))
 			discarded.stopCount(t, 1, "after End")
 		})
 	}

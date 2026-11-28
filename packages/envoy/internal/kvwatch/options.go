@@ -29,8 +29,9 @@ type AfterFunc func(d time.Duration, f func()) Timer
 // a re-read that failed to start, none after a recreate a stream read found), the wait before a
 // scheduled read (WithScheduledRead), the wait before the next stream probe, and a read's scan idle
 // wait (the idle timeout, ScanIdleTimeout by default, and what remains of it when it is armed
-// again: idleExpired). The production waits are a minute and seconds, so a test hands in its own,
-// keeps each callback and fires it itself rather than sleeping for it.
+// again: idleExpired), and the bound on draining a discarded watcher (abandonedDrain). The
+// production waits are a minute and seconds, so a test hands in its own, keeps each callback and
+// fires it itself rather than sleeping for it.
 func WithAfterFunc(after AfterFunc) Option {
 	return func(w *Watcher) { w.after = after }
 }

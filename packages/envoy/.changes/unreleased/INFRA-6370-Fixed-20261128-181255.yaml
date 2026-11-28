@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The listener's key scan now reads every key a bucket holds, also a key that another client writes
+  again while the scan runs. Before, the scan ended at the end of its watch's first delivery, which
+  can come before such a key, so a role claim scan, the interest marker pass, a Legion agent listing
+  or a webhook redelivery sweep could miss a key. The scan now takes the keys from the bucket's
+  stream and reads from the stream's leader only a key its watch left out, so a deleted key costs no
+  read.
+time: 2026-11-28T18:12:55Z
+custom:
+    Issue: INFRA-6370

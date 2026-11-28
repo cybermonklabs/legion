@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -210,11 +209,12 @@ func (s *Store) read(ctx context.Context, sessionID string) (Entry, uint64, erro
 	return entry, found.Revision(), nil
 }
 
-// list reads every key under prefix, an issue's or a role token's, from one watch filtered to it
-// (kvwatch.ScanExistingKeys, which fails a watch that did not deliver every key the filter held).
-// The scan takes ctx, so the whole of it -- the watch's consumer create and every wait for the
-// next key -- ends with the caller's read, and its idle bound is ReadTimeout, so a scan under a
-// context that cannot end gives up no later than one of the store's other calls would.
+// list reads every key under prefix, an issue's or a role token's, from one scan of the keys under
+// it (kvwatch.ScanExistingKeys, which lists them from the bucket's stream and fails a scan that did
+// not hand over every listed key the bucket still holds). The scan takes ctx, so the whole of it --
+// its reads of the bucket's stream, the watch's consumer create and every wait for the next key --
+// ends with the caller's read, and its idle bound is ReadTimeout, so a scan under a context that
+// cannot end gives up no later than one of the store's other calls would.
 //
 // It answers only the entries of their keys: one stored under prefix and the session id it names,
 // which names what prefix names (of: the issue or the role token). The write stores each entry
@@ -239,7 +239,7 @@ func (s *Store) list(ctx context.Context, prefix string, of func(Entry) bool) ([
 		}
 		entries = append(entries, entry)
 		return nil
-	}, jetstream.IgnoreDeletes())
+	})
 	if err != nil {
 		return nil, err
 	}

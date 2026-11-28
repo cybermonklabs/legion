@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
@@ -174,11 +173,11 @@ const strayMargin = cursorOverlap + time.Minute
 // by the minute: one due at 10:00:30 is keyed 10:00, and a sweep that started at 10:00:10 and found
 // it not yet due must still be able to select it afterwards.
 //
-// The completeness check matters more here than anywhere else in the sweep. The jetstream watcher
-// ends a watch two ways and only one is a complete read (kvwatch.ScanFilteredKeys); a sweep that
-// read some of its due entries and called itself complete would advance its cursor past the rest,
-// and nothing would ever bring those deliveries back. That is the one way this design could lose
-// a delivery.
+// The completeness check matters more here than anywhere else in the sweep.
+// kvwatch.ScanFilteredKeys is whole only once it has handed over every listed key the bucket still
+// holds, and fails otherwise; a sweep that read some of its due entries and called itself complete
+// would advance its cursor past the rest, and nothing would ever bring those deliveries back. That
+// is the one way this design could lose a delivery.
 func (s *Sweeper) openDue(listed map[string][]githubapp.Delivery, floor, now time.Time, dryRun bool) ([]openRecord, int, error) {
 	// An entry's value is empty and its record is read by its own key, so the watch asks for no
 	// value, and the keys are taken first: a Get for each inside the watch's loop would hold the
@@ -187,7 +186,7 @@ func (s *Sweeper) openDue(listed map[string][]githubapp.Delivery, floor, now tim
 	scan, err := kvwatch.ScanFilteredKeys(s.state, pendingFilters(floor, now), "webhook redelivery index", kvwatch.ScanIdleTimeout, s.Logger, func(entry kvwatch.Entry) error {
 		keys = append(keys, entry.Key)
 		return nil
-	}, jetstream.MetaOnly(), jetstream.IgnoreDeletes())
+	}, kvwatch.ScanMetaOnly())
 	if err != nil {
 		return nil, 0, fmt.Errorf("list the due redelivery index entries: %w", err)
 	}
