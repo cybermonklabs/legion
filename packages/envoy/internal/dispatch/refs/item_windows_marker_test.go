@@ -9,7 +9,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // markedItem is one kind of item as the marker's behaviour is read over it: the insert that
@@ -335,7 +334,7 @@ func markWindowsOwed(t *testing.T, database *store.Store, kind ItemKind, id stri
 // blocks stand in to the window arm (queueRecordIndexed).
 func indexOwedItem(t *testing.T, database *store.Store, kind ItemKind, id, what string) {
 	t.Helper()
-	indexed, err := IndexOwedItemBlocks(context.Background(), database.Pool, OwedItemBlock{Kind: kind, ID: id}, text.NewOrigins(askPartServer))
+	indexed, err := IndexOwedItemBlocks(context.Background(), database.Pool, OwedItemBlock{Kind: kind, ID: id}, testOrigins)
 	if err != nil || !indexed {
 		t.Fatalf("index the %s owed a block index after %s = %v, %v; want it indexed", kind, what, indexed, err)
 	}

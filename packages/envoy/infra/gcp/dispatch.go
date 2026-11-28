@@ -6,7 +6,6 @@ import (
 	"math"
 	"math/big"
 	"net"
-	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
@@ -20,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/weborigin"
@@ -1501,9 +1501,10 @@ func refuseDispatchSharedHost(input, name string, origin *url.URL, taken []dispa
 // taken grown by each. Each entry must be a web origin weborigin.Parse takes, whose refusals it
 // prefixes with the entry's path, so it is written as a browser writes it and Dispatch, which
 // compares a request's Origin with it as a string, reads it as written; one trailing slash is
-// trimmed, as Dispatch trims one. With googleSignIn each entry's host must be one
-// weborigin.GoogleRedirectHost takes, since the Google client must then list
-// <address>/auth/callback. No entry may share a host with an address taken before it
+// trimmed, as Dispatch trims one. With googleSignIn each entry must be https, as publicOrigin must
+// (refuseDispatchPublicOrigin), since the session cookie and the browser sign-in need TLS at it,
+// and its host must be one weborigin.GoogleRedirectHost takes, since the Google client must then
+// list <address>/auth/callback. No entry may share a host with an address taken before it
 // (refuseDispatchSharedHost). Each refusal is a core.InputError naming input, as the schema names
 // the list, whose message names the entry by its index. dispatchSeededInput has refused a seed in
 // any entry already, so a refusal may quote one.
@@ -1516,6 +1517,9 @@ func newDispatchOriginList(input string, entries []string, googleSignIn bool, ta
 			return nil, nil, core.InputErrorf(input, "%s: %w", name, err)
 		}
 		if googleSignIn {
+			if origin.Scheme != "https" {
+				return nil, nil, core.InputErrorf(input, "%s must be an https origin with browser sign-in on: Dispatch's session cookie and the Google sign-in need TLS at each address it serves, as they do at publicOrigin", name)
+			}
 			if err := weborigin.GoogleRedirectHost(origin.Hostname()); err != nil {
 				return nil, nil, core.InputErrorf(input, "%s's %w", name, err)
 			}
@@ -1531,23 +1535,26 @@ func newDispatchOriginList(input string, entries []string, googleSignIn bool, ta
 
 // refuseDispatchTrustedProxyRanges judges trustedProxyRanges, which every mode that runs the app
 // takes, whatever else is set, as Dispatch's own reading of DISPATCH_TRUSTED_PROXY_RANGES judges
-// each entry (parseTrustedProxyRanges in packages/envoy/cmd/dispatch/main.go), so no pod is
-// rendered with a list its boot refuses: each entry must be a CIDR netip.ParsePrefix takes,
-// written as the network it names, so the setting trusts what it says, with a prefix longer than
-// /0: 0.0.0.0/0 or ::/0 would trust every peer's X-Forwarded-For, and any caller would pick the
+// each entry (parseTrustedProxyRanges in packages/envoy/cmd/dispatch/main.go), by the one check
+// both read, netaddr.TrustedRange, so no pod is rendered with a list its boot refuses: each entry
+// must be a CIDR netip.ParsePrefix takes, but no IPv4-mapped IPv6 prefix, which no peer's address
+// is ever inside, since Dispatch reads each peer's address as the IPv4 address it holds; written
+// as the network it names, so the setting trusts what it says; with a prefix longer than /0:
+// 0.0.0.0/0 or ::/0 would trust every peer's X-Forwarded-For, and any caller would pick the
 // address it is logged and rate limited by. Each refusal is a core.InputError naming the input,
 // whose message names the entry by its index; dispatchSeededInput has refused a seed in any entry
 // already, so a refusal may quote one.
 func refuseDispatchTrustedProxyRanges(args *DispatchArgs) error {
 	for i, cidr := range args.TrustedProxyRanges {
-		prefix, err := netip.ParsePrefix(cidr)
-		if err != nil {
+		prefix, err := netaddr.TrustedRange(cidr)
+		switch {
+		case errors.Is(err, netaddr.ErrRangeNotCIDR):
 			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q must be a CIDR, such as 130.211.0.0/22", i, cidr)
-		}
-		if network := prefix.Masked(); prefix != network {
-			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q must be written as the network it names, %s", i, cidr, network)
-		}
-		if prefix.Bits() == 0 {
+		case errors.Is(err, netaddr.ErrRangeMapped):
+			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q is an IPv4-mapped IPv6 prefix, which no peer's address is ever inside, since Dispatch reads each peer's address as the IPv4 address it holds: write it as an IPv4 prefix, such as 130.211.0.0/22", i, cidr)
+		case errors.Is(err, netaddr.ErrRangeNotNetwork):
+			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q must be written as the network it names, %s", i, cidr, prefix.Masked())
+		case errors.Is(err, netaddr.ErrRangeEveryPeer):
 			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q trusts every peer's X-Forwarded-For, so any caller would pick the address it is logged and rate limited by: name the proxies' own ranges, such as 130.211.0.0/22", i, cidr)
 		}
 	}
@@ -1923,6 +1930,10 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// outsideOrigin keeps the one rule it has, a host other than the front door's or, without the
 	// front door, publicOrigin's (refuseDispatchOutsideOrigin).
 	var outsideOrigin, publicOrigin string
+	// servedOrigins is every address Dispatch serves beside its canonical one, in the order
+	// DISPATCH_SERVED_ORIGINS renders them: beside publicOrigin the front door's name first, then
+	// the servedOrigins input's entries.
+	var servedOrigins []string
 	var taken []dispatchAddress
 	switch {
 	case frontDoor:
@@ -1947,6 +1958,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 				return dispatchSettings{}, err
 			}
 			publicOrigin = origin.String()
+			servedOrigins = []string{dispatchFrontDoorOrigin(args.Hostname, args.TailnetDnsName)}
 			taken = append(taken, dispatchAddress{owner: "publicOrigin's", origin: origin})
 		}
 		var err error
@@ -1978,10 +1990,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 		taken = []dispatchAddress{{owner: "the app's own Service's", origin: &url.URL{Scheme: "http", Host: clusterLocal(args.Hostname, namespace)}}}
 	}
-	servedOrigins, taken, err := newDispatchOriginList("servedOrigins", args.ServedOrigins, signInOn, taken)
+	listed, taken, err := newDispatchOriginList("servedOrigins", args.ServedOrigins, signInOn, taken)
 	if err != nil {
 		return dispatchSettings{}, err
 	}
+	servedOrigins = append(servedOrigins, listed...)
 	// A former address serves no sign-in, so the Google client need list no callback of it.
 	formerOrigins, _, err := newDispatchOriginList("formerOrigins", args.FormerOrigins, false, taken)
 	if err != nil {
@@ -2181,11 +2194,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 	}
 	s.publicOrigin = publicOrigin
-	// Beside publicOrigin the front door's name is a served address, and the first.
-	if frontDoor && publicOrigin != "" {
-		s.servedOrigins = append(s.servedOrigins, dispatchFrontDoorOrigin(args.Hostname, args.TailnetDnsName))
-	}
-	s.servedOrigins = append(s.servedOrigins, servedOrigins...)
+	s.servedOrigins = servedOrigins
 	s.formerOrigins = formerOrigins
 	s.trustedProxyRanges = slices.Clone(args.TrustedProxyRanges)
 	s.iap = args.IapAudience != nil

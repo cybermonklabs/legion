@@ -33,10 +33,10 @@ func decodedWhoamiOrigins(t *testing.T, what string, response *httptest.Response
 }
 
 // TestTheAPIWhoamiNamesTheOriginsAuthWhoamiNames (R10, D14): GET /api/v1/whoami writes the list
-// DepsInput.OriginsAt answers for the request (wired from the router's origin table in routes; held
-// against GET /auth/whoami by routes' TestTheAPIWhoamiMatchesAuthWhoamiThroughTheRouter) on both
-// its user and its agent forms, and no "origins" key where OriginsAt answers nil (neither list
-// set) or is nil, so a server at one address answers as it always did.
+// DepsInput.WhoamiOrigins holds (wired from the router's origin table in routes; held against GET
+// /auth/whoami by routes' TestTheAPIWhoamiMatchesAuthWhoamiThroughTheRouter) at every Host on both
+// its user and its agent forms, and no "origins" key where it is unset, as the router leaves it
+// with neither list set, so a server at one address answers as it always did.
 func TestTheAPIWhoamiNamesTheOriginsAuthWhoamiNames(t *testing.T) {
 	t.Parallel()
 	const (
@@ -48,14 +48,14 @@ func TestTheAPIWhoamiNamesTheOriginsAuthWhoamiNames(t *testing.T) {
 	)
 	every := []string{canonical, served, former}
 
-	mount := func(originsAt func(*http.Request) []string) http.Handler {
+	mount := func(origins []string) http.Handler {
 		deps, err := NewDeps(withDocumentService(t, DepsInput{
 			Identity:      identity.HeaderIdentity{Header: "X-Dispatch-User", People: unrecordedPeople{}},
 			AgentTokens:   sharedAgentTokens(t, agentKey),
 			ServerURL:     canonical,
 			ServedOrigins: []string{served},
 			FormerOrigins: []string{former},
-			OriginsAt:     originsAt,
+			WhoamiOrigins: origins,
 		}))
 		if err != nil {
 			t.Fatalf("NewDeps: %v", err)
@@ -78,7 +78,7 @@ func TestTheAPIWhoamiNamesTheOriginsAuthWhoamiNames(t *testing.T) {
 		return decodedWhoamiOrigins(t, kind+" GET /api/v1/whoami at Host "+host, response)
 	}
 
-	configured := mount(func(*http.Request) []string { return every })
+	configured := mount(every)
 	for _, host := range []string{"a.example.test", "b.example.test"} {
 		for _, kind := range []string{"user", "agent"} {
 			if got, present := ask(configured, host, kind); !present || !slices.Equal(got, every) {
@@ -87,18 +87,10 @@ func TestTheAPIWhoamiNamesTheOriginsAuthWhoamiNames(t *testing.T) {
 		}
 	}
 
-	for _, empty := range []struct {
-		name      string
-		originsAt func(*http.Request) []string
-	}{
-		{"OriginsAt answering nil", func(*http.Request) []string { return nil }},
-		{"OriginsAt unset", nil},
-	} {
-		handler := mount(empty.originsAt)
-		for _, kind := range []string{"user", "agent"} {
-			if got, present := ask(handler, "a.example.test", kind); present {
-				t.Errorf("%s (%s): GET /api/v1/whoami carried origins=%v, want the key omitted", kind, empty.name, got)
-			}
+	unset := mount(nil)
+	for _, kind := range []string{"user", "agent"} {
+		if got, present := ask(unset, "a.example.test", kind); present {
+			t.Errorf("%s: GET /api/v1/whoami with WhoamiOrigins unset carried origins=%v, want the key omitted", kind, got)
 		}
 	}
 }

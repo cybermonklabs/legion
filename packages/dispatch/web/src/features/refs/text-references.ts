@@ -479,11 +479,12 @@ function resolvePrefixIds(
 
 /** `route` with the whole ids `items` names put in, or undefined while one of its short ids
  *  names nothing yet: a record is read under its whole id or not at all, so nothing is ever
- *  cached under a prefix. `items` is each whole id to the reference it is stored under. */
+ *  cached under a prefix. `items` is each whole id to the reference it is stored under, read
+ *  against `origins`, the page's own and the ones whoami named (`dispatchOrigins`) by default. */
 export function routeWithWholeIds(
   route: DispatchReferenceRoute,
   items: Readonly<Record<string, string>>,
-  origins: readonly string[]
+  origins: readonly string[] = dispatchOrigins()
 ): DispatchReferenceRoute | undefined {
   const resolved = resolvePrefixIds(route, itemKinds(items, origins));
   return resolved.unresolved ? undefined : resolved.route;

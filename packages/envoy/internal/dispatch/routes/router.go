@@ -266,7 +266,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ServerURL:              opts.ServerURL,
 		ServedOrigins:          opts.ServedOrigins,
 		FormerOrigins:          opts.FormerOrigins,
-		OriginsAt:              hosts.originsAt,
+		WhoamiOrigins:          hosts.origins,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
 		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
@@ -588,7 +588,7 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 // answer's JSON has always carried them in. Origins names the server's origins, the canonical one
 // first, then the served addresses (DISPATCH_SERVED_ORIGINS) and the former addresses
 // (DISPATCH_FORMER_ORIGINS), only where the server is configured with either list
-// (hostOrigins.originsAt): so the answer of a server at one address is byte for byte what it was
+// (hostOrigins.origins): so the answer of a server at one address is byte for byte what it was
 // before either list existed.
 type whoamiAnswer struct {
 	EventHead string   `json:"event_head"`
@@ -627,7 +627,7 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 		writeCodeError(w, http.StatusServiceUnavailable, "the event log's head could not be read", "EVENT_HEAD_READ_FAILED")
 		return
 	}
-	api.WriteJSON(w, http.StatusOK, whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email, Origins: r.ctx.hosts.originsAt(req)})
+	api.WriteJSON(w, http.StatusOK, whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email, Origins: r.ctx.hosts.origins})
 }
 
 // apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App.
@@ -1029,12 +1029,11 @@ func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
 // to the socket's own upgrade, which holds it to the page's origin.
 func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
-			next.ServeHTTP(w, req)
-			return
-		}
+		// The method and the headers are read before any cookie is parsed, as most requests are
+		// safe ones that open no document socket.
 		docSocket := opensDocumentSocket(req)
-		if !docSocket && (!unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "") {
+		if !docSocket && (!unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "") ||
+			!auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
 			next.ServeHTTP(w, req)
 			return
 		}

@@ -6,6 +6,8 @@ body: |-
   matches, the command reads `GET /api/v1/whoami`'s `origins` and matches the link against each
   origin listed there. No client setting holds a copy of the list. When the call fails, or the
   server names no `origins`, the command reads a link at its configured address alone, as before.
+  A dry run that asks Dispatch nothing reads no origins, so it refuses a link at another address
+  of the server that the real call reads.
 time: 2026-11-28T03:00:00Z
 custom:
   Issue: INFRA-5491

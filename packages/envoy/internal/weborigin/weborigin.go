@@ -78,11 +78,13 @@ func Parse(raw string) (*url.URL, error) {
 // for http) taken off, the scheme compared without case: as a browser writes an origin, and as RFC
 // 3986 Section 6.2.3 has a URL compared.
 func WithoutDefaultPort(scheme, host string) string {
-	switch {
-	case strings.EqualFold(scheme, "https"):
-		host, _ = strings.CutSuffix(host, ":443")
-	case strings.EqualFold(scheme, "http"):
-		host, _ = strings.CutSuffix(host, ":80")
+	for name, port := range defaultPorts {
+		if strings.EqualFold(scheme, name) {
+			// The suffix is written on the stack: a proof's check and each link's reading call this.
+			var suffix [len(":65535")]byte
+			host, _ = strings.CutSuffix(host, string(strconv.AppendInt(append(suffix[:0], ':'), int64(port), 10)))
+			break
+		}
 	}
 	return host
 }

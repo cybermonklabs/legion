@@ -1,15 +1,11 @@
 package textcheck
 
 import (
-	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"os"
 	"path"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -91,63 +87,36 @@ func TestNoCodeOutsideTheOriginTablePicksByHost(t *testing.T) {
 	})
 }
 
-// hostReads reads the non-test Go files of each of directories, not of the directories below it,
-// and returns, sorted, each top-level declaration (declName) that reads the Host of a request it is
-// handed, as "<path> <declaration>": a selector .Host on a parameter of type *http.Request, of the
-// declaration or of a function literal in it, whatever name its file imports net/http under. It
-// counts the Go files it read.
+// hostReads reads the non-test Go files of each of directories, not of the directories below it
+// (goFiles), and returns, sorted, each top-level declaration (declName) that reads the Host of a
+// request it is handed, as "<path> <declaration>": a selector .Host on a parameter of type
+// *http.Request, of the declaration or of a function literal in it, whatever name its file imports
+// net/http under. It counts the Go files it read.
 func hostReads(directories ...string) (reads []string, read int, err error) {
-	fileSet := token.NewFileSet()
-	for _, directory := range directories {
-		entries, err := os.ReadDir(directory)
-		if err != nil {
-			return nil, read, fmt.Errorf("read %s: %w", directory, err)
-		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-				continue
-			}
-			at := filepath.Join(directory, name)
-			file, err := parser.ParseFile(fileSet, at, nil, parser.SkipObjectResolution)
-			if err != nil {
-				return nil, read, err
-			}
-			read++
-			http, dotHTTP := map[string]bool{}, false
-			for _, spec := range file.Imports {
-				if importPath, _ := strconv.Unquote(spec.Path.Value); importPath != "net/http" {
-					continue
-				}
-				switch {
-				case spec.Name == nil:
-					http["http"] = true
-				case spec.Name.Name == ".":
-					dotHTTP = true
-				default:
-					http[spec.Name.Name] = true
-				}
-			}
-			for _, decl := range file.Decls {
-				if readsRequestHost(decl, http, dotHTTP) {
-					reads = append(reads, filepath.ToSlash(at)+" "+declName(decl))
-				}
+	read, err = goFiles(directories, true, func(at string, file *ast.File, _ *token.FileSet) {
+		http := importNames(file, "net/http")
+		for _, decl := range file.Decls {
+			if readsRequestHost(decl, http) {
+				reads = append(reads, filepath.ToSlash(at)+" "+declName(decl))
 			}
 		}
+	})
+	if err != nil {
+		return nil, read, err
 	}
 	slices.Sort(reads)
 	return reads, read, nil
 }
 
 // readsRequestHost reports whether decl reads .Host of a parameter, of decl or of a function
-// literal in it, whose type is *http.Request: http are the names its file imports net/http under,
-// and dotHTTP whether it imports it with a dot, as Request bare.
-func readsRequestHost(decl ast.Decl, http map[string]bool, dotHTTP bool) bool {
+// literal in it, whose type is *http.Request: http are the names its file imports net/http under
+// (importNames), "." among them where it imports it with a dot, as Request bare.
+func readsRequestHost(decl ast.Decl, http map[string]bool) bool {
 	requests := map[string]bool{}
 	ast.Inspect(decl, func(node ast.Node) bool {
 		if function, ok := node.(*ast.FuncType); ok && function.Params != nil {
 			for _, field := range function.Params.List {
-				if isRequestPointer(field.Type, http, dotHTTP) {
+				if isRequestPointer(field.Type, http) {
 					for _, name := range field.Names {
 						requests[name.Name] = true
 					}
@@ -169,8 +138,8 @@ func readsRequestHost(decl ast.Decl, http map[string]bool, dotHTTP bool) bool {
 }
 
 // isRequestPointer reports whether expression is the type *http.Request, under one of http, the
-// names its file imports net/http under, or bare where it imports net/http with a dot.
-func isRequestPointer(expression ast.Expr, http map[string]bool, dotHTTP bool) bool {
+// names its file imports net/http under, or bare where those hold ".", a dot import.
+func isRequestPointer(expression ast.Expr, http map[string]bool) bool {
 	pointer, ok := expression.(*ast.StarExpr)
 	if !ok {
 		return false
@@ -180,7 +149,7 @@ func isRequestPointer(expression ast.Expr, http map[string]bool, dotHTTP bool) b
 		pkg, ok := target.X.(*ast.Ident)
 		return ok && http[pkg.Name] && target.Sel.Name == "Request"
 	case *ast.Ident:
-		return dotHTTP && target.Name == "Request"
+		return http["."] && target.Name == "Request"
 	}
 	return false
 }

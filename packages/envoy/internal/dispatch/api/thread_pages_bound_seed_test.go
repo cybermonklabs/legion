@@ -504,9 +504,9 @@ func settleBoundItems(t *testing.T, database *store.Store) {
 			}
 			for _, item := range batch {
 				if owed.kind == refs.ItemAsk {
-					_, err = refs.IndexItemIfOwed(ctx, tx, refs.ItemAsk, item.id, text.NewOrigins(testServerURL))
+					_, err = refs.IndexItemIfOwed(ctx, tx, refs.ItemAsk, item.id, testOrigins)
 				} else {
-					_, err = refs.IndexItem(ctx, tx, owed.kind, item.id, item.body, text.NewOrigins(testServerURL), item.at, text.ExtractAt(item.body, text.NewOrigins(testServerURL)), nil)
+					_, err = refs.IndexItem(ctx, tx, owed.kind, item.id, item.body, testOrigins, item.at, text.ExtractAt(item.body, testOrigins), nil)
 				}
 				if err != nil {
 					_ = tx.Rollback(ctx)

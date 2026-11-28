@@ -1,6 +1,6 @@
-/** Which links are references is the origin list the server's /auth/whoami names for the address
- *  the request came to, by its Host, and the row reads it under two servers started with two
- *  lists, where a recording would answer one list for both. */
+/** Which links are references is the origin list the server's /auth/whoami names, one list at
+ *  every Host the server answers, and the row reads it under two servers started with two lists,
+ *  where a recording would answer one list for both. */
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { createWriteStream, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -26,7 +26,7 @@ import { dropDatabase, sqlAt } from "./psql";
  * and as an ordinary link under one that does not.
  *
  * Each row stands on the real stack because what decides it is the server: the origins its
- * `/auth/whoami` names for the address the request came to, picked by the request's `Host`. So the
+ * `/auth/whoami` names, the same list at whichever of its addresses the request came to. So the
  * rows start servers of their own (`e2e/run-server.sh`, with `DISPATCH_SERVED_ORIGINS` and
  * `DISPATCH_FORMER_ORIGINS`) at the canonical address https://a.example.test, behind a TLS front
  * door of this file's own (`e2e/served-hosts-proxy.ts`) that keeps each request's `Host`. Chromium
@@ -165,11 +165,17 @@ const servedTest = test.extend<Record<never, never>, { rig: ServedAddressesRig }
         // The keeper writes the file through a rename once it serves its socket, so a file that
         // exists holds the whole port.
         await expect
-          .poll(() => existsSync(portFile) || kept.child.exitCode !== null, { timeout: 30_000 })
+          .poll(
+            () =>
+              existsSync(portFile) ||
+              kept.child.exitCode !== null ||
+              kept.child.signalCode !== null,
+            { timeout: 30_000 }
+          )
           .toBe(true);
         if (!existsSync(portFile)) {
           throw new Error(
-            `the port keeper exited ${kept.child.exitCode}: ${(await keeperError).trim()}`
+            `the port keeper exited ${kept.child.exitCode ?? kept.child.signalCode}: ${(await keeperError).trim()}`
           );
         }
         const serverPort = Number(readFileSync(portFile, "utf8").trim());

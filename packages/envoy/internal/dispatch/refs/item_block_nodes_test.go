@@ -17,8 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-const itemBlockServer = "https://dispatch.example"
-
 // insertIndexedItem inserts a comment or an issue message of issueKey with body and indexes it
 // as a write of this build does (indexItemAsAWriteDoes), returning its id.
 func insertIndexedItem(t *testing.T, tx pgx.Tx, kind ItemKind, issueKey, body string) string {
@@ -33,7 +31,7 @@ func insertIndexedItem(t *testing.T, tx pgx.Tx, kind ItemKind, issueKey, body st
 	if err := tx.QueryRow(ctx, `insert into `+table+` (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2) returning id::text, created_at`, issueKey, body).Scan(&id, &createdAt); err != nil {
 		t.Fatalf("insert %s: %v", kind, err)
 	}
-	indexItemAsAWriteDoes(t, tx, kind, id, body, itemBlockServer, createdAt)
+	indexItemAsAWriteDoes(t, tx, kind, id, body, testOrigins, createdAt)
 	return id
 }
 
@@ -94,7 +92,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	messageBlock := itemBlockNodeID(ItemMessage, message, "b2")
 	citer := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/comment/"+comment+"#b-b2.")
 	ask := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE-2 first?", model.AskOption{Label: "Yes"})
-	askMentions := NewReader(ctx, tx, ask.Author, "ask", ask.ID, text.NewOrigins(itemBlockServer)).Mentions(ask.Question)
+	askMentions := NewReader(ctx, tx, ask.Author, "ask", ask.ID, testOrigins).Mentions(ask.Question)
 	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil, false); err != nil {
 		t.Fatalf("index the ask's own references: %v", err)
 	}
@@ -391,7 +389,7 @@ func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
 	if err := tx.QueryRow(ctx, `update comments set body = $2, edited_at = now() where id = $1::uuid returning edited_at`, comment, edited).Scan(&editedAt); err != nil {
 		t.Fatalf("edit the comment: %v", err)
 	}
-	indexItemAsAWriteDoes(t, tx, ItemComment, comment, edited, itemBlockServer, editedAt)
+	indexItemAsAWriteDoes(t, tx, ItemComment, comment, edited, testOrigins, editedAt)
 
 	ask := insertAsk(t, tx, "CORE-1", "Which day do we ship?",
 		model.AskOption{Label: "Monday"}, model.AskOption{Label: "Tuesday", Description: "before the freeze"})

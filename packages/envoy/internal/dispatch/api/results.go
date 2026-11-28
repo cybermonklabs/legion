@@ -1250,10 +1250,18 @@ func (w lineWords) drops(word string) bool {
 // holds reports whether word holds `://`, a private host, a host of this Dispatch's own or an
 // issue key of a project this Dispatch holds.
 func (w lineWords) holds(word string) bool {
-	lower := strings.ToLower(word)
 	return holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
-		slices.ContainsFunc(w.hosts, func(host string) bool { return host != "" && strings.Contains(lower, host) }) ||
-		(w.issueKey != nil && w.issueKey.MatchString(word))
+		w.holdsHost(word) || (w.issueKey != nil && w.issueKey.MatchString(word))
+}
+
+// holdsHost reports whether word holds a host of this Dispatch's own, in any case: none with no
+// hosts, so the word is lowered only where one can match.
+func (w lineWords) holdsHost(word string) bool {
+	if len(w.hosts) == 0 {
+		return false
+	}
+	lower := strings.ToLower(word)
+	return slices.ContainsFunc(w.hosts, func(host string) bool { return host != "" && strings.Contains(lower, host) })
 }
 
 // keep is text's words joined by single blanks, less every word the line drops.

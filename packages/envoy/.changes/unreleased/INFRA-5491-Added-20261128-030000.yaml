@@ -28,7 +28,8 @@ body: |-
   neither list is set. The web page and the `dispatch` command read links at any of them from it.
 
   `DISPATCH_TRUSTED_PROXY_RANGES`, empty by default, lists the proxies whose `X-Forwarded-For`
-  Dispatch trusts, as CIDRs written as their networks, none of length 0. From a peer in a listed
+  Dispatch trusts, as CIDRs written as their networks, none of length 0 and none an IPv4-mapped
+  IPv6 prefix, which no peer is ever inside. From a peer in a listed
   range, the caller address is the entry second from the right of the one `X-Forwarded-For` line,
   the client that a proxy such as Google's internal Application Load Balancer appends before its
   forwarding rule's address, and the /64 of an IPv6 client. That address keys the broker token
@@ -45,8 +46,9 @@ body: |-
   door's name is a served address, first in `DISPATCH_SERVED_ORIGINS`, while every front-door
   object renders as before. `iapAudience`, `loadBalancerSourceRanges` and
   `networkEndpointGroupName` are refused beside the tailnet inputs. Two addresses on one host name
-  are refused, naming the input. `trustedProxyRanges` renders `DISPATCH_TRUSTED_PROXY_RANGES` in
-  every mode that runs the app. `preStopSeconds`, 5 by default, and
+  are refused, naming the input, and so, with browser sign-in on, is a served address that is not
+  `https`. `trustedProxyRanges` renders `DISPATCH_TRUSTED_PROXY_RANGES` in every mode that runs
+  the app, and refuses the entries Dispatch refuses. `preStopSeconds`, 5 by default, and
   `terminationGracePeriodSeconds`, 35 by default, set the app pod's pre-stop wait and grace period,
   and a grace period under `preStopSeconds` plus 30 is refused.
 time: 2026-11-28T03:00:00Z

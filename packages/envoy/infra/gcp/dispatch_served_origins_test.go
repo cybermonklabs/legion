@@ -1,9 +1,7 @@
 package gcp_test
 
 import (
-	"encoding/json"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -67,15 +65,6 @@ func appOriginEnv(t *testing.T, m *pulumitest.Mocks) []string {
 	return nil
 }
 
-// renderedJSON is value as JSON, the bytes a golden of it holds: normalizedProperty's rendering,
-// every output and secret wrapper off and a secret's value as <secret>, with its keys sorted.
-func renderedJSON(t *testing.T, value any) string {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	require.NoError(t, err)
-	return string(encoded)
-}
-
 // The app's environment names Dispatch's canonical address in DISPATCH_SERVER_URL, its other
 // served addresses in DISPATCH_SERVED_ORIGINS and its former ones in DISPATCH_FORMER_ORIGINS, the
 // two lists right after it, each comma-joined in the order given with one trailing slash trimmed,
@@ -97,10 +86,10 @@ func TestDispatchRendersServedAndFormerOrigins(t *testing.T) {
 		want []string
 	}{
 		{"the tailnet inputs alone", dispatchArgs, []string{"DISPATCH_SERVER_URL=" + dispatchFrontDoorURL}},
-		{"the tailnet inputs and a former address", editedDispatchArgs(dispatchArgs, func(a *gcp.DispatchArgs) {
+		{"the tailnet inputs and a former address", dispatchArgsWith(func(a *gcp.DispatchArgs) {
 			a.FormerOrigins = []string{dispatchFormerOrigin}
 		}), []string{"DISPATCH_SERVER_URL=" + dispatchFrontDoorURL, "DISPATCH_FORMER_ORIGINS=" + dispatchFormerOrigin}},
-		{"the tailnet inputs and two more served addresses, the canonical one kept", editedDispatchArgs(dispatchArgs, func(a *gcp.DispatchArgs) {
+		{"the tailnet inputs and two more served addresses, the canonical one kept", dispatchArgsWith(func(a *gcp.DispatchArgs) {
 			a.ServedOrigins = []string{dispatchServedOrigin, "https://c.example.com:8443/"}
 			a.FormerOrigins = []string{dispatchFormerOrigin, "http://older.example.test:8080"}
 		}), []string{
@@ -207,10 +196,10 @@ func TestDispatchRefusesOverlappingOrigins(t *testing.T) {
 		args        func() *gcp.DispatchArgs
 		want        string
 	}{
-		{"publicOrigin on the front door's host", "publicOrigin", editedDispatchArgs(dispatchArgs, func(a *gcp.DispatchArgs) {
+		{"publicOrigin on the front door's host", "publicOrigin", dispatchArgsWith(func(a *gcp.DispatchArgs) {
 			a.PublicOrigin = dispatchFrontDoorURL + ":8443"
 		}), "publicOrigin's host " + frontDoorHost + " is the front door's" + ownHost},
-		{"a served address on the front door's host", "servedOrigins", editedDispatchArgs(dispatchArgs, func(a *gcp.DispatchArgs) {
+		{"a served address on the front door's host", "servedOrigins", dispatchArgsWith(func(a *gcp.DispatchArgs) {
 			a.ServedOrigins = []string{dispatchFrontDoorURL + ":8443"}
 		}), "servedOrigins[0]'s host " + frontDoorHost + " is the front door's" + ownHost},
 		{"a served address on the front door's host beside publicOrigin", "servedOrigins", editedDispatchArgs(dispatchFrontDoorPublicOriginArgs, func(a *gcp.DispatchArgs) {
@@ -225,20 +214,20 @@ func TestDispatchRefusesOverlappingOrigins(t *testing.T) {
 		{"a served address on the sandbox's own host", "servedOrigins", editedDispatchArgs(dispatchSandboxArgs, func(a *gcp.DispatchArgs) {
 			a.ServedOrigins = []string{"http://example-dispatch.dispatch.svc.cluster.local:9000"}
 		}), "servedOrigins[0]'s host example-dispatch.dispatch.svc.cluster.local is the app's own Service's" + ownHost},
-		{"two served addresses on one host", "servedOrigins", editedDispatchArgs(dispatchArgs, func(a *gcp.DispatchArgs) {
+		{"two served addresses on one host", "servedOrigins", dispatchArgsWith(func(a *gcp.DispatchArgs) {
 			a.ServedOrigins = []string{dispatchServedOrigin, dispatchServedOrigin + ":8443"}
 		}), "servedOrigins[1]'s host b.example.com is servedOrigins[0]'s" + ownHost},
-		{"a former address on the front door's host", "formerOrigins", editedDispatchArgs(dispatchArgs, func(a *gcp.DispatchArgs) {
+		{"a former address on the front door's host", "formerOrigins", dispatchArgsWith(func(a *gcp.DispatchArgs) {
 			a.FormerOrigins = []string{dispatchFrontDoorURL + ":8443"}
 		}), "formerOrigins[0]'s host " + frontDoorHost + " is the front door's" + ownHost},
 		{"a former address on publicOrigin's host beside the front door", "formerOrigins", editedDispatchArgs(dispatchFrontDoorPublicOriginArgs, func(a *gcp.DispatchArgs) {
 			a.FormerOrigins = []string{"https://dispatch.example.com:8443"}
 		}), "formerOrigins[0]'s host dispatch.example.com is publicOrigin's" + ownHost},
-		{"a former address on a served address's host", "formerOrigins", editedDispatchArgs(dispatchArgs, func(a *gcp.DispatchArgs) {
+		{"a former address on a served address's host", "formerOrigins", dispatchArgsWith(func(a *gcp.DispatchArgs) {
 			a.ServedOrigins = []string{dispatchServedOrigin}
 			a.FormerOrigins = []string{"http://b.example.com"}
 		}), "formerOrigins[0]'s host b.example.com is servedOrigins[0]'s" + ownHost},
-		{"two former addresses on one host", "formerOrigins", editedDispatchArgs(dispatchArgs, func(a *gcp.DispatchArgs) {
+		{"two former addresses on one host", "formerOrigins", dispatchArgsWith(func(a *gcp.DispatchArgs) {
 			a.FormerOrigins = []string{dispatchFormerOrigin, "http://old.example.test:8080"}
 		}), "formerOrigins[1]'s host old.example.test is formerOrigins[0]'s" + ownHost},
 	} {
@@ -256,7 +245,7 @@ func TestDispatchRefusesOverlappingOrigins(t *testing.T) {
 		a.FormerOrigins = []string{dispatchFormerOrigin, "https://older.example.test"}
 	}
 	for _, args := range []func() *gcp.DispatchArgs{
-		editedDispatchArgs(dispatchArgs, everyAddress),
+		dispatchArgsWith(everyAddress),
 		editedDispatchArgs(dispatchFrontDoorPublicOriginArgs, everyAddress),
 		editedDispatchArgs(dispatchPublicOriginArgs, everyAddress),
 	} {
@@ -268,10 +257,11 @@ func TestDispatchRefusesOverlappingOrigins(t *testing.T) {
 // Each served and former address is an origin written as a browser writes it, since Dispatch
 // compares a request's Origin with it as a string and refuses to start on any other spelling:
 // weborigin.Parse's refusals are prefixed with the entry's path, named as the list, and none
-// echoes a user, which could carry a credential. With browser sign-in on, a served address's host
-// must be one Google takes in a redirect URI, since the Google client lists its callback; a former
-// address serves no sign-in, and neither does a served one without browser sign-in or behind the
-// IAP door, so those take a host Google would refuse.
+// echoes a user, which could carry a credential. With browser sign-in on, a served address must be
+// https, as publicOrigin must, and its host one Google takes in a redirect URI, since the Google
+// client lists its callback; a former address serves no sign-in, and neither does a served one
+// without browser sign-in or behind the IAP door, so those take http and a host Google would
+// refuse.
 func TestDispatchRefusesAServedOrFormerAddressItCannotServe(t *testing.T) {
 	notOrigin := func(entry string) string {
 		return entry + ": must be an absolute http or https URL with no path, user, query or fragment, as an origin is (not echoed)"
@@ -280,7 +270,7 @@ func TestDispatchRefusesAServedOrFormerAddressItCannotServe(t *testing.T) {
 		return editedDispatchArgs(base, func(a *gcp.DispatchArgs) { a.ServedOrigins = entries })
 	}
 	former := func(entries ...string) func() *gcp.DispatchArgs {
-		return editedDispatchArgs(dispatchArgs, func(a *gcp.DispatchArgs) { a.FormerOrigins = entries })
+		return dispatchArgsWith(func(a *gcp.DispatchArgs) { a.FormerOrigins = entries })
 	}
 	const offTheList = "servedOrigins[0]'s host b.example.test ends in test, no top-level domain on the public suffix list, " +
 		"which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete"
@@ -301,6 +291,10 @@ func TestDispatchRefusesAServedOrFormerAddressItCannotServe(t *testing.T) {
 			"servedOrigins[0]: must be written as a browser writes this origin, https://b.example.com: a lowercase scheme and no default port"},
 		{"a former address with a query", "formerOrigins", former("https://old.example.test?from=x"), notOrigin("formerOrigins[0]")},
 		{"a former address with a user", "formerOrigins", former("https://example-user@old.example.test"), notOrigin("formerOrigins[0]")},
+		{"an http served address with browser sign-in", "servedOrigins", served(dispatchArgs, "https://c.example.com", "http://b.example.com"),
+			"servedOrigins[1] must be an https origin with browser sign-in on: Dispatch's session cookie and the Google sign-in need TLS at each address it serves, as they do at publicOrigin"},
+		{"an http served address beside publicOrigin without the front door", "servedOrigins", served(dispatchPublicOriginArgs, "http://b.example.com"),
+			"servedOrigins[0] must be an https origin with browser sign-in on: Dispatch's session cookie and the Google sign-in need TLS at each address it serves, as they do at publicOrigin"},
 		{"a served IP address with browser sign-in", "servedOrigins", served(dispatchArgs, "https://10.0.0.1"),
 			"servedOrigins[0]'s host 10.0.0.1 is an IP address, which Google refuses as the host of an OAuth redirect URI, so browser sign-in at it could not complete: name the origin by a DNS name"},
 		{"a served host off the public suffix list with browser sign-in", "servedOrigins", served(dispatchArgs, "https://b.example.test"), offTheList},
@@ -346,7 +340,7 @@ func TestDispatchFrontDoorIsByteEqualWithAndWithoutTheNewInputs(t *testing.T) {
 		require.True(t, ok, "%q names a type and a name", object)
 		t.Run(object, func(t *testing.T) {
 			want, got := base.Named(t, typ, name).Inputs, changed.Named(t, typ, name).Inputs
-			require.Equal(t, renderedJSON(t, normalizedProperty(resource.NewProperty(want))), renderedJSON(t, normalizedProperty(resource.NewProperty(got))))
+			require.Equal(t, prodRenderKey(t, normalizedProperty(resource.NewProperty(want))), prodRenderKey(t, normalizedProperty(resource.NewProperty(got))))
 			require.Equal(t, want, got, "the same values, a secret's own included")
 		})
 	}
@@ -354,11 +348,11 @@ func TestDispatchFrontDoorIsByteEqualWithAndWithoutTheNewInputs(t *testing.T) {
 	requirePodGolden(t, changed, "example-dispatch-tailnet", "dispatch-tailnet-pod.golden")
 	requirePodGolden(t, changed, "example-dispatch-listener", "dispatch-listener-pod.golden")
 	for _, deployment := range []string{"example-dispatch-tailnet", "example-dispatch-listener"} {
-		require.Equal(t, renderedJSON(t, deploymentSpec(t, base, deployment)), renderedJSON(t, deploymentSpec(t, changed, deployment)), "%s's spec", deployment)
+		require.Equal(t, prodRenderKey(t, deploymentSpec(t, base, deployment)), prodRenderKey(t, deploymentSpec(t, changed, deployment)), "%s's spec", deployment)
 	}
 	require.Equal(t, readGolden(t, "dispatch-registrations.golden"), dispatchRegistrations(changed))
 
-	require.NotEqual(t, renderedJSON(t, deploymentSpec(t, base, "example-dispatch")), renderedJSON(t, deploymentSpec(t, changed, "example-dispatch")),
+	require.NotEqual(t, prodRenderKey(t, deploymentSpec(t, base, "example-dispatch")), prodRenderKey(t, deploymentSpec(t, changed, "example-dispatch")),
 		"the app's own pods carry the new inputs")
 }
 
@@ -406,8 +400,6 @@ func TestDispatchWithNoNewInputRendersTheBaseGoldens(t *testing.T) {
 				m, err := runDispatch(t, sent.args(), true)
 				require.NoError(t, err)
 				requirePodGolden(t, m, "example-dispatch", row.golden)
-				names := appEnvNames(t, m)
-				require.False(t, slices.Contains(names, "DISPATCH_SERVED_ORIGINS") || slices.Contains(names, "DISPATCH_FORMER_ORIGINS"), "no list renders")
 			})
 		}
 	}

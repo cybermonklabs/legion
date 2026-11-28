@@ -683,8 +683,10 @@ is longer than about 20 seconds therefore never closes either one.
 
 `DISPATCH_TRUSTED_PROXY_RANGES` lists the proxies whose `X-Forwarded-For` Dispatch trusts: comma-separated CIDR ranges, each written as its network, such as `10.129.0.0/23`.
 It is empty by default, so Dispatch trusts no proxy, and a range of length 0, such as `0.0.0.0/0`, refuses the start.
+So does an IPv4-mapped IPv6 range, such as `::ffff:10.129.0.0/119`, which no peer is ever inside, since Dispatch reads each peer's address as the IPv4 address it holds: write it as an IPv4 range.
 The setting decides the caller address of each request, which the access log names in `address` and the broker token check's per-address limit counts.
 From a listed proxy, the caller address is the entry second from the right of the one `X-Forwarded-For` line: the client address that a proxy such as Google's internal Application Load Balancer appends before the address of its forwarding rule.
+An IPv6 client is keyed by the /64 that holds its address, since one host or one site holds a whole /64.
 Dispatch never reads an entry to the left of it, because the caller wrote it.
 A request from a listed proxy whose header that proxy could not have written is answered `400` with the code `FORWARDED_FOR_INVALID`, before any credential is read.
 Such a header is not one line, holds fewer than two entries, or has a second entry from the right that is no IP address.

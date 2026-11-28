@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -293,10 +294,5 @@ func inRanges(address string, ranges []netip.Prefix) bool {
 		return false
 	}
 	addr = netaddr.Canonical(addr)
-	for _, prefix := range ranges {
-		if prefix.Contains(addr) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(ranges, func(prefix netip.Prefix) bool { return prefix.Contains(addr) })
 }

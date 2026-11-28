@@ -1,16 +1,12 @@
 package textcheck
 
 import (
-	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"go/types"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -90,62 +86,31 @@ func TestOnlyOneConstructorBuildsTheServersOrigins(t *testing.T) {
 	})
 }
 
-// originsBuilds walks the non-test Go files under roots and returns, sorted, each top-level
-// declaration that names text.NewOrigins, as "<path> <declaration>" (declName), whatever name the
-// file imports text under; inside package text itself (a file of package text in a directory
-// dispatch/text) a bare NewOrigins, except in the constructor, ServerOrigins; and each dot import of
-// text, as "<path> import . <text>", since a bare NewOrigins through it cannot be told from a
-// function of the file's own. It counts the Go files it read.
+// originsBuilds reads the non-test Go files under roots (goFiles) and returns, sorted, each
+// top-level declaration that names text.NewOrigins, as "<path> <declaration>" (declName), whatever
+// name the file imports text under; inside package text itself (a file of package text in a
+// directory dispatch/text) a bare NewOrigins, except in the constructor, ServerOrigins; and each dot
+// import of text, as "<path> import . <text>", since a bare NewOrigins through it cannot be told
+// from a function of the file's own. It counts the Go files it read.
 func originsBuilds(roots ...string) (builds []string, read int, err error) {
-	fileSet := token.NewFileSet()
-	for _, root := range roots {
-		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				if entry.Name() == "testdata" || entry.Name() == "node_modules" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			file, err := parser.ParseFile(fileSet, path, nil, parser.SkipObjectResolution)
-			if err != nil {
-				return err
-			}
-			read++
-			at := filepath.ToSlash(path)
-			inText := file.Name.Name == "text" && strings.HasSuffix(filepath.ToSlash(filepath.Dir(path)), "dispatch/text")
-			names := map[string]bool{}
-			for _, spec := range file.Imports {
-				if importPath, _ := strconv.Unquote(spec.Path.Value); importPath != textImport {
-					continue
-				}
-				switch {
-				case spec.Name == nil:
-					names["text"] = true
-				case spec.Name.Name == ".":
-					builds = append(builds, at+" import . "+textImport)
-				default:
-					names[spec.Name.Name] = true
-				}
-			}
-			for _, decl := range file.Decls {
-				if function, ok := decl.(*ast.FuncDecl); ok && inText && function.Recv == nil && function.Name.Name == serverOriginsConstructor {
-					continue
-				}
-				if namesNewOrigins(decl, names, inText) {
-					builds = append(builds, at+" "+declName(decl))
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, read, fmt.Errorf("walk %s: %w", root, err)
+	read, err = goFiles(roots, false, func(path string, file *ast.File, _ *token.FileSet) {
+		at := filepath.ToSlash(path)
+		inText := file.Name.Name == "text" && strings.HasSuffix(filepath.ToSlash(filepath.Dir(path)), "dispatch/text")
+		names := importNames(file, textImport)
+		if names["."] {
+			builds = append(builds, at+" import . "+textImport)
 		}
+		for _, decl := range file.Decls {
+			if function, ok := decl.(*ast.FuncDecl); ok && inText && function.Recv == nil && function.Name.Name == serverOriginsConstructor {
+				continue
+			}
+			if namesNewOrigins(decl, names, inText) {
+				builds = append(builds, at+" "+declName(decl))
+			}
+		}
+	})
+	if err != nil {
+		return nil, read, err
 	}
 	slices.Sort(builds)
 	return builds, read, nil

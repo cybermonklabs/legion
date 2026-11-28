@@ -793,7 +793,7 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 		insertReference(t, tx, "message", message, "artifact", reached["message"])
 		insertIndexedItem(t, tx, ItemMessage, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/by-message-block-md.")
 		question := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE/artifact/by-question-md first?", model.AskOption{Label: "Yes"})
-		mentions := NewReader(ctx, tx, question.Author, "ask", question.ID, text.NewOrigins(itemBlockServer)).Mentions(question.Question)
+		mentions := NewReader(ctx, tx, question.Author, "ask", question.ID, testOrigins).Mentions(question.Question)
 		if _, err := replaceRefs(ctx, tx, "ask", question.ID, text.Refs(mentions), nil, false); err != nil {
 			t.Fatalf("index the ask's own references: %v", err)
 		}

@@ -14,8 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-const refsGrammarServer = "https://dispatch.example"
-
 // owedRows is every row of the re-index queue as "kind id", in kind then id order.
 func owedRows(t *testing.T, q Queryer) []string {
 	t.Helper()
@@ -63,7 +61,7 @@ func TestAWriteLeavesNothingOwed(t *testing.T) {
 		t.Fatalf("the comment's own write owes %v, want the comment alone", owed)
 	}
 
-	located := NewReader(ctx, tx, prefixAuthor, "comment", comment, text.NewOrigins(refsGrammarServer)).Mentions("Blocked on CORE-1.")
+	located := NewReader(ctx, tx, prefixAuthor, "comment", comment, testOrigins).Mentions("Blocked on CORE-1.")
 	if _, err := replaceRefs(ctx, tx, "comment", comment, text.Refs(located), nil, false); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
@@ -106,7 +104,7 @@ func TestADocumentVersionLeavesItsScopeOwed(t *testing.T) {
 	}
 
 	// The version records no author, so its writer is nobody, as the version's own write reads it.
-	reader := NewReader(ctx, tx, model.Actor{}, "artifact", document, text.NewOrigins(refsGrammarServer))
+	reader := NewReader(ctx, tx, model.Actor{}, "artifact", document, testOrigins)
 	replacement, err := PlanReplace(ctx, tx, "artifact", document,
 		text.Refs(reader.Mentions("Blocked on CORE-1.")), &versionAt)
 	if err != nil {
@@ -154,7 +152,7 @@ func TestAMovedOwedRowStaysOwedAndIsNotIndexed(t *testing.T) {
 		t.Fatalf("move the comment's enqueued_at: %v", err)
 	}
 
-	indexed, err := ReindexOwed(ctx, database.Pool, listed[0], text.NewOrigins(refsGrammarServer))
+	indexed, err := ReindexOwed(ctx, database.Pool, listed[0], testOrigins)
 	if err != nil {
 		t.Fatalf("re-index the comment: %v", err)
 	}
@@ -179,7 +177,7 @@ func TestAMovedOwedRowStaysOwedAndIsNotIndexed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list what is owed again: %v", err)
 	}
-	if indexed, err := ReindexOwed(ctx, database.Pool, listed[0], text.NewOrigins(refsGrammarServer)); err != nil || !indexed {
+	if indexed, err := ReindexOwed(ctx, database.Pool, listed[0], testOrigins); err != nil || !indexed {
 		t.Fatalf("re-index the comment on the next pass = %v (%v), want it indexed", indexed, err)
 	}
 	if owed := owedRows(t, database.Pool); len(owed) != 0 {
@@ -230,7 +228,7 @@ func TestTheScopeDrainReadsASourceBeforeItLocksIt(t *testing.T) {
 
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	indexed, err := ReindexScopeSource(bounded, database.Pool, "comment", quiet, text.NewOrigins(refsGrammarServer))
+	indexed, err := ReindexScopeSource(bounded, database.Pool, "comment", quiet, testOrigins)
 
 	if err != nil || indexed {
 		t.Fatalf("the scope drain of a comment an edit holds = %v (%v), want it passed over without waiting", indexed, err)
@@ -241,7 +239,7 @@ func TestTheScopeDrainReadsASourceBeforeItLocksIt(t *testing.T) {
 	if err := edit.Rollback(ctx); err != nil {
 		t.Fatalf("release the owner lock: %v", err)
 	}
-	if indexed, err := ReindexScopeSource(ctx, database.Pool, "comment", citing, text.NewOrigins(refsGrammarServer)); err != nil || !indexed {
+	if indexed, err := ReindexScopeSource(ctx, database.Pool, "comment", citing, testOrigins); err != nil || !indexed {
 		t.Fatalf("the scope drain of a comment that writes a `#id` = %v (%v), want it re-indexed", indexed, err)
 	}
 }
@@ -276,7 +274,7 @@ func TestTheScopeDrainReadsACitingSourceAgainUnderItsOwnerLock(t *testing.T) {
 
 	drained := make(chan drainAnswer, 1)
 	go func() {
-		indexed, err := ReindexScopeSource(ctx, database.Pool, "comment", comment, text.NewOrigins(refsGrammarServer))
+		indexed, err := ReindexScopeSource(ctx, database.Pool, "comment", comment, testOrigins)
 		drained <- drainAnswer{indexed: indexed, err: err}
 	}()
 	if answer, early, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the scope drain", drained); early {

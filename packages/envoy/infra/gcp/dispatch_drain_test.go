@@ -30,7 +30,7 @@ func appDrain(t *testing.T, m *pulumitest.Mocks) (grace, wait float64) {
 // whatever the two inputs hold.
 func TestDispatchDrainInputsRenderAndRefuse(t *testing.T) {
 	drain := func(preStop, grace *int) func() *gcp.DispatchArgs {
-		return editedDispatchArgs(dispatchArgs, func(a *gcp.DispatchArgs) {
+		return dispatchArgsWith(func(a *gcp.DispatchArgs) {
 			a.PreStopSeconds, a.TerminationGracePeriodSeconds = preStop, grace
 		})
 	}

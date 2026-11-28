@@ -612,10 +612,10 @@ function anchorFormatting(anchor: HTMLAnchorElement, root: HTMLElement): WordsFo
  * freshly-wrapped anchors, and a dashboard URL remark-gfm autolinked, still carry
  * their real value in `href` — `data-dispatch-href` takes priority when present.
  */
-export function collectReferenceAnchors(
-  root: HTMLElement,
-  appOrigins: readonly string[] = dispatchOrigins()
-): ReferenceAnchor[] {
+export function collectReferenceAnchors(root: HTMLElement): ReferenceAnchor[] {
+  // One list for the whole pass: the reading below and `hereHref`'s rewrite both read
+  // `dispatchOrigins`, which answers the same list while whoami names no new one.
+  const appOrigins = dispatchOrigins();
   const targets: ReferenceAnchor[] = [];
   const anchors = Array.from(
     root.querySelectorAll<HTMLAnchorElement>("a:not([data-dispatch-picture])")

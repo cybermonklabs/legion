@@ -1,6 +1,5 @@
 import type { Artifact, ArtifactBlock } from "@legion/contracts";
 import { commandLine } from "../dispatch-command";
-import { defaultExec } from "../dispatch-cwd";
 import type { DispatchClient } from "../dispatch-http";
 import type { Owner } from "../dispatch-owner";
 import { ToolInputError } from "../tool-input-errors";
@@ -450,12 +449,8 @@ export async function readDocumentBlocks(
   const resolution = await resolveOwnerArguments(
     tool,
     args,
-    context.cwd,
-    context.env ?? process.env,
-    context.exec ?? defaultExec,
-    context.serverUrls,
-    problems,
-    () => client.whoami()
+    { ...context, whoami: () => client.whoami() },
+    problems
   );
   problems.push(
     ...ownerConflictProblems(tool, args, resolution.ref, optionalString(resolution.args, "ref"))

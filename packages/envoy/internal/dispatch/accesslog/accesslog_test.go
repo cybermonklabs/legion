@@ -193,9 +193,6 @@ func TestTheLineNamesTheHostAsWritten(t *testing.T) {
 				ServeHTTP(httptest.NewRecorder(), request)
 			got := line(t, logged)
 			carries(t, got, ` host=`+row.want+` `)
-			if strings.Contains(got, strings.Repeat("h", fieldBytes+1)) {
-				t.Fatalf("access-log line keeps more than %d bytes of the Host", fieldBytes)
-			}
 		})
 	}
 }

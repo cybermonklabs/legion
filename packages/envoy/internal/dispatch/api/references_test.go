@@ -1995,7 +1995,7 @@ func TestCitationsOfAnIDDecodingToNULDoNotFailTheWrite(t *testing.T) {
 	}, "alice"); edit.Code != http.StatusOK {
 		t.Fatalf("edit a comment to cite a NUL id: status=%d body=%s", edit.Code, edit.Body.String())
 	}
-	if _, err := refs.RebuildAll(context.Background(), database.Pool, text.NewOrigins("https://dispatch.example")); err != nil {
+	if _, err := refs.RebuildAll(context.Background(), database.Pool, testOrigins); err != nil {
 		t.Fatalf("rebuild refs over bodies citing a NUL id: %v", err)
 	}
 }
@@ -2083,7 +2083,7 @@ func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
 		t.Fatalf("doctored index = %#v; want seven rows", doctored)
 	}
 
-	report, err := refs.RebuildAll(context.Background(), database.Pool, text.NewOrigins("https://dispatch.example"))
+	report, err := refs.RebuildAll(context.Background(), database.Pool, testOrigins)
 	if err != nil {
 		t.Fatalf("rebuild refs: %v", err)
 	}
@@ -2135,7 +2135,7 @@ func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
 			t.Fatalf("surviving edge %#v lost provenance %#v", got, row)
 		}
 	}
-	if _, err := refs.RebuildAll(context.Background(), database.Pool, text.NewOrigins("https://dispatch.example")); err != nil {
+	if _, err := refs.RebuildAll(context.Background(), database.Pool, testOrigins); err != nil {
 		t.Fatalf("second rebuild: %v", err)
 	}
 	if again := readRefRows(t, database); !reflect.DeepEqual(again, rebuilt) {

@@ -745,7 +745,7 @@ resources each of those is, the sandbox and the public origin in the paragraph u
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
 | Three ClusterIP Services and three NetworkPolicies (two Services with `natsInCluster`) | Dispatch's API on port 8766, to the `allowedNamespaces` and the front door; the front door's SOCKS5 proxy on port 1055, to the app and the listener, neither the Service nor that rule rendered with `natsInCluster`, which leaves the front door's policy admitting nothing; the listener's API on port 9020, to the app. Each policy admits those sources alone among pods (Kubernetes still admits each pod's own node). | Not built |
-| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. With `replaceUnderHold: true`, the app and the listener are `Recreate` at any count, with no `rollingUpdate` block, and carry `pulumi.com/skipAwait: "true"`; the front door keeps its strategy ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
+| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. With `replaceUnderHold: true`, the app and the listener are `Recreate` at any count, with no `rollingUpdate` block, and carry `pulumi.com/skipAwait: "true"`; the front door keeps its strategy ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app's pre-stop wait and termination grace period are `preStopSeconds` and `terminationGracePeriodSeconds`, 5 and 35 seconds by default, around the stop it is built for; the listener has a five-second pre-stop wait and a 40-second grace period for its own. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
 | Up to three PodDisruptionBudgets | `<hostname>` with `appPdbMinAvailable`, `<hostname>-tailnet` with `frontDoorPdbMinAvailable` and `<hostname>-listener` with `listenerPdbMinAvailable`, each over its own Deployment's pods (`app=<name>`) alone, with that `minAvailable` and Kubernetes' default `unhealthyPodEvictionPolicy`, so a drain cannot take that workload below that many ready pods. | Not built |
 
 Three inputs change what the first four rows register:
@@ -1058,7 +1058,7 @@ With the sign-in group the Google client lists the front door's callback, `https
 Dispatch serves a list of addresses, and the first is the canonical one: `publicOrigin` where it is set, else the front door's name, else, in the sandbox, the app's own Service.
 The `url` output is that canonical address, and so is the app's `DISPATCH_SERVER_URL`.
 Each entry of the two lists is an origin written as a browser writes it, `http` or `https` (a trailing slash is trimmed), since Dispatch compares the `Origin` a browser sends with it as a string.
-With the sign-in group, the host of each `servedOrigins` entry must also be one Google takes in a redirect URI.
+With the sign-in group, each `servedOrigins` entry must also be `https`, as `publicOrigin` must, and its host one Google takes in a redirect URI.
 
 `servedOrigins` lists the other addresses Dispatch serves.
 It renders `DISPATCH_SERVED_ORIGINS` right after `DISPATCH_SERVER_URL`, the entries comma-joined in the order given, after the front door's name where that is served too.
@@ -1081,11 +1081,12 @@ An `envoyImage` whose `envoy-dispatch` predates the two settings ignores them, a
 
 `trustedProxyRanges`, unset by default, lists the proxies whose `X-Forwarded-For` Dispatch trusts, such as an internal Application Load Balancer's proxy-only subnet.
 It renders `DISPATCH_TRUSTED_PROXY_RANGES` on the app's container, the entries comma-joined in the order given, in every mode that runs the app, after `DISPATCH_SERVER_URL`, the two address lists, `DISPATCH_OUTSIDE_ORIGIN` and `DISPATCH_SIGNIN_PASSKEY` where those render.
-For a request whose connection comes from inside a listed range, Dispatch takes the client address that the proxy appended, the second entry from the right of the one `X-Forwarded-For` line.
+For a request whose connection comes from inside a listed range, Dispatch takes the client address that the proxy appended, the second entry from the right of the one `X-Forwarded-For` line, and an IPv6 client by its /64.
 That address keys the broker token's introspection limit and is the `address` of the request's log line.
 A request from such a proxy whose header the proxy could not have written is answered `400 FORWARDED_FOR_INVALID` (`packages/envoy/cmd/dispatch/README.md`, `DISPATCH_TRUSTED_PROXY_RANGES`).
 Every other connection keeps the rightmost entry.
 Each entry is a CIDR written as the network it names (`10.0.0.0/8`, not `10.0.0.1/8`), with a prefix longer than `/0`, as Dispatch refuses to start on any other.
+An IPv4-mapped IPv6 prefix (`::ffff:10.129.0.0/119`) is refused too: Dispatch reads each peer's address as the IPv4 address it holds, so no peer is ever inside one; write it as an IPv4 prefix.
 A range of `/0` (`0.0.0.0/0` or `::/0`) would trust every peer's `X-Forwarded-For`, so any caller would pick its own address.
 Each refusal names `trustedProxyRanges` and the entry's index, and `clusterOnly` refuses the input.
 Unset, it renders nothing, and Dispatch trusts no proxy.
@@ -1726,8 +1727,8 @@ refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is
 above states, a `publicOrigin` that breaks the rule its own paragraph states or is set beside the
 tailnet inputs and `iapAudience`,
 a `servedOrigins` or `formerOrigins` entry that is not an origin written as a browser writes it or that shares a host name with another address of Dispatch's (the canonical address, the front door's name, or an entry before it in either list),
-a `servedOrigins` entry whose host Google refuses in a redirect URI while the sign-in inputs are set,
-a `trustedProxyRanges` entry that is no CIDR written as its network or is `/0`,
+a `servedOrigins` entry that is `http` or whose host Google refuses in a redirect URI while the sign-in inputs are set,
+a `trustedProxyRanges` entry that is no CIDR written as its network, is an IPv4-mapped IPv6 prefix or is `/0`,
 a `preStopSeconds` below 1, a `terminationGracePeriodSeconds` under `preStopSeconds` plus 30,
 a `loadBalancerSourceRanges` or `networkEndpointGroupName` beside the tailnet inputs,
 an `iapAudience` without `publicOrigin` or `signInDomain` or beside
@@ -2595,6 +2596,7 @@ Steps 1 and 3 are each one `pulumi up`.
          natsUrl: nats://envoy-hub.envoy.svc.cluster.local:4222
          natsInCluster: true
          formerOrigins: [https://example-dispatch.example-tailnet.ts.net]
+         trustedProxyRanges: [10.129.0.0/23]
    ```
 
    A link written at the tailnet name stays a reference, and Dispatch serves no sign-in, no cookie write and no proof there.

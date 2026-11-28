@@ -30,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -2689,7 +2690,8 @@ func proofOriginEntries(value string) ([]string, error) {
 }
 
 // parseTrustedProxyRanges reads DISPATCH_TRUSTED_PROXY_RANGES: each comma-separated entry,
-// trimmed, a CIDR, IPv4 or IPv6, written as the network it names (10.129.0.0/23, not
+// trimmed, a range netaddr.TrustedRange takes: a CIDR, IPv4 or IPv6 but no IPv4-mapped IPv6 prefix,
+// which no peer's address is ever inside, written as the network it names (10.129.0.0/23, not
 // 10.129.0.5/23, so the setting trusts what it says), with a prefix longer than /0, since
 // 0.0.0.0/0 or ::/0 would trust every peer's X-Forwarded-For and let any caller pick the address
 // it is logged and rate limited by. A value of nothing but whitespace is unset. It refuses an
@@ -2705,14 +2707,15 @@ func parseTrustedProxyRanges(value string) ([]netip.Prefix, error) {
 		if entry == "" {
 			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d is empty", index+1, len(entries))
 		}
-		prefix, err := netip.ParsePrefix(entry)
-		if err != nil {
+		prefix, err := netaddr.TrustedRange(entry)
+		switch {
+		case errors.Is(err, netaddr.ErrRangeNotCIDR):
 			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be a CIDR such as 192.0.2.0/24 or 2001:db8::/64", index+1, len(entries))
-		}
-		if prefix != prefix.Masked() {
+		case errors.Is(err, netaddr.ErrRangeMapped):
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d is an IPv4-mapped IPv6 prefix, which no peer's address is ever inside, since the server reads each peer's address as the IPv4 address it holds: write it as an IPv4 prefix", index+1, len(entries))
+		case errors.Is(err, netaddr.ErrRangeNotNetwork):
 			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be written as the network it names, %s", index+1, len(entries), prefix.Masked())
-		}
-		if prefix.Bits() == 0 {
+		case errors.Is(err, netaddr.ErrRangeEveryPeer):
 			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d trusts every peer's X-Forwarded-For, so any caller would pick the address it is logged and rate limited by: name the proxies' own ranges", index+1, len(entries))
 		}
 		ranges[index] = prefix

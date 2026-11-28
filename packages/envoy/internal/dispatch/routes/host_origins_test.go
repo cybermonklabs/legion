@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/sjawhar/envoy/internal/dispatch/identity"
 )
 
 // The addresses of the server these rows drive: its canonical origin (DISPATCH_SERVER_URL), a
@@ -48,26 +46,6 @@ const noServedOrigin = "(none of the server's origins)"
 // Sec-Fetch-Site that it is same-origin.
 const sameOriginWrite = "no Origin, Sec-Fetch-Site: same-origin"
 
-// newHostOriginsRouter is a router at tableCanonical that also serves tableServed and served
-// tableFormer before, signing people of rigDomain in with Google through a fake issuer; it answers
-// the router whose members a row calls and the handler New serves, whose sign-in start a row
-// requests.
-func newHostOriginsRouter(t *testing.T) (*router, http.Handler) {
-	t.Helper()
-	rig := newSignInRigFor(t, tableCanonical, identity.DomainRule{Domain: rigDomain}, rigDomain)
-	options := rig.options
-	options.ServedOrigins = []string{tableServed}
-	options.FormerOrigins = []string{tableFormer}
-	ctx, err := BuildAppContext(withDocuments(t, options))
-	if err != nil {
-		t.Fatalf("build context: %v", err)
-	}
-	standInEventLog(ctx, 0)
-	handler, background := New(ctx)
-	t.Cleanup(background.Wait)
-	return &router{ctx: ctx}, handler
-}
-
 // requestAt is a request of method for path whose Host is host.
 func requestAt(method, host, path string) *http.Request {
 	return httptest.NewRequest(method, "http://"+host+path, nil)
@@ -89,7 +67,8 @@ func requestAt(method, host, path string) *http.Request {
 // The answers that are no member's of a served or a former address - every one at the canonical
 // and an unknown Host - are what the router answered before either list existed.
 func TestOneTableAnswersEachPickByHost(t *testing.T) {
-	r, handler := newHostOriginsRouter(t)
+	rig := newServedRig(t)
+	r, handler := &router{ctx: rig.ctx}, rig.handler
 	served := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	for _, member := range []struct {
 		name string

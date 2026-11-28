@@ -698,9 +698,10 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// routing window by default) and the grace period terminationGracePeriodSeconds (35 s by
 	// default), which newDispatchDrain refuses under that wait plus the 30 s
 	// cmd/dispatch/shutdown.go builds its shutdown for (stopGrace = 30 * time.Second, copied as
-	// dispatchStopGraceSeconds). The two inputs are coupled and neither may be raised alone; a
-	// wait the grace period does not cover spends the document service's five-second reserve and
-	// kills a write still waiting on a lock mid-commit.
+	// dispatchStopGraceSeconds). So the wait is raised only beside a grace period that covers it,
+	// while a longer grace period may be set alone; a wait the grace period does not cover would
+	// spend the document service's five-second reserve and kill a write still waiting on a lock
+	// mid-commit.
 	// The listener's container waits its own 5 s for the same reason (sleepPreStop); the front
 	// door's tailscale container drains the Tailscale Service and logs its node out instead
 	// (tailnetPreStop).

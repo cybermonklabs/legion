@@ -91,9 +91,10 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 }
 
 // withDocumentService is input with a document service of the test's own, for a test that needs
-// none of its own making: one over the input's store, event broker, identity and server URL,
-// shut down once the test ends, after every cleanup registered later (a server's wait among
-// them). An input with no broker gets one, which the API and the service then share.
+// none of its own making: one over the input's store, event broker and identity, reading links at
+// the origins NewDeps reads them at (text.ServerOrigins of the input's ServerURL, ServedOrigins and
+// FormerOrigins), shut down once the test ends, after every cleanup registered later (a server's
+// wait among them). An input with no broker gets one, which the API and the service then share.
 func withDocumentService(t testing.TB, input DepsInput) DepsInput {
 	t.Helper()
 	if input.Events == nil {
@@ -292,8 +293,9 @@ const testTakeoverWindow = 750 * time.Millisecond
 // writes names, and what a DPoP proof's 'htu' is checked against (broker_token_test.go).
 const testServerURL = "https://dispatch.example"
 
-// testOrigins is the server's origins as every test server reads dashboard links with them: the
-// one canonical origin, testServerURL.
+// testOrigins is testServerURL as the one origin dashboard links are read at: what a server built
+// with that ServerURL and neither list reads them with (Deps.Origins), for a test that builds a
+// reader of links without a server.
 var testOrigins = text.NewOrigins(testServerURL)
 
 // testSigningKey is the one-key set the package's session cookies are signed with.

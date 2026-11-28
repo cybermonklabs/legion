@@ -26,23 +26,23 @@
 # answers with no list equal to; unset, the script builds it from BASE_COMMIT, whose tree it takes
 # with `git archive` into its work directory, so the checkout is never touched and its history must
 # hold that commit.
-# BASE_COMMIT defaults to c55680e22e67fe9f3c6982bec1784834127d30ec, the commit of main that the
-# branch's latest merge of main took, which is the base the change sits on. A later merge of main
-# into the branch moves the base: set the default below to the main commit that merge took (the
-# merge commit's second parent, `git rev-parse <merge>^2`), and the same commit in
-# scripts/e2e/README.md and .github/e2e-scripts.json.
+# BASE_COMMIT defaults to the commit of main that the branch's latest merge of main took (the
+# default below), which is the base the change sits on. A later merge of main into the branch
+# moves the base: set the default below to the main commit that merge took (the merge commit's
+# second parent, `git rev-parse <merge>^2`); scripts/e2e/README.md and .github/e2e-scripts.json
+# name the default and repeat no commit.
 # ISSUER_BIN names dev-oidc-issuer; unset, the script builds ./cmd/dev-oidc-issuer.
 # DISPATCH_CLI names the bin/dispatch.ts c-l-cli runs, in a tree whose Bun dependencies are
 # installed; unset, it is this checkout's packages/envoy-client/bin/dispatch.ts. The command's
 # negative control names the base commit's here.
 #
 # Needs go, bun, python3 (lib/loopback-dsn.py) and, to build the base, git and tar; it starts no
-# container. The work directory, under TMPDIR, holds the binaries, the tests' temporary files and
-# go test's output: removed when the run passes, kept (without the binaries) and printed when it
-# fails. The last line is the verdict, read from the tests' own `--- PASS`, `--- FAIL` and
-# `--- SKIP` lines and never from go test's exit status alone: PASS names how many subtests passed,
-# FAIL names every subtest that failed or was skipped, since a skipped subtest is a step this run
-# did not prove.
+# container. The work directory, under TMPDIR, holds the binaries, the base commit's tree, the
+# tests' temporary files and go test's output: removed when the run passes, kept without the
+# binaries and the base tree, and printed, when it fails. The last line is the verdict, read from
+# the tests' own `--- PASS`, `--- FAIL` and `--- SKIP` lines and never from go test's exit status
+# alone: PASS names how many subtests passed, FAIL names every subtest that failed or was skipped,
+# since a skipped subtest is a step this run did not prove.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -70,7 +70,7 @@ fail() {
 dsn=${LEGION_TEST_PG_DSN:-}
 dispatch_bin=${DISPATCH_BIN:-}
 base_bin=${BASE_BIN:-}
-base_commit=${BASE_COMMIT:-c55680e22e67fe9f3c6982bec1784834127d30ec}
+base_commit=${BASE_COMMIT:-aa3eaba7c3b2a66a6c021c50974e1a9d8fb70bcf}
 issuer_bin=${ISSUER_BIN:-}
 dispatch_cli=${DISPATCH_CLI:-}
 
@@ -95,7 +95,7 @@ skipped=''
 # cleanup prints the run's last line through lib/run-verdict.sh, which exits with rc: the
 # script's own status for EXIT, 128 plus the signal's number for INT and TERM. PASS needs rc 0 and
 # run_end, the script's last statement, so a run a signal ended reads FAIL. The work directory goes
-# with a pass; a failed run keeps it without the binaries.
+# with a pass; a failed run keeps it without the binaries and the base commit's tree.
 cleanup() {
   local rc=$1
   trap - EXIT INT TERM

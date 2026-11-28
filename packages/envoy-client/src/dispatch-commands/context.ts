@@ -206,8 +206,12 @@ export type WhoamiOriginsFn = () => Promise<Pick<WhoamiResponse, "origins">>;
 
 /** What the pre-send check reads: the call's arguments, its checkout and environment, the
  *  Dispatch server's addresses, whose dashboard URLs a `ref` may be (none when the session has no
- *  Dispatch configured, which only a dry run checks with), and the server's own list of its
- *  origins (`whoami`), which a check that makes no call to Dispatch, a dry run's, goes without. */
+ *  Dispatch configured, which only a dry run checks with, and none for a hostless `dispatch api`),
+ *  and the server's own list of its origins (`whoami`). A session's real call reads that list
+ *  (`executeDispatchTool`, `readDocumentBlocks`). A CI job's (`jobResultCommand`) goes without it:
+ *  `dispatch_result`, the one call it makes, takes no `ref`. A dry run that asks Dispatch nothing
+ *  goes without it too (dispatch-cli.ts, `dryRunAsksDispatch`), so it refuses a link at another
+ *  address of the server that the real call reads. */
 export interface DispatchCallCheckInput
   extends Pick<ExecuteDispatchToolInput, "tool" | "args" | "cwd" | "env" | "exec"> {
   readonly serverUrls: readonly string[];

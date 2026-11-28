@@ -25,7 +25,7 @@ import (
 func TestDispatchRendersTheTrustedProxyRangesInEachMode(t *testing.T) {
 	ranges := []string{"10.129.0.0/23", "2001:db8:100::/48", "192.0.2.7/32"}
 	const joined = "10.129.0.0/23,2001:db8:100::/48,192.0.2.7/32"
-	withLists := editedDispatchArgs(dispatchArgs, func(a *gcp.DispatchArgs) {
+	withLists := dispatchArgsWith(func(a *gcp.DispatchArgs) {
 		a.ServedOrigins = []string{dispatchServedOrigin}
 		a.FormerOrigins = []string{dispatchFormerOrigin}
 	})
@@ -113,13 +113,14 @@ func appSpecWithout(t *testing.T, m *pulumitest.Mocks, names ...string) map[stri
 
 // trustedProxyRanges is refused by its own name, as a core.InputError naming it, before anything
 // registers, in every mode that takes it, on each entry Dispatch refuses to start on
-// (parseTrustedProxyRanges in packages/envoy/cmd/dispatch/main.go): one that is not a CIDR, one
-// not written as the network it names, and a range of length 0, IPv4's or IPv6's, which would
-// trust every peer's X-Forwarded-For. The refusal names the entry by its index. A seed in an entry
-// is refused as in every plain input, and clusterOnly refuses the input as it refuses every input
-// that configures Dispatch (TestDispatchClusterOnlyRefusesEveryDispatchInput).
+// (parseTrustedProxyRanges in packages/envoy/cmd/dispatch/main.go): one that is not a CIDR, an
+// IPv4-mapped IPv6 prefix, which no peer's address is ever inside, one not written as the network
+// it names, and a range of length 0, IPv4's or IPv6's, which would trust every peer's
+// X-Forwarded-For. The refusal names the entry by its index. A seed in an entry is refused as in
+// every plain input, and clusterOnly refuses the input as it refuses every input that configures
+// Dispatch (TestDispatchClusterOnlyRefusesEveryDispatchInput).
 //
-// Control: drop any one of the three checks, and its rows register Dispatch and fail.
+// Control: drop any one of the four checks, and its rows register Dispatch and fail.
 func TestDispatchRefusesTrustedProxyRangesItCannotUse(t *testing.T) {
 	seed, _ := testnats.User(t)
 	with := func(base func() *gcp.DispatchArgs, ranges ...string) func() *gcp.DispatchArgs {
@@ -140,6 +141,8 @@ func TestDispatchRefusesTrustedProxyRangesItCannotUse(t *testing.T) {
 			`trustedProxyRanges[0] "192.0.2.1" must be a CIDR, such as 130.211.0.0/22`},
 		{"an empty entry", with(dispatchArgs, ""),
 			`trustedProxyRanges[0] "" must be a CIDR, such as 130.211.0.0/22`},
+		{"an IPv4-mapped IPv6 prefix", with(dispatchArgs, "::ffff:10.129.0.0/119"),
+			`trustedProxyRanges[0] "::ffff:10.129.0.0/119" is an IPv4-mapped IPv6 prefix, which no peer's address is ever inside, since Dispatch reads each peer's address as the IPv4 address it holds: write it as an IPv4 prefix, such as 130.211.0.0/22`},
 		{"not written as its network", with(dispatchArgs, "10.0.0.1/8"),
 			`trustedProxyRanges[0] "10.0.0.1/8" must be written as the network it names, 10.0.0.0/8`},
 		{"an IPv6 range not written as its network", with(dispatchFrontDoorPublicOriginArgs, "2001:db8:100::1/48"),

@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -2436,19 +2437,35 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 	}
 }
 
-// The document service reads a dashboard link as the API does, whatever the server URL ends in:
-// api.NewDeps and documentDeps build their origins with one constructor, text.ServerOrigins, which
-// trims one trailing `/`, so a server URL ending in `//` reads `/issues/ABC-1` under it as an issue
-// in both, and a server URL ending in one `/` or none does too.
+// The document service reads dashboard links at the origins the API reads them at: from one boot,
+// with a served and a former address, the origins documentDeps gives the service are the ones
+// api.NewDeps builds (Deps.Origins) from what main hands the router (appContextOptions), whatever
+// the server URL ends in, and both read `/issues/ABC-1` under a server URL ending in `//`, one `/`
+// or none as an issue, and so at the served and the former address.
 func TestDocumentDepsReadLinksAsTheAPIDoes(t *testing.T) {
 	t.Parallel()
+	boot := bootConfig{ServedOrigins: []string{"https://b.example.test"}, FormerOrigins: []string{"https://old.example.test"}}
+	documents := docs.New(docs.Deps{})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut the document service down: %v", err)
+		}
+	})
 	for _, serverURL := range []string{"https://dispatch.example", "https://dispatch.example/", "https://dispatch.example//"} {
-		apiOrigins := text.ServerOrigins(serverURL, nil, nil)
-		docOrigins := documentDeps(bootConfig{}, serverURL, docs.Deps{}).Origins
-		const page = "https://dispatch.example/issues/ABC-1"
-		api, document := text.Extract(page, apiOrigins), text.Extract(page, docOrigins)
-		if len(api) != 1 || api[0].Kind != "issue" || len(document) != 1 || document[0].Kind != "issue" {
-			t.Errorf("server URL %q: the API reads %s as %+v and the document service as %+v, want the issue in both", serverURL, page, api, document)
+		options := appContextOptions(boot, routes.AppContextOptions{ServerURL: serverURL})
+		apiDeps, err := api.NewDeps(api.DepsInput{ServerURL: options.ServerURL, ServedOrigins: options.ServedOrigins, FormerOrigins: options.FormerOrigins, Docs: documents})
+		if err != nil {
+			t.Fatalf("api.NewDeps: %v", err)
+		}
+		docOrigins := documentDeps(boot, serverURL, docs.Deps{}).Origins
+		if !reflect.DeepEqual(docOrigins, apiDeps.Origins) {
+			t.Errorf("server URL %q: the document service reads links at %q and the API at %q, want one list", serverURL, docOrigins.Hosts(), apiDeps.Origins.Hosts())
+		}
+		for _, page := range []string{"https://dispatch.example/issues/ABC-1", "https://b.example.test/issues/ABC-1", "https://old.example.test/issues/ABC-1"} {
+			apiRead, documentRead := text.Extract(page, apiDeps.Origins), text.Extract(page, docOrigins)
+			if len(apiRead) != 1 || apiRead[0].Kind != "issue" || len(documentRead) != 1 || documentRead[0].Kind != "issue" {
+				t.Errorf("server URL %q: the API reads %s as %+v and the document service as %+v, want the issue in both", serverURL, page, apiRead, documentRead)
+			}
 		}
 	}
 }

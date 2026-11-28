@@ -27,11 +27,14 @@ func NewOrigins(canonical string, others ...string) Origins {
 // ServerOrigins is the list of origins a Dispatch server reads dashboard links of, in this order:
 // canonical (DISPATCH_SERVER_URL) less one trailing `/`, each of served (DISPATCH_SERVED_ORIGINS)
 // and each of former (DISPATCH_FORMER_ORIGINS). It is the one constructor of that list:
-// cmd/dispatch's main and rebuild-refs and api.NewDeps build theirs through it alone (textcheck's
-// TestOnlyOneConstructorBuildsTheServersOrigins), so the reference index, the document service,
-// the API's URL parameters, rebuild-refs and a result line's words read one list. The `/` trimmed
-// is not redundant with parseServer, which trims one from each base path: together they read a
-// server URL ending in `//` as the one ending in `/`.
+// cmd/dispatch's main and rebuild-refs, cmd/dispatch-seed and api.NewDeps build theirs through it,
+// so the reference index, the document service, the API's URL parameters, rebuild-refs, the seed's
+// mentions and a result line's words read one list. textcheck's
+// TestOnlyOneConstructorBuildsTheServersOrigins scans the non-test files of cmd/dispatch,
+// cmd/dispatch-seed and internal/dispatch for a call of NewOrigins outside this function, under any
+// name their file imports text with or through a dot import. The `/` trimmed is not redundant with
+// parseServer, which trims one from each base path: together they read a server URL ending in `//`
+// as the one ending in `/`.
 func ServerOrigins(canonical string, served, former []string) Origins {
 	raw := make([]string, 0, 1+len(served)+len(former))
 	raw = append(raw, strings.TrimSuffix(canonical, "/"))

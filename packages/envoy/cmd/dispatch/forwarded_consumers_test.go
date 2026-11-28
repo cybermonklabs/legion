@@ -2,16 +2,10 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
-	"github.com/sjawhar/envoy/internal/cmdtest"
-	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
-	"github.com/sjawhar/envoy/internal/dispatch/routes"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -32,62 +26,30 @@ func proxiedFor(client string) string {
 // TestEveryConsumerOfTheClientAddressReadsTheResolvedOne: on the server main builds with
 // DISPATCH_TRUSTED_PROXY_RANGES=127.0.0.1/32, every consumer of the client address keys a request
 // through that proxy on the client the proxy appended, second from the right, the one address the
-// middleware around the router resolves: the request's dispatch: request line, the line of a
-// request authenticated with a previous shared agent token, and the broker token check's
-// per-address bucket (brokerTokenVerifier's Address). A consumer that read the header for itself
-// would key every caller behind the proxy on its forwarding rule's address, the rightmost entry.
+// middleware around the router resolves: the line of a request authenticated with a previous
+// shared agent token and the broker token check's per-address bucket (brokerTokenVerifier's
+// Address), here, and the request's dispatch: request line, in
+// TestAConfiguredPeerIsReadSecondFromTheRight. A consumer that read the header for itself would key
+// every caller behind the proxy on its forwarding rule's address, the rightmost entry.
 func TestEveryConsumerOfTheClientAddressReadsTheResolvedOne(t *testing.T) {
-	// The server's request goroutines write the log while the test reads it.
-	var logged cmdtest.LockedBuffer
-	logtest.SetDefault(t, slog.NewJSONHandler(&logged, nil))
-	broker := ciphertokentest.NewStubBroker(t)
-	boot := resolveWith(t, map[string]string{"DISPATCH_AGENT_TOKEN": "new-token\nold-token", "DISPATCH_TRUSTED_PROXY_RANGES": "127.0.0.1/32"})
-	boot.AgentSecretsURL = broker.Server.URL
-	boot.AgentSecretsTokenFile = writeFile(t, "account-token", "dispatch-account-token\n")
-	database := storetest.Open(t)
-	verifier, err := brokerTokenVerifier(boot, database, brokerOrigin)
-	if err != nil {
-		t.Fatalf("build the broker-token check: %v", err)
-	}
-	handler := routerFor(t, boot, routes.AppContextOptions{Store: database, ServerURL: brokerOrigin, BrokerTokens: verifier})
+	rig := trustedProxyRouter(t, map[string]string{"DISPATCH_AGENT_TOKEN": "new-token\nold-token", "DISPATCH_TRUSTED_PROXY_RANGES": "127.0.0.1/32"})
 	// whoamiThrough is GET /api/v1/whoami from client through the trusted proxy, presenting
 	// authorization.
 	whoamiThrough := func(client, authorization string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodGet, brokerOrigin+"/api/v1/whoami", nil)
-		request.RemoteAddr = trustedProxyPeer
-		request.Header.Set("X-Forwarded-For", proxiedFor(client))
-		request.Header.Set("Authorization", authorization)
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		return response
+		return rig.through(authorization, proxiedFor(client))
 	}
-	// loggedAddress is the address of the first line message names that the log holds past before
-	// lines.
-	loggedAddress := func(t *testing.T, before int, message string) any {
-		t.Helper()
-		line, found := logtest.LineWhere(logtest.JSONLines(t, logged.String())[before:], func(line map[string]any) bool { return line["msg"] == message })
-		if !found {
-			t.Fatalf("no %q line in the log:\n%s", message, logged.String())
-		}
-		return line["address"]
-	}
-
-	t.Run("the access log's address", func(t *testing.T) {
-		before := len(logtest.JSONLines(t, logged.String()))
-		if response := whoamiThrough(proxiedClient, "Bearer new-token"); !answersSharedToken(response) {
-			t.Fatalf("GET /api/v1/whoami with the shared token answered %d %s, want 200 naming it", response.Code, response.Body.String())
-		}
-		if got := loggedAddress(t, before, accesslog.Message); got != proxiedClient {
-			t.Errorf("the dispatch: request line of a request through the proxy for %s names the address %v, want %s", proxiedFor(proxiedClient), got, proxiedClient)
-		}
-	})
 
 	t.Run("the previous-token line's address", func(t *testing.T) {
-		before := len(logtest.JSONLines(t, logged.String()))
+		before := len(logtest.JSONLines(t, rig.logged.String()))
 		if response := whoamiThrough(proxiedClient, "Bearer old-token"); !answersSharedToken(response) {
 			t.Fatalf("GET /api/v1/whoami with the previous shared token answered %d %s, want 200 naming the shared token", response.Code, response.Body.String())
 		}
-		if got := loggedAddress(t, before, "dispatch: request authenticated with a previous shared agent token"); got != proxiedClient {
+		const message = "dispatch: request authenticated with a previous shared agent token"
+		line, found := logtest.LineWhere(logtest.JSONLines(t, rig.logged.String())[before:], func(line map[string]any) bool { return line["msg"] == message })
+		if !found {
+			t.Fatalf("no %q line in the log:\n%s", message, rig.logged.String())
+		}
+		if got := line["address"]; got != proxiedClient {
 			t.Errorf("the previous-token line of a request through the proxy for %s names the address %v, want %s", proxiedFor(proxiedClient), got, proxiedClient)
 		}
 	})

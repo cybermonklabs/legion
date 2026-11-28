@@ -22,9 +22,11 @@ import (
 const brokerOrigin = "http://dispatch.test"
 
 // TestTheTrustedProxyRangesSettingRefusals: DISPATCH_TRUSTED_PROXY_RANGES refuses startup on an
-// empty entry, an entry that is not a CIDR, a CIDR not written as the network it names and a range
-// of length 0, IPv4 or IPv6, which would trust every peer's X-Forwarded-For: each alone and each
-// beside a good entry, naming the setting and the entry's position. Unset or blank, it trusts none.
+// empty entry, an entry that is not a CIDR, an IPv4-mapped IPv6 prefix, which no peer's address is
+// ever inside since the server reads each as the IPv4 address it holds, a CIDR not written as the
+// network it names and a range of length 0, IPv4 or IPv6, which would trust every peer's
+// X-Forwarded-For: each alone and each beside a good entry, naming the setting and the entry's
+// position. Unset or blank, it trusts none.
 func TestTheTrustedProxyRangesSettingRefusals(t *testing.T) {
 	for _, row := range []struct{ value, naming string }{
 		{"not-a-cidr", "DISPATCH_TRUSTED_PROXY_RANGES entry 1 of 1 must be a CIDR"},
@@ -33,6 +35,8 @@ func TestTheTrustedProxyRangesSettingRefusals(t *testing.T) {
 		{"192.0.2.0/24,", "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 2 is empty"},
 		{"10.0.0.1/8", "DISPATCH_TRUSTED_PROXY_RANGES entry 1 of 1 must be written as the network it names, 10.0.0.0/8"},
 		{"192.0.2.0/24,2001:db8::1/64", "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 2 must be written as the network it names, 2001:db8::/64"},
+		{"::ffff:10.129.0.0/119", "DISPATCH_TRUSTED_PROXY_RANGES entry 1 of 1 is an IPv4-mapped IPv6 prefix"},
+		{"192.0.2.0/24,::ffff:192.0.2.0/120", "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 2 is an IPv4-mapped IPv6 prefix"},
 		{"0.0.0.0/0", "DISPATCH_TRUSTED_PROXY_RANGES entry 1 of 1 trusts every peer's X-Forwarded-For"},
 		{"::/0", "DISPATCH_TRUSTED_PROXY_RANGES entry 1 of 1 trusts every peer's X-Forwarded-For"},
 		{"192.0.2.0/24,::/0", "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 2 trusts every peer's X-Forwarded-For"},
@@ -68,37 +72,13 @@ func TestTheTrustedProxyRangesSettingRefusals(t *testing.T) {
 // connection's address instead of answering 400, and the refusals answer 401 after asking the
 // broker.
 func TestAConfiguredPeerIsReadSecondFromTheRight(t *testing.T) {
-	// The server's request goroutines write the log while the test reads it.
-	var logged cmdtest.LockedBuffer
-	logtest.SetDefault(t, slog.NewJSONHandler(&logged, nil))
-	broker := ciphertokentest.NewStubBroker(t)
-	boot := resolveWith(t, map[string]string{"DISPATCH_TRUSTED_PROXY_RANGES": "127.0.0.1/32"})
-	boot.AgentSecretsURL = broker.Server.URL
-	boot.AgentSecretsTokenFile = writeFile(t, "account-token", "dispatch-account-token\n")
-	database := storetest.Open(t)
-	verifier, err := brokerTokenVerifier(boot, database, brokerOrigin)
-	if err != nil {
-		t.Fatalf("build the broker-token check: %v", err)
-	}
-	handler := routerFor(t, boot, routes.AppContextOptions{Store: database, ServerURL: brokerOrigin, BrokerTokens: verifier})
-	// through is GET /api/v1/whoami from the trusted proxy, presenting authorization and carrying
-	// the X-Forwarded-For lines forwarded.
-	through := func(authorization string, forwarded ...string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodGet, brokerOrigin+"/api/v1/whoami", nil)
-		request.RemoteAddr = trustedProxyPeer
-		for _, line := range forwarded {
-			request.Header.Add("X-Forwarded-For", line)
-		}
-		request.Header.Set("Authorization", authorization)
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		return response
-	}
+	rig := trustedProxyRouter(t, map[string]string{"DISPATCH_TRUSTED_PROXY_RANGES": "127.0.0.1/32"})
+	through, broker := rig.through, rig.broker
 	// requestLines are the dispatch: request lines the log holds past before lines.
 	requestLines := func(t *testing.T, before int) []map[string]any {
 		t.Helper()
 		var lines []map[string]any
-		for _, line := range logtest.JSONLines(t, logged.String())[before:] {
+		for _, line := range logtest.JSONLines(t, rig.logged.String())[before:] {
 			if line["msg"] == accesslog.Message {
 				lines = append(lines, line)
 			}
@@ -112,7 +92,7 @@ func TestAConfiguredPeerIsReadSecondFromTheRight(t *testing.T) {
 		{"a client entry a caller wrote to the left", "198.51.100.66, 203.0.113.7, 10.0.0.9", "203.0.113.7"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			before := len(logtest.JSONLines(t, logged.String()))
+			before := len(logtest.JSONLines(t, rig.logged.String()))
 			if response := through("Bearer agent-token", row.forwarded); !answersSharedToken(response) {
 				t.Fatalf("GET /api/v1/whoami with the shared token through the proxy (X-Forwarded-For %q) answered %d %s, want 200 naming it", row.forwarded, response.Code, response.Body.String())
 			}
@@ -138,7 +118,7 @@ func TestAConfiguredPeerIsReadSecondFromTheRight(t *testing.T) {
 		{"a second-to-last entry that is no address", []string{"not-an-address, 10.0.0.9"}, "10.0.0.9"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			before, asked := len(logtest.JSONLines(t, logged.String())), broker.Count()
+			before, asked := len(logtest.JSONLines(t, rig.logged.String())), broker.Count()
 			refusals := ciphertoken.DefaultAddressLimit.Burst + 1
 			for attempt := range refusals {
 				response := through(fmt.Sprintf("DPoP a-token-the-broker-does-not-hold-%d", attempt), row.forwarded...)
@@ -165,4 +145,46 @@ func TestAConfiguredPeerIsReadSecondFromTheRight(t *testing.T) {
 			}
 		})
 	}
+}
+
+// trustedProxyRig is the server trustedProxyRouter builds, the log it writes and the stub broker
+// its broker token check asks.
+type trustedProxyRig struct {
+	logged  *cmdtest.LockedBuffer
+	broker  *ciphertokentest.StubBroker
+	handler http.Handler
+}
+
+// trustedProxyRouter is the server main builds from the settings env names, beside which the
+// trusted proxy tests give it a database of its own and a broker token check that asks a stub
+// broker, at brokerOrigin. The server's request goroutines write the log as JSON while the test
+// reads it.
+func trustedProxyRouter(t *testing.T, env map[string]string) *trustedProxyRig {
+	t.Helper()
+	rig := &trustedProxyRig{logged: &cmdtest.LockedBuffer{}, broker: ciphertokentest.NewStubBroker(t)}
+	logtest.SetDefault(t, slog.NewJSONHandler(rig.logged, nil))
+	boot := resolveWith(t, env)
+	boot.AgentSecretsURL = rig.broker.Server.URL
+	boot.AgentSecretsTokenFile = writeFile(t, "account-token", "dispatch-account-token\n")
+	database := storetest.Open(t)
+	verifier, err := brokerTokenVerifier(boot, database, brokerOrigin)
+	if err != nil {
+		t.Fatalf("build the broker-token check: %v", err)
+	}
+	rig.handler = routerFor(t, boot, routes.AppContextOptions{Store: database, ServerURL: brokerOrigin, BrokerTokens: verifier})
+	return rig
+}
+
+// through is GET /api/v1/whoami from the trusted proxy (trustedProxyPeer), presenting
+// authorization and carrying the X-Forwarded-For lines forwarded.
+func (rig *trustedProxyRig) through(authorization string, forwarded ...string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodGet, brokerOrigin+"/api/v1/whoami", nil)
+	request.RemoteAddr = trustedProxyPeer
+	for _, line := range forwarded {
+		request.Header.Add("X-Forwarded-For", line)
+	}
+	request.Header.Set("Authorization", authorization)
+	response := httptest.NewRecorder()
+	rig.handler.ServeHTTP(response, request)
+	return response
 }

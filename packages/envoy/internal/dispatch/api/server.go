@@ -106,11 +106,11 @@ type Deps struct {
 	// request writes is read as the reference its page names.
 	Origins text.Origins
 	Docs    docs.API
-	// OriginsAt is the server's origins as GET /api/v1/whoami names them to a request: the
-	// router's one origin table's answer (routes: hostOrigins.originsAt), the list GET
-	// /auth/whoami names, so the dispatch command reads the list the page reads and the API keeps
-	// no copy of the settings it is built from. nil, an API no router built, names none.
-	OriginsAt func(*http.Request) []string
+	// WhoamiOrigins is the server's origins as GET /api/v1/whoami names them: the router's one
+	// origin table's list (routes: hostOrigins.origins), the list GET /auth/whoami names, so the
+	// dispatch command reads the list the page reads and the API keeps no copy of the settings it
+	// is built from. nil, where neither list is set or no router built the API, names none.
+	WhoamiOrigins []string
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -288,10 +288,10 @@ type DepsInput struct {
 	// former address keeps its target. Which address a request is answered at is the router's.
 	ServedOrigins []string
 	FormerOrigins []string
-	// OriginsAt is the router's answer of the origins GET /api/v1/whoami names; see
-	// Deps.OriginsAt.
-	OriginsAt func(*http.Request) []string
-	EnvoyURL  string
+	// WhoamiOrigins is the router's list of the origins GET /api/v1/whoami names; see
+	// Deps.WhoamiOrigins.
+	WhoamiOrigins []string
+	EnvoyURL      string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -449,7 +449,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
 		Origins:                text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins),
-		OriginsAt:              input.OriginsAt,
+		WhoamiOrigins:          input.WhoamiOrigins,
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,

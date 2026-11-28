@@ -31,6 +31,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
 // The outcomes a caller has to tell apart. None of them carries the token presented.
@@ -387,7 +388,7 @@ func New(options Options) (*Verifier, error) {
 		if (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" || origin.Path != "" {
 			return nil, fmt.Errorf("brokertoken: the origin %q must be an absolute http(s) URL with no path", raw)
 		}
-		origins[i] = proofOrigin{url: origin, host: withoutDefaultPort(origin.Scheme, origin.Host)}
+		origins[i] = proofOrigin{url: origin, host: weborigin.WithoutDefaultPort(origin.Scheme, origin.Host)}
 		// One empty state serves every request atOrigin rewrites to this origin, built here
 		// rather than per request: what reads it asks only whether the request carried TLS.
 		if origin.Scheme == "https" {
@@ -704,7 +705,7 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string, spe
 func (v *Verifier) originFor(r *http.Request) *proofOrigin {
 	if len(v.origins) > 1 {
 		if target, err := url.Parse(claimedTarget(r.Header.Get("DPoP"))); err == nil {
-			host := withoutDefaultPort(target.Scheme, target.Host)
+			host := weborigin.WithoutDefaultPort(target.Scheme, target.Host)
 			for i := range v.origins {
 				origin := &v.origins[i]
 				if strings.EqualFold(target.Scheme, origin.url.Scheme) && strings.EqualFold(host, origin.host) {
@@ -738,18 +739,6 @@ func claimedTarget(proof string) string {
 		return ""
 	}
 	return claims.Target
-}
-
-// withoutDefaultPort is host with scheme's default port dropped, as RFC 3986 Section 6.2.3 has an
-// 'htu' compared and the library compares it.
-func withoutDefaultPort(scheme, host string) string {
-	switch {
-	case strings.EqualFold(scheme, "https"):
-		host, _ = strings.CutSuffix(host, ":443")
-	case strings.EqualFold(scheme, "http"):
-		host, _ = strings.CutSuffix(host, ":80")
-	}
-	return host
 }
 
 // atOrigin is r as if it had reached origin, one of the mounting program's own origins, directly:

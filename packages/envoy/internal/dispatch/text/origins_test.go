@@ -61,8 +61,11 @@ func TestNoOriginsReadsOnlyDispatchReferences(t *testing.T) {
 }
 
 // NewOrigins skips a value that is empty or names no scheme and host, so a list with such a value
-// reads exactly the others.
+// reads exactly the others, and a list of nothing else names no origin.
 func TestNewOriginsSkipsWhatNamesNoOrigin(t *testing.T) {
+	if hosts := NewOrigins("", "not a url").Hosts(); len(hosts) != 0 {
+		t.Fatalf("NewOrigins of an empty value and one with no scheme or host names the hosts %q, want none", hosts)
+	}
 	origins := NewOrigins("https://a.example.test", "", "not a url", "https://b.example.test")
 	if got := Extract("https://b.example.test/issues/ABC-1", origins); len(got) != 1 || got[0].Kind != "issue" {
 		t.Fatalf("Extract of the second origin = %+v, want the issue", got)

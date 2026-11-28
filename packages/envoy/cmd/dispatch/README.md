@@ -220,13 +220,13 @@ Each entry of the two lists is an absolute `http` or `https` URL with no path, u
 One trailing slash is trimmed.
 The origin check compares a browser's `Origin` with the entry as a string, so any other spelling refuses the start.
 Dispatch picks an address by its `Host`, so no two addresses may share a host name.
-The start refuses each of these, naming the setting and the entry's position, with host names compared at any port (`checkServedOrigins`):
+The start refuses each of these, naming the setting, with host names compared at any port:
 
-- An entry that is empty or spelt otherwise.
+- An entry that is empty or spelt otherwise, named by its position (`parseOriginList`).
 
-- A served or a former address on the host name of `DISPATCH_SERVER_URL`, or of an address listed before it in either list.
+- A served or a former address on the host name of `DISPATCH_SERVER_URL`, or of an address listed before it in either list, named by its position (`checkServedOrigins`).
 
-- A former address on the host name of a `DISPATCH_PROOF_ORIGINS` entry, because a former address passes no proof check.
+- A former address on the host name of a `DISPATCH_PROOF_ORIGINS` entry, because a former address passes no proof check, named by its position (`checkServedOrigins`).
 
 - Either list with no `DISPATCH_SERVER_URL` (or `dispatch.serverUrl` in `envoy.json`).
 
@@ -255,8 +255,9 @@ Where the load balancer needs more than 5 seconds to stop sending requests to a 
 
 `DISPATCH_TRUSTED_PROXY_RANGES` lists the proxies whose `X-Forwarded-For` Dispatch trusts: comma-separated CIDRs, IPv4 or IPv6, each written as the network it names (`10.129.0.0/23`, not `10.129.0.5/23`).
 It is empty by default, so Dispatch trusts no proxy.
-An entry that is empty, no CIDR, not written as its network, or of length 0 refuses the start, named by its position (`parseTrustedProxyRanges`).
+An entry that is empty, no CIDR, an IPv4-mapped IPv6 prefix, not written as its network, or of length 0 refuses the start, named by its position (`parseTrustedProxyRanges`, through `netaddr.TrustedRange`, which `gcp:Dispatch` judges its `trustedProxyRanges` with too).
 A range of length 0 (`0.0.0.0/0`, `::/0`) would trust every peer, so that any caller could pick the address it is logged and rate limited by.
+An IPv4-mapped IPv6 prefix (`::ffff:10.129.0.0/119`) would trust no peer, since Dispatch reads each peer's address as the IPv4 address it holds: write it as an IPv4 prefix.
 One function reads the setting, `auth.ForwardedAddress`, and its answer is the caller address of a request:
 the key of the broker token check's per-address introspection bucket, the access log's `address` (Access log, below) and the previous-shared-token line's `address` (`DISPATCH_AGENT_TOKEN`, above).
 One middleware around the router reads that address once for each request, before any check reads it (`resolveClientAddress`):

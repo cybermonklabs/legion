@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { bearerCredential } from "../bearer";
-import { resolveOwnerArguments } from "../dispatch-commands/check";
+import { type OwnerContext, resolveOwnerArguments } from "../dispatch-commands/check";
 import type { WhoamiOriginsFn } from "../dispatch-commands/context";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool } from "../dispatch-execute";
@@ -16,6 +16,12 @@ const OTHER = "https://other.example.test";
 const SERVER_ORIGINS = [CANONICAL, SERVED, FORMER] as const;
 
 const unusedExec: ExecFn = async () => ({ stdout: "", stderr: "", exitCode: 1 });
+
+/** What `resolveOwnerArguments` reads beside a call's arguments: a checkout with no repository,
+ *  no environment, the command's configured addresses and the server's own list (`whoami`). */
+function ownerContext(serverUrls: readonly string[], whoami: WhoamiOriginsFn): OwnerContext {
+  return { cwd: "/workspace", env: {}, exec: unusedExec, serverUrls, whoami };
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -37,12 +43,8 @@ describe("served and former address links in resolveOwnerArguments (R10)", () =>
         const resolved = await resolveOwnerArguments(
           "dispatch_read",
           { ref: `${linkOrigin}/issues/CORE-42/spec` },
-          "/workspace",
-          {},
-          unusedExec,
-          [configured],
-          problems,
-          whoami
+          ownerContext([configured], whoami),
+          problems
         );
         expect(problems).toEqual([]);
         expect(resolved.args.ref).toBe("dispatch://CORE-42/spec");
@@ -62,12 +64,8 @@ describe("served and former address links in resolveOwnerArguments (R10)", () =>
       const resolved = await resolveOwnerArguments(
         "dispatch_read",
         { ref: `${OTHER}/issues/CORE-42` },
-        "/workspace",
-        {},
-        unusedExec,
-        [configured],
-        problems,
-        whoami
+        ownerContext([configured], whoami),
+        problems
       );
       expect(whoamiCalls).toBe(1);
       expect(problems.length).toBeGreaterThan(0);
@@ -85,12 +83,8 @@ describe("served and former address links in resolveOwnerArguments (R10)", () =>
       const resolved = await resolveOwnerArguments(
         "dispatch_read",
         { ref: `${linkOrigin}/issues/CORE-42` },
-        "/workspace",
-        {},
-        unusedExec,
-        [CANONICAL],
-        problems,
-        refusingWhoami
+        ownerContext([CANONICAL], refusingWhoami),
+        problems
       );
       expect(problems.length).toBeGreaterThan(0);
       expect(resolved.owner).toBeNull();
@@ -100,12 +94,8 @@ describe("served and former address links in resolveOwnerArguments (R10)", () =>
     const own = await resolveOwnerArguments(
       "dispatch_read",
       { ref: `${CANONICAL}/issues/CORE-42` },
-      "/workspace",
-      {},
-      unusedExec,
-      [CANONICAL],
-      ownProblems,
-      refusingWhoami
+      ownerContext([CANONICAL], refusingWhoami),
+      ownProblems
     );
     expect(ownProblems).toEqual([]);
     expect(own.args.ref).toBe("dispatch://CORE-42");
@@ -118,12 +108,8 @@ describe("served and former address links in resolveOwnerArguments (R10)", () =>
       const resolved = await resolveOwnerArguments(
         "dispatch_read",
         { ref: `${linkOrigin}/issues/CORE-42` },
-        "/workspace",
-        {},
-        unusedExec,
-        [CANONICAL],
-        problems,
-        olderServerWhoami
+        ownerContext([CANONICAL], olderServerWhoami),
+        problems
       );
       expect(problems.length).toBeGreaterThan(0);
       expect(resolved.owner).toBeNull();
@@ -141,12 +127,8 @@ describe("served and former address links in resolveOwnerArguments (R10)", () =>
       const resolved = await resolveOwnerArguments(
         "dispatch_read",
         { ref: `${linkOrigin}/issues/CORE-42` },
-        "/workspace",
-        env,
-        unusedExec,
-        [CANONICAL],
-        problems,
-        noOriginsWhoami
+        { ...ownerContext([CANONICAL], noOriginsWhoami), env },
+        problems
       );
       expect(problems.length).toBeGreaterThan(0);
       expect(resolved.owner).toBeNull();

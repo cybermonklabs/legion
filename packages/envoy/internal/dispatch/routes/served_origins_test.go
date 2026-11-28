@@ -210,21 +210,15 @@ func TestServedHostAtAnotherPortIsAnsweredAsTheCanonicalOne(t *testing.T) {
 	}
 }
 
-// whoamiRouter is a router over a database of its own whose GET /auth/whoami and GET
-// /api/v1/whoami answer the person the X-Dispatch-User header names, built from options, whose
-// ServerURL and lists name the server's origins.
-func whoamiRouter(t *testing.T, options AppContextOptions) http.Handler {
+// whoamiRouter is newTestRouterWith over a database of its own, whose GET /auth/whoami and GET
+// /api/v1/whoami answer the person the X-Dispatch-User header names, with configure applied to its
+// options, which set the ServerURL and the lists that name the server's origins.
+func whoamiRouter(t *testing.T, configure func(*AppContextOptions)) http.Handler {
 	t.Helper()
-	people := newMemoryPeople()
-	options.SigningKey, options.People, options.Store, options.Lifetime = testSigningKey, people, storetest.Open(t), t.Context()
-	options.Identity = identity.HeaderIdentity{Header: "X-Dispatch-User", People: people}
-	ctx, err := BuildAppContext(withDocuments(t, options))
-	if err != nil {
-		t.Fatalf("build context: %v", err)
-	}
-	standInEventLog(ctx, 0)
-	handler, background := New(ctx)
-	t.Cleanup(background.Wait)
+	handler, _ := newTestRouterWith(t, func(options *AppContextOptions) {
+		options.Store = storetest.Open(t)
+		configure(options)
+	})
 	return handler
 }
 
@@ -244,18 +238,22 @@ func rawWhoamiAt(t *testing.T, handler http.Handler, host, login string) (int, s
 // list, its answer is byte for byte the one it was before either existed, with no origins key.
 func TestWhoamiNamesTheServedAndFormerAddresses(t *testing.T) {
 	const answer = `{"event_head":"0","kind":"user","login":"alice@example.com"`
-	lists := whoamiRouter(t, AppContextOptions{ServerURL: tableCanonical, ServedOrigins: []string{tableServed}, FormerOrigins: []string{tableFormer}})
+	lists := whoamiRouter(t, func(options *AppContextOptions) {
+		options.ServerURL, options.ServedOrigins, options.FormerOrigins = tableCanonical, []string{tableServed}, []string{tableFormer}
+	})
 	want := answer + `,"origins":["` + tableCanonical + `","` + tableServed + `","` + tableFormer + `"]}`
 	for _, host := range []string{"a.example.test", "b.example.test", "old.example.test", "other.example.test"} {
 		if status, body := rawWhoamiAt(t, lists, host, "alice@example.com"); status != http.StatusOK || body != want {
 			t.Errorf("whoami at Host %s = %d %s, want %s", host, status, body, want)
 		}
 	}
-	former := whoamiRouter(t, AppContextOptions{ServerURL: tableCanonical, FormerOrigins: []string{tableFormer}})
+	former := whoamiRouter(t, func(options *AppContextOptions) {
+		options.ServerURL, options.FormerOrigins = tableCanonical, []string{tableFormer}
+	})
 	if status, body := rawWhoamiAt(t, former, "a.example.test", "alice@example.com"); status != http.StatusOK || body != answer+`,"origins":["`+tableCanonical+`","`+tableFormer+`"]}` {
 		t.Errorf("whoami with a former address alone = %d %s, want the canonical origin and the former address", status, body)
 	}
-	one := whoamiRouter(t, AppContextOptions{ServerURL: tableCanonical})
+	one := whoamiRouter(t, func(options *AppContextOptions) { options.ServerURL = tableCanonical })
 	for _, host := range []string{"a.example.test", "b.example.test"} {
 		if status, body := rawWhoamiAt(t, one, host, "alice@example.com"); status != http.StatusOK || body != answer+"}" {
 			t.Errorf("whoami at Host %s with neither list = %d %s, want today's three keys and no origins", host, status, body)
@@ -264,8 +262,9 @@ func TestWhoamiNamesTheServedAndFormerAddresses(t *testing.T) {
 }
 
 // TestTheAPIWhoamiMatchesAuthWhoamiThroughTheRouter (R10, D14): BuildAppContext hands the router's
-// one origin table (hostOrigins.originsAt) to api.DepsInput.OriginsAt, so GET /api/v1/whoami names
-// the exact origins GET /auth/whoami names at every Host on both its user and its agent forms:
+// one origin table's list (hostOrigins.origins) to api.DepsInput.WhoamiOrigins, so GET
+// /api/v1/whoami names the exact origins GET /auth/whoami names at every Host on both its user and
+// its agent forms:
 //   - with both lists set, canonical, served, former at the canonical, a served and a former Host;
 //   - with neither list, no "origins" key on either form.
 func TestTheAPIWhoamiMatchesAuthWhoamiThroughTheRouter(t *testing.T) {
@@ -306,11 +305,9 @@ func TestTheAPIWhoamiMatchesAuthWhoamiThroughTheRouter(t *testing.T) {
 	}
 
 	every := []string{tableCanonical, tableServed, tableFormer}
-	both := whoamiRouter(t, AppContextOptions{
-		ServerURL:     tableCanonical,
-		ServedOrigins: []string{tableServed},
-		FormerOrigins: []string{tableFormer},
-		AgentTokens:   tokens,
+	both := whoamiRouter(t, func(options *AppContextOptions) {
+		options.ServerURL, options.ServedOrigins, options.FormerOrigins = tableCanonical, []string{tableServed}, []string{tableFormer}
+		options.AgentTokens = tokens
 	})
 	for _, host := range []string{"a.example.test", "b.example.test", "old.example.test"} {
 		authOrigins, authPresent := ask(both, "/auth/whoami", host, "user")
@@ -325,9 +322,8 @@ func TestTheAPIWhoamiMatchesAuthWhoamiThroughTheRouter(t *testing.T) {
 		}
 	}
 
-	none := whoamiRouter(t, AppContextOptions{
-		ServerURL:   tableCanonical,
-		AgentTokens: tokens,
+	none := whoamiRouter(t, func(options *AppContextOptions) {
+		options.ServerURL, options.AgentTokens = tableCanonical, tokens
 	})
 	if got, present := ask(none, "/auth/whoami", "a.example.test", "user"); present {
 		t.Errorf("GET /auth/whoami with neither list carried origins=%v, want omitted", got)

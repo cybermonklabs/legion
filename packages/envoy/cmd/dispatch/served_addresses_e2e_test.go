@@ -21,19 +21,14 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"maps"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -51,11 +46,13 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -196,44 +193,21 @@ func e2eRandom(t *testing.T) string {
 	return hex.EncodeToString(secret)
 }
 
-// e2eCertificates makes the run's throwaway CA and the one certificate every front door serves for
-// every example host, in memory. The CA's certificate is written only where the dispatch command
-// reads it (c-l-cli's NODE_EXTRA_CA_CERTS).
+// e2eCertificates makes the run's throwaway authority, proxyrulestest's as cmd/cipher's tests make
+// theirs, and the one certificate every front door serves for every example host, in memory. The
+// authority's certificate is written only where the dispatch command reads it (c-l-cli's
+// NODE_EXTRA_CA_CERTS).
 func e2eCertificates(t *testing.T) (*x509.CertPool, []byte, tls.Certificate) {
 	t.Helper()
-	now := time.Now()
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	authority, err := proxyrulestest.NewAuthority("served-addresses e2e CA")
 	if err != nil {
 		t.Fatal(err)
 	}
-	caTemplate := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "served-addresses e2e CA"},
-		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(6 * time.Hour),
-		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-	}
-	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	leaf, _, err := authority.Leaf(e2eHosts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ca, err := x509.ParseCertificate(caDER)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leafDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
-		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: e2eHosts[0]}, DNSNames: e2eHosts,
-		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(6 * time.Hour),
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}, ca, &key.PublicKey, caKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pool := x509.NewCertPool()
-	pool.AddCert(ca)
-	return pool, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), tls.Certificate{Certificate: [][]byte{leafDER, caDER}, PrivateKey: key}
+	return authority.Pool(), authority.CertificatePEM(), *leaf
 }
 
 // e2eIssuerListening is the line dev-oidc-issuer logs once it serves, naming its URL.
@@ -610,7 +584,7 @@ func (s *e2eServer) signIn(t *testing.T, host string) e2eSignIn {
 	called := s.send(t, browser, http.MethodGet, callback.String(), header, "")
 	signIn.called = e2eSummary(called) + "; no session cookie"
 	for _, cookie := range (&http.Response{Header: called.header}).Cookies() {
-		if (cookie.Name == "dsession" || cookie.Name == "__Host-dsession") && cookie.Value != "" && cookie.MaxAge >= 0 {
+		if cookie.Name == "dsession" && cookie.Value != "" && cookie.MaxAge >= 0 {
 			signIn.cookie = cookie
 			signIn.called = fmt.Sprintf("%s; session cookie %s with Domain %q", e2eSummary(called), cookie.Name, cookie.Domain)
 		}
@@ -728,13 +702,14 @@ func e2eLogFields(line string) map[string]string {
 	return fields
 }
 
-// logLines are the lines the process wrote past since bytes of its output whose msg is message.
+// logLines are the lines the process wrote past since bytes of its output whose msg is message,
+// each read whole (e2eLogFields) once its msg (horizontest.Field) is message.
 func (s *e2eServer) logLines(since int, message string) []map[string]string {
 	output := s.process.Output.String()
 	var lines []map[string]string
 	for line := range strings.Lines(output[min(since, len(output)):]) {
-		if fields := e2eLogFields(line); fields["msg"] == message {
-			lines = append(lines, fields)
+		if msg, _ := horizontest.Field(line, "msg"); msg == message {
+			lines = append(lines, e2eLogFields(line))
 		}
 	}
 	return lines

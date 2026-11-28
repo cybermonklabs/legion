@@ -4362,7 +4362,7 @@ Each item below names an input and its default, then what it means.
 
   the base commit's `envoy-dispatch`, whose answers to `c-l-served` (1) to (4) this build's with no served or former list must equal (`c-l-served` (6)); unset, the script builds it from `BASE_COMMIT`'s tree, which it takes with `git archive` into its work directory, so the checkout is never touched
 
-- `BASE_COMMIT` — `c55680e22e67fe9f3c6982bec1784834127d30ec`
+- `BASE_COMMIT` — the script's `BASE_COMMIT` default
 
   the commit that build is built from when `BASE_BIN` is unset: the commit of `main` that the branch's latest merge of `main` took, which must be in this checkout's history.
   A later merge of `main` into the branch moves it: the script's header says how
@@ -4483,7 +4483,7 @@ The test of `auth.ForwardedAddress` for a peer outside every range that fails wi
 
 ```sh
 base=$(mktemp -d "$TMPDIR/served-addresses-base.XXXXXX")
-git -C <the checkout> archive c55680e22e67fe9f3c6982bec1784834127d30ec | tar -x -C "$base"
+git -C <the checkout> archive <the script's BASE_COMMIT default> | tar -x -C "$base"
 go -C "$base/packages/envoy" build -o "$base/envoy-dispatch" ./cmd/dispatch
 (cd "$base" && bun install --frozen-lockfile --ignore-scripts)
 LEGION_TEST_PG_DSN=… DISPATCH_BIN="$base/envoy-dispatch" BASE_BIN="$base/envoy-dispatch" \

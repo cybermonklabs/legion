@@ -11,9 +11,11 @@ import (
 
 // hostOrigins is the router's one table of the origins it picks among by a request's Host: the
 // canonical origin (ServerURL), the served addresses (DISPATCH_SERVED_ORIGINS) and the former
-// addresses (DISPATCH_FORMER_ORIGINS). Every pick of an origin by Host is one of its methods
-// (textcheck's TestNoCodeOutsideTheOriginTablePicksByHost), and each member of the router that
-// picks by Host reads it (TestOneTableAnswersEachPickByHost).
+// addresses (DISPATCH_FORMER_ORIGINS). Its methods pick an origin by Host; textcheck's
+// TestNoCodeOutsideTheOriginTablePicksByHost scans the non-test files of internal/dispatch/routes,
+// internal/dispatch/api and internal/ciphertoken, not the directories below them, for a
+// declaration outside it that reads .Host of a parameter typed *http.Request, and each member of
+// the router that picks by Host reads it (TestOneTableAnswersEachPickByHost).
 //
 // A Host is a served address's as weborigin.SameHost compares them: the name without case or a
 // trailing dot, the port as a number and the scheme's default port equal to none, so the same name
@@ -28,9 +30,10 @@ type hostOrigins struct {
 	canonical string
 	// served and former are the served and the former addresses.
 	served, former []tableOrigin
-	// origins is what GET /auth/whoami and GET /api/v1/whoami name as the server's origins
-	// (originsAt): the canonical origin, each served and each former address, in that order; nil
-	// where the table names no origin but the canonical one.
+	// origins is what GET /auth/whoami and GET /api/v1/whoami (api.Deps.WhoamiOrigins) name as the
+	// server's origins at every Host, so the dispatch command reads the list the page reads: the
+	// canonical origin, each served and each former address, in that order; nil where neither list
+	// is set, so the answer of a server at one address is what it always was.
 	origins []string
 }
 
@@ -131,12 +134,4 @@ func (o hostOrigins) callbackURL(req *http.Request) string {
 // (enforceCookieOrigin).
 func (o hostOrigins) atFormer(req *http.Request) bool {
 	return slices.ContainsFunc(o.former, func(former tableOrigin) bool { return former.namesHost(req.Host) })
-}
-
-// originsAt is what GET /auth/whoami names as the server's origins to req, and GET /api/v1/whoami
-// too (api.Deps.OriginsAt), so the dispatch command reads the list the page reads: the canonical
-// origin, each served and each former address, at every Host; nil where neither list is set, so
-// the answer of a server at one address is what it always was.
-func (o hostOrigins) originsAt(*http.Request) []string {
-	return o.origins
 }

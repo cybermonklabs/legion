@@ -184,12 +184,16 @@ function Place(): ReactNode {
 
 /** A plain click on a link to the board at `origin` in a node's words, drawn from their reading
  *  at `/issues/CORE-1` as `RowText.tsx` draws them: whether the browser was left to follow it,
- *  and where the router stands after. The unit suite's document loads no page, so the browser's
- *  own follow is stopped once the click has been read. */
+ *  and where the router stands after. The words are drawn while whoami has named no origin yet,
+ *  so the link pass (`collectReferenceAnchors`) leaves the link at the address its author wrote,
+ *  and whoami's origins are named before the click: the click alone decides where the link opens.
+ *  The unit suite's document loads no page, so the browser's own follow is stopped once the click
+ *  has been read. */
 async function rowClick(origin: string) {
   const text = `See [the board](${board(origin)}).`;
   const tree = displayTree(text);
   if (tree === undefined) throw new Error("the engine refused the node's words");
+  setDispatchOrigins([]);
   const view = render(
     createElement(
       QueryClientProvider,
@@ -213,6 +217,8 @@ async function rowClick(origin: string) {
       expect(found?.textContent).toBe("the board");
       return found;
     });
+    expect(link?.getAttribute("href")).toBe(board(origin));
+    setDispatchOrigins(NAMED);
     document.addEventListener("click", stop);
     act(() => {
       link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));

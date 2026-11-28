@@ -21,8 +21,8 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// resolverServer is the dashboard the resolver tests read their text with.
-const resolverServer = "https://dispatch.example"
+// testOrigins is the one dashboard origin the package's tests read their text at.
+var testOrigins = text.NewOrigins("https://dispatch.example")
 
 // The ids the resolver tests write their items under: one ask a prefix names alone, two an
 // ambiguous prefix names, one comment, and one ask of another issue, which a reference naming
@@ -150,7 +150,7 @@ func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.
 	} {
 		source := resolverSource(index + 1)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		located := NewReader(ctx, tx, prefixAuthor, "comment", source, text.NewOrigins(resolverServer)).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", source, testOrigins).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -228,7 +228,7 @@ func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) 
 	} {
 		source := resolverSource(index + 100)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		located := NewReader(ctx, tx, prefixAuthor, "comment", source, text.NewOrigins(resolverServer)).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", source, testOrigins).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -299,7 +299,7 @@ func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
 		if test.source != anchored {
 			insertPrefixComment(t, tx, test.source, "ACME-1", test.body)
 		}
-		located := NewReader(ctx, tx, prefixAuthor, "comment", test.source, text.NewOrigins(resolverServer)).Mentions(test.body)
+		located := NewReader(ctx, tx, prefixAuthor, "comment", test.source, testOrigins).Mentions(test.body)
 		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
@@ -326,7 +326,7 @@ func TestABareKeyLeavesALaterBlockMentionInItsOwnBlock(t *testing.T) {
 	body := "ACME-1 is the issue.\n\nSee dispatch://ACME-1/artifact/notes#b-two."
 	insertPrefixComment(t, tx, source, "ACME-1", body)
 	at := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
-	indexItemAsAWriteDoes(t, tx, ItemComment, source, body, resolverServer, at)
+	indexItemAsAWriteDoes(t, tx, ItemComment, source, body, testOrigins, at)
 
 	rows, err := tx.Query(ctx, `
 		select block_id, to_kind, to_id from comment_block_refs where comment_id = $1::uuid
@@ -389,7 +389,7 @@ func TestRebuildAllReadsTheWholeGrammarOfStoredText(t *testing.T) {
 	body := "ACME-1, see #q1 and dispatch://ACME-1/ask/" + resolverAsk[:8] + "."
 	question := rebuildFixture(t, database, source, body)
 
-	if _, err := RebuildAll(ctx, database.Pool, text.NewOrigins(resolverServer)); err != nil {
+	if _, err := RebuildAll(ctx, database.Pool, testOrigins); err != nil {
 		t.Fatalf("rebuild the references: %v", err)
 	}
 	want := []Target{{"ask", question}, {"ask", resolverAsk}, {"issue", "ACME-1"}}
@@ -469,8 +469,8 @@ func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
 	logged := &countingHandler{}
 	logtest.SetDefault(t, logged)
 
-	located := NewReader(ctx, failingQueryer{}, prefixAuthor, "comment", source, text.NewOrigins(resolverServer)).Mentions(body)
-	if want := text.ExtractAt(body, text.NewOrigins(resolverServer)); !reflect.DeepEqual(located, want) {
+	located := NewReader(ctx, failingQueryer{}, prefixAuthor, "comment", source, testOrigins).Mentions(body)
+	if want := text.ExtractAt(body, testOrigins); !reflect.DeepEqual(located, want) {
 		t.Errorf("a failed resolver read %#v; want the text as written, %#v", located, want)
 	}
 	if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, true); err != nil {
@@ -618,7 +618,7 @@ func TestAFailedPrefixReadQuotesNothingAReferenceWrote(t *testing.T) {
 	const id = "0c1d2e3f-0000-4000-8000-000000000001"
 	deletedAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	for _, kind := range []string{"comment", "message"} {
-		_, err := itemCandidate(kind, id, nil, "", "", "", text.NewOrigins(resolverServer), postMarks{deletedAt: &deletedAt, deletedBy: []byte("no actor")})
+		_, err := itemCandidate(kind, id, nil, "", "", "", testOrigins, postMarks{deletedAt: &deletedAt, deletedBy: []byte("no actor")})
 		if syntax := new(*json.SyntaxError); !errors.As(err, syntax) {
 			t.Errorf("a %s whose delete mark does not decode failed with %v; want the decode's failure wrapped", kind, err)
 			continue
@@ -636,7 +636,7 @@ func loggedErrors(t *testing.T, q Queryer, body string) []error {
 	recorder := &logtest.Recorder{}
 	restore := logtest.Swap(t, recorder)
 	defer restore()
-	NewReader(context.Background(), q, prefixAuthor, "comment", resolverSource(1), text.NewOrigins(resolverServer)).Mentions(body)
+	NewReader(context.Background(), q, prefixAuthor, "comment", resolverSource(1), testOrigins).Mentions(body)
 	var logged []error
 	for _, record := range recorder.Records() {
 		record.Attrs(func(attr slog.Attr) bool {
@@ -695,7 +695,7 @@ func TestAnAmbiguousShortIDReadsAsWrittenAndLogsNothing(t *testing.T) {
 	shared, lone := resolverAmbiguous[:8], resolverAsk[:8]
 	body := "See dispatch://ACME-1/ask/" + shared + ", dispatch://ACME-1/ask/" + lone + " and dispatch://ACME-1/ask/deadbeef."
 	var read []string
-	for _, mention := range NewReader(ctx, tx, prefixAuthor, "comment", resolverSource(1), text.NewOrigins(resolverServer)).Mentions(body) {
+	for _, mention := range NewReader(ctx, tx, prefixAuthor, "comment", resolverSource(1), testOrigins).Mentions(body) {
 		read = append(read, mention.Kind+"/"+mention.ID)
 	}
 	if want := []string{"ask/" + shared, "ask/" + resolverAsk, "ask/deadbeef"}; !slices.Equal(read, want) {
@@ -747,7 +747,7 @@ func TestAResolverResolvesEachPrefixOnce(t *testing.T) {
 
 	cite := "dispatch://ACME-1/ask/" + resolverAsk[:8]
 	reads := 0
-	resolve := NewReader(ctx, countingQueryer{Queryer: tx, reads: &reads}, prefixAuthor, "comment", resolverSource(1), text.NewOrigins(resolverServer))
+	resolve := NewReader(ctx, countingQueryer{Queryer: tx, reads: &reads}, prefixAuthor, "comment", resolverSource(1), testOrigins)
 	if located := resolve.Mentions("See " + cite + "."); len(located) != 1 || located[0].ID != resolverAsk {
 		t.Fatalf("the first text read %#v; want the whole id of %s", located, resolverAsk)
 	}
