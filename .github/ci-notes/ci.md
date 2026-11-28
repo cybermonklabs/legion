@@ -2644,12 +2644,13 @@ them; the wait passes `--allow-none` for that run.
 
 ## Two jobs that call one file
 
-ci.yaml calls 45 unique reusable workflows, the most .github/scripts/check-workflow-files.sh
-allows it: its rule 5 holds every file to 46 over the 50 GitHub counts over every tree of nested
-calls, and .github/workflows/large-pr-lanes.yaml, which calls ci.yaml, counts ci.yaml and its 45.
-So a job split in two takes no file of its own for its new half, and a new job takes none
-either. test and tooling-checks call ci-job-test.yaml, pi-legion and pi-legion-build call
-ci-job-pi-legion.yaml, envoy-infra-go and envoy-infra-build call ci-job-envoy-infra-go.yaml,
+ci.yaml calls 44 unique reusable workflows today, and .github/workflows/large-pr-lanes.yaml,
+which calls ci.yaml, 45: ci.yaml itself and its whole tree. .github/scripts/check-workflow-files.sh's
+rule 5 holds every file to 46 under the 50 GitHub counts over every tree of nested calls, so it
+holds ci.yaml to 45, since its caller counts one more. A job split in two takes no file of its own
+for its new half, and a new job takes none either. test and tooling-checks call ci-job-test.yaml,
+pi-legion and pi-legion-build call ci-job-pi-legion.yaml, envoy-infra-go and envoy-infra-build
+call ci-job-envoy-infra-go.yaml,
 and envoy-e2e-local and envoy-refill, which build the same listener and natsd, call
 ci-job-envoy-e2e-local.yaml. Such a file holds one job per caller and
 takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its id>'`, each
