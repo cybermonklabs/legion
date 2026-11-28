@@ -242,14 +242,11 @@ type Intake struct {
 	reported map[reportKey]time.Time
 	// pruned is when this process last pruned legion_reads.
 	pruned time.Time
-	// calling is each project for which a message of a store its cursor drops has queued a call for
-	// the owed read on the project's runner (callRead), until that call has run, so a burst of such
-	// messages queues one call. A take-over empties it (takenOver): the delivery before the
-	// take-over dropped each call that still waited when it stopped (delivery.HeldDurable.Queue).
-	calling map[string]bool
-	// waiting counts the messages that wait on each project's runner, for the subscription the
-	// durable delivers on now (waitingCounts). A take-over starts it again (takenOver).
-	waiting waitingCounts
+	// subscription is what the intake keeps for the subscription of the durable that delivered the
+	// latest message: the messages that wait on each project's runner, and each project whose call
+	// for the owed read waits on its runner (subscriptionState). That subscription's first message
+	// starts it again (messageKey).
+	subscription subscriptionState
 	// reading is the whole read in flight on each project's runner (readWhole, readInFlight).
 	reading map[string]readInFlight
 }
@@ -334,7 +331,7 @@ func NewIntake(natsClient *bus.Client, pool *store.Pool, admissions Admissions, 
 func newIntake(pool *store.Pool, admissions Admissions, settingsWake <-chan struct{}) *Intake {
 	return &Intake{pool: pool, admissions: admissions, settingsWake: settingsWake, now: time.Now, after: func(d time.Duration, f func()) { time.AfterFunc(d, f) },
 		firstRetry: applyFirstRetry, lastRetry: applyLastRetry,
-		reported: map[reportKey]time.Time{}, calling: map[string]bool{}, waiting: newWaitingCounts(), reading: map[string]readInFlight{}}
+		reported: map[reportKey]time.Time{}, subscription: newSubscriptionState(""), reading: map[string]readInFlight{}}
 }
 
 // ReserveLeases reserves the intake's callers of the lease pool: three, as every held durable's
@@ -420,17 +417,12 @@ func (in *Intake) SettingsChanged(ctx context.Context) {
 }
 
 // takenOver is the durable's take-over callback (delivery.NewHeldDurable): once a take-over has
-// bound the durable, its first creation included, it empties the projects whose call for the owed
-// read is queued (calling), since the delivery before the take-over dropped each call that still
-// waited when it stopped, starts the counts of the messages that wait on each runner again at 0
-// (waiting), since that delivery handed back each message that still waited, and queues
-// SettingsChanged on settingsKey's runner. The callback runs on the durable's run loop, which
-// waits for it, so it only queues the settings read and does not make it.
+// bound the durable, its first creation included, it queues SettingsChanged on settingsKey's
+// runner. The callback runs on the durable's run loop, which waits for it, so it only queues the
+// settings read and does not make it. It starts no state of the new subscription's
+// (subscription): the durable delivers to that subscription before the callback runs, and the
+// subscription's first message starts it (messageKey, subscriptionState).
 func (in *Intake) takenOver() {
-	in.mu.Lock()
-	clear(in.calling)
-	in.waiting = newWaitingCounts()
-	in.mu.Unlock()
 	in.durable.Queue(settingsKey, in.SettingsChanged)
 }
 
@@ -517,11 +509,13 @@ func (in *Intake) startBlocked(ctx context.Context, reason string) (bool, error)
 }
 
 // messageKey keys a state message by the project its payload names, so one runner applies a
-// project's messages one at a time, and counts it among the messages that wait on that runner
-// (waiting). A message that arrives while stateMaxWaiting of its project's messages wait is keyed
-// by the project's crowded key instead (crowdedKey), and is not counted: it waits on no read of the
-// project (judgeCrowded). A message whose envelope or payload does not decode, or that names no
-// project, is keyed by its subject, and deliver reports it.
+// project's messages one at a time, and counts it among the messages that wait on that runner, in
+// the state of the subscription that delivered it (subscription): the first message of another
+// subscription than the state's starts a new state (subscriptionState). A message that arrives
+// while stateMaxWaiting of its project's messages wait is keyed by the project's crowded key
+// instead (crowdedKey), and is not counted: it waits on no read of the project (judgeCrowded). A
+// message whose envelope or payload does not decode, or that names no project, is keyed by its
+// subject, and deliver reports it.
 func (in *Intake) messageKey(msg *natsgo.Msg) (string, *contracts.Envelope, bool) {
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &envelope); err != nil {
@@ -535,11 +529,14 @@ func (in *Intake) messageKey(msg *natsgo.Msg) (string, *contracts.Envelope, bool
 	}
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	if in.waiting.projects[head.Project] >= stateMaxWaiting {
+	if subject := deliverSubject(msg); subject != in.subscription.subject {
+		in.subscription = newSubscriptionState(subject)
+	}
+	if in.subscription.waiting[head.Project] >= stateMaxWaiting {
 		return crowdedKey(head.Project), &envelope, true
 	}
-	in.waiting.projects[head.Project]++
-	in.waiting.keyed[msg] = head.Project
+	in.subscription.waiting[head.Project]++
+	in.subscription.keyed[msg] = head.Project
 	return head.Project, &envelope, true
 }
 

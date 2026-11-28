@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  Dispatch's Legion state intake keeps each project to 16 messages waiting on its runner, and to
+  one queued call for its owed whole read, right after a take-over of its durable too. The
+  take-over's callback started the counts of the messages that wait on each runner again at 0, and
+  forgot the calls that wait, once the take-over had recorded its deliver subject in its hold; but
+  the durable delivers to that subject from its create on, so a message the new subscription had
+  keyed before the callback ran was counted nowhere, and a call it had queued was forgotten. The
+  project's 17th message then waited on the runner rather than running beside it, holding one
+  message of the durable's window more than its bound for each such message, and a later message
+  could queue a second call for the same read. The intake now keeps both for each subscription and
+  starts them again at the subscription's first message, whenever the callback runs.
+time: 2026-11-28T08:33:01.000000000Z
+custom:
+    Issue: INFRA-2918

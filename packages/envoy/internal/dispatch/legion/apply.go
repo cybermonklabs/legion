@@ -36,24 +36,27 @@ import (
 // at most once a minute, so an old daemon that still publishes adds no read the project does not
 // owe. The message does not wait for it, never holds it, and is acknowledged unapplied at once;
 // the read rule starts the project's whole reads ReadRetryAfter apart. At most one such call waits
-// per project (calling), until it has run, so the messages of such a store that the runner judges
-// meanwhile join it and queue none: a read the daemon never answers lasts RequestTimeout, which is
+// per project in the state of the subscription that delivered the message (subscriptionState's
+// calling), until it has run, so the messages of such a store that the runner judges meanwhile join
+// it and queue none: a read the daemon never answers lasts RequestTimeout, which is
 // ReadRetryAfter, so each call queued behind it would find the read due again and make one more,
-// back to back on the project's runner.
+// back to back on the project's runner. The call clears its mark from the state it was set in, so
+// a call that runs once another subscription's state has started clears nothing of that state.
 func (in *Intake) callRead(project string, current cursor) {
 	if !current.readFor("", in.now(), 0, false, nil).read {
 		return
 	}
 	in.mu.Lock()
-	if in.calling[project] {
+	calling := in.subscription.calling
+	if calling[project] {
 		in.mu.Unlock()
 		return
 	}
-	in.calling[project] = true
+	calling[project] = true
 	in.mu.Unlock()
 	called := func() {
 		in.mu.Lock()
-		delete(in.calling, project)
+		delete(calling, project)
 		in.mu.Unlock()
 	}
 	if !in.durable.Queue(project, func(ctx context.Context) {

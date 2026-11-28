@@ -1,7 +1,8 @@
 package legion
 
-// crowded.go holds the crowded key of a project's messages (dispatch://INFRA-3931): how many of a
-// project's messages wait on its runner and the count's two ends (waitingCounts, Intake.finished),
+// crowded.go holds the crowded key of a project's messages (dispatch://INFRA-3931): what the
+// intake keeps for each subscription of the durable, how many of a project's messages wait on its
+// runner among it, and the count's two ends (subscriptionState, deliverSubject, Intake.finished),
 // the message past stateMaxWaiting that runs on a key of its own beside the runner (crowdedKey,
 // judgeCrowded), and what that message asks of the whole read in flight on the runner (readsNow,
 // inFlight).
@@ -14,13 +15,13 @@ import (
 )
 
 // stateMaxWaiting is how many messages one project keeps waiting on its runner, the one running
-// included (Intake.waiting). A message that arrives while that many wait does not wait: it runs on
-// its project's crowded key (crowdedKey), where judgeCrowded finishes it or has it owe a read. A
-// read the daemon does not answer holds the runner for RequestTimeout, and every message that
-// waits holds one message of the durable's window (stateMaxAckPending) until it is acknowledged, a
-// message handed back with a delay included. So a project in such a read holds stateMaxWaiting
-// messages that wait and one that holds the owed read, 17 of the 256, and 15 projects can be in
-// such a read at once before the window is full.
+// included (subscriptionState.waiting). A message that arrives while that many wait does not wait:
+// it runs on its project's crowded key (crowdedKey), where judgeCrowded finishes it or has it owe a
+// read. A read the daemon does not answer holds the runner for RequestTimeout, and every message
+// that waits holds one message of the durable's window (stateMaxAckPending) until it is
+// acknowledged, a message handed back with a delay included. So a project in such a read holds
+// stateMaxWaiting messages that wait and one that holds the owed read, 17 of the 256, and 15
+// projects can be in such a read at once before the window is full.
 const stateMaxWaiting = 16
 
 // crowdedKeyPrefix begins each project's crowded key (crowdedKey). Its first byte is not UTF-8, so
@@ -35,35 +36,66 @@ func crowdedKey(project string) string {
 	return crowdedKeyPrefix + project
 }
 
-// waitingCounts is, for one subscription of the durable, how many messages of each project are
-// keyed to the project's runner and not yet finished (projects), and the project of each such
-// message (keyed). messageKey counts a message up as it keys it to its project's runner, and
-// deliver counts it down as it returns for it (finished). A message the stop of a subscription
-// hands back never reaches deliver, so a take-over starts new counts at 0 (takenOver), and a
-// message keyed under the counts before is counted down in none.
-type waitingCounts struct {
-	projects map[string]int
-	keyed    map[*natsgo.Msg]string
+// subscriptionState is what the intake keeps for one subscription of the durable, which subject
+// names: its deliver subject (deliverSubject), a fresh one at each take-over (consumerConfig).
+// waiting is how many messages of each project are keyed to the project's runner and not yet
+// finished, and keyed the project of each such message: messageKey counts a message up as it keys
+// it to its project's runner, and deliver counts it down as it returns for it (finished). calling
+// is each project for which a message of a store its cursor drops has queued a call for the owed
+// read on the project's runner (callRead), until that call has run, so a burst of such messages
+// queues one call.
+//
+// A subscription's stop hands back each message that still waits, which never reaches deliver,
+// and drops each call still queued, which never runs (delivery.HeldDurable.Queue). So messageKey
+// starts a new state at the first message of another subscription, and a message keyed or a call
+// queued under the state before is counted down or cleared in none.
+//
+// The take-over's callback (takenOver) does not start it. A take-over subscribes before it
+// creates the durable, which delivers to the new subscription from its create on, and it runs the
+// callback only after that, once it has recorded the deliver subject in its hold (delivery's
+// finishTakeOver), so the new subscription can key messages, and queue calls for them, before the
+// callback runs. A state the callback started would count none of those messages, and their
+// project could keep more than stateMaxWaiting messages waiting on its runner; and it would hold
+// none of those calls, so a message after the callback would queue a second call beside one that
+// still waits.
+type subscriptionState struct {
+	subject string
+	waiting map[string]int
+	keyed   map[*natsgo.Msg]string
+	calling map[string]bool
 }
 
-// newWaitingCounts is a subscription's counts before any message is keyed.
-func newWaitingCounts() waitingCounts {
-	return waitingCounts{projects: map[string]int{}, keyed: map[*natsgo.Msg]string{}}
+// newSubscriptionState is the state of the subscription at subject before any of its messages is
+// keyed.
+func newSubscriptionState(subject string) subscriptionState {
+	return subscriptionState{subject: subject, waiting: map[string]int{}, keyed: map[*natsgo.Msg]string{}, calling: map[string]bool{}}
+}
+
+// deliverSubject is the deliver subject of the subscription of the durable that delivered msg,
+// "" for a message of no subscription. nats.go subscribes a push consumer on its deliver subject,
+// and the intake's client keeps that subject when it binds the subscription again on a new
+// connection (bus.Client.Subscribe), so the subject names the subscription where msg.Sub, the
+// NATS subscription of one connection, does not.
+func deliverSubject(msg *natsgo.Msg) string {
+	if msg.Sub == nil {
+		return ""
+	}
+	return msg.Sub.Subject
 }
 
 // finished counts msg down among the messages that wait on its project's runner, where messageKey
-// counted it under the counts of the subscription the durable delivers on now (waiting). deliver
-// calls it as it returns for msg.
+// counted it under the state it keeps now (Intake.subscription): a message of a subscription
+// before it is counted in none. deliver calls it as it returns for msg.
 func (in *Intake) finished(msg *natsgo.Msg) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	project, keyed := in.waiting.keyed[msg]
+	project, keyed := in.subscription.keyed[msg]
 	if !keyed {
 		return
 	}
-	delete(in.waiting.keyed, msg)
-	if in.waiting.projects[project]--; in.waiting.projects[project] <= 0 {
-		delete(in.waiting.projects, project)
+	delete(in.subscription.keyed, msg)
+	if in.subscription.waiting[project]--; in.subscription.waiting[project] <= 0 {
+		delete(in.subscription.waiting, project)
 	}
 }
 
