@@ -11,18 +11,23 @@ import (
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
-// TestTheReadingReadsEachOfMainsTablesItNames checks R4: the Legion reading uses
-// issues, events, handoffs, and legion_observations from Dispatch's schema.
+// TestTheReadingReadsEachOfMainsTablesItNames checks R4 of dispatch://INFRA-6225:
+// the Legion reading uses issues, events, handoffs, and legion_observations from Dispatch's schema.
 func TestTheReadingReadsEachOfMainsTablesItNames(t *testing.T) {
+	t.Parallel()
 	const deleteEvents = `delete from events e using issues i where e.issue_key = i.key and i.project_key = $1`
 	for _, test := range []struct {
 		name   string
+		first  string
 		remove string
 		check  func(t *testing.T, before, after Reading)
 	}{
-		{name: "whole history"},
 		{
-			name:   "issues",
+			name: "issues",
+			// Events reference issues without a cascade. Read again once the
+			// events are gone: handoffs alone still qualify the finished issues.
+			// Deleting issues then cascades to handoffs.
+			first:  deleteEvents,
 			remove: `delete from issues where project_key = $1`,
 			check: func(t *testing.T, before, after Reading) {
 				if before.Issues == 0 || after.Issues != 0 {
@@ -60,6 +65,7 @@ func TestTheReadingReadsEachOfMainsTablesItNames(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := t.Context()
 			pool := storetest.Open(t).Pool
 			now := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
@@ -77,10 +83,10 @@ func TestTheReadingReadsEachOfMainsTablesItNames(t *testing.T) {
 			if whole.Issues != legiontest.FinishedPerTree {
 				t.Errorf("the whole history has %d finished issues, want %d including the child with only a handoff", whole.Issues, legiontest.FinishedPerTree)
 			}
-			if len(whole.Measures) != 6 {
-				t.Errorf("the whole history gives %d measures, want six", len(whole.Measures))
+			if len(whole.Measures) != len(Slugs) {
+				t.Errorf("the whole history gives %d measures, want len(Slugs) = %d", len(whole.Measures), len(Slugs))
 			}
-			for _, slug := range []string{SlugWorkTime, SlugPhaseTime, SlugIdleTime, SlugSlotWait, SlugRework, SlugSplitting} {
+			for _, slug := range Slugs {
 				if _, found := whole.Measure(slug); !found {
 					t.Errorf("the whole history gives no %s measure", slug)
 				}
@@ -88,17 +94,11 @@ func TestTheReadingReadsEachOfMainsTablesItNames(t *testing.T) {
 			if whole.FirstClaimObservation == nil || whole.FirstSlotObservation == nil {
 				t.Errorf("the whole history gives first claim %v and first slot %v, want both", whole.FirstClaimObservation, whole.FirstSlotObservation)
 			}
-			if test.remove == "" {
-				return
-			}
 
 			before := whole
-			if test.name == "issues" {
-				// Events reference issues without a cascade. Read again once the
-				// events are gone: handoffs alone still qualify the finished issues.
-				// Deleting issues then cascades to handoffs.
-				if _, err := pool.Exec(ctx, deleteEvents, fixture.Project); err != nil {
-					t.Fatalf("delete the project's events before its issues: %v", err)
+			if test.first != "" {
+				if _, err := pool.Exec(ctx, test.first, fixture.Project); err != nil {
+					t.Fatalf("run the first statement before deleting the project's rows from %s: %v", test.name, err)
 				}
 				before = read()
 			}

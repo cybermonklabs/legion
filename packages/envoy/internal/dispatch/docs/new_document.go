@@ -221,9 +221,9 @@ type WrittenText struct {
 // left the document owing a settlement (WrittenText.OwesSettlement): a replacement does, and so
 // does a seed, unless CreateDocument made it and its tree needs no settlement (SeedText).
 //
-// It appends no event and does not write Blocks to the store. The caller appends Blocks under
-// the event that records the write. An upload appends its event after any approval moves the
-// replacement makes.
+// It appends no event, so it states none of Blocks: the caller appends them under the event
+// that records the write (graphstore.QueueCaused). An upload appends its event after any
+// approval moves the replacement makes.
 func WriteDocumentText(ctx context.Context, documents API, artifactID, markdown string, actor model.Actor, summary *string, created bool, precondition *model.EditPrecondition) (WrittenText, error) {
 	ledger := ledgerFrom(ctx)
 	tx, joined := txFromContext(ctx)

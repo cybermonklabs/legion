@@ -11,8 +11,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// TestACreatedDocumentsEventNamesItAndCausesItsNodeAndBlocks checks R1: a project
-// document's creation event records its first version and causes its graph writes.
+// TestACreatedDocumentsEventNamesItAndCausesItsNodeAndBlocks checks R1 of dispatch://INFRA-6225:
+// a project document's creation event records its first version and causes its graph writes.
 // A seed that needs no settlement leaves none pending.
 func TestACreatedDocumentsEventNamesItAndCausesItsNodeAndBlocks(t *testing.T) {
 	t.Parallel()

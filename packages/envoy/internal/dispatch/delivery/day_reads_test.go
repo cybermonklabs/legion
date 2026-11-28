@@ -7,9 +7,11 @@ import (
 	"time"
 )
 
-// TestEachDaysReadAnswersWhatItsWindowsReadAnswers checks R2: the day and history
-// reads keep the window reads' answers and refuse an overfull day without partial rows.
+// TestEachDaysReadAnswersWhatItsWindowsReadAnswers checks R2 of dispatch://INFRA-6225:
+// the day and history reads keep the window reads' answers and refuse an overfull day
+// without partial rows.
 func TestEachDaysReadAnswersWhatItsWindowsReadAnswers(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	base := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	settings := DeliverySettings{DeployRepo: waitingRepo, ProductionJobNames: []string{waitingJob}, ProductionApplyStepName: new(waitingStep)}
@@ -95,8 +97,8 @@ func TestEachDaysReadAnswersWhatItsWindowsReadAnswers(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s: ReadMergedRows: %v", day, err)
 				}
-				if got, want := shippedIDs(got.Deploys[i].ShippedBy(merged, settings)), shippedIDs(want.ShippedBy(merged, settings)); !reflect.DeepEqual(got, want) {
-					t.Errorf("%s: the day's deploys ship %v, want %v", day, got, want)
+				if gotShipped, wantShipped := shippedIDs(got.Deploys[i].ShippedBy(merged, settings)), shippedIDs(want.ShippedBy(merged, settings)); !reflect.DeepEqual(gotShipped, wantShipped) {
+					t.Errorf("%s: the day's deploys ship %v, want %v", day, gotShipped, wantShipped)
 				}
 			}
 		}},
@@ -147,9 +149,9 @@ func TestEachDaysReadAnswersWhatItsWindowsReadAnswers(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s: Since: %v", day, err)
 				}
-				want, err := readApplyRows(ctx, pool, settings, day, nil)
+				want, err := ReadApplyRows(ctx, pool, settings, day)
 				if err != nil {
-					t.Fatalf("%s: readApplyRows: %v", day, err)
+					t.Fatalf("%s: ReadApplyRows: %v", day, err)
 				}
 				if !reflect.DeepEqual(got.Runs, want.Runs) || !reflect.DeepEqual(got.Jobs, want.Jobs) {
 					t.Errorf("%s: Since returned runs %v and jobs %v, want runs %v and jobs %v", day, runIDsOf(got.Runs), got.Jobs, runIDsOf(want.Runs), want.Jobs)
@@ -204,26 +206,19 @@ func TestEachDaysReadAnswersWhatItsWindowsReadAnswers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReadPullRequestsMergedBefore: %v", err)
 			}
-			history, err := ReadHistoryRows(ctx, pool, []string{settings.DeployRepo}, names, to)
+			history, err := ReadHistoryRows(ctx, pool, nil, nil, to)
 			if err != nil {
 				t.Fatalf("ReadHistoryRows: %v", err)
 			}
 			if !reflect.DeepEqual(got, history.PullRequests) {
 				t.Errorf("pull requests merged before %s differ from ReadHistoryRows (%d rows versus %d)", to, len(got), len(history.PullRequests))
 			}
-			rows, err := pool.Query(ctx, `
-				select `+PullRequestColumns+` from delivery_pull_requests where merged_at < $1
-				order by merged_at, (repo || '#' || number) collate "C"
-			`, to)
+			want, err := ListPullRequestsInWindow(ctx, pool, time.Time{}, to)
 			if err != nil {
-				t.Fatalf("select pull requests merged before %s: %v", to, err)
-			}
-			want, err := collectPullRequests(rows)
-			if err != nil {
-				t.Fatalf("scan pull requests merged before %s: %v", to, err)
+				t.Fatalf("ListPullRequestsInWindow before %s: %v", to, err)
 			}
 			if !reflect.DeepEqual(got, want) {
-				t.Errorf("pull requests merged before %s differ from the ordered SQL read (%d rows versus %d)", to, len(got), len(want))
+				t.Errorf("pull requests merged before %s differ from ListPullRequestsInWindow's read of them (%d rows versus %d)", to, len(got), len(want))
 			}
 		}},
 		// Run the overfull row last so only it reads the extra pull requests.

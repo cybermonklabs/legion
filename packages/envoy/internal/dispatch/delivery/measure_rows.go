@@ -609,8 +609,8 @@ func ListPullRequestsOnDays(ctx context.Context, q Querier, days []time.Time) ([
 // with the windows, holds its refusal, naming the window and the bound, and nil for every window
 // answered. No window answers part of its rows, so which of a window's rows the statement takes
 // does not matter: it answers them only where they are every one of the window's. A refusal
-// affects only its window. When the whole read was refused, every attempt failed for all days,
-// including those under the bound
+// affects only its window, so every other day is answered whatever one day holds; a refusal
+// of the whole read would fail every day, those under the bound included, on every attempt
 // (dispatch://INFRA-2916/comment/0d936c90-6b07-4049-bca2-7b08ea901db3). A limit the windows shared
 // (maxPullRequestsPerWindow times their number) let a window take the share another left unused,
 // and past it kept the oldest of every window's together without a word, leaving out a window's
