@@ -155,9 +155,8 @@ func TestADeliveryWakeWaitsForTheTeardownOfAReleaseThatRecordedItsRole(t *testin
 	woken, turn, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
 	latest := rig.runner.now().Add(30 * time.Second)
 	at, until := wait.UntilAt(err)
-	var routine interface{ Routine() bool }
-	if woken || !turn.IsZero() || !until || at.Before(earliest) || at.After(latest) || !errors.As(err, &routine) || !routine.Routine() {
-		t.Fatalf("the wake while the release runs = %t, %s, %v; want no wake and a routine wait until 30 seconds on: the release recorded the role",
+	if woken || !turn.IsZero() || !until || at.Before(earliest) || at.After(latest) || !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the wake while the release runs = %t, %s, %v; want no wake and a role wait until 30 seconds on: the release recorded the role",
 			woken, turn, err)
 	}
 	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || open {
@@ -196,9 +195,9 @@ func TestADeliveryWakeWaitsForTheTeardownOfAReleaseThatRecordedItsRole(t *testin
 // queues a start for each claim it resumes and resumes none itself, so the claim reads `released`
 // until that start runs, and its pod never went away (store.CancelIssueRelease). A delivery for
 // that role in that time takes no wake: a wake would record a resume of a pod that no release
-// took, and the records would count that pod's return. The row waits 30 seconds, as a routine
-// wait, while the start is queued. The start resumes the role in the same pod, and the row's next
-// attempt finds the claim live and publishes, so the role still gets its delivery.
+// took, and the records would count that pod's return. The row waits 30 seconds while the start is
+// queued. The start resumes the role in the same pod, and the row's next attempt finds the claim
+// live and publishes, so the role still gets its delivery.
 func TestADeliveryWakeAfterACancelWaitsForTheCancelsStartAndRecordsNoResume(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
@@ -237,10 +236,9 @@ func TestADeliveryWakeAfterACancelWaitsForTheCancelsStartAndRecordsNoResume(t *t
 	woken, turn, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
 	latest := rig.runner.now().Add(30 * time.Second)
 	at, until := wait.UntilAt(err)
-	var routine interface{ Routine() bool }
-	if woken || !turn.IsZero() || !until || at.Before(earliest) || at.After(latest) || !errors.As(err, &routine) || !routine.Routine() ||
+	if woken || !turn.IsZero() || !until || at.Before(earliest) || at.After(latest) || !errors.Is(err, wait.ErrWaiting) ||
 		!strings.Contains(err.Error(), "waits for the start queued for "+rig.issue.Key+"'s implementer") {
-		t.Fatalf("the wake while the cancel's start is queued = %t, %s, %v; want no wake and a routine wait of 30 seconds for that start",
+		t.Fatalf("the wake while the cancel's start is queued = %t, %s, %v; want no wake and a role wait of 30 seconds for that start",
 			woken, turn, err)
 	}
 	if records := rig.records(t); len(records.Resumes) != 0 {

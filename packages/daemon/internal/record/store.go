@@ -1796,15 +1796,6 @@ func (s *Postgres) ClaimKeptDecisions(ctx context.Context, tx pgx.Tx, tree strin
 	return nil
 }
 
-func (s *Postgres) MoveKeptClaims(ctx context.Context, tx pgx.Tx, from, to int64) error {
-	for _, table := range []string{"parked_decisions", "readmitted_approvals"} {
-		if _, err := tx.Exec(ctx, "update "+table+" set claimed_by = $2 where claimed_by = $1", from, to); err != nil {
-			return fmt.Errorf("move the claims of outbox row %d to %d: %w", from, to, err)
-		}
-	}
-	return nil
-}
-
 func (s *Postgres) ReleaseKeptClaims(ctx context.Context, tx pgx.Tx, row int64) ([]string, error) {
 	trees, err := releasedTrees(ctx, tx, `with decisions as (
 		update parked_decisions set claimed_by = null where claimed_by = $1 returning issue
@@ -3052,6 +3043,14 @@ func (s *Postgres) SetCaughtUp(ctx context.Context, tx pgx.Tx, issue string, seq
 	return nil
 }
 
+// nullableTime is at, or SQL null when it is the zero time, which no moment a row records is.
+func nullableTime(at time.Time) any {
+	if at.IsZero() {
+		return nil
+	}
+	return at
+}
+
 // nullableText is text, or SQL null when it is empty.
 func nullableText(text string) any {
 	if text == "" {
@@ -3607,9 +3606,11 @@ func (s *Postgres) QueuedMergeForwardAsk(ctx context.Context, tx pgx.Tx, issue s
 
 // outboxColumns is an outbox row as scanOutbox reads it. held_by_pause is read as 0 for the null
 // of a row no pause held (OutboxRow.HeldByPause), and the three state columns are null on every
-// row but a committed state row's (OutboxRow.StateSeq).
+// row but a committed state row's (OutboxRow.StateSeq). The seven wait columns are the row's wait
+// (OutboxRow.Wait), whose two moments are null on a row that waits for nothing.
 const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until,
-	coalesce(held_by_pause, 0) as held_by_pause, state_seq, state_at, state_tx`
+	coalesce(held_by_pause, 0) as held_by_pause, state_seq, state_at, state_tx,
+	wait_since, wait_logged, wait_step, wait_ready, wait_launch, wait_for, wait_woken`
 
 func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if !json.Valid(row.Payload) {
@@ -3617,13 +3618,13 @@ func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error 
 	}
 	var err error
 	if row.CreatedAt.IsZero() {
-		_, err = tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
-			values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.LeaseToken, row.LeaseUntil)
-	} else {
-		_, err = tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
+		_, err = tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until, wait_for)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-			string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.CreatedAt, row.LeaseToken, row.LeaseUntil)
+			string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.LeaseToken, row.LeaseUntil, row.Wait.WaitFor)
+	} else {
+		_, err = tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until, wait_for)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.CreatedAt, row.LeaseToken, row.LeaseUntil, row.Wait.WaitFor)
 	}
 	if err != nil {
 		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
@@ -3636,9 +3637,9 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 		return 0, fmt.Errorf("enqueue %s for %s: payload is not JSON", row.Kind, row.Issue)
 	}
 	var id int64
-	if err := tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
-		values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
-		string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.LeaseToken, row.LeaseUntil).Scan(&id); err != nil {
+	if err := tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until, wait_for)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+		string(row.Kind), row.Issue, string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.LeaseToken, row.LeaseUntil, row.Wait.WaitFor).Scan(&id); err != nil {
 		return 0, fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
 	}
 	return id, nil
@@ -3662,10 +3663,11 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // EnqueueStart writes a phase worker's start as a row of its own, in one statement that takes
 // out the start the issue already owes its worker for the same wait — its oldest pending start
 // of a phase worker (pendingPhaseStart) whose slot mark is the mark row carries and that no live
-// lease holds — and writes row in its place, carrying that row's attempts, next_at, last_error
-// and created_at. Where the issue owes no such row, row is written with its own values, which is
-// the first start of a phase. So two transitions before the worker runs leave one start, the
-// later one, and its caller (workflow.StartOrOwe) has one call to make either way.
+// lease holds — and writes row in its place, carrying that row's attempts, next_at, last_error,
+// created_at and wait (OutboxWait). Where the issue owes no such row, row is written with its own
+// values, as Enqueue writes them, which is the first start of a phase. So two transitions before
+// the worker runs leave one start, the later one, and its caller (workflow.StartOrOwe) has one
+// call to make either way.
 //
 // Two start rows of one issue the outbox cannot tell apart start that issue's worker twice for
 // one piece of work, and that is what this keeps to one row. The outbox's fences end a row that
@@ -3756,9 +3758,10 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // under the number the row took before it, and the rule would end the start the retry had just
 // written.
 //
-// Everything else of the replaced row rides over unchanged — its attempts, when it is next due
-// and the error it last recorded — so a row backing off keeps its backoff and carries the later
-// task into it.
+// Everything else of the replaced row rides over unchanged — its attempts, when it is next due,
+// the error it last recorded and its wait, all seven values of it — so a row backing off keeps its
+// backoff and carries the later task into it, and a wait the row was in goes on in the new row
+// rather than ends: the replacement is the same wait carrying a newer task.
 //
 // A partial unique index on the pending start would be the other way to keep one row, and is not
 // available: Enqueue allows one `on conflict` target per statement and already spends it on
@@ -3778,12 +3781,16 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 					and (lease_until is null or lease_until <= $3)
 				order by created_at, id limit 1)
 				and (lease_until is null or lease_until <= $3)
-			returning attempts, next_at, last_error, created_at)
-		insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
+			returning attempts, next_at, last_error, created_at,
+				wait_since, wait_logged, wait_step, wait_ready, wait_launch, wait_for, wait_woken)
+		insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until,
+			wait_since, wait_logged, wait_step, wait_ready, wait_launch, wait_for, wait_woken)
 		select 'supervise', $1, $2, coalesce(owed.attempts, $4), coalesce(owed.next_at, $3), coalesce(owed.last_error, $5),
-			coalesce(owed.created_at, now()), '', null
+			coalesce(owed.created_at, now()), '', null,
+			owed.wait_since, coalesce(owed.wait_logged, false), coalesce(owed.wait_step, 0), owed.wait_ready,
+			coalesce(owed.wait_launch, 0), coalesce(owed.wait_for, $6), coalesce(owed.wait_woken, false)
 		from (values (1)) as caller(one) left join owed on true`,
-		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError); err != nil {
+		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError, row.Wait.WaitFor); err != nil {
 		return fmt.Errorf("enqueue the start of %s: %w", row.Issue, err)
 	}
 	return nil
@@ -4371,11 +4378,16 @@ func (s *Postgres) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string
 	return nil
 }
 
-func (s *Postgres) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error {
-	if _, err := tx.Exec(ctx, "delete from outbox where id = any($1)", rows); err != nil {
-		return fmt.Errorf("drop the queued changes requests %v: %w", rows, err)
+func (s *Postgres) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64, _ time.Time) ([]WaitingRow, error) {
+	deleted, err := tx.Query(ctx, "delete from outbox where id = any($1) returning "+waitingRowColumns, rows)
+	if err != nil {
+		return nil, fmt.Errorf("drop the queued changes requests %v: %w", rows, err)
 	}
-	return nil
+	dropped, err := collectWaitingRows(deleted)
+	if err != nil {
+		return nil, fmt.Errorf("read the dropped changes requests %v: %w", rows, err)
+	}
+	return dropped, nil
 }
 
 func (s *Postgres) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error {
@@ -4385,7 +4397,7 @@ func (s *Postgres) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue 
 	return nil
 }
 
-func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]int64, error) {
+func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]WaitingRow, error) {
 	// The claims of the issue's catch-ups are serialized with this drop by an advisory lock keyed
 	// by the issue, which a catch-up's claim takes too (ClaimRow). The lease check below is a
 	// subquery over the outbox, and Postgres rechecks a concurrently updated row's new version
@@ -4393,14 +4405,14 @@ func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, no
 	// before a lane's claim committed would wait on the claim's row lock and then delete the row it
 	// had read unleased. Under the lock a claim either commits before the lock is taken, and the
 	// delete, a statement of its own, reads the lease it wrote, or it waits for this transaction
-	// and claims nothing when the delete took its row. A copy a re-hold queues while this runs
-	// (reholdNotice, which carries the row's claims onto it) is covered the same way: its own claim
-	// waits here too.
+	// and claims nothing when the delete took its row. A copy an earlier listener's role-lane
+	// exception queues while this runs (the daemon's reholdNotice) is covered the same way: its own
+	// claim waits here too.
 	//
 	// The lock takes no row: a lane finishing a catch-up deletes its row and then waits on the
-	// decisions it claimed, which the callers of this drop have locked first (workflow.Adopt and
-	// spentKept lock them through UnclaimedKept before they queue a catch-up), so a row lock here
-	// would close a deadlock (TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting).
+	// decisions it claimed, which a caller of this drop may have locked first (workflow.Adopt locks
+	// them through UnclaimedKept before it queues a catch-up), so a row lock here would close a
+	// deadlock (TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting).
 	if err := LockCatchUps(ctx, tx, issue); err != nil {
 		return nil, err
 	}
@@ -4414,15 +4426,15 @@ func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, no
 			where live.kind = outbox.kind and live.issue = outbox.issue
 			and coalesce((live.payload->>'resend_of')::bigint, live.id) = coalesce((outbox.payload->>'resend_of')::bigint, outbox.id)
 			and live.lease_token <> '' and live.lease_until > $5))
-		returning id`, string(OutboxKindNotice), issue, KeptToldSource, outboxKeyPrefix, now)
+		returning `+waitingRowColumns, string(OutboxKindNotice), issue, KeptToldSource, outboxKeyPrefix, now)
 	if err != nil {
 		return nil, fmt.Errorf("drop the queued catch-ups of %s: %w", issue, err)
 	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	dropped, err := collectWaitingRows(rows)
 	if err != nil {
 		return nil, fmt.Errorf("read the dropped catch-ups of %s: %w", issue, err)
 	}
-	return ids, nil
+	return dropped, nil
 }
 
 // ReleaseHeldCatchUp makes the held catch-up row id due at at, the moment the wake pacing let its
@@ -4466,12 +4478,97 @@ func (s *Postgres) OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseT
 	return leased, nil
 }
 
+func (s *Postgres) NoticeQueued(ctx context.Context, tx pgx.Tx, id int64) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, "select exists(select 1 from outbox where id = $1 and kind = $2)", id, string(OutboxKindNotice)).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether the outbox still holds notice row %d: %w", id, err)
+	}
+	return queued, nil
+}
+
 func (s *Postgres) ExpediteOutbox(ctx context.Context, tx pgx.Tx, row OutboxRow, now time.Time) (bool, error) {
 	tag, err := tx.Exec(ctx, "update outbox set next_at = $2 where id = $1 and next_at > $2", row.ID, now)
 	if err != nil {
 		return false, fmt.Errorf("expedite outbox row %d: %w", row.ID, err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// catchUpPacedAhead is a catch-up the wake pacing holds to a moment still ahead of $2, the
+// caller's now: a notice whose paced_at is after it (Notice.PacedAt), which only a catch-up the
+// pacing marked carries. The daemon's pacedCatchUps reads the same rule off the decoded notice.
+const catchUpPacedAhead = `(outbox.kind = 'notice' and outbox.payload ? 'paced_at'
+	and (outbox.payload->>'paced_at')::timestamptz > $2)`
+
+// ExpediteWaits is Store.ExpediteWaits: the event the rows waiting for one of keys wait for has
+// come (dispatch://INFRA-4131/spec#b-r-wait-event), in the caller's transaction, which records it.
+//
+// A row that no lane holds and that is due later is made due at now, and its wait's step goes back
+// to 0: the wait it was in has had its event, and the backoff of a wait after it starts again from
+// one second. Such a row's woken mark is cleared too, since the run this makes due reads the
+// event. A row already due is left as it is, since its run comes anyway, and so is a catch-up the
+// wake pacing holds to a moment still ahead (catchUpPacedAhead): its wait is the turn the
+// operator's rate gave it, and a wave of rows an event released together is the wave the pacing
+// spreads.
+//
+// A row a lane holds now is not moved, since its run is under way and its retry writes its next
+// run. The run read what the event changes before the event landed, so the row is marked woken
+// instead (OutboxWait.WaitWoken), and RetryOutbox makes it due at once from the mark. The mark is
+// written in a statement before the one that makes rows due, and the order matters, under the
+// read committed isolation every daemon write runs at, because a lane's retry can commit between
+// the two. A retry that commits before the mark's statement reaches the row leaves it unleased,
+// and the second statement, which reads the store afresh, makes it due. One that commits after it
+// waits on the row's lock until this transaction commits, and then reads the mark. The other
+// order would lose the event: the first statement would pass over the row as leased, and the
+// second over it as unleased.
+//
+// Both statements also require a non-empty wait_for, which no key builder's key can fail, so that
+// the planner can read them as implying the predicate of the partial index outbox_wait_for under a
+// generic plan or a long key list, as it cannot from `= any($1)` alone.
+func (s *Postgres) ExpediteWaits(ctx context.Context, tx pgx.Tx, keys []string, now time.Time) ([]WaitingRow, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	if _, err := tx.Exec(ctx, `update outbox set wait_woken = true
+		where wait_for = any($1) and wait_for <> '' and not wait_woken and lease_until > $2 and not `+catchUpPacedAhead, keys, now); err != nil {
+		return nil, fmt.Errorf("wake the held outbox rows that wait for %v: %w", keys, err)
+	}
+	rows, err := tx.Query(ctx, `with due as (update outbox set next_at = $2, wait_step = 0, wait_woken = false
+			where wait_for = any($1) and wait_for <> '' and next_at > $2 and (lease_until is null or lease_until <= $2)
+				and not `+catchUpPacedAhead+`
+			returning `+waitingRowColumns+`)
+		select * from due order by id`, keys, now)
+	if err != nil {
+		return nil, fmt.Errorf("expedite the outbox rows that wait for %v: %w", keys, err)
+	}
+	due, err := collectWaitingRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("read the outbox rows made due that wait for %v: %w", keys, err)
+	}
+	return due, nil
+}
+
+// waitingRowColumns is an outbox row as collectWaitingRows reads it (WaitingRow), each column named
+// by its table, since a statement that returns them may read other rows of the outbox under an
+// alias of their own.
+const waitingRowColumns = `outbox.id, outbox.kind, outbox.issue, outbox.attempts, outbox.wait_since`
+
+// collectWaitingRows reads every row of rows, each one of waitingRowColumns; a row's null
+// wait_since, a row that was not waiting, reads as the zero time.
+func collectWaitingRows(rows pgx.Rows) ([]WaitingRow, error) {
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (WaitingRow, error) {
+		var out WaitingRow
+		var kind string
+		var since *time.Time
+		if err := row.Scan(&out.ID, &kind, &out.Issue, &out.Attempts, &since); err != nil {
+			return WaitingRow{}, err
+		}
+		out.Kind = OutboxKind(kind)
+		if since != nil {
+			out.WaitSince = *since
+		}
+		return out, nil
+	})
 }
 
 func (s *Postgres) TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Issue, error) {
@@ -4604,12 +4701,24 @@ func (s *Postgres) NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, iss
 }
 
 // RetryOutbox returns row id to the outbox, due again at nextAt, while leaseToken holds it: one
-// more attempt, its lease cleared, and lastErr as its last error. lastErr is a far side's error
-// text, so the row holds storetext.FarSideError of it, and the caller logs the whole text
-// (storetext.LogWhole).
-func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error {
-	if _, err := tx.Exec(ctx, `update outbox set attempts = attempts + 1, next_at = $3, last_error = $4,
-		lease_token = '', lease_until = null where id = $1 and lease_token = $2`, id, leaseToken, nextAt, storetext.FarSideError(lastErr)); err != nil {
+// more attempt, its lease cleared, lastErr as its last error and wait as its wait, all in one
+// update, so a row's attempts, its next run and its wait are never read apart. lastErr is a far
+// side's error text, so the row holds storetext.FarSideError of it, and the caller logs the whole
+// text (storetext.LogWhole).
+//
+// A row an event woke while the lease held it (ExpediteWaits, OutboxWait.WaitWoken) is due at now
+// instead of nextAt, its wait's step at 0 instead of wait's, and its mark is cleared: the run read
+// what the event changed before the event landed, so the row runs again at once rather than at the
+// backoff the run asked for, and the event is not lost. The mark is the stored row's, read in this
+// same update, so an event that commits while the update waits on the row's lock is read too.
+func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string, wait OutboxWait, now time.Time) error {
+	if _, err := tx.Exec(ctx, `update outbox set attempts = attempts + 1,
+			next_at = case when wait_woken then $5::timestamptz else $3::timestamptz end, last_error = $4,
+			wait_since = $6, wait_logged = $7, wait_step = case when wait_woken then 0 else $8::integer end, wait_ready = $9,
+			wait_launch = $10, wait_for = $11, wait_woken = false,
+			lease_token = '', lease_until = null
+		where id = $1 and lease_token = $2`, id, leaseToken, nextAt, storetext.FarSideError(lastErr), now,
+		nullableTime(wait.WaitSince), wait.WaitLogged, wait.WaitStep, nullableTime(wait.WaitReady), wait.WaitLaunch, wait.WaitFor); err != nil {
 		return fmt.Errorf("retry outbox row %d: %w", id, err)
 	}
 	return nil
@@ -4896,15 +5005,18 @@ func (s *Postgres) PendingStatusWrites(ctx context.Context, tx pgx.Tx, project s
 
 // scanOutbox reads one row of outboxColumns, then extra: the destinations of any columns the
 // statement selects after them. The three state columns are null on every row but a committed
-// state row's, and read as zero there (OutboxRow.StateSeq).
+// state row's, and read as zero there (OutboxRow.StateSeq); the two moments of a wait are null on
+// a row that waits for nothing, and read as zero there too (OutboxWait.WaitSince).
 func scanOutbox(row scanner, extra ...any) (OutboxRow, error) {
 	var out OutboxRow
 	var kind string
 	var payload []byte
 	var stateSeq, stateTx *int64
-	var stateAt *time.Time
+	var stateAt, waitSince, waitReady *time.Time
+	wait := &out.Wait
 	if err := row.Scan(append([]any{&out.ID, &kind, &out.Issue, &payload, &out.Attempts, &out.NextAt, &out.LastError,
-		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil, &out.HeldByPause, &stateSeq, &stateAt, &stateTx}, extra...)...); err != nil {
+		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil, &out.HeldByPause, &stateSeq, &stateAt, &stateTx,
+		&waitSince, &wait.WaitLogged, &wait.WaitStep, &waitReady, &wait.WaitLaunch, &wait.WaitFor, &wait.WaitWoken}, extra...)...); err != nil {
 		return OutboxRow{}, err
 	}
 	out.Kind = OutboxKind(kind)
@@ -4917,6 +5029,12 @@ func scanOutbox(row scanner, extra ...any) (OutboxRow, error) {
 	}
 	if stateTx != nil {
 		out.StateTx = *stateTx
+	}
+	if waitSince != nil {
+		wait.WaitSince = *waitSince
+	}
+	if waitReady != nil {
+		wait.WaitReady = *waitReady
 	}
 	return out, nil
 }

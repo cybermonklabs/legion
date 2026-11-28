@@ -289,10 +289,10 @@ func TestFortyStartsOfRunningArchitectsWriteCatchUpsOnTheLimitersSchedule(t *tes
 	}
 }
 
-// A ready of an architect releases the notices that wait for it (releaseWaiting), and a catch-up
-// the pacing holds is not one of them: its wait is the turn the operator's rate gave this wake,
-// not the architect being away. A notice waiting on the outbox's backoff beside it is released as
-// it always was.
+// A ready of an architect releases the notices that wait for it (releaseReadies), and a catch-up
+// the pacing holds is not one of them, even one that waits for that architect: its wait is the
+// turn the operator's rate gave this wake, not the architect being away. A notice waiting on its
+// backoff beside it is released as it always was.
 func TestAReadyLeavesAPacedCatchUpAtItsOwnMoment(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -307,10 +307,14 @@ func TestAReadyLeavesAPacedCatchUpAtItsOwnMoment(t *testing.T) {
 
 	due := now.Add(5 * testWakeInterval)
 	paced := pacedCatchUp(t, pool, records, "LEGION-1", 1, now, due)
+	if _, err := pool.Exec(ctx, "update outbox set wait_for = $2 where id = $1", paced, record.WaitForReady(architect)); err != nil {
+		t.Fatalf("make the paced catch-up wait for its architect's ready: %v", err)
+	}
 	held := mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}, now.Add(time.Minute))
+	held.Wait.WaitFor = record.WaitForReady(architect)
 	enqueueOutbox(t, pool, records, held)
 
-	if err := runner.releaseWaiting(ctx, architect); err != nil {
+	if err := releaseReadies(ctx, runner, architect); err != nil {
 		t.Fatalf("release the notices waiting for %s: %v", architect, err)
 	}
 
@@ -373,9 +377,9 @@ func TestALaterNoticeIsPublishedAfterThePacedCatchUpAndNeverBeforeIt(t *testing.
 }
 
 // The row the fence holds behind a paced catch-up runs once, at the catch-up's own moment, rather
-// than climbing the outbox's backoff to it: a 49-minute hold on the backoff is some twenty-five
-// attempts, and every attempt from the seventh is a warning (waitWarnAttempts), so each architect
-// of a wave would leave a column of warnings that say only that the pacing is working.
+// than climbing the capped backoff of a wait to it (record.RoleWaitBackoff): a 40-minute hold on
+// that backoff is some sixteen runs, each a line of its wait (logWait) and the one at 30 minutes a
+// warning, so each architect of a wave would leave lines that say only that the pacing is working.
 func TestTheRowFencedBehindAPacedCatchUpRunsOnceAtItsMoment(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -406,7 +410,7 @@ func TestTheRowFencedBehindAPacedCatchUpRunsOnceAtItsMoment(t *testing.T) {
 	}
 	if !fenced.nextAt.Equal(due) {
 		t.Fatalf("the fenced row is due at %s, want the catch-up's own moment %s rather than its backoff at %s",
-			fenced.nextAt, due, now.Add(record.RetryBackoff(0)))
+			fenced.nextAt, due, now.Add(record.RoleWaitBackoff(0)))
 	}
 
 	// Nothing more runs until that moment: the row waited once, not on a climbing backoff.
@@ -597,18 +601,15 @@ func TestABurstReleasedCatchUpWritesAWakeLineThatWaitedNothing(t *testing.T) {
 	}
 }
 
-// The wake a paced catch-up is can be the copy of its row rather than the row: a publish its
-// architect's session does not confirm (504 receipt_timeout) woke nobody, and the notice is
-// queued again as a copy (reholdNotice). The copy carries the moments the pacing gave the row it
-// copies, so the publish that does reach the architect writes the one line that wake owes — the
-// wire payload drops them either way (Notice.Published), and the copy's own next_at is the
-// re-send delay, not a reservation. Before, the copy was built from the published notice alone,
-// so a wake that reached its architect on the second attempt wrote no line at all, and the
-// operator's check neither counted it nor built its window (scripts/wake-windows.py).
-//
-// The negative control is the carry reverted (noticeAnswered's PacedAt and PacedFrom on the
-// copy): the copy then publishes with no line written, which this test reads at the wake lines.
-func TestAReHeldPacedCatchUpWritesItsOneWakeLineWhenItsCopyPublishes(t *testing.T) {
+// The wake a paced catch-up is can come on a later publish of its row than the first: a publish
+// its architect's session does not confirm (504 receipt_timeout) woke nobody, and the row is kept,
+// its reserved moments with it, and published again on its backoff (noticeAnswered). The publish
+// that does reach the architect writes the one line that wake owes, with the wait the reservation
+// gave — the wire payload drops the moments either way (Notice.Published), and the row's next_at
+// is its backoff, not a reservation. Before, the publish nobody confirmed queued a copy, which had
+// to carry the moments over for the line to be written at all, so that the operator's check counted
+// that wake and built its window (scripts/wake-windows.py).
+func TestAPacedCatchUpItsArchitectsSessionDidNotConfirmWritesItsOneWakeLineWhenItPublishes(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -626,37 +627,39 @@ func TestAReHeldPacedCatchUpWritesItsOneWakeLineWhenItsCopyPublishes(t *testing.
 		notices: publisher, supervisor: sup, project: "legion", now: func() time.Time { return now }}
 
 	held := 3 * testWakeInterval
-	id := pacedCatchUp(t, pool, records, "LEGION-1", 1, now, now.Add(held))
-	now = now.Add(held)
+	reserved := wakeOrigin.Add(held)
+	id := pacedCatchUp(t, pool, records, "LEGION-1", 1, now, reserved)
+	now = reserved
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the paced catch-up at its moment: %v", err)
 	}
 	if lines := wakeLines(t, logged.String()); len(lines) != 0 {
 		t.Fatalf("the publish nobody confirmed wrote %d wake lines, want none: it woke no architect: %s", len(lines), logged.String())
 	}
-	copied := noticeRows(t, pool)
-	if len(copied) != 1 || copied[0].id == id || !copied[0].pacedAt.Equal(wakeOrigin.Add(held)) {
-		t.Fatalf("the rows after the unconfirmed publish are %+v, want one copy of row %d reserved for %s", copied, id, wakeOrigin.Add(held))
+	kept := noticeRows(t, pool)
+	if len(kept) != 1 || kept[0].id != id || !kept[0].pacedAt.Equal(reserved) || !kept[0].nextAt.After(reserved) {
+		t.Fatalf("the rows after the unconfirmed publish are %+v, want row %d alone, reserved for %s and due on its backoff", kept, id, reserved)
 	}
 
 	publisher.err = nil
+	now = kept[0].nextAt
 	if err := runner.RunOnce(ctx); err != nil {
-		t.Fatalf("run the copy: %v", err)
+		t.Fatalf("run the row again on its backoff: %v", err)
 	}
 
 	lines := wakeLines(t, logged.String())
 	if len(lines) != 1 {
-		t.Fatalf("wake lines over the two publishes = %d, want the one the copy wrote: %s", len(lines), logged.String())
+		t.Fatalf("wake lines over the two publishes = %d, want the one the publish taken wrote: %s", len(lines), logged.String())
 	}
 	if waitedFor := lines[0]["waitedFor"]; waitedFor != float64(held) {
-		t.Fatalf("the wake line waited for %v, want %v, the wait the reservation gave the row this copies", waitedFor, float64(held))
+		t.Fatalf("the wake line waited for %v, want %v, the wait the reservation gave the row", waitedFor, float64(held))
 	}
 	published := publisher.publishes()
 	if len(published) != 2 || !published[1].payload.(record.Notice).PacedAt.IsZero() {
-		t.Fatalf("the copy published %+v, want a notice carrying no reserved moment: the architect is told what the catch-up says, not what the pacing did", published)
+		t.Fatalf("the row published %+v, want a notice carrying no reserved moment: the architect is told what the catch-up says, not what the pacing did", published)
 	}
 	if rows := outboxRows(t, pool); rows != 0 {
-		t.Fatalf("%d outbox rows left, want none: the copy published", rows)
+		t.Fatalf("%d outbox rows left, want none: the row published", rows)
 	}
 }
 
@@ -741,9 +744,9 @@ func TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed(t *testing.T) {
 
 	reserved := now.Add(3 * testWakeInterval)
 	id := pacedCatchUp(t, pool, records, "LEGION-1", 1, now, reserved)
-	// Two attempts fail, so the row waits three seconds past its moment on a backoff of its own
-	// (record.RetryBackoff of no attempt, then of one) rather than one second, and a ready
-	// between the two moments is a ready the row is waiting through.
+	// Two attempts fail, so the row waits three seconds past its moment on the capped backoff of a
+	// wait (record.RoleWaitBackoff of its first step, then of its second) rather than one second,
+	// and a ready between the two moments is a ready the row is waiting through.
 	for _, at := range []time.Time{reserved, reserved.Add(time.Second)} {
 		now = at
 		if err := runner.RunOnce(ctx); err != nil {
@@ -756,7 +759,7 @@ func TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed(t *testing.T) {
 	}
 
 	now = reserved.Add(2 * time.Second)
-	if err := runner.releaseWaiting(ctx, architect); err != nil {
+	if err := releaseReadies(ctx, runner, architect); err != nil {
 		t.Fatalf("release the notices waiting for %s: %v", architect, err)
 	}
 	released := noticeRows(t, pool)[0]

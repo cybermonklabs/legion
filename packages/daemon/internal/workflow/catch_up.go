@@ -150,7 +150,7 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // called with the row's id once the transaction commits, which is where the daemon joins the row
 // to its wake pacing's queue (Config.HoldCatchUp). The row keeps the moment of its own because a
 // failed attempt rewrites next_at to its backoff: the moment is what keeps a ready from pulling
-// the row forward before its turn (the daemon's releaseWaiting), and with the moment the hold
+// the row forward before its turn (record.Store.ExpediteWaits), and with the moment the hold
 // began it is the wait in the line that wake writes when it runs (the daemon's wakeRan). Neither
 // is written on a catch-up no pacing holds, which reports no wait, having had none.
 func queueCatchUp(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, issue record.Issue, launch uint64,

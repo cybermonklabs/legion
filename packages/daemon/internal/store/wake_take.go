@@ -162,11 +162,12 @@ type DeliveryWake struct {
 //
 // How long a delivery waits for a queued start is that start's own fate. The start runs on its
 // lane like any row. Its failures, and those of an older row of the issue that it waits behind
-// (record's outboxInOrder), are logged by the failing row itself: an error at each attempt, and a
-// wait at WARN once its attempts pass the outbox's count (internal/daemon's waitWarnAttempts). A
+// (record's outboxInOrder), are logged by the failing row itself: an error at each attempt, or as
+// a wait (internal/daemon's logWait for a row that waits for its role or for an event of the
+// daemon's own, dispatch://INFRA-4131/spec#b-r-logged-once; waitWarnAttempts for other waits). A
 // start that finishes without acting, such as one that serves an earlier generation, is deleted,
-// and the delivery's next attempt takes the wake itself. So the delivery logs its own wait at
-// debug and adds no warning of its own.
+// and the delivery's next attempt takes the wake itself. The delivery row waits for its role, so
+// settle logs it once at start, once at 30 minutes and once at end rather than at each attempt.
 //
 // token is the claim the wake brings back, and the role it names is the role woken: a token that
 // names no role is an error. generation is the issue's generation, which a start that brings the

@@ -74,7 +74,7 @@ func TestAControllerNoticeWaitsForALiveHolderOfTheControllerRoleThenGoesToItsRol
 	}
 
 	listener.answer("ses_controller", notify.StateUnresponsive)
-	clock = clock.Add(record.RetryBackoffMost + time.Second)
+	clock = clock.Add(record.RoleWaitBackoffMost + time.Second)
 	attempt("while the registered controller session holds the role unresponsive")
 	if got := listener.publishedTopics(); len(got) != 0 {
 		t.Fatalf("published to %v while the controller role's holder is unresponsive, want nothing", got)
@@ -84,7 +84,7 @@ func TestAControllerNoticeWaitsForALiveHolderOfTheControllerRoleThenGoesToItsRol
 	}
 
 	listener.answer("ses_controller", notify.StateLive)
-	clock = clock.Add(record.RetryBackoffMost + time.Second)
+	clock = clock.Add(record.RoleWaitBackoffMost + time.Second)
 	attempt("once the registered controller session holds the role live")
 	published := listener.publishes()
 	if len(published) != 1 {
@@ -258,13 +258,14 @@ func TestAControllerNoticeWaitsWhileTheRolesLiveHolderIsNotTheRegisteredSession(
 }
 
 // The no-registration half of controllerHolds: with no controller registered, a controller notice
-// waits, and its wait stays at DEBUG past waitWarnAttempts, where a wait on a registered
-// controller turns into a warning: the liveness sweep already says no controller is registered
+// waits, publishes nothing and keeps its row, and its wait is logged by the wait rather than by
+// the row's attempts (dispatch://INFRA-4131/spec#b-r-logged-once), so a wait under way stays at
+// DEBUG past waitWarnAttempts: the liveness sweep already says no controller is registered
 // (controllerNotRegistered), and each waiting row would otherwise repeat it every minute. The
 // listener names a live holder, so a wait the registration did not decide would publish.
 //
-// The control (the pull request records the run): the wait on no registration made a plain wait
-// rather than a routine one (routineWaiting) logs the row's eighth attempt at WARN.
+// The control: logging the wait by its attempts, as settle logs a wait of a kind that does not
+// wait for its role (waitWarnAttempts), writes this run at WARN.
 func TestAControllerNoticeWithNoControllerRegisteredWaitsAtDebug(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -275,8 +276,11 @@ func TestAControllerNoticeWithNoControllerRegisteredWaitsAtDebug(t *testing.T) {
 	t.Cleanup(server.Close)
 	clock := time.Now().UTC()
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, clock))
-	if _, err := pool.Exec(context.Background(), "update outbox set attempts = $1", waitWarnAttempts); err != nil {
-		t.Fatalf("age the row to attempt %d: %v", waitWarnAttempts, err)
+	// A wait under way: the row has run waitWarnAttempts times, the first of them ten minutes ago,
+	// which started its wait and logged that start at INFO.
+	if _, err := pool.Exec(context.Background(), "update outbox set attempts = $1, wait_step = $1, wait_since = $2",
+		waitWarnAttempts, clock.Add(-10*time.Minute)); err != nil {
+		t.Fatalf("age the row to attempt %d of a wait under way: %v", waitWarnAttempts, err)
 	}
 	var logged syncBuffer
 	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})), pool: pool,

@@ -2399,6 +2399,52 @@ type OutboxRow struct {
 	StateSeq int64
 	StateAt  time.Time
 	StateTx  int64
+	// Wait is the row's wait for its role or for an event of the daemon's own (OutboxWait): what
+	// its last retry wrote (Postgres.RetryOutbox), or, on a row that has not run, the key it was
+	// queued to wait for (Postgres.Enqueue).
+	Wait OutboxWait
+}
+
+// OutboxWait is the wait of an outbox row that waits for its role, or for an event the daemon
+// records itself, kept on the row (migration 20261127174946_outbox_waits) so that a restart of the
+// daemon keeps it (dispatch://INFRA-4131/spec#b-r-wait-ready, #b-r-capped, #b-r-logged-once and
+// #b-r-wait-event). Each field is the column it is named for; the zero OutboxWait is a row that
+// waits for nothing, which every row is until its first wait.
+type OutboxWait struct {
+	// WaitSince is the moment the row's current wait started, by which the wait is logged once
+	// at its start, once at 30 minutes and once at its end; zero while it waits for nothing.
+	WaitSince time.Time
+	// WaitLogged is whether the wait's 30-minute line was written.
+	WaitLogged bool
+	// WaitStep is the step of the wait's backoff (RoleWaitBackoff).
+	WaitStep int
+	// WaitReady is the ready of the role's claim (supervise.Claim.LastReady) that WaitStep counts
+	// from, zero for none.
+	WaitReady time.Time
+	// WaitLaunch is the launch of the role's claim (supervise.Claim.Generation) the row last
+	// published to, 0 for none.
+	WaitLaunch uint64
+	// WaitFor is the key of what the row waits for (WaitForClaim and the other builders of a key),
+	// "" for nothing. It is the one value a writer that queues a row gives it (Postgres.Enqueue),
+	// for a row queued to wait for an event from its start.
+	WaitFor string
+	// WaitWoken is whether an event the row waits for came while a lane held it (ExpediteWaits),
+	// so that the row's retry makes it due at once rather than at its backoff, and clears it.
+	WaitWoken bool
+}
+
+// WaitingRow is one outbox row a write acted on without running it: a row a delete took out of
+// the outbox (Store.DropCatchUps, Store.DropQueuedChanges), or one an event made due
+// (Store.ExpediteWaits). It holds what the write's caller needs of the row once it commits: its
+// id, its kind and issue, which name its lane, its attempts, and WaitSince, when its current wait
+// started (OutboxWait.WaitSince), zero for a row that was not waiting, so that the end of a wait
+// the delete cut short can be told (dispatch://INFRA-4131/spec#b-r-logged-once).
+type WaitingRow struct {
+	ID        int64
+	Kind      OutboxKind
+	Issue     string
+	Attempts  int
+	WaitSince time.Time
 }
 
 // StatePublication is a project's counter of its state events (state_publication, migration
@@ -2813,9 +2859,6 @@ type Store interface {
 	// deletion releases it as a last resort (claimed_by is set null with the row), for the next
 	// start or catch-up to name.
 	ClaimKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error
-	// MoveKeptClaims moves every claim of outbox row from to row to: the re-hold's copy of a catch-up
-	// carries the claims of the row it copies, which then finishes.
-	MoveKeptClaims(ctx context.Context, tx pgx.Tx, from, to int64) error
 	// ReleaseKeptClaims unclaims every parked decision and readmitted approval outbox row holds,
 	// and reports the tree each released row is owed to now, by key: the hand-over's first step,
 	// since the row told no architect what it named, and what says which trees' architects the
@@ -3258,6 +3301,9 @@ type Store interface {
 	// queues nothing. It answers whether it queued the event. Its caller reads StatePublished
 	// first: a call while the state events are off is refused.
 	QueueAdmissionBlock(ctx context.Context, tx pgx.Tx, project string, block AdmissionBlock) (bool, error)
+	// Enqueue writes row into the outbox. Of its wait it writes what the row waits for
+	// (OutboxWait.WaitFor) alone, which a row queued to wait for an event from its start carries;
+	// the rest of a wait is a run's, and a row that has not run has none.
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.
@@ -3268,8 +3314,9 @@ type Store interface {
 	// (SuperviseRequest.NeedsSlot) or nothing, and that no live lease holds, so however many
 	// starts are written before the worker runs the issue holds one per wait, the later one, in
 	// the place in the waiting line the first one took: the row written carries the earlier
-	// row's creation time, its attempts, when it is next due and the error it last recorded, and
-	// its own values where the issue owed no such row. A start that waits for a slot takes out
+	// row's creation time, its attempts, when it is next due, the error it last recorded and its
+	// wait (OutboxWait), so a wait goes on across the replacement rather than ends, and its own
+	// values where the issue owed no such row. A start that waits for a slot takes out
 	// no start that waits for none, nor the other way round: the place in the line is the
 	// waiting row's own, and a start claimable at once may not pass what its lane has queued
 	// behind that row. It is never the earlier row rewritten — one outbox row is one task, which
@@ -3342,7 +3389,11 @@ type Store interface {
 	// again (UndeliveredHookPrompts.Message), leaving when it is due as it is. With no window to
 	// join it opens one: a new row made at now and due window after now.
 	NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, paragraph string, now time.Time, window time.Duration) (posts time.Time, opened bool, err error)
-	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
+	// RetryOutbox returns row id to the outbox while leaseToken holds it, due again at nextAt, with
+	// one more attempt, lastErr as its last error and wait as its wait, all in one write
+	// (Postgres.RetryOutbox); where an event the row waits for came while the lease held it
+	// (OutboxWait.WaitWoken), the row is due at now instead, its wait's step back at 0.
+	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string, wait OutboxWait, now time.Time) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
 	// StatePublication is project's counter row (state_publication): the sequence of the newest
 	// state row project's daemon committed, 0 while the project has none, and the store id the
@@ -3367,6 +3418,13 @@ type Store interface {
 	// ExpediteOutbox makes row due at now if it was due later, returning whether it moved the row.
 	// It takes the row, not its id, so a caller that wakes the row's lane has its issue and kind.
 	ExpediteOutbox(ctx context.Context, tx pgx.Tx, row OutboxRow, now time.Time) (bool, error)
+	// ExpediteWaits makes due at now, its wait's step back at 0, every row that waits for one of
+	// keys (OutboxWait.WaitFor) and is due later and that no lane holds, and marks woken each such
+	// row a lane holds (OutboxWait.WaitWoken), which its retry then makes due; a catch-up the wake
+	// pacing holds to a moment still ahead of now (Notice.PacedAt) keeps that moment. It answers
+	// the rows it made due, by id, so a caller that wakes their lanes has each one's issue and kind
+	// (Postgres.ExpediteWaits).
+	ExpediteWaits(ctx context.Context, tx pgx.Tx, keys []string, now time.Time) ([]WaitingRow, error)
 	// DropCatchUps deletes every catch-up notice row of issue the outbox still holds, a re-held copy
 	// and a row the runner has leased included, but for two a drop would lose a person's decision
 	// from. The first is a row whose publish told the decisions it named (KeptToldSource) and whose
@@ -3392,10 +3450,10 @@ type Store interface {
 	// still finds it, so a dropped row is delivered only when the drop lands during its publish, a
 	// duplicate the fresh catch-up follows. A dropped catch-up's decisions are released with its row
 	// and named again by the fresh catch-up, written in the same transaction as the drop: only a
-	// published catch-up forgets them. It answers the ids of the rows it dropped, so that a
+	// published catch-up forgets them. It answers the rows it dropped (WaitingRow), so that a
 	// caller whose wake pacing holds one of them gives up that row's place in its queue (the
-	// daemon's projectRecords.DropCatchUps).
-	DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]int64, error)
+	// daemon's projectRecords.DropCatchUps), and the end of the wait of a row it dropped can be told.
+	DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]WaitingRow, error)
 	// DropStatusWrites deletes every Dispatch status write of issue the outbox still holds, a row
 	// the runner has leased included; one mid-attempt can still reach Dispatch, and its finish then
 	// finds nothing to delete.
@@ -3404,8 +3462,10 @@ type Store interface {
 	// changes requests a clear's forget found that the person's approval followed (KeptForget,
 	// QueuedChanges), whose gates the clear then deletes. A runner mid-attempt reads its lease in
 	// the snapshot it asks the gates in (OutboxLeased), so it finishes such a row unpublished, and
-	// its finish then finds nothing to delete.
-	DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error
+	// its finish then finds nothing to delete. It answers the rows it deleted (WaitingRow), so the
+	// end of the wait of a row it deleted can be told; now is the caller's clock, the moment of the
+	// delete, as DropCatchUps takes it.
+	DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64, now time.Time) ([]WaitingRow, error)
 	// DropUnfencedCheckWakes deletes every check_wake row of issue the outbox still holds that
 	// carries no wake of its own (CheckWakeDue.WakeAt): a row a release before that field queued,
 	// which checkWakeDue cannot fence by the wake the check records. The workflow drops them where it
@@ -3415,6 +3475,11 @@ type Store interface {
 	// OutboxLeased reports whether row id is still in the outbox under leaseToken: false once
 	// another transaction deleted it while the runner held it (DropCatchUps, DropQueuedChanges).
 	OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error)
+	// NoticeQueued reports whether the outbox still holds notice row id, leased or not: false once
+	// the row finished or a delete took it. The daemon's re-hold of a notice an earlier listener's
+	// role-lane exception reports reads it, since a row still held runs again by itself and a copy
+	// beside it would send the notice twice (its reholdNotice).
+	NoticeQueued(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
 	// TreeIssues is every issue of tree, the root included, by key.
 	TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Issue, error)
 	// EarlierNotices is every unfinished notice row of tree's issues written before row id, oldest

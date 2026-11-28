@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The comments of `contracts.SessionClaimStale`, `session.ClaimStaleAfter` and the package
+  `sessiontiming` no longer say that the Legion daemon's own code reads the claim-stale value or the
+  session timings. No production code of this repository reads `sessiontiming` now: the daemon's
+  tests read `Heartbeat`, `LiveWindow` and the three call numbers, and `ClaimStale` stays for a
+  caller outside this repository.
+time: 2026-11-28T04:57:38Z
+custom:
+    Issue: infra-4131

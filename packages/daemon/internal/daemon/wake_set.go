@@ -15,9 +15,10 @@ import (
 // key recorded twice before the taker reaches it is one piece of work rather than two, which is
 // what makes a second handoff of the same issue one read and a second fact one ladder.
 //
-// Three readers have one each: the architects whose waiting notices are released
-// (workflowRuntime.readied), the issues whose pull request is read after a handoff (handedOff),
-// and the issues GitHub's merge state is read for (mergeStates).
+// Its readers have one each: the waits a change of a claim made happen, its ready among them
+// (workflowRuntime.changed), the issues whose pull request is read after a handoff (handedOff),
+// the issues GitHub's merge state is read for (mergeStates), and the bases whose merge states are
+// read in a batch (baseWake).
 type wakeSet[K cmp.Ordered] struct {
 	mu   sync.Mutex
 	keys map[K]bool

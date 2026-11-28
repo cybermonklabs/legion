@@ -732,6 +732,9 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 	// the forget would be published to that role's topic (the outbox's controllerNotice): none is.
 	registerProjectControllerAs(t, r.pool.Config().ConnString(), olderLauncherProject, "ses_controller")
 	r.notices.holds(legionController, "ses_controller")
+	// The issue's architect has said it is ready, so the forget's notice is published to it: a
+	// notice to an architect with no claim ends without its publish (roleWaitGate).
+	readyOutboxClaim(t, r.sup, olderLauncherIssue, claim.RoleArchitect)
 	r.drain()
 
 	type text struct{ what, says string }

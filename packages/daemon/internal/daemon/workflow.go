@@ -329,9 +329,10 @@ type workflowRuntime struct {
 	// the daemon with it: the claim's terminal state is durable, so the next boot's replay applies
 	// the fact the failed callback lost.
 	failed chan error
-	// readied is the architects claimReady recorded whose waiting notices releaseReadied has not
+	// changed is the keys of the waits that a change of a claim made happen (claimChanged:
+	// record.WaitForClaim, WaitForTreeClaims and WaitForReady), whose rows releaseChanged has not
 	// released yet.
-	readied *wakeSet[claim.Token]
+	changed *wakeSet[string]
 	// handedOff is each issue whose agent's handoff the API recorded (handoffCompleted) that
 	// readHandedOff has not read the pull request of yet, which is what makes a second completion
 	// of the same issue, while the first is still queued, one read rather than two.
@@ -400,10 +401,10 @@ type workflowRuntime struct {
 	ownsTransport bool
 }
 
-// readyReleaseTimeout bounds one release of ready architects' waiting notices
-// (outbox.releaseWaiting): a read of a project's waiting notices and their trees, then one update,
-// each well under a second. A release that runs this long holds a database that stopped answering;
-// it is logged, and the notices it would have released still go on their schedule.
+// readyReleaseTimeout bounds one release of the outbox rows that wait for a changed claim, its
+// ready among the changes (outbox.releaseChanged): at most four updates of the rows that wait for
+// the keys, each well under a second. A release that runs this long holds a database that stopped
+// answering; it is logged, and the rows it would have released still go on their backoff.
 const readyReleaseTimeout = 30 * time.Second
 
 // appCallBounds are the bounds of the start's App calls, the logins read (appLoginsAtBoot) and the
@@ -812,7 +813,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		failed:     make(chan error, 1),
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1), followWake: make(chan struct{}, 1),
-		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
+		changed: newWakeSet[string](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
 		mergeStateRunning: map[string]*mergeStateRun{}, baseWake: newWakeSet[string](), etags: githubrest.NewETags(etagBytes),
 		controllerWake: cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, graphQLShare: cfg.GitHubGraphQLShare, appCalls: appCalls,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
@@ -2144,6 +2145,9 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.hold = supervision.plan.holdOutbox
+	if supervision.plan.outboxNow != nil {
+		w.outbox.now = supervision.plan.outboxNow
+	}
 	w.dropConsumedEvent = supervision.plan.dropConsumedEvent
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
@@ -2626,7 +2630,7 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		return nil
 	})
 	group.Go(func() error {
-		w.releaseReadied(store.ForConcurrentWorker(running))
+		w.releaseChanged(store.ForConcurrentWorker(running))
 		return nil
 	})
 	group.Go(func() error {
@@ -2990,15 +2994,40 @@ func (w *workflowRuntime) promoteAfterHoldClears(ctx context.Context) error {
 	return err
 }
 
-// claimReady records an architect whose claim is ready, for releaseReadied to release the notices
-// waiting for a later attempt that it owns (outbox.releaseWaiting): a relaunched architect is told
-// what it missed at once, ahead of what follows. The ready route calls it before it answers the
-// agent, so it only records the claim and wakes the release.
-func (w *workflowRuntime) claimReady(c supervise.Claim) {
-	if c.Role != claim.RoleArchitect {
-		return
+// claimChanged records the waits a change of a claim made happen, for releaseChanged to make due
+// at once the outbox rows that wait for them (supervise's Deps.ClaimChanged, which says which
+// changes it tells, and a machine this daemon makes while it runs, supervisor.Create): the claim's
+// own key (record.WaitForClaim), the key of each tree the claim is of before and after the change
+// (record.WaitForTreeClaims), and, where the change moved the count of the claim's readies the
+// store took (supervise.ClaimView.Readies) and left it in a state that said it is ready
+// (supervise.SaidReady), its ready's key (record.WaitForReady), which no other change makes
+// happen (dispatch://INFRA-4131/spec#b-r-wait-event).
+//
+// It is the one way a ready of any role releases the rows that wait for it
+// (dispatch://INFRA-4131/spec#b-r-wait-ready): the end of the ready's decision tells it, before the
+// ready route answers the agent, and the route's own hook releases nothing (claimReadyHook), so one
+// ready makes those rows due once. The count moves at the first ready of a launch and at each ready
+// the agent sends again (supervise's reready) alike, so each releases those rows once. A session
+// sends its ready again each time it takes its Envoy role back, and the rows that waited while it
+// had lost that role are due at once at that ready: a publish refused because no session held the
+// role, and a controller notice that its read of the role's holder held (outbox.controllerHolds),
+// which waits for any change of the controller's claim. A ready that landed in a suspension held
+// until it moves no count and records no ready's key: the rows that wait for that ready wait for
+// the claim's next launch. Nor does a ready whose write the store refused: the agent's plugin asks
+// it again, and that retry, once the store takes it, is the ready counted. A machine the daemon
+// restores at boot is no change of its claim, and is not told (supervisor.restore); its count
+// starts at 0, so a restart releases no ready. The machine calls it once its decision has ended,
+// on the goroutine that made it, so it only records the keys and wakes the release.
+func (w *workflowRuntime) claimChanged(before, after supervise.ClaimView) {
+	w.changed.add(record.WaitForClaim(after.Token))
+	for _, tree := range []string{before.Tree, after.Tree} {
+		if tree != "" {
+			w.changed.add(record.WaitForTreeClaims(tree))
+		}
 	}
-	w.readied.add(c.Token)
+	if after.Readies != before.Readies && supervise.SaidReady(after.State) {
+		w.changed.add(record.WaitForReady(after.Token))
+	}
 }
 
 // taskConfirmed applies the fact that a role's agent took the work the daemon gave it
@@ -3131,22 +3160,25 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason stri
 	}()
 }
 
-// releaseReadied releases, until ctx ends, the waiting notices of the architects claimReady
-// recorded: each wake takes every architect recorded since the last one, in one release.
-func (w *workflowRuntime) releaseReadied(ctx context.Context) {
+// releaseChanged releases, until ctx ends, the outbox rows waiting for the changes of claims
+// claimChanged recorded: each wake takes every key recorded since the last one and hands them to
+// the outbox in one release (outbox.releaseChanged), bounded by readyReleaseTimeout (an empty
+// take, a wake an earlier take already carried, releases nothing). A release that fails while ctx
+// stands is logged at Error, with the keys.
+func (w *workflowRuntime) releaseChanged(ctx context.Context) {
 	for {
-		architects, ok := w.readied.take(ctx)
+		keys, ok := w.changed.take(ctx)
 		if !ok {
 			return
 		}
-		if len(architects) == 0 {
+		if len(keys) == 0 {
 			continue
 		}
-		release, cancel := context.WithTimeout(ctx, readyReleaseTimeout)
-		err := w.outbox.releaseWaiting(release, architects...)
+		bounded, cancel := context.WithTimeout(ctx, readyReleaseTimeout)
+		err := w.outbox.releaseChanged(bounded, keys)
 		cancel()
 		if err != nil && ctx.Err() == nil {
-			w.log.Error("release the notices waiting for ready architects", "architects", architects, "error", err)
+			w.log.Error("release the outbox rows waiting for changes of their claims", "waits", keys, "error", err)
 		}
 	}
 }

@@ -215,11 +215,13 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // 20261120055717 among them, is one main's run applied. One rewrites claims_suspended_by_check,
 // one deletes the controller notices of two kinds the daemon no longer writes, and 20261126110259
 // rewrites outbox_kind_check over the rows main's daemon left, and dispatch://INFRA-3931's state
-// events (20261126163320), which main has not recorded either, rewrite it last. The upgrade
-// applies all four whatever main's newest version is: Store.apply asks each migration whether its
-// own version is recorded.
+// events (20261126163320), which main has not recorded either, rewrite it last. Above them,
+// dispatch://INFRA-4131's outbox waits (20261127174946) add the seven columns of a row's wait to
+// the outbox over those same rows. The upgrade applies all five whatever main's newest version
+// is: Store.apply asks each migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
 	20261115060739: true, 20261115121838: true, 20261126110259: true, stateEventsVersion: true,
+	outboxWaitsVersion: true,
 }
 
 // A daemon of this release is also deployed over a database main migrated once main recorded each
@@ -238,9 +240,11 @@ var thisBranchsMigrationsMainLacks = map[int]bool{
 // eight kinds out would fail Migrate (SQLSTATE 23514) and leave the daemon unable to boot. After
 // the upgrade the outbox takes a merge_holds_changed row, the kind 20261126110259 adds: both lists
 // stand above 20261122154643's, which does not name the kind, and the state events' list, which
-// names it too, is the last word of the check. The negative controls are each of the eight kinds
-// taken out of either list, where the Migrate below then fails on that pending row, and
-// merge_holds_changed taken out of the last one, where the row queued after the upgrade is refused.
+// names it too, is the last word of the check. The outbox waits (20261127174946) then add the
+// seven columns of a row's wait over the same rows, each of which waits for nothing after it. The
+// negative controls are each of the eight kinds taken out of either list, where the Migrate below
+// then fails on that pending row, and merge_holds_changed taken out of the last one, where the row
+// queued after the upgrade is refused.
 func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -269,12 +273,14 @@ func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
 		t.Fatalf("upgrade the database main migrated with a row of each of %v pending: %v", kinds, err)
 	}
 	for _, kind := range kinds {
-		var pending int
-		if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = $1`, kind).Scan(&pending); err != nil {
+		var pending, waiting int
+		if err := store.pool.QueryRow(ctx, `select count(*), count(*) filter (where wait_since is not null or wait_logged
+			or wait_step <> 0 or wait_ready is not null or wait_launch <> 0 or wait_for <> '' or wait_woken)
+			from outbox where kind = $1`, kind).Scan(&pending, &waiting); err != nil {
 			t.Fatalf("count the %s rows the upgrade left: %v", kind, err)
 		}
-		if pending != 1 {
-			t.Fatalf("%s rows after the upgrade = %d, want the pending one kept", kind, pending)
+		if pending != 1 || waiting != 0 {
+			t.Fatalf("%s rows after the upgrade = %d, %d of them waiting for something, want the pending one kept, waiting for nothing", kind, pending, waiting)
 		}
 	}
 	if _, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)

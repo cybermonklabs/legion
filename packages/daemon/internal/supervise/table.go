@@ -3157,20 +3157,43 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 // readyWorkerTask). A claim that holds a delivery is sent it with the sentence in front, and one
 // whose held task that send drops instead is given the daemon's own delivery there
 // (sendPending's relaunchAfterDrop).
+//
+// Each ready whose write the store took is logged, readyLine, and counted on the claim's
+// published view (Machine.readies, ClaimView.Readies), the agent's retry of a ready included
+// (reready), since that retry writes the claim again. The count is what tells the daemon of the
+// ready at the decision's end (claimChanged, Deps.ClaimChanged), which makes due at once the
+// outbox rows that wait for the claim's ready, once for each ready
+// (dispatch://INFRA-4131/spec#b-r-wait-ready). A ready whose write the store refused is not
+// counted: the ready route answers it with a 500, which the agent's plugin asks again
+// (packages/pi-shared's callReadyWithRetry), and that retry, a reready, is the ready counted.
 func finishReady(m *Machine, ctx context.Context) error {
 	if err := m.durableWrite(ctx, StateReady, m.persist); err != nil {
 		return err
 	}
+	m.readies++
+	m.log.Info(readyLine, "generation", m.claim.Generation)
 	if err := m.queueRelaunch(ctx); err != nil {
 		return err
 	}
 	return m.sendPending(ctx)
 }
 
+// readyLine is the message a ready is logged under, at Info, once the store has taken its write
+// (finishReady), with the claim, which the machine's own logger names, and the launch it is the
+// ready of (generation). It is pinned, as the turn lines are, because a reader of the daemon's log
+// counts a claim's readies by it against its launches (`supervise: launched`), and reads by the
+// two how often the daemon published to a role that was ready
+// (dispatch://INFRA-4131/spec#b-r-production).
+const readyLine = "supervise: ready"
+
 // reready persists the in-memory ready state before answering an agent retry: a prior ready's
-// claim write may have failed after the machine made the transition. A retained launch-time
-// suspension still wins: the retry completes that suspension instead of publishing ready and
-// releasing notices to a claim the operator or workflow is stopping.
+// claim write may have failed after the machine made the transition. The agent also sends its
+// ready again each time its session takes its Envoy role back (the plugin's onRoleRegained), and
+// either retry is a ready of its own to the outbox: finishReady counts it, so the rows that wait
+// for the claim's ready, a publish refused while the session had lost its role among them, are
+// due at once, as at the first ready (dispatch://INFRA-4131/spec#b-r-wait-ready). A retained
+// launch-time suspension still wins: the retry completes that suspension instead of publishing
+// ready and releasing notices to a claim the operator or workflow is stopping.
 func reready(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil {
 		return m.suspendHeld(ctx)

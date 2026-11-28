@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -116,6 +117,32 @@ func (s *Store) IssueSuspension(ctx context.Context, project string, close Issue
 	return act, nil
 }
 
+// ErrRoleStopsUnfinished is the wait of a close or a release of an issue's pod behind one of the
+// issue's role stops still queued (issueStopFences): the role stop's finish ends it, which the
+// daemon's outbox makes the waiting row due at (dispatch://INFRA-4131/spec#b-r-wait-event).
+var ErrRoleStopsUnfinished = wait.New("its role stop effects")
+
+// StoredClaimWait is the wait of a close or a release of an issue's pod for a stored claim of the
+// issue that may still hold a process (issueStopFences): Token names the claim, whose stop ends
+// the wait, and which the daemon's outbox makes the waiting row due at
+// (dispatch://INFRA-4131/spec#b-r-wait-event). It is a wait (wait.ErrWaiting), with err as its text.
+type StoredClaimWait struct {
+	Token claim.Token
+	err   error
+}
+
+func (w StoredClaimWait) Error() string { return w.err.Error() }
+
+func (w StoredClaimWait) Unwrap() error { return w.err }
+
+// RoleStopOps are the ops of the supervise rows that are an issue's role stops: a suspend, a step
+// stop, an issue close and a role stop of an idle release. A close and a release of the issue's
+// pod wait for each of them still queued (issueStopFences), and the daemon's outbox makes those
+// waits due at the finish of each (its finishedWaits, dispatch://INFRA-4131/spec#b-r-wait-event),
+// so both read this one list: an op in one and not the other would leave a close waiting for a
+// finish that makes nothing due.
+var RoleStopOps = []string{"suspend", "step_stop", "issue_close", "release"}
+
 // issueStopFences are three checks a close's authorizer and a release's both make (a close's
 // last), in the order both make them and against the caller's own transaction: the tree's cleanup
 // reservation, the issue's own unfinished role stops, and a stored claim of the issue that may
@@ -123,10 +150,11 @@ func (s *Store) IssueSuspension(ctx context.Context, project string, close Issue
 // "release").
 //
 // It answers false with no error for a reserved cleanup, which deletes the Sandbox the caller
-// would and so finishes the caller without acting, and a wait error for each of the other two,
-// which the caller is retried on. A close and a release order against each other here: both read
-// the same `suspend`, `step_stop`, `issue_close` and `release` ops, so each waits on the other's
-// role stops, and on the stop of a stopped task's step (workflow's stopTask).
+// would and so finishes the caller without acting, and a wait for each of the other two, which the
+// caller is retried on: ErrRoleStopsUnfinished and StoredClaimWait, each of which names what ends
+// it. A close and a release order against each other here: both read the same role stops
+// (RoleStopOps), so each waits on the other's role stops, and on the stop of a stopped task's step
+// (workflow's stopTask).
 func issueStopFences(ctx context.Context, tx pgx.Tx, project, issue, tree, what string, row int64, generation uint64) (bool, error) {
 	var reserved bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from tree_lifecycles
@@ -139,18 +167,18 @@ func issueStopFences(ctx context.Context, tx pgx.Tx, project, issue, tree, what 
 	var stopping bool
 	if err := tx.QueryRow(ctx, `select exists (
 		select 1 from outbox where issue = $1 and id < $2 and kind = 'supervise'
-		and payload->>'op' in ('suspend', 'step_stop', 'issue_close', 'release') and (payload->>'generation')::bigint = $3)`,
-		issue, row, generation).Scan(&stopping); err != nil {
+		and payload->>'op' = any($4) and (payload->>'generation')::bigint = $3)`,
+		issue, row, generation, RoleStopOps).Scan(&stopping); err != nil {
 		return false, err
 	}
 	if stopping {
-		return false, wait.Errorf("issue %s %s waits for its role stop effects", issue, what)
+		return false, fmt.Errorf("issue %s %s waits for %w", issue, what, ErrRoleStopsUnfinished)
 	}
-	var pending string
-	err := tx.QueryRow(ctx, `select token || ':' || state from claims where project = $1 and issue = $2 and `+claimMayRun+`
-		order by token limit 1`, project, issue).Scan(&pending)
+	var token, state string
+	err := tx.QueryRow(ctx, `select token, state from claims where project = $1 and issue = $2 and `+claimMayRun+`
+		order by token limit 1`, project, issue).Scan(&token, &state)
 	if err == nil {
-		return false, wait.Errorf("issue %s %s waits for stored claim %s", issue, what, pending)
+		return false, StoredClaimWait{Token: claim.Token(token), err: wait.Errorf("issue %s %s waits for stored claim %s:%s", issue, what, token, state)}
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return false, err

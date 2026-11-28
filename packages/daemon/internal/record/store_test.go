@@ -1429,7 +1429,7 @@ func TestClaimRowLeasesADueRowExactlyOnceUntilItsLeaseLapses(t *testing.T) {
 			t.Fatalf("due rows while leased = %#v, want none", due)
 		}
 		must(t, records.FinishOutbox(ctx, tx, row.ID, "stale-lease"))
-		must(t, records.RetryOutbox(ctx, tx, row.ID, "stale-lease", now.Add(24*time.Hour), "stale"))
+		must(t, records.RetryOutbox(ctx, tx, row.ID, "stale-lease", now.Add(24*time.Hour), "stale", OutboxWait{}, now))
 	})
 
 	lapsed := now.Add(2 * time.Minute)
@@ -2144,8 +2144,8 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 }
 
 // A lane finishing a catch-up and a transaction that locked the tree's decisions and then drops the
-// root's catch-ups (workflow.Adopt and spentKept, which lock them through UnclaimedKept before they
-// queue a catch-up) would take the same two locks in opposite orders if the drop locked the rows.
+// root's catch-ups (workflow.Adopt, which locks them through UnclaimedKept before it queues a
+// catch-up) would take the same two locks in opposite orders if the drop locked the rows.
 // The finish deletes its row and then sets the decisions it claimed back to unclaimed (the foreign
 // key's on delete set null), which waits on the decisions the other transaction locked; a drop that
 // locked every catch-up of the issue, the finishing one included, would wait on the finish, and
@@ -2227,13 +2227,15 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	}
 }
 
-// A re-hold queues a copy of a catch-up and moves the row's claims onto it (reholdNotice,
-// MoveKeptClaims) while a drop of the root's catch-ups runs, and a lane then claims that copy. The
-// drop's lease check reads the outbox in a subquery, which its delete does not recheck against a
-// lease committed after the statement began, so a claim of a copy made after the drop's own reads
-// would leave the copy deleted and its lane publishing it from memory, beside the fresh catch-up
-// naming the decisions the deletion released: told twice. The claim takes the drop's advisory lock,
-// so it waits for the drop and claims nothing of a row the drop took.
+// A copy of a catch-up (Notice.ResendOf), naming what the row it copies named, is queued while a
+// drop of the root's catch-ups runs, and a lane then claims that copy. The daemon's reholdNotice
+// queues a copy only once the row it copies has left the outbox (NoticeQueued); here that row
+// stays, with its claims, which the store allows and the drop must handle all the same. The drop's
+// lease check reads the outbox in a subquery, which its delete does not recheck against a lease
+// committed after the statement began, so a claim of a copy made after the drop's own reads would
+// leave the copy deleted and its lane publishing it from memory, beside the fresh catch-up naming
+// the decisions the deletion released: told twice. The claim takes the drop's advisory lock, so it
+// waits for the drop and claims nothing of a row the drop took.
 func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2255,7 +2257,8 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 		must(t, records.ClaimKeptDecisions(ctx, tx, "LEGION-1", kept, catchUp))
 	})
 
-	// The re-hold's copy, queued in a transaction of its own and carrying the row's claims.
+	// The copy, queued in a transaction of its own: it names what the row it copies names, whose
+	// claims stay with that row, still in the outbox.
 	var copyID int64
 	inTx(t, st, func(tx pgx.Tx) {
 		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
@@ -2263,7 +2266,6 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 		must(t, err)
 		copyID, err = records.EnqueueID(ctx, tx, row)
 		must(t, err)
-		must(t, records.MoveKeptClaims(ctx, tx, catchUp, copyID))
 	})
 
 	// The drop, which takes both rows and holds its lock from here until it commits.
@@ -2453,7 +2455,7 @@ func TestPendingStatusWritesListsEveryUnfinishedStatusEffect(t *testing.T) {
 			switch {
 			case row.Kind != OutboxKindDispatchStatus:
 			case row.Issue == "LEGION-208":
-				must(t, records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, backoffUntil, "Dispatch unavailable"))
+				must(t, records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, backoffUntil, "Dispatch unavailable", row.Wait, now))
 			default:
 				must(t, records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken))
 			}
@@ -2580,7 +2582,8 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
 		"slots":                  {"issue", "index", "admitted_at"},
 		"processed_events":       {"source", "event_id", "processed_at"},
-		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause", "state_seq", "state_at", "state_tx"},
+		"outbox": {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause", "state_seq", "state_at", "state_tx",
+			"wait_since", "wait_logged", "wait_step", "wait_ready", "wait_launch", "wait_for", "wait_woken"},
 		"intake_failures": {"id", "project", "consumer", "subject", "stream_seq", "stored_at", "headers", "payload", "event_source", "event_id",
 			"first_failed_at", "updated_at", "deliveries", "ended_delivery", "last_error", "given_up_at", "give_up_reason", "notice_id",
 			"replay_claimed_at", "closed_at", "closed_how", "closed_by", "discarded_at", "discarded_by", "discard_reason"},
@@ -2606,6 +2609,343 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			}
 		}
 	})
+}
+
+// storedOutboxRow is outbox row id as the store holds it, read as every reader of the outbox reads
+// a row (outboxColumns), whatever its lease and its due time.
+func storedOutboxRow(t *testing.T, st *store.Store, id int64) OutboxRow {
+	t.Helper()
+	row, err := scanOutbox(st.Pool().QueryRow(context.Background(), "select "+outboxColumns+" from outbox where id = $1", id))
+	if err != nil {
+		t.Fatalf("read outbox row %d: %v", id, err)
+	}
+	return row
+}
+
+// sameWait is whether two waits hold the same values, each moment compared as a moment, so that the
+// zone a read hands a time back in is not taken for a difference.
+func sameWait(a, b OutboxWait) bool {
+	return a.WaitSince.Equal(b.WaitSince) && a.WaitLogged == b.WaitLogged && a.WaitStep == b.WaitStep &&
+		a.WaitReady.Equal(b.WaitReady) && a.WaitLaunch == b.WaitLaunch && a.WaitFor == b.WaitFor && a.WaitWoken == b.WaitWoken
+}
+
+// waitingRoleMessage is a role message to the implementer of issue, due at at and waiting for key,
+// "" for nothing: a row of a kind that waits for its role (OutboxKind.WaitsForRole).
+func waitingRoleMessage(t *testing.T, issue string, at time.Time, key string) OutboxRow {
+	t.Helper()
+	row, err := NewOutboxRow(issue, RoleMessage{Role: "legion.sjawhar-legion." + issue + ".implementer", Body: "CI settled."}, at)
+	if err != nil {
+		t.Fatalf("build the role message of %s: %v", issue, err)
+	}
+	row.Wait.WaitFor = key
+	return row
+}
+
+// enqueueOutboxRow queues row and answers its id (EnqueueID).
+func enqueueOutboxRow(t *testing.T, st *store.Store, records *Postgres, row OutboxRow) int64 {
+	t.Helper()
+	var id int64
+	inTx(t, st, func(tx pgx.Tx) {
+		var err error
+		id, err = records.EnqueueID(context.Background(), tx, row)
+		must(t, err)
+	})
+	return id
+}
+
+// claimOutboxRow leases row id at at for a minute, as a lane does, and fails the test where a lane
+// could not claim the row then.
+func claimOutboxRow(t *testing.T, st *store.Store, records *Postgres, id int64, at time.Time) OutboxRow {
+	t.Helper()
+	var claimed OutboxRow
+	inTx(t, st, func(tx pgx.Tx) {
+		var ok bool
+		var err error
+		claimed, ok, err = records.ClaimRow(context.Background(), tx, id, at, time.Minute)
+		must(t, err)
+		if !ok {
+			t.Fatalf("outbox row %d was not claimable at %s", id, at)
+		}
+	})
+	return claimed
+}
+
+// A row's wait is what its last retry wrote (RetryOutbox), in the one write that also counts the
+// attempt and sets the next run, and a lane's read of the row hands it back (ClaimRow, which reads a
+// row as every reader of the outbox does): when the wait started, whether its 30-minute line was
+// written, the step of its backoff, the ready that step counts from, the launch the row last
+// published to and what it waits for. So a daemon that restarts in the middle of a wait reads the
+// wait it left (dispatch://INFRA-4131/spec#b-r-logged-once). A row the outbox has just queued waits
+// for nothing, and a retry that writes no wait leaves none: the wait a read hands back is always the
+// one last written.
+func TestAWaitingRowReadsBackItsWait(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	id := enqueueOutboxRow(t, st, records, waitingRoleMessage(t, "LEGION-208", now, ""))
+	first := claimOutboxRow(t, st, records, id, now)
+	if !sameWait(first.Wait, OutboxWait{}) {
+		t.Fatalf("the wait of a row just queued = %+v, want none", first.Wait)
+	}
+
+	wait := OutboxWait{WaitSince: now, WaitLogged: true, WaitStep: 3, WaitReady: now.Add(-time.Minute), WaitLaunch: 2,
+		WaitFor: WaitForReady("legion-legion-legion-208-implementer")}
+	retryAt := now.Add(RoleWaitBackoff(3))
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.RetryOutbox(ctx, tx, id, first.LeaseToken, retryAt, "the listener refused the publish", wait, now))
+	})
+	again := claimOutboxRow(t, st, records, id, retryAt)
+	if again.Attempts != 1 || !again.NextAt.Equal(retryAt) || again.LastError != "the listener refused the publish" || !sameWait(again.Wait, wait) {
+		t.Fatalf("the row after its retry = attempts %d, next run %s, last error %q, wait %+v; want 1, %s, the refusal and the wait the retry wrote, %+v",
+			again.Attempts, again.NextAt, again.LastError, again.Wait, retryAt, wait)
+	}
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.RetryOutbox(ctx, tx, id, again.LeaseToken, retryAt.Add(time.Second), "Dispatch unavailable", OutboxWait{}, retryAt))
+	})
+	last := claimOutboxRow(t, st, records, id, retryAt.Add(time.Second))
+	if last.Attempts != 2 || !sameWait(last.Wait, OutboxWait{}) {
+		t.Fatalf("the row after a retry that wrote no wait = attempts %d, wait %+v; want 2 and none", last.Attempts, last.Wait)
+	}
+}
+
+// An event a row waits for that lands while a lane holds the row is not lost
+// (dispatch://INFRA-4131/spec#b-r-wait-event). The lane's run read what the event changes before
+// it landed, so ExpediteWaits, which moves no row a lane holds, marks the row woken instead, and the
+// row's retry then makes it due at the moment of the retry, its step back at 0, whatever next run
+// and step the run asked for, and clears the mark; the rest of the wait is the run's. A retry with
+// no event since keeps the next run and the step it was given.
+func TestAnEventWhileTheRowRunsMakesItDueAtItsRetry(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	key := WaitForClaim("legion-legion-legion-208-implementer")
+	id := enqueueOutboxRow(t, st, records, waitingRoleMessage(t, "LEGION-208", now, key))
+	leased := claimOutboxRow(t, st, records, id, now)
+	// The run asked for its next run an hour out, as a run that will retry does, so only the lease
+	// keeps the event from moving the row.
+	held := now.Add(time.Hour)
+	if _, err := st.Pool().Exec(ctx, "update outbox set next_at = $2 where id = $1", id, held); err != nil {
+		t.Fatalf("put the held row's next run at %s: %v", held, err)
+	}
+
+	inTx(t, st, func(tx pgx.Tx) {
+		moved, err := records.ExpediteWaits(ctx, tx, []string{key}, now.Add(time.Second))
+		must(t, err)
+		if len(moved) != 0 {
+			t.Fatalf("ExpediteWaits of the key of a row a lane holds moved %+v, want nothing moved", moved)
+		}
+	})
+	if woken := storedOutboxRow(t, st, id); !woken.Wait.WaitWoken || !woken.NextAt.Equal(held) {
+		t.Fatalf("the held row after the event = woken %t, next run %s; want it woken, its next run left at %s", woken.Wait.WaitWoken, woken.NextAt, held)
+	}
+
+	asked := OutboxWait{WaitSince: now, WaitStep: 4, WaitFor: key}
+	retried := now.Add(2 * time.Second)
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.RetryOutbox(ctx, tx, id, leased.LeaseToken, retried.Add(RoleWaitBackoff(4)), "the listener refused the publish", asked, retried))
+	})
+	due := storedOutboxRow(t, st, id)
+	if want := (OutboxWait{WaitSince: now, WaitFor: key}); !due.NextAt.Equal(retried) || !sameWait(due.Wait, want) || due.LeaseToken != "" {
+		t.Fatalf("the woken row after its retry = next run %s, wait %+v, lease %q; want due at the retry, %s, with the wait %+v and no lease",
+			due.NextAt, due.Wait, due.LeaseToken, retried, want)
+	}
+
+	again := claimOutboxRow(t, st, records, id, retried)
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.RetryOutbox(ctx, tx, id, again.LeaseToken, retried.Add(RoleWaitBackoff(4)), "the listener refused the publish", asked, retried))
+	})
+	if later := storedOutboxRow(t, st, id); !later.NextAt.Equal(retried.Add(RoleWaitBackoff(4))) || !sameWait(later.Wait, asked) {
+		t.Fatalf("the row after a retry with no event since = next run %s, wait %+v; want the next run and the wait it asked for, %s and %+v",
+			later.NextAt, later.Wait, retried.Add(RoleWaitBackoff(4)), asked)
+	}
+}
+
+// ExpediteWaits makes due at now every row that waits for one of its keys and is due later, its
+// step back at 0, and answers those rows, so its caller can wake each one's lane once it commits:
+// the event the rows waited for has come (dispatch://INFRA-4131/spec#b-r-wait-event). A row that
+// waits for another key is left as it is. A row a lane holds is not moved, since its run is under
+// way, but marked woken, and its retry makes it due (TestAnEventWhileTheRowRunsMakesItDueAtItsRetry).
+// A catch-up the wake pacing holds to a moment still ahead of now (Notice.PacedAt) keeps that
+// moment: its wait is the turn the pacing gave it, not the event; a catch-up whose turn came and
+// whose publish then waited is made due like any other row. A second call at the same moment finds
+// every such row due already and moves none.
+func TestExpediteWaitsMakesDueTheRowsThatWaitForTheKey(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	queued, later := now.Add(-time.Minute), now.Add(5*time.Minute)
+	const token = claim.Token("legion-legion-legion-208-implementer")
+	claimKey, readyKey, otherKey := WaitForClaim(token), WaitForReady(token), WaitForClaim("legion-legion-legion-209-implementer")
+
+	// A row that ran, was refused and waits at step 5 of its backoff for the claim's next change.
+	waiting := enqueueOutboxRow(t, st, records, waitingRoleMessage(t, "LEGION-208", queued, ""))
+	leased := claimOutboxRow(t, st, records, waiting, queued)
+	stepped := OutboxWait{WaitSince: queued, WaitStep: 5, WaitFor: claimKey}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.RetryOutbox(ctx, tx, waiting, leased.LeaseToken, later, "the listener refused the publish", stepped, queued))
+	})
+	ready := enqueueOutboxRow(t, st, records, waitingRoleMessage(t, "LEGION-209", later, readyKey))
+	other := enqueueOutboxRow(t, st, records, waitingRoleMessage(t, "LEGION-210", later, otherKey))
+	running := enqueueOutboxRow(t, st, records, waitingRoleMessage(t, "LEGION-211", queued, claimKey))
+	claimOutboxRow(t, st, records, running, now.Add(-10*time.Second))
+	// The run of the held row asked for its next run later, as a run that will retry does, so only
+	// its lease keeps the event from moving it.
+	if _, err := st.Pool().Exec(ctx, "update outbox set next_at = $2 where id = $1", running, later); err != nil {
+		t.Fatalf("put the held row's next run at %s: %v", later, err)
+	}
+	catchUp := func(issue string, paced, nextAt time.Time) int64 {
+		t.Helper()
+		row, err := NewOutboxRow(issue, Notice{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: queued,
+			Reason: "the tree of " + issue + " as the daemon records it now", CatchUp: &CatchUp{Generation: 1, Launch: 1}}, nextAt)
+		must(t, err)
+		row.Wait.WaitFor = claimKey
+		return enqueueOutboxRow(t, st, records, row)
+	}
+	paced := catchUp("LEGION-212", now.Add(10*time.Minute), now.Add(10*time.Minute))
+	pacedEarlier := catchUp("LEGION-213", queued, later)
+
+	var moved []WaitingRow
+	inTx(t, st, func(tx pgx.Tx) {
+		var err error
+		moved, err = records.ExpediteWaits(ctx, tx, []string{claimKey, readyKey}, now)
+		must(t, err)
+	})
+	var ids []int64
+	for _, row := range moved {
+		ids = append(ids, row.ID)
+		if row.Kind != storedOutboxRow(t, st, row.ID).Kind || row.Issue != storedOutboxRow(t, st, row.ID).Issue {
+			t.Errorf("ExpediteWaits answered row %d as %s of %s, want the row's own kind and issue, which name its lane", row.ID, row.Kind, row.Issue)
+		}
+	}
+	if want := []int64{waiting, ready, pacedEarlier}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("ExpediteWaits moved rows %v, want %v: the rows waiting for either key and due later, in id order", ids, want)
+	}
+	for _, tc := range []struct {
+		name   string
+		id     int64
+		nextAt time.Time
+		wait   OutboxWait
+	}{
+		{"the row waiting at step 5 for the claim's change", waiting, now, OutboxWait{WaitSince: queued, WaitFor: claimKey}},
+		{"the row waiting for the claim's ready", ready, now, OutboxWait{WaitFor: readyKey}},
+		{"the row waiting for another claim", other, later, OutboxWait{WaitFor: otherKey}},
+		{"the row a lane holds", running, later, OutboxWait{WaitFor: claimKey, WaitWoken: true}},
+		{"the catch-up the pacing holds to a moment ahead", paced, now.Add(10 * time.Minute), OutboxWait{WaitFor: claimKey}},
+		{"the catch-up whose paced moment has passed", pacedEarlier, now, OutboxWait{WaitFor: claimKey}},
+	} {
+		if got := storedOutboxRow(t, st, tc.id); !got.NextAt.Equal(tc.nextAt) || !sameWait(got.Wait, tc.wait) {
+			t.Errorf("%s after ExpediteWaits = next run %s, wait %+v; want %s and %+v", tc.name, got.NextAt, got.Wait, tc.nextAt, tc.wait)
+		}
+	}
+
+	inTx(t, st, func(tx pgx.Tx) {
+		again, err := records.ExpediteWaits(ctx, tx, []string{claimKey, readyKey}, now)
+		must(t, err)
+		if len(again) != 0 {
+			t.Fatalf("a second ExpediteWaits at %s moved %+v, want nothing: every row it made due is due already", now, again)
+		}
+	})
+}
+
+// A row queued with what it waits for keeps it (OutboxWait.WaitFor) through each insert of the
+// outbox, Enqueue with and without the row's own creation time and EnqueueID, stored as its builder
+// spells it, since a later release reads the key an earlier one wrote. The rest of a wait is a
+// run's, not the writer's: a row that has not run has not waited, so the six other values take their
+// defaults whatever the row carries. A row queued with no key waits for nothing.
+func TestAnEnqueuedRowKeepsItsWaitFor(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	const key = "ready:legion-legion-legion-208-architect"
+	if got := WaitForReady("legion-legion-legion-208-architect"); got != key {
+		t.Fatalf("WaitForReady of the architect's claim = %q, want %q", got, key)
+	}
+	carried := OutboxWait{WaitSince: now, WaitLogged: true, WaitStep: 3, WaitReady: now, WaitLaunch: 2, WaitFor: key, WaitWoken: true}
+	row := func(issue string) OutboxRow {
+		t.Helper()
+		row := waitingRoleMessage(t, issue, now.Add(time.Minute), "")
+		row.Wait = carried
+		return row
+	}
+	created := row("LEGION-209")
+	created.CreatedAt = now.Add(-time.Hour)
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.Enqueue(ctx, tx, row("LEGION-208")))
+		must(t, records.Enqueue(ctx, tx, created))
+	})
+	enqueuedID := enqueueOutboxRow(t, st, records, row("LEGION-210"))
+	plain := enqueueOutboxRow(t, st, records, waitingRoleMessage(t, "LEGION-211", now.Add(time.Minute), ""))
+	var ids []int64
+	inTx(t, st, func(tx pgx.Tx) {
+		rows, err := tx.Query(ctx, "select id from outbox where issue in ('LEGION-208', 'LEGION-209') order by issue")
+		must(t, err)
+		ids, err = pgx.CollectRows(rows, pgx.RowTo[int64])
+		must(t, err)
+	})
+	if len(ids) != 2 {
+		t.Fatalf("the outbox holds %d rows of LEGION-208 and LEGION-209, want the two Enqueue wrote", len(ids))
+	}
+	for i, id := range append(ids, enqueuedID) {
+		if got := storedOutboxRow(t, st, id).Wait; !sameWait(got, OutboxWait{WaitFor: key}) {
+			t.Errorf("the wait of queued row %d of 3 = %+v, want only what it waits for, %q", i+1, got, key)
+		}
+	}
+	if got := storedOutboxRow(t, st, plain).Wait; !sameWait(got, OutboxWait{}) {
+		t.Errorf("the wait of a row queued with no key = %+v, want none", got)
+	}
+}
+
+// A phase worker's start written in the place of the one its issue owes (EnqueueStart) carries
+// that row's wait beside its attempts, its next run and its last error: the new row is the same
+// wait carrying a newer task, so its wait goes on rather than ends, from the moment it started,
+// with its line, its step, the ready and the launch it counts from, what it waits for and an event
+// that came while a lane held the owed row.
+func TestAReplacedStartKeepsItsWait(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	const issue = "LEGION-208"
+	since := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	wait := OutboxWait{WaitSince: since, WaitLogged: true, WaitStep: 4, WaitReady: since.Add(-time.Minute), WaitLaunch: 3,
+		WaitFor: WaitForClaim("legion-legion-legion-208-implementer"), WaitWoken: true}
+	nextAt := since.Add(RoleWaitBackoff(4))
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.Enqueue(ctx, tx, owedStartRow(t, issue, "Implement the change.")))
+		// The wait as a run of the owed start left it, and an event that came while a lane held it
+		// and whose lease then lapsed before its retry.
+		if _, err := tx.Exec(ctx, `update outbox set attempts = 5, next_at = $2, last_error = 'the claim is launching',
+			wait_since = $3, wait_logged = $4, wait_step = $5, wait_ready = $6, wait_launch = $7, wait_for = $8, wait_woken = $9
+			where issue = $1 and kind = 'supervise'`, issue, nextAt, wait.WaitSince, wait.WaitLogged, wait.WaitStep, wait.WaitReady,
+			wait.WaitLaunch, wait.WaitFor, wait.WaitWoken); err != nil {
+			t.Fatalf("write the owed start's wait: %v", err)
+		}
+		must(t, records.EnqueueStart(ctx, tx, owedStartRow(t, issue, "Implement the change again.")))
+	})
+	var starts []OutboxRow
+	inTx(t, st, func(tx pgx.Tx) {
+		rows, err := tx.Query(ctx, "select "+outboxColumns+" from outbox where issue = $1 and kind = 'supervise'", issue)
+		must(t, err)
+		defer rows.Close()
+		for rows.Next() {
+			row, err := scanOutbox(rows)
+			must(t, err)
+			starts = append(starts, row)
+		}
+		must(t, rows.Err())
+	})
+	if len(starts) != 1 || !strings.Contains(string(starts[0].Payload), "Implement the change again.") {
+		t.Fatalf("the starts of %s = %+v, want the one written in the owed start's place", issue, starts)
+	}
+	start := starts[0]
+	if start.Attempts != 5 || !start.NextAt.Equal(nextAt) || start.LastError != "the claim is launching" || !sameWait(start.Wait, wait) {
+		t.Fatalf("the start written in the owed one's place = attempts %d, next run %s, last error %q, wait %+v; want the owed row's 5, %s, %q and %+v",
+			start.Attempts, start.NextAt, start.LastError, start.Wait, nextAt, "the claim is launching", wait)
+	}
 }
 
 // Migration 0019 moves the newest deciding review off the reviewer's phase row onto the pull

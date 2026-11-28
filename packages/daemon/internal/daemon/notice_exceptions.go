@@ -1,20 +1,16 @@
 package daemon
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/roleholder"
-	"github.com/sjawhar/envoy/sessiontiming"
 	"github.com/sjawhar/envoy/subjectforms"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -34,36 +30,6 @@ import (
 // name under the role lanes' prefix, which the daemon's grant names whole (natsgrant.Daemon), and
 // exceptionNotice reads either form.
 const noticeExceptionSubjects = "notifications.envoy.exceptions." + notify.RoleTopicPrefix + ">"
-
-// The listener's own liveness windows for a role holder (packages/envoy/internal/session), read
-// through sessiontiming (the one public door onto the generated contracts numbers the listener
-// itself weighs), so they cannot drift from what the listener enforces. A session's last
-// registration keeps it live for listenerSessionTTL, the same declaration session.LiveWindow
-// reads (state.go); past it the holder reads unresponsive, keeps its role claim to the gone
-// horizon, and a delivery to it fails that attempt and releases nothing. listenerClaimStale is
-// the claim's own staleness window (claim.go, ClaimStaleAfter), and the plugin heartbeats every
-// pluginHeartbeat (sessiontiming.Heartbeat). A session that stops running can therefore stay a
-// registered holder for up to the longer of the two windows, and until then the listener accepts
-// a publish for it, forwards it, and reports it undelivered.
-const (
-	listenerSessionTTL = sessiontiming.LiveWindow
-	listenerClaimStale = sessiontiming.ClaimStale
-	pluginHeartbeat    = sessiontiming.Heartbeat
-)
-
-// noticeReholdDelays is how long each copy of a notice whose forward failed waits: the nth copy
-// waits the nth delay after the report of the one before it, except that a copy goes at once when
-// copyDueAtOnce says so. The first catches a quick relaunch, the second one heartbeat later, and
-// the last is sent once the clean stop of a stopped session's registration (daemon.go,
-// cleanSessionStop) has had time to land, past both windows with a minute to spare. A holder
-// that is only unresponsive keeps the row on the outbox's backoff instead. That copy then either
-// reaches the relaunched session or is refused (notify.ErrNoHolder) and held by the executor
-// until a session holds the role again, so nothing is dropped while the architect's claim lives.
-// There are three, as the TypeScript daemon re-sends one at most three times (processes.ts,
-// resendToRootArchitect): a holder that keeps its registration alive but never confirms a
-// delivery would otherwise be sent copies without end, and the report of its last copy is logged
-// and queues nothing.
-var noticeReholdDelays = [...]time.Duration{30 * time.Second, pluginHeartbeat, max(listenerSessionTTL, listenerClaimStale) + time.Minute}
 
 // errNoticeException is a report the listener sent that cannot be read as the failed forward of
 // a notice.
@@ -95,15 +61,15 @@ func subscribeNoticeExceptions(conn *nats.Conn, rehold func(data []byte)) (*nats
 // (packages/envoy/cmd/listener/confirmed.go) reports that its forward to the owning architect's
 // session did not complete after it answered the publish 200: the forward failed
 // (`delivery_failed`), the holder lapsed between the two (`no_holder`), or the session the
-// listener forwarded to did not confirm it in time (`receipt_timeout`). A listener of this
-// release answers no `receipt_timeout`: no session confirms a forward any more, and every
-// forward the stream did not store is `delivery_failed` (dispatch://INFRA-771). The reason is
-// still handled here because a listener of the deployed, older build raises it until the rollout
-// finishes. Such a listener sends a
-// role message on its role lane, which forwards it once and reports a failure on
-// noticeExceptionSubjects instead of answering it; a listener of the confirmed route answers the
-// publish itself, and the notice executor re-holds from that answer (notice). Both run one policy,
-// reholdNotice. The subscription stays while a deployment may run an earlier listener.
+// listener forwarded to did not confirm it in time (`receipt_timeout`). No deployed listener
+// answers `receipt_timeout` any more: no session confirms a forward, and every forward the stream
+// did not store is `delivery_failed` (dispatch://INFRA-771). The reason is still read here because
+// a deployment can roll its listener back to an older build, which raises it. A listener before
+// the confirmed route sends a role message on its role lane, which forwards it once and reports a
+// failure on noticeExceptionSubjects instead of answering it, and the row has finished by then, so
+// the report is answered with a copy of its own (reholdNotice). A listener of the confirmed route
+// answers the publish itself, and the notice executor keeps the row from that answer and runs it
+// again (noticeAnswered). The subscription stays while a deployment may run an earlier listener.
 //
 // rehold reads the report: an envelope the listener itself sent, whose payload names a reason it
 // knows and a notice of this daemon's outbox to an architect of this project (exceptionNotice). A
@@ -171,28 +137,39 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 //
 // A publish the listener took writes one line naming the architect it reached (noticePublished).
 //
-// A delivery its architect's session did not confirm (504 `receipt_timeout`) is queued again as a
-// copy of its own (reholdNotice). A holder that does not advertise the notice's delivery mode, and
-// a forward the listener's own NATS grant denies, refuse every attempt until something outside
-// this daemon changes, so each finishes undelivered with one log line rather than holding every
-// later notice to that architect behind the fence. A holder only unresponsive — its session past
-// the listener's live window and still inside its gone horizon — holds the role yet, so its notice
-// is kept whole: no copy is spent and no slot of the re-hold schedule with it, and the row waits
-// (wait.ErrWaiting), tried again on the outbox's backoff until the session's heartbeats land,
-// which is what reaches a session stalled under box load once it answers again
-// (dispatch://INFRA-392). That answer is logged as the wait it is, naming the holder and the
-// state the listener reported it in: a session that will answer for itself is no failure of the
-// row's, so it costs no error line per attempt, where a publish that did fail still costs one.
-// A role no session holds is held for its architect while that architect's claim can hold it
-// again, and finishes undelivered once nobody will. Any other failure is the row's, retried on
-// its backoff.
+// A delivery its architect's session did not confirm (504 `receipt_timeout`, which only a listener
+// rolled back to a build before dispatch://INFRA-771 answers) keeps its row: the row waits for its
+// architect (roleWait) and is published again on the capped backoff of a role wait, under its own
+// id and key, with the claims a catch-up holds on the decisions it names and the moments its
+// pacing reserved, until a publish is taken, which tells those decisions once (toldKept), or its
+// architect will not hold its role again (architectEnded), which finishes it undelivered as a role
+// no session holds does. No copy is queued and no count of publishes gives it up
+// (dispatch://INFRA-4131/spec#b-r-never-given-up). A holder that does not advertise the notice's
+// delivery mode, and a forward the listener's own NATS grant denies, refuse every attempt until
+// something outside this daemon changes, so each finishes undelivered with one log line rather
+// than holding every later notice to that architect behind the fence. A holder only unresponsive —
+// its session past the listener's live window and still inside its gone horizon — holds the role
+// yet, so its notice is kept whole, and the row waits for its architect (roleWait), tried again on
+// the capped backoff of a role wait until the session's heartbeats land, which is what reaches a
+// session stalled under box load once it answers again (dispatch://INFRA-392,
+// dispatch://INFRA-4131/spec#b-r-capped). A forward the listener could not make at all (504
+// `delivery_failed`) waits the same way, since the next attempt can make it, and so does every
+// other failed publish (publishFailed): any other refusal or 5xx of the listener's, and a publish
+// that did not reach the listener or could not read its answer. Each is logged as the wait it is
+// (settle's logWait), naming the architect and the listener's last answer, not as an error line
+// per attempt. The one refusal among them that does not wait is the listener's refusal of the
+// notice itself, a 400 or a 413 with its own error (notify.ErrMessageRefused): no retry of the
+// same notice changes that answer, so settle ends the row undelivered at that run, with one line at
+// Error and no wait (messageRefused, permanentRefusal, finishRefused), and the next notice to the
+// architect is due at once. A role no session holds is held for its architect while that
+// architect's claim can hold it again (errNoticeWaits, a role wait too), and finishes undelivered
+// once nobody will.
 func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, payload record.Notice,
-	tree treeSnapshot, architect claim.Token, published error,
+	tree treeSnapshot, architect claim.Token, view supervise.ClaimView, published error,
 ) error {
-	// The same pair the publish went out as (Notice.Published): the notice as it was sent and the
-	// dedupe key it was sent under, derived here rather than passed in, so no caller can hand this
-	// answer one notice's text under another's key.
-	notice, key := payload.Published(row.ID)
+	// The dedupe key the publish went out under (Notice.Published), derived here rather than passed
+	// in, so no caller can hand this answer one notice's telling under another's key.
+	_, key := payload.Published(row.ID)
 	var notDelivered notify.ErrNotDelivered
 	var refused notify.ErrRefusedByHolder
 	var denied notify.ErrPublishDenied
@@ -213,22 +190,16 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		}
 		return nil
 	case errors.As(published, &notDelivered) && notDelivered.Reason == notify.ReasonReceiptTimeout:
-		// The notice went out under the key of the row it copies, or of this row (Notice.Published).
-		// The copy takes over this row's claims on the decisions it names (claims).
-		source := cmp.Or(payload.ResendOf, row.ID)
-		// Nothing woke the architect here — its session never took the notice — so the wake this
-		// row is waits for the copy, and the copy carries the moments the pacing gave this row to
-		// write that one line with (record.Notice.PacedFrom). The publish strips them again
-		// (Notice.Published), and the copy's own next_at stays the re-send delay: the reservation
-		// is spent, and what is carried over is the account of it the line reports. Without this
-		// the copy publishes and no "supervise: wake ran" is written at all, so the operator's
-		// own check neither counts that wake nor builds its window (scripts/wake-windows.py).
-		notice.PacedAt, notice.PacedFrom, notice.PacedTurns = payload.PacedAt, payload.PacedFrom, payload.PacedTurns
-		reported := reportedNotice{issue: row.Issue, notice: notice, row: source, architect: architect, claims: row.ID}
-		if err := r.reholdNotice(ctx, reported, notDelivered.Reason, notDelivered.Holder); err != nil {
-			return fmt.Errorf("re-hold the notice for %s that its architect %s did not take: %w", row.Issue, architect, err)
+		// The architect's session did not confirm the notice, and nothing says whether it took it.
+		// The row stays as it is, its claims and its reserved moments with it, and runs again until
+		// a publish is taken; a claim that ended while the listener waited for the receipt ends it
+		// here, as a role nobody holds does.
+		if ended := architectEnded(tree, r.claimState(architect)); ended != "" {
+			return r.noticeArchitectEnded(ctx, row, payload, tree, architect, ended)
 		}
-		return nil
+		return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
+			wait.Errorf("the notice for %s waits for its architect %s, whose session did not confirm it: %w",
+				row.Issue, architect, published))
 	case errors.As(published, &refused):
 		r.log.Warn("outbox notice finished undelivered: its architect's session does not advertise the delivery mode",
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "holder", refused.Holder, "error", published)
@@ -238,23 +209,52 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "reason", denied.Message)
 		return nil
 	case errors.Is(published, notify.ErrHolderUnresponsive):
-		return wait.Errorf("the notice for %s waits for its architect %s, whose session the listener reports %s: %w",
-			row.Issue, architect, notify.StateUnresponsive, published)
+		return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
+			wait.Errorf("the notice for %s waits for its architect %s, whose session the listener reports %s: %w",
+				row.Issue, architect, notify.StateUnresponsive, published))
+	case errors.As(published, &notDelivered):
+		// The listener could not forward the notice at all (`delivery_failed`): no live holder to
+		// forward to, a read that failed or ran out of time, a forward not shown to reach the
+		// server. It is no notice held for an architect that holds no role (errNoticeWaits), and the
+		// row keeps its own place: no copy is queued, as none is for `receipt_timeout`.
+		return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
+			wait.Errorf("the notice for %s waits for its architect %s, to whom the listener could not forward it: %w",
+				row.Issue, architect, published))
 	case !errors.Is(published, notify.ErrNoHolder):
-		return fmt.Errorf("publish notice for %s to its architect %s: %w", row.Issue, architect, published)
+		// Any other failed publish (publishFailed): a refusal or a 5xx the listener gave, or a
+		// publish that did not reach it, which the next attempt can get through. Its refusal of
+		// the notice itself (notify.ErrMessageRefused) is in this wait too, and settle ends the
+		// row on it at this run (messageRefused).
+		return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
+			wait.Errorf("the notice for %s waits for its architect %s to take it: %w", row.Issue, architect, published))
 	}
 	if ended := architectEnded(tree, r.claimState(architect)); ended != "" {
-		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
-			return err
-		}
-		if err := r.tellControllerOfKeptPod(ctx, row.Issue, row.ID, notice, key, architect, ended); err != nil {
-			return err
-		}
-		r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", ended)
-		return nil
+		return r.noticeArchitectEnded(ctx, row, payload, tree, architect, ended)
 	}
-	return fmt.Errorf("%w: %s holds no role for %s: %w", errNoticeWaits, architect, row.Issue, published)
+	return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
+		fmt.Errorf("%w: %s holds no role for %s: %w", errNoticeWaits, architect, row.Issue, published))
+}
+
+// noticeArchitectEnded ends a notice row undelivered because its owning architect will not hold
+// its role again, ended being why (architectEnded, read once by the caller so the reason it judged
+// by is the one relayed and logged): before the publish when roleWaitGate finds no machine or a
+// failed or retired claim (dispatch://INFRA-4131/spec#b-r-wait-ready), or after a publish refused
+// notify.ErrNoHolder or not confirmed (notify.ReasonReceiptTimeout) when the claim ended in between
+// or the tree lingers. It relays any person's spec decision to the controller (parkDecision) and
+// any kept-pod disk notice (tellControllerOfKeptPod), then logs the one Info line.
+func (r *outbox) noticeArchitectEnded(ctx context.Context, row record.OutboxRow, payload record.Notice,
+	tree treeSnapshot, architect claim.Token, ended string,
+) error {
+	notice, key := payload.Published(row.ID)
+	if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
+		return err
+	}
+	if err := r.tellControllerOfKeptPod(ctx, row.Issue, row.ID, notice, key, architect, ended); err != nil {
+		return err
+	}
+	r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
+		"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", ended)
+	return nil
 }
 
 // noticePublished is the one line a notice the listener took writes: its kind, its issue, its row
@@ -272,53 +272,69 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 	r.log.Info("outbox notice published", fields...)
 }
 
-// reholdNotice queues reported's notice again after a publish its architect's session did not
-// take: the publish, under the dedupe key of reported's row (record.OutboxKey), went to the
-// architect's role topic, the listener named reason, and recipient is the session it forwarded to
-// ("" when it named none). It runs from a role-lane exception of an earlier listener (rehold) and
-// from the 504 `receipt_timeout` answer of a confirmed publish route of a listener older than
-// dispatch://INFRA-771, which this daemon still handles until that rollout finishes (a listener
-// of this release answers `delivery_failed` instead). A session that
-// stopped running but is still registered produced a receipt_timeout there: the listener
-// forwarded to it
-// and waited for a receipt that never came. So does the relaunch window, until the claim's agent
-// has taken the Envoy role back. Every such failure is queued, a late receipt from the claim's own
-// session too: a Go relaunch resumes the claim's session id, so a failure naming it cannot tell the
-// stopped process from the relaunched one, and a copy the session already has costs one frame its
-// plugin drops, where a skipped copy the relaunched process never saw is a notice lost.
+// reholdNotice queues reported's notice again after an earlier listener reported that its
+// architect's session did not take a publish the listener had answered 200 (rehold): the publish,
+// under the dedupe key of reported's row (record.OutboxKey), went to the architect's role topic,
+// the listener named reason, and recipient is the session it forwarded to ("" when it named none).
+// Only a listener before the confirmed publish route, older than legion-envoy-v22.3.0, reports a
+// daemon publish so; a listener of that route answers the publish itself, and the notice executor
+// keeps the row from that answer (noticeAnswered). A session that stopped running but is still
+// registered produced a receipt_timeout there: the listener forwarded to it and waited for a
+// receipt that never came. So does the relaunch window, until the claim's agent has taken the
+// Envoy role back. Every such failure is queued, a late receipt from the claim's own session too: a
+// Go relaunch resumes the claim's session id, so a failure naming it cannot tell the stopped
+// process from the relaunched one, and a copy the session already has costs one frame its plugin
+// drops, where a skipped copy the relaunched process never saw is a notice lost.
+//
+// A report whose key names a row the outbox still holds queues nothing: that row runs again by
+// itself, on its own wait, and a copy beside it would send the notice twice. Such a report comes
+// while a deployment runs listeners of both kinds, one answering a publish receipt_timeout and the
+// other reporting its own forward of the same row, or for a publish whose 200 the daemon lost.
 //
 // The notice goes back through the executor as a new row of its issue, counted in its Resends,
 // so it is routed, fenced and held as any notice is, and it is published under the dedupe key of
 // the row it copies (Notice.Published), so a session that did get the forward recognises the copy.
-// A copy of a catch-up the pacing held carries that row's reserved moments, so that the publish
-// which does reach the architect writes the one wake line (noticeAnswered); a copy an earlier
-// listener's report queues carries none, and is owed none, because that publish was answered and
-// wrote the line already.
-// A copy is due at once when copyDueAtOnce says so, and otherwise after the next of
-// noticeReholdDelays. It is queued again once per delay; the failure of its last copy is logged
-// and queues nothing. Each published copy of a row is queued again once, marked processed under
-// the row's dedupe key and the copy's count: a publish whose 200 was lost is retried under the
-// same key, an earlier listener reports each failed forward under a fresh event id, and during a
-// rollout one publish can draw both a 504 from one listener and an exception from another, which
-// queue one copy between them.
+// A copy carries what the publish carried and nothing more: no moment the wake pacing reserved,
+// since that publish was answered and wrote its wake line already, and no claim on a decision a
+// catch-up names, since the publish told it (toldKept, settleTold). The copies have no limit
+// (dispatch://INFRA-4131/spec#b-r-never-given-up): each is due at once when copyDueAtOnce says
+// so, and otherwise after the capped backoff of the copies sent before it (record.RoleWaitBackoff
+// of Resends: 1 s, doubling, to RoleWaitBackoffMost). Either way it waits for its architect's ready
+// (record.WaitForReady), so the architect's next ready makes it due at once
+// (outbox.releaseChanged) and a turn start of a session that took nothing does not, and it ends,
+// as every notice ends, once its architect will not hold its role again (the executor's
+// architectEnded). Each copy is a row of its own, with a wait and lines of its own. Each published
+// copy of a row is queued again once, marked processed under the row's dedupe key and the copy's
+// count: a publish whose 200 was lost is retried under the same key, and an earlier listener
+// reports each failed forward under a fresh event id.
 //
 // The publish's row finishes once the listener answers, and an earlier listener reports a failed
 // forward only after its receipt window (two seconds, longer while forwards queue behind others on
 // its role lane). A notice to the same architect written before the copy is queued is not held
 // behind the failed one, so it can arrive before the copy. A catch-up a newer one superseded
-// (catchUpSuperseded) is not queued again: its copy would arrive after the fresh catch-up, so what
-// it named is handed over to that fresh catch-up instead (workflow.HandOverKept, through
-// supersededKept), the copy that would have carried its claims on never being written. Nor is
-// a notice whose architect stopped with its finished tree (stoppedWithTree): nothing of the close
-// is sent to it, and a person's spec decision such a notice reports goes to the controller instead
-// (parkDecision), as does a notice of the issue pod's disk (tellControllerOfKeptPod). Those checks
-// read the claim from memory, outside ApplyFact's lock, which the
-// ready handler holds, so a copy can still lose the race to a ready; the notice executor checks
-// again when it runs the row.
+// (catchUpSuperseded) is not queued again: its copy would arrive after the fresh catch-up, and its
+// own publish already told what it named. Nor is a notice whose architect stopped with its finished
+// tree (stoppedWithTree): nothing of the close is sent to it, and a person's spec decision such a
+// notice reports goes to the controller instead (parkDecision), as does a notice of the issue
+// pod's disk (tellControllerOfKeptPod). Those checks read the claim from memory, outside
+// ApplyFact's lock, which the ready handler holds, so a copy can still lose the race to a ready;
+// the notice executor checks again when it runs the row.
 func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reason, recipient string) error {
 	key := record.OutboxKey(reported.row)
 	issue, notice := reported.issue, reported.notice
 	topic := notify.RoleTopicPrefix + string(reported.architect)
+	kept, err := store.ReadOnly(ctx, r.pool, "read whether the outbox still holds the reported notice",
+		func(ctx context.Context, tx pgx.Tx) (bool, error) {
+			return r.records.NoticeQueued(ctx, tx, reported.row)
+		})
+	if err != nil {
+		return err
+	}
+	if kept {
+		r.log.Info("outbox notice not re-held: its row is still in the outbox and runs again by itself",
+			"row", reported.row, "issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason)
+		return nil
+	}
 	held := r.supervisedClaim(reported.architect)
 	if !holdsRole(held) {
 		root, lingers, err := r.issueTree(ctx, issue)
@@ -337,20 +353,7 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 			return nil
 		}
 	}
-	if notice.Resends >= len(noticeReholdDelays) {
-		r.log.Warn("outbox notice not re-held again: it was queued again the most times a notice is",
-			"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason, "resends", notice.Resends)
-		// No copy carries a catch-up's claims on now, so what it named is handed over rather than
-		// left to the row's deletion (spentKept): while the root has an architect to hear it, a
-		// fresh catch-up of that architect's launch claims and names it; while it has none
-		// (lingering, out of the workflow, waiting for its slot), nothing is written and the
-		// decisions wait KEPT for the root's next start or ready to name (CatchUpTheTreesOwed).
-		if notice.CatchUp != nil && notice.CatchUp.Kept != nil {
-			return r.spentKept(ctx, issue, reported.claims, key)
-		}
-		return nil
-	}
-	due := r.now().Add(noticeReholdDelays[notice.Resends])
+	due := r.now().Add(record.RoleWaitBackoff(notice.Resends))
 	if copyDueAtOnce(held.Claim, notice.Resends, recipient) {
 		due = r.now()
 	}
@@ -361,6 +364,7 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 	if err != nil {
 		return fmt.Errorf("the copy is a notice the outbox refuses: %w", err)
 	}
+	row.Wait.WaitFor = record.WaitForReady(reported.architect)
 	superseded := false
 	// The re-hold is its own transaction, so it owns the commit hook the row's write registers
 	// (projectRecords, store.OnCommit), as ApplyFact does for a fact's rows, and the hook that
@@ -383,35 +387,12 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 			r.log.Info("outbox notice re-held: the listener could not forward it to its architect's session",
 				"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason)
 		})
-		// A copy of a catch-up whose row still claims decisions (the confirmed route's answer, in the
-		// row's own run) takes those claims over before the row finishes and its deletion releases
-		// them, so no other start or catch-up names what the copy will.
-		if notice.CatchUp != nil && notice.CatchUp.Kept != nil && reported.claims != 0 {
-			id, err := r.records.EnqueueID(ctx, tx, row)
-			if err != nil {
-				return err
-			}
-			return r.records.MoveKeptClaims(ctx, tx, reported.claims, id)
-		}
 		return r.records.Enqueue(ctx, tx, row)
 	}); err != nil {
 		return err
 	}
 	if superseded {
-		// The copy this re-hold would have queued is the only thing that would have taken the row's
-		// claims on (MoveKeptClaims), so what the row named is handed over here exactly as a
-		// superseded catch-up's own ending hands it over (supersededKept): unclaimed, and named at
-		// once by a fresh catch-up while the root has an architect to tell. Only a root's catch-up
-		// names kept decisions, and it is enqueued on the root whose tree it states
-		// (workflow.QueueCatchUp), so the row's issue is that root. The hand-over is its own
-		// transaction, after this one: a receipt timeout marks no telling, so the told check
-		// supersededKept makes answers no here unless an earlier run of this row published.
-		if notice.CatchUp.Kept != nil && reported.claims != 0 {
-			if err := r.supersededKept(ctx, issue, reported.claims, key); err != nil {
-				return err
-			}
-		}
-		r.log.Info("outbox catch-up not re-held: a newer catch-up supersedes it; what it named is handed over",
+		r.log.Info("outbox catch-up not re-held: a newer catch-up supersedes it",
 			"issue", issue, "key", key, "generation", notice.CatchUp.Generation, "launch", notice.CatchUp.Launch, "reason", reason)
 	}
 	return nil
@@ -452,20 +433,22 @@ func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, issue *reco
 	return issue != nil && issue.Generation > catchUp.Generation
 }
 
-// copyDueAtOnce says whether the next copy of a notice is due at once, given held, the architect's
-// claim as this daemon supervises it (the zero Claim when it does not), resends, the copies of the
-// notice already sent, and recipient, the session the report (or the listener's 504 answer, as its
-// holder) names. A copy is due at once when the architect's agent has said it is ready
-// (supervise.SaidReady), and it is the first copy or its report names a session other than the
-// one the claim is ready on: that ready has passed, so no release (releaseWaiting) would make the
-// copy due, and every later notice to the architect would wait behind it. The first covers a
-// relaunch that reported ready inside the receipt window; a later copy that failed on another
-// session went where the role no longer is. A later copy whose report names no session (the
-// listener names none for no_holder, or when it could not read the holder) says nothing about
-// where the role went. It waits its delay, as does a later copy that failed on the claim's own
-// ready session and every copy while the claim has not reported ready, so a claim that reads live
-// while its session hears nothing (a reconnecting connection, a death the supervisor has not seen)
-// keeps the notice for the whole schedule instead of spending its copies in seconds.
+// copyDueAtOnce says whether the next copy of a notice an earlier listener's role-lane exception
+// reported (reholdNotice) is due at once, given held, the architect's claim as this daemon
+// supervises it (the zero Claim when it does not), resends, the copies of the notice already sent,
+// and recipient, the session the report names. A copy is due at once when the architect's agent
+// has said it is ready (supervise.SaidReady), and it is the first copy or its report names a
+// session other than the one the claim is ready on: that ready has passed, so the ready key the
+// copy waits for (record.WaitForReady, which outbox.releaseChanged makes due) is not met again
+// before the claim's next ready, and every later notice to the architect would wait behind the
+// copy. The first covers a relaunch that reported ready inside the receipt window; a later copy
+// that failed on another session went where the role no longer is. A later copy whose report names
+// no session (the listener names none for no_holder, or when it could not read the holder) says
+// nothing about where the role went. It waits its delay (record.RoleWaitBackoff of resends), as
+// does a later copy that failed on the claim's own ready session and every copy while the claim
+// has not reported ready, so a claim that reads live while its session hears nothing (a
+// reconnecting connection, a death the supervisor has not seen) is sent its copies on the capped
+// backoff, at most 12 an hour, rather than one every few seconds.
 func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {
 	if !supervise.SaidReady(held.State) {
 		return false
@@ -473,18 +456,14 @@ func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {
 	return resends == 0 || recipient != "" && !held.HoldsSession(recipient)
 }
 
-// reportedNotice is the notice a failed publish was, as exceptionNotice reads it from a report or
-// the notice executor knows it when the listener answers: its issue, the notice as it was
-// published, the outbox row its dedupe key names, and the architect whose role topic it went to.
+// reportedNotice is the notice a failed forward was, as exceptionNotice reads it from an earlier
+// listener's report: its issue, the notice as it was published, the outbox row its dedupe key
+// names, and the architect whose role topic it went to.
 type reportedNotice struct {
 	issue     string
 	notice    record.Notice
 	row       int64
 	architect claim.Token
-	// claims is the outbox row still running that claims the decisions the notice names (the
-	// confirmed route's answer, in the row's own run), 0 when that row has already finished (an
-	// earlier listener's report).
-	claims int64
 }
 
 // exceptionNotice reads the notice a report is about: a publish of this daemon's outbox (its
@@ -517,87 +496,4 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 		return reportedNotice{}, false
 	}
 	return reportedNotice{issue: issue, notice: notice, row: row, architect: claim.Token(token)}, true
-}
-
-// releaseWaiting makes due at once every notice waiting for a later attempt that goes to one of
-// architects now (noticeArchitect), once their claims are ready: each agent said it can be
-// prompted (supervise.SaidReady), having booted or taken its Envoy role back. A boot's ready comes
-// before the name — the session claims its role at its first turn — so a notice this releases, and
-// the catch-up that same ready writes, can still be refused no_holder and wait the outbox's own
-// backoff (record.RetryBackoff, one second doubling to a cap of 64) until the name is taken. What
-// the release ends is the wait for the architect, not the wait for the role. That covers a copy
-// waiting out its re-send delay, whichever session it failed on (a Go relaunch resumes the
-// claim's session file, so the relaunched agent registers the very session id the stopped one
-// had), and a notice held on the outbox's backoff while nobody held the role. A copy waiting
-// minutes for a stopped session's registration to lapse would otherwise hold back every later
-// notice to that architect behind the fence, after the architect is back. Released, the notices
-// go in the order they were written, ahead of the ones behind them. The waiting notices and their
-// trees are one repeatable read, each tree read once; the fence is not read, since a release only
-// makes a notice due and its send still passes the fence.
-//
-// A catch-up the wake pacing still holds to its turn is left where it stands: its wait is not the
-// architect being away — the architect is running, which is why a start wrote a catch-up instead
-// of launching one — but the turn the operator's rate gave this wake, and a ready that pulled it
-// forward would let a whole restart's worth of catch-ups out in the minute the first architect
-// reported ready, which is the wave the pacing exists to spread. What is held back is the row
-// whose reserved moment is still ahead of now (record.Notice.PacedAt), not every row the pacing
-// ever marked: a catch-up whose turn came and whose attempt then failed waits on a backoff of its
-// own, and that wait is one a ready releases like any other, since the pacing has had its say.
-func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) error {
-	now := r.now()
-	released := []record.OutboxRow{}
-	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		waiting, err := r.records.WaitingNotices(ctx, tx, r.dispatchProject, now)
-		if err != nil {
-			return err
-		}
-		routes := map[string]noticeRoute{}
-		for _, row := range waiting {
-			payload, err := record.DecodeOutboxPayload(row)
-			if err != nil {
-				return fmt.Errorf("decode waiting notice row %d: %w", row.ID, err)
-			}
-			notice, ok := payload.(record.Notice)
-			if !ok || notice.PacedAt.After(now) {
-				continue
-			}
-			issue, route, err := r.readNoticeRoute(ctx, tx, row.Issue, routes)
-			if errors.Is(err, errNoticeUnroutable) {
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			if owner, err := noticeArchitect(route.project, route.issues, issue, notice, r.holdsItsRole); err == nil && slices.Contains(architects, owner) {
-				released = append(released, row)
-			}
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("read the notices waiting for %v: %w", architects, err)
-	}
-	if len(released) == 0 {
-		return nil
-	}
-	// The release is its own transaction, so it owns the commit hooks the expedites register
-	// (projectRecords, store.OnCommit), each released notice's lane woken once they commit, and the
-	// hook that logs the release.
-	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		for _, row := range released {
-			if _, err := r.records.ExpediteOutbox(ctx, tx, row, now); err != nil {
-				return err
-			}
-		}
-		store.OnCommit(ctx, func() {
-			ids := make([]int64, len(released))
-			for i, row := range released {
-				ids[i] = row.ID
-			}
-			r.log.Info("outbox notices released: their architect is ready", "architects", architects, "rows", ids)
-		})
-		return nil
-	}); err != nil {
-		return fmt.Errorf("release the notices waiting for %v: %w", architects, err)
-	}
-	return nil
 }

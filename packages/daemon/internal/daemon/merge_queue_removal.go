@@ -203,13 +203,23 @@ type heldMessage struct {
 // role again. A released merger is held by the rule that holds its start
 // (mergerWaitsForTheDesignGate: the design gate, and the news of the approved design it is owed),
 // and a released role of another kind while the root's design gate is closed (designGateClosed):
-// such a role is neither woken nor told, and the row waits, since a role the gate holds may not
-// know the gate closed, and woken by this message it would work against the gate. A role whose
-// session holds it is told at once, gate or none, and m.delivered is logged. The three other
-// answers of the confirmed publish route keep the ordinary retry, as they do for a hook prompt: a
-// holder that did not confirm in time (notify.ErrNotDelivered), one that does not advertise the
-// delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied).
+// such a role is neither woken nor told, and the row waits for the gate's opening, or the news
+// being recorded, which makes it due at once (record.WaitForGate, record.WaitForNews,
+// dispatch://INFRA-4131/spec#b-r-wait-event), since a role the gate holds may not know the gate
+// closed, and woken by this message it would work against the gate. A role whose session holds it
+// is told at once, gate or none, and m.delivered is logged. Every other failed publish
+// (publishFailed) keeps the row waiting for its role (roleWait) on the capped backoff of a role
+// wait (dispatch://INFRA-4131/spec#b-r-capped), as it does for a hook prompt: no session holds the
+// role (notify.ErrNoHolder), its holder is unresponsive (notify.ErrHolderUnresponsive), a holder
+// did not confirm in time (notify.ErrNotDelivered), one does not advertise the delivery mode
+// (notify.ErrRefusedByHolder), a forward the listener's own NATS grant denies
+// (notify.ErrPublishDenied), any other refusal or 5xx of the listener's, and a publish that did
+// not reach the listener or could not read its answer, which its wait's lines name as the
+// listener's last answer. The one exception is a message the listener refuses for itself, a 400
+// or a 413 with its own error (notify.ErrMessageRefused): no retry of the same message changes
+// that answer, so settle ends the row undelivered at that run, with one line at Error and no wait
+// (messageRefused, permanentRefusal, finishRefused), and m.end, a merge-forward ask's, does not
+// run: its end would send the same ask again to the launch it reads (workflow.MergeForwardAskEnded).
 //
 // Each message is for the session of the role's current launch, and the listener's word is the one
 // evidence of who took it: its 200 names the session it stored the message for
@@ -232,13 +242,18 @@ type heldMessage struct {
 // the attempt: undelivered, the row is read again at its retry; delivered, it is published again
 // and ends again, so a launch may be told twice and none is told nothing.
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
-	held := r.supervisedClaim(m.token)
-	if supervise.FailedOrRetired(held.State) {
+	// claimEnded ends the row undelivered for a claim that failed or retired, in state, read here
+	// or by the gate just before the publish, and logs m.claimEnded once that end is made.
+	claimEnded := func(state supervise.ClaimState) error {
 		if err := r.endUndelivered(ctx, row, m.end); err != nil {
 			return err
 		}
-		r.log.Info(m.claimEnded, append(m.attributes, "state", held.State)...)
+		r.log.Info(m.claimEnded, append(m.attributes, "state", state)...)
 		return nil
+	}
+	held := r.supervisedClaim(m.token)
+	if supervise.FailedOrRetired(held.State) {
+		return claimEnded(held.State)
 	}
 	if held.Released() {
 		if m.role == claim.RoleMerger {
@@ -248,35 +263,38 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		} else if closed, err := r.designGateClosed(ctx, m.issue); err != nil {
 			return err
 		} else if closed {
-			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, m.issue.Tree, m.role)
+			return eventWait(record.WaitForGate(m.issue.Tree),
+				wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, m.issue.Tree, m.role))
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
 	// role on every attempt and wait for a session nothing brings back. A launch the wake pacing
 	// holds is waited for until it runs, the claim read again at its turn or parkedWakeBound on,
-	// whichever comes first (parkedWait).
+	// whichever comes first (parkedWait). Either wait, for the launch this row's wake asked or for
+	// the one the pacing holds, is one for any change of the role's claim (launchWait), so that
+	// launch and its ready make the row due at once.
 	if waits, turn, err := r.wakeForDelivery(ctx, m.token, m.what, row.HeldByPause); err != nil {
 		return err
 	} else if !turn.IsZero() {
-		return r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
-			m.what, m.role, turn.UTC().Format(time.RFC3339)))
+		return launchWait(m.token, r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
+			m.what, m.role, turn.UTC().Format(time.RFC3339))))
 	} else if waits {
-		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
+		return launchWait(m.token, wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role))
 	}
-	launch := r.supervisedClaim(m.token)
-	if launch.Generation == 0 {
-		return wait.Errorf("%s waits for its %s's claim's first launch to register its session: no launch of that claim holds the role yet",
-			m.what, m.role)
+	topic := notify.RoleTopicPrefix + string(m.token)
+	gate := r.roleWaitGate(row, topic)
+	if gate.ended != "" {
+		return claimEnded(gate.view.State)
 	}
-	if supervise.Unregistered(launch.State) {
-		return wait.Errorf("%s waits for its %s's launch %d, which is %s, to register its session: a publish now would reach an earlier launch's session or none",
-			m.what, m.role, launch.Generation, launch.State)
+	if gate.wait != nil {
+		return gate.wait
 	}
-	holder, published := r.publishTo(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
+	launch := gate.view
+	holder, published := r.publishTo(ctx, topic, m.message, m.message, record.OutboxKey(row.ID))
 	switch {
 	case published == nil && holder != "" && launch.Session != "" && !launch.HoldsSession(holder):
-		return wait.Errorf("%s was stored for session %s, which is not %s, the session of its %s's launch %d: it waits for that session to hold the role",
-			m.what, holder, launch.Session, m.role, launch.Generation)
+		return r.roleWaitPublished(topic, launch, wait.Errorf("%s was stored for session %s, which is not %s, the session of its %s's launch %d: it waits for that session to hold the role",
+			m.what, holder, launch.Session, m.role, launch.Generation))
 	case published == nil:
 		r.log.Info(m.delivered, m.attributes...)
 		if m.end != nil {
@@ -288,11 +306,12 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		}
 		return nil
 	case errors.Is(published, notify.ErrNoHolder):
-		return wait.Errorf("%s waits for a session to hold its %s's role: %w", m.what, m.role, published)
+		return r.roleWait(topic, launch, published, wait.Errorf("%s waits for a session to hold its %s's role: %w", m.what, m.role, published))
 	case errors.Is(published, notify.ErrHolderUnresponsive):
-		return wait.Errorf("%s waits for its %s, whose session the listener reports %s: %w", m.what, m.role, notify.StateUnresponsive, published)
+		return r.roleWait(topic, launch, published, wait.Errorf("%s waits for its %s, whose session the listener reports %s: %w",
+			m.what, m.role, notify.StateUnresponsive, published))
 	}
-	return fmt.Errorf("publish %s to its %s: %w", m.what, m.role, published)
+	return r.roleWait(topic, launch, published, wait.Errorf("%s waits for its %s to take it: %w", m.what, m.role, published))
 }
 
 // endUndelivered is the end of row, a held message's, undelivered: the test's hook between the read

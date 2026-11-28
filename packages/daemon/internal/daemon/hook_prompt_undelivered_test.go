@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -149,10 +150,12 @@ func requireSays(t *testing.T, body string, words ...string) {
 // nothing for a publish naming no source session, as the daemon's prompts name none) waits for a
 // session to hold the role while the hour after its row was made runs: retried on the row's
 // backoff, nothing posted on the issue. The listener keeps nothing for such a publish, so the row
-// is the prompt's keeper.
+// is the prompt's keeper. The role's claim has said it is ready, so the gate lets the publish
+// reach the listener (roleWaitGate; a role with no claim is published nothing until its start).
 func TestAHookPromptNoSessionHoldsWaitsForTheRoleInsideTheHour(t *testing.T) {
 	t.Parallel()
-	runner, _, pool, publisher, _ := unheldHookRunner(t)
+	runner, sup, pool, publisher, _ := unheldHookRunner(t)
+	readyOutboxClaim(t, sup, "LEGION-208", claim.RoleImplementer)
 	hookRowMadeAt(t, runner, pool, firedHook, time.Now().Add(-time.Minute))
 
 	if err := runner.RunOnce(context.Background()); err != nil {
@@ -326,16 +329,19 @@ func TestTheHookPromptsOfOneRoleThatEndWithinAnHourShareOneMessage(t *testing.T)
 
 // A released role's woken session can claim its role only after several of the row's attempts:
 // the first wakes the pod and waits, and each later one before the claim meets a role no live
-// session holds, which the listener refuses with nothing kept. The row waits through each of them
-// on its backoff, and its first attempt once the session holds the role delivers the prompt, once:
-// a refused publish stores nothing, so the one forward is the one the session gets. The pod is
-// woken once and nothing is posted on the issue. The control is the base, whose row finishes at
-// the first refusal, the prompt kept nowhere.
+// session holds, which the listener refuses with nothing kept. The woken launch has said it is
+// ready, so the gate lets each of those publishes through (roleWaitGate): a session takes its
+// role's Envoy name only after its ready answers. The row waits through each of them on its
+// backoff, and its first attempt once the session holds the role delivers the prompt, once: a
+// refused publish stores nothing, so the one forward is the one the session gets. The pod is woken
+// once and nothing is posted on the issue. The control is the base, whose row finishes at the
+// first refusal, the prompt kept nowhere.
 func TestAHookPromptReachesItsWokenRoleAfterAClaimSlowerThanTwoRetries(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	runner, _, pool, publisher, topic := unheldHookRunner(t)
+	runner, sup, pool, publisher, topic := unheldHookRunner(t)
 	machine := recordedReleasedClaim(t, runner, claim.RoleImplementer)
+	sup.deps.Conns.(*fake.Conns).Register(mustClaimToken(t, "LEGION-208", claim.RoleImplementer), fake.NewConn())
 	hookRowMadeAt(t, runner, pool, firedHook, time.Now().Add(-time.Minute))
 
 	if err := runner.RunOnce(ctx); err != nil {
@@ -347,6 +353,10 @@ func TestAHookPromptReachesItsWokenRoleAfterAClaimSlowerThanTwoRetries(t *testin
 	if held := machine.Claim(); held.Released() {
 		t.Fatalf("the implementer is %s by %s after the first attempt, want the wake to have resumed it", held.State, held.SuspendedBy)
 	}
+	// The woken launch registers its session and says it is ready, before its session holds the
+	// role's Envoy name.
+	machine.Wait()
+	comesUp(t, machine, true)
 	// Two attempts, each past the row's backoff, while the woken session has claimed nothing.
 	for step := 1; step <= 2; step++ {
 		drainAt(t, runner, time.Duration(step)*time.Minute, "a retry before the claim")
@@ -405,6 +415,9 @@ func TestAnUndeliveredHookPromptTellsTheIssuesArchitectOnceForEachMessage(t *tes
 	runner, sup, pool := hookRunner(t, publisher)
 	failedClaim(t, sup, claim.RoleImplementer)
 	failedClaim(t, sup, claim.RoleTester)
+	// The issue's architect has said it is ready, so each notice is published to it: a notice to an
+	// architect with no claim ends without its publish (roleWaitGate).
+	readyOutboxClaim(t, sup, "LEGION-208", claim.RoleArchitect)
 	testerHook := firedHook
 	testerHook.Role, testerHook.Hook, testerHook.Prompt = claim.RoleTester, "tester-loop", "Run the failing case first."
 	againHook := firedHook
@@ -522,7 +535,11 @@ func endedWithTheMessage(t *testing.T, pool *store.Pool, publisher *holderPublis
 // again with the restarted daemon given a new database that holds the issue's record and no
 // outbox row, which is what a daemon that kept the wait in its process memory alone would leave
 // after the restart, and each must fail. At the base the row ends at the first refusal with a log
-// line and no message, so each row fails there as well.
+// line and no message, so each row fails there as well. The implementer's claim said it was ready
+// before the work-back was made, in the first daemon and in the restarted one, which restores its
+// claims as a boot does: so the gate lets each publish reach the listener (roleWaitGate), the
+// listener's answer is what the row meets, and the work-back's hour runs from its making
+// (keptRoleMessageEnded counts it from the later of the making and the claim's last ready).
 func TestARestartedDaemonKeepsARefusedWorkBackInsideItsHour(t *testing.T) {
 	t.Parallel()
 	for _, row := range restartRows {
@@ -533,20 +550,24 @@ func TestARestartedDaemonKeepsARefusedWorkBackInsideItsHour(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				runner, _, pool, publisher, topic := unheldHookRunner(t)
+				ready := time.Now().UTC().Add(-20 * time.Minute)
+				runner, sup, pool, publisher, topic := unheldHookRunner(t)
+				readyOutboxClaimSince(t, sup, "LEGION-208", claim.RoleImplementer, ready)
 				hookRowMadeAt(t, runner, pool, firedHook, time.Now().Add(-10*time.Minute))
 				drainAt(t, runner, 0, "the first daemon's attempt, which the listener refuses")
 				if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 1 || deliveriesTo(publisher, topic) != 0 {
 					t.Fatalf("before the restart %d hook-prompt rows wait and %d deliveries were made, want the one refused work-back waiting: a daemon that ends the row at the listener's refusal leaves the restart nothing to keep",
 						left, deliveriesTo(publisher, topic))
 				}
-				// The restart: a new outbox and a new supervisor with no claim, and only the
+				// The restart: a new outbox and a new supervisor, which holds the implementer's
+				// claim again as a boot restores the claims the store records, and only the
 				// database carried over, or, for the control, a new database.
 				restartedPool := pool
 				if empty {
 					_, _, restartedPool = hookRunner(t, publisher)
 				}
-				restarted, _ := restartedHookRunner(t, restartedPool, publisher, &outboxDispatch{})
+				restarted, restartedSup := restartedHookRunner(t, restartedPool, publisher, &outboxDispatch{})
+				readyOutboxClaimSince(t, restartedSup, "LEGION-208", claim.RoleImplementer, ready)
 				failure := row.after(t, restarted, restartedPool, publisher, topic)
 				switch {
 				case !empty && failure != "":

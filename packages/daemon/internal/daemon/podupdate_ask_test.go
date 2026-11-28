@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // The round every case below asks for, the pod it was opened over, and the text the sweep built.
@@ -41,7 +42,8 @@ func askRunner(t *testing.T, publisher outboxNotices, rounds map[claim.Role]stri
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	for role, round := range rounds {
 		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-208", role), Project: "legion",
-			Tree: "LEGION-208", Issue: "LEGION-208", Role: role, State: supervise.StateQueued, UpdateRound: round}, ""); err != nil {
+			Tree: "LEGION-208", Issue: "LEGION-208", Role: role, Generation: 1, State: supervise.StateReady,
+			Session: "ses-" + string(role), SessionFile: t.TempDir() + "/session.jsonl", UpdateRound: round}, ""); err != nil {
 			t.Fatalf("create the %s's claim: %v", role, err)
 		}
 	}
@@ -154,11 +156,12 @@ func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
 	}
 }
 
-// Every publish failure but a role with no holder keeps the row's retry: a holder that did not
-// confirm the ask in time can take it on the next attempt, a holder that does not advertise the
-// delivery mode can be replaced by another session on the role, and a forward the listener's own
-// NATS grant denies goes through once an operator changes that grant. No published line is
-// written for any of them.
+// Every refusal of the listener's but a role with no holder keeps the row waiting for its role
+// (roleWait), retried on the capped backoff of a role wait (dispatch://INFRA-4131/spec#b-r-capped)
+// rather than logged as a failure at each attempt: a holder that did not confirm the ask in time
+// can take it on the next attempt, a holder that does not advertise the delivery mode can be
+// replaced by another session on the role, and a forward the listener's own NATS grant denies goes
+// through once an operator changes that grant. No published line is written for any of them.
 func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
 	t.Parallel()
 	publisher := &outboxPublisher{}
@@ -171,8 +174,8 @@ func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
 	} {
 		publisher.err = fmt.Errorf("publish to the implementer's topic: %w", cause)
 		err := runner.execute(context.Background(), row)
-		if err == nil || !errors.Is(err, cause) {
-			t.Fatalf("the ask answered %v = %v, want the answer as a failure, retried", cause, err)
+		if err == nil || !errors.Is(err, cause) || !errors.Is(err, wait.ErrWaiting) {
+			t.Fatalf("the ask answered %v = %v, want the answer kept as a wait for the role, retried", cause, err)
 		}
 		t.Logf("%T: %v", cause, err)
 	}

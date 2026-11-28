@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -82,14 +83,14 @@ const cutoverStoredSeq = 5
 
 // cutoverWait bounds each wait of this test on the daemon's own work after its boot: a launch, a
 // registration, an outbox row's tries, an idle pass, the record of a design's news. The longest of
-// those is a merger's start that a closed design gate held: once the gate opens the test makes the
-// row due, and the row's backoff timer or the outbox's sweep, every outboxLease (30 seconds), runs
-// it. A try of that row that read the gate closed just before the test opened it can still record
-// its retry after the test made the row due, which puts the row back on its backoff, up to the
-// outbox's 64 seconds (record.RetryBackoff), so the bound stays above that. It is the bound a
-// fault is reported at, so a slow machine is no failure, and a start that never comes fails here
-// rather than at the package's deadline. cutoverPoll is how often a wait asks: most questions are a
-// read of the daemon's claims over its API or of its database.
+// those is a merger's start that a closed design gate held: the gate's opening makes the row due
+// at once (record.WaitForGate), and the row's lane, or the outbox's sweep, every outboxLease (30
+// seconds), runs it. A try of that row that read the gate closed just before it opened is marked
+// woken by the opening (record.Store.ExpediteWaits), so its retry makes it due at once rather than
+// at its wait's next step (record.RoleWaitBackoff), and the bound stays above the sweep. It is the
+// bound a fault is reported at, so a slow machine is no failure, and a start that never comes
+// fails here rather than at the package's deadline. cutoverPoll is how often a wait asks: most
+// questions are a read of the daemon's claims over its API or of its database.
 const (
 	cutoverWait = 90 * time.Second
 	cutoverPoll = 100 * time.Millisecond
@@ -322,17 +323,15 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	if launched := rig.launches(rig.e.merger, 0); len(launched) != 0 {
 		t.Fatalf("E's merger was launched by %v while its tree's design gate was closed, want no start", cutoverMethods(launched))
 	}
-	approved := 2
-	putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: rig.e.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + rig.e.key,
-		LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
-	// The held start waits on its row's backoff, up to the outbox's 64 seconds
-	// (record.RetryBackoff). Made due here, behind the daemon, it runs when its lane wakes: at the
-	// backoff timer the lane armed for the old due time, or at the outbox's next sweep. It then waits
-	// for the news of version 2 to be recorded, which the entry sweep's backstop queues
-	// (cutoverEntrySweep).
-	if _, err := rig.pool.Exec(ctx, "update outbox set next_at = now() where issue = $1 and kind = 'supervise'", rig.e.key); err != nil {
-		t.Fatalf("let the backoff of E's merger start go: %v", err)
-	}
+	// A person approves version 2, which opens the gate. The approval is applied as the daemon
+	// applies a Dispatch event, through the workflow engine, whose opening of the gate makes the
+	// held start due at once (workflow's tellGateMoved, record.WaitForGate): no backoff is waited
+	// out. The start then waits for what changed in version 2 to be recorded, which the reconcile
+	// the opening queued records, and that record makes it due at once again (designChanges,
+	// record.WaitForNews).
+	applyFact(t, rig.pool, "dispatch", "approved-spec-"+rig.e.key, intake.DispatchArtifact{Key: rig.e.key, ArtifactID: "spec-" + rig.e.key,
+		Kind: intake.DispatchArtifactApproved, Version: 2, Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: record.EventMark{Seq: 90}},
+		startedAgainEngine(rig.cfg))
 	rig.connect(t, rig.e)
 	rig.settled(t, rig.e)
 	rig.toldOnceWithNews(t, rig.e, 2)

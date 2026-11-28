@@ -482,6 +482,61 @@ func TestEnsureRepositoryCacheReplacesADriftedPodKeepingTheSandbox(t *testing.T)
 	}
 }
 
+// The orphan sweep (ReconcileOrphans) leaves a cache whose pod drifted to the cache sweep
+// (SweepRepositoryCaches), so a daemon's boot reconciliation, which the claims' relaunches wait for,
+// never replaces cache pods one after another: a release that moved the worker image had every
+// cache pod of INFRA's daemon replaced inside its boot reconciliation on 2026-11-27, and the boot's
+// next step met an expired budget (dispatch://INFRA-4131/spec#b-r-boot-budget). The cache sweep
+// replaces that pod as before: suspended, then Running on the runtime's image. A cache sweep whose
+// context has ended answers that context's error and writes nothing, so the daemon can say a pass
+// was cut short.
+func TestReconcileOrphansLeavesADriftedCachePodToTheCacheSweep(t *testing.T) {
+	t.Parallel()
+	drifted := cachePod(cacheRepo, "uid-pod-old", "uid-cache", "ghcr.io/cybermonklabs/legion-worker@sha256:0ld", corev1.PodRunning)
+	g := newRig(t, []k8sruntime.Object{cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""), drifted}, withOptions(func(o *Options) {
+		o.CacheRepositories = func() []ghrepo.Repository { return []ghrepo.Repository{cacheRepo} }
+	}))
+	name := CacheSandboxName(testProject, cacheRepo)
+	cacheStored(g, cacheRepo)
+	g.eventually("the drifted cache pod in the store", func() bool {
+		_, drifted := imageDrift(g.r.storedPod(name), testImage)
+		return drifted
+	})
+	replaced := func() (suspended, running bool) {
+		for _, w := range g.writes() {
+			if w.resource == "sandboxes" && w.verb == "patch" {
+				suspended = suspended || modePatched(t, w.patch, modeSuspended)
+				running = running || modePatched(t, w.patch, modeRunning)
+			}
+		}
+		return suspended, running
+	}
+
+	g.clearActions()
+	if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
+		t.Fatalf("ReconcileOrphans: %v", err)
+	}
+	if writes := g.writes(); len(writes) != 0 {
+		t.Fatalf("ReconcileOrphans wrote %v over a cache whose pod drifted, want nothing: the cache sweep replaces it", writes)
+	}
+
+	ended, end := context.WithCancel(g.ctx)
+	end()
+	if err := g.r.SweepRepositoryCaches(ended); !errors.Is(err, context.Canceled) {
+		t.Fatalf("SweepRepositoryCaches on an ended context = %v, want its error", err)
+	}
+	if writes := g.writes(); len(writes) != 0 {
+		t.Fatalf("SweepRepositoryCaches on an ended context wrote %v, want nothing", writes)
+	}
+
+	if err := g.r.SweepRepositoryCaches(g.ctx); err != nil {
+		t.Fatalf("SweepRepositoryCaches: %v", err)
+	}
+	if suspended, running := replaced(); !suspended || !running {
+		t.Fatalf("the cache sweep suspended the drifted cache %t and set it Running %t, want both", suspended, running)
+	}
+}
+
 // reserveCacheCPU is the cache Sandbox u with its pod template's cache container reserving cpu,
 // request and limit: a template written under another runtime.kubernetes.repository_cache.
 func reserveCacheCPU(t *testing.T, u *unstructured.Unstructured, cpu string) *unstructured.Unstructured {
@@ -628,10 +683,10 @@ func TestRefreshCacheTokensRewritesALostOrForeignSecret(t *testing.T) {
 // cacheStored waits until the runtime's stores hold the cache Sandbox of repo and its pod. A
 // Sandbox and its pod arrive on informers of their own, and nothing orders the Sandbox store after
 // the pod store, so a test that waits for the pod alone can read a Sandbox store that does not hold
-// the cache yet. RepositoryCache read such a store and found no cache on a loaded runner (#5643), and
-// the sweep (sweepCaches), which judges only the cache Sandboxes the store holds, passed over the
-// cache, wrote nothing and returned nil, so the mark a test then waited for never came (CI run
-// 45783744798, TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes).
+// the cache yet. RepositoryCache read such a store and found no cache on a loaded runner (#5643),
+// and the sweep (SweepRepositoryCaches), which judges only the cache Sandboxes the store holds,
+// passed over the cache, wrote nothing and returned nil, so the mark a test then waited for never
+// came (CI run 45783744798, TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes).
 func cacheStored(g *rig, repo ghrepo.Repository) {
 	g.t.Helper()
 	name := CacheSandboxName(testProject, repo)
@@ -814,11 +869,12 @@ func TestCensusAcceptsACacheSandboxAndRefusesAMalformedOne(t *testing.T) {
 	}
 }
 
-// The orphan sweep makes the missing cache of a repository of the cache set, keeps it, replacing a
-// pod of it that drifted, and retires one outside the set: marked with when it left the set, kept
-// while that is under Retain, then deleted in the foreground with its volume; one back in the set
-// before then loses the mark and stays. The claim path's sweep never judges a cache.
-func TestReconcileOrphansKeepsACacheInTheSetAndRetiresOneOutsideIt(t *testing.T) {
+// The cache sweep (SweepRepositoryCaches) makes the missing cache of a repository of the cache set,
+// keeps it, replacing a pod of it that drifted, and retires one outside the set: marked with when
+// it left the set, kept while that is under Retain, then deleted in the foreground with its volume;
+// one back in the set before then loses the mark and stays. ReconcileOrphans' claim path never
+// judges a cache (TestReconcileOrphansLeavesADriftedCachePodToTheCacheSweep).
+func TestTheCacheSweepKeepsACacheInTheSetAndRetiresOneOutsideIt(t *testing.T) {
 	t.Parallel()
 	var inSet atomic.Bool
 	inSet.Store(true)
@@ -842,8 +898,8 @@ func TestReconcileOrphansKeepsACacheInTheSetAndRetiresOneOutsideIt(t *testing.T)
 	sweep := func(what string) {
 		t.Helper()
 		g.clearActions()
-		if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
-			t.Fatalf("ReconcileOrphans %s: %v", what, err)
+		if err := g.r.SweepRepositoryCaches(g.ctx); err != nil {
+			t.Fatalf("SweepRepositoryCaches %s: %v", what, err)
 		}
 	}
 	unusedAt := func() string {
@@ -937,7 +993,7 @@ func TestReconcileOrphansKeepsACacheInTheSetAndRetiresOneOutsideIt(t *testing.T)
 // per such repository. Once no record names it — its last issue is done — the cache is marked,
 // kept for its retention and retired, which is the one rule the sweep has, and the cache of a
 // repository a live record still names is kept.
-func TestReconcileOrphansKeepsTheCacheOfARepositoryWhileARecordNamesIt(t *testing.T) {
+func TestTheCacheSweepKeepsTheCacheOfARepositoryWhileARecordNamesIt(t *testing.T) {
 	t.Parallel()
 	// A live record names acme/widgets throughout; stranger/tools is named by a live record until
 	// its issue is done.
@@ -957,8 +1013,8 @@ func TestReconcileOrphansKeepsTheCacheOfARepositoryWhileARecordNamesIt(t *testin
 	sweep := func(what string) {
 		t.Helper()
 		g.clearActions()
-		if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
-			t.Fatalf("ReconcileOrphans %s: %v", what, err)
+		if err := g.r.SweepRepositoryCaches(g.ctx); err != nil {
+			t.Fatalf("SweepRepositoryCaches %s: %v", what, err)
 		}
 	}
 
@@ -1018,8 +1074,8 @@ func TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes(t *testing.T) {
 	}
 	kept, unused := CacheSandboxName(testProject, servingSmoke), CacheSandboxName(testProject, recordedSmoke)
 
-	if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
-		t.Fatalf("ReconcileOrphans over both of the pair's caches: %v", err)
+	if err := g.r.SweepRepositoryCaches(g.ctx); err != nil {
+		t.Fatalf("SweepRepositoryCaches over both of the pair's caches: %v", err)
 	}
 
 	g.eventually("the recorded name's cache marked", func() bool {
@@ -1133,8 +1189,8 @@ func TestACacheMarkedUnderTheOldAnnotationRetiresOneRetentionAfterItsFirstMark(t
 	}
 	sweep := func(what string) {
 		t.Helper()
-		if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
-			t.Fatalf("ReconcileOrphans %s: %v", what, err)
+		if err := g.r.SweepRepositoryCaches(g.ctx); err != nil {
+			t.Fatalf("SweepRepositoryCaches %s: %v", what, err)
 		}
 	}
 	// marked answers case i+1's cache as the first pass left it, failing the test when it is gone
@@ -1750,10 +1806,10 @@ func TestEnsureRepositoryCacheReplacesACacheWhoseTemplateIsPlacedElsewhere(t *te
 }
 
 // A repository of the cache set whose cache cannot be made — its token cannot be minted — is logged
-// as the sweep's warning naming the cache and tried at the next sweep; ReconcileOrphans answers
-// nil, since its error holds the claims' launches back at boot and each launch ensures its own
-// repository's cache.
-func TestACacheThatCannotBeMadeNeverFailsTheReconciliation(t *testing.T) {
+// as the sweep's warning naming the cache and tried at the next sweep; SweepRepositoryCaches
+// answers nil, since each launch ensures its own repository's cache and fails, naming why, when it
+// cannot be made, so one repository's cache never stops another's launches.
+func TestACacheThatCannotBeMadeNeverFailsTheCacheSweep(t *testing.T) {
 	t.Parallel()
 	logs := &logBuffer{}
 	g := newRig(t, nil, withLog(logs), withOptions(func(o *Options) {
@@ -1761,8 +1817,8 @@ func TestACacheThatCannotBeMadeNeverFailsTheReconciliation(t *testing.T) {
 		o.CacheRepositories = func() []ghrepo.Repository { return []ghrepo.Repository{cacheRepo} }
 	}))
 	for range 2 {
-		if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
-			t.Fatalf("ReconcileOrphans with a cache that cannot be made = %v, want nil", err)
+		if err := g.r.SweepRepositoryCaches(g.ctx); err != nil {
+			t.Fatalf("SweepRepositoryCaches with a cache that cannot be made = %v, want nil", err)
 		}
 	}
 	name := CacheSandboxName(testProject, cacheRepo)
@@ -2022,7 +2078,7 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 	})
 	g.eventually("the cache ready", func() bool { status, _ := g.r.RepositoryCache(cacheRepo); return status.Ready })
 	inSet.Store(false)
-	if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
+	if err := g.r.SweepRepositoryCaches(g.ctx); err != nil {
 		t.Fatal(err)
 	}
 	g.eventually("acme/gadgets marked", func() bool {

@@ -81,8 +81,8 @@ func (e pastItsHour) Error() string { return "the hour after " + e.after + " has
 func (pastItsHour) Is(target error) bool { return target == errKeptRoleMessagePastItsHour }
 
 // keptRoleMessageEnded is the end of a kept role message's row that no attempt to publish it can
-// change, and nil while the message may still be delivered, read from wake, the claim's one read
-// of this attempt (claimWakeOf). publishKeptToRole runs it at the top of every attempt, before
+// change, and nil while the message may still be delivered, read from wake, the attempt's first
+// read of the claim (claimWakeOf). publishKeptToRole runs it at the top of every attempt, before
 // anything wakes the role or publishes. Two ends:
 //   - A role whose claim has failed or was retired gets no session that holds the role again.
 //   - A message whose hour has passed: keptRoleMessageHoldBound from the later of the row's making
@@ -97,8 +97,7 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 	start := row.CreatedAt
 	if wake.machine != nil {
 		if supervise.FailedOrRetired(wake.view.State) {
-			return &keptRoleMessageUndelivered{what: m.what, cause: errKeptRoleMessageRoleNotComing,
-				why: fmt.Sprintf("%s's claim is %s, so no session of it will hold the role again", m.who, wake.view.State)}, nil
+			return m.roleNotComing(wake.view.State), nil
 		}
 		coming, err := r.wakeComing(ctx, row.Issue, wake)
 		if err != nil || coming {
@@ -115,24 +114,35 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 	return nil, nil
 }
 
+// roleNotComing is the end of m's row whose role's claim is in state, failed or retired, so that no
+// session of the role holds it again (errKeptRoleMessageRoleNotComing).
+func (m keptRoleMessage) roleNotComing(state supervise.ClaimState) *keptRoleMessageUndelivered {
+	return &keptRoleMessageUndelivered{what: m.what, cause: errKeptRoleMessageRoleNotComing,
+		why: fmt.Sprintf("%s's claim is %s, so no session of it will hold the role again", m.who, state)}
+}
+
 // publishKeptToRole is the one flow of a kept role message's row (keptRoleMessage), the flow
-// hookPrompt and phaseEnded share. Each attempt reads the role's claim once (claimWakeOf), then:
+// hookPrompt and phaseEnded share. Each attempt reads the role's claim (claimWakeOf), then:
 //
 //   - The row's end, read before anything wakes or publishes (keptRoleMessageEnded): a role whose
 //     claim failed or was retired, or an hour that passed with no wake coming. It is answered as
 //     the *keptRoleMessageUndelivered, with no error, and the executor words the end.
 //   - A role whose pod was released is not "no live session holds the role": its session is intact
-//     and its pod is one wake away, so the row wakes it and waits on its backoff, and the row's
-//     first attempt after that resume has launched publishes (deliveryWake). A launch the wake
-//     pacing holds is waited for until it runs, the claim read again at its turn or
-//     parkedWakeBound on, whichever comes first (parkedWait). The daemon's own wake brings the pod
-//     back whatever the listener does with the publish; the listener's own report of a publish to
-//     a role with no live holder meets the role's open resume, and the pod starts once.
+//     and its pod is one wake away, so the row wakes it and waits for that launch (deliveryWake). A
+//     launch the wake pacing holds is waited for until it runs, the claim read again at its turn or
+//     parkedWakeBound on, whichever comes first (parkedWait). Either wait is one for any change of
+//     the role's claim (launchWait), so the launch, its registration and its ready each make the
+//     row due at once, and it publishes as the gate lets it (roleWaitGate). The daemon's own wake
+//     brings the pod back whatever the listener does with the publish; the listener's own report of
+//     a publish to a role with no live holder meets the role's open resume, and the pod starts once.
+//   - The gate every publish of the outbox goes through (roleWaitGate), which reads the claim
+//     again just before the publish: a claim that failed or was retired since the attempt's first
+//     read ends the row as keptRoleMessageEnded ends it (roleNotComing), so a failed or retired
+//     role is never published to, and a wait the gate decides is the row's wait.
 //   - The publish, with keep, to the Envoy topic of the role's claim (notify.RoleTopicPrefix and
-//     the claim's token), under the row's own key, through the gate every publish of the outbox
-//     goes through (publishKept). A retry of the row while its copy is still on the role's kept
-//     lane stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's answers and
-//     what a repeat after the copy's hand-over does.
+//     the claim's token), under the row's own key (publishKept). A retry of the row while its copy
+//     is still on the role's kept lane stores nothing new; notify.HTTPPublisher.PublishKept gives
+//     the listener's answers and what a repeat after the copy's hand-over does.
 //
 // What each answer of the publish does to the row:
 //
@@ -144,15 +154,24 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 //   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder), the
 //     role's claim records a session it does not hold and nothing was published (the gate's
 //     notify.ErrNoHolder), or a holder the listener calls unresponsive
-//     (notify.ErrHolderUnresponsive): the row is the message's keeper, so it waits
-//     (wait.ErrWaiting), tried again on its backoff, until a session of the role holds it or an
+//     (notify.ErrHolderUnresponsive): the row is the message's keeper, so it waits for its role
+//     (roleWait), tried again on the capped backoff of a role wait
+//     (dispatch://INFRA-4131/spec#b-r-capped), until a session of the role holds it or an
 //     attempt's keptRoleMessageEnded ends the row. A released role's woken session claims the role
 //     a few attempts after the resume launched it, and a role with no claim yet may be started
 //     inside the hour. A refused publish stores nothing, so the one publish a session takes is the
 //     one it is handed, and a retry of a publish whose answer was lost is stored once, under the
 //     row's own key (record.OutboxKey), which every attempt sends;
-//   - every other failure: the error is returned, wrapped with the message's subject, and the row
-//     keeps its retry.
+//   - every other failed publish (publishFailed) but the next one: a holder that did not confirm in
+//     time, one that does not advertise the delivery mode, a forward the listener's own NATS grant
+//     denies, any other refusal or 5xx of the listener's, and a publish that did not reach the
+//     listener or could not read its answer: the row waits for its role the same way, since a
+//     later attempt can go through, the failure being the listener's last answer its wait's lines
+//     name;
+//   - a message the listener refuses for itself, a 400 or a 413 with its own error
+//     (notify.ErrMessageRefused): the role wait it is ends the row undelivered at that run, with
+//     one line at Error and no wait, since no retry of the same message changes that answer
+//     (messageRefused, permanentRefusal, finishRefused).
 //
 // The row is not held for a holder as an architect's notice is held, and it can reach a later
 // session than the one it was written for: for a role nobody claims, the listener hands a kept
@@ -164,28 +183,25 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 // role_keep.go), and a row ends at its own, so no session is handed a message older than that,
 // and each message names its move back or its phases, so its reader judges which round it was for.
 //
-// Seven other executors publish to a role's topic, each with its own rules for what the publisher
-// answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
-// every other failure; deliverNotice, an architect's notice, holds the row for
-// a topic with no holder while the owning architect can hold its role again (noticeAnswered);
-// roleMessage ends the row for a topic with no holder, waits for a holder the listener calls
-// unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that refuses the
-// delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied); mergeQueueRemoval and mergeHoldsChanged, the merger's message of a
-// removal from the merge queue and of a change of the merge holds, hold the row for a topic with
-// no holder and for an unresponsive holder while the merger's claim has neither failed nor
-// retired, and retry every other failure (merge_queue_removal.go, merge_holds.go);
-// mergeForwardMessage, a message of a merge forward, holds its row the same way while the role's
-// claim has neither failed nor retired and the merge forward still stands at the row's head
-// (merge_forward.go), those three publishing through the deliverHeld they share; and
-// controllerNotice, every notice told to the project's controller, publishes only once the
-// registered controller session holds the controller's role live, and holds its row for a topic
-// with no live holder, however long that lasts. Each of those seven publishes with keep: false:
-// deliverNotice, the three through deliverHeld and controllerNotice hold their own row, and a kept
-// copy beside it would be a second keeper of one message; roleMessage's message is stale by the
-// time a role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the
-// role answers. So whoever changes the rule for a topic with no holder must read all nine
-// executors, not this function alone.
+// Every executor that publishes to a role's topic, the controller's role topic among them
+// (record.OutboxKind.WaitsForRole: notice, controller_notice, merge_queue_removal,
+// merge_holds_changed, merge_forward, hook_prompt, phase_ended, role_message and update_ask),
+// passes through the one gate roleWaitGate (daemon/role_wait.go,
+// dispatch://INFRA-4131/spec#b-r-wait-ready) before publishing, and turns every failed publish
+// that keeps its row (publishFailed) into a roleWait on the capped backoff
+// (dispatch://INFRA-4131/spec#b-r-capped):
+// whoever changes the rule for waiting on a role changes roleWaitGate and role_wait.go rather than
+// chasing the nine executors apart. The one role wait that ends its row, a message the listener
+// refuses for itself (messageRefused), is settle's end for every kind rather than an executor's.
+// The executors still own their own non-claim ends and waits, and what each listener refusal ends
+// rather than keeps (notice's fence and architectEnded, roleMessage's no-holder/capability/denied
+// ends, updateAsk's round and no-holder end, keptRoleMessageEnded's hour, deliverHeld's
+// design-gate and session checks, and controllerNotice's read that the registered controller
+// session holds the controller's role live, controllerHolds, whose wait is a roleWait too). The
+// seven of them other than this function's two kinds publish with keep: false: deliverNotice, the
+// three through deliverHeld and controllerNotice hold their own row, and a kept copy beside it
+// would be a second keeper of one message; roleMessage's message is stale by the time a role nobody
+// holds is claimed; and updateAsk's round ends at its bound whether or not the role answers.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, token claim.Token, m keptRoleMessage) (*keptRoleMessageUndelivered, error) {
 	wake, err := r.claimWakeOf(ctx, token)
 	if err != nil {
@@ -197,12 +213,20 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 	if waits, turn, err := r.deliveryWake(ctx, token, wake, m.subject, row.HeldByPause); err != nil {
 		return nil, err
 	} else if !turn.IsZero() {
-		return nil, r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
-			m.subject, m.role, turn.UTC().Format(time.RFC3339)))
+		return nil, launchWait(token, r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
+			m.subject, m.role, turn.UTC().Format(time.RFC3339))))
 	} else if waits {
-		return nil, wait.Errorf("%s waits for its %s's released pod to come back", m.subject, m.role)
+		return nil, launchWait(token, wait.Errorf("%s waits for its %s's released pod to come back", m.subject, m.role))
 	}
-	keeps, err := r.publishKept(ctx, notify.RoleTopicPrefix+string(token), m.message, m.message, record.OutboxKey(row.ID))
+	topic := notify.RoleTopicPrefix + string(token)
+	gate := r.roleWaitGate(row, topic)
+	if gate.ended != "" {
+		return m.roleNotComing(gate.view.State), nil
+	}
+	if gate.wait != nil {
+		return nil, gate.wait
+	}
+	keeps, err := r.publishKept(ctx, topic, m.message, m.message, record.OutboxKey(row.ID))
 	switch {
 	case err == nil:
 		if keeps {
@@ -210,7 +234,7 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 		}
 		return nil, nil
 	case errors.Is(err, notify.ErrNoHolder), errors.Is(err, notify.ErrHolderUnresponsive):
-		return nil, wait.Errorf("%s waits for a session to hold its %s's role: %w", m.subject, m.role, err)
+		return nil, r.roleWait(topic, gate.view, err, wait.Errorf("%s waits for a session to hold its %s's role: %w", m.subject, m.role, err))
 	}
-	return nil, fmt.Errorf("publish %s to its %s: %w", m.subject, m.role, err)
+	return nil, r.roleWait(topic, gate.view, err, wait.Errorf("%s waits for its %s to take it: %w", m.subject, m.role, err))
 }

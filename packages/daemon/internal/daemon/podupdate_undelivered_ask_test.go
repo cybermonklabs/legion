@@ -1,13 +1,12 @@
 package daemon
 
-// An update round's ask counts once it reached a session (dispatch://INFRA-4109 R4,
-// dispatch://INFRA-4131 R4, verification's c-undelivered-ask-asked-again). The sweep enqueues the
-// ask and marks nothing; the outbox's row publishes it under the claim's own lock and marks the
-// claim asked only when the publish reached a session (updateAsk, supervise's
-// Machine.PublishUpdateAsk). So an ask that finds no live holder on the role's topic
-// (notify.ErrNoHolder) leaves the claim unasked, a later sweep asks it again, and the round ends
-// once it answers, long before its bound; an ask that reached a session is the only one its role
-// gets, whatever other row of the round runs before or after it.
+// An update round's ask counts once it reached a session (dispatch://INFRA-4109 R4, verification's
+// c-undelivered-ask-asked-again). The sweep enqueues the ask and marks nothing; the outbox's row
+// publishes it under the claim's own lock and marks the claim asked only when the publish reached a
+// session (updateAsk, supervise's Machine.PublishUpdateAsk). So an ask that finds no live holder on
+// the role's topic (notify.ErrNoHolder) leaves the claim unasked, a later sweep asks it again, and
+// the round ends once it answers, long before its bound; an ask that reached a session is the only
+// one its role gets, whatever other row of the round runs before or after it.
 //
 // These cases drive the pod-update rig of podupdate_test.go, whose role-message lane runs each ask
 // row the sweep wrote through the outbox's own executor, against a listener that refuses a topic
@@ -23,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -333,8 +333,9 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 // waits out its pod, so a row that waited for that lock would hold every hook prompt, merge
 // forward's message and ask of that issue behind one relaunch. Here the claim's machine is held
 // inside a Resume: the row returns a wait at once, having published nothing and marked nothing,
-// and the row's next attempt once the relaunch is over publishes the ask, which is delivered once
-// in all.
+// and the row's next attempt once the relaunch is over and its launch has come up ready publishes
+// the ask, which is delivered once in all. The launch comes up before that attempt because the
+// gate publishes nothing to a launch that has not registered its session (roleWaitGate).
 //
 // The negative control is a row that takes the lock with waiting: the run below does not return
 // while the relaunch is held inside its Resume, and the wait for its answer gives up by name at the
@@ -379,7 +380,15 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 		t.Fatalf("the claim records an ask at %v while its lock was held, want none", v.UpdateTaskedAt)
 	}
 
+	// The relaunch's Resume answers, and its launch comes up as every launch of the rig does: its
+	// shim dials a connection of its own, its agent registers and it says it is ready. The fake
+	// answers the Resume with a process in no pod.
+	conn := fake.NewConn()
+	rig.conns.Register(rig.tokens[claim.RoleImplementer], conn)
+	rig.workers[claim.RoleImplementer] = conn
 	release()
+	rig.settleAll()
+	rig.registerInto(claim.RoleImplementer, "")
 	rig.runAsk(row)
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateTaskedAt == nil {
 		t.Fatalf("the claim records no ask after the row's next attempt, want the delivered ask marked")

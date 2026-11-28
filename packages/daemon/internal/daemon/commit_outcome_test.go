@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -37,10 +36,6 @@ import (
 // faultMatch is the SQL every transaction that serializes with the facts sends (intake's
 // SerializeFacts): an admission reconcile's and a fact's.
 const faultMatch = "legion.apply_fact"
-
-// noticesReleasedMessage is what a release of the notices waiting for a ready architect logs
-// once its transaction has committed (outbox.releaseWaiting).
-const noticesReleasedMessage = "outbox notices released: their architect is ready"
 
 // faultedPools is one cloned database reached two ways: direct, which seeds and observes, and
 // faulted, through a proxy whose armed fault holds or cuts one transaction's commit. Both are
@@ -225,9 +220,13 @@ func (l *laneWakes) sorted() []string {
 	return slices.Sorted(slices.Values(l.issues))
 }
 
-// releasedLanes is the lane wakes the notice tests' one release makes: the root's two notices and
-// another tree's root's one, while the sub-architect's notice keeps its time.
-var releasedLanes = []string{"LEGION-1", "LEGION-1", "LEGION-9"}
+// releasedRows is how many notices the notice tests' one release makes due: the root's two and
+// another tree's root's one, while the sub-architect's notice keeps its time. releasedLanes is the
+// lane wakes that release makes, one for each lane it made a row of due (projectRecords'
+// ExpediteWaits): the root's notice lane, which holds both of its notices, and the other root's.
+const releasedRows = 3
+
+var releasedLanes = []string{"LEGION-1", "LEGION-9"}
 
 // noticeRig is a runner on the faulted pool whose records wake lanes, over the notices of
 // TestAReadyArchitectReleasesOnlyItsOwnNotices, seeded through the direct pool.
@@ -251,18 +250,7 @@ func newNoticeRig(t *testing.T) *noticeRig {
 	architectClaimOn(t, sup, "LEGION-2", supervise.StateWorking, "ses_sub")
 	architectClaimOn(t, sup, "LEGION-9", supervise.StateReady, "ses_other")
 	now := time.Now()
-	later := now.Add(noticeReholdDelays[1])
-	for _, c := range []struct {
-		issue   string
-		resends int
-	}{
-		{"LEGION-1", 1}, // a re-held copy of the root's
-		{"LEGION-1", 0}, // the root's, held on backoff
-		{"LEGION-3", 1}, // the sub-architect's: LEGION-3 is under LEGION-2, whose sub-architect runs
-		{"LEGION-9", 1}, // another tree's root's
-	} {
-		enqueueOutbox(t, direct, records, mustOutboxRow(t, c.issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Resends: c.resends}, later))
-	}
+	architectsWaitingNotices(t, direct, records, now.Add(record.RoleWaitBackoffMost))
 	logged, log := watchedLog()
 	wakes := &laneWakes{}
 	runner := &outbox{log: log, pool: faulted, dispatchProject: "LEGION", supervisor: sup, project: "legion", now: func() time.Time { return now },
@@ -270,10 +258,11 @@ func newNoticeRig(t *testing.T) *noticeRig {
 	return &noticeRig{direct: direct, fault: fault, logged: logged, wakes: wakes, runner: runner, now: now}
 }
 
-// release releases the notices waiting for LEGION-1's and LEGION-9's architects.
+// release releases the rows waiting for LEGION-1's and LEGION-9's architects, as their readies do
+// (releaseReadies).
 func (r *noticeRig) release(t *testing.T, ctx context.Context) error {
 	t.Helper()
-	return r.runner.releaseWaiting(ctx, architectTopicToken(t, "LEGION-1"), architectTopicToken(t, "LEGION-9"))
+	return releaseReadies(ctx, r.runner, architectTopicToken(t, "LEGION-1"), architectTopicToken(t, "LEGION-9"))
 }
 
 // due is how many notices the direct pool reads as due at the rig's moment.
@@ -299,7 +288,7 @@ func TestANoticeReleaseWhoseCommitReplyComesAfterTheCancelWakesItsLanes(t *testi
 	go func() { done <- rig.release(t, ctx) }()
 	testdb.Met(t, fired)
 	testwait.Eventually(t, "the released notices to be due while the release's commit reply is held", func() bool {
-		return rig.due(t) == len(releasedLanes)
+		return rig.due(t) == releasedRows
 	})
 	if err := cancelWhileCommitting(t, done, cancel); err != nil {
 		t.Errorf("the release whose commit landed = %v, want nil", err)
@@ -307,7 +296,7 @@ func TestANoticeReleaseWhoseCommitReplyComesAfterTheCancelWakesItsLanes(t *testi
 	if woken := rig.wakes.sorted(); !slices.Equal(woken, releasedLanes) {
 		t.Errorf("lanes woken after the release = %v, want %v: its commit landed", woken, releasedLanes)
 	}
-	if lines := releaseLogLines(rig.logged, noticesReleasedMessage); len(lines) != 1 {
+	if lines := releaseLogLines(rig.logged, wantReadyReleasedLine); len(lines) != 1 {
 		t.Errorf("release lines after the release = %q, want one: its commit landed", lines)
 	}
 
@@ -317,7 +306,7 @@ func TestANoticeReleaseWhoseCommitReplyComesAfterTheCancelWakesItsLanes(t *testi
 	if woken := rig.wakes.sorted(); !slices.Equal(woken, releasedLanes) {
 		t.Errorf("lanes woken after the retry = %v, want still %v: the retry released nothing", woken, releasedLanes)
 	}
-	if lines := releaseLogLines(rig.logged, noticesReleasedMessage); len(lines) != 1 {
+	if lines := releaseLogLines(rig.logged, wantReadyReleasedLine); len(lines) != 1 {
 		t.Errorf("release lines after the retry = %q, want still the one", lines)
 	}
 }
@@ -339,20 +328,20 @@ func TestANoticeReleaseCutBeforeItsCommitWakesNothingUntilItsRetry(t *testing.T)
 	if woken := rig.wakes.sorted(); len(woken) != 0 {
 		t.Errorf("lanes woken after the cut release = %v, want none: nothing committed", woken)
 	}
-	if lines := releaseLogLines(rig.logged, noticesReleasedMessage); len(lines) != 0 {
+	if lines := releaseLogLines(rig.logged, wantReadyReleasedLine); len(lines) != 0 {
 		t.Errorf("release lines after the cut release = %q, want none", lines)
 	}
 
 	if err := rig.release(t, context.Background()); err != nil {
 		t.Fatalf("the retried release = %v, want nil", err)
 	}
-	if due := rig.due(t); due != len(releasedLanes) {
-		t.Errorf("due notices after the retry = %d, want %d", due, len(releasedLanes))
+	if due := rig.due(t); due != releasedRows {
+		t.Errorf("due notices after the retry = %d, want %d", due, releasedRows)
 	}
 	if woken := rig.wakes.sorted(); !slices.Equal(woken, releasedLanes) {
 		t.Errorf("lanes woken after the retry = %v, want %v", woken, releasedLanes)
 	}
-	if lines := releaseLogLines(rig.logged, noticesReleasedMessage); len(lines) != 1 {
+	if lines := releaseLogLines(rig.logged, wantReadyReleasedLine); len(lines) != 1 {
 		t.Errorf("release lines after the retry = %q, want one", lines)
 	}
 }

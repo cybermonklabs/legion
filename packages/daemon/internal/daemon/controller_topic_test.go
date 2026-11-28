@@ -34,26 +34,36 @@ import (
 // architect's role topic takes the held and worker-died notices once each, the held one carrying
 // the failure that held the issue, and the controller's role topic takes neither, because the
 // controller's skill does nothing for a hold its architect has not escalated
-// (#4065).
+// (#4065). The architect runs and has said it is ready, so the notices have a session to reach: a
+// notice to an architect with no claim ends without its publish (roleWaitGate,
+// dispatch://INFRA-4131/spec#b-r-wait-ready).
 //
 // A tree architect whose own launches run out is the case the controller still hears, from an
 // outbox row of its own (workflow's noticeWithController), once the registered controller session
 // holds the controller's role live. Here the listener refuses the controller's role topic twice
-// first, as a stream outage answers: only the controller's row retries, so the architect's topic
-// is sent the worker-died once however long the controller's topic keeps failing, and every try
-// carries the one key the controller's subscriber dedupes on. The controller reads the notice the
-// architect is sent, without the row's routing.
+// first, as a stream outage answers: only the controller's row retries, and every try carries the
+// one key the controller's subscriber dedupes on. The architect's own row ends undelivered at its
+// first attempt, since its claim failed (roleWaitGate), so the architect's topic is sent nothing
+// however long the controller's topic keeps failing. The controller reads the notice written for
+// the architect, without the row's routing.
+//
+// The held root is the operator's tree, and the planner's run-out takes it out of the workflow
+// (admission finds it in progress with no tree of the workflow's running): that move queues the
+// release of its Dispatch claim (workflow's leaveUnderOperator, dispatch://INFRA-3144), a row of
+// the issue that reads the issue from Dispatch before it judges anything (releaseClaim). The
+// test's Dispatch shows the issue unclaimed (runOutHoldBoard), so that row ends at its first run,
+// and every row of the hold still finishes.
 func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResendTheArchitects(t *testing.T) {
 	t.Parallel()
 	listener := newNoticeListener()
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
-	cfg := workflowConfig(t, workflowNATS(t))
+	cfg := workflowConfigOn(t, workflowNATS(t), runOutHoldBoard)
 	cfg.EnvoyURL = server.URL
 	cfg.LaunchFailureLimit = 1
 	rt := fake.NewRuntime()
-	rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("pane launch failed")}, fake.SpawnResult{Err: errors.New("pane launch failed")})
-	o := fakeRuntime(rt, &built{})
+	var launched built
+	o := fakeRuntime(rt, &launched)
 	o.workflowTokens = &workflowTokenRecorder{}
 	d := startDaemon(t, cfg, o)
 
@@ -132,21 +142,36 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 		return rows
 	}
 
-	// The planner's one launch the limit allows fails, and the operator is answered with it; the
-	// claim is failed, and the workflow holds the issue.
+	// The held tree's architect is the operator's start, so the tree holds its lifecycle under the
+	// operator's authority. The architect is launched and comes up: its shim dials the launch's
+	// stream, its agent registers and it says it is ready.
 	held := cfg.Project + "-1"
-	runningTree(held, treelifecycle.AuthorityWorkflow)
+	runningTree(held, treelifecycle.AuthorityOperator)
+	architect := d.spawn(api.SpawnRequest{Tree: held, Issue: held, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
+	launch := lastLaunch(t, rt, architect)
+	dialShim(t, launched.address, launch.BootToken)
+	testwait.Eventually(t, "the hello to reach the architect's machine", func() bool {
+		return d.claim(architect).State == string(supervise.StateShimConnected)
+	})
+	readyClaim(t, d, rt, architect)
+
+	// The planner's one launch the limit allows fails, and the operator is answered with it; the
+	// claim is failed, and the workflow holds the issue. The next launch, the other tree's
+	// architect's below, fails too.
+	rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("pane launch failed")}, fake.SpawnResult{Err: errors.New("pane launch failed")})
 	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims", api.SpawnRequest{Tree: held, Issue: held, Role: claim.RolePlanner, Prompt: "Plan it."}, true); status != http.StatusInternalServerError || !strings.Contains(string(body), "pane launch failed") {
 		t.Fatalf("spawn the planner = %d %s, want its one launch refused", status, body)
 	}
-	testwait.Eventually(t, "every notice row of the hold finished and its architect told twice", func() bool {
-		return rowsOf(held) == 0 && len(listener.acceptedOn(architectTopic(held))) == 2
+	// The architect's ready queues its catch-up, which its topic takes too, so its topic is read
+	// for the hold's two notices alone.
+	heldNotices := []string{"held on " + held, "worker-died on " + held}
+	testwait.Eventually(t, "every row of the hold finished, its notices and its claim release, and its architect told twice", func() bool {
+		return rowsOf(held) == 0 && len(named(listener.acceptedOn(architectTopic(held)), heldNotices...)) == 2
 	})
-	onArchitect := listener.acceptedOn(architectTopic(held))
+	onArchitect := named(listener.acceptedOn(architectTopic(held)), heldNotices...)
 	if onArchitect[0].Message != "held on "+held || onArchitect[1].Message != "worker-died on "+held {
 		t.Fatalf("the architect's role topic took %+v, want held then worker-died, once each", onArchitect)
 	}
-	heldNotices := []string{"held on " + held, "worker-died on " + held}
 	if told, tried := named(listener.acceptedOn(controllerTopic), heldNotices...), named(listener.refusedOn(controllerTopic), heldNotices...); len(told) != 0 || len(tried) != 0 {
 		t.Fatalf("the controller's role topic took %+v and refused %+v, want nothing of %s published to it: a hold its architect has not escalated is the architect's", told, tried, held)
 	}
@@ -187,8 +212,8 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	testwait.Eventually(t, "every notice row of the failed architect finished and the controller's copy taken", func() bool {
 		return rowsOf(failed) == 0 && len(named(listener.acceptedOn(controllerTopic), died)) == 1
 	})
-	if onArchitect := listener.acceptedOn(architectTopic(failed)); len(onArchitect) != 1 || onArchitect[0].Message != "worker-died on "+failed {
-		t.Fatalf("the architect's role topic took %+v, want the worker-died once however often the controller's topic refused", onArchitect)
+	if onArchitect := listener.acceptedOn(architectTopic(failed)); len(onArchitect) != 0 {
+		t.Fatalf("the architect's role topic took %+v, want nothing however often the controller's topic refused: the failed architect's own row ends unpublished", onArchitect)
 	}
 	refused, taken := named(listener.refusedOn(controllerTopic), died), named(listener.acceptedOn(controllerTopic), died)[0]
 	if len(refused) != 2 {
@@ -213,6 +238,36 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 		Reason: strconv.Quote("launch failures ran out: pane launch failed")}); !reflect.DeepEqual(payload, want) {
 		t.Fatalf("the controller's payload = %+v, want the architect's own notice %+v", payload, want)
 	}
+}
+
+// runOutHoldBoard is workflowDispatch with the one read more that the held root's move out of the
+// workflow needs: the read of an issue of the project (GET /api/v1/issues/<key>) that the release
+// of its Dispatch claim makes first (record.ClaimRelease, releaseClaim). It shows the issue with no
+// claim, so the row finds nothing to judge and ends. Every other call of the daemon's fails the
+// test, as workflowDispatch's do.
+func runOutHoldBoard(t *testing.T, project string) string {
+	t.Helper()
+	return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+		var body any
+		key, issue := strings.CutPrefix(r.URL.Path, "/api/v1/issues/")
+		switch {
+		case servedBootCall(t, w, r, project):
+			return
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
+			body = []any{}
+		case r.Method == http.MethodGet && issue && strings.HasPrefix(key, project+"-") && !strings.Contains(key, "/"):
+			body = map[string]any{"key": key, "title": "held", "status": "in_progress", "labels": []string{},
+				"last_seq": 1, "project": project}
+		default:
+			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(body); err != nil {
+			t.Errorf("write %s: %v", r.URL.Path, err)
+		}
+	})
 }
 
 // noticeListener is the Envoy listener's publish route as the outbox uses it: it takes every

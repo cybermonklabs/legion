@@ -64,9 +64,11 @@ const (
 	idleRigControllerHeartbeat = 2 * time.Second
 	// idleRigControllerNoticeWait bounds a controller notice reaching the controller once its
 	// session holds the role: the outbox's sweep finds a row the rig's own engine wrote within
-	// outboxLease (30 s), and a row that has waited retries at most RetryBackoffMost (64 s) later,
-	// so three minutes is twice the longest wait the daemon's own clock gives it.
-	idleRigControllerNoticeWait = 3 * time.Minute
+	// outboxLease (30 s), and a row that has waited for the role, which under the rig's
+	// `controller: operator` no claim of the daemon holds, retries on the capped backoff of a role
+	// wait, at most RoleWaitBackoffMost (5 minutes) later (dispatch://INFRA-4131/spec#b-r-capped),
+	// so this is twice the longest wait the daemon's own clock gives it.
+	idleRigControllerNoticeWait = 2 * (outboxLease + record.RoleWaitBackoffMost)
 	// idleRigControllerSettle is how long the count is read again after the first copy arrived:
 	// a second copy of one notice is a kept-lane or takeover copy, which the listener hands over
 	// within seconds of the claim.

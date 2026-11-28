@@ -17,6 +17,9 @@ import (
 // A hook prompt past its hour, or to a role whose claim failed, is never published, even to a role
 // a live session holds: the row ends undelivered with the message on the issue before anything
 // wakes or publishes. The control is a row one minute old to a held role, which is delivered once.
+// A held role's claim said it was ready before the prompt fired, so the gate lets a publish to it
+// through (roleWaitGate) and the prompt's hour runs from its firing (keptRoleMessageEnded counts
+// it from the later of the row's making and the claim's last ready).
 // A released role whose wake is coming holds the row past its hour
 // (TestAKeptRoleMessageToAReleasedRoleWaitsPastItsHourOnlyWhileAWakeCanCome), and so does a launch
 // the wake pacing parked two hours out (TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod).
@@ -39,6 +42,8 @@ func TestAHookPromptPastItsHourOrToARoleNotComingIsNeverPublished(t *testing.T) 
 			runner, sup, pool := hookRunner(t, publisher)
 			if tc.failed {
 				failedClaim(t, sup, claim.RoleImplementer)
+			} else {
+				readyOutboxClaimSince(t, sup, "LEGION-208", claim.RoleImplementer, time.Now().Add(-tc.age-time.Minute))
 			}
 			hookRowMadeAt(t, runner, pool, firedHook, time.Now().Add(-tc.age))
 

@@ -29,13 +29,16 @@ func holdsNotice(notices []record.Notice, kind record.NoticeKind, role claim.Rol
 // failure through the daemon's terminal hook (workflowRuntime.terminal). The worker-died that
 // failure writes is about the child's architect, so it is published to the root's architect, and
 // a notice of the child written while its architect is down — the planner's lost session — goes
-// there too, since no architect between the child and the root holds its role. The planner's
-// completion then moves the child to implementing, a phase start, and that start queues the
-// child's architect's start: the outbox retries the failed claim, which resumes the session file
-// it recorded rather than spawning a fresh agent, on the same claim with its budgets zeroed.
+// there too, since no architect between the child and the root holds its role. The root's
+// architect is supervised for it (superviseRootArchitect): the gate publishes nothing to an
+// architect with no machine. The planner's completion then moves the child to implementing, a
+// phase start, and that start queues the child's architect's start: the outbox retries the failed
+// claim, which resumes the session file it recorded rather than spawning a fresh agent, on the
+// same claim with its budgets zeroed.
 func TestAFailedSubArchitectIsRetriedWithFreshBudgetsAtTheChildsNextPhaseStart(t *testing.T) {
 	t.Parallel()
 	rig := newChildArchitectRig(t)
+	rig.superviseRootArchitect()
 	token := mustClaimToken(t, doorChild, claim.RoleArchitect)
 	rig.written("release", childAt("todo", 2))
 	rig.drain()

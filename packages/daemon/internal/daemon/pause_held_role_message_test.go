@@ -15,6 +15,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
+// newHeldRoleMessageRig is newPauseDaemonRig with the outbox reading the same test clock that
+// stamps each claim's LastReady (overrides.outboxNow) and a short outbox sweep, so the held
+// role-message tests move through the 30-second first-turn bound (roleNameBound) on that one clock
+// (passTheNameBound) rather than waiting out 30+ seconds of wall time.
+func newHeldRoleMessageRig(t *testing.T) *pauseDaemonRig {
+	t.Helper()
+	r := newPauseDaemonRig(t, nil)
+	// Keep the shared test clock ahead of Postgres's wall-clock now() so rows inserted with
+	// SQL now() (such as pause_stop) are due immediately on the test clock while LastReady
+	// and outbox.now read the one clock.
+	r.clock.advance(time.Minute)
+	r.o.outboxNow = r.clock.Now
+	r.o.outboxSweep = 100 * time.Millisecond
+	return r
+}
+
 // R4 of dispatch://INFRA-3759: a resume launches each session the pause held something for,
 // once, and what was held for it is delivered to it then. A role message of the daemon's own that
 // the pause held for a role the pause stopped is such held work: the role was live when the pause
@@ -37,7 +53,7 @@ import (
 // attempt.
 func TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume(t *testing.T) {
 	t.Parallel()
-	r := newPauseDaemonRig(t, nil)
+	r := newHeldRoleMessageRig(t)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
 	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleImplementer, supervise.StateIdle))
@@ -78,6 +94,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume(
 			r.envoy.hold(worker)
 		}
 	}, func(api.State) {})
+	r.passTheNameBound(worker, message)
 	testwait.WithinPolling(t, 6*time.Minute, 200*time.Millisecond, "the held role message to reach the role after its launch", func() bool {
 		return len(r.envoy.publishedTo(worker)) > 0 && attempts() == -1
 	})
@@ -114,7 +131,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume(
 // once the resume lets its row run, and launches nothing.
 func TestARoleMessageThePauseHeldForARoleReleasedBeforeThePauseKeepsMainsRule(t *testing.T) {
 	t.Parallel()
-	r := newPauseDaemonRig(t, nil)
+	r := newHeldRoleMessageRig(t)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
 	r.seed(r.root(issue, phase.Implementing), r.released(issue, claim.RoleImplementer))
@@ -156,7 +173,7 @@ func TestARoleMessageThePauseHeldForARoleReleasedBeforeThePauseKeepsMainsRule(t 
 // in the gap: the role ready, its topic not yet held.
 func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesTheGapBetweenItsReadyAndItsRoleClaim(t *testing.T) {
 	t.Parallel()
-	r := newPauseDaemonRig(t, nil)
+	r := newHeldRoleMessageRig(t)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
 	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleImplementer, supervise.StateIdle))
@@ -178,12 +195,9 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesTheGapBetweenItsReadyA
 			r.ready(worker)
 		}
 	}, func(api.State) {})
-	atReady := attempts()
-	testwait.WithinPolling(t, 3*time.Minute, 200*time.Millisecond, "the row's next attempt after the role's ready, its topic not yet claimed", func() bool {
-		n := attempts()
-		return n == -1 || n > atReady
-	})
+	r.awaitRunAtReady(worker, message)
 	r.envoy.hold(worker)
+	r.passTheNameBound(worker, message)
 	testwait.WithinPolling(t, 3*time.Minute, 200*time.Millisecond, "the held role message's row to end", func() bool { return attempts() == -1 })
 	time.Sleep(time.Second)
 	if sent := r.envoy.publishedTo(worker); len(sent) != 1 || sent[0].message != body {
@@ -205,7 +219,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesTheGapBetweenItsReadyA
 // message.
 func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseBeforeTheRoleIsBack(t *testing.T) {
 	t.Parallel()
-	r := newPauseDaemonRig(t, nil)
+	r := newHeldRoleMessageRig(t)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
 	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleImplementer, supervise.StateIdle))
@@ -240,6 +254,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseBeforeTheR
 			r.envoy.hold(worker)
 		}
 	}, func(api.State) {})
+	r.passTheNameBound(worker, message)
 	testwait.WithinPolling(t, 3*time.Minute, 200*time.Millisecond, "the held role message's row to end", func() bool { return attempts() == -1 })
 	time.Sleep(time.Second)
 	if sent := r.envoy.publishedTo(worker); len(sent) != 1 || sent[0].message != body {
@@ -262,7 +277,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseBeforeTheR
 // undelivered, and the test fails where it reads the row after that attempt.
 func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseWhoseStopItsResumeCancels(t *testing.T) {
 	t.Parallel()
-	r := newPauseDaemonRig(t, nil)
+	r := newHeldRoleMessageRig(t)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
 	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleImplementer, supervise.StateIdle))
@@ -315,6 +330,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseWhoseStopI
 	}
 	r.ready(worker)
 	r.envoy.hold(worker)
+	r.passTheNameBound(worker, message)
 	testwait.WithinPolling(t, 3*time.Minute, 200*time.Millisecond, "the held role message's row to end", func() bool { return attempts() == -1 })
 	time.Sleep(time.Second)
 	if sent := r.envoy.publishedTo(worker); len(sent) != 1 || sent[0].message != body {
@@ -478,4 +494,46 @@ func heldRowAttempts(t *testing.T, r *pauseDaemonRig, id int64) func() int {
 		}
 		return n
 	}
+}
+
+// awaitRunAtReady waits, on the clock token's claim's ready left, for held role message row id to
+// settle its run at that ready: the row has ended, or no lane holds it and its wait counts from that
+// ready (record.OutboxWait.WaitReady), which only a run that read the ready writes. The ready makes
+// the row due at once (dispatch://INFRA-4131/spec#b-r-wait-ready), so that run needs no move of the
+// clock, and a ready that never brought the row's run fails the test here, naming the row's wait.
+func (r *pauseDaemonRig) awaitRunAtReady(token claim.Token, id int64) {
+	r.t.Helper()
+	ready := r.claim(token).LastReady.UTC()
+	if testwait.Holds(3*time.Minute, 200*time.Millisecond, func() bool {
+		var settled bool
+		if err := r.pool.QueryRow(r.ctx, `select coalesce(bool_and(lease_token = '' and wait_ready is not distinct from $2), true)
+			from outbox where id = $1`, id, ready).Scan(&settled); err != nil {
+			r.t.Fatalf("read outbox row %d's wait: %v", id, err)
+		}
+		return settled
+	}) {
+		return
+	}
+	var wait string
+	if err := r.pool.QueryRow(r.ctx, `select coalesce((select format('next_at %s, wait_for %s, wait_step %s, wait_ready %s, leased %s',
+		next_at, wait_for, wait_step, wait_ready, lease_token <> '') from outbox where id = $1), 'ended')`, id).Scan(&wait); err != nil {
+		r.t.Fatalf("read outbox row %d's wait: %v", id, err)
+	}
+	r.t.Fatalf("timed out waiting for the held role message's run at %s's ready at %s, on the clock that ready left (%s): the row's wait is %s",
+		token, ready.Format(time.RFC3339Nano), r.clock.Now().UTC().Format(time.RFC3339Nano), wait)
+}
+
+// passTheNameBound moves the test clock a second past the end of the first-turn bound after token's
+// claim's ready (roleNameBound), once held role message row id has settled its run at that ready
+// (awaitRunAtReady). A run refused there because the woken session does not hold its topic yet
+// waits for the end of the bound (roleWaiting.awaitsName), which the move reaches.
+//
+// The clock never moves while a run of the row is in flight. The rig's clock moves only when the
+// test moves it, here by the whole bound at once: a run refused before that move whose retry read
+// the clock after it finds the bound passed and waits the backoff's first step from the moved clock
+// (roleWaitNext), a second production's clock reaches and the rig's never does.
+func (r *pauseDaemonRig) passTheNameBound(token claim.Token, id int64) {
+	r.t.Helper()
+	r.awaitRunAtReady(token, id)
+	r.clock.advanceTo(r.claim(token).LastReady.Add(roleNameBound + time.Second))
 }

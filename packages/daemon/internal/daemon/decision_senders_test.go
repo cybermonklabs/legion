@@ -170,10 +170,10 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // readNoticeTree calls, through workflow.NoticeSuperseded), through the catch-up's Decided that
 // readNoticeTree writes again (workflow.KeptDecisionsTask), through the hand-over of a catch-up's
 // decisions to a fresh catch-up (workflow.HandOverKept) once a newer one superseded it
-// (supersededKept) or its re-holds are spent (the re-hold policy's spentKept), and through the
-// relay of a kept decision (parkDecision). Take the first out and the walk still passes. What
-// holds that ask is its behavior, which TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished
-// drives. The publish of a relay to the controller (controllerNotice) reaches it one way alone,
+// (supersededKept), and through the relay of a kept decision (parkDecision). Take the first out and
+// the walk still passes. What holds that ask is its behavior, which
+// TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished drives. The publish of a relay to the
+// controller (controllerNotice) reaches it one way alone,
 // through its ask of a relayed changes request (stillOwed, through workflow.NoticeSuperseded), so the
 // walk fails it if that ask goes; that the ask is of the review's mark and document the relay
 // carries, and of nothing kept beside the row, is its behavior too, which

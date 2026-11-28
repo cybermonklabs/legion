@@ -99,17 +99,6 @@ func millis(d time.Duration) string {
 // covers. MIN_PASS_DEADLINE_MS, and ENVOY_PASS_DEADLINE_MS over it, only floor how long one pass
 // may run, and raising either must not fail this test.
 //
-// Three copies of these numbers are then checked against the declarations they must equal,
-// because each one feeds a decision of the daemon's own: pluginHeartbeat and the two listener
-// windows, listenerSessionTTL and listenerClaimStale, are noticeReholdDelays
-// (notice_exceptions.go): when each copy of a notice the listener could not forward is re-sent.
-// The second copy goes one pane heartbeat after the first, to catch a pane that has just
-// relaunched and registered; the last goes past both listener windows with a minute to spare,
-// when any registration a stopped session left behind must have lapsed. A copy that drifted low
-// sends that last notice while the listener still names a holder that is gone, so the forward is
-// refused and the copy dropped; a copy that drifted high holds the notice past the window it
-// could have been caught in.
-//
 // What this test cannot bind:
 //
 //   - A pane started with ENVOY_HEARTBEAT_MS set: that overrides the interval for that pane
@@ -128,23 +117,6 @@ func TestDAEMONTESTTheSessionTimingRuleHoldsAtTheValuesTheBuildUses(t *testing.T
 	}
 	for _, problem := range sessionTimingProblems(build) {
 		t.Error(problem)
-	}
-
-	for _, copied := range []struct {
-		name     string
-		value    time.Duration
-		wantName string
-		want     time.Duration
-	}{
-		{"pluginHeartbeat", pluginHeartbeat, "sessiontiming.Heartbeat", sessiontiming.Heartbeat},
-		{"listenerSessionTTL", listenerSessionTTL, "sessiontiming.LiveWindow", sessiontiming.LiveWindow},
-		{"listenerClaimStale", listenerClaimStale, "sessiontiming.ClaimStale", sessiontiming.ClaimStale},
-	} {
-		if copied.value != copied.want {
-			t.Errorf("%s is %s, but %s is %s", copied.name, millis(copied.value), copied.wantName, millis(copied.want))
-			continue
-		}
-		t.Logf("%s is %s, the same as %s", copied.name, millis(copied.value), copied.wantName)
 	}
 
 	// The failing answer, proved in the same green run: a set the rule must reject has to be
@@ -187,7 +159,6 @@ func TestDAEMONTESTTheSessionTimingRuleHoldsAtTheValuesTheBuildUses(t *testing.T
 
 	t.Logf("refresh interval %s (sessiontiming.Heartbeat)", millis(build.interval))
 	t.Logf("live window %s (sessiontiming.LiveWindow)", millis(build.liveWindow))
-	t.Logf("claim stale window %s (sessiontiming.ClaimStale)", millis(sessiontiming.ClaimStale))
 	t.Logf("one listener call: %d attempts (sessiontiming.CallAttempts) of %s (sessiontiming.CallTimeout), %s between them (sessiontiming.CallRetryDelay)",
 		build.attempts, millis(build.timeout), millis(build.retryDelay))
 	t.Logf("call budget %s = %d * %s + %d * %s",

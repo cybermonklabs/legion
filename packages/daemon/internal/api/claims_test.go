@@ -279,10 +279,11 @@ func TestReadyMakesTheRegisteredClaimReady(t *testing.T) {
 	}
 }
 
-// A ready the claim takes tells the workflow the claim's agent has booted and can be prompted
-// (Options.ClaimReady), once per ready, so a relaunched architect's waiting notices are released;
-// a ready it refuses, naming another session, tells it nothing.
-func TestReadyOfTheClaimsSessionTellsTheWorkflow(t *testing.T) {
+// A ready the claim takes tells the route's hook the claim's agent has booted and can be prompted
+// (Options.ClaimReady), once per ready, which the daemon gives its controller's keeper, so a ready
+// controller is handed its start message; a ready it refuses, naming another session, tells it
+// nothing.
+func TestReadyOfTheClaimsSessionTellsTheReadyHook(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
 	registered := h.registered(boot, "ses_architect")

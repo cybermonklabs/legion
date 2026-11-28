@@ -902,13 +902,14 @@ func (r *Runtime) refreshCacheTokens(ctx context.Context) {
 	}
 }
 
-// sweepCaches is ReconcileOrphans' pass over the repository caches (the claim path, sweep, never
-// sees one), against the cache set (Options.CacheRepositories: the repositories of the project's
-// live issue records and of the launches since the daemon last read them). For each stored cache
-// Sandbox: a repository that does not parse, or a shape this runtime does not build, is logged
-// and kept, as sweep keeps a Sandbox it cannot judge (the next boot's census refuses it by name);
-// a repository the set holds has its cache's annotationCacheUnusedAt and
-// annotationCacheOldUnusedAt removed; one the set does not — no live record and no launch since
+// SweepRepositoryCaches is the runtime's pass over the repository caches
+// (runtime.RepositoryCacheSweeper), which neither the claim path of ReconcileOrphans (sweep) nor
+// any claim's own call ever judges, against the cache set (Options.CacheRepositories: the
+// repositories of the project's live issue records and of the launches since the daemon last read
+// them). For each stored cache Sandbox: a repository that does not parse, or a shape this runtime
+// does not build, is logged and kept, as sweep keeps a Sandbox it cannot judge (the next boot's
+// census refuses it by name); a repository the set holds has its cache's annotationCacheUnusedAt
+// and annotationCacheOldUnusedAt removed; one the set does not — no live record and no launch since
 // the last read names it — is marked with now once, kept while now minus the mark is under the
 // retention, and deleted after it (deleteFenced, in the foreground, so its volume and Secret go
 // with it), logged with the repository and how long it was kept. A cache an earlier release
@@ -919,33 +920,44 @@ func (r *Runtime) refreshCacheTokens(ctx context.Context) {
 // patch that removes the old annotation, so it retires one retention after its first mark; one
 // none of whose marks parses is marked with now in that patch, with a warning naming each value,
 // and kept one retention. Then every member's cache is ensured (EnsureRepositoryCache): one
-// missing is made — at boot, whose reconciliation runs this, and after a launch's own ensure
-// failed — and a drifted or dead cache pod is replaced, all on the sweep's schedule. Each runs
+// missing is made — at the daemon's first pass, and after a launch's own ensure failed — and a
+// drifted or dead cache pod is replaced, one after another, all on the pass's schedule. Each runs
 // under the cache's launch turn, fenced to the Sandbox as the store held it. Every failure is
-// logged, as a warning naming the cache, and tried at the next sweep; none is ReconcileOrphans'
-// error, which holds the claims' launches back at boot (reconcileBootOrphans): each launch
-// ensures its own repository's cache and fails, naming why, when it cannot be made, so one
-// repository's cache never stops another's launches.
-func (r *Runtime) sweepCaches(ctx context.Context) {
+// logged, as a warning naming the cache, and tried at the next pass; none is the pass's error, a
+// failure of one cache being the runtime's to log (runtime.RepositoryCacheSweeper).
+//
+// A pass whose context ends stops there and answers the context's error, so the caller can say
+// which pass was cut short: the caches it did not reach wait for the next pass. The daemon runs it
+// beside its claims and never on its boot, since replacing cache pods one at a time, each waiting
+// out its pod's stop (awaitPodGone), can spend a boot step's whole budget
+// (runtime.RepositoryCacheSweeper, dispatch://INFRA-4131/spec#b-r-boot-budget).
+func (r *Runtime) SweepRepositoryCaches(ctx context.Context) error {
 	cached := r.cacheRepositories()
 	for _, u := range r.storedCaches() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err := r.sweepCache(ctx, u, cached); err != nil && ctx.Err() == nil {
 			r.log.Warn("sandbox runtime: repository cache sweep failed; tried at the next sweep", "sandbox", u.GetName(), "err", err)
 		}
 	}
 	for _, repo := range cached {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err := r.EnsureRepositoryCache(ctx, repo); err != nil && ctx.Err() == nil {
 			r.log.Warn("sandbox runtime: repository cache sweep failed; tried at the next sweep", "sandbox", CacheSandboxName(r.project, repo), "repo", repo.String(), "err", err)
 		}
 	}
+	return ctx.Err()
 }
 
-// sweepCache is sweepCaches' judgement of one stored cache Sandbox, u, against cached, the cache
-// set, with one of four outcomes. In the set, a cache that carries annotationCacheUnusedAt loses
-// it. Outside the set, a cache with no mark is marked with now; one whose mark is not a time is
-// logged and kept; and one whose mark is a time is retired once now minus that mark reaches the
-// retention, and kept until then. A cache an earlier release marked under
-// annotationCacheOldUnusedAt is judged by sweepOldMarkedCache instead, under the same lock.
+// sweepCache is SweepRepositoryCaches' judgement of one stored cache Sandbox, u, against cached,
+// the cache set, with one of four outcomes. In the set, a cache that carries
+// annotationCacheUnusedAt loses it. Outside the set, a cache with no mark is marked with now; one
+// whose mark is not a time is logged and kept; and one whose mark is a time is retired once now
+// minus that mark reaches the retention, and kept until then. A cache an earlier release marked
+// under annotationCacheOldUnusedAt is judged by sweepOldMarkedCache instead, under the same lock.
 func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, cached []ghrepo.Repository) error {
 	repo, err := cacheRepository(u.GetAnnotations())
 	if err != nil {

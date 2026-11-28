@@ -43,8 +43,9 @@ const (
 // facts each claim's machine reports, applied through the same handlers (workflowRuntime.terminal).
 // Its tree is live: the root stands in implementing with its admission slot, its design gate open,
 // its architect working and its implementer holding its phase's task, so admission's pass starts
-// no worker of the root's. The claims of the root's roles are the store's alone: a notice the walk
-// sends to the root's architect is published to its topic all the same.
+// no worker of the root's. The claims of the root's roles are the store's alone, so the gate
+// publishes nothing to them (roleWaitGate: a role with no machine), unless a test supervises the
+// root's architect (superviseRootArchitect).
 type childArchitectRig struct {
 	t         *testing.T
 	ctx       context.Context
@@ -84,8 +85,7 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 		t.Fatalf("admit the tree of %s: %v", doorRoot, err)
 	}
 	for _, c := range []supervise.Claim{
-		{Token: mustClaimToken(t, doorRoot, claim.RoleArchitect), Project: "legion", Tree: doorRoot, TreeEpoch: 1, Issue: doorRoot, Role: claim.RoleArchitect,
-			State: supervise.StateWorking, Generation: 1, Session: "ses-root-architect", SessionFile: "/sessions/root-architect.jsonl"},
+		rootArchitect(t),
 		{Token: mustClaimToken(t, doorRoot, claim.RoleImplementer), Project: "legion", Tree: doorRoot, TreeEpoch: 1, Issue: doorRoot, Role: claim.RoleImplementer,
 			State: supervise.StateWorking, Generation: 1, Session: "ses-root-implementer", SessionFile: "/sessions/root-implementer.jsonl",
 			Pending: &supervise.Delivery{ID: "outbox:1", Task: "Continue root. Issue: LEGION-1. Phase: implementing.", Generation: 1,
@@ -118,6 +118,24 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 			},
 			remove: func(context.Context, workspace.Workspace, sync.Locker) error { return nil },
 		},
+	}
+}
+
+// rootArchitect is the root's architect claim as the rig seeds it in the store: working at its
+// first launch, on its session.
+func rootArchitect(t *testing.T) supervise.Claim {
+	return supervise.Claim{Token: mustClaimToken(t, doorRoot, claim.RoleArchitect), Project: "legion", Tree: doorRoot, TreeEpoch: 1, Issue: doorRoot,
+		Role: claim.RoleArchitect, State: supervise.StateWorking, Generation: 1, Session: "ses-root-architect", SessionFile: "/sessions/root-architect.jsonl"}
+}
+
+// superviseRootArchitect gives the root's architect, which the rig seeds in the store alone, a
+// machine of the rig's supervisor, working as the store holds it, so a notice the owner walk sends
+// up to it is published: the gate publishes nothing to an architect with no machine
+// (roleWaitGate).
+func (r *childArchitectRig) superviseRootArchitect() {
+	r.t.Helper()
+	if _, _, err := r.sup.Create(r.ctx, rootArchitect(r.t), ""); err != nil {
+		r.t.Fatalf("supervise the root's architect: %v", err)
 	}
 }
 
@@ -342,10 +360,13 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 // its pod, or it failed. A released claim holds its role (record.HoldsRole), so the first attempt
 // of each notice wakes the pod and waits on its backoff, as on INFRA's daemon (INFRA-4640,
 // INFRA-4318), and the child's start waits behind the parent's earlier notice to the same
-// architect. The child's architect starts while the notices wait, and the attempt after the
-// backoff walks the owner again and finds that architect launching: the notices still go to the
-// parent's architect. A failed claim holds no role, so the notices go on up to the root's
-// architect.
+// architect. The woken launch comes up and says it is ready before that backoff runs out, since
+// the gate publishes nothing to a launch that has not registered (roleWaitGate); its ready's
+// catch-up is a notice of its own, not one of these two. The child's architect starts while the
+// notices wait, and the attempt after the backoff walks the owner again and finds that architect
+// launching: the notices still go to the parent's architect. A failed claim holds no role, so the
+// notices go on up to the root's architect, which the rig supervises for that case
+// (superviseRootArchitect).
 func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 	t.Parallel()
 	const parent = "LEGION-5"
@@ -373,12 +394,18 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 			if got := held.Claim(); got.State != tc.state || got.Released() != tc.released {
 				t.Fatalf("the architect of %s is %s by %s, want %s (released %t)", parent, got.State, got.SuspendedBy, tc.state, tc.released)
 			}
+			if tc.above == doorRoot {
+				rig.superviseRootArchitect()
+			}
 
 			rig.written("release", dispatch.Issue{Key: doorChild, Status: "todo", Title: doorChild, Parent: new(parent), Rank: "V",
 				ResolvedRepo: "acme/widgets", LastSeq: 2})
 			rig.drain()
 			if told := rig.noticesTo(parent); tc.released && len(told) != 0 {
 				t.Fatalf("the released architect of %s was published %+v before its pod came back, want nothing", parent, told)
+			}
+			if tc.released {
+				rig.boot(parent, claim.RoleArchitect, "ses-parent-architect")
 			}
 			// The backoff of each notice that woke the parent's pod runs out: the parent's own
 			// awaiting-children notice, and the child's start behind it.
@@ -390,9 +417,12 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 			want := workflow.ChildStartedNotice(doorChild, doorRoot, phase.Planning, nil)
 			var started, waiting []record.Notice
 			for _, notice := range rig.noticesTo(tc.above) {
-				if notice.Kind == want.Kind {
+				switch notice.Kind {
+				case want.Kind:
 					started = append(started, notice)
-				} else {
+				case "catch-up":
+					// A woken architect's catch-up at its ready, its own notice.
+				default:
 					waiting = append(waiting, notice)
 				}
 			}

@@ -206,6 +206,26 @@ func OutboxLanes() []OutboxLane {
 	return slices.Sorted(maps.Keys(laneKinds))
 }
 
+// roleWaitKinds is the one list of the kinds that publish a message to one role and wait for that
+// role to be able to take it (WaitsForRole).
+var roleWaitKinds = []OutboxKind{
+	OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged,
+	OutboxKindMergeForward, OutboxKindHookPrompt, OutboxKindPhaseEnded, OutboxKindRoleMessage, OutboxKindUpdateAsk,
+}
+
+// WaitsForRole is whether a row of kind publishes a message to one role's topic and waits for that
+// role to be able to take it: an architect's notice, a controller's notice, the merger's messages
+// that its pull request left the merge queue and that the merge holds changed, a merge forward's
+// message, a hook's words, the end of a phase, a role message and an update round's ask. These are
+// the rows the spec holds to their role's claim and to a backoff capped at five minutes, and never
+// gives up while that claim stands (dispatch://INFRA-4131/spec#b-r-wait-ready, #b-r-capped and
+// #b-r-never-given-up); their retries wait RoleWaitBackoff. Every other kind publishes to no role
+// and answers false. TestEveryOutboxKindIsClassifiedForTheRoleWait names every kind the lanes run
+// with its answer, so a kind added to a lane fails it until somebody decides which it is.
+func (k OutboxKind) WaitsForRole() bool {
+	return slices.Contains(roleWaitKinds, k)
+}
+
 // LaneKey names one lane of one issue.
 type LaneKey struct {
 	Issue string
@@ -472,8 +492,9 @@ type Notice struct {
 	// reach is another claim (the daemon's deliverNotice). Published keeps it, so a re-held copy
 	// is judged the same way.
 	StoppedBy claim.Token `json:"stoppedBy,omitempty"`
-	// Resends counts the times the notice was queued again after the listener could not forward
-	// it to its architect's session (the daemon's rehold), which stops at a cap.
+	// Resends counts the times the notice was queued again after an earlier listener reported that
+	// it could not forward it to its architect's session (the daemon's rehold). It has no cap: it
+	// picks the next copy's wait (RoleWaitBackoff), and only that.
 	Resends int `json:"resends,omitempty"`
 	// PacedAt is the moment the daemon's wake pacing let out a catch-up it held to its turn: the
 	// catch-up the outbox writes in place of a launch when a start row finds an architect already
@@ -486,13 +507,13 @@ type Notice struct {
 	// The moment is kept here rather than read back from the row's next_at because the two part
 	// company: a failed attempt rewrites next_at to its backoff (RetryOutbox), while the turn the
 	// pacing gave this wake never moves. The outbox writes that wake's one line from it, on
-	// whichever attempt publishes (the daemon's wakeRan), and a ready that releases the
-	// architect's waiting notices leaves the row where it stands only while the moment is still
-	// ahead (the daemon's releaseWaiting), so a catch-up still held stays held, and one whose turn
+	// whichever attempt publishes (the daemon's wakeRan), and a ready that releases the rows
+	// waiting for the architect leaves the row where it stands only while the moment is still
+	// ahead (Store.ExpediteWaits), so a catch-up still held stays held, and one whose turn
 	// has come is released like any other notice rather than waiting out a backoff the pacing
 	// never asked for. It is the daemon's own bookkeeping, so the publish drops it (Published) as
-	// it drops ResendOf; a re-held copy keeps it for that one line alone, its next_at being the
-	// re-send delay (the daemon's noticeAnswered).
+	// it drops ResendOf, and the row keeps it through its retries, a receipt the architect's session
+	// did not confirm among them (the daemon's noticeAnswered).
 	PacedAt time.Time `json:"paced_at,omitzero"`
 	// PacedFrom is the moment the engine wrote the row held, on the clock the let-out is read on,
 	// and the two travel together: PacedAt less PacedFrom is how long the pacing held this wake,
@@ -507,7 +528,7 @@ type Notice struct {
 	// PacedTurns is how many turns the pacing let out between the row's join of its queue and its
 	// own let-out (wakepace.Let.Turns), which the line its wake writes names beside the queue. The
 	// let-out writes it with PacedAt (ReleaseHeldCatchUp), and it goes where PacedAt goes: dropped
-	// at the publish, kept on a re-held copy.
+	// at the publish, kept by the row through its retries.
 	PacedTurns int `json:"paced_turns,omitempty"`
 	// ResendOf is the outbox row a re-held copy copies. The copy is published under that row's
 	// dedupe key (OutboxKey), so the listener's report of a failed forward names the original row,
@@ -1054,12 +1075,10 @@ func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
 // bookkeeping of the row, and what the pacing did says nothing to the architect that reads the
 // notice (the daemon's wakeRan writes it to the log instead). A re-held copy carries only what
 // the publish carried: the daemon's exceptionNotice decodes the listener's report into a notice
-// and puts nothing back, and only the receipt-timeout path restores the paced moments and turns
-// by hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
-// (reholdNotice, through NewOutboxRow), so a field validateOutboxPayload requires for its kind,
-// as it requires CatchUp of a catch-up notice, is stripped here only together with a restore of
-// its own there, or every re-hold of that kind is refused for want of it
-// (record's TestAPublishedNoticeIsStillAValidOutboxPayload).
+// and puts nothing back, and the re-hold validates the copy before queueing it (reholdNotice,
+// through NewOutboxRow), so a field validateOutboxPayload requires for its kind, as it requires
+// CatchUp of a catch-up notice, is never stripped here, or every re-hold of that kind is refused
+// for want of it (record's TestAPublishedNoticeIsStillAValidOutboxPayload).
 func (n Notice) Published(id int64) (Notice, string) {
 	n.PacedAt, n.PacedFrom, n.PacedTurns = time.Time{}, time.Time{}, 0
 	if n.ResendOf == 0 {
@@ -1086,8 +1105,9 @@ var CatchUpHeldAt = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 // in the state's wakesWaiting, test the moment with it, so none of them takes it for a deadline.
 // Two statements of the store compare next_at with CatchUpHeldAt itself (ReleaseHeldCatchUp,
 // CatchUpHeld), and the other readers rely on the held moment sorting after any now: the outbox
-// runs a row only once its next_at has come, and the daemon's releaseWaiting and pacedCatchUps
-// tell a held notice by a PacedAt still ahead of now.
+// runs a row only once its next_at has come, and a ready's release of the rows waiting for an
+// architect (Store.ExpediteWaits) and the daemon's pacedCatchUps tell a held notice by a PacedAt
+// still ahead of now.
 func CatchUpIsHeld(at time.Time) bool {
 	return at.Equal(CatchUpHeldAt)
 }
@@ -2746,6 +2766,71 @@ const RetryBackoffMost = time.Second << retryBackoffDoublings
 func RetryBackoff(attempts int) time.Duration {
 	return time.Second << min(max(attempts, 0), retryBackoffDoublings)
 }
+
+// roleWaitDoublings is how many times a waiting row's backoff doubles at most: one second doubled
+// nine times, at step 9, is 512 s, which RoleWaitBackoffMost cuts, so a later step waits no longer
+// and the shift of a step far past it cannot overflow.
+const roleWaitDoublings = 9
+
+// RoleWaitBackoffMost is the longest a row that waits for its role, or for an event of the daemon's
+// own, waits between two runs: the cap of RoleWaitBackoff (dispatch://INFRA-4131/spec#b-r-capped).
+// It is five minutes because that is the bound the daemon already puts on a delivery row's wait for
+// a launch the wake pacing parked (internal/daemon's parkedWakeBound), for the same two reasons: a
+// row that is never taken runs at most twelve times an hour, where RetryBackoffMost's 64 s would
+// run it about 57 times, and a message is at most five minutes late once its role can take it.
+const RoleWaitBackoffMost = 5 * time.Minute
+
+// RoleWaitBackoff is how long a row that waits for its role, or for an event of the daemon's own,
+// waits to run again at step step of its wait (OutboxWait.WaitStep): one second at step 0, doubled
+// at each step, at most RoleWaitBackoffMost. The waits are 1, 2, 4, 8, 16, 32, 64, 128 and 256 s,
+// then 300 s at every step after. A step below zero, which the outbox never stores, waits as step
+// 0 does. It counts the wait's own steps rather than the row's attempts, so a wait that starts
+// again, at its role's ready or at the event it waits for, starts again from one second.
+func RoleWaitBackoff(step int) time.Duration {
+	return min(time.Second<<min(max(step, 0), roleWaitDoublings), RoleWaitBackoffMost)
+}
+
+// The keys below name what a waiting row waits for (OutboxWait.WaitFor, the outbox's wait_for
+// column): each is one event this daemon records itself (dispatch://INFRA-4131/spec#b-r-wait-event),
+// and the write that records the event makes due the rows whose key names it (Store.ExpediteWaits).
+// Each key is built by its function here and nowhere else. A row keeps its key in the store, so a
+// later release reads the key an earlier one wrote: a key's spelling never changes.
+
+// WaitForClaim is the key of a row that waits for any change of claim token's machine, its ready
+// among them.
+func WaitForClaim(token claim.Token) string { return "claim:" + string(token) }
+
+// WaitForReady is the key of a row that waits for claim token's ready alone: no turn start and no
+// other change of the claim makes it due.
+func WaitForReady(token claim.Token) string { return "ready:" + string(token) }
+
+// WaitForTreeClaims is the key of a row that waits for a change of any claim of tree.
+func WaitForTreeClaims(tree string) string { return "tree-claims:" + tree }
+
+// WaitForGate is the key of a row that waits for tree's design gate to open.
+func WaitForGate(tree string) string { return "gate:" + tree }
+
+// WaitForNews is the key of a row that waits for tree's news of its approved design to be recorded.
+func WaitForNews(tree string) string { return "news:" + tree }
+
+// WaitForRoleStops is the key of a row that waits for the role-stop rows of issue to finish.
+func WaitForRoleStops(issue string) string { return "role-stops:" + issue }
+
+// WaitForWorkspaceCheck is the key of a row that waits for the workspace check of issue, its
+// issue_bundle row, to finish.
+func WaitForWorkspaceCheck(issue string) string { return "workspace-check:" + issue }
+
+// WaitForBranch is the key of a row that waits for the issue_branch row of issue to finish.
+func WaitForBranch(issue string) string { return "branch:" + issue }
+
+// WaitForTreeRuns is the key of a row that waits for tree to run again.
+func WaitForTreeRuns(tree string) string { return "tree-runs:" + tree }
+
+// WaitForEpoch is the key of a row that waits for the next lifecycle epoch of tree to open.
+func WaitForEpoch(tree string) string { return "epoch:" + tree }
+
+// WaitForRow is the key of a row that waits for outbox row id to finish or to be deleted.
+func WaitForRow(id int64) string { return "row:" + strconv.FormatInt(id, 10) }
 
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {

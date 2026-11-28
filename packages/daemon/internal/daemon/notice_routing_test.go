@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // holderPublisher is the listener as a role publish meets it: a role topic in absent has no live
@@ -140,12 +141,18 @@ func noticeTree(t *testing.T, pool *store.Pool, records record.Store, lingers bo
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-3", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &child, Title: "Grandchild", Phase: phase.Testing, Generation: 1, Status: "testing"})
 }
 
+// architectClaim creates issue's architect claim in state. A claim registered or suspended has
+// been launched, so it is at its first launch's generation, as supervise's writeTry gives each
+// launch try one: the role-wait gate publishes nothing to a claim in either state with no launch
+// (roleWaitGate).
 func architectClaim(t *testing.T, sup *supervisor, issue string, state supervise.ClaimState) claim.Token {
 	t.Helper()
 	token := mustClaimToken(t, issue, claim.RoleArchitect)
-	if _, _, err := sup.Create(context.Background(), supervise.Claim{
-		Token: token, Project: "legion", Tree: "LEGION-1", Issue: issue, Role: claim.RoleArchitect, State: state,
-	}, ""); err != nil {
+	c := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-1", Issue: issue, Role: claim.RoleArchitect, State: state}
+	if state == supervise.StateRegistered || state == supervise.StateSuspended {
+		c.Generation = 1
+	}
+	if _, _, err := sup.Create(context.Background(), c, ""); err != nil {
 		t.Fatalf("create the architect claim of %s: %v", issue, err)
 	}
 	return token
@@ -296,11 +303,11 @@ func TestANoticeGoesToTheOwningArchitectsRoleTopicAlone(t *testing.T) {
 // The outbox routes a notice without waiting on its architect's launch: the runner executes one
 // row at a time, and a machine holds its lock through the runtime call its decision makes, so a
 // read of the architect's claim that waited would hold every row behind it for as long as a
-// Sandbox relaunch waits on the cluster (LEGION-650). The architect is launching, so the notice
-// goes to its role topic, as it would once the launch returned. The publish goes through the
-// outbox's hold gate (outbox.publish, supervise.Machine.HoldsItsSession), which must not wait on
-// the launch either (review round 13 of #4220); its control, the gate reading the hold under the
-// machine's lock, fails here with "the notice waited on its architect's launch in the runtime".
+// Sandbox relaunch waits on the cluster (LEGION-650). The architect is launching, its launch not
+// registered, so the notice's run reads the claim's published view (roleWaitGate), which waits on
+// no decision, and comes back at once as a wait for that launch, publishing nothing; a run that
+// read the claim under the machine's lock fails here with "the notice waited on its architect's
+// launch in the runtime".
 func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -326,14 +333,16 @@ func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 	go func() { executed <- runner.execute(context.Background(), row) }()
 	select {
 	case err := <-executed:
-		if err != nil {
-			t.Fatalf("execute the notice: %v", err)
+		// The architect's launch is still unregistered (launching), so roleWaitGate waits without
+		// blocking on the launch in the runtime and publishes nothing before registration.
+		if !errors.Is(err, wait.ErrWaiting) {
+			t.Fatalf("execute the notice = %v, want a role wait for the launching architect", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the notice waited on its architect's launch in the runtime")
 	}
-	if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != architectTopic(t, "LEGION-1") {
-		t.Fatalf("notice publishes = %+v, want one to the launching architect's role topic", delivered)
+	if attempts, _ := publisher.snapshot(); attempts != 0 {
+		t.Fatalf("notice publishes = %d, want 0 while the architect's launch has not registered", attempts)
 	}
 }
 
@@ -400,7 +409,7 @@ func TestANoticeHeldForAnAbsentArchitectArrivesInOrderOnceItReturns(t *testing.T
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateLaunching)
+	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	first := mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now())
 	second := mustOutboxRow(t, "LEGION-3", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, time.Now())
 	third := mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "design-approved", Version: 2}, time.Now())
@@ -634,7 +643,8 @@ func TestANoticeForAnOperatorSuspendedRootIsHeldUntilItHoldsItsRoleAgain(t *test
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	architect := architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	machine, _ := sup.Machine(architect)
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, time.Now()))
 	var logged bytes.Buffer
 	clock := time.Now()
@@ -652,6 +662,13 @@ func TestANoticeForAnOperatorSuspendedRootIsHeldUntilItHoldsItsRoleAgain(t *test
 	if _, delivered := publisher.snapshot(); len(delivered) != 0 || outboxRows(t, pool) != 1 || strings.Count(logged.String(), "msg=\"outbox row waits\" row=1 kind=notice ") != 1 {
 		t.Fatalf("while the suspended root holds no role: delivered %+v, %d rows, log %q; want the row held, logged once", delivered, outboxRows(t, pool), logged.String())
 	}
+	// The operator resumes the root architect and its new launch comes up ready.
+	sup.deps.Conns.(*fake.Conns).Register(architect, fake.NewConn())
+	if err := machine.Handle(context.Background(), supervise.RequestResume{Claim: architect, By: supervise.SuspendedByOperator}); err != nil {
+		t.Fatalf("resume the suspended root architect: %v", err)
+	}
+	machine.Wait()
+	comesUp(t, machine, true)
 	publisher.setAbsent()
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run after the root holds its role again: %v", err)
@@ -671,7 +688,7 @@ func TestAHeldChildCloseHoldsTheArchitectsLaterNotices(t *testing.T) {
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateLaunching)
+	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	architectClaim(t, sup, "LEGION-2", supervise.StateWorking)
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}, time.Now()))
 	clock := time.Now()

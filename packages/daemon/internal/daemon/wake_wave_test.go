@@ -2418,8 +2418,13 @@ func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testin
 		t.Fatalf("the catch-up of %s is %+v (estimate %s), want held with its estimate more than a minute out", woken, catchUp, due)
 	}
 	architect := mustClaimToken(t, woken, claim.RoleArchitect)
+	// The catch-up waits for its architect's ready, as a run of it that met the architect away
+	// leaves it (record.WaitForReady), so the ready's release reads it and must leave it at its turn.
+	if _, err := pool.Exec(ctx, "update outbox set wait_for = $2 where id = $1", catchUp.id, record.WaitForReady(architect)); err != nil {
+		t.Fatalf("make the catch-up of %s wait for its architect's ready: %v", woken, err)
+	}
 
-	if err := runner.releaseWaiting(ctx, architect); err != nil {
+	if err := releaseReadies(ctx, runner, architect); err != nil {
 		t.Fatalf("release the notices waiting for %s: %v", architect, err)
 	}
 	if after, _ := noticeRowOf(t, pool, woken); !after.nextAt.Equal(catchUp.nextAt) {

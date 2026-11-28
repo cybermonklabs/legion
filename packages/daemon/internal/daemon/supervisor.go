@@ -154,6 +154,12 @@ func (s *supervisor) OnDurableState(callback func(supervise.Claim, supervise.Cla
 // under the state directory as a test override; ordinary claims have no override and the specs
 // composer supplies their role prompt parts. A claim the daemon already supervises is returned as
 // it is.
+//
+// The machine it adds is a claim the daemon's record now holds a machine for, so the daemon's
+// claim-change hook is told of it (supervise.Deps.ClaimChanged, from the zero view to the
+// machine's first): a row that waited for the claim's machine runs at once — a stop that found the
+// claim stored and its machine not yet published (outbox.stopWithoutMachine), or a row to a role
+// whose claim the daemon did not record yet (roleWaitGate).
 func (s *supervisor) Create(ctx context.Context, c supervise.Claim, rolePrompt string) (*supervise.Machine, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -182,6 +188,9 @@ func (s *supervisor) Create(ctx context.Context, c supervise.Claim, rolePrompt s
 		return nil, false, err
 	}
 	s.add(c.Token, m)
+	if s.deps.ClaimChanged != nil {
+		s.deps.ClaimChanged(supervise.ClaimView{}, m.View())
+	}
 	return m, true, nil
 }
 
@@ -211,6 +220,17 @@ func (s *supervisor) Step(ctx context.Context, token claim.Token) (supervise.Ste
 // cannot survive a repair. Each repair is logged with the state it was stored in, and written back
 // into claims, so the boot's later passes over them (refreshStalePlugins, replayTerminal) read it
 // as restored rather than as a live claim with no process.
+//
+// A machine restored is no change of its claim, so the daemon's claim-change hook is told nothing
+// of it (supervise.Deps.ClaimChanged, which Create tells): the claim the store held is the one an
+// outbox row's wait was read against, and a restart is no ready of it. Told the zero view, the
+// hook would read a change in every claim and make due at once, its step back at 0, every row that
+// waits for that claim or its tree, which then publishes again from the backoff's first step at
+// each restart (dispatch://INFRA-4131/spec#b-r-capped). It would read no ready: a restored
+// machine's count of its claim's readies starts at 0, as the zero view's is
+// (supervise.ClaimView.Readies), and moves only at its agent's next ready. A row's wait reads back
+// across the restart (its wait_step and next_at), and the claim's next change or ready makes it
+// due as it would have.
 func (s *supervisor) restore(ctx context.Context, claims []supervise.Claim) ([]claim.Token, error) {
 	var unfinished []claim.Token
 	live := supervise.LiveStates()

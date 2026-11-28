@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -1210,8 +1211,9 @@ func TestOutboxNoticeReturnsPublisherFailure(t *testing.T) {
 	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now()))
 	publisher := &outboxPublisher{err: errors.New("listener unavailable")}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	readyOutboxClaim(t, sup, "LEGION-2", claim.RoleArchitect)
 
-	if err := (&outbox{pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup}).execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "listener unavailable") {
+	if err := (&outbox{pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion"}).execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "listener unavailable") {
 		t.Fatalf("notice failure = %v, want listener failure", err)
 	}
 }
@@ -1247,7 +1249,9 @@ func TestOutboxRoleMessageKeptForAnUnresponsiveHolder(t *testing.T) {
 // every attempt until another session holds the role, and the listener's own NATS grant denies
 // every forward (403 with no reason) until an operator changes it, as a role with no holder does:
 // the row is done either way, since the message reports a moment that has passed by then. A holder
-// that did not confirm the message in time (504 receipt_timeout or delivery_failed) is retried.
+// that did not confirm the message in time (504 receipt_timeout or delivery_failed) keeps the row
+// waiting for its role (roleWait), retried on the capped backoff of a role wait
+// (dispatch://INFRA-4131/spec#b-r-capped).
 func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	t.Parallel()
 	row := mustOutboxRow(t, "LEGION-2", record.RoleMessage{Role: "implementer", Body: "CI settled at head"}, time.Now())
@@ -1268,8 +1272,9 @@ func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	for _, reason := range []string{notify.ReasonReceiptTimeout, notify.ReasonDeliveryFailed} {
 		publisher.err = fmt.Errorf("publish notice to notifications.role.implementer: listener returned 504 Gateway Timeout: %w", notify.ErrNotDelivered{Reason: reason, Holder: "ses_impl"})
 		var notDelivered notify.ErrNotDelivered
-		if err := runner.execute(context.Background(), row); !errors.As(err, &notDelivered) || notDelivered.Reason != reason {
-			t.Fatalf("a role message answered %s = %v, want the answer as a failure, retried", reason, err)
+		if err := runner.execute(context.Background(), row); !errors.As(err, &notDelivered) || notDelivered.Reason != reason ||
+			!errors.Is(err, wait.ErrWaiting) {
+			t.Fatalf("a role message answered %s = %v, want the answer kept as a wait for the role, retried", reason, err)
 		}
 	}
 	if got := client.messages; len(got) != 0 {
@@ -1325,14 +1330,15 @@ func startedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Mac
 	return machine
 }
 
-// A role whose claim this daemon supervises and has not released is published to as before: the
-// claim read stops only the message to a released pod.
+// A role whose claim this daemon supervises and has not released (and is ready) is published to
+// as before: the claim read stops only the message to a released pod (and roleWaitGate holds back
+// an unregistered launch).
 func TestOutboxRoleMessageToAClaimNotReleasedIsPublished(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
 	runner, sup, pool := hookRunner(t, publisher)
-	startedClaim(t, sup, claim.RoleImplementer)
+	readyOutboxClaim(t, sup, "LEGION-208", claim.RoleImplementer)
 	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208",
 		record.RoleMessage{Role: string(token), Body: "CI settled at head"}, time.Now().Add(-time.Minute)))

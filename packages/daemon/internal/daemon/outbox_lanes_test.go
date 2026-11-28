@@ -639,7 +639,7 @@ func TestARowDueLaterRunsWhenItsLanesTimerFires(t *testing.T) {
 	}
 }
 
-// A notice waiting for a later attempt is released by its architect's ready (releaseWaiting): the
+// A notice waiting for its architect's ready is released by that ready (releaseReadies): the
 // expedite that makes it due wakes its lane as it commits, and the notice is published with no
 // timer fired — neither the lane's wait for the hour it was due at nor the sweep.
 func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
@@ -654,8 +654,9 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 	runner.records = wakingRecords(runner)
 	runLanes(t, runner, clock)
 
-	commitRows(t, pool, runner.records, "held-notice", mustOutboxRow(t, "LEGION-2",
-		record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, clock.Now().Add(time.Hour)))
+	held := mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, clock.Now().Add(time.Hour))
+	held.Wait.WaitFor = record.WaitForReady(architect)
+	commitRows(t, pool, runner.records, "held-notice", held)
 	testwait.Eventually(t, "the lane armed its wait for the hour", func() bool {
 		live, _ := clock.armed(time.Hour)
 		return live == 1
@@ -664,7 +665,7 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 		t.Fatalf("delivered %+v before the release, want nothing", delivered)
 	}
 
-	if err := runner.releaseWaiting(context.Background(), architect); err != nil {
+	if err := releaseReadies(context.Background(), runner, architect); err != nil {
 		t.Fatalf("release the architect's notices: %v", err)
 	}
 	testwait.Eventually(t, "the released notice was published and its lane dropped its wait", func() bool {
@@ -849,7 +850,7 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 	commitRows(t, pool, runner.records, "older", mustOutboxRow(t, "LEGION-2", notice, clock.Now()))
 	testwait.Eventually(t, "the older notice reached the publisher", func() bool { return publisher.gate.entries() == 1 })
 	commitRows(t, pool, runner.records, "newer", mustOutboxRow(t, "LEGION-3", notice, clock.Now()))
-	backoff := record.RetryBackoff(0)
+	backoff := record.RoleWaitBackoff(0)
 	testwait.Eventually(t, "the newer notice waited and its lane armed the backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1
@@ -903,25 +904,50 @@ func TestALifecycleLaneRunsOneRowAtATimeInIdOrder(t *testing.T) {
 	}
 }
 
-// An issue's notice runs on its board lane beside its blocked lifecycle lane: the notice is
-// published to the issue's architect while that architect's start is still held in Spawn.
-func TestAnIssuesNoticePublishesWhileItsLifecycleRowBlocksOnTheRuntime(t *testing.T) {
+// An issue's notice runs on its board lane beside its blocked lifecycle lane: while the issue's
+// architect's start is still held in Spawn, the notice's run reads that launch, which has not
+// registered its session, and waits for it (roleWaitGate) without waiting on the lifecycle lane,
+// publishing nothing. Once the start has run and the launch has registered, the notice's next run,
+// at its wait's first step, publishes it to the architect's role topic.
+func TestAnIssuesNoticeRunsWhileItsLifecycleRowBlocksOnTheRuntime(t *testing.T) {
 	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.holdArchitectStart(t)
 
 	tree.commit(t, "own-notice", mustOutboxRow(t, tree.root.Key, record.Notice{Kind: "design-approved", Version: 2}, tree.clock.Now()))
-	testwait.Eventually(t, "the notice was published beside the blocked start", func() bool {
+	ran := func() bool {
+		var attempts int
+		if err := tree.pool.QueryRow(context.Background(), "select attempts from outbox where kind = 'notice'").Scan(&attempts); err != nil {
+			t.Fatalf("read the notice's attempts: %v", err)
+		}
+		return attempts == 1
+	}
+	testwait.Eventually(t, "the notice ran beside the blocked start", ran)
+	if attempts, _ := tree.publisher.snapshot(); attempts != 0 {
+		t.Fatalf("the notice published %d times to an architect whose launch has not registered, want 0", attempts)
+	}
+	tree.blocked(t, "after the notice ran")
+
+	tree.spawn.gate.open()
+	testwait.Eventually(t, "the start ran", func() bool { return outboxRowsOf(t, tree.pool, tree.root.Key) == 1 })
+	architect := mustClaimToken(t, tree.root.Key, claim.RoleArchitect)
+	machine, found := tree.runner.supervisor.Machine(architect)
+	if !found {
+		t.Fatalf("the start made no machine for %s", architect)
+	}
+	tree.runner.supervisor.deps.Conns.(*fake.Conns).Register(architect, fake.NewConn())
+	comesUp(t, machine, false)
+	tree.clock.advance(record.RoleWaitBackoff(0))
+	if fired := tree.clock.fire(record.RoleWaitBackoff(0)); fired == 0 {
+		t.Fatal("no timer armed for the notice's first step fired")
+	}
+	testwait.Eventually(t, "the notice was published once its architect's launch registered", func() bool {
 		_, delivered := tree.publisher.snapshot()
-		return len(delivered) == 1 && outboxRowsOf(t, tree.pool, tree.root.Key) == 1
+		return len(delivered) == 1 && outboxRowsOf(t, tree.pool, tree.root.Key) == 0
 	})
 	if _, delivered := tree.publisher.snapshot(); delivered[0].topic != architectTopic(t, tree.root.Key) {
 		t.Fatalf("the notice went to %s, want the issue's architect's role topic", delivered[0].topic)
 	}
-	tree.blocked(t, "after the notice was published")
-
-	tree.spawn.gate.open()
-	testwait.Eventually(t, "the start ran", func() bool { return outboxRows(t, tree.pool) == 0 })
 }
 
 // A row that runs long keeps its lease: every third of the lease a tick moves the lease a whole
