@@ -22,11 +22,12 @@
 set -euo pipefail
 
 # CPU seconds at main 8e248d6c, run 46127046034 (job 140924069070), longest first:
-# image-clients 27.5, vm-hub 26.4, versions 19.4, listeners 17.1,
+# versions 19.4, listeners 17.1,
 # developer-box-surfaces 16.4, developer-box-records 16.31, developer-box 16.09,
-# short-reads 15.58, short-reads-clients 14.99, daemons 6.5, project-fields 2.1.
+# short-reads 15.58, short-reads-clients 14.99, vm-hub-archive 13.47,
+# image-clients 13.44, image-clients-pins 13.39, vm-hub 12.52, daemons 6.5, project-fields 2.1.
 # Source: dispatch://INFRA-6359/artifact/case-cpu-at-main-tsv. Split group times sum the cases.
-readonly groups=(image-clients vm-hub versions listeners developer-box-surfaces developer-box-records developer-box short-reads short-reads-clients daemons project-fields)
+readonly groups=(versions listeners developer-box-surfaces developer-box-records developer-box short-reads short-reads-clients vm-hub-archive image-clients image-clients-pins vm-hub daemons project-fields)
 readonly lib="$(dirname "${BASH_SOURCE[0]}")/lib"
 
 is_group() {

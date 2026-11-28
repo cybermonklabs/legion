@@ -100,7 +100,7 @@ box_case() {
   box_release_tags
 }
 
-# box_case_full_fleet <name>: the image-clients cases that check INFRA keep the full background.
+# box_case_full_fleet <name>: the image-clients-pins cases that check INFRA keep the full background.
 box_case_full_fleet() {
   new_case "$1"
   clients_background

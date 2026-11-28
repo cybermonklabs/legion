@@ -1211,10 +1211,11 @@ bash scripts/daemon-release-gate.test.sh --groups    # the group names, one a li
 failed=0; for g in $(bash scripts/daemon-release-gate.test.sh --groups); do bash scripts/daemon-release-gate.test.sh "$g" || failed=1; done; [ "$failed" = 0 ]
 ```
 
-The groups are `image-clients`, `vm-hub`, `versions`, `listeners`, `developer-box-surfaces`,
-`developer-box-records`, `developer-box`, `short-reads`, `short-reads-clients`, `daemons` and
-`project-fields`. With no group, or a name that is no group, the test exits 2 before it sets anything
-up, and so does any run while the list and the case files under `lib/` do not name the same groups.
+The groups are `versions`, `listeners`, `developer-box-surfaces`, `developer-box-records`,
+`developer-box`, `short-reads`, `short-reads-clients`, `vm-hub-archive`, `image-clients`,
+`image-clients-pins`, `vm-hub`, `daemons` and `project-fields`. With no group, or a name that is
+no group, the test exits 2 before it sets anything up, and so does any run while the list and the
+case files under `lib/` do not name the same groups.
 CI runs each group as a pool entry of its own,
 `scripts/daemon-release-gate.test.sh <group>`, in the `envoy-go-checks` job of
 `.github/workflows/ci.yaml`. Two controls run with it: a copy of the gate whose VM leg reads an
