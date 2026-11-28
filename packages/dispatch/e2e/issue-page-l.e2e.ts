@@ -81,7 +81,7 @@ import {
   sendWithKeys,
   wordsInField,
 } from "./issue-page-l";
-import { historyItem, historyPanel } from "./issue-page-m";
+import { focusedNodeFacts, historyItem, historyPanel } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import { runClockUntil, watchWrites } from "./keyed-writes";
 import { commentWithBody } from "./margin-helpers";
@@ -1363,10 +1363,13 @@ test("the box at the foot is never drawn in Threads, and Conversation draws it a
   });
 });
 
-// c-box, the half that waited on INFRA-3948 (decision 127): the panel's Reply on a turn of its
-// history and its Edit on the reader's own comment set no target in Threads, and Conversation
-// opened after them draws the box at rest, with no target line. The panel has both controls:
-// INFRA-3948's history and focused node in Details are under this part's head.
+// c-box, the half that waited on INFRA-3948 (decision 127): the panel's Reply and Edit set no
+// target in Threads, and Conversation opened after them draws the box at rest, with no target
+// line. The Reply is on a turn of Details' history. The Edit is in Details' facts of the focused
+// row: the reader's own comment, which a person wrote, so it is a row of the outline and no turn
+// of the history. Threads draws no outline, so the focus is put on that row in Conversation,
+// Threads is opened with the focus still on it, and the facts keep it. INFRA-3948's history and
+// focused node in Details are under this part's head.
 test("the box at the foot is never drawn in Threads, and the panel's Reply or Edit there sets no target @phone", async ({
   browser,
 }) => {
@@ -1376,27 +1379,50 @@ test("the box at the foot is never drawn in Threads, and the panel's Reply or Ed
       await page.setViewportSize({ height: size.height, width: size.width });
       await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectIssuePageDrawn(page);
-      await pickPreset(page, THREADS);
+      await focusRow(page, seeded.own.id);
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `the reader's own comment did not take the focus ${at}`,
+        })
+        .toBe(seeded.own.id);
+      // The facts stay the row's only while the focus leaves the outline for nothing but Details
+      // or the box at the foot (`IssueTree.tsx`'s `useReleaseFocus`). From 1280 px a toggle of the
+      // view row takes no focus on its press; below it the row's one control opens a menu that
+      // takes the focus (`IssuePresets.tsx`), so on a phone Threads is opened by `t t`, which
+      // leaves the focus on the row (`useIssueKeymap.ts`).
+      if (size === PHONE) {
+        await page.keyboard.press("t");
+        await page.keyboard.press("t");
+      } else {
+        await pickPreset(page, THREADS);
+      }
       await expectActivePreset(page, THREADS);
       await openDetails(page);
-      await panelEntry(page, seeded.daemon.words)
-        .getByRole("button", { exact: true, name: CONTROL_LABELS.reply })
+      await expect(
+        focusedNodeFacts(page),
+        `Details' facts in Threads are not the reader's own comment's, so the row proves nothing ${at}`
+      ).toHaveAttribute("data-focused-node", seeded.own.id);
+      // The Edit first: on a phone the turn's Reply closes Details, a sheet there, so that the box
+      // at the foot can take the focus (`history-entries.tsx`), which would take the facts' Edit
+      // off the page; the Edit closes nothing.
+      await focusedNodeFacts(page)
+        .getByRole("button", { exact: true, name: CONTROL_LABELS.edit })
         .click();
       // The press's handler and the render it asks for are done within these frames, so a box
       // the press aimed would be drawn by their end.
       await nextFrames(page);
       await expect(
         composer(page),
-        `the panel's Reply on a turn of the history drew the box in Threads ${at}`
+        `the panel's Edit on the reader's own comment drew the box in Threads ${at}`
       ).toHaveCount(0);
-      await panelEntry(page, seeded.own.words)
-        .getByRole("button", { exact: true, name: CONTROL_LABELS.edit })
+      await panelEntry(page, seeded.daemon.words)
+        .getByRole("button", { exact: true, name: CONTROL_LABELS.reply })
         .click();
-      // The same frames, for the Edit's press.
+      // The same frames, for the Reply's press.
       await nextFrames(page);
       await expect(
         composer(page),
-        `the panel's Edit on the reader's own comment drew the box in Threads ${at}`
+        `the panel's Reply on a turn of the history drew the box in Threads ${at}`
       ).toHaveCount(0);
       await closeDetails(page);
       await pickPreset(page, PRESET_NAMES.conversation);
