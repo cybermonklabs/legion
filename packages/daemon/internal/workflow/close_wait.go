@@ -1175,5 +1175,5 @@ func (e *Engine) verificationChanged(ctx context.Context, tx pgx.Tx, fact intake
 	if err := json.Unmarshal(read.Answer, &answer); err != nil || answer.Results.VerificationArtifactID != fact.ArtifactID {
 		return nil
 	}
-	return e.askCloseRead(ctx, tx, *issue)
+	return nil
 }
