@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io/fs"
 	"maps"
 	"math/rand/v2"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode/utf16"
 
@@ -458,7 +460,10 @@ func TestEachProblemOfTheReaderSaysWhetherItLosesANode(t *testing.T) {
 // the printer writes plain makes the printed document, which the reader takes with no problem. A
 // text that the printer writes in single quotes, for a reason of form such as a leading "---", is
 // no case of the rule, and neither is a text that yaml.v3 reads as more than one plain scalar. The
-// test requires 1,000 cases on each side, so it cannot pass on no case.
+// test makes the texts first, then judges them in parallel subtests of at most 1,000 texts each,
+// named by the index of their first and their last text, which add their cases of each side to the
+// counts. The group of subtests returns once each has ended, so the counts are whole when the test
+// logs them. The test requires 1,000 cases on each side, so it cannot pass on no case.
 func TestTheReaderLosesANodeAtEachPlainTextThatThePrinterQuotes(t *testing.T) {
 	t.Parallel()
 	texts := []string{
@@ -505,41 +510,49 @@ func TestTheReaderLosesANodeAtEachPlainTextThatThePrinterQuotes(t *testing.T) {
 		texts = append(texts, string(b))
 	}
 	const definition = "A work unit is work."
-	quotedCases, plainCases := 0, 0
-	for _, text := range texts {
-		file := "---\ntype: term\nid: work-unit\nname: " + text + "\ndefinition:\n  - " + definition + "\n"
-		if !readsAsPlainName(file, text) {
-			continue
+	var quotedCases, plainCases atomic.Int64
+	t.Run("texts", func(t *testing.T) {
+		for start := 0; start < len(texts); start += 1000 {
+			chunk := texts[start:min(start+1000, len(texts))]
+			t.Run(fmt.Sprintf("texts %d to %d", start, start+len(chunk)-1), func(t *testing.T) {
+				t.Parallel()
+				for _, text := range chunk {
+					file := "---\ntype: term\nid: work-unit\nname: " + text + "\ndefinition:\n  - " + definition + "\n"
+					if !readsAsPlainName(file, text) {
+						continue
+					}
+					printed, err := printNode(Term{ID: "work-unit", Name: text, Definition: definition})
+					if err != nil {
+						t.Fatalf("printNode of the name %q: %v", text, err)
+					}
+					var quoted bool
+					switch line := strings.Split(printed, "\n")[3]; {
+					case line == "name: "+text:
+					case strings.HasPrefix(line, `name: "`):
+						quoted = true
+					default:
+						continue
+					}
+					_, problems := Parse(map[string][]byte{"x.yaml": []byte(file)})
+					loses := slices.ContainsFunc(problems, func(p Problem) bool { return p.Effect == LosesNode })
+					if loses != quoted {
+						t.Errorf("the name %q: the printer writes it double-quoted: %t, and the reader gives a problem that loses a node for it plain: %t (%+v)", text, quoted, loses, problems)
+					}
+					if quoted {
+						quotedCases.Add(1)
+						continue
+					}
+					plainCases.Add(1)
+					if file != printed || len(problems) != 0 {
+						t.Errorf("the name %q, which the printer writes plain: the printed document %q, the file %q, problems %+v", text, printed, file, problems)
+					}
+				}
+			})
 		}
-		printed, err := printNode(Term{ID: "work-unit", Name: text, Definition: definition})
-		if err != nil {
-			t.Fatalf("printNode of the name %q: %v", text, err)
-		}
-		var quoted bool
-		switch line := strings.Split(printed, "\n")[3]; {
-		case line == "name: "+text:
-		case strings.HasPrefix(line, `name: "`):
-			quoted = true
-		default:
-			continue
-		}
-		_, problems := Parse(map[string][]byte{"x.yaml": []byte(file)})
-		loses := slices.ContainsFunc(problems, func(p Problem) bool { return p.Effect == LosesNode })
-		if loses != quoted {
-			t.Errorf("the name %q: the printer writes it double-quoted: %t, and the reader gives a problem that loses a node for it plain: %t (%+v)", text, quoted, loses, problems)
-		}
-		if quoted {
-			quotedCases++
-			continue
-		}
-		plainCases++
-		if file != printed || len(problems) != 0 {
-			t.Errorf("the name %q, which the printer writes plain: the printed document %q, the file %q, problems %+v", text, printed, file, problems)
-		}
-	}
-	t.Logf("%d texts: %d that the printer double-quotes, %d that it writes plain", len(texts), quotedCases, plainCases)
-	if quotedCases < 1000 || plainCases < 1000 {
-		t.Errorf("%d texts that the printer double-quotes and %d that it writes plain, want 1,000 of each", quotedCases, plainCases)
+	})
+	t.Logf("%d texts: %d that the printer double-quotes, %d that it writes plain", len(texts), quotedCases.Load(), plainCases.Load())
+	if quotedCases.Load() < 1000 || plainCases.Load() < 1000 {
+		t.Errorf("%d texts that the printer double-quotes and %d that it writes plain, want 1,000 of each", quotedCases.Load(), plainCases.Load())
 	}
 }
 

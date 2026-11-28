@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -488,8 +489,11 @@ func parentOf(pointer string) string { return pointer[:max(strings.LastIndexByte
 // other file unchanged, so that a writer that writes another element, at another place or in
 // another file, changes another place of the file too, or changes the element that it is handed,
 // fails by name. The element is the edit's own, so a fault of the edit is in what the read back
-// takes too; the readings that each mark states catch it. The test reads at least the floor of
-// readings of a member left out that it read when the floor was written (markReadingsFloor).
+// takes too; the readings that each mark states catch it. Each member is a parallel subtest of the
+// group members, named by its file, its type and its member, which adds its readings to the count;
+// the group returns once each has ended, so the count is whole when the test logs it. The test
+// reads at least the floor of readings of a member left out that it read when the floor was
+// written (markReadingsFloor).
 func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 	t.Parallel()
 	base := memberScenario(t)
@@ -503,97 +507,103 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 		}
 		return v
 	}
-	checked := 0
+	var checked atomic.Int64
 	fileTypes := scenarioFileTypes()
-	for _, name := range slices.Sorted(maps.Keys(fileTypes)) {
-		for _, typ := range structTypes(fileTypes[name], nil) {
-			for _, m := range inputMembers(typ) {
-				if m.name == "" {
-					continue
-				}
-				mark, err := markOf(m.field)
-				if err != nil {
-					t.Errorf("%s: %v", typ, err)
-					continue
-				}
-				zero := zeroJSON(t, m.field.Type)
-				// The element that leaves the member out: one that sets it, a non-zero value first, and for
-				// a result one of outcome fail; and an element beside it that sets it too.
-				objects := slices.DeleteFunc(objectsOf(read(t, name), fileTypes[name], "", typ), func(o object) bool { return o.members[m.name] == nil })
-				slices.SortStableFunc(objects, func(a, b object) int {
-					return boolOrder(reflect.DeepEqual(a.members[m.name], zero), reflect.DeepEqual(b.members[m.name], zero))
-				})
-				if typ == reflect.TypeFor[scenarioResult]() {
-					objects = slices.DeleteFunc(objects, func(o object) bool { return o.members["outcome"] != "fail" && o.members["outcome"] != "pass" })
-					slices.SortStableFunc(objects, func(a, b object) int {
-						return boolOrder(a.members["outcome"] != "fail", b.members["outcome"] != "fail")
-					})
-				}
-				element, beside := -1, -1
-				for i := 0; i < len(objects) && beside < 0; i++ {
-					for j := range objects {
-						if j != i && parentOf(objects[j].pointer) == parentOf(objects[i].pointer) && objects[i].pointer != "" &&
-							(typ != reflect.TypeFor[scenarioResult]() || objects[j].members["outcome"] == "pass" && objects[i].members["outcome"] == "fail" &&
-								objects[j].members["check"] == objects[i].members["check"] && objects[j].members["kind"] == objects[i].members["kind"]) {
-							element, beside = i, j
-							break
-						}
-					}
-				}
-				if len(objects) == 1 && objects[0].pointer == "" {
-					element = 0
-				}
-				if element < 0 {
-					t.Errorf("%s: no element of %s sets %s beside another one that sets it, so the test reads no absence of it", name, typ, m.name)
-					continue
-				}
-				e := objects[element]
-				// placement is the file with e in its place, as edit leaves it: beside, or alone in its list,
-				// read back at its pointer, whose tokens hold no ~ or / (jsonAt).
-				placement := func(t *testing.T, alone bool, edit func(members map[string]any)) fstest.MapFS {
-					members := maps.Clone(jsonAt(read(t, name), e.pointer).(map[string]any))
-					edit(members)
-					at, x := e.pointer, any(members)
-					if alone && e.pointer != "" {
-						at, x = parentOf(e.pointer), []any{members}
-					}
-					var place []string
-					if at != "" {
-						place = strings.Split(at[1:], "/")
-					}
-					return changedFile(t, base, name, treeChange{place: place, value: x}, elementAt)
-				}
-				for _, alone := range []bool{false, true} {
-					where := fmt.Sprintf("%s %s of %s %s, %s", name, m.name, typ.Name(), e.pointer, map[bool]string{false: "beside " + objectsPointer(objects, beside), true: "alone"}[alone])
-					if e.pointer == "" && !alone {
+	t.Run("members", func(t *testing.T) {
+		for _, name := range slices.Sorted(maps.Keys(fileTypes)) {
+			for _, typ := range structTypes(fileTypes[name], nil) {
+				for _, m := range inputMembers(typ) {
+					if m.name == "" {
 						continue
 					}
-					left := outcomeOf(placement(t, alone, func(members map[string]any) { delete(members, m.name) }))
-					checked++
-					switch mark.kind {
-					case "zero":
-						if set := outcomeOf(placement(t, alone, func(members map[string]any) { members[m.name] = zero })); left != set {
-							t.Errorf("%s: left out it reads\n%s\nand at its zero value %v\n%s", where, left, zero, set)
+					t.Run(fmt.Sprintf("%s %s %s", name, typ.Name(), m.name), func(t *testing.T) {
+						t.Parallel()
+						mark, err := markOf(m.field)
+						if err != nil {
+							t.Errorf("%s: %v", typ, err)
+							return
 						}
-					default:
-						kept := outcomeOf(placement(t, alone, func(map[string]any) {}))
-						if !strings.HasPrefix(left, "refused") || left == kept {
-							t.Errorf("%s: a member marked %s left out reads\n%s\nand set\n%s", where, mark.kind, left, kept)
+						zero := zeroJSON(t, m.field.Type)
+						// The element that leaves the member out: one that sets it, a non-zero value
+						// first, and for a result one of outcome fail; and an element beside it that sets
+						// it too.
+						objects := slices.DeleteFunc(objectsOf(read(t, name), fileTypes[name], "", typ), func(o object) bool { return o.members[m.name] == nil })
+						slices.SortStableFunc(objects, func(a, b object) int {
+							return boolOrder(reflect.DeepEqual(a.members[m.name], zero), reflect.DeepEqual(b.members[m.name], zero))
+						})
+						if typ == reflect.TypeFor[scenarioResult]() {
+							objects = slices.DeleteFunc(objects, func(o object) bool { return o.members["outcome"] != "fail" && o.members["outcome"] != "pass" })
+							slices.SortStableFunc(objects, func(a, b object) int {
+								return boolOrder(a.members["outcome"] != "fail", b.members["outcome"] != "fail")
+							})
 						}
-					}
-					if mark.kind == "one of" && !alone {
-						both := outcomeOf(placement(t, alone, func(members map[string]any) { members[mark.other] = "x9" }))
-						if !strings.HasPrefix(both, "refused") {
-							t.Errorf("%s: with %s set too it reads\n%s", where, mark.other, both)
+						element, beside := -1, -1
+						for i := 0; i < len(objects) && beside < 0; i++ {
+							for j := range objects {
+								if j != i && parentOf(objects[j].pointer) == parentOf(objects[i].pointer) && objects[i].pointer != "" &&
+									(typ != reflect.TypeFor[scenarioResult]() || objects[j].members["outcome"] == "pass" && objects[i].members["outcome"] == "fail" &&
+										objects[j].members["check"] == objects[i].members["check"] && objects[j].members["kind"] == objects[i].members["kind"]) {
+									element, beside = i, j
+									break
+								}
+							}
 						}
-					}
+						if len(objects) == 1 && objects[0].pointer == "" {
+							element = 0
+						}
+						if element < 0 {
+							t.Errorf("%s: no element of %s sets %s beside another one that sets it, so the test reads no absence of it", name, typ, m.name)
+							return
+						}
+						e := objects[element]
+						// placement is the file with e in its place, as edit leaves it: beside, or alone in
+						// its list, read back at its pointer, whose tokens hold no ~ or / (jsonAt).
+						placement := func(t *testing.T, alone bool, edit func(members map[string]any)) fstest.MapFS {
+							members := maps.Clone(jsonAt(read(t, name), e.pointer).(map[string]any))
+							edit(members)
+							at, x := e.pointer, any(members)
+							if alone && e.pointer != "" {
+								at, x = parentOf(e.pointer), []any{members}
+							}
+							var place []string
+							if at != "" {
+								place = strings.Split(at[1:], "/")
+							}
+							return changedFile(t, base, name, treeChange{place: place, value: x}, elementAt)
+						}
+						for _, alone := range []bool{false, true} {
+							where := fmt.Sprintf("%s %s of %s %s, %s", name, m.name, typ.Name(), e.pointer, map[bool]string{false: "beside " + objectsPointer(objects, beside), true: "alone"}[alone])
+							if e.pointer == "" && !alone {
+								continue
+							}
+							left := outcomeOf(placement(t, alone, func(members map[string]any) { delete(members, m.name) }))
+							checked.Add(1)
+							switch mark.kind {
+							case "zero":
+								if set := outcomeOf(placement(t, alone, func(members map[string]any) { members[m.name] = zero })); left != set {
+									t.Errorf("%s: left out it reads\n%s\nand at its zero value %v\n%s", where, left, zero, set)
+								}
+							default:
+								kept := outcomeOf(placement(t, alone, func(map[string]any) {}))
+								if !strings.HasPrefix(left, "refused") || left == kept {
+									t.Errorf("%s: a member marked %s left out reads\n%s\nand set\n%s", where, mark.kind, left, kept)
+								}
+							}
+							if mark.kind == "one of" && !alone {
+								both := outcomeOf(placement(t, alone, func(members map[string]any) { members[mark.other] = "x9" }))
+								if !strings.HasPrefix(both, "refused") {
+									t.Errorf("%s: with %s set too it reads\n%s", where, mark.other, both)
+								}
+							}
+						}
+					})
 				}
 			}
 		}
-	}
-	t.Logf("%d readings of a member left out", checked)
-	if checked < markReadingsFloor {
-		t.Errorf("the test read %d readings of a member left out, fewer than its floor of %d (markReadingsFloor)", checked, markReadingsFloor)
+	})
+	t.Logf("%d readings of a member left out", checked.Load())
+	if checked.Load() < markReadingsFloor {
+		t.Errorf("the test read %d readings of a member left out, fewer than its floor of %d (markReadingsFloor)", checked.Load(), markReadingsFloor)
 	}
 }
 
@@ -723,7 +733,9 @@ func edit(v reflect.Value, path []step, change func(reflect.Value)) {
 //     refuses a run of a check of the code with no commit;
 //   - for a member of a one of mark, also with both members set.
 //
-// No file is read.
+// Each member is a parallel subtest of the group members, named by its root, its type and its
+// member, which adds its readings to the count; the group returns once each has ended, so the count
+// is whole when the test logs it. No file is read.
 func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 	t.Parallel()
 	refusal := func(t *testing.T, in Input, units []Unit, root reflect.Type) string {
@@ -738,121 +750,127 @@ func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 		}
 		return fmt.Sprint(err)
 	}
-	checked := 0
-	for _, root := range []reflect.Type{reflect.TypeFor[Input](), reflect.TypeFor[[]Unit]()} {
-		types := structTypes(root, nil)
-		if root == reflect.TypeFor[Input]() {
-			types = structTypes(reflect.TypeFor[FixtureHistory](), types) // the History of memberBase
-		}
-		for _, typ := range types {
-			for _, m := range inputMembers(typ) {
-				mark, err := markOf(m.field)
-				if err != nil {
-					t.Errorf("%s: %v", typ, err)
-					continue
-				}
-				if mark.kind == "zero" {
-					checked += zeroTaken(t, root, typ, m, refusal)
-					continue
-				}
-				// variant is the refusal of memberBase with change made to the value at the path of the
-				// instance of typ, or, alone, to its list or map with only that instance in it.
-				variant := func(t *testing.T, instance int, alone bool, change func(reflect.Value)) (string, string) {
-					_, in, _, units := memberBase(t)
-					v := reflect.ValueOf(&in).Elem()
-					if root == reflect.TypeFor[[]Unit]() {
-						v = reflect.ValueOf(&units).Elem()
-					}
-					paths := instancesOf(v, typ, nil)
-					path := paths[instance]
-					if alone {
-						container, last := path[:len(path)-1], path[len(path)-1]
-						edit(v, container, func(c reflect.Value) {
-							only := reflect.New(c.Type()).Elem()
-							if c.Kind() == reflect.Slice {
-								only.Set(reflect.Append(reflect.MakeSlice(c.Type(), 0, 1), c.Index(last.index)))
-							} else {
-								only.Set(reflect.MakeMap(c.Type()))
-								only.SetMapIndex(last.key, c.MapIndex(last.key))
+	var checked atomic.Int64
+	t.Run("members", func(t *testing.T) {
+		for _, root := range []reflect.Type{reflect.TypeFor[Input](), reflect.TypeFor[[]Unit]()} {
+			types := structTypes(root, nil)
+			if root == reflect.TypeFor[Input]() {
+				types = structTypes(reflect.TypeFor[FixtureHistory](), types) // the History of memberBase
+			}
+			for _, typ := range types {
+				for _, m := range inputMembers(typ) {
+					t.Run(fmt.Sprintf("%s %s %s", root, typ.Name(), m.field.Name), func(t *testing.T) {
+						t.Parallel()
+						mark, err := markOf(m.field)
+						if err != nil {
+							t.Errorf("%s: %v", typ, err)
+							return
+						}
+						if mark.kind == "zero" {
+							checked.Add(int64(zeroTaken(t, root, typ, m, refusal)))
+							return
+						}
+						// variant is the refusal of memberBase with change made to the value at the path
+						// of the instance of typ, or, alone, to its list or map with only that instance in
+						// it.
+						variant := func(t *testing.T, instance int, alone bool, change func(reflect.Value)) (string, string) {
+							_, in, _, units := memberBase(t)
+							v := reflect.ValueOf(&in).Elem()
+							if root == reflect.TypeFor[[]Unit]() {
+								v = reflect.ValueOf(&units).Elem()
 							}
-							c.Set(only)
-						})
-						if last.index >= 0 {
-							path = append(slices.Clone(container), step{field: -1, index: 0})
-						}
-					}
-					edit(v, path, change)
-					return refusal(t, in, units, root), fmt.Sprint(path)
-				}
-				_, in, _, units := memberBase(t)
-				v := reflect.ValueOf(&in).Elem()
-				if root == reflect.TypeFor[[]Unit]() {
-					v = reflect.ValueOf(&units).Elem()
-				}
-				paths := instancesOf(v, typ, nil)
-				instance := slices.IndexFunc(paths, func(path []step) bool {
-					found := false
-					edit(v, path, func(s reflect.Value) { found = !s.FieldByIndex(m.index).IsZero() })
-					return found
-				})
-				switch {
-				case instance < 0 && mark.kind == "one of":
-					instance = 0 // its zero is the other member's case; both set is this member's
-				case instance < 0:
-					t.Errorf("%s: memberBase sets %s of no %s, so the test reads no zero of it", root, m.field.Name, typ)
-					continue
-				}
-				for _, alone := range []bool{false, true} {
-					// A value is alone in a list or a map of others; a member or the root has no others.
-					path := paths[instance]
-					if alone && (len(path) == 0 || path[len(path)-1].index < 0 && !path[len(path)-1].key.IsValid()) {
-						continue
-					}
-					var set bool
-					edit(v, path, func(s reflect.Value) { set = !s.FieldByIndex(m.index).IsZero() })
-					if set {
-						kept, _ := variant(t, instance, alone, func(reflect.Value) {})
-						zeroed, at := variant(t, instance, alone, func(s reflect.Value) {
-							f := s.FieldByIndex(m.index)
-							f.Set(reflect.Zero(f.Type()))
-						})
-						checked++
-						if zeroed == "<nil>" || zeroed == kept {
-							t.Errorf("%s %s at %v (alone %t): with it zero the entry gives %s, and with it set %s", typ, m.field.Name, at, alone, zeroed, kept)
-						}
-						if mark.kind != "one of" && m.field.Type.Kind() == reflect.Map {
-							for depth := 1; ; depth++ {
-								held := false
-								zeroed, at := variant(t, instance, alone, func(s reflect.Value) { held = zeroValueAt(s.FieldByIndex(m.index), depth) })
-								if !held {
-									if depth == 1 {
-										t.Errorf("%s: memberBase sets no value of %s of %s, so the test reads no zero of one", root, m.field.Name, typ)
+							paths := instancesOf(v, typ, nil)
+							path := paths[instance]
+							if alone {
+								container, last := path[:len(path)-1], path[len(path)-1]
+								edit(v, container, func(c reflect.Value) {
+									only := reflect.New(c.Type()).Elem()
+									if c.Kind() == reflect.Slice {
+										only.Set(reflect.Append(reflect.MakeSlice(c.Type(), 0, 1), c.Index(last.index)))
+									} else {
+										only.Set(reflect.MakeMap(c.Type()))
+										only.SetMapIndex(last.key, c.MapIndex(last.key))
 									}
-									break
+									c.Set(only)
+								})
+								if last.index >= 0 {
+									path = append(slices.Clone(container), step{field: -1, index: 0})
 								}
-								checked++
+							}
+							edit(v, path, change)
+							return refusal(t, in, units, root), fmt.Sprint(path)
+						}
+						_, in, _, units := memberBase(t)
+						v := reflect.ValueOf(&in).Elem()
+						if root == reflect.TypeFor[[]Unit]() {
+							v = reflect.ValueOf(&units).Elem()
+						}
+						paths := instancesOf(v, typ, nil)
+						instance := slices.IndexFunc(paths, func(path []step) bool {
+							found := false
+							edit(v, path, func(s reflect.Value) { found = !s.FieldByIndex(m.index).IsZero() })
+							return found
+						})
+						switch {
+						case instance < 0 && mark.kind == "one of":
+							instance = 0 // its zero is the other member's case; both set is this member's
+						case instance < 0:
+							t.Errorf("%s: memberBase sets %s of no %s, so the test reads no zero of it", root, m.field.Name, typ)
+							return
+						}
+						for _, alone := range []bool{false, true} {
+							// A value is alone in a list or a map of others; a member or the root has no others.
+							path := paths[instance]
+							if alone && (len(path) == 0 || path[len(path)-1].index < 0 && !path[len(path)-1].key.IsValid()) {
+								continue
+							}
+							var set bool
+							edit(v, path, func(s reflect.Value) { set = !s.FieldByIndex(m.index).IsZero() })
+							if set {
+								kept, _ := variant(t, instance, alone, func(reflect.Value) {})
+								zeroed, at := variant(t, instance, alone, func(s reflect.Value) {
+									f := s.FieldByIndex(m.index)
+									f.Set(reflect.Zero(f.Type()))
+								})
+								checked.Add(1)
 								if zeroed == "<nil>" || zeroed == kept {
-									t.Errorf("%s %s at %v (alone %t), with a value at depth %d zero: the entry gives %s, and with it set %s", typ, m.field.Name, at, alone, depth, zeroed, kept)
+									t.Errorf("%s %s at %v (alone %t): with it zero the entry gives %s, and with it set %s", typ, m.field.Name, at, alone, zeroed, kept)
+								}
+								if mark.kind != "one of" && m.field.Type.Kind() == reflect.Map {
+									for depth := 1; ; depth++ {
+										held := false
+										zeroed, at := variant(t, instance, alone, func(s reflect.Value) { held = zeroValueAt(s.FieldByIndex(m.index), depth) })
+										if !held {
+											if depth == 1 {
+												t.Errorf("%s: memberBase sets no value of %s of %s, so the test reads no zero of one", root, m.field.Name, typ)
+											}
+											break
+										}
+										checked.Add(1)
+										if zeroed == "<nil>" || zeroed == kept {
+											t.Errorf("%s %s at %v (alone %t), with a value at depth %d zero: the entry gives %s, and with it set %s", typ, m.field.Name, at, alone, depth, zeroed, kept)
+										}
+									}
+								}
+							}
+							if mark.kind == "one of" && !alone {
+								i := slices.IndexFunc(inputMembers(typ), func(o inputMember) bool { return o.name == mark.other })
+								both, _ := variant(t, instance, alone, func(s reflect.Value) {
+									s.FieldByIndex(m.index).SetString("x9")
+									s.FieldByIndex(inputMembers(typ)[i].index).SetString("x8")
+								})
+								checked.Add(1)
+								if both == "<nil>" {
+									t.Errorf("%s %s and %s both set: the entry gives no error", typ, m.field.Name, mark.other)
 								}
 							}
 						}
-					}
-					if mark.kind == "one of" && !alone {
-						i := slices.IndexFunc(inputMembers(typ), func(o inputMember) bool { return o.name == mark.other })
-						both, _ := variant(t, instance, alone, func(s reflect.Value) {
-							s.FieldByIndex(m.index).SetString("x9")
-							s.FieldByIndex(inputMembers(typ)[i].index).SetString("x8")
-						})
-						checked++
-						if both == "<nil>" {
-							t.Errorf("%s %s and %s both set: the entry gives no error", typ, m.field.Name, mark.other)
-						}
-					}
+					})
 				}
 			}
 		}
-	}
-	t.Logf("%d readings of a member at its zero value", checked)
+	})
+	t.Logf("%d readings of a member at its zero value", checked.Load())
 }
 
 // zeroTaken fails the test unless the entry takes the zero value of the member m, marked zero, of
