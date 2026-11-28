@@ -6,8 +6,12 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"maps"
 	"net/http"
@@ -23,7 +27,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -354,6 +357,22 @@ func newSpecResultsRig(t *testing.T) *specResultsRig {
 	return newSpecResultsRigOn(t, testServerOptions{})
 }
 
+// specResultsAppKey is the App key of every rig of this file: the PEM text of an RSA-2048 key in
+// the PKCS1 form githubapptest.Key writes, generated once per test binary rather than once per
+// rig. No rig needs a key of its own: the stand-in GitHub mints an installation token for any
+// request to its token route and checks no signature (specGitHub.serve), so the key need only be
+// one the App client parses and signs with. The rigs only read the text, and each server parses
+// it into a key of its own (githubappjwt.ParseKey); signing with one crypto/rsa key from many
+// goroutines at once is safe as well. A failed generation's error is kept and reported by each rig
+// that asks for the key.
+var specResultsAppKey = sync.OnceValues(func() (string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})), nil
+})
+
 // newSpecResultsRigOn is newSpecResultsRig on a server built from serving, for a test that gives
 // the server a store of its own and the rename pairs read from it (renamedRepositoryStore). The
 // project's default repository is set as a person sets it, through PUT
@@ -365,7 +384,10 @@ func newSpecResultsRigOn(t *testing.T, serving testServerOptions) *specResultsRi
 		files:     map[string]map[string]string{specResultsCommit: specResultsFiles},
 		workflows: map[string]map[string]string{specResultsCommit: {specResultsWorkflowPath: specResultsWorkflow}},
 	}
-	_, pemText := githubapptest.Key(t)
+	pemText, err := specResultsAppKey()
+	if err != nil {
+		t.Fatalf("generate App key: %v", err)
+	}
 	serving.app = &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}
 	serving.githubAPIBase = github.serve(t)
 	rig := newBrokerTokenRigOn(t, serving)
@@ -459,6 +481,7 @@ func stored201(t *testing.T, response *httptest.ResponseRecorder) model.SpecChec
 // is the run the token proved: its session and principal, and no person. The body names none of
 // them. The read answers the same row.
 func TestAJobsResultIsStoredAsAnAttestationOfItsRun(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	result := stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)))
 
@@ -505,6 +528,7 @@ func TestAJobsResultIsStoredAsAnAttestationOfItsRun(t *testing.T) {
 // CI log, the read's answer and the write's access-log line each name the run and no person,
 // and the line names the run's session as the caller.
 func TestAResultNamesItsRunAndNoPerson(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog).
 	rig := newSpecResultsRig(t)
 	person := resultsOnlyToken(rig.caller.jkt, specResultsProject).Person
 	logged := captureLog(t)
@@ -544,6 +568,7 @@ func TestAResultNamesItsRunAndNoPerson(t *testing.T) {
 // run's workflow file at the path each row's workflow_ref names, the file in which go-checks, the
 // job of the check, is a plain job.
 func TestTheRecorderIsThePrincipalTheBrokerAuthenticated(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct{ name, path, ref string }{
 		{"a plain path on a plain branch", ".github/workflows/ci-results.yaml", "refs/heads/topic"},
 		{"a workflow file whose name holds an @", ".github/workflows/ci@probe.yaml", "refs/heads/topic"},
@@ -551,6 +576,7 @@ func TestTheRecorderIsThePrincipalTheBrokerAuthenticated(t *testing.T) {
 		{"both at one time", ".github/workflows/ci@probe.yaml", "refs/heads/legion/a@b"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newSpecResultsRig(t)
 			rig.github.workflows[specResultsCommit][row.path] = specResultsWorkflow
 			workflow := specResultsRepository + "/" + row.path
@@ -573,6 +599,7 @@ func TestTheRecorderIsThePrincipalTheBrokerAuthenticated(t *testing.T) {
 // TestAnotherCommitIsRefusedNamingBoth: a job writes a result only for the commit of its own
 // run, and the refusal names both commits.
 func TestAnotherCommitIsRefusedNamingBoth(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	body := passOf(probeCheck)
 	body["commit"] = specResultsOtherCommit
@@ -583,8 +610,10 @@ func TestAnotherCommitIsRefusedNamingBoth(t *testing.T) {
 }
 
 // TestAnIdentityFieldInTheBodyIsRefused: the identity on a result is the one the token proved,
-// never a field the caller set, so a body naming any field but the four is refused by name.
+// never a field the caller set, so a body naming any field but the four is refused by name. The
+// subtests share one rig, its count of tokens and its broker, so they run in order.
 func TestAnIdentityFieldInTheBodyIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	for _, field := range []string{"actor", "job", "leg", "attempt", "role", "session", "repository", "run_id", "check_run_id", "procedure_digest", "subject"} {
 		t.Run(field, func(t *testing.T) {
@@ -600,6 +629,7 @@ func TestAnIdentityFieldInTheBodyIsRefused(t *testing.T) {
 
 // TestACheckTheFilesDoNotHoldIsRefused: a result is for a check of the files at the run's commit.
 func TestACheckTheFilesDoNotHoldIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf("no-such-check")), http.StatusConflict, "CHECK_NOT_IN_FILES")
 }
@@ -611,6 +641,7 @@ func TestACheckTheFilesDoNotHoldIsRefused(t *testing.T) {
 // bound that every reader of spec files holds them to (notes.MaxFileSize) is the same refusal,
 // since GitHub serving it again changes nothing.
 func TestSpecFilesTheGraphLogicRefusesAreRefused(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, file, content, first string
 	}{
@@ -634,6 +665,7 @@ func TestSpecFilesTheGraphLogicRefusesAreRefused(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newSpecResultsRig(t)
 			files := maps.Clone(specResultsFiles)
 			files[row.file] = row.content
@@ -652,6 +684,7 @@ func TestSpecFilesTheGraphLogicRefusesAreRefused(t *testing.T) {
 // first is the first file in name order. The one-file row of
 // TestSpecFilesTheGraphLogicRefusesAreRefused is the control.
 func TestEachFileOverTheBoundIsAProblem(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	files := maps.Clone(specResultsFiles)
 	files["big-b.yaml"] = strings.Repeat("\n", notes.MaxFileSize+2)
@@ -671,6 +704,13 @@ func TestEachFileOverTheBoundIsAProblem(t *testing.T) {
 // with that one finding, and GitHub is asked for no file. The files of a commit at each bound
 // write their result.
 func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
+	t.Parallel()
+	// Each row builds the files it hands GitHub in its own subtest, so the four rows build theirs
+	// at the same time. Each builds all of its own, the files that the two padded sets and the two
+	// summed sets hold in common included: sharing the fifteen files of notes.MaxFileSize that the
+	// summed sets hold in common would save a few seconds of a leaf whose time is mostly the judging
+	// of 16 MiB of files, at the cost of a lock and an order of building that a reader must follow.
+	//
 	// The probe spec and padding files up to count files in all, each a file the graph logic takes.
 	padded := func(t *testing.T, count int) map[string]string {
 		files := maps.Clone(specResultsFiles)
@@ -693,15 +733,24 @@ func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
 	const refusedAs = "have 1 problem, so they hold no check to write a result for. The first: set too large: .dispatch/spec holds "
 	for _, row := range []struct {
 		name  string
-		files map[string]string
+		files func(*testing.T) map[string]string
 		want  string
 	}{
-		{name: "one file over MaxFiles", files: padded(t, notes.MaxFiles+1), want: refusedAs + "1001 files (limit 1000)"},
-		{name: "one byte over MaxSetSize", files: summing(t, notes.MaxSetSize+1), want: refusedAs + "16777217 bytes in its files (limit 16777216)"},
+		{
+			name:  "one file over MaxFiles",
+			files: func(t *testing.T) map[string]string { return padded(t, notes.MaxFiles+1) },
+			want:  refusedAs + "1001 files (limit 1000)",
+		},
+		{
+			name:  "one byte over MaxSetSize",
+			files: func(t *testing.T) map[string]string { return summing(t, notes.MaxSetSize+1) },
+			want:  refusedAs + "16777217 bytes in its files (limit 16777216)",
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newSpecResultsRig(t)
-			rig.github.files[specResultsCommit] = row.files
+			rig.github.files[specResultsCommit] = row.files(t)
 			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusConflict, "SPEC_FILES_REFUSED")
 			if !strings.Contains(refusal.Error, row.want) {
 				t.Errorf("the refusal %q does not say %q", refusal.Error, row.want)
@@ -715,14 +764,15 @@ func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
 	}
 	for _, row := range []struct {
 		name  string
-		files map[string]string
+		files func(*testing.T) map[string]string
 	}{
-		{name: "MaxFiles files", files: padded(t, notes.MaxFiles)},
-		{name: "files summing MaxSetSize", files: summing(t, notes.MaxSetSize)},
+		{name: "MaxFiles files", files: func(t *testing.T) map[string]string { return padded(t, notes.MaxFiles) }},
+		{name: "files summing MaxSetSize", files: func(t *testing.T) map[string]string { return summing(t, notes.MaxSetSize) }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newSpecResultsRig(t)
-			rig.github.files[specResultsCommit] = row.files
+			rig.github.files[specResultsCommit] = row.files(t)
 			stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)))
 		})
 	}
@@ -733,6 +783,7 @@ func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
 // the same at every read of that commit, so a write again can never be judged: each is 409
 // SPEC_FILES_REFUSED saying why, and no file is read, not a 503 that asks for the write again.
 func TestASpecDirectoryGitHubCannotListWholeIsRefused(t *testing.T) {
+	t.Parallel()
 	const refusedAs = "have 1 problem, so they hold no check to write a result for. The first: set too large: "
 	for _, row := range []struct {
 		name   string
@@ -743,6 +794,7 @@ func TestASpecDirectoryGitHubCannotListWholeIsRefused(t *testing.T) {
 		{name: "a listing over 1 MiB", setUp: func(g *specGitHub) { g.padding = 4000 }, reason: "GitHub's listing of .dispatch/spec is over 1048576 bytes, the most Dispatch reads of one listing; a set holds at most 1000 files, whose listing fits"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newSpecResultsRig(t)
 			row.setUp(rig.github)
 			for range 2 {
@@ -764,6 +816,7 @@ func TestASpecDirectoryGitHubCannotListWholeIsRefused(t *testing.T) {
 // keeps no entry larger than itself, so the judged files of a set within the bound are kept and
 // read once for each commit (notes.MaxSetSize's doc).
 func TestTheSetBoundFitsTheChecksCache(t *testing.T) {
+	t.Parallel()
 	if notes.MaxSetSize != specChecksCacheBytes {
 		t.Fatalf("notes.MaxSetSize is %d and the checks cache holds %d bytes: change the two together", notes.MaxSetSize, specChecksCacheBytes)
 	}
@@ -772,6 +825,7 @@ func TestTheSetBoundFitsTheChecksCache(t *testing.T) {
 // TestACheckOfAnotherJobIsRefused: the check names the job envoy-go, and the run's check run is
 // the job go-checks, which did not run that check.
 func TestACheckOfAnotherJobIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(otherJobsCheck)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
 }
@@ -796,6 +850,7 @@ func (r *specResultsRig) workflowsAsked() []string {
 // with no leg. GitHub is asked for the run's workflow file once, which says that one job is named
 // `foo (bar)` and that no matrix job can make that name for a leg.
 func TestAJobWhoseNameEndsInParenthesesWritesItsOwnCheck(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(31, "foo (bar)"), passOf(parenthesizedCheck)))
 	if p := result.Attestation.Predicate; p.Job != "foo (bar)" || p.Leg != "" {
@@ -814,7 +869,10 @@ func TestAJobWhoseNameEndsInParenthesesWritesItsOwnCheck(t *testing.T) {
 // with the matrix job renamed tests, whose legs make no check run of that name: the plain job's
 // check run writes the check, with no leg.
 func TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob(t *testing.T) {
+	t.Parallel()
 	const check = "unit-probe-passes"
+	// files is the probe spec with a check of the job `test (unit)` added, which the GitHubs of
+	// both rows serve and neither writes.
 	files := maps.Clone(specResultsFiles)
 	files["probe.yaml"] += "---\ntype: check\nid: " + check + "\nserves: the-probe-holds\nsubject: code\nprocedure: program\n" +
 		"test:\n  runner: go\n  selector: example.com/m/p TestU\n  job: test (unit)\n" +
@@ -832,6 +890,7 @@ func TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob(t *testing.T) {
 		return rig
 	}
 	t.Run("a matrix job test beside the plain job test (unit)", func(t *testing.T) {
+		t.Parallel()
 		rig := rigWith(t, "test")
 		refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(71, "test (unit)"), passOf(check)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
 		if says := `the matrix job "test" in ` + specResultsWorkflowPath + " at " + specResultsCommit + ` can make a check run of that name for its leg "unit"`; !strings.Contains(refusal.Error, says) {
@@ -839,6 +898,7 @@ func TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob(t *testing.T) {
 		}
 	})
 	t.Run("the control: the matrix job named tests", func(t *testing.T) {
+		t.Parallel()
 		rig := rigWith(t, "tests")
 		result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(71, "test (unit)"), passOf(check)))
 		if p := result.Attestation.Predicate; p.Job != "test (unit)" || p.Leg != "" {
@@ -854,7 +914,9 @@ func TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob(t *testing.T) {
 // the workflow file once for the commit, at the path the run's workflow_ref names, and a matrix
 // written as an expression is a matrix too.
 func TestALegOfAMatrixJobWritesItsJobsCheck(t *testing.T) {
+	t.Parallel()
 	t.Run("a matrix of values", func(t *testing.T) {
+		t.Parallel()
 		rig := newSpecResultsRig(t)
 		for i, leg := range []string{"linux", "linux (arm)"} {
 			result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(int64(41+i), "build ("+leg+")"), passOf(buildCheck)))
@@ -867,6 +929,7 @@ func TestALegOfAMatrixJobWritesItsJobsCheck(t *testing.T) {
 		}
 	})
 	t.Run("a matrix written as an expression", func(t *testing.T) {
+		t.Parallel()
 		rig := newSpecResultsRig(t)
 		rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = "jobs:\n" + job("build", "    strategy:\n      matrix: ${{ fromJSON(needs.setup.outputs.legs) }}\n")
 		result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(41, "build (linux)"), passOf(buildCheck)))
@@ -895,6 +958,7 @@ const linuxMatrix = "    strategy:\n      matrix:\n        os: [linux]\n"
 // where a job named `build (linux)` with no matrix makes a check run of that very name, and where
 // the file is over notes.MaxFileSize or does not read as a workflow file.
 func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
+	t.Parallel()
 	const at = " in " + specResultsWorkflowPath + " at " + specResultsCommit + " "
 	for _, row := range []struct {
 		name, workflow, says string
@@ -916,6 +980,7 @@ func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
 		{name: "a file that does not read as a workflow file", workflow: "jobs: [\n", says: "does not read as a workflow file"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newSpecResultsRig(t)
 			rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = row.workflow
 			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(51, "build (linux)"), passOf(buildCheck)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
@@ -934,6 +999,7 @@ func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
 // other matrix job can make the name. The control is the same name with build the one matrix job
 // that can make it: the leg writes build's check.
 func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
+	t.Parallel()
 	const at = " in " + specResultsWorkflowPath + " at " + specResultsCommit
 	build := job("build", linuxMatrix)
 	for _, row := range []struct {
@@ -953,6 +1019,7 @@ func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newSpecResultsRig(t)
 			rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = row.workflow
 			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(61, row.checkRun), passOf(buildCheck)), http.StatusConflict, "CHECK_NOT_THIS_JOBS")
@@ -962,6 +1029,7 @@ func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
 		})
 	}
 	t.Run("the control: build is the one matrix job that can make the name", func(t *testing.T) {
+		t.Parallel()
 		rig := newSpecResultsRig(t)
 		rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = "jobs:\n" + build + job("other", "    name: test\n    strategy:\n      matrix:\n        arch: [x64]\n")
 		result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(61, "build (linux) (x64)"), passOf(buildCheck)))
@@ -974,6 +1042,7 @@ func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
 // TestACheckRunOfAnotherCommitIsRefused: GitHub names another commit for the token's check run,
 // so the check run is no job of this run.
 func TestACheckRunOfAnotherCommitIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	rig.github.checkRuns[specResultsCheckRun] = specCheckRunAnswer{name: "go-checks", headSHA: specResultsOtherCommit}
 	rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusForbidden, "CHECK_RUN_NOT_THE_RUNS")
@@ -982,6 +1051,7 @@ func TestACheckRunOfAnotherCommitIsRefused(t *testing.T) {
 // TestAForgedAccessTokenIsRefusedAtTheRoute: a token the broker answers inactive, presented with
 // a sound DPoP proof of the caller's own key, writes nothing.
 func TestAForgedAccessTokenIsRefusedAtTheRoute(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	rig.refusedWith(t, rig.post(t, specResultsProject, "a-token-the-broker-never-issued", passOf(probeCheck)), http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE")
 }
@@ -989,6 +1059,7 @@ func TestAForgedAccessTokenIsRefusedAtTheRoute(t *testing.T) {
 // TestOnlyAResultsTokenWritesTheRoute: a session's own broker token of the project, and a
 // person's cookie, are refused the route: only a CI job's results token writes a result there.
 func TestOnlyAResultsTokenWritesTheRoute(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	named := liveNamedToken(rig.caller.jkt)
 	named.Projects = []string{specResultsProject}
@@ -1004,11 +1075,14 @@ func TestOnlyAResultsTokenWritesTheRoute(t *testing.T) {
 // the run's repository, where the handler would take the run as OTHER's and store its result under
 // OTHER.
 func TestAProjectNotTheTokensIsRefused(t *testing.T) {
+	t.Parallel()
 	t.Run("a public project", func(t *testing.T) {
+		t.Parallel()
 		rig := newSpecResultsRig(t)
 		rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf(probeCheck)), http.StatusForbidden, codeProjectScope)
 	})
 	t.Run("a public project whose default repository is the run's", func(t *testing.T) {
+		t.Parallel()
 		rig := newSpecResultsRig(t)
 		for _, set := range []struct{ project, repository string }{{specResultsProject, "example-org/another-repo"}, {"OTHER", specResultsRepository}} {
 			if written := rig.asPerson(t, http.MethodPut, "/api/v1/projects/"+set.project+"/default-repository", map[string]any{"repo": set.repository}); written.Code != http.StatusOK {
@@ -1031,7 +1105,9 @@ func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 // case, is refused (the rename row of TestARepositorySpelledWithCapitalsIsTheProjectsRepository,
 // a default stored under the old name and a run of the new, is its control).
 func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
+	t.Parallel()
 	t.Run("another repository", func(t *testing.T) {
+		t.Parallel()
 		rig := newSpecResultsRig(t)
 		token := rig.token(func(answer *ciphertoken.Introspection) {
 			answer.CI.Repository = "example-org/another-repo"
@@ -1043,6 +1119,7 @@ func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 		}
 	})
 	t.Run("a project with no default repository", func(t *testing.T) {
+		t.Parallel()
 		rig := newSpecResultsRig(t)
 		if cleared := rig.asPerson(t, http.MethodPut, "/api/v1/projects/"+specResultsProject+"/default-repository", map[string]any{"repo": nil}); cleared.Code != http.StatusOK {
 			t.Fatalf("clear %s's default repository: status=%d body=%s", specResultsProject, cleared.Code, cleared.Body.String())
@@ -1050,6 +1127,7 @@ func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 		rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
 	})
 	t.Run("the default repository of another project", func(t *testing.T) {
+		t.Parallel()
 		rig := newSpecResultsRig(t)
 		for _, set := range []struct{ project, repository string }{{specResultsProject, "example-org/another-repo"}, {"OTHER", specResultsRepository}} {
 			if written := rig.asPerson(t, http.MethodPut, "/api/v1/projects/"+set.project+"/default-repository", map[string]any{"repo": set.repository}); written.Code != http.StatusOK {
@@ -1062,8 +1140,10 @@ func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 		}
 	})
 	t.Run("the name the project's default repository was renamed away from", func(t *testing.T) {
+		t.Parallel()
 		for _, repository := range []string{"example-org/old-repo", "Example-Org/OLD-REPO"} {
 			t.Run(repository, func(t *testing.T) {
+				t.Parallel()
 				database, renames := renamedRepositoryStore(t, "RENM", "example-org/old-repo", "example-org/new-repo")
 				rig := newSpecResultsRigOn(t, testServerOptions{store: database, renames: renames})
 				if written := rig.asPerson(t, http.MethodPut, "/api/v1/projects/"+specResultsProject+"/default-repository", map[string]any{"repo": "example-org/new-repo"}); written.Code != http.StatusOK {
@@ -1096,6 +1176,7 @@ func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 // rewrites the old one (store.RewriteRenamedRepositories). The row is stored under the repository
 // as the run names it. The lowercase run of every other test is the control.
 func TestARepositorySpelledWithCapitalsIsTheProjectsRepository(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, repository string
 		// storedDefault, where set, is the project's default as the row holds it, written by SQL.
@@ -1105,6 +1186,7 @@ func TestARepositorySpelledWithCapitalsIsTheProjectsRepository(t *testing.T) {
 		{name: "the name the project's default repository was renamed to", repository: "Example-Org/New-Repo", storedDefault: "example-org/old-repo"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			database, renames := renamedRepositoryStore(t, "RENM", "example-org/old-repo", "example-org/new-repo")
 			rig := newSpecResultsRigOn(t, testServerOptions{store: database, renames: renames})
 			if row.storedDefault != "" {
@@ -1135,6 +1217,7 @@ func TestARepositorySpelledWithCapitalsIsTheProjectsRepository(t *testing.T) {
 // run, and 409 WORKFLOW_NOT_SHOWN for the workflow file, which says which job made the check run.
 // A workflow file the stand-in does not hold is GitHub's 404 too.
 func TestGitHubUnreadableIsAServiceError(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		setUp  func(*specGitHub)
@@ -1152,6 +1235,7 @@ func TestGitHubUnreadableIsAServiceError(t *testing.T) {
 		{name: "a workflow file the commit does not hold", setUp: func(g *specGitHub) { g.workflows = nil }, status: http.StatusConflict, code: "WORKFLOW_NOT_SHOWN"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newSpecResultsRig(t)
 			row.setUp(rig.github)
 			refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.checkRunNamed(61, "build (linux)"), passOf(buildCheck)), row.status, row.code)
@@ -1177,6 +1261,7 @@ func storedRow(t *testing.T, rig *specResultsRig, id string) string {
 // once for the check run, once for the files and once for the run's workflow file: each read is
 // cached for the process.
 func TestAResultIsAppendedAndNeverEdited(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	first := stored201(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)))
 	before := storedRow(t, rig, first.ID)
@@ -1205,6 +1290,7 @@ func TestAResultIsAppendedAndNeverEdited(t *testing.T) {
 // record number, newest first. Two more rows are written in one transaction, so they carry one
 // recorded_at, which a read ordered by time alone would answer in either order.
 func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	var wrote []int64
 	for range 3 {
@@ -1251,6 +1337,7 @@ func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
 // of its own, with the job and the leg from its check run's name, and none is marked or dropped.
 // The workflow file that makes m a matrix job is read of GitHub once for the commit.
 func TestEveryAttemptAndLegIsKept(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	runs := []struct {
 		id      int64
@@ -1289,6 +1376,7 @@ func TestEveryAttemptAndLegIsKept(t *testing.T) {
 // TestTwoLegsOfOneNameInOneAttemptAreTwoRows: two check runs of one name in one attempt are two
 // legs, and each is a row.
 func TestTwoLegsOfOneNameInOneAttemptAreTwoRows(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	for _, id := range []int64{11, 12} {
 		rig.github.checkRuns[id] = specCheckRunAnswer{name: "go-checks", headSHA: specResultsCommit}
@@ -1305,6 +1393,7 @@ func TestTwoLegsOfOneNameInOneAttemptAreTwoRows(t *testing.T) {
 // entry that write the same body under one key are two results, and only a repeat by the same
 // run is answered the first answer. The repeat is the control: the key layer is on.
 func TestAKeyOfOneRunNeverAnswersAnotherRun(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	rig.github.checkRuns[11] = specCheckRunAnswer{name: "go-checks", headSHA: specResultsCommit}
 	first := rig.token(nil)
@@ -1331,6 +1420,7 @@ func TestAKeyOfOneRunNeverAnswersAnotherRun(t *testing.T) {
 
 // TestTwoRunsAtOneCommitAreTwoRows: two workflow runs of one commit each write a row.
 func TestTwoRunsAtOneCommitAreTwoRows(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	for _, run := range []string{"1", "2"} {
 		stored201(t, rig.post(t, specResultsProject, rig.token(func(answer *ciphertoken.Introspection) { answer.CI.RunID = run }), passOf(probeCheck)))
@@ -1348,6 +1438,7 @@ func TestTwoRunsAtOneCommitAreTwoRows(t *testing.T) {
 // was cut; a text of exactly the bound is kept whole. A rune outside the basic plane, two UTF-16
 // units and four bytes, is one rune of the count.
 func TestAnObservedTextPastTheBoundIsCutAndSaysSo(t *testing.T) {
+	t.Parallel()
 	const start, end, note = contracts.SpecCheckObservedStart, contracts.SpecCheckObservedEnd, contracts.SpecCheckObservedCutNote
 	for _, row := range []struct {
 		name, sent, kept string
@@ -1358,6 +1449,7 @@ func TestAnObservedTextPastTheBoundIsCutAndSaysSo(t *testing.T) {
 		{"a text outside the basic plane", strings.Repeat("🙂", 2500), strings.Repeat("🙂", start) + note + strings.Repeat("🙂", end)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newSpecResultsRig(t)
 			body := passOf(probeCheck)
 			body["observed"] = row.sent
@@ -1376,6 +1468,7 @@ func TestAnObservedTextPastTheBoundIsCutAndSaysSo(t *testing.T) {
 // bound keeps both, with the note that says the middle was cut between them, and the stored text
 // is still contracts.SpecCheckObservedMax runes.
 func TestAFailingTestsLogKeepsItsStartAndItsEnd(t *testing.T) {
+	t.Parallel()
 	const first, last = "=== RUN   TestX\n", "--- FAIL: TestX (0.01s)\n"
 	sent := first + strings.Repeat("x\n", (10000-len(first)-len(last))/2) + last
 	if utf8.RuneCountInString(sent) != 10000 {
@@ -1397,6 +1490,7 @@ func TestAFailingTestsLogKeepsItsStartAndItsEnd(t *testing.T) {
 // TestACouldNotRunResultIsStored: a job whose test could not run writes that, and it is stored as
 // it was written.
 func TestACouldNotRunResultIsStored(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	body := passOf(probeCheck)
 	body["verdict"] = "could_not_run"
@@ -1408,6 +1502,7 @@ func TestACouldNotRunResultIsStored(t *testing.T) {
 // TestTheReadIsRefusedToAResultsToken: a results token writes results and reads nothing, the
 // results of its own project included.
 func TestTheReadIsRefusedToAResultsToken(t *testing.T) {
+	t.Parallel()
 	rig := newSpecResultsRig(t)
 	response := rig.serve(rig.caller.presenting(t, http.MethodGet, "/api/v1/projects/"+specResultsProject+"/results?commit="+specResultsCommit, rig.token(nil), nil))
 	if why := notTheGatesRefusal(response, codeResultsOnlyToken, ""); why != "" {
