@@ -24,6 +24,7 @@ import {
 } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferenceNamesProvider } from "../refs/reference-names";
+import { writesOf } from "../writes/write-store";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -579,6 +580,43 @@ test("the Change quotes its block's plain-text projection and anchors to the doc
     expect(createComment.mock.calls[0]?.[1]?.anchor?.quote).toBe(written);
   } finally {
     view.unmount();
+    decisions.mockRestore();
+    documentText.mockRestore();
+    createComment.mockRestore();
+  }
+});
+
+// A Change's write names its issue on the write store, as Keep does.
+test("a Change's write names its issue on the write store", async () => {
+  const answer = { ...read, decisions: [decision] };
+  const out = Promise.withResolvers<unknown>();
+  const createComment = spyOn(api, "createComment").mockReturnValue(out.promise as never);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["decisions", KEY], answer);
+  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(answer);
+  const documentText = spyDocumentText(DOCUMENT_TEXT);
+  const user = userEvent.setup();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>
+        <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+      </ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(
+      writesOf(client).writesOutOf(KEY).length,
+      "the Change's write did not name its issue on the write store"
+    ).toBe(1);
+    out.resolve({ id: "c-sent" });
+    await waitFor(() => expect(writesOf(client).writesOutOf(KEY)).toEqual([]));
+  } finally {
+    view.unmount();
+    client.clear();
     decisions.mockRestore();
     documentText.mockRestore();
     createComment.mockRestore();
