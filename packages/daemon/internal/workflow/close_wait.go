@@ -923,9 +923,6 @@ func (e *Engine) judgeEachVerifying(ctx context.Context, tx pgx.Tx, issues []rec
 		if issue == nil || issue.Phase != phase.Verifying {
 			continue
 		}
-		if err := e.askCloseRead(ctx, tx, *issue); err != nil {
-			return err
-		}
 		if err := e.judgeClose(ctx, tx, *issue); err != nil {
 			return err
 		}
