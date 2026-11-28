@@ -1,0 +1,5 @@
+kind: Changed
+body: The architect prompts tell an architect to give the production check subject="production" and its program where `dispatch deploys` lists that program, and neither otherwise; the production check's task and the tester's prompts record a check with subject production or graph at the commit of its program's deploy, which must hold the merge, not at the merge commit.
+time: 2026-11-28T10:45:14.786409831Z
+custom:
+    Issue: pr6031

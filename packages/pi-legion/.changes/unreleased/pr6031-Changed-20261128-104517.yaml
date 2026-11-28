@@ -1,0 +1,5 @@
+kind: Changed
+body: The legion-architect and legion-worker skills tell an author to write subject and program on a check that reads production or another live system after the merge, only where `dispatch deploys` lists that program, and say a live check's result counts only at its program's deploy.
+time: 2026-11-28T10:45:17.380472528Z
+custom:
+    Issue: pr6031
