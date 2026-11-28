@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -419,7 +420,23 @@ func (r *relay) await(t testing.TB, end waitEnd, what string, settled func() (re
 func (r *relay) Close() {
 	r.closing.Do(func() {
 		close(r.done)
+		// A child process forked while the relay listens, as a parallel test's child binary is,
+		// keeps a copy of the listening socket until its exec closes it, and a close alone leaves
+		// the address answering dials that long. Shutdown acts on the socket itself, not on this
+		// process's descriptor, so it stops the listening at once. The fork lock, held for reading
+		// across both, keeps a fork from starting meanwhile, and on Linux Go's fork waits for the
+		// child's exec (CLONE_VFORK), so once Close returns no child holds a copy: gVisor keeps a
+		// shut-down listener's port bound while any copy is open, and the next bind then succeeds.
+		syscall.ForkLock.RLock()
+		if conn, ok := r.listener.(syscall.Conn); ok {
+			if raw, err := conn.SyscallConn(); err == nil {
+				_ = raw.Control(func(fd uintptr) {
+					_ = syscall.Shutdown(int(fd), syscall.SHUT_RDWR)
+				})
+			}
+		}
 		_ = r.listener.Close()
+		syscall.ForkLock.RUnlock()
 		r.mu.Lock()
 		r.closed = true
 		r.moved.Broadcast()
