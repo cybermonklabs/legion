@@ -99,26 +99,8 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	clearCheckout := false
 	if exists {
 		request.Steps.Begin("checkout-check")
-		// A workspace whose checkout never finished — registered with no files, then the checkout
-		// failed or the daemon stopped — is checked out now, or its pane would start in an empty
-		// working copy.
-		whole, err := CheckedOut(ctx, run, workspace)
-		if err != nil {
+		if checkout, clearCheckout, err = checkExistingCheckout(ctx, run, workspace); err != nil {
 			return Workspace{}, err
-		}
-		if whole {
-			// A crash between the checkout's end and the marker's removal can leave the marker
-			// behind on a finished workspace; remove it so it never marks a later sparse clear.
-			if err := removeCheckoutMarker(workspace.Dir); err != nil {
-				return Workspace{}, err
-			}
-		} else {
-			marked, err := hasCheckoutMarker(workspace.Dir)
-			if err != nil {
-				return Workspace{}, err
-			}
-			checkout = true
-			clearCheckout = marked
 		}
 	}
 	request.Steps.Begin("configuration")
@@ -201,6 +183,31 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		}
 	}
 	return workspace, nil
+}
+
+// checkExistingCheckout checks whether an existing workspace finished its checkout under the store
+// lock. A finished workspace loses any leftover marker from a crash between checkout and marker
+// removal; an unfinished workspace will be checked out again, and when it still carries
+// checkoutMarkerFile its unfinished registration (creation record and bookmark) is finished first
+// and clearFirst tells Provision to clear the working copy before `jj sparse reset`.
+func checkExistingCheckout(ctx context.Context, run Runner, workspace Workspace) (checkout, clearFirst bool, err error) {
+	whole, err := CheckedOut(ctx, run, workspace)
+	if err != nil {
+		return false, false, err
+	}
+	if whole {
+		return false, false, removeCheckoutMarker(workspace.Dir)
+	}
+	marked, err := hasCheckoutMarker(workspace.Dir)
+	if err != nil {
+		return false, false, err
+	}
+	if marked {
+		if err := finishUnfinishedRegistration(ctx, run, workspace); err != nil {
+			return false, false, err
+		}
+	}
+	return true, marked, nil
 }
 
 // CheckedOut is whether workspace's checkout finished: it holds at least one sparse pattern — the

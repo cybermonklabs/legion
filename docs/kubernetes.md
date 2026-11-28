@@ -7166,6 +7166,8 @@ On a clone that is already there, the provision runs `update-stale` (`jj workspa
 
 Within `workspace-registration`, right after `jj workspace add` registers a fresh workspace and before any later step of the provision, `Provision` writes `.jj/legion-checkout` without following a link, and the marker stays through every retry until a `jj sparse reset` succeeds, after which `Provision` removes it (`checkout-check` also removes a leftover marker from a workspace it finds already checked out).
 On a retry after a provision failed or stopped anywhere between that add and the checkout's end, the workspace holds no sparse pattern and `.jj/legion-checkout` is still there, so `checkout-clear` removes every entry of the workspace directory except `.jj` and `.git` without following a link before `checkout` runs `jj sparse reset` again.
+On such a retry, `checkout-check` also finishes a registration that failed after `jj workspace add`: it records the workspace's creation where no record is there, and sets the issue's bookmark `legion/<KEY>` on the workspace's working-copy commit where neither the shared clone nor `origin` has it.
+Where `origin` has that branch and the shared clone does not, it refuses the workspace by name instead; deleting the workspace's directory, which holds no checkout, lets the next provision add it again at `origin`'s branch.
 Where a workspace holds no sparse pattern and no marker (an agent cleared its patterns, or an earlier release registered the workspace, as on a microVM pod's kept volume), `checkout-clear` does not run and `checkout` writes no marker, so the workspace's untracked files stay.
 
 ### The repository cache

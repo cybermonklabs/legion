@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
@@ -249,13 +250,7 @@ func TestProvisionMarksAWorkspaceWhoseRegistrationFailedAfterItsAdd(t *testing.T
 		t.Fatal(err)
 	}
 
-	realTools := run.tools
-	run.tools = jjTools(t, "*' bookmark set '*) echo 'the test fails jj bookmark set' >&2; exit 1 ;;\n")
-	_, err = Provision(context.Background(), run, req)
-	run.tools = realTools
-	if err == nil || !strings.Contains(err.Error(), "bookmark set") {
-		t.Fatalf("Provision whose jj bookmark set failed = %v, want that command's failure", err)
-	}
+	failBookmarkSet(t, run, req)
 	if listed := strings.TrimSpace(runSetup(t, location.Dir, "jj", "sparse", "list", "--ignore-working-copy", "-R", location.Dir)); listed != "" {
 		t.Fatalf("the workspace whose bookmark failed holds the sparse patterns %q, want none", listed)
 	}
@@ -292,6 +287,113 @@ func TestProvisionSetsTheBookmarkOfAWorkspaceWhoseRegistrationFailedAfterItsAdd(
 	at := commitOf(t, working.Dir, "@")
 	if got := commitOf(t, working.Dir, `bookmarks(exact:"`+working.Bookmark+`")`); got != at {
 		t.Errorf("after the provision that followed a failed jj bookmark set, bookmark %s is on %q, want the workspace's working-copy commit %s", working.Bookmark, got, at)
+	}
+}
+
+// failBookmarkSet provisions req's workspace with a jj whose `bookmark set` fails, the
+// registration's last step for an issue whose branch GitHub does not have, so the provision stops
+// right after the workspace is added, marked and its creation recorded.
+func failBookmarkSet(t *testing.T, run *recordingRunner, req Request) {
+	t.Helper()
+	realTools := run.tools
+	run.tools = jjTools(t, "*' bookmark set '*) echo 'the test fails jj bookmark set' >&2; exit 1 ;;\n")
+	_, err := Provision(context.Background(), run, req)
+	run.tools = realTools
+	if err == nil || !strings.Contains(err.Error(), "bookmark set") {
+		t.Fatalf("Provision whose jj bookmark set failed = %v, want that command's failure", err)
+	}
+}
+
+// An issue whose branch GitHub has, here made at the default branch's head as the daemon makes it,
+// starts its workspace on top of the branch, so the bookmark is on the workspace's @-. A provision
+// whose first checkout is cut short leaves that workspace marked, and the provision that redoes
+// the checkout finishes its registration without moving the bookmark onto @.
+func TestProvisionKeepsTheBookmarkOfABranchWhoseFirstCheckoutWasCutShort(t *testing.T) {
+	t.Parallel()
+	run := newLocalRunner(t)
+	pushTreeFiles(t, run.remote, "main", markedCheckoutTree)
+	req := provisionRequest(t)
+	location, err := Location(req.StateDir, req.Repo, req.Issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(runSetup(t, run.remote, "git", "--git-dir="+run.remote, "rev-parse", "refs/heads/main"))
+	runSetup(t, run.remote, "git", "--git-dir="+run.remote, "update-ref", "refs/heads/"+location.Bookmark, head)
+
+	requireCutShortCheckoutRedone(t, run, req)
+	bookmark := commitOf(t, location.Dir, `bookmarks(exact:"`+location.Bookmark+`")`)
+	if parent := commitOf(t, location.Dir, "@-"); bookmark != head || parent != head {
+		t.Errorf("after the provision that redid the cut-short checkout, bookmark %s is on %q and @- is %q, want both on origin's branch %s", location.Bookmark, bookmark, parent, head)
+	}
+}
+
+// A provision stopped right after it marked a freshly added workspace (checkoutMarkerFile), before
+// its creation record and its bookmark, leaves neither: here its jj bookmark set fails, and the
+// creation record it wrote first is removed. The provision after it writes both: Created answers
+// that provision's moment, and the bookmark is on the workspace's working-copy commit, where a
+// first provision that did not stop puts it.
+func TestProvisionRecordsTheCreationOfAWorkspaceWhoseRegistrationStoppedAtItsMarker(t *testing.T) {
+	t.Parallel()
+	run := newLocalRunner(t)
+	pushTreeFiles(t, run.remote, "main", markedCheckoutTree)
+	req := provisionRequest(t)
+	location, err := Location(req.StateDir, req.Repo, req.Issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failBookmarkSet(t, run, req)
+	if err := os.Remove(filepath.Join(location.Dir, ".jj", createdFile)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := Created(location.Dir); err != nil || ok {
+		t.Fatalf("Created of the workspace whose record was removed = %v, %v; want no record", ok, err)
+	}
+
+	retried := time.Now()
+	working, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("the Provision after the registration stopped at its marker: %v", err)
+	}
+	requireCheckedOut(t, working)
+	if at, ok, err := Created(working.Dir); err != nil || !ok || at.Before(retried) {
+		t.Errorf("Created after the provision that finished the registration = %s, %v, %v; want a record no earlier than %s", at, ok, err, retried)
+	}
+	at := commitOf(t, working.Dir, "@")
+	if got := commitOf(t, working.Dir, `bookmarks(exact:"`+working.Bookmark+`")`); got != at {
+		t.Errorf("after the provision that finished the registration, bookmark %s is on %q, want the workspace's working-copy commit %s", working.Bookmark, got, at)
+	}
+}
+
+// A provision that fails at the `jj bookmark set` of an issue whose branch GitHub does not have
+// leaves the workspace marked, added at the default branch with no bookmark. When GitHub has the
+// issue's branch by the next provision, that provision refuses the workspace by name, with the
+// bookmark and origin's commit, before it sets, tracks or checks out anything, rather than
+// checking it out with no bookmark where origin's branch is not.
+func TestProvisionRefusesAWorkspaceWhoseBranchGitHubMadeAfterItsRegistrationFailed(t *testing.T) {
+	t.Parallel()
+	run := newLocalRunner(t)
+	pushTreeFiles(t, run.remote, "main", markedCheckoutTree)
+	req := provisionRequest(t)
+	location, err := Location(req.StateDir, req.Repo, req.Issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failBookmarkSet(t, run, req)
+	branch := pushRemoteBranch(t, run.remote, location.Bookmark, "fixture.txt")
+
+	before := len(run.Calls())
+	_, err = Provision(context.Background(), run, req)
+	want := "Bookmark " + location.Bookmark + " is not in the shared clone " + location.Clone + " while " + location.Bookmark + "@origin is at " + branch + ", and workspace " + location.Dir + " holds no checkout"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("the Provision after GitHub made the branch = %v, want a refusal containing %q", err, want)
+	}
+	for _, call := range run.Calls()[before:] {
+		if commandWith(call.Argv, "jj", "bookmark", "set") || commandWith(call.Argv, "jj", "bookmark", "track") || commandWith(call.Argv, "jj", "sparse", "reset") {
+			t.Errorf("the refused provision ran %q", call.Argv)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(location.Dir, ".jj", checkoutMarkerFile)); err != nil {
+		t.Errorf("after the refusal, .jj/%s lstat = %v, want the marker there", checkoutMarkerFile, err)
 	}
 }
 

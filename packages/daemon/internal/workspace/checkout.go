@@ -19,8 +19,9 @@ import (
 // into the workspace succeeds and Provision removes it. While it exists beside an empty
 // sparse-pattern set, the next provision knows the last checkout Legion started, or was about to
 // start, was cut short, so it clears every entry of the workspace except `.jj` and `.git` before
-// running `jj sparse reset` again. Without the marker, a workspace whose sparse patterns an agent
-// cleared keeps its untracked files.
+// running `jj sparse reset` again, after finishing any unfinished registration (creation record
+// and bookmark) in finishUnfinishedRegistration. Without the marker, a workspace whose sparse
+// patterns an agent cleared keeps its untracked files.
 const checkoutMarkerFile = "legion-checkout"
 
 // writeCheckoutMarker creates or truncates `.jj/legion-checkout` in dir through openJJ and

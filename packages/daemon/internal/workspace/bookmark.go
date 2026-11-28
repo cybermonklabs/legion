@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -188,15 +189,21 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 		return err
 	}
 	// Recorded next, ahead of anything else that can still fail: a provisioning that failed after
-	// the add finds the workspace there next time and adds it no more, so only this one can record
-	// when it was created (Created).
+	// the add finds the workspace there next time and adds it no more, so this is the record closest
+	// to the add, and the next provisioning records its own moment only where a stop left none
+	// (finishUnfinishedRegistration).
 	if err := RecordCreated(workspace.Dir, time.Now()); err != nil {
 		return err
 	}
 	if !fromBase {
 		return nil
 	}
-	_, err = RunCheckedIn(ctx, run, workspace, []string{"jj", "bookmark", "set", jjString(workspace.Bookmark), "-r", "@"})
+	return setBookmarkOnWorkingCopy(ctx, run, workspace)
+}
+
+// setBookmarkOnWorkingCopy places workspace.Bookmark on the workspace's working-copy commit (`@`).
+func setBookmarkOnWorkingCopy(ctx context.Context, run Runner, workspace Workspace) error {
+	_, err := RunCheckedIn(ctx, run, workspace, []string{"jj", "bookmark", "set", jjString(workspace.Bookmark), "-r", "@"})
 	return err
 }
 
@@ -341,29 +348,42 @@ type bookmarkRows struct {
 // ids, comma-separated.
 const bookmarkRowTemplate = `if(remote, remote, "local") ++ "|" ++ if(present, "1", "0") ++ "|" ++ if(conflict, "1", "0") ++ "|" ++ if(tracked, "1", "0") ++ "|" ++ added_targets.map(|c| c.commit_id()).join(",") ++ "|" ++ removed_targets.map(|c| c.commit_id()).join(",") ++ "\n"`
 
-// readBookmark reads the bookmark name in the shared clone (the issue's, or the default branch), its local row and
-// origin's, in one `jj bookmark list`. A bookmark that exists nowhere lists nothing. Every row must have the
-// template's shape, with 0/1 flags, full commit ids, one added commit on a present row that is not
-// conflicted and at least one on a conflicted row, and one row per place: a commit jj cannot load
-// prints an error value where its id goes, which a workspace add would take as a revision.
+// readBookmark is readBookmarkRows for a workspace about to be added: a bookmark it could not read
+// refuses the add, so its refusal says the workspace was not created.
 func readBookmark(ctx context.Context, run Runner, workspace Workspace, name string) (bookmarkRows, error) {
-	list, err := onClone(workspace.Clone, "bookmark", "list", "--all-remotes", exactName(name), "-T", bookmarkRowTemplate)
+	rows, err := readBookmarkRows(ctx, run, workspace.Clone, name)
+	var unreadable *unreadableBookmark
+	if errors.As(err, &unreadable) {
+		return bookmarkRows{}, unreadable.refusal("; workspace " + workspace.Dir + " was not created")
+	}
+	return rows, err
+}
+
+// readBookmarkRows reads the bookmark name in the shared clone at cloneDir (the issue's, or the
+// default branch), its local row and origin's, in one `jj bookmark list`. A bookmark that exists
+// nowhere lists nothing. Every row must have the template's shape, with 0/1 flags, full commit ids,
+// one added commit on a present row that is not conflicted and at least one on a conflicted row,
+// and one row per place: a commit jj cannot load prints an error value where its id goes, which a
+// workspace add would take as a revision. A list jj failed, or printed out of that shape, is an
+// *unreadableBookmark.
+func readBookmarkRows(ctx context.Context, run Runner, cloneDir, name string) (bookmarkRows, error) {
+	list, err := onClone(cloneDir, "bookmark", "list", "--all-remotes", exactName(name), "-T", bookmarkRowTemplate)
 	if err != nil {
 		return bookmarkRows{}, err
 	}
-	result, err := runCommand(ctx, run, list, nil, workspace.Clone)
+	result, err := runCommand(ctx, run, list, nil, cloneDir)
 	if err != nil {
 		return bookmarkRows{}, runFailure(list, result, err)
 	}
 	if result.ExitCode != 0 {
-		return bookmarkRows{}, fmt.Errorf("Bookmark %s could not be resolved; workspace %s was not created: %w", name, workspace.Dir, commandFailure(list, result))
+		return bookmarkRows{}, &unreadableBookmark{name: name, failure: commandFailure(list, result)}
 	}
 	var rows bookmarkRows
 	seen := map[string]bool{}
 	for _, line := range nonEmptyLines(result.Stdout) {
 		where, row, ok := parseBookmarkRow(line)
 		if !ok || seen[where] {
-			return bookmarkRows{}, fmt.Errorf("Bookmark %s's row %q is not the shape %s prints; workspace %s was not created", name, line, strings.Join(list, " "), workspace.Dir)
+			return bookmarkRows{}, &unreadableBookmark{name: name, row: line, list: strings.Join(list, " ")}
 		}
 		seen[where] = true
 		switch where {
@@ -374,6 +394,69 @@ func readBookmark(ctx context.Context, run Runner, workspace Workspace, name str
 		}
 	}
 	return rows, nil
+}
+
+// unreadableBookmark is readBookmarkRows's refusal of a bookmark it could not read: jj's list
+// failed (failure), or printed row, which is not the shape list prints.
+type unreadableBookmark struct {
+	name, row, list string
+	failure         error
+}
+
+func (e *unreadableBookmark) Error() string { return e.refusal("").Error() }
+func (e *unreadableBookmark) Unwrap() error { return e.failure }
+
+// refusal is the refusal with its consequence, such as readBookmark's "; workspace <dir> was not
+// created", after the bookmark's own clause.
+func (e *unreadableBookmark) refusal(consequence string) error {
+	if e.failure != nil {
+		return fmt.Errorf("Bookmark %s could not be resolved%s: %w", e.name, consequence, e.failure)
+	}
+	return fmt.Errorf("Bookmark %s's row %q is not the shape %s prints%s", e.name, e.row, e.list, consequence)
+}
+
+// finishUnfinishedRegistration finishes the registration of a workspace Provision finds marked
+// (checkoutMarkerFile) with no sparse pattern, under the store lock and before its checkout. Such a
+// workspace's provision may have stopped anywhere after its `jj workspace add` (createWorkspace),
+// and no later provision adds it again, so this one writes what that one left out:
+//   - The creation record, where there is none (Created), at this moment.
+//   - The issue's bookmark, where neither the shared clone nor origin has it: the workspace was
+//     added at the default branch (baseCommit), and its `jj bookmark set` did not finish. It is
+//     set on the working-copy commit (setBookmarkOnWorkingCopy).
+//
+// A local bookmark, conflicted or not, is left where it is: a workspace added at the issue's
+// branch starts on top of it, so the bookmark is on the parent of the working-copy commit, never
+// on that commit. With no local bookmark, a row on origin means GitHub has the branch while the
+// workspace was added without it; the workspace is refused by name rather than checked out with
+// no bookmark, and the way out is the directory's deletion, which loses no work: a marked
+// workspace never finished a checkout, so no role worked in it.
+func finishUnfinishedRegistration(ctx context.Context, run Runner, workspace Workspace) error {
+	if _, ok, err := Created(workspace.Dir); err != nil {
+		return err
+	} else if !ok {
+		if err := RecordCreated(workspace.Dir, time.Now()); err != nil {
+			return err
+		}
+	}
+	rows, err := readBookmarkRows(ctx, run, workspace.Clone, workspace.Bookmark)
+	if err != nil {
+		return fmt.Errorf("finish the registration of workspace %s: %w", workspace.Dir, err)
+	}
+	local, origin := rows.local, rows.origin
+	switch {
+	case local.present || local.conflict:
+		return nil
+	case origin.present || origin.conflict:
+		remote := workspace.Bookmark + "@origin"
+		row := "at " + listed(origin.added)
+		if origin.conflict {
+			row = "conflicted " + origin.sides()
+		}
+		return fmt.Errorf("Bookmark %s is not in the shared clone %s while %s is %s, and workspace %s holds no checkout: the provision that added the workspace stopped before it set the bookmark, and GitHub has had the branch since, so the workspace does not start at origin's branch and is not checked out. "+
+			"Delete its directory, which holds no work, and the next provisioning adds it again at origin's branch as it is then",
+			workspace.Bookmark, workspace.Clone, remote, row, workspace.Dir)
+	}
+	return setBookmarkOnWorkingCopy(ctx, run, workspace)
 }
 
 // parseBookmarkRow reads one line bookmarkRowTemplate printed, reporting whether it has the shape.
