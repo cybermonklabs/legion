@@ -239,22 +239,39 @@ func runProfiledCountedChild(t *testing.T, what string, env ...string) (countedM
 // readCountedNone measures startup once in a child that builds no input.
 func readCountedNone(t *testing.T) (countedStatementRun, error) {
 	t.Helper()
-	measured, profile, err := runProfiledCountedChild(t, "the counted none baseline", countedModeEnv+"=none")
-	return countedStatementRun{units: measured.Units, statements: profile.total}, err
+	_, profile, err := runProfiledCountedChild(t, "the counted none baseline", countedModeEnv+"=none")
+	return countedStatementRun{statements: profile.total}, err
 }
 
 // countedChildSlots limits the number of memory-hungry leaves that may use children at once.
 var countedChildSlots = make(chan struct{}, 2)
 
+// countedBuildReady builds the counted child once and returns any build error.
+func countedBuildReady(t *testing.T) error {
+	t.Helper()
+	countedBuild.buildOnce.Do(func() { countedBuild.buildErr = buildCounted(t) })
+	return countedBuild.buildErr
+}
+
+// holdCountedChildSlot waits for room to run a child that reads a large body.
+func holdCountedChildSlot(t *testing.T, what string) (release func()) {
+	t.Helper()
+	ctx := testwait.Context(t)
+	select {
+	case countedChildSlots <- struct{}{}:
+		return func() { <-countedChildSlots }
+	case <-ctx.Done():
+		t.Fatalf("wait for %s: %v", what, ctx.Err())
+		return nil
+	}
+}
+
 // runCountedLeaf counts and judges one shape and operation in isolation.
-func runCountedLeaf(t *testing.T, row string, leaf countedShape) [2]countedSample {
+func runCountedLeaf(t *testing.T, row string, leaf countedShape) {
 	t.Helper()
 	t.Parallel()
-	countedBuild.buildOnce.Do(func() {
-		countedBuild.buildErr = buildCounted(t)
-	})
-	if countedBuild.buildErr != nil {
-		t.Fatal(countedBuild.buildErr)
+	if err := countedBuildReady(t); err != nil {
+		t.Fatal(err)
 	}
 	var none *countedStatementRun
 	if leaf.heavyBody {
@@ -265,13 +282,7 @@ func runCountedLeaf(t *testing.T, row string, leaf countedShape) [2]countedSampl
 		none = &countedBuild.none
 	}
 	if leaf.limitChildren {
-		ctx := testwait.Context(t)
-		select {
-		case countedChildSlots <- struct{}{}:
-			defer func() { <-countedChildSlots }()
-		case <-ctx.Done():
-			t.Fatalf("wait for a counted child slot for %s: %v", leaf.name, ctx.Err())
-		}
+		defer holdCountedChildSlot(t, "a counted child slot for "+leaf.name)()
 	}
 	var samples [2]countedSample
 	for i, size := range leaf.sizes {
@@ -292,7 +303,6 @@ func runCountedLeaf(t *testing.T, row string, leaf countedShape) [2]countedSampl
 	for _, failure := range failures {
 		t.Error(failure)
 	}
-	return samples
 }
 
 // readCountedSample subtracts the prepare-only child's statement total from the whole child's
@@ -357,7 +367,7 @@ func readCountedSample(t *testing.T, row string, leaf countedShape, size int, no
 		units: measured.Units, characters: measured.Characters, operation: operation, withPreparation: withPreparation,
 		operationByModule: op.byModule, countedBytes: measured.Bytes, invokingBytes: invokingBytes,
 		searchedBytes: measured.Stages.Parse + measured.Stages.Render, scanBytes: measured.Stages.Scan,
-		updateItems: measured.Stages.Update, busiest: op.busiest, busiestBlock: op.busiestBlock, outcome: measured.Outcome,
+		updateItems: measured.Stages.Update, busiest: op.busiest, busiestBlock: op.busiestBlock,
 	}
 }
 
@@ -514,11 +524,11 @@ func parseCountedProfile(r io.Reader, modules map[string]string) (countedProfile
 			return countedProfile{}, fmt.Errorf("profile line %q: package %q is not counted", line, pkg)
 		}
 		readNumber := func(field, raw string) (uint64, error) {
-			n, err := strconv.ParseInt(raw, 10, 64)
-			if err != nil || n < 0 || raw[0] == '-' || raw[0] == '+' {
+			n, err := strconv.ParseUint(raw, 10, 63)
+			if err != nil {
 				return 0, fmt.Errorf("profile line %q: %s %q is not a decimal integer from 0 to %d", line, field, raw, int64(math.MaxInt64))
 			}
-			return uint64(n), nil
+			return n, nil
 		}
 		statements, err := readNumber("statements", fields[1])
 		if err != nil {
@@ -542,8 +552,7 @@ func parseCountedProfile(r io.Reader, modules map[string]string) (countedProfile
 }
 
 // TestTheCountedProfileReaderRefusesWhatItCannotCount uses the fold package's slice of
-// the profile captured from the original 2048-character bracket proof leaf. That leaf
-// has been replaced by the delimiter row's [a render.
+// the profile captured from the original 2048-character bracket proof leaf.
 // In profile order the total is 1*1 + 1*2 + 2*1 + 1*2047 + 1*1024 + 1*1 + 1*0 + 1*0 = 3077.
 func TestTheCountedProfileReaderRefusesWhatItCannotCount(t *testing.T) {
 	t.Parallel()

@@ -62,14 +62,14 @@ func TestTheCountedBuildReadsEveryTextAsThePlainBuild(t *testing.T) {
 	}
 	// The plain shards can start before the counted binary is ready.
 	start(0, "plain", os.Args[0])
-	countedBuild.buildOnce.Do(func() { countedBuild.buildErr = buildCounted(t) })
-	if countedBuild.buildErr == nil {
+	buildErr := countedBuildReady(t)
+	if buildErr == nil {
 		start(1, "counted", countedBuild.binary)
 	}
 	// Join the subtests before comparing their results or returning.
 	children.Wait()
-	if countedBuild.buildErr != nil {
-		t.Fatal(countedBuild.buildErr)
+	if buildErr != nil {
+		t.Fatal(buildErr)
 	}
 	var plainTotal, countedTotal int
 	for _, pair := range outcomes {
@@ -104,13 +104,7 @@ func runCensusChild(t *testing.T, binary string, shard censusShard) map[string]s
 	t.Helper()
 	if shard.heavy {
 		// Share the memory limit with the counted growth tests that also read large bodies.
-		ctx := testwait.Context(t)
-		select {
-		case countedChildSlots <- struct{}{}:
-			defer func() { <-countedChildSlots }()
-		case <-ctx.Done():
-			t.Fatalf("wait for a heavy census child slot: %v", ctx.Err())
-		}
+		defer holdCountedChildSlot(t, "a heavy census child slot")()
 	}
 	out, stderr, err := testwait.RunChild(t, binary, 0, "^TestHeavyBodiesCountedHelper$",
 		countedModeEnv+"=census",
@@ -175,8 +169,8 @@ func writeCensusTexts(t *testing.T, out *bufio.Writer, index, count int) {
 		return match
 	}
 	text := func(name, markdown string) {
-		censusText(t, out, name, 1, markdown)
-		censusText(t, out, name, cpuCheckLength, strings.Repeat(markdown, cpuCheckLength))
+		censusText(t, out, name, "1x", markdown)
+		censusText(t, out, name, fmt.Sprintf("%dx", checkLength), strings.Repeat(markdown, checkLength))
 	}
 	fixtures := loadFixtures(t)
 	if len(fixtures) == 0 {
@@ -205,24 +199,35 @@ func writeCensusTexts(t *testing.T, out *bufio.Writer, index, count int) {
 	}
 }
 
-// writeCensusHeavyBodies builds and reads only one heavy body size at a time.
+// writeCensusHeavyBodies compares each builder size that a counted leaf uses for the body.
 func writeCensusHeavyBodies(t *testing.T, out *bufio.Writer) {
 	t.Helper()
-	for _, shape := range heavybodies.Shapes() {
-		for _, multiple := range []int{1, cpuCheckLength} {
-			censusText(t, out, shape.ID, multiple, shape.Body(shape.Grown*multiple))
+	sizesByShape := make(map[string]map[int]struct{})
+	for _, leaves := range [][]countedShape{heavyBodyCapShapes(), heavyBodyParseShapes(), heavyBodyWriteShapes()} {
+		for _, leaf := range leaves {
+			sizes := sizesByShape[leaf.shape]
+			if sizes == nil {
+				sizes = make(map[int]struct{})
+				sizesByShape[leaf.shape] = sizes
+			}
+			sizes[leaf.sizes[0]] = struct{}{}
+			if !leaf.fixedSize {
+				sizes[leaf.sizes[1]] = struct{}{}
+			}
 		}
-		if multiple := cpuCheckLengthOf(shape); multiple != cpuCheckLength {
-			censusText(t, out, shape.ID, multiple, shape.Body(shape.Grown*multiple))
+	}
+	for _, shape := range heavybodies.Shapes() {
+		for _, size := range slices.Sorted(maps.Keys(sizesByShape[shape.Name])) {
+			censusText(t, out, shape.ID, strconv.Itoa(size), shape.Body(size))
 		}
 	}
 }
 
 // censusText compares both parse results and both document states, including refusals at the
 // step that returns them. A refused parse leaves its Update and encode without an input.
-func censusText(t *testing.T, out *bufio.Writer, name string, multiple int, markdown string) {
+func censusText(t *testing.T, out *bufio.Writer, name, size string, markdown string) {
 	t.Helper()
-	label := fmt.Sprintf("%q at %dx", name, multiple)
+	label := fmt.Sprintf("%q at %s", name, size)
 	report := func(op, result string) {
 		if _, err := fmt.Fprintf(out, "%s%s, %s\t%d bytes: %s\n", censusMark, label, op, len(markdown), result); err != nil {
 			t.Fatal(err)
@@ -299,6 +304,6 @@ func editCensusTree(tree *Node) {
 		return false
 	})
 	if !edited {
-		tree.Children = append(tree.Children, &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: "Census edit."}}})
+		tree.Children = append(tree.Children, paragraph("Census edit."))
 	}
 }

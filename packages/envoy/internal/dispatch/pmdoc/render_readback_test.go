@@ -8,6 +8,7 @@ package pmdoc
 //ci:reads patches/** engineReadings bun run gen/differential.ts
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -22,26 +23,15 @@ import (
 // headless engine (gen/differential.ts), each short table body row padded as Parse pads it.
 func engineReadings(t *testing.T, markdowns []string) []*Node {
 	t.Helper()
-	dir := t.TempDir()
-	var input strings.Builder
+	var input bytes.Buffer
 	encoder := json.NewEncoder(&input)
 	for index, markdown := range markdowns {
 		if err := encoder.Encode(map[string]any{"id": index, "md": markdown}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	in, out := filepath.Join(dir, "in.jsonl"), filepath.Join(dir, "out.jsonl")
-	if err := os.WriteFile(in, []byte(input.String()), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return requireEngineReadings(t, runEngineReadings(t, in, out), len(markdowns))
-}
-
-// runEngineReadings reads the engine's output lines. In names mode the engine writes its list
-// of entity names to in rather than reading that file.
-func runEngineReadings(t *testing.T, in, out string, flags ...string) []string {
-	t.Helper()
-	return jsonlLines(genOutput(t, "differential.ts", out, append(flags, in, out, "md")...))
+	lines := genInputLines(t, "differential.ts", input.Bytes(), nil, "md")
+	return requireEngineReadings(t, lines, len(markdowns))
 }
 
 // requireEngineReadings fails the test before any comparison if the engine's file is incomplete
@@ -812,7 +802,8 @@ func TestEveryNameTheEngineKnowsReadsAsTheEngineReadsIt(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	namesPath := filepath.Join(dir, "names.txt")
-	lines := runEngineReadings(t, namesPath, filepath.Join(dir, "out.jsonl"), "--entity-names")
+	out := filepath.Join(dir, "out.jsonl")
+	lines := genLines(t, "differential.ts", out, "--entity-names", namesPath, out, "md")
 	raw, err := os.ReadFile(namesPath)
 	if err != nil {
 		t.Fatal(err)

@@ -1,14 +1,6 @@
-// entity-names.ts - the character reference names the browser editor's engine decodes, for the
-// pmdoc test that every one reads in Go as it does in the engine.
-//
-//   bun entity-names.ts <out.txt>
-//
-// Writes one name per line, without its `&` and `;`: the keys of the `character-entities` package
-// the engine itself loads, found as the engine finds it - from the editor package through
-// remark-parse, mdast-util-from-markdown, micromark and decode-named-character-reference, each
-// resolved from the package before it - so a test reads the names of the copy the engine decodes
-// with, not whichever copy this directory would resolve. The same install writes the same file.
-import { writeFileSync } from "node:fs";
+// differential.ts calls engineEntityNames in --entity-names mode to test every name the editor
+// decodes. Resolve each dependency from the package that imports it so the test reads the same
+// copy of character-entities that the editor uses.
 import { createRequire } from "node:module";
 
 /** Loads the names from the same dependency that the engine uses. */
@@ -28,13 +20,4 @@ export async function engineEntityNames(): Promise<string[]> {
     characterEntities: Record<string, string>;
   };
   return Object.keys(characterEntities);
-}
-
-if (import.meta.main) {
-  const [output] = process.argv.slice(2);
-  if (!output) {
-    console.error("usage: bun entity-names.ts <out.txt>");
-    process.exit(2);
-  }
-  writeFileSync(output, `${(await engineEntityNames()).join("\n")}\n`);
 }

@@ -18,7 +18,11 @@ func runLinearRow(t *testing.T) {
 	t.Helper()
 	t.Parallel()
 	row := t.Name()
-	for _, leaf := range countedRows[row]() {
+	shapes, ok := countedRows[row]
+	if !ok {
+		t.Fatalf("no counted shapes for %q", row)
+	}
+	for _, leaf := range shapes() {
 		name := strings.ReplaceAll(leaf.shape, "/", "∕")
 		// Go changes spaces to underscores, which would merge two URL spellings.
 		if strings.TrimSpace(name) != name {
@@ -98,14 +102,11 @@ func parseGrowthShape(shape, operation, unit string, body func(int) string, allo
 func renderGrowthShape(shape, unit string, body func(int) string, label string) countedShape {
 	leaf := linearShape(shape, "Render", unit)
 	leaf.prepare = func(t *testing.T, size int) (int, int, func() string) {
-		paragraph := func(text string) *Node {
-			return &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: text}}}
-		}
 		text := body(size)
 		doc := &Node{Type: "doc", Children: []*Node{paragraph(text)}}
 		characters := len(text)
 		if label != "" {
-			doc.Children = append(doc.Children, &Node{Type: "footnote_definition", Attrs: Attrs{"label": label}, Children: []*Node{paragraph("x")}})
+			doc.Children = append(doc.Children, footnoteDefinition(label, paragraph("x")))
 			characters++
 		}
 		return size, characters, func() string {
@@ -614,9 +615,7 @@ func alternatingShape() countedShape {
 	leaf.sizes = alternatingBlocks
 	leaf.limitChildren = true
 	seed := func(t *testing.T, blocks int) (*crdt.Doc, *crdt.YXmlFragment, *Node) {
-		doc := crdt.New(crdt.WithClientID(1))
-		fragment := doc.GetXmlFragment("prosemirror")
-		writeUpdate(t, doc, fragment, repeatedBlocks(t, "#\n\na\n\n", blocks/2))
+		doc, fragment := writeTree(t, repeatedBlocks(t, "#\n\na\n\n", blocks/2), crdt.WithClientID(1))
 		return doc, fragment, repeatedBlocks(t, "a\n\n", blocks)
 	}
 	leaf.prepare = func(t *testing.T, blocks int) (int, int, func() string) {

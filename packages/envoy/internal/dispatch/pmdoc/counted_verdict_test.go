@@ -81,7 +81,6 @@ type countedSample struct {
 	busiestBlock                string
 	operationByModule           map[string]uint64
 	updateItems                 uint64
-	outcome                     string
 	walks                       *countedSample
 }
 
@@ -122,7 +121,7 @@ func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []stri
 	unit, slack := leaf.unit, float64(linearSlack)
 	if leaf.perCharacterGrowth {
 		units = [2]int{small.characters, large.characters}
-		unit, slack = "body character", cpuGrowthPerCharacter
+		unit, slack = "body character", growthPerCharacter
 	}
 	growth := float64(units[1]) / float64(units[0])
 	limit := slack * growth

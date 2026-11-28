@@ -85,17 +85,17 @@ const growthStep = 8
 // quadratic count grows 64 times, past the 24 times allowed for linear work.
 const linearSlack = 3
 
-// cpuCheckLength is the multiplier for a read or whole write past the cap. Quadratic work per
+// checkLength is the multiplier for a read or whole write past the cap. Quadratic work per
 // character grows eightfold there, where linear work per character does not grow.
-const cpuCheckLength = 8
+const checkLength = 8
 
-// cpuCheckLengthOf uses a longer step for footnote references so their old resolution cost
+// checkLengthOf uses a longer step for footnote references so their old resolution cost
 // cannot hide beside the rest of the read or write.
-func cpuCheckLengthOf(shape heavybodies.Shape) int {
+func checkLengthOf(shape heavybodies.Shape) int {
 	if shape.ID == "footnote-references-then-definitions" {
 		return footnoteCheckLength
 	}
-	return cpuCheckLength
+	return checkLength
 }
 
 // footnoteCheckLength is the longer multiplier for footnote references and definitions. The old
@@ -106,10 +106,10 @@ func cpuCheckLengthOf(shape heavybodies.Shape) int {
 // With the current resolution they were 1.4 and 1.2 (CPU samples from INFRA-3904).
 const footnoteCheckLength = 32
 
-// cpuGrowthPerCharacter limits how much counted work, allocation or searched bytes per body
+// growthPerCharacter limits how much counted work, allocation or searched bytes per body
 // character may grow past the cap. It keeps the 2.5 ratio from the CPU verdict, where the
 // largest observed per-character growth on the clean code was 1.5.
-const cpuGrowthPerCharacter = 2.5
+const growthPerCharacter = 2.5
 
 // heavyBodyCapShapes checks all the stored and refused bodies at the cap and in a rendering read.
 // A separate growth leaf counts each refused parse at two sizes an eighth-to-whole step apart.
@@ -154,7 +154,7 @@ func heavyBodyWriteShapes() []countedShape {
 
 // heavyBodySizeDivisors records the chosen scales from sizes.tsv in the infra6314-pf-pfd-*
 // build-cluster Jobs at 5955cd4e. Parse at the cap stays at full size because the cap is the
-// claim. Read and whole write divide both original sizes, keeping the step from cpuCheckLengthOf:
+// claim. Read and whole write divide both original sizes, keeping the step from checkLengthOf:
 // the footnote regression can hide beside the rest of the work at an eightfold step.
 var heavyBodySizeDivisors = map[string]struct {
 	parse, write, read, wholeWrite int
@@ -185,9 +185,9 @@ func heavyBodyLeaf(shape heavybodies.Shape, operation string, reading countedRea
 	case "parse at the cap":
 		leaf.sizes = [2]int{shape.Grown}
 	case "read":
-		leaf.sizes = [2]int{shape.Grown / divisors.read, cpuCheckLengthOf(shape) * shape.Grown / divisors.read}
+		leaf.sizes = [2]int{shape.Grown / divisors.read, checkLengthOf(shape) * shape.Grown / divisors.read}
 	case "whole write":
-		leaf.sizes = [2]int{shape.Grown / divisors.wholeWrite, cpuCheckLengthOf(shape) * shape.Grown / divisors.wholeWrite}
+		leaf.sizes = [2]int{shape.Grown / divisors.wholeWrite, checkLengthOf(shape) * shape.Grown / divisors.wholeWrite}
 	case "parse", "parse growth":
 		whole := shape.Grown / divisors.parse
 		leaf.sizes = [2]int{whole / growthStep, whole}

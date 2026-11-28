@@ -243,7 +243,7 @@ func decodeAllWithYProsemirror(t *testing.T, inputs []browserUpdate) []*Node {
 			t.Fatalf("%s: encode update: %v", row.name, err)
 		}
 	}
-	lines := genLines(t, "decode.ts", input.Bytes(), "--jsonl")
+	lines := genInputLines(t, "decode.ts", input.Bytes(), []string{"--jsonl"})
 	nodes, err := parseDecodeBatch(lines, names)
 	if err != nil {
 		t.Fatal(err)
@@ -371,15 +371,22 @@ func genResult(t *testing.T, script string, args ...string) []byte {
 	return genOutput(t, script, out, append(args, out)...)
 }
 
-// genLines gives the script an input file and returns the lines from its output file.
-func genLines(t *testing.T, script string, input []byte, flags ...string) []string {
+// genInputLines supplies the input file for a script that reads it and writes output lines.
+func genInputLines(t *testing.T, script string, input []byte, flags []string, fields ...string) []string {
 	t.Helper()
 	dir := t.TempDir()
 	in, out := filepath.Join(dir, "in.jsonl"), filepath.Join(dir, "out.jsonl")
 	if err := os.WriteFile(in, input, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return jsonlLines(genOutput(t, script, out, append(flags, in, out)...))
+	args := append(flags, in, out)
+	return genLines(t, script, out, append(args, fields...)...)
+}
+
+// genLines runs a script with its arguments and reads the lines it writes to out.
+func genLines(t *testing.T, script, out string, args ...string) []string {
+	t.Helper()
+	return jsonlLines(genOutput(t, script, out, args...))
 }
 
 // jsonlLines leaves blank records visible but does not count the final newline as a record.
@@ -568,41 +575,49 @@ func TestUpdatePreservesMarksAcrossAstralEdit(t *testing.T) {
 // y-prosemirror decode of the whole state, as the document's readers see it.
 func TestUpdateRewritesEmojiThatShareHalfOfAPair(t *testing.T) {
 	t.Parallel()
-	for name, test := range map[string]struct{ was, now string }{
-		"a shared high surrogate": {was: "before \U0001F4CA after", now: "before \U0001F4CB after"},
-		"a shared low surrogate":  {was: "before \U0001F60A after", now: "before \U0001FA0A after"},
-		"a run of them":           {was: "\U0001F4CA\U0001F4CA\U0001F4CA", now: "\U0001F4CA\U0001F4CB\U0001F4CA"},
-		"marked text":             {was: "before **\U0001F4CA** after", now: "before **\U0001F4CB** after"},
+	tests := []struct{ name, was, now string }{
+		{name: "a shared high surrogate", was: "before \U0001F4CA after", now: "before \U0001F4CB after"},
+		{name: "a shared low surrogate", was: "before \U0001F60A after", now: "before \U0001FA0A after"},
+		{name: "a run of them", was: "\U0001F4CA\U0001F4CA\U0001F4CA", now: "\U0001F4CA\U0001F4CB\U0001F4CA"},
+		{name: "marked text", was: "before **\U0001F4CA** after", now: "before **\U0001F4CB** after"},
 		// The text a split pair left behind: ygo counts each U+FFFD as one unit, as the diff does.
-		"text a split pair already damaged": {was: "\uFFFD\uFFFD PIPE", now: "\U0001F4CA PIPE"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			seed, err := Parse(test.was + "\n")
+		{name: "text a split pair already damaged", was: "\uFFFD\uFFFD PIPE", now: "\U0001F4CA PIPE"},
+	}
+	inputs := make([]browserUpdate, len(tests))
+	wants := make([]*Node, len(tests))
+	for index, test := range tests {
+		seed, err := Parse(test.was + "\n")
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		want, err := Parse(test.now + "\n")
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		doc := crdt.New()
+		frag := doc.GetXmlFragment("prosemirror")
+		for _, tree := range []*Node{seed, want} {
+			doc.Transact(func(txn *crdt.Transaction) { err = Update(txn, frag, tree) })
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("%s: %v", test.name, err)
 			}
-			want, err := Parse(test.now + "\n")
-			if err != nil {
-				t.Fatal(err)
-			}
-			doc := crdt.New()
-			frag := doc.GetXmlFragment("prosemirror")
-			for _, tree := range []*Node{seed, want} {
-				doc.Transact(func(txn *crdt.Transaction) { err = Update(txn, frag, tree) })
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			got, err := Read(frag)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !got.Equal(want) {
-				gotJSON, _ := got.JSON()
-				t.Fatalf("Update stored %s, want %q", gotJSON, test.now)
-			}
-			if decoded := decodeWithYProsemirror(t, crdt.EncodeStateAsUpdateV1(doc, nil)); !decoded.Equal(want) {
-				decodedJSON, _ := decoded.JSON()
+		}
+		got, err := Read(frag)
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if !got.Equal(want) {
+			gotJSON, _ := got.JSON()
+			t.Fatalf("%s: Update stored %s, want %q", test.name, gotJSON, test.now)
+		}
+		inputs[index] = browserUpdate{test.name, crdt.EncodeStateAsUpdateV1(doc, nil)}
+		wants[index] = want
+	}
+	decoded := decodeAllWithYProsemirror(t, inputs)
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if pm := decoded[index]; !pm.Equal(wants[index]) {
+				decodedJSON, _ := pm.JSON()
 				t.Fatalf("y-prosemirror decoded %s, want %q", decodedJSON, test.now)
 			}
 		})

@@ -3,8 +3,6 @@ package pmdoc
 import (
 	"strings"
 	"testing"
-
-	"github.com/reearth/ygo/crdt"
 )
 
 // TestEachWorkCounterCountsWhatItsOperationReaches runs serially so no other test writes to
@@ -12,12 +10,6 @@ import (
 func TestEachWorkCounterCountsWhatItsOperationReaches(t *testing.T) {
 	document := func(children ...*Node) *Node {
 		return &Node{Type: "doc", Children: children}
-	}
-	paragraph := func(value string) *Node {
-		if value == "" {
-			return &Node{Type: "paragraph"}
-		}
-		return &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: value}}}
 	}
 	parse := func(markdown string, read func() uint64) func(*testing.T) uint64 {
 		return func(t *testing.T) uint64 {
@@ -30,18 +22,9 @@ func TestEachWorkCounterCountsWhatItsOperationReaches(t *testing.T) {
 	}
 	update := func(initial, want *Node) func(*testing.T) uint64 {
 		return func(t *testing.T) uint64 {
-			doc := crdt.New()
-			frag := doc.GetXmlFragment("prosemirror")
-			write := func(want *Node) {
-				var err error
-				doc.Transact(func(txn *crdt.Transaction) { err = Update(txn, frag, want) })
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			write(initial)
+			doc, frag := writeTree(t, initial)
 			before := UpdateWork()
-			write(want)
+			writeUpdate(t, doc, frag, want)
 			return UpdateWork() - before
 		}
 	}
