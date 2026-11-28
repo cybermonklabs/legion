@@ -13,10 +13,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isShellCommandReport } from "@legion/contracts";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { processEnded } from "@legion/test-fixtures/process-end";
-import { timeLeft } from "@legion/test-fixtures/wait";
+import { settled, timeLeft } from "@legion/test-fixtures/wait";
 import { procmgr } from "@oh-my-pi/pi-utils";
 import {
   runShellCommand,
@@ -156,7 +157,10 @@ describe("running a person's command", () => {
   beforeEach(() => {
     procmgr.__resetShellConfigCacheForTests();
   });
+  // A row that holds its run on Bun's fake clock and is ended by the command's guard never
+  // reaches its own `finally`, so the real clock comes back here too, before the next row.
   afterEach(() => {
+    jest.useRealTimers();
     procmgr.__resetShellConfigCacheForTests();
   });
 
@@ -164,7 +168,7 @@ describe("running a person's command", () => {
     const directory = scratch();
     try {
       const result = await runShellCommand("printf hi", { cwd: directory, limitMs: 10_000 });
-      expect(result).toEqual({ cut: false, output: "hi", status: undefined });
+      expect(result).toEqual({ cut: false, output: "hi", status: undefined, keptBytes: 2 });
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -232,7 +236,9 @@ describe("running a person's command", () => {
     await Bun.write(join(home, ".profile"), profile);
     await Bun.write(join(home, ".zprofile"), profile);
     const before = process.env.HOME;
+    const beforeCache = process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH;
     process.env.HOME = home;
+    Object.assign(process.env, bunCacheOff);
     try {
       const result = await runShellCommand('pwd -P; printf %s "$TYPED_SHELL_TEST_PROFILE"', {
         cwd: directory,
@@ -242,6 +248,8 @@ describe("running a person's command", () => {
     } finally {
       if (before === undefined) delete process.env.HOME;
       else process.env.HOME = before;
+      if (beforeCache === undefined) delete process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH;
+      else process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = beforeCache;
       rmSync(home, { recursive: true, force: true });
       rmSync(directory, { recursive: true, force: true });
     }
@@ -329,7 +337,7 @@ describe("running a person's command", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 60_000);
+  });
 
   // The environment is the host's own for a child shell, not this process's: the host drops the
   // git location variables from it (`filterChildShellEnv`), because forwarding them makes `git`
@@ -483,7 +491,7 @@ describe("running a person's command", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 30_000);
+  });
 
   // An earlier shape of the module pointed both streams at a file under `envoy-shell-*` and read
   // back `4 * SHELL_OUTPUT_MAX` bytes of it, so nothing bounded what the shell wrote there: `!yes`,
@@ -531,6 +539,9 @@ describe("running a person's command", () => {
       expect(result.status).toBe("The command was stopped.");
       expect(result.cut).toBe(true);
       expect(written).toBeLessThanOrEqual(bound);
+      // The module's own count of what it held of the output, which only grows, so it is the
+      // most it held at once.
+      expect(result.keptBytes).toBeLessThanOrEqual(bound);
     } finally {
       restore();
       rmSync(directory, { recursive: true, force: true });
@@ -552,7 +563,7 @@ describe("running a person's command", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 20_000);
+  });
 
   // The session holds the kill of a running command's group, which is what a shutdown stops it
   // with: nothing it started is left running, and what it printed is still its answer. The row
@@ -679,12 +690,13 @@ describe("running a person's command", () => {
         else expect(runs.exitCode).toBe(code);
         const pid = Number(readFileSync(pidFile, "utf8").trim());
         // Its end is the event: a zombie the process it was handed to has not reaped yet has
-        // ended, though `kill(pid, 0)` still answers for it. The row's timeout is the only bound.
-        await processEnded(pid);
+        // ended, though `kill(pid, 0)` still answers for it. The shared wait's deadline is the
+        // only bound.
+        await settled("the command's process to end", processEnded(pid));
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }
-    }, 60_000);
+    });
   }
 });
 
@@ -695,6 +707,7 @@ describe("the texts a command becomes", () => {
     cut: false,
     output: "hi",
     status: undefined,
+    keptBytes: 2,
   };
 
   test("carry the person's line and what the command printed, fenced", () => {

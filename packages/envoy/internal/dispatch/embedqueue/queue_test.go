@@ -2038,9 +2038,15 @@ func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 // signal Cover left there before it, was taken by a pass that ended before this report; a signal
 // still there arrived after the report's check, and the test lets the loop run on to the next
 // report. Both loops run on the queue's clock (Deps.Clock), a fake here: the pass a signal earns
-// is held to its gap on that clock, and the test moves the clock to it (scanLoop.fire). With both
-// reports in, that clock holds one timer and no other: the coverage loop's next recheck,
-// identityRecheckInterval after the boot pass began plus its jitter (armedRecheck).
+// is held to its gap on that clock, and the test moves the clock to it (scanLoop.fire). That move
+// fires every timer due by then, so a timer Run armed on Deps.Clock beside its loops' own, a
+// further scan pass due at the same gap among them, would run its work inside the move, before
+// the test reads its counts. So each time the scan loop reports its timer armed, before the test
+// moves the clock, the test reads every timer on that clock: the scan loop's and the coverage
+// loop's next recheck, identityRecheckInterval after the boot pass began plus its jitter
+// (requireRecheck), and no other. A third timer fails the test there, whatever its moment. With
+// both reports in, that clock holds the recheck and no other timer (armedRecheck), so no timer
+// Run armed after the test's last move is left either.
 //
 // A later action. The test moves the queue's clock to just before that recheck, the whole of the
 // time Run would wait: no timer fires, no statement is made and neither loop reports again.
@@ -2108,7 +2114,15 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 			close(release)
 		case wait := <-loop.waits:
 			// The pass a signal earns is held to its gap on the queue's clock, which the test moves
-			// there; a rest the loop reported before it took the signal is let on to take it.
+			// there; a rest the loop reported before it took the signal is let on to take it. Before
+			// the move the clock holds the scan loop's timer and the recheck, and no other.
+			if wait.armed {
+				armed := fake.Armed()
+				if len(armed) != 2 || !armed[0].Equal(wait.at) {
+					t.Fatalf("the queue's clock holds %d timers (%v) while Run's scan loop waits with %v, want that timer and the coverage loop's next recheck after it, and no other: the coverage loop is parked and the scan loop holds in its report, so no pass or call of Run's is in flight to arm one", len(armed), armed, wait)
+				}
+				requireRecheck(t, armed[1], booted)
+			}
 			loop.letOn(wait)
 		default:
 		}

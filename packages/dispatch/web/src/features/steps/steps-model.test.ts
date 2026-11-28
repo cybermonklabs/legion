@@ -41,6 +41,7 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
   ]);
   expect(first?.rows[1]).toEqual({
     agent: "legion-core-core-1-reviewer",
+    answered: "unknown",
     attempt: 1,
     ended: "2026-11-16T10:30:00Z",
     id: "review-1",
@@ -48,11 +49,17 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
     model: "openai/gpt-6.1-sol",
     returnedTo: "step 2",
     role: "reviewer",
+    setModel: "",
     started: "2026-11-16T10:00:00Z",
     state: "failed",
     type: "review",
   });
-  expect(first?.rows[2]).toMatchObject({ attempt: 2, ended: null, state: "running" });
+  expect(first?.rows[2]).toMatchObject({
+    answered: "running",
+    attempt: 2,
+    ended: null,
+    state: "running",
+  });
   expect(first?.rows[4]).toMatchObject({ agent: "", model: "", started: null, type: "" });
 });
 
