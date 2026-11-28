@@ -7,8 +7,10 @@ export function stepRecord(fields: Partial<StepRecord> & Pick<StepRecord, "id">)
   return {
     agent: "legion-core-core-1-implementer",
     attempt: 1,
+    end_commit: null,
     ended_at: "2026-11-16T09:40:00Z",
     experiment: null,
+    fix_check: null,
     generation: 1,
     issue: "CORE-1",
     kind: "step",
@@ -20,6 +22,7 @@ export function stepRecord(fields: Partial<StepRecord> & Pick<StepRecord, "id">)
     returned_to: null,
     role: "implementer",
     session: "",
+    start_commit: null,
     started_at: "2026-11-16T09:00:00Z",
     step: 2,
     task: "default",

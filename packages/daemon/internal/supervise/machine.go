@@ -975,6 +975,14 @@ type ClaimView struct {
 	// claimInTurn, supervise's Deps.IssueInTurn): two roles of one issue that each read the other
 	// as idle would otherwise adopt it at the same moment (dispatch://INFRA-314).
 	SendInFlight bool
+	// Copies is each working copy the delivery the claim serves touches, pending or confirmed and
+	// not yet retired, and CopyIssue where it serves none (servedCopies): the copies its send in
+	// flight may be rewriting and its turn may be writing in. A reader deciding who may adopt a
+	// working copy counts only a claim that touches a copy the adoption rewrites (the daemon's
+	// claimInTurn, supervise's Deps.IssueInTurn): a fix's task that rewrites only the fix's own copy
+	// holds no adoption of the shared copy, and a turn there holds no such fix's; a task that moves
+	// the shared copy touches it, whatever else it does.
+	Copies WorkingCopies
 	// WakeWaiting is the wake the pacing holds over this claim until its turn (reserveWake), nil
 	// while none waits. It travels on the published view rather than behind the machine's lock
 	// because none of its readers may wait on the decision in flight, which is the whole reason
@@ -1157,10 +1165,11 @@ type Deps struct {
 	// PhaseRole names the role working the current phase of issue, which the gate's order puts
 	// first among the starts no request raised that wait behind another (podQueue.next): the first
 	// start to reach a pod that holds nothing goes at once whatever its role (PodStarts.grant). It
-	// is the workflow's own reading of the issue record (internal/workflow's OpenPhaseRole), "" for
-	// an issue it does not record, for a phase no role works, and for a phase the architect works
-	// (admitted, accepting), which has no phase worker, so the order falls back to claim.Roles
-	// there. It is read at each start into a gated pod that no request raised, before the gate
+	// is the workflow's own reading of the issue record (the first of internal/workflow's
+	// OpenRoles), "" for an issue it does not record, for a phase no role works, and for a phase
+	// the architect works (admitted, accepting), which has no phase worker, so the order falls back
+	// to claim.Roles there; where a fix runs in such a phase it names the fix's implementer. It is
+	// read at each start into a gated pod that no request raised, before the gate
 	// answers, since the order reads it of no other, bounded by Timeouts.RPC; an error is logged
 	// and read as no phase worker, so the start waits in the order of claim.Roles. nil is a daemon
 	// with no workflow, where no role is the phase worker.
@@ -1179,24 +1188,28 @@ type Deps struct {
 	// before the task (adopts). nil, for a daemon with no workflow or no GitHub Apps, adopts
 	// nothing.
 	Identity func(ctx context.Context, role claim.Role, issue string) (runtime.GitIdentity, error)
-	// IssueInTurn names a claim of issue other than except whose agent is in a turn now, or is
-	// about to be, and reports whether there is one. The roles of an issue work one jj workspace,
-	// so the adoption a phase task makes of its working copy is not a private act: one run while
-	// another role is in a turn moves that role's worker onto a commit of this role's
-	// (dispatch://INFRA-714), and a task that would adopt waits instead (sendPending). The daemon
-	// answers it from the state its machines publish — a claim is StateWorking from its turn's
-	// start to its turn's end, and carries a send in flight from the moment its own prompt and
-	// that prompt's adoption go out (ClaimView.SendInFlight) — which is read without waiting on
+	// IssueInTurn names a claim of issue other than except whose agent is in a turn in one of the
+	// working copies copies now, or is about to be, and reports whether there is one. The roles of
+	// an issue work one jj workspace, so the adoption a phase task makes of its working copy is not
+	// a private act: one run while another role is in a turn moves that role's worker onto a commit
+	// of this role's (dispatch://INFRA-714), and a task that would adopt waits instead
+	// (sendPending). A fix works a working copy of its own beside that workspace (CopyFix), so only
+	// a claim serving a task that touches a copy the adoption rewrites counts (ClaimView.Copies).
+	// The daemon answers it from the state its machines publish — a claim is StateWorking from its
+	// turn's start to its turn's end, and carries a send in flight from the moment its own prompt
+	// and that prompt's adoption go out (ClaimView.SendInFlight) — which is read without waiting on
 	// any decision in flight (Machine.View). nil holds no delivery back.
-	IssueInTurn func(issue string, except claim.Token) (claim.Token, bool)
-	// PhaseHolds says whether issue is still in phase p on run generation: the workflow enqueues a
-	// task for the phase and run its issue was in, and the outbox refuses to start a role for a
-	// phase the issue has left (daemon/outbox.go), so a delivery queued before the phase or the run
-	// moved on is that same staleness one step later and is dropped rather than sent. It is asked
+	IssueInTurn func(issue string, except claim.Token, copies WorkingCopies) (claim.Token, bool)
+	// PhaseHolds says whether a task queued for phase p on run generation, of fix fix (0 for a
+	// task of no fix), is still the work of issue: the workflow enqueues a task for the phase and
+	// run its issue was in, and the outbox refuses to start a role for a phase the issue has left
+	// (daemon/outbox.go), so a delivery queued before the phase or the run moved on is that same
+	// staleness one step later and is dropped rather than sent. A fix's task runs beside the step
+	// of the phase, so it holds while its fix runs, whatever phase the issue stands in. It is asked
 	// only about a delivery that names a phase; a task an operator delivered by hand names none and
 	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
 	// task of no run. nil holds every delivery.
-	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64, fix int) (bool, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
@@ -2903,18 +2916,19 @@ func StoredClaim(c Claim) Claim {
 }
 
 // publish makes the claim as the machine holds it now the one View reports, with the wake the
-// pacing holds over it, if any: a fresh value each time, since the view is read without mu. The
-// wake is published with its kind and its place (publishedView.place), and no moment: its moment
-// is read from the pacer when the view is read (publishedView.due), since a let-out, a join, a
-// mark or a leave elsewhere in the queues moves it, and each turn's jitter moves every place
-// behind that turn, so a moment read at the publish would name a turn that has since moved. A
-// launch the project pause's gate holds is no such wake: it has no moment to run and waits in no
-// pacing (wake.pause), so it is published as none. Nor is a launch waiting for its issue pod's
-// start (wake.park): it has no moment either, and the daemon's state does not show that wait
-// (dispatch://INFRA-5297's decision; the start and load-end lines are its record). The caller
-// holds mu.
+// pacing holds over it, if any, and the working copies the delivery it serves touches: a fresh
+// value each time, since the view is read without mu. The wake is published with its kind and its
+// place (publishedView.place), and no moment: its moment is read from the pacer when the view is
+// read (publishedView.due), since a let-out, a join, a mark or a leave elsewhere in the queues
+// moves it, and each turn's jitter moves every place behind that turn, so a moment read at the
+// publish would name a turn that has since moved. A launch the project pause's gate holds is no
+// such wake: it has no moment to run and waits in no pacing (wake.pause), so it is published as
+// none. Nor is a launch waiting for its issue pod's start (wake.park): it has no moment either, and
+// the daemon's state does not show that wait (dispatch://INFRA-5297's decision; the start and
+// load-end lines are its record). The caller holds mu.
 func (m *Machine) publish() {
-	view := &publishedView{ClaimView: ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil}}
+	view := &publishedView{ClaimView: ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil,
+		Copies: servedCopies(m.claim.Pending)}}
 	if w := m.pacedWake(); w != nil {
 		view.place, view.WakeWaiting = w.place, &WakeWaiting{Kind: w.kind}
 	}

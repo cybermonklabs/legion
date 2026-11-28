@@ -50,8 +50,14 @@ export interface LegionToolRuntime {
    * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
    * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
    * implementer's record names no head, the commit its workspace stands on is not pushed, or its
-   * record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>
+   * record's head is not that pushed commit. `dir`, where given, is the directory the report is
+   * found in, in place of the pane's workspace: a running fix's working copy (the issue record's
+   * `fix.dir`). */
+  readonly handoffReport: (
+    phase: LegionPhase,
+    role: LegionRole,
+    dir?: string,
+  ) => Promise<HandoffReport>
   /** The head of `legion/<issue>@origin` a `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. */
   readonly branchHead: () => Promise<string>

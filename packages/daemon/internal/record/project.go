@@ -680,6 +680,16 @@ type LineFacts struct {
 	// LineWaitingOnIssue until the wait ends. Only the caller can fill it, for the reason Held
 	// gives, and it is read again on every pass as ChildWaits is (blockers.startedWaits).
 	Waits map[string][]string
+	// EndHolds is what holds each issue held before its retro for its fix or for its CI where it
+	// keeps no slot, by key (EndHoldsOf): the check and the head of the fix of its task that reads
+	// its job or runs, or each check a CI job runs that has not passed at its task's head. The held
+	// list names it beside the issue's word (HeldFixRunning, HeldCIAtHead, HeldIssue.HeldBy), and
+	// nothing else reads it, so the line cannot change for it. Only the caller fills it — the judgement
+	// every reader of the line comes through (blockers.JudgeLine), which reads it once for a set of
+	// facts, since nothing an admission pass writes moves a fix or a check — and a caller that
+	// builds the line itself, a test or a reader with no transaction, leaves each such row naming
+	// nothing.
+	EndHolds map[string][]string
 	// StartedParentWaits is the open Dispatch children of each issue whose phases have started,
 	// by parent key (readChildWaits over StartedParents): an issue in planning through
 	// accepting, held from one of them, owing a start, or waiting in awaiting_children, with no

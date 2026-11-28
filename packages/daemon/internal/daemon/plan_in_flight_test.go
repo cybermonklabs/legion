@@ -290,6 +290,11 @@ func newInFlightRig(t *testing.T) *inFlightRig {
 	if _, err := st.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate the store the release before left to the branch's schema: %v", err)
 	}
+	// Dispatch holds no check of these issues: their heads' sets are empty, so a task's end waits
+	// for no CI (noChecksAt).
+	for _, issue := range r.issues {
+		noChecksAt(t, r.st.Pool(), issue.key, liveRepo, stepRecordsHead)
+	}
 	r.boot()
 	for _, issue := range append(slices.Clone(r.walks), r.control) {
 		r.on(issue.key)

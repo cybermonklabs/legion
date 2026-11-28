@@ -854,12 +854,15 @@ const legionIssue = z.object({
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
-   * the controller; and from contract 219 `task-stopped` once its owner stopped its task with
+   * the controller; from contract 219 `task-stopped` once its owner stopped its task with
    * stop_task, and `children` while a parent whose task's last step is not the owner's acceptance
    * waits, before its retro, for the issues beneath it, the roots that rest on its approval or its
-   * open Dispatch children. A caller whose contract (the one it states, else its pod's
-   * lowest) is below 219 is served an issue held for either of those two with no `holdReason`
-   * (the daemon's value strip `withoutUnadmittedHoldReason`). `heldFrom` beside it is the phase
+   * open Dispatch children; and from entry 20261127102132 (fix-beside-review) `fix` while an issue
+   * waits before its retro for a fix of its task that runs, and `ci` while it waits before its
+   * retro until each check a CI job runs passes at its head. A caller whose contract (the one it
+   * states, else its pod's lowest) is below the contract a reason arrived at is served an issue
+   * held for that reason with no `holdReason` (the daemon's value strip
+   * `withoutUnadmittedHoldReason`). `heldFrom` beside it is the phase
    * the hold took the issue out of, and is absent for an issue that is not held. The linger
    * suppression is `holdReason`'s alone:
    * the reason is absent while the issue's tree lingers or is closed, until it is re-admitted,
@@ -868,7 +871,7 @@ const legionIssue = z.object({
    * stopped, whatever its tree is doing. A caller in a pod whose plugin declares a contract
    * below 75 is served every issue without `heldFrom` (the daemon's `withoutRecordFields`), so
    * every reader takes it as optional. */
-  holdReason: z.enum(["escalated", "task-stopped", "children"]).optional(),
+  holdReason: z.enum(["escalated", "task-stopped", "children", "fix", "ci"]).optional(),
   heldFrom: z.enum(LEGION_WORKFLOW_PHASES).optional(),
   /** When this root's linger runs out, absent for every issue that is not a lingering root:
    * only a root carries a linger, and re-admission clears it. It is what keeps `holdReason`'s
@@ -1038,6 +1041,28 @@ const legionIssue = z.object({
    * and a caller whose plugin declares a contract below 246 is served every issue without it
    * (the daemon's `withoutPodHold`), which is why a reader takes it as optional. */
   podHold: legionPodHold.optional(),
+  /** The fix that runs beside the issue's step (entry 20261127102132 (fix-beside-review)): a check
+   * a CI job runs failed at the task's head, and the task's first implementation step runs again,
+   * in a working copy of its own, while the other steps go on. `task` is the task the fix is of
+   * and `step` the place in it of the step it runs again; `check` and `head` are the check that
+   * failed and the head it failed at. `dir` is the directory of the fix's working copy beside the
+   * issue's workspace, where the implementer's `handoff_complete` finds the fix's report, and is
+   * absent where the daemon cannot place the issue's workspace. `entry` is the entry the fix
+   * raised on the implementer's phases row and `givenEntry` the entry of the last task the
+   * implementer's claim was given, each absent where it is 0. The key is absent while no fix runs
+   * and from every issue of the body the route serves a caller below that entry (the daemon's
+   * `withoutFix`), and plugin code reads `dir` alone, so every member is optional. */
+  fix: z
+    .object({
+      task: nonEmptyString.optional(),
+      step: z.number().int().positive().optional(),
+      check: nonEmptyString.optional(),
+      head: nonEmptyString.optional(),
+      dir: nonEmptyString.optional(),
+      entry: z.number().int().nonnegative().optional(),
+      givenEntry: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.
@@ -1086,10 +1111,14 @@ const legionBlockedIssue = z.object({
 
 /**
  * `record.HeldReason` — the words of `admission.held`, in `record.HeldReasons`' order.
- * `children_before_retro` and `task_stopped` came with contract 219; a caller below it is served
- * each such row as `unclassified` with no `heldBy` (the daemon's value strip
- * `withoutUnadmittedHeldWords`). `awaiting_children` came with entry 20261125161152 (gate-basis); a caller below it is
- * served each such row as `children_first`, the one word that strip stands another in for
+ * `children_before_retro` and `task_stopped` came with contract 219, and `fix_running` and
+ * `ci_at_head` with entry 20261127102132 (fix-beside-review); a caller below the contract a word
+ * came with is served each such row as `unclassified` with no `heldBy` (the daemon's value strip
+ * `withoutUnadmittedHeldWords`). `fix_running` is a task held before its retro while its fix runs,
+ * its `heldBy` the fix's check and head; `ci_at_head` is a task held there until each check a CI
+ * job runs passes at its head, its `heldBy` each such check that has not passed yet.
+ * `awaiting_children` came with entry 20261125161152 (gate-basis); a caller below it is served
+ * each such row as `children_first`, the one word that strip stands another in for
  * (`heldReasonStandIn`).
  * `at_work` names an issue in `accepting`, `retro` or `merging`, which keeps no admission slot;
  * `record.HeldAtWork` says which issues read it.
@@ -1107,6 +1136,8 @@ export const LEGION_HELD_REASONS = [
   "accepted_ancestor",
   "children_before_retro",
   "task_stopped",
+  "fix_running",
+  "ci_at_head",
   "at_work",
   "unclassified",
 ] as const;
@@ -1120,11 +1151,15 @@ export const LEGION_HELD_REASONS = [
  * absent, never empty, where no issue holds the one that waits — a root whose Legion label is
  * off, or an issue none of the other words is true of — and a key it names may be one the state's
  * `issues` does not hold, as `blockedBy` may today, since an issue the daemon has not observed
- * holds work all the same. */
+ * holds work all the same. From entry 20261127102132 (fix-beside-review) an entry of `heldBy` may
+ * also name what holds the issue other than an issue: a check that a CI job runs, by its name, and
+ * the head the check is read at. So each entry is read as a non-empty word rather than as an issue
+ * key; a caller below that entry is served no such row (the daemon's value strip
+ * `withoutUnadmittedHeldWords`). */
 const legionHeldIssue = z.object({
   issue: issueKey.optional(),
   reason: z.enum(LEGION_HELD_REASONS).optional(),
-  heldBy: z.array(issueKey).optional(),
+  heldBy: z.array(nonEmptyString).optional(),
 });
 
 /** `api.PauseActorView` — who paused the project or ended its pause (contract 178), and who set the
@@ -2707,7 +2742,8 @@ export const LegionTaskStopRequest = z.strictObject({
   task: nonEmptyString,
 });
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
- * issue's phase for a fieldless `handoff_complete`; a named check report reads no record.
+ * issue's phase and the directory of a running fix for a fieldless `handoff_complete`; a named
+ * check report reads no record. `phase-reminder.ts` reads whether a fix runs, and
  * `phase-reminder.ts` and `pi-legion/src/stall-evidence.ts` read the architect's claim state.
  * The controller's `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold
  * reason, slot and design gate, and the spec step's entry in its gated steps (its step, status and
@@ -2747,6 +2783,8 @@ const ISSUE_RECORD_READS = [
   "slot.index",
   "slot.admittedAt",
   "slot.lentTo",
+  "fix",
+  "fix.dir",
 ] as const;
 
 /**

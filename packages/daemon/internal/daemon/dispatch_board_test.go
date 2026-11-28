@@ -203,6 +203,10 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"artifact not found"}`)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/rating"):
 		b.putRating(key, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), "/rating"), req, w)
+	// A run's commits go to the record's own commits route, which writes the run's identity and
+	// its commits onto the same record, each field once, as a step write does.
+	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/commits"):
+		b.putStep(key, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), "/commits"), req, w)
 	// Before the step route's arm, which takes every other PUT under /steps/ and would make a
 	// record whose id is <id>/experiment.
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/experiment"):
@@ -626,5 +630,51 @@ func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
 	}
 	if after := held(); after != before {
 		t.Errorf("the refused writes changed what the board holds from\n%s\nto\n%s", before, after)
+	}
+}
+
+// A run's commits reach the board on the record's commits route, PUT
+// /api/v1/issues/{key}/steps/{id}/commits, as Dispatch takes them: onto the record id itself, each
+// field once beside what the step writes gave it, and never as a record of an id of its own.
+func TestTheBoardTakesARunsCommitsOntoItsRecord(t *testing.T) {
+	t.Parallel()
+	b := newLiveDispatch(t, "SR2")
+	const key, id = "SR2-1", "00000000-0000-4000-8000-000000000011"
+	put := func(path string, write map[string]any) {
+		t.Helper()
+		write["actor"] = map[string]any{"kind": "session", "id": dispatch.DaemonSession(key)}
+		body, err := json.Marshal(write)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(http.MethodPut, b.url+"/api/v1/issues/"+key+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PUT %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			answer, _ := io.ReadAll(resp.Body)
+			t.Fatalf("PUT %s = %d %s, want 200", path, resp.StatusCode, answer)
+		}
+	}
+	identity := func() map[string]any {
+		return map[string]any{"task": "a", "kind": "step", "step": 1, "role": "implementer", "generation": 1}
+	}
+	put("/steps/"+id, identity())
+	commits := identity()
+	commits["startCommit"], commits["fixCheck"] = "1111111111111111111111111111111111111111", "k-ci"
+	put("/steps/"+id+"/commits", commits)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.stepOrder) != 1 || b.stepOrder[0] != id {
+		t.Fatalf("the board holds the records %v, want %s alone", b.stepOrder, id)
+	}
+	if record := b.steps[id]; record["startCommit"] != commits["startCommit"] || record["fixCheck"] != "k-ci" {
+		t.Fatalf("the record %s = %v, want its start commit and its fix's check", id, record)
 	}
 }

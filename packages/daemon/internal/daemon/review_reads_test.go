@@ -121,10 +121,15 @@ func reviewsStandInWith(t *testing.T, reviews func() string, reads *atomic.Int64
 // reviewReadRuntime is a workflow runtime over pool whose GitHub reads go to api, with the review
 // App's login set on the engine and the runtime as a boot sets both.
 func reviewReadRuntime(pool *store.Pool, api string) *workflowRuntime {
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 10, ReviewAppLogin: reviewReadApp}, quietLogger())
+	return reviewReadRuntimeLogging(pool, api, quietLogger())
+}
+
+// reviewReadRuntimeLogging is reviewReadRuntime whose engine and runtime both log to log.
+func reviewReadRuntimeLogging(pool *store.Pool, api string, log *slog.Logger) *workflowRuntime {
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 10, ReviewAppLogin: reviewReadApp}, log)
 	return &workflowRuntime{
 		pool: pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, engine: engine, handlers: []intake.Handler{engine},
-		tokens: outboxTokens{}, dispatchProject: "CAPTURE", bootID: "test-boot", log: quietLogger(), githubAPI: api, reviewAppLogin: reviewReadApp, repositories: servedAcme(),
+		tokens: outboxTokens{}, dispatchProject: "CAPTURE", bootID: "test-boot", log: log, githubAPI: api, reviewAppLogin: reviewReadApp, repositories: servedAcme(),
 	}
 }
 
@@ -899,5 +904,100 @@ func TestARateLimitOnTheReviewsReadEndsTheRead(t *testing.T) {
 	readCapture(t, reviewReadRuntime(pool, server.URL))
 	if len(paths) != 2 || paths[1] != "/repos/acme/widgets/pulls/"+strings.TrimPrefix(paths[0], "/repos/acme/widgets/pulls/")+"/reviews" {
 		t.Fatalf("the read read %q, want one pull request and then its reviews, and nothing after the rate limit", paths)
+	}
+}
+
+// seedReviewBesideFix gives CAPTURE-1 a plan of one task, `implementer reviewer`, standing at its
+// review, whose run started at captureHead with the record the reviewer's start keeps
+// (workflow's startStep), and, where fix holds, fix 1 of the task, for a check failed at
+// captureHead, running beside that review since after its start, with the review's start marked
+// beside it as the fix's start marks it (workflow's tellStepsOfFix).
+func seedReviewBesideFix(t *testing.T, pool *store.Pool, fix bool) {
+	t.Helper()
+	ctx := context.Background()
+	records := record.NewStore()
+	started := time.Date(2026, 10, 8, 22, 0, 0, 0, time.UTC)
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: "CAPTURE-1", Generation: 1, Version: 1, ArtifactID: "plan-CAPTURE-1", Source: record.PlanSourceOwner,
+			GivenBy: "owner", GivenAt: started}
+		tasks := []record.PlanTask{{Issue: "CAPTURE-1", Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Task a.", State: record.TaskWaiting, FixesCI: true}}
+		steps := []record.PlanStep{
+			{Issue: "CAPTURE-1", Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
+			{Issue: "CAPTURE-1", Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"}}
+		if err := records.PutPlan(ctx, tx, v, tasks, steps); err != nil {
+			return err
+		}
+		if err := records.MoveTask(ctx, tx, "CAPTURE-1", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
+			return err
+		}
+		head, place := captureHead, record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 2}
+		if _, err := records.RaiseStepStarts(ctx, tx, "CAPTURE-1", place, func(starts int64) record.StepRecord {
+			return record.StepRecord{ID: workflow.StepID("CAPTURE-1", 1, place, starts), Task: "a", Step: 2, Kind: record.PlaceStep,
+				Role: "reviewer", Type: "review", Generation: 1, StartedAt: &started, StartCommit: &head}
+		}); err != nil {
+			return err
+		}
+		if !fix {
+			return nil
+		}
+		running := record.TaskFix{Issue: "CAPTURE-1", Generation: 1, Task: "a", Fix: 1, State: record.FixReading, Check: "unit", Head: captureHead, Place: 1}
+		if err := records.PutFix(ctx, tx, running); err != nil {
+			return err
+		}
+		at := started.Add(time.Minute)
+		running.State, running.Entry, running.StartedAt = record.FixRunning, 2, &at
+		if err := records.UpdateFix(ctx, tx, running); err != nil {
+			return err
+		}
+		return records.MarkStepBesideFix(ctx, tx, "CAPTURE-1", place, 1, running.Fix)
+	}); err != nil {
+		t.Fatalf("seed CAPTURE-1's review step and the fix beside it: %v", err)
+	}
+}
+
+// A review step that runs beside a fix ends with the review of the commit it started at, also on
+// the daemon's read of GitHub's list of the pull request's reviews: the reviewer's listed approval
+// whose Legion footer names captureHead, the commit the review step started at, decides its round
+// though the fix moved the pull request to pushedHead, since the read judges it by the commit
+// workflow.Engine.ReviewBesideFix reads, in the transaction that reads the reviewer's session. The
+// control, kept: with no fix beside the review the same approval is passed over at pushedHead, as
+// before.
+func TestAListedReviewOfXDecidesBesideTheFix(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		fix      bool
+		decision string
+	}{
+		{name: "beside the fix", fix: true, decision: "approved"},
+		{name: "the control: with no fix beside the review it is passed over", decision: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool := isolatedOutboxPool(t)
+			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
+			seedReviewBesideFix(t, pool, tc.fix)
+			captureHeadAt(t, pool, pushedHead)
+			seedReviewerSession(t, pool, "CAPTURE", "CAPTURE-1", "ses-reviewer")
+			var reads atomic.Int64
+			api := reviewsStandIn(t, func() string {
+				return "[" + legionReview(5463503611, "APPROVED", pushedHead, "2026-10-08T22:15:40Z", captureHead) + "]"
+			}, &reads).URL
+			var logs bytes.Buffer
+			readCapture(t, reviewReadRuntimeLogging(pool, api, slog.New(slog.NewTextHandler(&logs, nil))))
+			if got := reads.Load(); got != 1 {
+				t.Fatalf("the read read the pull request's reviews %d times, want once", got)
+			}
+			if got, _ := reviewerDecision(t, pool); got != tc.decision {
+				t.Fatalf("the round's recorded decision = %q, want %q; the read logged:\n%s", got, tc.decision, logs.String())
+			}
+			if got, _ := capturePhase(t, pool); (got == phase.Reviewing) == tc.fix {
+				t.Fatalf("after the read CAPTURE-1 stands in %s; beside a fix %v, the approval of the commit the review step started at decides it; the read logged:\n%s",
+					got, tc.fix, logs.String())
+			}
+			if refused := "footer names " + captureHead + ", not the head " + pushedHead; !tc.fix && !strings.Contains(logs.String(), refused) {
+				t.Fatalf("the read logged:\n%s\nwant the approval passed over as %q", logs.String(), refused)
+			}
+		})
 	}
 }

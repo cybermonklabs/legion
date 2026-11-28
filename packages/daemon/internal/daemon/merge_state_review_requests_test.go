@@ -316,7 +316,7 @@ func TestAMergeabilityGitHubNeverComputesIsToldOnItsSecondRead(t *testing.T) {
 // 6049029052).
 func TestAClimbWhoseFirstReadFailsHandsTheHeadToItsBase(t *testing.T) {
 	t.Parallel()
-	rig := newReadRig(t, approvedOnMain, func(int32) pullAnswer { return cleanPull })
+	rig := newReadRig(t, approvedCapture, func(int32) pullAnswer { return cleanPull })
 	rig.refuseREST.Store(true)
 	rig.start(t)
 	testwait.Eventually(t, "the base's read to end the round", func() bool {
@@ -333,23 +333,13 @@ func TestAClimbWhoseFirstReadFailsHandsTheHeadToItsBase(t *testing.T) {
 	}
 }
 
-// approvedOnMain is approvedCapture with the base the pull request's opened event records
-// (workflow's pullRequestOpened), so the record names main before any read of GitHub has answered.
-func approvedOnMain(t *testing.T, pool *store.Pool) {
-	t.Helper()
-	approvedCapture(t, pool)
-	if _, err := pool.Exec(context.Background(), "update pull_requests set base = 'main' where issue = 'CAPTURE-1'"); err != nil {
-		t.Fatalf("record the base: %v", err)
-	}
-}
-
 // After a restart the start read is what reads each issue's pull request, and a round that waits
 // quietly has no handoff coming that would read it again. So a start read that fails - here
 // GitHub's 502, which is no rate limit - hands the record's head to its base's reads, whose read
 // answers clean, and the round ends; nothing injects a read.
 func TestAStartReadThatFailsHandsTheHeadToItsBase(t *testing.T) {
 	t.Parallel()
-	rig := newReadRig(t, approvedOnMain, func(read int32) pullAnswer {
+	rig := newReadRig(t, approvedCapture, func(read int32) pullAnswer {
 		if read == 1 {
 			return unavailablePull
 		}
@@ -375,7 +365,7 @@ func TestAStartReadThatFailsHandsTheHeadToItsBase(t *testing.T) {
 // outlived is told though no read answers; nothing injects the fact.
 func TestABaseReadWhoseMintFailsStillTellsAPersistentNull(t *testing.T) {
 	t.Parallel()
-	rig := newReadRig(t, approvedOnMain, func(int32) pullAnswer { return cleanPull })
+	rig := newReadRig(t, approvedCapture, func(int32) pullAnswer { return cleanPull })
 	concludedOnCode(t, rig.pool)
 	// The record a null read wrote an hour ago: GitHub has not computed whether head code merges.
 	if _, err := rig.pool.Exec(context.Background(), `update pull_requests set merge_state = 'blocked', mergeability = 'UNKNOWN',

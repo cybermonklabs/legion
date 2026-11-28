@@ -1,6 +1,7 @@
-// The client's writes of a step record, of a retro's rating, of the variant of a record's issue
-// and of a plan (PutStep, PutStepRating, PutStepExperiment, PutPlan) against Dispatch's step,
-// rating, experiment and plan routes, as the daemon's outbox sends them.
+// The client's writes of a step record, of a retro's rating, of the variant of a record's issue,
+// of a run's commits and of a plan (PutStep, PutStepRating, PutStepExperiment, PutStepCommits,
+// PutPlan) against Dispatch's step, rating, experiment, commits and plan routes, as the daemon's
+// outbox sends them.
 package dispatch
 
 import (
@@ -62,6 +63,60 @@ func TestPutStepRatingWritesTheRatingOnTheRatingRoute(t *testing.T) {
 		if raw, ok := body[name]; ok {
 			t.Errorf("the body writes %s as %s, want it left out", name, raw)
 		}
+	}
+}
+
+// A run's commits and the check a fix's run is of go to the record's commits route, PUT
+// /api/v1/issues/{key}/steps/{id}/commits, never to the step route, which ignores a member it
+// does not declare and would answer 200 and drop them. The body is the run's identity, which makes
+// the record where its start and end have not landed yet, and the commits under the names the
+// route reads, and no other field of the record's write: the start and the end are the step
+// route's. A commit the run does not name is left out, since Dispatch writes each once.
+func TestPutStepCommitsWritesTheCommitsOnTheCommitsRoute(t *testing.T) {
+	t.Parallel()
+	const id = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
+	started, ended := time.Date(2026, 11, 23, 15, 0, 0, 0, time.UTC), time.Date(2026, 11, 23, 16, 0, 0, 0, time.UTC)
+	session, model, result, report, back := "ses-implementer", "anthropic/claude-opus-5", "passed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", 1
+	write := StepWrite{Task: "a", Step: 1, Kind: "step", Role: "implementer", Type: "implementation",
+		Agent: "legion-leg-leg-1-implementer", Generation: 2, Session: &session, Model: &model, StartedAt: &started,
+		EndedAt: &ended, Result: &result, ReturnedTo: &back, Report: &report}
+	for _, tc := range []struct {
+		name    string
+		commits StepCommits
+		want    map[string]string
+		absent  []string
+	}{
+		{name: "the end of a fix", commits: StepCommits{StartCommit: "1111111111111111111111111111111111111111",
+			EndCommit: "2222222222222222222222222222222222222222", FixCheck: "k-ci"},
+			want: map[string]string{"start_commit": `"1111111111111111111111111111111111111111"`,
+				"end_commit": `"2222222222222222222222222222222222222222"`, "fix_check": `"k-ci"`}},
+		{name: "a start that names its commit alone", commits: StepCommits{StartCommit: "1111111111111111111111111111111111111111"},
+			want: map[string]string{"start_commit": `"1111111111111111111111111111111111111111"`}, absent: []string{"end_commit", "fix_check"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := putRecord(t, "/api/v1/issues/LEG-1/steps/"+id+"/commits", id, func(client *HTTPClient) error {
+				return client.PutStepCommits(context.Background(), "LEG-1", id, write, tc.commits)
+			})
+			want := map[string]string{
+				"task": `"a"`, "step": "1", "kind": `"step"`, "role": `"implementer"`, "type": `"implementation"`,
+				"agent": `"legion-leg-leg-1-implementer"`, "generation": "2", "actor": `{"kind":"session","id":"legion-daemon:LEG"}`,
+			}
+			for name, value := range tc.want {
+				want[name] = value
+			}
+			for name, value := range want {
+				if got := string(body[name]); got != value {
+					t.Errorf("the body writes %s as %q, want %s", name, got, value)
+				}
+			}
+			for _, name := range append([]string{"id", "session", "model", "started_at", "ended_at", "result", "returned_to",
+				"report", "rating", "rating_reason"}, tc.absent...) {
+				if raw, ok := body[name]; ok {
+					t.Errorf("the body writes %s as %s, want it left out", name, raw)
+				}
+			}
+		})
 	}
 }
 

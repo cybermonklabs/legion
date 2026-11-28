@@ -365,6 +365,11 @@ func newReleaseBeforeRig(t *testing.T) *inFlightRig {
 	for _, table := range []string{"plan_steps", "plan_tasks", "issue_plans"} {
 		r.exec("delete from "+table+" where issue = $1", r.control.key)
 	}
+	// Dispatch holds no check of these issues: their heads' sets are empty, so a task's end waits
+	// for no CI (noChecksAt).
+	for _, issue := range r.issues {
+		noChecksAt(t, r.st.Pool(), issue.key, liveRepo, stepRecordsHead)
+	}
 	r.boot()
 	for _, issue := range []*inFlightIssue{r.walks[0], r.control} {
 		r.on(issue.key)

@@ -20,8 +20,8 @@ import { copyOfThisDirectory, rigFunctions } from "./catalog-copy";
 import { HEADS_SCENARIOS, headsCases, isHeadsScenario } from "./heads-scenarios";
 import { fileRowLimit, RIG_STEP, SCRIPT_RUN } from "./test-limit";
 
-// The most a row runs as processes of their own: five rig.sh steps, one for each heads scenario.
-setDefaultTimeout(fileRowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP));
+// The most a row runs as processes of their own: six rig.sh steps, one for each heads scenario.
+setDefaultTimeout(fileRowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP));
 
 const makeDirectory = temporaryDirectories("heads-catalog");
 
@@ -31,6 +31,7 @@ test("the heads scenarios have one canonical membership", () => {
     "reviewer-pass-and-fail",
     "architect-pass-and-fail",
     "ci-pass-and-fail",
+    "fix-judge",
     "tester-reads-no-ci",
   ]);
   expect(headsCases("tester-reads-no-ci")).toEqual(["ci-late", "ci-red"]);

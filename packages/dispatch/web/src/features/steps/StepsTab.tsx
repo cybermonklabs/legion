@@ -19,7 +19,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { type StepRow, stepTasks, stepVariant } from "./steps-model";
+import { type StepCommits, type StepRow, stepTasks, stepVariant } from "./steps-model";
 
 const COLUMNS = [
   "Step",
@@ -31,6 +31,7 @@ const COLUMNS = [
   "Started",
   "Ended",
   "Result",
+  "Commits",
 ] as const;
 
 /** A field the record does not hold: a merge GitHub made has no agent, a run that has not
@@ -149,6 +150,21 @@ function Result({ row }: { row: StepRow }): ReactNode {
   return row satisfies never;
 }
 
+/** The commits the run's task's head was at when the run started and when it ended, each cut to
+ *  ten characters and both whole in the title, or the dash for a record that holds none. A line
+ *  may break after the `..`, as an agent's id breaks at its hyphens, so the column is no wider
+ *  than one commit; each commit stays whole. */
+function Commits({ commits }: { commits: StepCommits | null }): ReactNode {
+  if (commits === null) return NONE;
+  return (
+    <span className="font-mono" title={`${commits.start ?? NONE}..${commits.end ?? NONE}`}>
+      <span className="whitespace-nowrap">{commits.start?.slice(0, 10) ?? NONE}..</span>
+      <wbr />
+      <span className="whitespace-nowrap">{commits.end?.slice(0, 10) ?? NONE}</span>
+    </span>
+  );
+}
+
 /** One task's runs, one row each, in the order the server read them. */
 function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): ReactNode {
   const tableFade = useScrollFadeTrailing();
@@ -184,6 +200,13 @@ function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): 
                 <tr className={`border-b last:border-0 ${borderDefault}`} key={row.id}>
                   <Cell className={`font-medium whitespace-nowrap ${textPrimaryOnSurface}`}>
                     {row.label}
+                    {row.fixOf === null ? null : (
+                      <span
+                        className={`mt-0.5 block w-fit rounded-sm px-1.5 py-0.5 text-xs font-medium ${badgeMed.bg} ${badgeMed.text}`}
+                      >
+                        Fix of {row.fixOf}
+                      </span>
+                    )}
                   </Cell>
                   <Cell className={`whitespace-nowrap ${textPrimaryOnSurface}`}>{row.role}</Cell>
                   <Cell className={`whitespace-nowrap ${textSecondaryOnSurface}`}>
@@ -204,6 +227,9 @@ function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): 
                   </Cell>
                   <Cell className={textPrimaryOnSurface}>
                     <Result row={row} />
+                  </Cell>
+                  <Cell className={textSecondaryOnSurface}>
+                    <Commits commits={row.commits} />
                   </Cell>
                 </tr>
               ))}

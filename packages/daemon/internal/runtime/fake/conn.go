@@ -23,10 +23,14 @@ type Prompt struct {
 	Message    string
 }
 
-// Adoption is one working-copy adoption the daemon asked the agent's side to perform.
+// Adoption is one working-copy adoption the daemon asked the agent's side to perform, with the
+// fix's commit, the fix's own branch and the task's move it named.
 type Adoption struct {
-	Identity runtime.GitIdentity
-	Timeout  time.Duration
+	Identity  runtime.GitIdentity
+	Timeout   time.Duration
+	FixFrom   string
+	MoveTo    string
+	FixBranch string
 }
 
 // WorkspaceWorkRead is one workspace read the daemon asked the agent's side to make.
@@ -61,6 +65,9 @@ type Conn struct {
 	state        runtime.ConnState
 	unresulted   string
 	failures     map[string]error
+	// olderShim is whether AdoptWorkingCopy answers as a shim built before an adoption named a
+	// fix's commit and the task's move (AnswerAdoptionsAsAnOlderShim).
+	olderShim bool
 }
 
 // NewConn is a connection that accepts everything and reports no turn in flight.
@@ -122,11 +129,28 @@ func (c *Conn) Shutdown(_ context.Context) error {
 	return c.failures["Shutdown"]
 }
 
-func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, timeout time.Duration) error {
+// AdoptWorkingCopy records the adoption with its members and answers a scripted failure, else the
+// echo a shim of this release gives (Echo), else, told to answer as an older shim, none.
+func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, adoption runtime.Adoption, timeout time.Duration) (runtime.Adopted, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.adoptions = append(c.adoptions, Adoption{Identity: id, Timeout: timeout})
-	return c.failures["AdoptWorkingCopy"]
+	c.adoptions = append(c.adoptions, Adoption{Identity: id, Timeout: timeout, FixFrom: adoption.FixFrom, MoveTo: adoption.MoveTo, FixBranch: adoption.FixBranch})
+	if err := c.failures["AdoptWorkingCopy"]; err != nil {
+		return runtime.Adopted{}, err
+	}
+	if c.olderShim {
+		return runtime.Adopted{}, nil
+	}
+	return Echo(adoption), nil
+}
+
+// AnswerAdoptionsAsAnOlderShim makes every later AdoptWorkingCopy answer as a shim built before
+// an adoption named a fix's commit and the task's move: ok, with neither echo. false puts back the
+// shim of this release.
+func (c *Conn) AnswerAdoptionsAsAnOlderShim(older bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.olderShim = older
 }
 
 // Compact answers the daemon asking Oh My Pi to shorten the session, recording what it asked

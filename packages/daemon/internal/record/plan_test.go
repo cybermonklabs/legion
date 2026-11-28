@@ -32,7 +32,7 @@ func ownersPlan(issue string, generation uint64, version int, givenBy claim.Toke
 	v := PlanVersion{Issue: issue, Generation: generation, Version: version, ArtifactID: planAuthor, Source: PlanSourceOwner, GivenBy: givenBy, GivenAt: at}
 	tasks := []PlanTask{{
 		Issue: issue, Generation: generation, Task: "a", PlanVersion: version, BlockText: "Build the widget.",
-		Needs: []string{"b"}, PartOf: "widgets", OwnerRole: "architect", Merges: true, StepsByDefault: true,
+		Needs: []string{"b"}, PartOf: "widgets", OwnerRole: "architect", Merges: true, StepsByDefault: true, FixesCI: true,
 		State: TaskWaiting,
 	}}
 	steps := []PlanStep{
@@ -760,13 +760,13 @@ func TestThePlansTaskIsItsOneTask(t *testing.T) {
 	}
 }
 
-// An owner's plan holds an issue for two more reasons: its owner stopped its task, and it waits
-// before its retro for the issues beneath it. Each is written and read back as any reason of a
-// hold is.
+// An owner's plan holds an issue for four more reasons: its owner stopped its task, it waits
+// before its retro for the issues beneath it, a fix of its task runs, and a check that a CI job
+// runs has not passed at its head. Each is written and read back as any reason of a hold is.
 func TestAHoldKeepsEachNewReason(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
-	for _, reason := range []HoldReason{HoldTaskStopped, HoldForChildren} {
+	for _, reason := range []HoldReason{HoldTaskStopped, HoldForChildren, HoldForFix, HoldForCI} {
 		issue := issueFixture("LEGION-" + string(reason))
 		issue.Phase, issue.Hold = phase.Held, &Hold{From: phase.Retro, Reason: reason}
 		inTx(t, st, func(tx pgx.Tx) {
@@ -778,7 +778,8 @@ func TestAHoldKeepsEachNewReason(t *testing.T) {
 			}
 		})
 	}
-	if HoldTaskStopped != "task-stopped" || HoldForChildren != "children" {
-		t.Fatalf("the reasons are %q and %q, want task-stopped and children, the values the state serves", HoldTaskStopped, HoldForChildren)
+	if HoldTaskStopped != "task-stopped" || HoldForChildren != "children" || HoldForFix != "fix" || HoldForCI != "ci" {
+		t.Fatalf("the reasons are %q, %q, %q and %q, want task-stopped, children, fix and ci, the values the state serves",
+			HoldTaskStopped, HoldForChildren, HoldForFix, HoldForCI)
 	}
 }

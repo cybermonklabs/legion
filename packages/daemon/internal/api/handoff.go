@@ -276,7 +276,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// run is the issue's generation, are untouched.
 	var notCurrent string
 	if c.ServingGeneration == 0 && (c.Pending == nil || (c.Pending.ConfirmedAt.IsZero() && c.Pending.DeliveredAt.IsZero())) {
-		if notCurrent = heldTaskNotCurrent(grant.Issue, issue.Generation, issue.Phase, c.Pending); notCurrent == "" {
+		if notCurrent = heldTaskNotCurrent(grant.Issue, issue.Generation, issue.Phase, position.fix, c.Pending); notCurrent == "" {
 			serving, entry = c.Pending.Generation, c.Pending.Entry
 		} else {
 			serving, entry = 0, 0
@@ -284,7 +284,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	if serving == 0 {
 		if notCurrent == "" {
-			notCurrent = heldTaskNotCurrent(grant.Issue, issue.Generation, issue.Phase, c.Pending)
+			notCurrent = heldTaskNotCurrent(grant.Issue, issue.Generation, issue.Phase, position.fix, c.Pending)
 		}
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_NO_RUN", noRunCompletion(grant.Issue, issue.Generation, issue.Phase, notCurrent))
 		return
@@ -303,6 +303,16 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
+	// A fix runs the task's first implementation step again beside the step the issue stands at
+	// (record.TaskFix), and while it runs its task is the implementer's work whatever phase the
+	// issue is in (record.PhaseHolds). The implementer's completion of the entry the fix raised,
+	// the entry the fix's task carries, is the fix's: it is placed at the fix's step, phase
+	// implementing, its fact names the fix, and the workflow ends the fix with it rather than the
+	// step the issue stands at. Any other completion is placed where the issue stands, as before.
+	fix := 0
+	if position.fix != nil && entry == position.fix.Entry {
+		fix = position.fix.Fix
+	}
 	// A tester's completion names the head it tested: the testing move reads Dispatch's check
 	// states at that head (workflow's decideTesting) and at no other, and the test record is the
 	// one witness of it, since the pull request's head can have moved while the tester worked. The
@@ -317,15 +327,20 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	// The phase this completion is of is phase.Of's, and the issue's for the architect, which
 	// leaves none. The record a phase with a handoff ends with is read back and held to the
-	// completion before anything is recorded: always when the role works the issue's phase, and
-	// for a phase it left only when the completion names one. A completion of a left phase that
-	// names none is the engine's to decide (workflow's leftItsPhase), which answers
+	// completion before anything is recorded: always when the role works the phase the completion
+	// is placed at, and for a phase it left only when the completion names one. A completion of a
+	// left phase that names none is the engine's to decide (workflow's leftItsPhase), which answers
 	// HANDOFF_NOT_CURRENT_PHASE when the role's completion of that phase already stands or no role
 	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
-	// phase that names one is refused.
-	of := phase.Of(grant.Role, issue.Phase)
+	// phase that names one is refused. A fix's completion is placed at implementing, the phase of
+	// the step the fix runs, whatever phase the issue stands in: the implementer works that step,
+	// so it ends with its implement record always.
+	of, at := phase.Of(grant.Role, issue.Phase), issue.Phase
 	if of == "" {
 		of = issue.Phase
+	}
+	if fix > 0 {
+		of, at = phase.Implementing, phase.Implementing
 	}
 	// The rating of the plan is held here to its form alone (planRatingOf), which no state of the
 	// issue changes; which completion ends the retro, and so carries a rating or must, is the
@@ -340,7 +355,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	word, writer, handoffPhase := phase.Handoff(of)
 	namesRecord := req.HandoffID != "" || req.HandoffVersion != 0
-	recordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)
+	recordBacked := handoffPhase && writer == grant.Role && (of == at || namesRecord)
 	var statesSerial int64
 	switch {
 	case recordBacked:
@@ -388,6 +403,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// issue used. An issue with no plan rows keeps today's key, so a completion retried across the
 	// upgrade keeps its key.
 	//
+	// A fix's completion is placed at the fix's step, so the key names phase implementing where it
+	// names the issue's phase for every other completion, and the fix after the task's pass: the
+	// implementer's completion of the step the fix runs again at the same pass is another fact,
+	// and so is the next fix's.
+	//
 	// The step a tester's completion names for its task to return to (returnTo) ends the key when
 	// the completion names one, for the reason a tester's verdict stood in it before
 	// CheckStatesContract: the workflow commits its refusal of a step it may not name
@@ -397,11 +417,14 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
 	}
-	counted := fmt.Sprint(pass)
+	counted, placed := fmt.Sprint(pass), "phase "+string(at)
 	if position.task != "" {
 		counted = position.task + ":" + counted
 	}
-	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported)
+	if fix > 0 {
+		counted, placed = fmt.Sprintf("%s:fix%d", counted, fix), fmt.Sprintf("fix %d of phase %s", fix, at)
+	}
+	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, at, counted, reported)
 	returnTo := 0
 	if req.ReturnTo != nil {
 		returnTo = *req.ReturnTo
@@ -421,15 +444,15 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
 	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Commit: req.Commit, HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, StatesSerial: statesSerial,
-		PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract, ReturnTo: returnTo})
+		PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract, ReturnTo: returnTo, Fix: fix})
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
 	}
 	if result.Duplicate {
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_ALREADY_RECORDED", fmt.Sprintf(
-			"the %s completion of phase %s (pass %d through it) %s was already received; this call changed nothing",
-			grant.Role, issue.Phase, pass, received))
+			"the %s completion of %s (pass %d through it) %s was already received; this call changed nothing",
+			grant.Role, placed, pass, received))
 		return
 	}
 	if result.Refusal != nil {
@@ -543,7 +566,9 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 
 // heldTaskNotCurrent says why the task a claim is holding is not the issue's current task — it is
 // of another run, of another phase, or there is no task at all — and answers "" when it is that
-// task: one of the issue's own generation and its own phase. The one rule has two readers, and
+// task: one of the issue's own generation and its own phase, or the task of fix, the fix that runs
+// beside the issue's step (completionPosition.fix, nil for none), which names phase implementing
+// and the fix's entry whatever phase the issue stands in. The one rule has two readers, and
 // this is the one place it is written. The completion route's fallback to the held task's run and
 // entry applies exactly on the empty answer (answerCompletion), and the HANDOFF_NO_RUN
 // refusal is written from the answer itself (noRunCompletion), so a change to which held task may
@@ -555,7 +580,7 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 // delivery of a relaunch's record (supervise.Delivery.Relaunch), which carries the sentence of
 // what the relaunch ended and no work; the reason says which, so that delivery is said as what it
 // is rather than read as a task of no run, which is an operator's own.
-func heldTaskNotCurrent(issue string, current uint64, p phase.Phase, pending *supervise.Delivery) string {
+func heldTaskNotCurrent(issue string, current uint64, p phase.Phase, fix *record.TaskFix, pending *supervise.Delivery) string {
 	switch {
 	case !supervise.HoldsTask(pending):
 		if pending == nil {
@@ -569,6 +594,8 @@ func heldTaskNotCurrent(issue string, current uint64, p phase.Phase, pending *su
 			run = "no run's (an operator's own task carries no generation)"
 		}
 		return fmt.Sprintf("the task this claim holds (%s) is %s, and %s is on generation %d", pending.ID, run, issue, current)
+	case fix != nil && pending.Phase == phase.Implementing && pending.Entry == fix.Entry:
+		return ""
 	case pending.Phase != p:
 		of := "names no phase"
 		if pending.Phase != "" {
@@ -661,11 +688,23 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // that entry's task, so no delivery can carry an entry the row does not already name.
 //
 // An entry behind the row's is refused (staleEntry) unless behindEntryClause takes it.
+//
+// A fix is asked as any step is. While a fix runs beside the issue's step (position.fix), the
+// implementer works the step the fix runs again, of phase implementing, whatever phase the issue
+// stands in, and the fix's task is owed to its claim and sent while the fix runs
+// (record.PhaseHolds). So the fence reads the implementer's completion at implementing: one behind
+// the fix's entry is refused HANDOFF_STALE_ENTRY, whose words send the worker to that task, never
+// HANDOFF_NOT_CURRENT_PHASE, which would say it works no step of the issue. The fix's entry asks
+// for the step's work to be done again at the head its check failed at, so no head takes such a
+// completion, as none takes one behind an entry a move back raised.
 func entryFence(grant credential.Grant, position completionPosition, entry int64, commit string, pending *supervise.Delivery) *intake.Refusal {
 	if entry == 0 || position.entry == 0 || entry == position.entry {
 		return nil
 	}
 	p := position.issue.Phase
+	if position.fix != nil {
+		p = phase.Implementing
+	}
 	if p == phase.Admitted || phase.RoleFor(p) != grant.Role {
 		return intake.NotCurrentPhase(grant.Role, p, grant.Issue)
 	}
@@ -675,7 +714,15 @@ func entryFence(grant credential.Grant, position completionPosition, entry int64
 	}
 	// The role works p, so the record p ends with, if any, is this role's (phase.Handoff).
 	_, _, recordBacked := phase.Handoff(p)
-	if clause := behindEntryClause(recordBacked, commit, position.pullRequest, position.entryMovedBack); clause != "" {
+	again := ""
+	switch {
+	case position.fix != nil && position.fix.Entry == position.entry:
+		again = fmt.Sprintf("the entry the phase is on is fix %d of the task, for check %s failed at head %s",
+			position.fix.Fix, position.fix.Check, position.fix.Head)
+	case position.entryMovedBack:
+		again = movedBackAgain
+	}
+	if clause := behindEntryClause(recordBacked, commit, position.pullRequest, again); clause != "" {
 		return &intake.Refusal{Status: http.StatusConflict, Code: staleEntryCode,
 			Message: staleEntry(grant.Issue, grant.Role, p, position.entry, entry, pending, clause)}
 	}
@@ -724,19 +771,22 @@ const staleEntryInstruction = "End this turn without completing. The task of the
 // other commit is a verdict on a head the record has left — the head the entry before this one was
 // for among them.
 //
-// Unless the move that entered the phase again moved it back (movedBack). The architect's move
-// back and the reviewer's request for changes send the work back at the head that is already
-// there, so the two heads read alike and the heads alone would take this completion — over an
-// entry that exists to have the work done again, which the verdict of the entry before it is
-// exactly what must not stand in for. The record says which it was, written onto the entry by the
-// transition that raised it, so the fence reads the move rather than guessing at it from the
-// heads (record.PhaseRow.EntryMovedBack, which says why no count can tell it either).
+// Unless the entry the phase is on was handed out for its work to be done again (again, "" for an
+// entry that was not). The architect's move back and the reviewer's request for changes send the
+// work back at the head that is already there (movedBackAgain), and so does a fix, which runs the
+// task's first implementation step again at the head its check failed at: the two heads read
+// alike and the heads alone would take this completion — over an entry that exists to have the
+// work done again, which the verdict of the entry before it is exactly what must not stand in
+// for. The record says which it was, written onto the entry by the transition that raised it, or
+// onto the fix that raised it (record.TaskFix.Entry), so the fence reads the move rather than
+// guessing at it from the heads (record.PhaseRow.EntryMovedBack, which says why no count can tell
+// it either).
 //
 // Otherwise the clause is the commit the completion gave, or that it gave none, against the head
-// the record holds for the issue, or that it holds no pull request at all; and, where movedBack,
-// that the entry the phase stands on was raised by a move back, which is what refuses this
+// the record holds for the issue, or that it holds no pull request at all; and, where again names
+// one, why the entry the phase stands on was handed out again, which is what refuses this
 // completion whatever those two heads read.
-func behindEntryClause(recordBacked bool, commit string, pr *record.PullRequest, movedBack bool) string {
+func behindEntryClause(recordBacked bool, commit string, pr *record.PullRequest, again string) string {
 	if !recordBacked {
 		return "this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is"
 	}
@@ -744,7 +794,7 @@ func behindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 	if pr != nil {
 		head = pr.HeadSHA
 	}
-	if !movedBack && commit != "" && commit == head {
+	if again == "" && commit != "" && commit == head {
 		return ""
 	}
 	gave := "this completion names no commit"
@@ -756,11 +806,14 @@ func behindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 		holds = "the pull request the record holds is at head " + head
 	}
 	clause := gave + " while " + holds
-	if movedBack {
-		clause += ", and the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it"
+	if again != "" {
+		clause += ", and " + again + ", which asks for this phase's work to be done again, so no verdict on either head answers for it"
 	}
 	return clause
 }
+
+// movedBackAgain is why an entry a move back raised was handed out (behindEntryClause's again).
+const movedBackAgain = "the move that handed the phase out again moved the issue back"
 
 // staleEntry is the refusal of a completion of a phase entry the issue's phase has moved past:
 // the role was given this phase's work again — the issue left the phase and came back, or the

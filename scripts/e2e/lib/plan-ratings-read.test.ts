@@ -91,15 +91,16 @@ function finished(
     ended_at: start === null ? null : at(end),
     duration_seconds: seconds,
     failed_steps: failed,
+    fixes: 0,
     experiment: null,
     variant: null,
   };
 }
 
 // A whole answer: an issue its owner planned in two tasks, rated once; an issue rated twice whose
-// second reason holds a quotation mark and a line break; the issue rated once; an issue its owner
-// planned in one task, unrated; and an issue Legion never ran, or ran before the release that
-// records each step, which lists no plan, no rating and no time.
+// second reason holds a quotation mark and a line break; the issue rated once, whose CI checks
+// two fixes fixed; an issue its owner planned in one task, unrated; and an issue Legion never ran,
+// or ran before the release that records each step, which lists no plan, no rating and no time.
 const answer: ProjectPlans = {
   project,
   issues: [
@@ -122,14 +123,17 @@ const answer: ProjectPlans = {
       3300,
       0
     ),
-    finished(
-      key,
-      "2026-11-20T11:20:00.123456Z",
-      planOf(key),
-      [[4, "The plan fit the work; the review sent it back once."]],
-      8400,
-      1
-    ),
+    {
+      ...finished(
+        key,
+        "2026-11-20T11:20:00.123456Z",
+        planOf(key),
+        [[4, "The plan fit the work; the review sent it back once."]],
+        8400,
+        1
+      ),
+      fixes: 2,
+    },
     finished("INFRA-30", "2026-11-19T10:00:00Z", planOf("INFRA-30", [["implementer"]]), [], 300, 0),
     finished("INFRA-7", "2026-11-01T08:00:00Z", null, [], null, 0),
   ],
@@ -235,7 +239,7 @@ describe("plan-ratings-read.sh", () => {
 
   test("an issue drawn into an experiment's group passes, exit 0, naming its variant, and the issues of no group still read", () => {
     expect(grouped.find((line) => line.startsWith(`${key} `))).toEndWith(
-      " failed steps 1 variant planning/b"
+      " failed steps 1 fixes 2 variant planning/b"
     );
     const judged = read(printed(grouped));
     expect(judged.stdout).toContain(

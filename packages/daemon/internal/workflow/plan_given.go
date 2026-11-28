@@ -208,9 +208,18 @@ type writtenVersion struct {
 
 // writeVersion stores fact's version as the version in force (givenRows): each task it leaves as
 // it was keeps its steps and where it stands, each task it changes takes the steps its block now
-// names, and each task it removes is deleted. It answers what it read of the version before.
+// names, and each task it removes is deleted. A task the version adds takes whether its run takes
+// a fix (record.Store.RunFixesCI), read before any task is removed, and a task the generation
+// holds keeps its own (PutPlan). It answers what it read of the version before.
 func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion) (writtenVersion, error) {
 	version, tasks, steps := givenRows(fact, given.stored, given.changed, e.cfg.DefaultSteps, e.now())
+	fixesCI, err := e.store.RunFixesCI(ctx, tx, fact.Issue, fact.Generation)
+	if err != nil {
+		return writtenVersion{}, err
+	}
+	for i := range tasks {
+		tasks[i].FixesCI = fixesCI
+	}
 	var removed []string
 	var written writtenVersion
 	if given.stored != nil {
@@ -225,6 +234,13 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 		}
 	}
 	if len(removed) > 0 {
+		// A task the version removes runs no step again: the branches beside its fixes go, named
+		// by the task's id before its rows are deleted (queueBesideDelete).
+		for _, task := range removed {
+			if err := e.queueBesideDelete(ctx, tx, record.Issue{Key: fact.Issue, Generation: fact.Generation}, task); err != nil {
+				return writtenVersion{}, err
+			}
+		}
 		if err := e.store.DeleteTasks(ctx, tx, fact.Issue, fact.Generation, removed); err != nil {
 			return writtenVersion{}, err
 		}

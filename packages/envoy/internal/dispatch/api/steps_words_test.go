@@ -10,10 +10,10 @@ import (
 )
 
 // A struct tag cannot name a constant, so the enum tags the OpenAPI document reads off the step
-// route's body and its answer spell the words of a step record out. Each is held here to the words
-// contracts gives them (STEP_KINDS, STEP_RESULTS), which Dispatch's store and the Legion daemon
-// read, so the document never names a word the store or the daemon does not hold. The answer's
-// result is "" too, for a run that still runs.
+// routes' bodies and their answer spell the words of a step record out. Each is held here to the
+// words contracts gives them (STEP_KINDS, STEP_RESULTS), which Dispatch's store and the Legion
+// daemon read, so the document never names a word the store or the daemon does not hold. The
+// answer's result is "" too, for a run that still runs.
 func TestTheStepRouteNamesContractsWords(t *testing.T) {
 	t.Parallel()
 	kinds := strings.Join([]string{contracts.StepKindStep, contracts.StepKindRetro, contracts.StepKindMerge}, ",")
@@ -25,6 +25,7 @@ func TestTheStepRouteNamesContractsWords(t *testing.T) {
 	}{
 		{reflect.TypeFor[stepRecordInput](), "Kind", kinds},
 		{reflect.TypeFor[stepRecordInput](), "Result", results},
+		{reflect.TypeFor[stepCommitsInput](), "Kind", kinds},
 		{reflect.TypeFor[model.StepRecord](), "Kind", kinds},
 		{reflect.TypeFor[model.StepRecord](), "Result", "," + results},
 	} {

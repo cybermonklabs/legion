@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -433,10 +434,11 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 	r.log.Warn("wake: a released pod's resume stands open with no process behind it; this wake resumes it", attrs...)
 }
 
-// armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
-// worker of the pod's open phase (workflow.OpenPhaseRole). An architect gets none — nothing of
-// its own is due, and a sub-architect woken for nothing would hold a pod open for the backstop
-// period — and neither does an issue whose phase no role works.
+// armBackstops arms the backstops of a release that completed: backstop_minutes from now, for each
+// worker of the pod's open phase (workflow.OpenRoles), the worker of the issue's phase and the
+// implementer while a fix runs beside its step. An architect gets none — nothing of its own is
+// due, and a sub-architect woken for nothing would hold a pod open for the backstop period — and
+// neither does an issue whose phase no role works and beside which no fix runs.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back. A backstop of an issue that waits for its admission
@@ -449,8 +451,8 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if r.backstop <= 0 {
 		return nil
 	}
-	role := workflow.OpenPhaseRole(issue.Phase)
-	if role == "" {
+	roles := workflow.OpenRoles(issue)
+	if len(roles) == 0 {
 		return nil
 	}
 	released, err := r.trees.ReleasedClaimsIn(ctx, r.project, issue.Key)
@@ -458,14 +460,16 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 		return err
 	}
 	for _, c := range released {
-		if c.Role != role || c.ServingGeneration != issue.Generation {
+		if !slices.Contains(roles, c.Role) || c.ServingGeneration != issue.Generation {
 			continue
 		}
 		due := r.now().UTC().Add(r.backstop)
 		r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",
-			"issue", issue.Key, "role", role, "due", due.Format(time.RFC3339))
-		return r.trees.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: r.project, Issue: issue.Key,
-			Role: role, DueAt: due})
+			"issue", issue.Key, "role", c.Role, "due", due.Format(time.RFC3339))
+		if err := r.trees.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: r.project, Issue: issue.Key,
+			Role: c.Role, DueAt: due}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

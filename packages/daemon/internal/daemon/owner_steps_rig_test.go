@@ -107,7 +107,8 @@ func newOwnerStepsRig(t *testing.T, proof liveProof, dispatch *scratchDispatch, 
 // seedAdmitted records the walk's issue as the daemon holds a root its architect has just begun:
 // handed to Legion at admitted, its lifecycle under the workflow, no design gate registered, no
 // pull request, and its architect's claim a launch a previous daemon began and never recorded,
-// which the boot relaunches.
+// which the boot relaunches. Dispatch holds no check of it at stepRecordsHead, the head its pull
+// request opens at (noChecksAt), so its task's end waits for no CI.
 func (r *ownerStepsRig) seedAdmitted(rank string, seq int64) {
 	t := r.t
 	t.Helper()
@@ -121,6 +122,7 @@ func (r *ownerStepsRig) seedAdmitted(rank string, seq int64) {
 	}); err != nil {
 		t.Fatalf("seed %s: %v", r.key, err)
 	}
+	noChecksAt(t, r.st.Pool(), r.key, liveRepo, stepRecordsHead)
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
 	}

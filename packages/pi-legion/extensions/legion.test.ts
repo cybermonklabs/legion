@@ -3165,6 +3165,115 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(dispatchHosts).toEqual(["profile.dispatch.example"]);
   });
 
+  // The wrapper the extension hands the legion tool passes every argument on to the pane's report
+  // (`handoffReport` in legion.ts), the directory of a running fix's working copy among them. So a
+  // fix's completion is read in that working copy: its newest implement record names the commit
+  // pushed from there. The pane's own workspace stands on the root commit, which no remote
+  // carries, so a completion read there is refused before anything is posted.
+  test("a fix's handoff_complete reports the commit its own working copy pushed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "legion-fix-copy-"));
+    temporaryPaths.push(root);
+    const vcs = { PATH: process.env.PATH ?? "", ...versionControlEnvironment(jjHomeDirectory) };
+    const run = async (cwd: string, ...argv: string[]): Promise<string> => {
+      const child = Bun.spawn(argv, { cwd, env: vcs, stdout: "pipe", stderr: "pipe" });
+      const [code, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout as ReadableStream<Uint8Array>).text(),
+        new Response(child.stderr as ReadableStream<Uint8Array>).text(),
+      ]);
+      if (code !== 0) throw new Error(`${argv.join(" ")} exited ${code}: ${stderr}`);
+      return stdout.trim();
+    };
+    const origin = path.join(root, "origin.git");
+    const fixDir = path.join(root, "workspace-fix");
+    await run(root, "git", "init", "--bare", "--quiet", origin);
+    await run(root, "jj", "git", "init", fixDir);
+    await run(fixDir, "jj", "git", "remote", "add", "origin", origin);
+    await writeFile(path.join(fixDir, "fix.txt"), "fixed\n");
+    await run(fixDir, "jj", "commit", "-m", "fix: the failed check");
+    await run(fixDir, "jj", "bookmark", "set", "legion/REPO-43", "-r", "@-");
+    await run(fixDir, "jj", "git", "push", "--bookmark", "legion/REPO-43");
+    const pushed = await run(fixDir, "jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id");
+    const handoff = {
+      id: "6b1f0c2e-8d4a-4e7b-9c3f-2a5d1e0b7c84",
+      issue_key: "REPO-43",
+      phase: "implement",
+      version: 1,
+      author: { kind: "agent", session_id: "ses_fix" },
+      created_at: "2026-11-23T07:30:00Z",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        phase: "implement",
+        issue: "REPO-43",
+        head: pushed,
+      }),
+    };
+    process.env.DISPATCH_URL = "http://dispatch.test";
+    process.env.DISPATCH_TOKEN = fixtureSecret("dsp");
+    const pane = await bootPane({
+      role: "implementer",
+      issue: "REPO-43",
+      sessionId: "ses_fix",
+      workspace: await createJjWorkspace(),
+      extraRoutes: (url) => {
+        if (url.pathname === "/legion/v1/issues/REPO-43/record") {
+          return Response.json({
+            key: "REPO-43",
+            generation: 2,
+            phase: "reviewing",
+            status: "needs_review",
+            repo: "acme/widgets",
+            defaultBranch: "main",
+            workers: {},
+            fix: {
+              task: "a",
+              step: 1,
+              check: "unit",
+              head: pushed,
+              dir: fixDir,
+              entry: 2,
+              givenEntry: 2,
+            },
+          });
+        }
+        if (url.pathname === "/legion/v1/grants") {
+          return Response.json({ grantId: "grant-fix", expiresAt: "2099-01-01T00:00:00Z" });
+        }
+        if (url.pathname === "/legion/v1/handoff/complete") return Response.json({});
+        if (url.pathname === "/api/v1/issues/REPO-43/handoffs/implement/latest") {
+          return Response.json(handoff);
+        }
+        return undefined;
+      },
+    });
+    const legion = pane.tools.find((tool) => tool.name === "legion");
+    if (legion === undefined) throw new Error("the legion tool was not registered");
+
+    const result = await legion.execute(
+      "call-fix",
+      { op: "handoff_complete", summary: "Fixed." },
+      undefined,
+      undefined,
+      pane.context
+    );
+
+    expect(result).toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+    expect(
+      pane.requests
+        .filter((request) => request.path === "/legion/v1/handoff/complete")
+        .map((request) => request.body)
+    ).toEqual([
+      {
+        grantId: "grant-fix",
+        summary: "Fixed.",
+        verdict: "",
+        commit: pushed,
+        handoffId: handoff.id,
+        handoffVersion: handoff.version,
+      },
+    ]);
+  }, 60_000);
+
   // The reader behind the production check of a deployment's idle release: the pane's own claim
   // and its secret, which the registration gave this process and no file holds, reach the
   // daemon's route, and the agent gets the window counted.

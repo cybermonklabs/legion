@@ -18,12 +18,14 @@ const acceptingCheck = "ci"
 
 // seedAccepting seeds LEGION-208 in accepting on an open pull request at head, its implementer's,
 // reviewer's and merger's phase rows as the review round left them: the reviewer's round completed
-// and approved at head.
+// and approved at head. Dispatch holds no check of the issue at head (noChecksAt), so the
+// sign-off's move into the retro waits for no CI.
 func seedAccepting(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Accepting, Generation: 1, Status: "needs_review", Rank: "U"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head",
 		CheckedHead: "head", CheckRuns: []record.AttemptRun{{Name: acceptingCheck, ID: 1}}, Failing: []string{}})
+	noChecksAt(t, pool, "LEGION-208", "sjawhar/legion", "head")
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", HandoffCommit: "implement-1"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed",
 		Decision: &record.ReviewDecision{State: "approved", Head: "head"}})

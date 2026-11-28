@@ -28,10 +28,9 @@ if (failures.length > 0) {
 
 /**
  * Removes one tree, making every directory in it writable, searchable and readable first.
- * `rm` alone fails on a tree a test made read-only on purpose, and a test can make one without
- * meaning to: Go's module cache writes 0555 directories and 0444 files, so a suite that runs `go`
- * under its temporary directory leaves a tree nothing can unlink. It removes asynchronously, so a
- * removal waiting on a loaded disk holds the hook alone, never the process's event loop.
+ * `rmSync` alone fails on a tree a test made read-only on purpose, and a test can make one
+ * without meaning to: Go's module cache writes 0555 directories and 0444 files, so a suite that
+ * runs `go` under its temporary directory leaves a tree nothing can unlink.
  */
 function removeTree(directory: string): void {
   makeWritable(directory);
@@ -40,16 +39,16 @@ function removeTree(directory: string): void {
 
 /** `chmod -R u+rwx` on a tree's directories, following no symlink. A path already gone is
  * nothing to do. */
-async function makeWritable(path: string): Promise<void> {
-  const entry = await makeSelfWritable(path);
+function makeWritable(path: string): void {
+  const entry = makeSelfWritable(path);
   if (entry === undefined || !entry.isDirectory()) return;
   let entries: string[];
   try {
-    entries = await readdir(path);
+    entries = readdirSync(path);
   } catch {
     return;
   }
-  for (const name of entries) await makeWritable(join(path, name));
+  for (const name of entries) makeWritable(join(path, name));
 }
 
 /**
@@ -60,10 +59,10 @@ async function makeWritable(path: string): Promise<void> {
  * holding it, never on the file, and a file in a temporary tree can be a hard link to one
  * outside it, whose mode is the same inode's.
  */
-async function makeSelfWritable(path: string): Promise<Stats | undefined> {
+function makeSelfWritable(path: string): Stats | undefined {
   let entry: Stats;
   try {
-    entry = await lstat(path);
+    entry = lstatSync(path);
   } catch {
     return undefined;
   }
@@ -73,9 +72,9 @@ async function makeSelfWritable(path: string): Promise<Stats | undefined> {
   const wanted = mode | 0o700;
   if (wanted !== mode) {
     try {
-      await chmod(path, wanted);
+      chmodSync(path, wanted);
     } catch {
-      // A mode this user cannot set is left to rm to report.
+      // A mode this user cannot set is left to rmSync to report.
     }
   }
   return entry;

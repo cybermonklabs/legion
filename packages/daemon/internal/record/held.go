@@ -76,6 +76,23 @@ const (
 	// a gap and reads unclassified. It stands beside children_before_retro, for the same reasons;
 	// the two are never true of one issue, since an issue holds one hold reason.
 	HeldTaskStopped HeldReason = "task_stopped"
+	// HeldFixRunning is an issue whose task's last step passed and that is held before its retro
+	// while a fix of its task reads its failed job or runs (HoldForFix, held where it keeps no
+	// slot: KeepsSlot). heldBy is no issue: it is the check the fix was started for and the head
+	// that check failed at (LineFacts.EndHolds). The fix's end ends this hold, and the retro starts
+	// once nothing else holds the task's end (workflow's StartHeldRetro). A hold for a fix from a
+	// step that keeps its slot, which a step beside the fix waits on, stands in the active set, so
+	// one that keeps its slot and holds none is a gap and reads unclassified, as a stopped task does.
+	HeldFixRunning HeldReason = "fix_running"
+	// HeldCIAtHead is an issue whose task's last step passed and that is held before its retro
+	// until each check a CI job runs passes at its task's head (HoldForCI). heldBy is no issue: it
+	// is each such check that has not passed at the head yet, in the order of the head's set
+	// (LineFacts.EndHolds), and nothing while the daemon holds no set of checks at that head. Those
+	// checks passing at the head end this hold; a failure starts a fix where the task has one, and
+	// the issue then reads fix_running. Both words stand beside task_stopped, for the reasons
+	// children_before_retro gives; an issue holds one hold reason, so no two of the four are true
+	// of one issue.
+	HeldCIAtHead HeldReason = "ci_at_head"
 	// HeldAtWork is the ladder's `!KeepsSlot(issue)` for an issue not standing in held: an issue
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
 	// no other issue holds. KeepsSlot is InWorkflow and a phase that keeps a slot
@@ -84,8 +101,9 @@ const (
 	// sign-off, retro and merge run on no slot at all. An issue held from one of those
 	// phases keeps no slot either, but its hold stopped its work, so it does not read this word:
 	// a parent held there for its children reads children_before_retro, a stopped task reads
-	// task_stopped, and any other hold falls to unclassified (HeldReasonOf states why at the
-	// clause). Of the issues that read it, one whose tree runs is served no `why` (projection's
+	// task_stopped, a task held at its end reads fix_running or ci_at_head, and any other hold
+	// falls to unclassified (HeldReasonOf states why at the clause). Of the issues that read it,
+	// one whose tree runs is served no `why` (projection's
 	// atWorkInSlotlessPhase), so `why` serves this word's sentence only to a member in accepting, retro or merging of
 	// a tree that runs nothing. This is the one statement of that; every other reader points here.
 	HeldAtWork HeldReason = "at_work"
@@ -118,6 +136,8 @@ var HeldReasons = []HeldReason{
 	HeldAcceptedAncestor,
 	HeldChildrenBeforeRetro,
 	HeldTaskStopped,
+	HeldFixRunning,
+	HeldCIAtHead,
 	HeldAtWork,
 	HeldUnclassified,
 }
@@ -138,11 +158,13 @@ func HeldBefore(word, other HeldReason) bool {
 // the state's admission.held and the controller's tick notice carry one shape rather than two
 // that could drift.
 //
-// heldBy is absent where no issue holds the one that waits — a root whose label is off, an issue
+// heldBy is absent where nothing holds the one that waits — a root whose label is off, an issue
 // whose task was stopped, or an issue none of the other words is true of — so the field carries
 // omitempty and this row gets no MarshalJSON writing an empty array for it. That is the one way
 // the row differs from BlockedIssue, whose MarshalJSON writes [] for blockedBy because every row
 // of that list names at least one blocker and a reader of it would have to answer for a null.
+// heldBy names issues, save under the two words of a task's end, whose holders are no issue: a
+// check and a head under fix_running, and checks under ci_at_head (LineFacts.EndHolds).
 type HeldIssue struct {
 	Issue  string     `json:"issue"`
 	Reason HeldReason `json:"reason"`
@@ -378,20 +400,25 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	}
 	// The two holds an owner's plan makes stand here, below every word above, each of which holds
 	// the issue whatever its own hold is, and above at_work and unclassified (each word's doc says
-	// why). A stopped task that keeps its slot is not one of them: it stands in the active set, and
-	// one that holds no slot row there is the gap unclassified reports.
+	// why), and the two holds of a task's end stand beside them, for the same reasons. A stopped
+	// task, or a task held for its fix, that keeps its slot is not one of them: it stands in the
+	// active set, and one that holds no slot row there is the gap unclassified reports.
 	switch {
 	case HeldForChildren(issue):
 		return HeldChildrenBeforeRetro, retroHeldBy(issue, facts.Facts)
 	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
 		return HeldTaskStopped, nil
+	case HeldFor(issue, HoldForFix) && !KeepsSlot(issue):
+		return HeldFixRunning, facts.Facts.EndHolds[issue.Key]
+	case HeldFor(issue, HoldForCI) && !KeepsSlot(issue):
+		return HeldCIAtHead, facts.Facts.EndHolds[issue.Key]
 	}
 	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from accepting, retro or
 	// merging keeps no slot (KeepsSlot reads StandsAt), which makes this word reachable for a held
 	// issue, and its sentence — that the issue's workers run as they did — is false for an issue
 	// whose hold stopped its work. Such an issue reads the word of its hold above where it has one,
 	// and falls to unclassified where it has none. The stalled-tree measure is unmoved: none of
-	// these four words silences a tree (admit's silencedTree says why).
+	// these six words silences a tree (admit's silencedTree says why).
 	if !KeepsSlot(issue) && issue.Phase != phase.Held {
 		return HeldAtWork, nil
 	}

@@ -255,12 +255,14 @@ const sandboxSettingsBlock = `    sandbox:
 // cannot: an issue waiting on a person for a design gate, which is the `waitingOn` of a kind
 // the first body has none of; an issue whose wait a person declined to answer, which is the
 // value contract 68 added to `answeredBy` and the one this change's serving-down of a value is
-// for; a status write the daemon owes Dispatch; a repository cache whose health read failed;
-// the project's last pause, which a state carries only while no pause stands, and populatedState
-// carries the one that stands (contract 178); and the settings of a tmux deployment
-// (shapeSettingsFile). Every key of these is a key the state route writes, so the records
-// describe each of them, the settings keys no reader types apart (withoutUntypedSettings), and a
-// serving-down that forgets one is caught where a thinner sample would pass.
+// for; an issue whose task runs a fix beside its review, with every key of the fix
+// (FixBesideReviewContract); a status write the daemon owes Dispatch; a repository cache whose
+// health read failed; the project's last pause, which a state carries only while no pause stands,
+// and populatedState carries the one that stands (contract 178); and the settings of a tmux
+// deployment (shapeSettingsFile). Every key of these is a key the state route writes, so the
+// records describe each of them, the settings keys no reader types apart
+// (withoutUntypedSettings), and a serving-down that forgets one is caught where a thinner sample
+// would pass.
 func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	t.Helper()
 	since := time.Date(2026, 9, 22, 7, 30, 0, 0, time.UTC)
@@ -323,6 +325,21 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 					AnsweredAt: &declinedAt,
 					AnsweredBy: record.AnsweredByDecline,
 				},
+			},
+			// The issue whose task runs a fix beside its review: a check a CI job runs failed at
+			// the task's head, and the fix runs the task's first step again in a working copy of
+			// its own. Its implementer's claim holds the fix's task.
+			"SHAPES-3": {
+				Key:           "SHAPES-3",
+				Generation:    1,
+				Phase:         phase.Reviewing,
+				Status:        "needs_review",
+				Tree:          "SHAPES-3",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers:       map[claim.Role]PhaseView{},
+				Fix: &FixView{Task: "a", Step: 1, Check: "unit", Head: "c0de0000000000000000000000000000000000ff",
+					Dir: "/var/lib/legion/workspaces/acme/widgets/SHAPES-3-fix", Entry: 2, GivenEntry: 2},
 			},
 		},
 		// A status write the daemon owes Dispatch, which its lane has tried twice. The payload
@@ -409,8 +426,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	heldWords := []record.HeldReason{record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
 		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldAwaitingChildren, record.HeldDesignGate,
 		record.HeldDispatchBlocker, record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldChildrenBeforeRetro,
-		record.HeldTaskStopped, record.HeldAtWork, record.HeldUnclassified}
-	holdWords := []record.HoldReason{record.HoldEscalated, record.HoldTaskStopped, record.HoldForChildren}
+		record.HeldTaskStopped, record.HeldFixRunning, record.HeldCIAtHead, record.HeldAtWork, record.HeldUnclassified}
+	holdWords := []record.HoldReason{record.HoldEscalated, record.HoldTaskStopped, record.HoldForChildren,
+		record.HoldForFix, record.HoldForCI}
 	roleWords := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger}
 	stallWords := []record.ArchitectStallArm{record.ArchitectTookNothing, record.ArchitectClaimUnreachable,
@@ -506,7 +524,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Key: "VALUES-AWAITING", Generation: 1, Phase: phase.AwaitingChildren, Status: "in_progress",
 		Tree: "VALUES-AWAITING", Repo: "acme/widgets", DefaultBranch: "main", Workers: map[claim.Role]PhaseView{},
 	}
-	// The fourteen held words over the thirteen issues, the last word on the first issue again.
+	// The sixteen held words over the thirteen issues, the last three words on the first three issues again.
 	held := make([]HeldIssue, 0, len(heldWords))
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})

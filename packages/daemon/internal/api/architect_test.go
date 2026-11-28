@@ -81,8 +81,8 @@ type statusRecorder struct {
 	writes []statusWrite
 	// taken is every other Dispatch write the fake took, in order, as `<method> <issue or
 	// project>`: a message, a document upload, a role-holder publication, and a write of the
-	// gated steps, the design gates, a step, a step's rating, a step's experiment or a plan. It
-	// keeps none of them.
+	// gated steps, the design gates, a step, a step's rating, a step's experiment, a step's commits
+	// or a plan. It keeps none of them.
 	taken []string
 	// documents maps each Dispatch document id this fake knows to the issue carrying it.
 	documents map[string]string
@@ -367,6 +367,19 @@ func (r *statusRecorder) PutRoleHolders(_ context.Context, key string, _ []dispa
 	r.asked("PUT /api/v1/issues/%s/role-holders", key)
 	r.taken = append(r.taken, "PutRoleHolders "+key)
 	return nil
+}
+
+// PutStepCommits takes a write of a step record's commits and keeps none. No route of this
+// package writes a record's commits.
+func (r *statusRecorder) PutStepCommits(_ context.Context, key, id string, _ dispatch.StepWrite, _ dispatch.StepCommits) error {
+	r.asked("PUT /api/v1/issues/%s/steps/%s/commits", key, id)
+	r.taken = append(r.taken, "PutStepCommits "+key)
+	return nil
+}
+
+// CIJob answers a read of a CI job with none. No route of this package reads a CI job.
+func (r *statusRecorder) CIJob(context.Context, string, string, string) (dispatch.CIJob, error) {
+	return dispatch.CIJob{}, nil
 }
 
 var _ dispatch.Client = (*statusRecorder)(nil)

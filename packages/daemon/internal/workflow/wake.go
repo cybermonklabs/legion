@@ -290,9 +290,14 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
 // issue's pull request).
 //
-// Only the worker of the pod's open phase is woken: the settlement is that worker's business and
-// no one else's, and an architect reads it from its own notices. A head that settles again as each
-// of its checks finishes wakes the pod no second time, because the role's resume is still open.
+// On a task that takes a fix (record.PlanTask.FixesCI) it wakes nobody itself: the listener's
+// report of the settlement (reportRuns) names each current reader, and the outbox wakes a released
+// one as it delivers the row. On every other task the worker of the pod's open phase is woken
+// (OpenRoles): the settlement is its business and no one else's, and an architect reads it from
+// its own notices. A head that settles again as each of its checks finishes wakes the pod no
+// second time, because the role's resume is still open. The wake's detail names what Legion
+// itself does next for the task where it acts next (ciNext, settlementDetail), the same act the
+// role's report of the settlement names.
 //
 // Asking the apply step also keeps a settlement delivered late, or replayed from a message the
 // intake gave up on, however late, from waking anyone where the record will not take it for the
@@ -302,6 +307,9 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // remembers for the head when its fence was reset, so it is stale exactly where it is with the
 // fence standing, and the woken worker's task would otherwise name a verdict that is no longer
 // the head's.
+//
+// It answers the role this call woke, which tellChecks then tells no role message, and ""
+// otherwise.
 func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Role, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return "", nil
@@ -318,15 +326,14 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if err != nil || issue == nil {
 		return "", err
 	}
-	role := OpenPhaseRole(issue.Phase)
-	if role == "" {
-		return "", nil
-	}
-	released, found, err := e.cfg.Pods.ReleasedClaimOfRole(ctx, tx, issue.Key, role)
-	if err != nil || !found || released.ServingGeneration != issue.Generation {
+	if fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil || fixesCI {
 		return "", err
 	}
-	// The role is the settlement's to tell only when this call is what woke it: a wake another
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return "", err
+	}
+	// A role is the settlement's to tell only when this call is what woke it: a wake another
 	// pass took is already bringing the pod back with a task of its own, and a claim this
 	// settlement did not wake is told as any live role is (tellChecks).
 	//
@@ -337,11 +344,28 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if fact.StatusesUnread {
 		fact.Statuses = keptStatuses(*pr, fact.HeadSHA)
 	}
-	woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
-	if err != nil || !woken {
-		return "", err
+	var phaseWorker claim.Role
+	for _, role := range OpenRoles(*issue) {
+		released, found, err := e.cfg.Pods.ReleasedClaimOfRole(ctx, tx, issue.Key, role)
+		if err != nil {
+			return "", err
+		}
+		if !found || released.ServingGeneration != issue.Generation {
+			continue
+		}
+		next, err := e.ciNext(ctx, tx, *issue, w, role)
+		if err != nil {
+			return "", err
+		}
+		woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact, next), e.now())
+		if err != nil {
+			return "", err
+		}
+		if woken {
+			phaseWorker = role
+		}
 	}
-	return role, nil
+	return phaseWorker, nil
 }
 
 // settlementDetail names the head and what its settlement came to, which is what the woken role's
@@ -375,10 +399,19 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 // gave before, word for word (dispatch://INFRA-4135 R3), whatever other word GitHub gave each
 // run: the word of a check that passed (success or neutral, which R1 counts as passed) adds
 // nothing to `passed every check`, and the CI message is where each check is named by its word.
-func settlementDetail(fact intake.PullRequestChecks) string {
+//
+// Where Legion itself acts next for the task (next, ciNext), the detail names GitHub's conclusion
+// of each run and each commit status of the settlement, as the report of it names them, and the
+// sentence of that act (nextSentence), and never passedEveryCheck: a woken role that read a pass
+// there could take for its own act what Legion decides. Where next names nothing, the detail is
+// the one above.
+func settlementDetail(fact intake.PullRequestChecks, next ciNextOf) string {
 	head := fact.HeadSHA
 	if len(head) > 12 {
 		head = head[:12]
+	}
+	if next.Next != record.CINextNone {
+		return head + " concluded " + githubConclusions(fact) + "; " + strings.TrimSuffix(nextSentence(next), ".")
 	}
 	var failed []string
 	for _, status := range fact.Statuses {
@@ -407,9 +440,9 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 	case len(skipped) > 0:
 		detail = head + " had no failed or cancelled check"
 	case len(failed) > 0:
-		detail = head + " passed every check run"
+		detail = head + " " + passedEveryCheck + " run"
 	default:
-		return head + " passed every check"
+		return head + " " + passedEveryCheck
 	}
 	if len(skipped) > 0 {
 		detail += "; skipped " + strings.Join(skipped, ", ") + ": " + skippedRanNothing
@@ -422,6 +455,45 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 	default:
 		return detail + "; failed commit statuses " + strings.Join(failed, ", ")
 	}
+}
+
+// passedEveryCheck is what a wake's detail says of a settlement that names no check failed,
+// cancelled or skipped (settlementDetail), and never where Legion itself acts next for the task.
+const passedEveryCheck = "passed every check"
+
+// githubConclusions is each run of fact by its name, quoted, and the word GitHub gave it where the
+// settlement carried one, else the conclusion its lists give it (shownAs), in name order, then
+// each commit status it names with its state (namedStatuses).
+func githubConclusions(fact intake.PullRequestChecks) string {
+	shown := make(map[string]string, len(fact.CheckRuns))
+	for _, run := range fact.CheckRuns {
+		conclusion := record.RunSucceeded
+		switch {
+		case slices.Contains(fact.Failing, run.Name):
+			conclusion = record.RunFailed
+		case slices.Contains(fact.Cancelled, run.Name):
+			conclusion = record.RunCancelled
+		case run.Conclusion == record.RunSkipped:
+			conclusion = record.RunSkipped
+		}
+		shown[run.Name] = shownAs(run, conclusion)
+	}
+	for _, name := range fact.Failing {
+		if _, ok := shown[name]; !ok {
+			shown[name] = string(record.RunFailed)
+		}
+	}
+	for _, name := range fact.Cancelled {
+		if _, ok := shown[name]; !ok {
+			shown[name] = string(record.RunCancelled)
+		}
+	}
+	statuses := slices.Clone(fact.Statuses)
+	slices.SortFunc(statuses, func(a, b record.CommitStatus) int { return strings.Compare(a.Context, b.Context) })
+	if len(shown) == 0 {
+		return "no check run" + namedStatuses(statuses)
+	}
+	return namedConclusions(shown) + namedStatuses(statuses)
 }
 
 // podBackstopDue wakes a released pod on its backstop, which is R5: backstop_minutes after the
@@ -540,16 +612,47 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, kind, pause, WakeTask(kind, detail, stop)))
 }
 
-// OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
-// works, and the architect, whose phases (admitted and accepting) are the architect's own turn
-// rather than a worker's. It is the one statement of "the worker of the open phase" the release
-// reads: which role a release arms a backstop for — an architect gets none, because nothing of
-// its own is due and a sub-architect woken for nothing would hold a pod open for the backstop
-// period — which role a CI settlement wakes, and which live claim of a pod has a phase reminder
-// armed in it.
-func OpenPhaseRole(p phase.Phase) claim.Role {
-	if role := phase.RoleFor(p); role != claim.RoleArchitect {
-		return role
+// OpenRolesOf is the workers of an issue standing in p, each once: the role of p where it has one
+// and it is no architect's, whose phases (admitted and accepting) are the architect's own turn
+// rather than a worker's, and then the implementer where fixRunning, a fix running beside the step
+// of p (record.Issue.RunningFix), which runs the task's first implementation step again. It is the
+// one statement of "the workers of the open phase": which roles a release arms a backstop for — an
+// architect gets none, because nothing of its own is due and a sub-architect woken for nothing
+// would hold a pod open for the backstop period — which roles a CI settlement wakes, which live
+// claims of a pod have a phase reminder armed in them, and which roles the boot, the silence
+// repair, the ready of a claim and admission's repairs give work again. A fix that still reads its
+// failed job runs at no entry, so it is no worker here.
+func OpenRolesOf(p phase.Phase, fixRunning bool) []claim.Role {
+	var roles []claim.Role
+	if role := phase.RoleFor(p); role != "" && role != claim.RoleArchitect {
+		roles = append(roles, role)
 	}
-	return ""
+	if fixRunning && !slices.Contains(roles, claim.RoleImplementer) {
+		roles = append(roles, claim.RoleImplementer)
+	}
+	return roles
+}
+
+// OpenRoles is OpenRolesOf issue's phase and whether a fix runs beside its step.
+func OpenRoles(issue record.Issue) []claim.Role {
+	return OpenRolesOf(issue.Phase, issue.RunningFix > 0)
+}
+
+// FixWork says whether role's work on issue is the fix that runs beside the issue's step rather
+// than the work of the issue's phase: role is an open worker of the issue (OpenRoles) that the
+// issue's phase alone does not name.
+func FixWork(issue record.Issue, role claim.Role) bool {
+	return issue.RunningFix > 0 && slices.Contains(OpenRoles(issue), role) && !slices.Contains(OpenRolesOf(issue.Phase, false), role)
+}
+
+// WorkStanding is issue as role's work on it stands. The fix's work (FixWork) stands in
+// implementing, the phase of the task's first implementation step, which a fix runs again (the
+// implementer step is a plan's one step of type implementation), and is held nowhere, as the
+// fix's start stands it (startFix): a held issue's fix runs on. Every other role's work stands
+// where the issue does.
+func WorkStanding(issue record.Issue, role claim.Role) record.Issue {
+	if FixWork(issue, role) {
+		issue.Phase, issue.Hold = phase.Implementing, nil
+	}
+	return issue
 }

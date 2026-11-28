@@ -46,7 +46,15 @@ import (
 // (Config.ReadBaseMergeStates): one batch of reads of the base for every pull request the push
 // owes one, where a read of each was asked for apiece before, so the daemon reads the owed pull
 // requests of a base a few to a GraphQL query rather than one REST read each.
+//
+// A push of a branch beside a fix (claim.BesideBranch) is such a push too, and one no pull request
+// sits on: before the pull requests on the base are read, the head it left is kept for the fix and
+// the role the branch is of (recordBesidePush), so a step's next task names where its pushed commits
+// stand, and a deleted branch's key goes.
 func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) (intake.Result, error) {
+	if err := e.recordBesidePush(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
 	open, err := e.store.OpenPullRequestsOnBase(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil {
 		return intake.Result{}, err

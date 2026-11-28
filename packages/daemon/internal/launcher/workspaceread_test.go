@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -40,9 +41,11 @@ import (
 // workspace and the shared clone that Location lays out beside it, and no legacy configuration
 // file, each removed before jj runs. A role that deletes the id files and writes both legacy files
 // with the signing program gets neither loaded: the read runs no program and counts the work, and
-// the files are gone. A workspace the guards refuse, here one whose .jj/repo names another
-// repository than the shared clone, is not read: the read is refused, and the daemon keeps the pod
-// as for any read that cannot be made.
+// the files are gone. A fix's working copy beside the workspace (workspace.FixDir) is read the same
+// way: an edit in it that no jj command recorded is counted as the fix's working-copy commit, and
+// its own legacy workspace configuration is removed before jj runs there. A workspace the guards
+// refuse, here one whose .jj/repo names another repository than the shared clone, is not read: the
+// read is refused, and the daemon keeps the pod as for any read that cannot be made.
 func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (the fixture's home and PATH).
 	for _, tool := range []string{"git", "jj"} {
@@ -114,6 +117,11 @@ func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
 	// The working copy is signed, empty and undescribed, so it is no work and a snapshot that
 	// rewrites it would sign the rewrite where the configuration says so.
 	run.Run(ws, "jj", "--config=signing.backend=gpg", "--config=signing.backends.gpg.program="+okSigner, "sign", "-r", "@", "-R", ws)
+
+	// A fix's working copy beside the workspace, made as the fix's adoption makes it: a workspace of
+	// the clone named for its directory, at main. With no edit it is no work.
+	fixDir := workspace.FixDir(ws)
+	run.Run(clone, "jj", "workspace", "add", fixDir, "--name", filepath.Base(fixDir), "--revision", "main", "-R", clone)
 
 	// A configuration a role could write: sign every commit and verify signatures with the marker
 	// program, an `empty` that verifies the working copy's signature, no working copies in any
@@ -195,6 +203,32 @@ func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
 		if _, err := os.Lstat(file); err == nil {
 			t.Fatalf("the legacy configuration file %s is still there after the read, want it removed before jj ran", file)
 		}
+	}
+
+	// The fix's agent edits a file in the fix's working copy and runs no jj command after it, and a
+	// role writes the fix copy's legacy workspace configuration with the signing program. The read
+	// snapshots the fix's copy too, after the guards removed that file, so the edit is counted as
+	// the fix's working-copy commit beside the workspace's own, and no program runs.
+	fixLegacy := filepath.Join(fixDir, ".jj", "workspace-config.toml")
+	if err := os.Remove(filepath.Join(fixDir, ".jj", "workspace-config-id")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("delete the fix copy's id file, as a role could: %v", err)
+	}
+	if err := os.WriteFile(fixLegacy, []byte("[signing]\nbehavior = \"force\"\nbackend = \"gpg\"\nbackends.gpg.program = \""+signer+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixDir, "fix-wip.txt"), []byte("fix wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixed := read("fix-copy")
+	// The file is read first: the fixture's own jj below would migrate it, as a role's would, and
+	// print jj's warning of that beside the commit.
+	if _, err := os.Lstat(fixLegacy); err == nil {
+		t.Fatalf("the fix copy's legacy configuration file %s is still there after the read %+v, want it removed before jj ran", fixLegacy, fixed)
+	}
+	fixAt := run.Run(fixDir, "jj", "log", "-R", fixDir, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id")
+	if fixed.Count != 2 || !slices.Contains(fixed.Commits, fixAt) || !fixed.Changed {
+		t.Fatalf("the read of a workspace beside a fix's copy holding an edit no jj command recorded = %+v, want the workspace's change and the fix's working copy %s counted",
+			fixed, fixAt)
 	}
 
 	// A workspace the guards refuse: its .jj/repo names another repository than the shared clone

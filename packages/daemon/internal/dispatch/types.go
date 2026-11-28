@@ -87,6 +87,14 @@ type Client interface {
 	// record id of the issue, with the run's identity in write, on the record's experiment route.
 	// Dispatch writes each field once, so a pair sent again changes nothing.
 	PutStepExperiment(ctx context.Context, key, id string, write StepWrite, experiment StepExperiment) error
+	// PutStepCommits writes the commits a run of the record id of the issue started and ended at,
+	// and the check a fix's run is of, with the record's identity out of write, on the record's
+	// commits route. Dispatch writes each field once, so commits sent again change nothing.
+	PutStepCommits(ctx context.Context, key, id string, write StepWrite, commits StepCommits) error
+	// CIJob reads the CI job of the issue's check at head from the issue's check results: the name
+	// of the check run the check's CI job makes and the page of that job's run at head, each ""
+	// where Dispatch answers none.
+	CIJob(ctx context.Context, key, check, head string) (CIJob, error)
 	// PutPlan writes the plan one run of the issue carries out onto Dispatch's plan id of the
 	// issue. Its source, document, version and tasks are one fact: a write whose version is above
 	// the version Dispatch holds replaces all four, and one at or below it changes nothing (a
@@ -123,8 +131,8 @@ type RoleHolder struct {
 // know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
 // leaves out, and it takes a text field sent as "" as left out; a time and ReturnedTo are pointers
 // because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
-// StepRecord, the rating and the experiment aside, because this package imports no record of the
-// daemon's.
+// StepRecord, the rating, the experiment and the commits aside, because this package imports no
+// record of the daemon's.
 type StepWrite struct {
 	Task       string     `json:"task"`
 	Step       int        `json:"step"`
@@ -161,6 +169,25 @@ type StepExperiment struct {
 	Experiment string `json:"experiment"`
 	Variant    string `json:"variant"`
 }
+
+// StepCommits is what the record's commits route takes beside the run's identity
+// (HTTPClient.PutStepCommits): the commits the run's task's head was at when the run started and
+// when it ended, each 40 lowercase hexadecimal digits, and the block id of the CI check a fix's run
+// is of, which only a run of kind step names. Each is "" where the write names none, and left out
+// of the body then, which Dispatch takes as stating nothing. It mirrors the record's own
+// StepRecord's three fields of the same names, because this package imports no record of the
+// daemon's; internal/daemon's TestARecordWithCommitsWritesThemAfterTheRecord holds the two to the
+// same fields.
+type StepCommits struct {
+	StartCommit string `json:"start_commit,omitempty"`
+	EndCommit   string `json:"end_commit,omitempty"`
+	FixCheck    string `json:"fix_check,omitempty"`
+}
+
+// CIJob is the CI job a check of an issue names at one head, as the issue's check results answer
+// it (HTTPClient.CIJob): Name, the name of the check run the check's CI job makes, and URL, the
+// page of that job's run at the head. Each is "" where the answer holds none.
+type CIJob struct{ Name, URL string }
 
 // PlanWrite is the body of a plan's write, as Dispatch's route takes it, the actor aside: the run
 // the plan is of, its source (default or owner), the owner's document with its version, which a

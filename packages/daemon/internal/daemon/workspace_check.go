@@ -407,7 +407,7 @@ func (r *outbox) declineRelease(ctx context.Context, issue string, payload recor
 	}
 	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		declined, err := r.trees.DeclineIssueRelease(ctx, r.project, issue, decline, r.releaseResume(issue, payload.Tree), record.OutOfWorkflow,
-			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
+			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenRoles: workflow.OpenRolesOf})
 		if err != nil {
 			return err
 		}
@@ -451,9 +451,20 @@ func declineMessage(issue string, work runtime.WorkspaceWork) string {
 	found = append(found,
 		"The idle release does not take a pod whose workspace holds such work, so the pod stays and the release waits for your push. "+
 			"The daemon does not push for you.",
-		fmt.Sprintf("Push the work that you keep to legion/%s, and abandon the work that you do not keep. "+
-			"You are told this once: the daemon reads the workspace again after a turn of a role of this issue, and tells you again only if it finds other work.", issue))
+		"Push the work that you keep, and abandon the work that you do not keep. "+keptWorkBranches(issue),
+		"You are told this once: the daemon reads the workspace again after a turn of a role of this issue, and tells you again only if it finds other work.")
 	return strings.Join(found, " ")
+}
+
+// keptWorkBranches says which branch each work a read found is pushed to: the issue's working copy
+// to legion/<KEY>; a step that runs beside a running fix to its own branch beside that fix, which
+// its task names, never to legion/<KEY>; and the fix's working copy, beside the workspace
+// (workspace.FixDir), to the fix's branch, by the fix's own worker. The worker a decline or a kept
+// pod tells can be a role beside the fix, and the read counts the fix's working copy too, so the
+// sentence names all three rather than legion/<KEY> alone.
+func keptWorkBranches(issue string) string {
+	return fmt.Sprintf("Work in the issue's working copy goes to legion/%s. A step that runs beside a running fix pushes to its own branch beside that fix, which its task names, and never to legion/%s. "+
+		"Work in the fix's working copy, beside the workspace, is the fix's: the fix's worker pushes it to the fix's branch.", issue, issue)
 }
 
 // workFound is what a read that found work found, in sentences, of a workspace that still holds it
@@ -503,8 +514,8 @@ func keptMessage(issue, pod string, claims store.ClaimStates, work runtime.Works
 		"The launcher could not read the workspace",
 		"The daemon does not push this work and does not save it. The pod stays until a later read finds nothing that origin does not hold, the runtime makes another pod for the issue, or the issue closes, or its tree closes or lingers. "+
 			"The daemon reads the workspace again after a role of the issue starts or runs a turn.",
-		fmt.Sprintf("To keep the work, start a role of %s in this pod, for example with `legion claims resume` or `legion claims retry`, and push the work to legion/%s. "+
-			"You are told this once for this pod.", issue, issue))
+		fmt.Sprintf("To keep the work, start a role of %s in this pod, for example with `legion claims resume` or `legion claims retry`, and have it push the work. %s "+
+			"You are told this once for this pod.", issue, keptWorkBranches(issue)))
 }
 
 // keptNotice is the issue's architect's workspace-kept notice (record.WorkspaceKeptNotice) in the

@@ -25,7 +25,8 @@ const heldParentNeverReleased = "LEGION-211"
 // and every reason beside a todo set back on a held root says what starts the retro with
 // (intake.HeldParentRetroStarts), written out so the words are held here.
 const retroHeldStarts = "Legion starts the retro by itself once nothing holds it any longer: no issue beneath it is still in the workflow, " +
-	"no root that rests on its approval is still in the workflow, and no Dispatch child of it is open."
+	"no root that rests on its approval is still in the workflow, and no Dispatch child of it is open. Legion then starts the retro, " +
+	"unless it holds the task before its retro still, while a fix of the task runs or until each check a CI job runs passes at the task's head."
 
 // reviewingWithoutAcceptance walks key, a root at admitted with its open pull request, through the
 // plan `implementer reviewer` to its reviewing at step 2.
@@ -88,7 +89,8 @@ func retryRefusedWith(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, mes
 
 // heldForARestingRoot is P (LEGION-100), walking `implementer reviewer`, held before its retro by
 // the reviewer's pass while R (LEGION-208), a view root of its own tree, has its spec step waiting
-// on P's open approval request ask-100, and by nothing else.
+// on P's open approval request ask-100, and by nothing else: Dispatch holds no check of P at its
+// head (noChecksAt), so P's task's end waits for no CI.
 func heldForARestingRoot(t *testing.T) (*pgxpool.Pool, *Engine) {
 	t.Helper()
 	pool := migratedPool(t)
@@ -98,6 +100,7 @@ func heldForARestingRoot(t *testing.T) (*pgxpool.Pool, *Engine) {
 	seedTreeLifecycle(t, pool, basisAncestor)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: basisAncestor, Repo: "sjawhar/legion", Number: 41,
 		Branch: "legion/" + basisAncestor, HeadSHA: "head", Failing: []string{}})
+	noChecksAt(t, pool, basisAncestor, "sjawhar/legion", "head")
 	reviewingWithoutAcceptance(t, pool, engine, basisAncestor)
 	// R, a view on P, admitted in its own tree as seedGatedTree records it, its spec step waiting
 	// on P's approval request.

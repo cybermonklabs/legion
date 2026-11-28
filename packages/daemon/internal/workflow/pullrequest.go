@@ -333,7 +333,8 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 }
 
 // push records a push to the pull request's branch (classify.ApplyPushDropping) and re-asks the
-// review round (reaskRound). It records nothing for a push whose After is record.NoCommit: that is
+// review round (reaskRound), where a push of the fix beside a running review step re-asks no
+// round. It records nothing for a push whose After is record.NoCommit: that is
 // GitHub's deletion of the branch, which names no code. intake's decodePush makes no fact of a
 // deletion, and this test holds for a Push from any other source too. It records nothing for a
 // push to a pull request recorded merged either, since the merge has landed: a push after it is
@@ -392,6 +393,13 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 // the fact found it. The round as prior had it is the before a round stuck the same way is
 // deduped against (stuckAs), so a fact at the head the round was already told stuck at tells
 // nothing again. An issue outside reviewing has no round to re-ask, and nothing is read for it.
+//
+// A push, or the head it left arriving, while the review step runs beside a fix of its task
+// (ReviewBesideFix) is the fix's, since only the fix pushes while it runs, and the head it moved
+// re-asks no round: the round as the fact left it is the before, so a round stuck at the fix's
+// head for want of a review of it tells nothing, where it would have the architect ask the
+// reviewer for a review of that head. The review of the commit the step started at still decides
+// the step (refusesRound, settleRound), on this fact or a later one.
 func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, prior record.PullRequest, by string) error {
 	if issue.Phase != phase.Reviewing {
 		return nil
@@ -400,7 +408,17 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return err
 	}
-	_, err = e.settleRound(ctx, tx, issue, reviewer, pr, e.reviewRound(issue, reviewer, &prior), by)
+	before := e.reviewRound(issue, reviewer, &prior)
+	if by == byPush {
+		besideFix, err := e.reviewBesideFix(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		if besideFix != "" {
+			before = e.reviewRound(issue, reviewer, pr)
+		}
+	}
+	_, err = e.settleRound(ctx, tx, issue, reviewer, pr, before, by)
 	return err
 }
 

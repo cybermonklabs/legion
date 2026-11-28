@@ -280,7 +280,7 @@ func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	reason := why.reason()
-	replaced := noticeFor(trigger, issue.Phase, to, handoff, why)
+	replaced := noticeFor(trigger, issue.Phase, to, handoff, moverOf(ctx), why)
 	moved := issue
 	if err := e.moveTask(ctx, tx, &moved, &w, to, record.TaskRunning); err != nil {
 		return err

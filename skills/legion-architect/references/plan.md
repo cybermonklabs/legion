@@ -37,12 +37,12 @@ The table lists the steps in the order of the default steps:
 | `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
 | `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: you, or a subagent you dispatch, then run and record them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
 | `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you. |
-| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
+| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. A fix or its CI can hold any task there first (`retro-held`). |
 
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
-A reviewer step approves only once a pass stands for every `before_merge` check at the head.
+A reviewer step approves only once a pass stands for every `before_merge` check at the head, but the check a running fix holds.
 And retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read.
-So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
+Legion holds every task before its retro until each `ci_check` check passes at its head, so no such check reaches the merge without its pass.
 
 ## What Legion refuses
 

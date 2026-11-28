@@ -177,7 +177,8 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 			drive: func(h *harness, p *peer) error {
 				conn := h.conn()
 				result := async(func() error {
-					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					_, err := conn.AdoptWorkingCopy(context.Background(), identity, runtime.Adoption{}, time.Second)
+					return err
 				})
 				request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 				p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: false, Error: staleLock})
@@ -192,7 +193,8 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 			drive: func(h *harness, p *peer) error {
 				conn := h.conn()
 				result := async(func() error {
-					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					_, err := conn.AdoptWorkingCopy(context.Background(), identity, runtime.Adoption{}, time.Second)
+					return err
 				})
 				request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 				p.send(shimwire.Response{ID: request.ID, Command: shimwire.TypeAdoptWorkingCopy,
@@ -215,7 +217,8 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 			drive: func(h *harness, p *peer) error {
 				conn := h.conn()
 				result := async(func() error {
-					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+					_, err := conn.AdoptWorkingCopy(context.Background(), identity, runtime.Adoption{}, time.Second)
+					return err
 				})
 				p.expect(shimwire.TypeAdoptWorkingCopy)
 				p.conn.Close()
@@ -903,7 +906,11 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 	conn := h.conn()
 	identity := runtime.GitIdentity{Name: "legion-bot", Email: "bot@legion.dev"}
 
-	result := async(func() error { return conn.AdoptWorkingCopy(context.Background(), identity, 3*time.Second) })
+	adopt := func() error {
+		_, err := conn.AdoptWorkingCopy(context.Background(), identity, runtime.Adoption{}, 3*time.Second)
+		return err
+	}
+	result := async(adopt)
 	request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 	if request.JJUser != "legion-bot" || request.JJEmail != "bot@legion.dev" || request.TimeoutMs != 3000 || request.ID == "" {
 		t.Fatalf("adopt-working-copy frame = %#v", request)
@@ -913,7 +920,7 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 		t.Fatalf("AdoptWorkingCopy: %v", err)
 	}
 
-	result = async(func() error { return conn.AdoptWorkingCopy(context.Background(), identity, 3*time.Second) })
+	result = async(adopt)
 	request = p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
 	p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: false, Error: "jj metaedit exited 1"})
 	err := awaitResult(t, result)
@@ -922,8 +929,78 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 		t.Fatalf("AdoptWorkingCopy = %v, want a RefusedError carrying the shim's error", err)
 	}
 
-	if err := conn.AdoptWorkingCopy(context.Background(), runtime.GitIdentity{}, time.Second); err == nil {
+	if _, err := conn.AdoptWorkingCopy(context.Background(), runtime.GitIdentity{}, runtime.Adoption{}, time.Second); err == nil {
 		t.Fatal("AdoptWorkingCopy sent a frame with no identity")
+	}
+}
+
+// An adoption names a fix's commit, the fix's own branch and the task's move beside the identity,
+// each a member of the frame, and the shim's echo of each is the answer: the fix's working copy it
+// made and the commit it moved the task's working copy to. A shim built before the members answers
+// ok with neither, and the connection hands that answer on as it came. A member that is no full
+// commit id, or a fix's branch that is no branch beside a fix, is refused before any frame leaves,
+// as every malformed frame is.
+func TestAnAdoptionCarriesTheFixAndTheMoveAndReadsTheirEchoes(t *testing.T) {
+	const fixFrom, moveTo = "c0de000000000000000000000000000000000001", "c0de000000000000000000000000000000000002"
+	const fixBranch = "legion-beside/LEGION-208/1/default/fix-1/implementer"
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	conn := h.conn()
+	identity := runtime.GitIdentity{Name: "legion-bot", Email: "bot@legion.dev"}
+	type answer struct {
+		adopted runtime.Adopted
+		err     error
+	}
+	ask := func(adoption runtime.Adoption) <-chan answer {
+		answered := make(chan answer, 1)
+		go func() {
+			adopted, err := conn.AdoptWorkingCopy(context.Background(), identity, adoption, 3*time.Second)
+			answered <- answer{adopted, err}
+		}()
+		return answered
+	}
+	await := func(answered <-chan answer) answer {
+		t.Helper()
+		select {
+		case got := <-answered:
+			return got
+		case <-time.After(5 * time.Second):
+			t.Fatal("AdoptWorkingCopy did not return")
+			return answer{}
+		}
+	}
+
+	answered := ask(runtime.Adoption{FixFrom: fixFrom, MoveTo: moveTo, FixBranch: fixBranch})
+	request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
+	if request.FixFrom != fixFrom || request.MoveTo != moveTo || request.FixBranch != fixBranch || request.JJUser != identity.Name {
+		t.Fatalf("adopt-working-copy frame = %#v, want fixFrom %s, moveTo %s and fixBranch %s under %s", request, fixFrom, moveTo, fixBranch, identity.Name)
+	}
+	p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true, FixDir: "/w/widgets-42-fix", MovedTo: moveTo})
+	if got := await(answered); got.err != nil || got.adopted != (runtime.Adopted{FixDir: "/w/widgets-42-fix", MovedTo: moveTo}) {
+		t.Fatalf("AdoptWorkingCopy = %+v, %v; want the shim's two echoes", got.adopted, got.err)
+	}
+
+	answered = ask(runtime.Adoption{FixFrom: fixFrom})
+	request = p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
+	p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true})
+	if got := await(answered); got.err != nil || got.adopted != (runtime.Adopted{}) {
+		t.Fatalf("an older shim's answer = %+v, %v; want ok with no echo, as it came", got.adopted, got.err)
+	}
+
+	answered = ask(runtime.Adoption{})
+	if request = p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy); request.FixFrom != "" || request.MoveTo != "" || request.FixBranch != "" {
+		t.Fatalf("an adoption naming neither sent %#v, want a frame with neither member", request)
+	}
+	p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true})
+	if got := await(answered); got.err != nil || got.adopted != (runtime.Adopted{}) {
+		t.Fatalf("an adoption naming neither = %+v, %v; want ok with no echo", got.adopted, got.err)
+	}
+
+	if _, err := conn.AdoptWorkingCopy(context.Background(), identity, runtime.Adoption{FixFrom: "abc"}, time.Second); !errors.Is(err, shimwire.ErrMalformedFrame) {
+		t.Fatalf("an adoption naming fixFrom abc = %v, want the malformed frame refused before it leaves", err)
+	}
+	if _, err := conn.AdoptWorkingCopy(context.Background(), identity, runtime.Adoption{FixFrom: fixFrom, FixBranch: "legion/LEGION-208"}, time.Second); !errors.Is(err, shimwire.ErrMalformedFrame) {
+		t.Fatalf("an adoption naming the issue's branch as the fix's = %v, want the malformed frame refused before it leaves", err)
 	}
 }
 

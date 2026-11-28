@@ -41,7 +41,9 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
   expect(first?.rows[1]).toEqual({
     agent: "legion-core-core-1-reviewer",
     attempt: 1,
+    commits: null,
     ended: "2026-11-16T10:30:00Z",
+    fixOf: null,
     id: "review-1",
     label: "4",
     model: "openai/gpt-6.1-sol",
@@ -83,6 +85,67 @@ test("stepTasks reads a null list as empty", () => {
   expect(stepTasks({ issue: "CORE-1", tasks: [] })).toEqual([]);
   expect(stepTasks({ issue: "CORE-1", tasks: [{ steps: null, task: "default" }] })).toEqual([
     { rows: [], task: "default" },
+  ]);
+});
+
+// Two commits of the head of CORE-1's task, in the order it moved.
+const HEAD_X = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+const HEAD_Y = "b2c3d4e5f60718293a4b5c6d7e8f9012345678a1";
+
+// A run carries the commits its task's head was at when it started and when it ended, which the
+// column Commits draws, and a fix carries the CI check it fixes, which the mark "Fix of <check>"
+// names. A run still running holds its start commit alone.
+test("stepTasks gives each run its commits and a fix the check it fixes", () => {
+  const [task] = stepTasks({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({
+            attempt: 2,
+            end_commit: HEAD_Y,
+            fix_check: "k-ci",
+            id: "fix-1",
+            start_commit: HEAD_X,
+          }),
+          record({
+            attempt: 3,
+            ended_at: null,
+            id: "implement-3",
+            result: "",
+            start_commit: HEAD_Y,
+          }),
+        ],
+        task: "default",
+      },
+    ],
+  });
+
+  expect(task?.rows.map((row) => [row.id, row.commits, row.fixOf])).toEqual([
+    ["fix-1", { end: HEAD_Y, start: HEAD_X }, "k-ci"],
+    ["implement-3", { end: null, start: HEAD_Y }, null],
+  ]);
+});
+
+// The control of the row above: a run whose record names no check carries no mark, and one whose
+// record holds no commit carries no commits, so the cell draws none.
+test("stepTasks gives a run with no check no mark, and a run with no commit no commits", () => {
+  const [task] = stepTasks({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({ end_commit: HEAD_Y, id: "unchecked", start_commit: HEAD_X }),
+          record({ id: "uncommitted" }),
+        ],
+        task: "default",
+      },
+    ],
+  });
+
+  expect(task?.rows.map((row) => [row.id, row.commits, row.fixOf])).toEqual([
+    ["unchecked", { end: HEAD_Y, start: HEAD_X }, null],
+    ["uncommitted", null, null],
   ]);
 });
 

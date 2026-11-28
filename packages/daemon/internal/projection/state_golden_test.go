@@ -42,6 +42,17 @@ var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this 
 // waits in the same line on an issue of its own, and is in neither `blocked` nor any judgement:
 // a root carrying a run is work already under way.
 //
+// It carries the two holds before a retro that FixBesideReviewContract added, each on a root of
+// its own tree whose design gate stands open: LEGION-212, held while a fix of its task reads its
+// failed job (`holdReason: fix`), whose held row reads `fix_running` with the fix's check and head
+// as `heldBy`, and LEGION-213, held until each check a CI job runs passes at the head of its open
+// pull request (`holdReason: ci`), whose held row reads `ci_at_head` with each check that has not
+// passed there, a check whose job runs and one whose job failed, and not the one that passed.
+// Both stand from the retro, which keeps no slot, and no lifecycle of theirs is open, so `active`
+// and `trees` stay as above. The contract's own schema parses both reasons and both words, and
+// the frozen schema of the contract before it refuses the reasons
+// (packages/contracts/src/legion-api.test.ts).
+//
 // It carries the trees too (dispatch://INFRA-980): LEGION-208's lifecycle stands open under the
 // workflow, and the two roots waiting in the line are live trees of their own, so `trees` names
 // three roots while one issue alone holds a slot — which is the reading `active` can no longer
@@ -60,12 +71,22 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 			{Key: "LEGION-209", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Status: "todo", Phase: phase.Admitted, Generation: 1},
 			{Key: "LEGION-210", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-210", Status: "todo", Phase: phase.Admitted, Generation: 1, Rank: "00010", HandedOver: true},
 			{Key: "LEGION-211", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-211", Status: "todo", Phase: phase.Implementing, Generation: 2, Rank: "00011", HandedOver: true, HandedOverFrom: "LEGION-200"},
+			{Key: "LEGION-212", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-212", Status: "in_progress", Phase: phase.Held, Generation: 1, Rank: "00012", HandedOver: true,
+				Hold: &record.Hold{From: phase.Retro, Reason: record.HoldForFix}},
+			{Key: "LEGION-213", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-213", Status: "in_progress", Phase: phase.Held, Generation: 1, Rank: "00013", HandedOver: true,
+				Hold: &record.Hold{From: phase.Retro, Reason: record.HoldForCI}},
 		},
 		phases: map[string][]record.PhaseRow{issue: {{Issue: issue, Role: claim.RoleArchitect, Claim: architect}}},
 		slots:  []record.Slot{{Issue: issue, Index: 0, AdmittedAt: admitted}},
 		// The tree the architect runs stands open under the workflow, which is what makes it a
 		// live tree now that its slot no longer says so.
 		lifecycles: []string{issue},
+		// The two held roots' design gates stand open, so the held list reads neither of them
+		// under design_gate: each takes the row the ladder gives its hold.
+		gates: map[string]map[record.DesignStep]record.DesignGate{
+			"LEGION-212": openGate("LEGION-212", admitted.Add(-2*time.Hour)),
+			"LEGION-213": openGate("LEGION-213", admitted.Add(-2*time.Hour)),
+		},
 		mirror: []record.DispatchIssueRow{
 			{Key: issue, Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 4},
 			{Key: "LEGION-209", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-300"}, Seq: 5},
@@ -74,6 +95,21 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 			{Key: "LEGION-300", Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 8},
 			{Key: "LEGION-302", Project: "LEGION", Status: "todo", Blockers: []string{}, Seq: 9},
 		},
+		// LEGION-212's task and the fix of it that reads its failed job, and LEGION-213's open pull
+		// request with what the daemon holds of its checks at its head.
+		planTasks: []record.PlanTask{{Issue: "LEGION-212", Generation: 1, Task: "a"}},
+		fixes: map[string]record.TaskFix{"LEGION-212": {Issue: "LEGION-212", Generation: 1, Task: "a", Fix: 1,
+			State: record.FixReading, Check: "ci / test (ubuntu-24.04)", Head: fixHead, Place: 1}},
+		pullRequests: map[string]*record.PullRequest{"LEGION-213": {Issue: "LEGION-213", Repo: "acme/widgets", Number: 213,
+			Branch: "legion/LEGION-213", HeadSHA: fixHead, Generation: 1, State: record.PullRequestOpen}},
+		headStates: map[string]map[string]record.HeadStates{"LEGION-213": {fixHead: {
+			Checks: []string{"ci / build", "ci / lint", "ci / test (ubuntu-24.04)"},
+			States: map[string]record.CheckState{
+				"ci / build":               {Check: "ci / build", State: "no", Reason: "no_result", CICase: record.CINotCompleted},
+				"ci / lint":                {Check: "ci / lint", State: "yes", CICase: "success"},
+				"ci / test (ubuntu-24.04)": {Check: "ci / test (ubuntu-24.04)", State: "no", Reason: "fail", CICase: "failure"},
+			},
+		}}},
 	}
 	architectLocator := sandboxLocator(architect, "legion-legion-legion-208", "4b7e1c2a-0d93-4f6e-8a51-3c2f9e7d1b04", 1)
 	// The architect's session sent its live rows on a `claims/ready` of its own, measured at an
@@ -153,6 +189,15 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 	}
 	if !reflect.DeepEqual(state.Admission.Blocked, want) {
 		t.Errorf("the state's blocked = %#v, want %#v: LEGION-211 carries a run and is never judged", state.Admission.Blocked, want)
+	}
+	// The two holds before a retro read their own words, each with what holds it.
+	for _, want := range []api.HeldIssue{
+		{Issue: "LEGION-212", Reason: record.HeldFixRunning, HeldBy: []string{"ci / test (ubuntu-24.04)", fixHead}},
+		{Issue: "LEGION-213", Reason: record.HeldCIAtHead, HeldBy: []string{"ci / build", "ci / test (ubuntu-24.04)"}},
+	} {
+		if got := heldRow(t, state, want.Issue); !reflect.DeepEqual(got, want) {
+			t.Errorf("the held row of %s = %#v, want %#v", want.Issue, got, want)
+		}
 	}
 
 	state.Daemon = api.DaemonInfo{Project: "LEGION", SchemaVersion: 35, Boots: 2, FirstBootAt: admitted.Add(-time.Hour), StartedAt: admitted.Add(-time.Minute)}

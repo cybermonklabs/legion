@@ -1,7 +1,11 @@
 package workspace
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -42,22 +46,34 @@ import (
 // going with a pod is the work that keeps a release from taking it.
 const WorkRevset = `(::(working_copies() | bookmarks()) ~ ::(remote_bookmarks() | tags())) ~ (empty() & description(exact:""))`
 
-// ReadWork runs the read's two jj commands in the workspace dir with jj, through run, which runs
-// one command and answers its trimmed standard output (RunCommand under the caller's budget and
-// environment, which for the pod's launcher holds no configuration of anyone's). global are jj
-// options the caller puts before each command's own. The first command
-// reads the working copy's commit and whether it is empty, and it is the one jj snapshot the read
-// makes; the second is --ignore-working-copy, so both describe one state of the workspace. It
-// answers the working copy's commit, whether that commit holds a change, and every work commit
-// (WorkRevset), newest first. The snapshot is what the read writes, as every jj command that reads
-// the working copy does: jj records an operation and, where files of the working copy changed, a
+// ReadWork runs the read's jj commands through run, which runs one command in the directory it is
+// given and answers its trimmed standard output (RunCommand under the caller's budget and
+// environment, which for the pod's launcher holds no configuration of anyone's). Each command runs
+// in the workspace its `-R` names, as RunCommand requires: jj reads the configuration of the
+// repository it finds from the directory it runs in before it applies `-R`. global are jj options
+// the caller puts before each command's own. The first command reads the issue workspace dir's
+// working-copy commit and whether it is empty, and it snapshots dir's working copy. Where the
+// working copy of a fix stands beside dir (FixDir, a `.jj` directory there), the read snapshots
+// that copy too, with a read of its working-copy commit run in it: jj snapshots only the working
+// copy of the workspace `-R` names, and an edit the fix's agent made after its last jj command is
+// in no commit until then, so a release that read only dir would take the pod and the edit with
+// it, since the fix's copy is made again from its branch when the fix resumes. The snapshot puts
+// that edit in the fix's working-copy commit, which the count then holds. A stale working copy,
+// either one, is read as jj reads it: jj refuses it, the read fails and the caller keeps the pod.
+// The read never brings a stale copy up to date (`jj workspace update-stale`): that moves an edit
+// no jj command recorded off the disk into a divergent commit that no working copy reaches and the
+// count does not hold. The last command, run in dir, is --ignore-working-copy, so it describes the
+// state the snapshots left. It answers the issue's working copy's commit, whether that commit
+// holds a change, and every work commit (WorkRevset), newest first, the fix's working copy among
+// them where it holds an edit. The snapshots are what the read writes, as every jj command that
+// reads a working copy does: jj records an operation and, where files of a working copy changed, a
 // new working-copy commit and the git ref jj keeps for it (refs/jj/keep). The read changes no file
-// of the working copy, moves no bookmark and pushes nothing, and it needs no git.
-func ReadWork(run func(args ...string) (string, error), jj, dir string, global ...string) (head string, changed bool, work []string, err error) {
+// of either working copy, moves no bookmark and pushes nothing, and it needs no git.
+func ReadWork(run func(in string, args ...string) (string, error), jj, dir string, global ...string) (head string, changed bool, work []string, err error) {
 	command := func(args ...string) []string {
 		return append(append([]string{jj}, global...), args...)
 	}
-	at, err := run(command("log", "-R", dir, "-r", "@", "--no-graph", "-T", `commit_id ++ " " ++ empty`)...)
+	at, err := run(dir, command("log", "-R", dir, "-r", "@", "--no-graph", "-T", `commit_id ++ " " ++ empty`)...)
 	if err != nil {
 		return "", false, nil, err
 	}
@@ -65,9 +81,34 @@ func ReadWork(run func(args ...string) (string, error), jj, dir string, global .
 	if head == "" || (empty != "true" && empty != "false") {
 		return "", false, nil, fmt.Errorf("jj answered %q for the working copy, not its commit and whether it is empty", at)
 	}
-	listed, err := run(command("log", "-R", dir, "--ignore-working-copy", "-r", WorkRevset, "--no-graph", "-T", `commit_id ++ "\n"`)...)
+	fix := FixDir(dir)
+	beside, err := HoldsJJ(fix)
+	if err != nil {
+		return "", false, nil, err
+	}
+	if beside {
+		if _, err := run(fix, command("log", "-R", fix, "-r", "@", "--no-graph", "-T", "commit_id")...); err != nil {
+			return "", false, nil, err
+		}
+	}
+	listed, err := run(dir, command("log", "-R", dir, "--ignore-working-copy", "-r", WorkRevset, "--no-graph", "-T", `commit_id ++ "\n"`)...)
 	if err != nil {
 		return "", false, nil, err
 	}
 	return head, empty == "false", OutputLines(listed), nil
+}
+
+// HoldsJJ is whether dir holds a jj workspace: a `.jj` directory. A dir that is not there, or
+// whose `.jj` is no directory, holds none, and a read that fails for another reason is an error,
+// named. The workspace read, its guards and a fix's adoption each ask it of the fix's working copy
+// (FixDir).
+func HoldsJJ(dir string) (bool, error) {
+	info, err := os.Lstat(filepath.Join(dir, ".jj"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read the fix's working copy %s: %w", dir, err)
+	}
+	return info.IsDir(), nil
 }

@@ -47,6 +47,12 @@ var _ supervise.Store = (*Store)(nil)
 // (supervise.Delivery.Carried), and whether that turn's result said it ran (supervise.Delivery.Ran),
 // are read beside both (carried_news and carried_ran, design_news_told.go).
 //
+// The fix a delivery's task is of, the head the fix's working copy is made at, the fix's own branch
+// and the head the task's working copy moves to (supervise.Delivery.Fix, FixFrom, FixBranch and
+// MoveTo) are the delivery's own columns (fix, fix_from, fix_branch, move_to), so a restart sends
+// the adoption the task was queued with. A row a release before them wrote takes each column's
+// default: no fix, no branch and no move.
+//
 // The two cause columns are read beside held_for, which says whether a `provider_error` either of
 // them holds stands for `cyber_policy` (supervise.DecodeCause); upsertClaim writes the three
 // together (storedCause, heldFor).
@@ -72,7 +78,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.design_news, d.carried_news,
-	coalesce(d.carried_ran, false), coalesce(d.news_only, false), d.round_named
+	coalesce(d.carried_ran, false), coalesce(d.news_only, false), d.round_named,
+	coalesce(d.fix, 0), coalesce(d.fix_from, ''), coalesce(d.move_to, ''), coalesce(d.fix_branch, '')
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
@@ -785,9 +792,9 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		confirmed_at, interrupted, prompted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
 		provider_error_retries, provider_error_note, design_news, carried_news, carried_ran, news_only,
-		round_named)
+		round_named, fix, fix_from, move_to, fix_branch)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22::jsonb, $23::jsonb, $24, $25, $26)
+		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22::jsonb, $23::jsonb, $24, $25, $26, $27, $28, $29, $30)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		entry = excluded.entry, check_look = excluded.check_look,
@@ -800,12 +807,14 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		provider_error_retries = excluded.provider_error_retries,
 		provider_error_note = excluded.provider_error_note, design_news = excluded.design_news,
 		carried_news = excluded.carried_news, carried_ran = excluded.carried_ran, news_only = excluded.news_only,
-		round_named = excluded.round_named`,
+		round_named = excluded.round_named, fix = excluded.fix, fix_from = excluded.fix_from,
+		move_to = excluded.move_to, fix_branch = excluded.fix_branch`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
 		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
 		d.ProviderErrorRetries, d.ProviderErrorNote, news, carried, d.Ran, d.NewsOnly, d.RoundNamed,
+		d.Fix, d.FixFrom, d.MoveTo, d.FixBranch,
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
@@ -940,6 +949,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		retries                     *int64
 		note                        *string
 		roundNamed                  *bool
+		fix                         int
+		fixFrom, moveTo, fixBranch  string
 		stepAt, turnStarted         *time.Time
 		stepStarted, stepEnded      *time.Time
 		reportedAt, reminderAt      *time.Time
@@ -966,7 +977,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &news, &carried, &ran, &newsOnly,
-		&roundNamed)
+		&roundNamed, &fix, &fixFrom, &moveTo, &fixBranch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
 	}
@@ -1081,6 +1092,10 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			// A delivery a release before this one wrote takes the column's default, false: its
 			// task names no review round (supervise's Delivery.message).
 			RoundNamed: orFalse(roundNamed),
+			Fix:        fix,
+			FixFrom:    fixFrom,
+			MoveTo:     moveTo,
+			FixBranch:  fixBranch,
 		}
 	}
 	return c, nil

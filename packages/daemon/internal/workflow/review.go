@@ -15,15 +15,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
-// it says (tellChecks). It moves nothing: a failed CI check is information, not the daemon's to
+// it says (tellChecks). It moves nothing: the settlement is information, not the daemon's to
 // read the semantics of, and the message asks no role to act on it: the tester reads no CI, the
 // implementer is told of a failed check a CI job runs by its own message (tellCIFailure), and the
-// reviewer and the architect read CI's state.
+// reviewer and the architect read CI's state. A failed check that a CI job runs is judged by
+// Dispatch's check states instead, and for a task that takes a fix the fix rule starts the fix
+// (fixRule). The record as it stood before the settlement is kept for the report of a task that
+// takes a fix, which names only what the settlement newly put on it (reportRuns).
 //
 // It runs for every settlement fact, after the wake (wakeOnSettlement), and each settlement it
 // does not apply is named by one INFO line once the fact commits, since a pull request whose head
@@ -57,6 +61,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	// intake.PullRequestChecks.StatusesUnread).
 	candidate := settlementCandidate(fact)
 	told := settledChecks(*pr)
+	before := *pr
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {
 		e.logUnappliedSettlement(ctx, fact, *pr, candidate)
@@ -98,7 +103,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.tellChecks(ctx, tx, pr, told, woken)
+	return intake.Result{}, e.tellChecks(ctx, tx, before, pr, told, woken)
 }
 
 // settlementCandidate is the settlement fact as the apply step reads it, and the one place it is
@@ -330,7 +335,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		}
 		green := classify.GreenContexts(*pr)
 		if why := classify.ConflictNeedsMerge(*issue, w.Line, fact.Rules, green); why != "" {
-			if err := e.mergeForward(ctx, tx, *issue, w.Line, pr, why); err != nil {
+			if err := e.mergeForward(ctx, tx, *issue, w, pr, why); err != nil {
 				return intake.Result{}, err
 			}
 		} else {
@@ -571,20 +576,17 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
 // request's head says (settledChecks), and moves nothing: the daemon passes the CI result on and
 // asks nobody anything of it, no re-run, no wait and no fix, since the tester reads no CI and each
-// other role's prompt says what it does with CI's state. Each
-// message is settlementMessage's, its sentence and the values it is written from, and once they
-// are queued the line `workflow: a CI settlement is told` names, from those rows, the pull
-// request, the head, the checks, the statuses and each role told. One message goes to three
-// roles - the worker holding the issue's phase, the implementer, whose code the checks ran on, and
-// the architect that owns the issue
-// (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
-// a role holder with a message. In merging the implementer is not told: the merge and what breaks
-// it are the merger's to decide, and the merger asks the implementer when it needs it
-// (cybermonklabs/legion#4979). A held issue keeps the worker of Hold.From (record.StandsAt).
-// A role named twice, the implementer holding the phase, is told once, and a phase no worker holds
-// names none (addressRoles). told is what the settlement
-// standing for the head said before this one, so a second settlement of the same head that leaves
-// the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
+// other role's prompt says what it does with CI's state. before is the record as it stood before
+// the settlement was applied, pr the record after it. The receivers are three roles (ciReceivers)
+// - the worker holding the issue's phase, the implementer, whose code the checks ran on, and the
+// architect that owns the issue (owningArchitect) - each on its own role topic, the way the daemon
+// reaches a role holder with a message. In merging the implementer is not told: the merge and what
+// breaks it are the merger's to decide, and the merger asks the implementer when it needs it
+// (cybermonklabs/legion#4979). A held issue keeps the worker of Hold.From (record.StandsAt). A role
+// named twice, the implementer holding the phase, is told once, and a phase no worker holds names
+// none (addressRoles). Each role message is settlementMessage's, its sentence and the values it is
+// written from, and once they are queued the line `workflow: a CI settlement is told` names, from
+// those rows, the pull request, the head, the checks, the statuses and each role told. Linger
 // holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
 // suspended there, so the settlement is recorded and nobody is told. A parent waiting in
 // awaiting_children is told nothing either, and neither is the architect that owns it: no role
@@ -592,20 +594,35 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // with the base's tip (dispatch://INFRA-3320 R11, R12), so the settlement is recorded and no
 // message goes out.
 //
-// A role whose released pod this same settlement woke is told nothing: its wake task already
-// names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
-// would reach it as a second wake of one release, described to the worker as something somebody
-// published to its role topic. woken is that role, "" when the settlement woke nobody, and every
-// other role — a live one, and one the wake did not reach — is told as before.
+// A task whose run takes a fix (record.PlanTask.FixesCI) gets the listener's report instead
+// (reportRuns): each receiver one row of the runs and statuses the settlement newly put on the
+// record, which assigns nothing, since Dispatch's state of each check decides and the fix rule
+// alone assigns a repair (fixRule).
+//
+// Every other task is told as main tells it: told is what the settlement standing for the head
+// said before this one (settledChecks), so a second settlement of the same head that leaves the
+// same conclusions tells nobody again, and so does a settlement that stands for no head. Each
+// receiver gets the settlement's line in one role message (record.RoleMessage), but where Legion
+// itself acts next for the task (ciNext: the task held at its end for its CI or for its fix, a fix
+// that runs, the testing move waiting for Dispatch's states), which then gets one report of the
+// settlement's runs and statuses naming that act (record.CINews with Next) in its place, so no
+// receiver is told to decide what Legion decides. A settlement that reports no run and no status
+// has nothing such a report can carry, and is told by the role message.
+//
+// A role whose released pod this same settlement woke is told no role message: its wake task
+// already names the settlement (WakeTask with pods.WakeChecks), and a message about the same
+// settlement would reach it as a second wake of one release, described to the worker as something
+// somebody published to its role topic. woken is that role, "" when the settlement woke nobody,
+// and every other role — a live one, and one the wake did not reach — is told as before. A
+// report that names what Legion does next reaches the woken role all the same: it carries the act
+// the wake's detail names (settlementDetail), and as a row of no reader it is finished undelivered
+// for a released claim, as a role message is.
 //
 // A holder this daemon cannot name is an error here, and with it the settlement's whole
 // transaction: the settlement moves no issue, so there is nothing kept by telling the rest, and
 // the next settlement of the head asks again.
-func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told string, woken claim.Role) error {
+func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, before record.PullRequest, pr *record.PullRequest, told string, woken claim.Role) error {
 	settled := settledChecks(*pr)
-	if settled == "" || settled == told {
-		return nil
-	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil || issue.Phase == phase.AwaitingChildren {
 		return err
@@ -613,41 +630,48 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	// The architect told is the one that owns the issue now (owningArchitect): the issue's own
-	// while its claim holds its role, else the nearest one above it that does, else the tree
-	// root's. A phase the architect itself holds (accepting) is that same architect's acceptance,
-	// so it is told once, as the owner; and an architect this settlement woke would be the issue's
-	// own released claim, which holds its role and so is that owner too.
-	recipients := []roleRecipient{}
-	if woken != claim.RoleArchitect {
-		owner, err := e.owningArchitect(ctx, tx, *issue)
-		if err != nil {
-			return err
-		}
-		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
-	}
-	roles := []claim.Role{RoleFor(record.StandsAt(*issue))}
-	if !record.StandsIn(*issue, phase.Merging) {
-		roles = append(roles, claim.RoleImplementer)
-	}
-	for _, role := range roles {
-		if role == claim.RoleArchitect || role == woken {
-			continue
-		}
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
-	}
-	addressed, err := e.addressRoles(issue.Project, recipients, nil)
+	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
 		return err
 	}
+	fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return err
+	}
+	if fixesCI {
+		return e.reportRuns(ctx, tx, *issue, w, before, *pr)
+	}
+	if settled == "" || settled == told {
+		return nil
+	}
+	recipients, err := e.ciReceivers(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
+	runs, statuses := settledRuns(*pr)
 	var tokens []string
 	var row record.RoleMessage
-	for _, to := range addressed {
-		row = settlementMessage(string(to.token), *pr)
-		if err := e.enqueue(ctx, tx, to.issue, row); err != nil {
+	if err := e.eachRecipient(issue.Project, recipients, func(to roleRecipient, token claim.Token) error {
+		next, err := e.ciNext(ctx, tx, *issue, w, to.role)
+		if err != nil {
 			return err
 		}
-		tokens = append(tokens, row.Role)
+		if next.Next == record.CINextNone || (len(runs) == 0 && len(statuses) == 0) {
+			if to.role == woken {
+				return nil
+			}
+			row = settlementMessage(string(token), *pr)
+			tokens = append(tokens, row.Role)
+			return e.enqueue(ctx, tx, to.row, row)
+		}
+		if next.Tested == pr.CheckedHead {
+			next.Tested = ""
+		}
+		return e.enqueue(ctx, tx, to.row, record.CINews{Purpose: record.CINewsRuns, Role: string(token), Generation: issue.Generation,
+			Task: w.Task, Repo: pr.Repo, PullRequest: pr.Number, Head: pr.CheckedHead, Next: next.Next, Tested: next.Tested,
+			Runs: runs, Statuses: statuses, Body: runsBody(issue.Key, pr.Number, pr.CheckedHead, runs, statuses, next)})
+	}); err != nil {
+		return err
 	}
 	if len(tokens) > 0 {
 		e.logOnCommit(ctx, "workflow: a CI settlement is told", "issue", issue.Key, "pull_request", row.PullRequest, "head", row.Head,
@@ -769,13 +793,14 @@ const (
 // RefusesRound is the whole of why review, one that decides (intake.PullRequestReview.Decides),
 // must not decide pr's round, a RoundRefusal with no reason when nothing refuses it: who wrote it
 // (DecidesRound, with reviewerSession as ReviewerSession reads it), then the head it says it read
-// (refusesRound). A review-App review judged while reviewerSession is "" waits
-// (RefusedWhileNoSession). Two places judge a review - this engine, for the review a webhook
-// delivers, and the daemon's read of GitHub's list of a pull request's reviews (daemon's
-// reviewToApply), which applies only a review this would take - and both ask this one judgement,
-// so neither judges by a narrower rule than the other, and neither asks a second one to learn how
-// long a refusal stands: the answer carries that (RoundRefusal.Lasts).
-func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullRequest, reviewerSession string) RoundRefusal {
+// (refusesRound), where besideFix, the commit the running review step started at beside a fix of
+// its task as ReviewBesideFix reads it, decides beside pr's head. A review-App review judged while
+// reviewerSession is "" waits (RefusedWhileNoSession). Two places judge a review - this engine,
+// for the review a webhook delivers, and the daemon's read of GitHub's list of a pull request's
+// reviews (daemon's reviewToApply), which applies only a review this would take - and both ask
+// this one judgement, so neither judges by a narrower rule than the other, and neither asks a
+// second one to learn how long a refusal stands: the answer carries that (RoundRefusal.Lasts).
+func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullRequest, reviewerSession, besideFix string) RoundRefusal {
 	if !e.DecidesRound(review, reviewerSession) {
 		switch {
 		case !e.byReviewApp(review.Author):
@@ -785,7 +810,7 @@ func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullReq
 		}
 		return RoundRefusal{Reason: "the review App submitted it from a session that is not the reviewer's", Lasts: RefusedAtEveryHead}
 	}
-	return e.refusesRound(review, pr)
+	return e.refusesRound(review, pr, besideFix)
 }
 
 // refusesRound is the second half of that judgement (RefusesRound): why a review that decides
@@ -802,25 +827,92 @@ func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullReq
 //     carried.
 //   - A review the review App submitted, listed or by webhook, decides only when the head its
 //     Legion footer names (intake.PullRequestReview.LegionHead) is pr's current head, compared
-//     exactly, so its refusal stands at the head the record holds now and no further. The footer
-//     is the review's own word for the code it read, written in the body it was submitted with; no
-//     clock answers for a force push that puts an earlier head back, and GitHub's commit_id for
-//     the review moves with the pull request.
+//     exactly, or besideFix, the commit the running review step started at where a fix of its
+//     task ran beside it ("" for none, ReviewBesideFix), so its refusal stands at the head the
+//     record holds now and no further. The footer is the review's own word for the code it read,
+//     written in the body it was submitted with; no clock answers for a force push that puts an
+//     earlier head back, and GitHub's commit_id for the review moves with the pull request. A
+//     review step that started at X ends with the review of X, also after the fix beside it
+//     pushed, since only the fix pushes while it runs.
 //   - Every other review - a person's, delivered by its webhook - decides as it did before.
-func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullRequest) RoundRefusal {
+func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullRequest, besideFix string) RoundRefusal {
 	if !e.byReviewApp(review.Author) {
 		if review.ReadFromList {
 			return RoundRefusal{Reason: "a person's review read from the list", Lasts: RefusedAtEveryHead}
 		}
 		return RoundRefusal{}
 	}
-	switch head := review.LegionHead(); {
+	head := review.LegionHead()
+	switch {
 	case head == "":
 		return RoundRefusal{Reason: "footer names no head", Lasts: RefusedAtThisHead}
-	case head != pr.HeadSHA:
-		return RoundRefusal{Reason: fmt.Sprintf("footer names %s, not the head %s", head, pr.HeadSHA), Lasts: RefusedAtThisHead}
+	case head == pr.HeadSHA || head == besideFix:
+		return RoundRefusal{}
+	case besideFix != "":
+		return RoundRefusal{Reason: fmt.Sprintf("footer names %s, not the head %s nor %s, the commit its review step started at beside a fix", head, pr.HeadSHA, besideFix),
+			Lasts: RefusedAtThisHead}
 	}
-	return RoundRefusal{}
+	return RoundRefusal{Reason: fmt.Sprintf("footer names %s, not the head %s", head, pr.HeadSHA), Lasts: RefusedAtThisHead}
+}
+
+// ReviewBesideFix is the commit the running review step of issue's task started at, where the
+// task's latest fix (record.Store.LatestFix) has started, ran beside that step's run, and the
+// task's branch stands where that fix left it. The step started while the fix read its job or ran
+// (bindBesideFix), or the fix started while the step ran (tellStepsOfFix); both are marked on the
+// step's start (record.StepStart.BesideFix), so no clock decides it. It is "" otherwise: an issue
+// with no record or no plan rows, one that stands in no step of type review, a run of that step
+// that has ended or names no start commit, a task whose latest fix has not started, a step that
+// started after that fix ended, and a head no fix made.
+//
+// Only while a fix runs does the fix alone push to the task's branch (fixPushSentence,
+// tellStepsOfFix), so only then is a head that moved since the step's start the fix's. Once the
+// fix has ended, the one head it answers for is the head it ended at: anyone may push after that,
+// a person among them, and such a push is no fix's. So a head that is neither the running fix's
+// nor the ended fix's own end leaves the review step beside no fix, and the round goes on as it
+// does without one: the push asks the reviewer for a review of that head (reaskRound), and a
+// review of the commit the step started at is refused there (refusesRound, settleRound).
+//
+// Where the head is the fix's, the review of the commit the step started at decides the step
+// (refusesRound, settleRound), the commit the reviewer read moves to it
+// (record.PhaseRow.ReviewedHead), and the fix's own push re-asks no round (reaskRound). The
+// daemon's read of a pull request's reviews reads it in the transaction that reads the reviewer's
+// session, before it judges one (RefusesRound), so both judge a review beside a fix alike.
+func (e *Engine) ReviewBesideFix(ctx context.Context, tx pgx.Tx, issue string) (string, error) {
+	recorded, err := e.store.Issue(ctx, tx, issue)
+	if err != nil || recorded == nil {
+		return "", err
+	}
+	return e.reviewBesideFix(ctx, tx, *recorded)
+}
+
+// reviewBesideFix is ReviewBesideFix of issue as the fact's transaction holds it.
+func (e *Engine) reviewBesideFix(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil || !w.Stored {
+		return "", err
+	}
+	step, ok := standingStep(w, issue)
+	if !ok || step.typ != plan.TypeReview || step.place.Kind != record.PlaceStep {
+		return "", nil
+	}
+	start, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
+	if err != nil || start.Run != record.RunOpen || start.StartCommit == "" {
+		return "", err
+	}
+	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil || fix == nil || fix.StartedAt == nil || start.BesideFix != fix.Fix {
+		return "", err
+	}
+	if fix.State != record.FixRunning {
+		pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+		if err != nil {
+			return "", err
+		}
+		if _, head := taskHead(pr); head == "" || head != fix.EndHead {
+			return "", nil
+		}
+	}
+	return start.StartCommit, nil
 }
 
 // ReviewerSession is the session of issue's reviewer, the session a review-App review's Legion
@@ -875,6 +967,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	resolvedIssue(ctx, issue.Key)
 	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
 		return intake.Result{}, err
@@ -898,7 +991,8 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		before, by = round{}, byAnswer
 	}
 	// Only changes_requested and approved decide anything, and one judgement says whether such a
-	// review may decide this round (RefusesRound): who wrote it, and the head it says it read.
+	// review may decide this round (RefusesRound): who wrote it, and the head it says it read, which
+	// beside a fix may be the commit the review step started at (ReviewBesideFix).
 	// Any other review orders nothing either, so a comment written after a decision but
 	// delivered before it, or an outsider's review, cannot make the decision look old.
 	state := strings.ToLower(fact.State)
@@ -922,10 +1016,18 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// that judges it again by the session recorded then either takes it or refuses it afresh.
 	refused := ""
 	if decides {
-		if refusal := e.RefusesRound(fact, *pr, reviewerSession); refusal.Reason != "" {
+		// besideFix is read only for a review the review App submitted: no other author's review is
+		// held to the head its footer names.
+		besideFix := ""
+		if e.byReviewApp(fact.Author) {
+			if besideFix, err = e.reviewBesideFix(ctx, tx, *issue); err != nil {
+				return intake.Result{}, err
+			}
+		}
+		if refusal := e.RefusesRound(fact, *pr, reviewerSession, besideFix); refusal.Reason != "" {
 			args := []any{"issue", issue.Key, "pull_request", pr.Number, "author", fact.Author, "state", state,
 				"footer_session", fact.LegionSession(), "reviewer_session", reviewerSession, "reviewer_claim", string(reviewerClaim),
-				"footer_head", fact.LegionHead(), "head", pr.HeadSHA, "read_from_list", fact.ReadFromList,
+				"footer_head", fact.LegionHead(), "head", pr.HeadSHA, "beside_fix", besideFix, "read_from_list", fact.ReadFromList,
 				"body_truncated", fact.BodyTruncated}
 			switch {
 			case refusal.Lasts == RefusedWhileNoSession:
@@ -1380,11 +1482,27 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // (record.TreeLingers), and leaves no mark: nothing was told, so the head is told when the tree
 // runs again.
 //
+// An approval of the commit the running review step started at beside a fix of its task
+// (ReviewBesideFix) ends the round as approved where it does not stand at the open pull request's
+// head, which the fix's push moved or is moving: the review step that started at X ends with the
+// review of X, and what runs after the fix is the fix's way (besideFix). An approval of the head
+// itself is weighed as every approval is.
+//
 // A round GitHub will not merge from (stuckMergeState) is the one cause the reviewer cannot
 // decide, and the whole of its path - its own dedup, its own message to the reviewer, a notice
 // with no topic - is tellStuckMergeState's, which this asks for once.
 func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, before round, by string) (bool, error) {
 	r := e.reviewRound(issue, row, pr)
+	if issue.Phase == phase.Reviewing && pr != nil && pr.State == record.PullRequestOpen && row.Decision != nil &&
+		row.Decision.State == "approved" && !classify.ApprovalStands(*pr, row.Decision.Head) {
+		besideFix, err := e.reviewBesideFix(ctx, tx, issue)
+		if err != nil {
+			return false, err
+		}
+		if besideFix != "" && row.Decision.Head == besideFix {
+			r = round{outcome: roundApproved}
+		}
+	}
 	switch r.outcome {
 	case roundRejected:
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {

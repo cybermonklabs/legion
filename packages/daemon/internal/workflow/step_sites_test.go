@@ -43,7 +43,9 @@ func placeOf(kind string, step int) record.StepPlace {
 	return record.StepPlace{Task: "default", Kind: kind, Place: step}
 }
 
-// stepRoot is the root LEGION-208 standing at at, generation 1, with its open pull request #42.
+// stepRoot is the root LEGION-208 standing at at, generation 1, with its open pull request #42,
+// whose head holds no check: Dispatch's set of its checks there is empty (noChecksAt), so its
+// task's end waits for no CI.
 func stepRoot(t *testing.T, pool *pgxpool.Pool, at phase.Phase) record.Issue {
 	t.Helper()
 	root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
@@ -52,7 +54,37 @@ func stepRoot(t *testing.T, pool *pgxpool.Pool, at phase.Phase) record.Issue {
 	seedTreeLifecycle(t, pool, root.Key)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 42,
 		Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
+	noChecksAt(t, pool, root.Key, "sjawhar/legion", "head")
 	return root
+}
+
+// noChecksAt holds the set of checks Dispatch publishes of issue at head of repo where the head
+// has none (ciPassedAt with no check).
+func noChecksAt(t *testing.T, pool *pgxpool.Pool, issue, repo, head string) {
+	t.Helper()
+	ciPassedAt(t, pool, issue, repo, head)
+}
+
+// ciPassedAt holds what Dispatch publishes of issue at head of repo where checks are the head's
+// set and the CI job of each passed there, as its check.state_changed events of that head carry
+// them, at sequence 1, below every event a test applies (checkstatetest.Seq), so a later event of
+// the head replaces each. A task whose head holds no set waits for CI at its end (retroHold); one
+// whose head's every check passed, or that has no check, waits for none.
+func ciPassedAt(t *testing.T, pool *pgxpool.Pool, issue, repo, head string, checks ...string) {
+	t.Helper()
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		store := record.NewStore()
+		if _, err := store.PutCheckSet(t.Context(), tx, issue, repo, head, append([]string{}, checks...), 1); err != nil {
+			return err
+		}
+		for _, check := range checks {
+			if _, err := store.PutCheckState(t.Context(), tx, record.CheckState{Issue: issue, Repo: repo, Head: head, Check: check,
+				State: stateYes, CICase: "success", Roles: []string{"ci"}, Seq: 1}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // stepChild is the child key of LEGION-208 standing at at, generation 3.
@@ -65,7 +97,8 @@ func stepChild(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, hol
 	return child
 }
 
-// seedChildPR gives LEGION-209 its pull request #43 in state, with its merge commit where merged.
+// seedChildPR gives LEGION-209 its pull request #43 in state, with its merge commit where merged,
+// whose head holds no check of Dispatch's (noChecksAt).
 func seedChildPR(t *testing.T, pool *pgxpool.Pool, state record.PullRequestState) {
 	t.Helper()
 	pr := record.PullRequest{State: state, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
@@ -74,6 +107,7 @@ func seedChildPR(t *testing.T, pool *pgxpool.Pool, state record.PullRequestState
 		pr.MergeSHA = "merge-43"
 	}
 	seedPR(t, pool, pr)
+	noChecksAt(t, pool, pr.Issue, pr.Repo, pr.HeadSHA)
 }
 
 // mergingChild seeds LEGION-209 at the retro under LEGION-208, with its open pull request, and

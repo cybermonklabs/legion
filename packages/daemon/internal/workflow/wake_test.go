@@ -595,29 +595,36 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 	}
 }
 
-// R5: an architect gets no backstop. OpenPhaseRole is the one statement of "the worker of the
-// open phase" — which role a release arms a backstop for, which role a CI settlement wakes, and
-// which live claim has a phase reminder armed in it — and it answers none for a phase the
-// architect works and none for a phase no role works. Admitted and accepting are the two the
-// architect works (phase.RoleFor).
+// R5: an architect gets no backstop. OpenRolesOf is the one statement of "the workers of the open
+// phase" — which roles a release arms a backstop for, which roles a CI settlement wakes, and which
+// live claims have a phase reminder armed in them — and it answers no architect for a phase the
+// architect works and no role for a phase no role works. Admitted and accepting are the two the
+// architect works (phase.RoleFor). A fix running beside the step adds the implementer, once, after
+// the role of the phase, in a phase no role works as well (a held issue's fix runs on); and a fix
+// beside a phase the implementer works names it once.
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name string
-		p    phase.Phase
-		want claim.Role
+		name       string
+		p          phase.Phase
+		fixRunning bool
+		want       []claim.Role
 	}{
-		{name: "implementing", p: phase.Implementing, want: claim.RoleImplementer},
-		{name: "testing", p: phase.Testing, want: claim.RoleTester},
+		{name: "implementing", p: phase.Implementing, want: []claim.Role{claim.RoleImplementer}},
+		{name: "testing", p: phase.Testing, want: []claim.Role{claim.RoleTester}},
 		{name: "admitted is the architect's", p: phase.Admitted},
 		{name: "accepting is the architect's", p: phase.Accepting},
 		{name: "awaiting a person", p: phase.AwaitingPerson},
 		{name: "awaiting its children, which no role works", p: phase.AwaitingChildren},
 		{name: "done", p: phase.Done},
+		{name: "a fix beside the review", p: phase.Reviewing, fixRunning: true, want: []claim.Role{claim.RoleReviewer, claim.RoleImplementer}},
+		{name: "a fix beside a held issue", p: phase.Held, fixRunning: true, want: []claim.Role{claim.RoleImplementer}},
+		{name: "a fix beside the architect's accepting", p: phase.Accepting, fixRunning: true, want: []claim.Role{claim.RoleImplementer}},
+		{name: "a fix beside implementing names the implementer once", p: phase.Implementing, fixRunning: true, want: []claim.Role{claim.RoleImplementer}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := OpenPhaseRole(tc.p); got != tc.want {
-				t.Fatalf("OpenPhaseRole(%s) = %q, want %q", tc.p, got, tc.want)
+			if got := OpenRolesOf(tc.p, tc.fixRunning); !slices.Equal(got, tc.want) {
+				t.Fatalf("OpenRolesOf(%s, %t) = %q, want %q", tc.p, tc.fixRunning, got, tc.want)
 			}
 		})
 	}

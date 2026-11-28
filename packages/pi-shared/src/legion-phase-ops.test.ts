@@ -130,8 +130,8 @@ function runtime(
     }),
     claim,
     build: BUILD,
-    handoffReport: async (phase, role) => {
-      lookups.push(`${phase} ${role}`);
+    handoffReport: async (phase, role, dir) => {
+      lookups.push(dir === undefined ? `${phase} ${role}` : `${phase} ${role} in ${dir}`);
       return report;
     },
     branchHead: async () => {
@@ -446,6 +446,66 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
     verdict: "",
     ...REPORT,
   });
+});
+
+/** The fix the issue record names while one runs beside the issue's step, as the daemon serves it
+ * (`api.Issue.Fix`): the directory of its working copy beside the workspace, and its entries. */
+const RUNNING_FIX = {
+  task: "a",
+  step: 1,
+  check: "unit",
+  head: "c".repeat(40),
+  dir: "/workspaces/LEGION-208-fix",
+  entry: 4,
+  givenEntry: 4,
+};
+
+// A fix runs the task's first implementation step again beside the step the issue stands at, in a
+// working copy of its own. While the record names one, the implementer's completion is the fix's:
+// its report is the implementing step's, found in the fix's directory, whatever phase the issue
+// stands in. A fix the daemon names no directory for is refused before anything is minted or
+// posted, since a report found in the shared workspace would be another step's.
+test("while a fix runs, the implementer's completion reads the implementing report in the fix's directory", async () => {
+  const { ops, routes, posted, lookups } = runtime(
+    implementer,
+    stateAtPhase("reviewing", { fix: RUNNING_FIX })
+  );
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "The check passes." })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(lookups).toEqual(["implementing implementer in /workspaces/LEGION-208-fix"]);
+  expect(routes).toEqual([
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "The check passes.",
+    verdict: "",
+    ...REPORT,
+  });
+
+  const { dir: _, ...nowhere } = RUNNING_FIX;
+  const refused = runtime(implementer, stateAtPhase("reviewing", { fix: nowhere }));
+  await expect(
+    executePhaseOp(refused.ops, { op: "handoff_complete", summary: "The check passes." })
+  ).rejects.toThrow();
+  expect(refused.lookups).toEqual([]);
+  expect(refused.routes).toEqual(["/legion/v1/issues/LEGION-208/record"]);
+});
+
+// The control: with no fix in the record the implementer's report is the phase's as before, and
+// another role's is its own phase's whether or not a fix runs.
+test("with no fix, or for another role, the completion reads the phase's report as before", async () => {
+  const plain = runtime(implementer, stateAtPhase("reviewing"));
+  await executePhaseOp(plain.ops, { op: "handoff_complete", summary: "Late." });
+  expect(plain.lookups).toEqual(["reviewing implementer"]);
+
+  const reviewer = { ...implementer, role: "reviewer" as const };
+  const beside = runtime(reviewer, stateAtPhase("reviewing", { fix: RUNNING_FIX }));
+  await executePhaseOp(beside.ops, { op: "handoff_complete", summary: "Approved." });
+  expect(beside.lookups).toEqual(["reviewing reviewer"]);
 });
 
 // The agent that does the retro rates the plan the issue ran in the completion that ends the

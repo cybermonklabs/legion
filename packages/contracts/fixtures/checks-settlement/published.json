@@ -1,0 +1,164 @@
+{
+  "about": "Settlements of a pull request's checks as Envoy's listener publishes them (cistore's settlementEnvelope): the record's check runs and commit statuses on one head, the subject, the dedupe key and the payload. Beside them, the subject segment each name becomes (contracts.SanitizeSubjectSegment), and the durable Dispatch's delivery intake reads the settlements from (bus.DispatchDeliveryDurable). The daemon's fake GitHub copies each by hand, since the daemon module cannot import Envoy's internal packages. Envoy's test (internal/cistore/published_fixture_test.go) proves Envoy's own code makes each value, and the daemon's (internal/githubtest/published_fixture_test.go) proves its copies make the same. A record here has no check suite.",
+  "settlements": [
+    {
+      "about": "A head settled again, at its third generation: a run of each group the listener's rule names but running and queued, a conclusion GitHub may add later, which is failed, and two commit statuses, in context order. The repository's dot becomes an underscore in the subject alone.",
+      "owner": "acme",
+      "repo": "widgets.v2",
+      "number": 7,
+      "sha": "1f3e5a7c9b2d4f6081a3c5e7f9b1d3f5a7c9e1b3",
+      "generation": 3,
+      "superseded": true,
+      "check_runs": [
+        {
+          "name": "unit",
+          "id": 7001,
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/acme/widgets.v2/actions/runs/7000/job/7001"
+        },
+        {
+          "name": "lint",
+          "id": 7002,
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/acme/widgets.v2/actions/runs/7000/job/7002"
+        },
+        {
+          "name": "e2e",
+          "id": 7003,
+          "status": "completed",
+          "conclusion": "timed_out",
+          "url": "https://github.com/acme/widgets.v2/actions/runs/7000/job/7003"
+        },
+        {
+          "name": "docs",
+          "id": 7004,
+          "status": "completed",
+          "conclusion": "skipped",
+          "url": "https://github.com/acme/widgets.v2/actions/runs/7000/job/7004"
+        },
+        {
+          "name": "bench",
+          "id": 7005,
+          "status": "completed",
+          "conclusion": "cancelled",
+          "url": "https://github.com/acme/widgets.v2/actions/runs/7000/job/7005"
+        },
+        {
+          "name": "future",
+          "id": 7006,
+          "status": "completed",
+          "conclusion": "a_conclusion_github_adds_later",
+          "url": "https://github.com/acme/widgets.v2/actions/runs/7000/job/7006"
+        },
+        {
+          "name": "format",
+          "id": 7007,
+          "status": "completed",
+          "conclusion": "neutral",
+          "url": "https://github.com/acme/widgets.v2/actions/runs/7000/job/7007"
+        }
+      ],
+      "statuses": [
+        { "context": "deploy/preview", "state": "failure", "created_at": "2026-11-23T10:00:00Z" },
+        { "context": "ci/legacy", "state": "success", "created_at": "2026-11-23T09:58:30Z" }
+      ],
+      "topic": "notifications.github.acme.widgets_v2.pr.7.checks",
+      "dedupe_key": "github.checks.acme/widgets.v2.pr.7.1f3e5a7c9b2d4f6081a3c5e7f9b1d3f5a7c9e1b3.g3",
+      "payload": {
+        "kind": "checks",
+        "repo": "acme/widgets.v2",
+        "number": "7",
+        "sha": "1f3e5a7c9b2d4f6081a3c5e7f9b1d3f5a7c9e1b3",
+        "check_runs": [
+          { "name": "bench", "id": 7005, "conclusion": "cancelled" },
+          { "name": "docs", "id": 7004, "conclusion": "skipped" },
+          { "name": "e2e", "id": 7003, "conclusion": "timed_out" },
+          { "name": "format", "id": 7007, "conclusion": "neutral" },
+          { "name": "future", "id": 7006, "conclusion": "a_conclusion_github_adds_later" },
+          { "name": "lint", "id": 7002, "conclusion": "success" },
+          { "name": "unit", "id": 7001, "conclusion": "failure" }
+        ],
+        "generation": 3,
+        "snapshot": "27f656aa8744e8a300aad7a5bbab7d74bcb928cac194cfa222ecb325edef0bfb",
+        "superseded_settlement": "true",
+        "failed": { "count": 3, "checks": ["e2e", "future", "unit"] },
+        "running": { "count": 0, "checks": [] },
+        "passed": { "count": 2, "checks": ["format", "lint"] },
+        "queued": { "count": 0, "checks": [] },
+        "cancelled": { "count": 1, "checks": ["bench"] },
+        "skipped": { "count": 1, "checks": ["docs"] },
+        "failing_checks": [
+          {
+            "name": "e2e",
+            "url": "https://github.com/acme/widgets.v2/actions/runs/7000/job/7003"
+          },
+          {
+            "name": "future",
+            "url": "https://github.com/acme/widgets.v2/actions/runs/7000/job/7006"
+          },
+          {
+            "name": "unit",
+            "url": "https://github.com/acme/widgets.v2/actions/runs/7000/job/7001"
+          }
+        ],
+        "statuses": [
+          { "context": "ci/legacy", "state": "success", "created_at": "2026-11-23T09:58:30Z" },
+          { "context": "deploy/preview", "state": "failure", "created_at": "2026-11-23T10:00:00Z" }
+        ]
+      }
+    },
+    {
+      "about": "The first settlement of a head with one failed run and no commit status: the payload has no superseded_settlement and no statuses.",
+      "owner": "acme",
+      "repo": "widgets",
+      "number": 7,
+      "sha": "8c2e4a6f0b1d3e5a7c9f2b4d6e8a0c1e3f5a7b9d",
+      "generation": 1,
+      "superseded": false,
+      "check_runs": [
+        {
+          "name": "unit",
+          "id": 7101,
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/acme/widgets/actions/runs/7100/job/7101"
+        }
+      ],
+      "statuses": [],
+      "topic": "notifications.github.acme.widgets.pr.7.checks",
+      "dedupe_key": "github.checks.acme/widgets.pr.7.8c2e4a6f0b1d3e5a7c9f2b4d6e8a0c1e3f5a7b9d.g1",
+      "payload": {
+        "kind": "checks",
+        "repo": "acme/widgets",
+        "number": "7",
+        "sha": "8c2e4a6f0b1d3e5a7c9f2b4d6e8a0c1e3f5a7b9d",
+        "check_runs": [{ "name": "unit", "id": 7101, "conclusion": "failure" }],
+        "generation": 1,
+        "snapshot": "9e6485349b4dfb0b30b58de58a3da2d5f907c807175433f299fecf1376a0c2fb",
+        "failed": { "count": 1, "checks": ["unit"] },
+        "running": { "count": 0, "checks": [] },
+        "passed": { "count": 0, "checks": [] },
+        "queued": { "count": 0, "checks": [] },
+        "cancelled": { "count": 0, "checks": [] },
+        "skipped": { "count": 0, "checks": [] },
+        "failing_checks": [
+          {
+            "name": "unit",
+            "url": "https://github.com/acme/widgets/actions/runs/7100/job/7101"
+          }
+        ]
+      }
+    }
+  ],
+  "subject_segments": [
+    { "value": "acme", "segment": "acme" },
+    { "value": ".github", "segment": "_github" },
+    { "value": "widgets.v2", "segment": "widgets_v2" },
+    { "value": "a b\tc\rd\ne", "segment": "a_b_c_d_e" },
+    { "value": "wild*cards>", "segment": "wild_cards_" },
+    { "value": "owner/name", "segment": "owner/name" }
+  ],
+  "dispatch_delivery_durable": "delivery-events"
+}

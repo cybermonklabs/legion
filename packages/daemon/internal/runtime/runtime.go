@@ -95,8 +95,11 @@ type Runtime interface {
 	ReconcileOrphans(ctx context.Context, known []Known, grace time.Duration) error
 	// AdoptWorkingCopy hands the agent's working copy the git identity its commits are authored
 	// with, in the place the working copy actually lives (which under a sandbox is not a
-	// directory the daemon can see).
-	AdoptWorkingCopy(ctx context.Context, loc Locator, id GitIdentity) error
+	// directory the daemon can see). adoption names, where it names them, the commit a fix's
+	// working copy starts from and the commit the task's working copy moves to first; the answer
+	// is the shim's echo of each member it acted on (Adopted), which a shim built before them
+	// never gives (ErrAdoptionUnsupported is the caller's to raise).
+	AdoptWorkingCopy(ctx context.Context, loc Locator, id GitIdentity, adoption Adoption) (Adopted, error)
 	// ProvisionsWorkspaces is whether the runtime provisions each claim's workspace where its
 	// process runs (a pod's init containers, on the issue's own volume). When it does, the daemon
 	// provisions and removes none on its own host.
@@ -1058,6 +1061,30 @@ type GitIdentity struct {
 	Name  string
 	Email string
 }
+
+// Adoption is what an adoption of the working copy names beside the role's identity. FixFrom is
+// the commit a fix's working copy starts from: the shim makes or moves that working copy beside
+// its own workspace and adopts it in the workspace's place. FixBranch is the fix's own branch
+// (claim.BesideBranch), named only with FixFrom: where the shim finds no fix's working copy, it
+// makes it at that branch's head where origin holds the branch. MoveTo is the commit the task's
+// working copy moves to before anything else runs. FixFrom and MoveTo are full commit ids; each
+// member is "" for none, and the zero value is the adoption of every task that is no fix's and
+// moves nothing.
+type Adoption struct{ FixFrom, MoveTo, FixBranch string }
+
+// Adopted is the shim's echo of what an adoption acted on: FixDir, the directory of the fix's
+// working copy, for FixFrom and FixBranch, and MovedTo, the commit the task's working copy moved
+// to, for MoveTo. Each is "" where the adoption did not name its member, and where the shim was
+// built before the member, which it ignores.
+type Adopted struct{ FixDir, MovedTo string }
+
+// ErrAdoptionUnsupported is an adoption that named a fix's commit or the task's move and was
+// answered ok with no echo of it: the issue's pod runs a shim built before those members, which
+// ignored them and adopted the task's working copy as it always did. supervise's Machine.adopt
+// raises it, and the send's refusal charges nothing for it and waits: asking that shim again changes
+// nothing, and the pod's update round, which a pod built from an older configuration opens, replaces
+// the pod with one whose shim makes the copy.
+var ErrAdoptionUnsupported = errors.New("the issue's pod runs a shim that does not make a fix's working copy or move the task's; only its update round replaces it")
 
 // Env is the six variables that make a process commit as id: JJ_USER/JJ_EMAIL, which jj reads
 // over every config scope, and the Git author and committer pairs for plain git.

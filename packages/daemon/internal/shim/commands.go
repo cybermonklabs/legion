@@ -2,12 +2,17 @@ package shim
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -116,11 +121,13 @@ func (s *shim) drainCommands() {
 // openedWorkspace is what one request of the daemon's runs its commands with in the workspace
 // its role works in (openWorkspace): the workspace, the jj of PATH, and run, which runs one
 // command there with the request's environment and within its budget, with stdin fed to it, and
-// answers its trimmed standard output (workspace.RunCommand).
+// answers its trimmed standard output (workspace.RunCommand). runIn runs one command the same way
+// in another directory: the adoption's in the fix's working copy beside the workspace.
 type openedWorkspace struct {
-	dir string
-	jj  string
-	run func(stdin []byte, args ...string) (string, error)
+	dir   string
+	jj    string
+	run   func(stdin []byte, args ...string) (string, error)
+	runIn func(dir string, stdin []byte, args ...string) (string, error)
 }
 
 // openWorkspace is the one start of every request a shim answers in its role's workspace: the
@@ -147,17 +154,21 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 	ctx, cancel := context.WithTimeout(s.commands, budget)
 	started := time.Now()
 	start := s.children.Starter()
-	run := func(stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, start, budget, started, env, dir, stdin, args)
+	runIn := func(at string, stdin []byte, args ...string) (string, error) {
+		return workspace.RunCommand(ctx, start, budget, started, env, at, stdin, args)
 	}
-	return openedWorkspace{dir: dir, jj: jj, run: run}, cancel, nil
+	run := func(stdin []byte, args ...string) (string, error) {
+		return runIn(dir, stdin, args...)
+	}
+	return openedWorkspace{dir: dir, jj: jj, run: run, runIn: runIn}, cancel, nil
 }
 
 // adopt answers `adopt-working-copy`, which fromDaemon hands it, with the adoption's outcome
 // (runAdoption). A request the shim cannot act on is answered with the reason when it names an
 // id to answer. The answer goes out as one line, so a refusal carries at most
 // shimwire.MaxAnswerErrorBytes of its reason (shimwire.CutAnswerError): jj's standard error has no
-// bound of its own.
+// bound of its own. An adoption that ran answers the echo of each member it acted on: the fix's
+// directory for fixFrom, and the commit the task's working copy moved to for moveTo.
 func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	result := shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true}
 	if err := request.Validate(); err != nil {
@@ -166,8 +177,10 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 			return
 		}
 		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
-	} else if err := s.runAdoption(request); err != nil {
+	} else if fixDir, movedTo, err := s.runAdoption(request); err != nil {
 		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
+	} else {
+		result.FixDir, result.MovedTo = fixDir, movedTo
 	}
 	s.toDaemon(result)
 }
@@ -185,6 +198,14 @@ func describedArgs(jj, dir string) []string {
 	return []string{jj, "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", dir}
 }
 
+// fixWorkArgs prints each commit of the fix's working copy at fix that holds work over fixFrom: a
+// commit between fixFrom and the working copy, the working copy included, that changes something.
+// It prints nothing where the working copy does not stand over fixFrom, or holds nothing over it.
+// It is no --ignore-working-copy read, so it records the copy's last edits first.
+func fixWorkArgs(jj, fix, fixFrom string) []string {
+	return []string{jj, "log", "-r", fixFrom + "::@ ~ " + fixFrom + " ~ empty()", "--no-graph", "-T", `commit_id ++ "\n"`, "-R", fix}
+}
+
 // runAdoption runs the adoption under the requested identity and budget, in the workspace the
 // shim's environment names in LEGION_WORKSPACE and with PATH's jj (openWorkspace): the one the
 // pane's own shell runs, since no runtime pins a jj on a pane or pod. Every role of an issue
@@ -193,29 +214,257 @@ func describedArgs(jj, dir string) []string {
 // work would land in the previous role's commit, authored by the previous role's App. One read
 // decides which of the two changes the working copy needs, and only that one runs: `jj metaedit
 // --update-author` on an undescribed @ (adoptionArgs), `jj new` on a described one. That read, like
-// any jj command run without --ignore-working-copy, first snapshots the working copy. Both commands
-// run in the workspace itself, never in the shim's own directory: jj reads the repository of the
-// directory it runs in, whatever -R names, and migrates that repository's legacy configuration
-// (workspace.RunCommand). A failure is answered in workspace.RunCommand's words, which name the
-// command and its exit or its timeout, with jj's standard error: the daemon decides what a failed
-// adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and refuses; a
-// PATH without jj refuses naming jj and the PATH searched (openWorkspace).
-func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
+// any jj command run without --ignore-working-copy, first snapshots the working copy. Every command
+// runs in the working copy it acts on, never in the shim's own directory: jj reads the repository
+// of the directory it runs in, whatever -R names, and migrates that repository's legacy
+// configuration (workspace.RunCommand). A failure is answered in workspace.RunCommand's words,
+// which name the command and its exit or its timeout, with jj's standard error: the daemon decides
+// what a failed adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and
+// refuses; a PATH without jj refuses naming jj and the PATH searched (openWorkspace).
+//
+// A request may name two commits. With MoveTo, the task's working copy moves first: one read of
+// the commit it stands on, and a `jj new` onto MoveTo only where that is another commit; the answer
+// names MoveTo as moved to. With FixFrom, the adoption is of the fix's working copy, beside the
+// workspace (workspace.FixDir), in place of the workspace's: a jj workspace of the same clone added
+// where none is there, on the head of the fix's own branch where the request names it (FixBranch)
+// and origin holds it, and on FixFrom otherwise (fixStart). Either is read to the commit it names
+// before anything is made at it, and the task's branch is fetched where the clone has not got that
+// commit (startCommit); the copy the add made is read back, so an adoption answers the fix's
+// directory only where the copy stands on the commit the fix was given.
+//
+// Where a copy is there, it is brought up to date, and one read (fixWorkArgs) asks whether it holds
+// work of its own over FixFrom — a commit, or an edit the read itself records. A copy that holds
+// work is resumed only where it is this fix's (fixOfCopy): the adoption before a fix's task runs
+// again each time that task is sent again. A copy that holds the work of another fix of the task —
+// one whose claim failed, say, leaving commits it never pushed — is not resumed: this fix starts on
+// a fresh commit over FixFrom, as a copy with no work of its own does, and the other fix's commits
+// stay in the clone, which abandons none of them, under the ids the shim logs. Then the copy is
+// bound to this fix (bindCopyToFix) and the adoption command runs there, so the fix's commits carry
+// the role's identity. The answer names that directory.
+// Every workspace of the clone shares its store, so a commit a step makes in the workspace is there
+// in the fix's working copy by its id, and a rewrite made from the fix's working copy of a commit
+// under the workspace's working copy leaves that working copy stale. So where the fix's working
+// copy exists, every adoption that acts on the workspace brings it up to date first (`jj workspace
+// update-stale`).
+func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (fixDir, movedTo string, err error) {
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	opened, done, err := s.openWorkspace("adopt", env, time.Duration(request.TimeoutMs)*time.Millisecond)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	defer done()
-	dir, jj, run := opened.dir, opened.jj, opened.run
+	dir, jj, run, runIn := opened.dir, opened.jj, opened.run, opened.runIn
+	fix := workspace.FixDir(dir)
+	fixMade, err := workspace.HoldsJJ(fix)
+	if err != nil {
+		return "", "", err
+	}
+	if fixMade && (request.MoveTo != "" || request.FixFrom == "") {
+		if _, err := run(nil, jj, "workspace", "update-stale", "-R", dir); err != nil {
+			return "", "", err
+		}
+	}
+	if request.MoveTo != "" {
+		parent, err := run(nil, jj, "log", "-r", "@-", "--no-graph", "-T", "commit_id", "-R", dir)
+		if err != nil {
+			return "", "", err
+		}
+		if parent != request.MoveTo {
+			if _, err := run(nil, jj, "new", request.MoveTo, "-R", dir); err != nil {
+				return "", "", err
+			}
+		}
+		movedTo = request.MoveTo
+	}
+	if request.FixFrom != "" {
+		if fixMade {
+			if _, err := runIn(fix, nil, jj, "workspace", "update-stale", "-R", fix); err != nil {
+				return "", "", err
+			}
+			at, err := startCommit(request, request.FixFrom, jj, fix, runIn)
+			if err != nil {
+				return "", "", err
+			}
+			work, err := runIn(fix, nil, fixWorkArgs(jj, fix, at)...)
+			if err != nil {
+				return "", "", err
+			}
+			bound, err := fixOfCopy(fix)
+			if err != nil {
+				return "", "", err
+			}
+			resumes := work != "" && boundToFix(bound, request.FixBranch)
+			if work != "" && !resumes {
+				s.log.Printf("[worker-shim] the working copy %s holds the work of %s, not of %s: its commits (%s) stay in the clone, and this fix starts on a fresh commit over %s",
+					fix, bound, request.FixBranch, strings.Join(strings.Fields(work), " "), at)
+			}
+			if !resumes {
+				if _, err := runIn(fix, nil, jj, "new", at, "-R", fix); err != nil {
+					return "", "", err
+				}
+			}
+		} else {
+			from, err := fixStart(request, dir, jj, run)
+			if err != nil {
+				return "", "", err
+			}
+			at, err := startCommit(request, from, jj, dir, runIn)
+			if err != nil {
+				return "", "", err
+			}
+			if _, err := run(nil, jj, "workspace", "add", "--name", filepath.Base(fix), "-r", at, fix, "-R", dir); err != nil {
+				return "", "", err
+			}
+			made, err := runIn(fix, nil, jj, "log", "-r", "@-", "--no-graph", "--ignore-working-copy", "-T", "commit_id", "-R", fix)
+			if err != nil {
+				return "", "", err
+			}
+			if made != at {
+				return "", "", fmt.Errorf("worker-shim: the fix's working copy %s stands on %s, and the fix starts at %s", fix, made, at)
+			}
+		}
+		if err := bindCopyToFix(fix, request.FixBranch); err != nil {
+			return "", "", err
+		}
+		if _, err := runIn(fix, nil, adoptionArgs(jj, fix)...); err != nil {
+			return "", "", err
+		}
+		return fix, movedTo, nil
+	}
 	described, err := run(nil, describedArgs(jj, dir)...)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	change := adoptionArgs(jj, dir)
 	if described != "" {
 		change = []string{jj, "new", "-R", dir}
 	}
-	_, err = run(nil, change...)
-	return err
+	if _, err := run(nil, change...); err != nil {
+		return "", "", err
+	}
+	return "", movedTo, nil
 }
+
+// fixStart is the revision a fix's working copy is made at where the directory beside the
+// workspace holds none: the head of the fix's own branch on origin where the request names that
+// branch and origin holds it, so a fix that pushed its work at an update round finds it on the pod
+// that replaced the round's, and FixFrom otherwise. One read of origin in the clone's git directory
+// (`git ls-remote`, which answers an absent branch with no line and exit 0) decides, and only where
+// it names a commit does a fetch of that one branch run, in the workspace, so the clone holds the
+// branch's head as a remote bookmark. A track of that bookmark follows: a fetch leaves it
+// untracked, and jj refuses to push a bookmark over a remote one it does not track and holds the
+// commits of one immutable. Tracked, the branch is the fix's in this clone as it was in the pod
+// that pushed it, so the fix's next push of it succeeds and the fix can rebase its own commits.
+func fixStart(request shimwire.AdoptWorkingCopy, dir, jj string, run func(stdin []byte, args ...string) (string, error)) (string, error) {
+	if request.FixBranch == "" {
+		return request.FixFrom, nil
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return "", fmt.Errorf("worker-shim: git is not on PATH (%s); no git to read the fix's branch %s with", os.Getenv("PATH"), request.FixBranch)
+	}
+	gitDir, err := workspace.GitDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("worker-shim: %w", err)
+	}
+	pushed, err := run(nil, git, "--git-dir="+gitDir, "ls-remote", "origin", "refs/heads/"+request.FixBranch)
+	if err != nil {
+		return "", err
+	}
+	if pushed == "" {
+		return request.FixFrom, nil
+	}
+	if _, err := run(nil, jj, "git", "fetch", "--remote", "origin", "--branch", request.FixBranch, "-R", dir); err != nil {
+		return "", err
+	}
+	if _, err := run(nil, jj, "bookmark", "track", "exact:"+request.FixBranch, "--remote", "exact:origin", "-R", dir); err != nil {
+		return "", err
+	}
+	return request.FixBranch + "@origin", nil
+}
+
+// startCommit is the commit rev names in the clone the working copy at dir is of, with the task's
+// branch fetched where the clone has not got it. A fix starts at the head its check failed at
+// (record.SuperviseRequest.FixFrom), which is the head GitHub recorded for the task's branch, and
+// a pod's clone holds the branch as its last fetch left it: a person's push after that fetch
+// gives the daemon a commit this clone has never had. Every command of the adoption that names
+// such a commit fails, and `jj workspace add` fails after it has made the copy's directory and
+// registered its workspace, so the fix's task is never sent and the next adoption finds a copy
+// standing nowhere. One read says whether the clone has the commit; where it has not, one fetch
+// of the task's branch, whose head that commit is or is under, brings it, and the read runs
+// again. The task's branch is the fix's own branch's issue (taskBranchOf), and a request that
+// names no branch of a fix names no branch to fetch, so the read's own failure is the answer.
+// Both reads ignore dir's working copy: they ask what the clone holds, and record nothing of the
+// edits of the step or the fix whose copy dir is.
+func startCommit(request shimwire.AdoptWorkingCopy, rev, jj, dir string, runIn func(dir string, stdin []byte, args ...string) (string, error)) (string, error) {
+	read := func() (string, error) {
+		return runIn(dir, nil, jj, "log", "-r", rev, "--no-graph", "--ignore-working-copy", "-T", "commit_id", "-R", dir)
+	}
+	at, err := read()
+	if err == nil {
+		return at, nil
+	}
+	branch := taskBranchOf(request.FixBranch)
+	if branch == "" {
+		return "", err
+	}
+	if _, err := runIn(dir, nil, jj, "git", "fetch", "--remote", "origin", "--branch", branch, "-R", dir); err != nil {
+		return "", err
+	}
+	at, err = read()
+	if err != nil {
+		return "", fmt.Errorf("worker-shim: the fix starts at %s, which the clone has not got after a fetch of %s: %w", rev, branch, err)
+	}
+	return at, nil
+}
+
+// taskBranchOf is the branch of the task the fix of fixBranch is of: a branch beside a fix names
+// its issue in its first part (claim.BesideBranch's form, which workflow's besideBranchFix reads
+// the same way), and the task's branch is that issue's (claim.IssueBranch). It is "" for a name of
+// any other form, the empty name of a request that names no branch of the fix among them.
+func taskBranchOf(fixBranch string) string {
+	parts := strings.Split(fixBranch, "/")
+	if !claim.IsBesideBranch(fixBranch) || len(parts) != 6 {
+		return ""
+	}
+	return claim.IssueBranch(parts[1])
+}
+
+// fixCopyMark is the file that names the fix a working copy beside the workspace is of, under
+// that copy's own `.jj` directory: jj keeps `.jj` out of the working copy's snapshot, so the name
+// never reaches a commit the fix pushes, and the file goes when the copy does.
+const fixCopyMark = "legion-fix"
+
+// fixOfCopy is the fix the copy at fix is of, by the branch that is one fix's own name
+// (bindCopyToFix), and "" where the copy names none: a copy made or adopted only by requests that
+// named no branch of a fix, which bind nothing. Such a copy is taken as this fix's, as every
+// request took the copy before a copy was bound to anything (boundToFix).
+func fixOfCopy(fix string) (string, error) {
+	named, err := os.ReadFile(filepath.Join(fix, ".jj", fixCopyMark))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("worker-shim: read the fix the working copy %s is of: %w", fix, err)
+	}
+	return strings.TrimSpace(string(named)), nil
+}
+
+// bindCopyToFix names branch as the fix the copy at fix is of, which the next adoption reads
+// (fixOfCopy). A request that names no branch of a fix binds nothing and leaves what is there:
+// every start and resume of a fix of a task names its branch (record.SuperviseRequest.FixBranch),
+// and a request without one is a caller that has no fix to tell this copy from another's.
+func bindCopyToFix(fix, branch string) error {
+	if branch == "" {
+		return nil
+	}
+	if err := os.WriteFile(filepath.Join(fix, ".jj", fixCopyMark), []byte(branch+"\n"), 0o600); err != nil {
+		return fmt.Errorf("worker-shim: name the fix the working copy %s is of: %w", fix, err)
+	}
+	return nil
+}
+
+// boundToFix is whether a copy bound to bound is the copy of the fix whose branch is branch: its
+// own, or one bound to no fix (fixOfCopy). A request with no branch of a fix takes the copy as it
+// finds it, as every such request did before a copy was bound to anything.
+func boundToFix(bound, branch string) bool { return bound == "" || branch == "" || bound == branch }

@@ -20,7 +20,7 @@ const (
 	// reasonNoResult is a check with no result at the head.
 	reasonNoResult = "no_result"
 	// ciNotCompleted is the case of a check CI proves whose run at the head has not concluded.
-	ciNotCompleted = "not_completed"
+	ciNotCompleted = record.CINotCompleted
 )
 
 // testingJudgement is what the states the daemon holds at the tested head say of each check of the
@@ -45,20 +45,16 @@ type testingJudgement struct {
 // known yet whether a CI job runs it, since Dispatch tells that only in a state, by naming the
 // job's case (ci_case) there.
 //
-// leaveCI leaves out each check a CI job runs, the one whose held state names its job's case,
-// whatever that state is. That is the testing move once the end of a task holds its CI checks: a
-// failure of such a check reaches the implementer at once by a message of its own (tellCIFailure),
-// and the review, the acceptance and the end of the task read it. The testing move passes
-// Config.TestingLeavesCI, which the daemon wires false until the change that builds that hold at
-// the end of a task turns it on, since a task whose steps after testing hold no review and no
-// acceptance would otherwise end with no gate on its CI checks. Reading every check, one with no result while
-// its CI run goes on waits as well, since that is no state the check ends at, and a fail or a pass
-// and a fail is a fail whatever its CI run says.
+// Each check a CI job runs, the one whose held state names its job's case, is left out, whatever
+// that state is: its failure is the fix's or the owner's (fixRule), or reaches the implementer by
+// its own message where no fix takes it (tellCIFailure), and the end of the task holds it until it
+// passes at the task's head (retroHold), so the testing step judges only the checks that no CI job
+// runs.
 //
 // Every other state of a check judged is conclusive, and one that is not yes fails: a fail, a pass
 // and a fail, and a state Dispatch published because a read it needed failed (read_failed), which
 // is a state of the check all the same. false is no set held at the head, which judges nothing.
-func judgeStates(head record.HeadStates, leaveCI bool) (testingJudgement, bool) {
+func judgeStates(head record.HeadStates) (testingJudgement, bool) {
 	if head.Checks == nil {
 		return testingJudgement{}, false
 	}
@@ -68,7 +64,7 @@ func judgeStates(head record.HeadStates, leaveCI bool) (testingJudgement, bool) 
 		switch {
 		case !held:
 			judgement.Waiting = append(judgement.Waiting, check)
-		case leaveCI && state.CICase != "":
+		case state.CICase != "":
 			continue
 		case state.State == stateYes:
 			continue
@@ -111,9 +107,8 @@ func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest)
 // holds through the record's (record.Store.StatesFenceReached), since each event the tester's
 // results caused has a serial at or below it: below that fence the states held may be the ones from
 // before those results. At the fence it decides only once every check it reads holds a conclusive
-// state there (judgeStates with Config.TestingLeavesCI: every check, those a CI job runs among
-// them, as the daemon wires it, until the end of a task holds the checks a CI job runs; only the
-// checks that no CI job runs, once the change that builds that hold turns it on): a head with no
+// state there (judgeStates: the checks that no CI job runs, since the end of the task holds each
+// one a CI job runs): a head with no
 // set held, or a check the judgement waits for, a check with no state among them, moves nothing,
 // whatever the other checks read, since a later state of the waiting check changes what the task
 // must name. Then every check it reads passing moves the issue on to the task's next step, and the
@@ -143,10 +138,10 @@ func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return err
 	}
-	judgement, judged := judgeStates(held, e.cfg.TestingLeavesCI)
+	judgement, judged := judgeStates(held)
 	switch {
 	case !judged:
-		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{Head: head, WaitsFor: waitsForSet})
+		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{Head: head, WaitsFor: waitsForSet, PullRequestHead: offHead(head, pr)})
 	case len(judgement.Waiting) > 0:
 		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{Head: head, WaitsFor: waitsForChecks, Waiting: judgement.Waiting})
 	case len(judgement.Failing) > 0:
@@ -193,15 +188,28 @@ const (
 // testingMove is one wait or one move back of the testing move at the tested head Head
 // (decideTesting): a wait names what it waits for (WaitsFor), the fence's serial (Serial) and the
 // checks whose states it waits for (Waiting); a move back has no WaitsFor, and names each check
-// that does not pass (Failing). Its sentence is the words of the task of the step the work goes
-// back to and of the architect's notice, and its notice carries the sentence and these values, so
-// the words and the fields are one value.
+// that does not pass (Failing). A wait for the set of a head that no open pull request heads names
+// the head the pull request stands at instead (PullRequestHead), since no state will come there.
+// Its sentence is the words of the task of the step the work goes back to and of the architect's
+// notice, and its notice carries the sentence and these values, so the words and the fields are
+// one value.
 type testingMove struct {
-	Head     string
-	WaitsFor string
-	Serial   int64
-	Waiting  []string
-	Failing  []record.FailingCheck
+	Head            string
+	WaitsFor        string
+	Serial          int64
+	Waiting         []string
+	Failing         []record.FailingCheck
+	PullRequestHead string
+}
+
+// offHead is the head the open pull request pr stands at where the tested head is another commit,
+// "" where pr is no open pull request or heads the tested head: a set of check states at a commit
+// that heads no pull request never comes, which the testing move's wait then says (offHeadWaitReason).
+func offHead(tested string, pr *record.PullRequest) string {
+	if pr == nil || pr.State != record.PullRequestOpen || pr.HeadSHA == "" || pr.HeadSHA == tested {
+		return ""
+	}
+	return pr.HeadSHA
 }
 
 // sentence is the move in words, written from its fields alone.
@@ -213,6 +221,9 @@ func (m testingMove) sentence() string {
 	case waitsForFence:
 		return fmt.Sprintf("the move waits for Dispatch's check states through serial %d at %s", m.Serial, m.Head)
 	case waitsForSet:
+		if m.PullRequestHead != "" {
+			return offHeadWaitReason(m.Head, m.PullRequestHead)
+		}
 		return "the move waits for Dispatch's states at " + m.Head
 	case waitsForChecks:
 		return "the move waits for the states of " + strings.Join(m.Waiting, ", ") + " at " + m.Head
@@ -274,12 +285,11 @@ func (e *Engine) testingWaits(ctx context.Context, tx pgx.Tx, issue record.Issue
 // the agent's objects are written from, where they are written: transition calls it beside
 // noticeFor for the tester's moves back and on (TriggerTesterFailed, TriggerTesterPassed), with
 // the phase moved to, its head and why.Testing, and testingWaits, at the completion, with waits,
-// the wait's head and the move it gives notice. Its attributes are issue, head, leave_ci (the
-// engine's TestingLeavesCI), move, and, only where m is set, waits_for, waiting and failing (the
-// ids of m's failing checks), so a move with no testingMove logs no check and reads no field of a
-// nil m. decideTesting logs nothing itself.
+// the wait's head and the move it gives notice. Its attributes are issue, head, move, and, only
+// where m is set, waits_for, waiting and failing (the ids of m's failing checks), so a move with
+// no testingMove logs no check and reads no field of a nil m. decideTesting logs nothing itself.
 func (e *Engine) logTestingMove(ctx context.Context, issue, move, head string, m *testingMove) {
-	args := []any{"issue", issue, "head", head, "leave_ci", e.cfg.TestingLeavesCI, "move", move}
+	args := []any{"issue", issue, "head", head, "move", move}
 	if m != nil {
 		failing := make([]string, 0, len(m.Failing))
 		for _, check := range m.Failing {
@@ -301,7 +311,14 @@ func (e *Engine) logTestingMove(ctx context.Context, issue, move, head string, m
 // A newer state of a check a CI job runs that says its job ended at the head without a pass
 // (ciJobFailed), where the state the daemon held there before said no such failure, is told to the
 // implementer at once, in the same transaction and in any phase (tellCIFailure): the failure does
-// not wait for the tester's or the reviewer's step to end, and it moves nothing.
+// not wait for the tester's or the reviewer's step to end, and it moves nothing. A task whose run
+// takes a fix hears of it from the fix rule instead (fixRule).
+//
+// What the daemon holds at the head is read before the writes, and each write's answer is kept, so
+// an accepted change (acceptedChange of the check's state, acceptedSetChange of the head's set)
+// gives each current reader of a task that takes a fix one prompt to read Dispatch again
+// (promptReaders). A higher sequence with the same content changes nothing, and a lower one the
+// store refused tells nothing.
 //
 // While the issue is in testing and its tester has completed, the event decides the testing move
 // again (decideTesting), whatever head it names: an event at another head can still be the one the
@@ -312,31 +329,39 @@ func (e *Engine) checkState(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if _, err := e.store.PutCheckSet(ctx, tx, fact.Key, fact.Repo, fact.Head, fact.Checks, fact.Mark.Seq); err != nil {
+	held, err := e.store.HeadStates(ctx, tx, fact.Key, fact.Repo, fact.Head)
+	if err != nil {
 		return intake.Result{}, err
 	}
+	setWritten, err := e.store.PutCheckSet(ctx, tx, fact.Key, fact.Repo, fact.Head, fact.Checks, fact.Mark.Seq)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	var changed []record.CIStateSnapshot
 	if fact.Check != "" {
-		failed := ciJobFailed(fact.State, fact.CICase)
-		var before record.CheckState
-		var wasHeld bool
-		if failed {
-			held, err := e.store.HeadStates(ctx, tx, fact.Key, fact.Repo, fact.Head)
-			if err != nil {
-				return intake.Result{}, err
-			}
-			before, wasHeld = held.States[fact.Check]
-		}
+		before, wasHeld := held.States[fact.Check]
 		state := record.CheckState{Issue: fact.Key, Repo: fact.Repo, Head: fact.Head, Check: fact.Check,
 			State: fact.State, Reason: fact.Reason, CICase: fact.CICase, Roles: fact.Roles, Seq: fact.Mark.Seq}
 		newer, err := e.store.PutCheckState(ctx, tx, state)
 		if err != nil {
 			return intake.Result{}, err
 		}
-		if failed && newer && !(wasHeld && sameFailure(before, state)) {
+		if ciJobFailed(fact.State, fact.CICase) && newer && !(wasHeld && sameFailure(before, state)) {
 			if err := e.tellCIFailure(ctx, tx, *issue, state); err != nil {
 				return intake.Result{}, err
 			}
 		}
+		if acceptedChange(newer, wasHeld, before, state) {
+			changed = append(changed, snapshotOf(state))
+		}
+	}
+	var set *[]string
+	if acceptedSetChange(setWritten, held.Checks, fact.Checks) {
+		checks := append([]string{}, fact.Checks...)
+		set = &checks
+	}
+	if err := e.promptReaders(ctx, tx, *issue, fact, changed, set); err != nil {
+		return intake.Result{}, err
 	}
 	if err := e.store.PutCheckStateSerial(ctx, tx, fact.Key, fact.Serial); err != nil {
 		return intake.Result{}, err
@@ -389,8 +414,13 @@ func sameFailure(a, b record.CheckState) bool {
 // request has left is no head the implementer works on. It tells no other role, starts no
 // implementer and moves nothing, so the tester or the reviewer that works goes on. Linger holds a
 // member of a closed tree where it stood (record.TreeLingers), so nobody is told there, as
-// tellChecks tells nobody.
+// tellChecks tells nobody. A task whose run takes a fix (record.PlanTask.FixesCI) is told nothing
+// here: the fix rule (fixRule) gives the failure to the step that holds it, or starts the fix, so
+// the implementer hears it once.
 func (e *Engine) tellCIFailure(ctx context.Context, tx pgx.Tx, issue record.Issue, state record.CheckState) error {
+	if fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil || fixesCI {
+		return err
+	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil || pr == nil {
 		return err

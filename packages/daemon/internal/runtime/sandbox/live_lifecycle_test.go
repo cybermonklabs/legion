@@ -426,7 +426,7 @@ func (r *liveRig) checkAdoptWorkingCopy() error {
 	if err := r.ensureRunning(root); err != nil {
 		return err
 	}
-	if err := r.rt.AdoptWorkingCopy(r.ctx, *root.loc, r.identity); err != nil {
+	if _, err := r.rt.AdoptWorkingCopy(r.ctx, *root.loc, r.identity, runtime.Adoption{}); err != nil {
 		return err
 	}
 	note("runtime", "AdoptWorkingCopy(%s, %s <%s>): nil", root.token, r.identity.Name, r.identity.Email)

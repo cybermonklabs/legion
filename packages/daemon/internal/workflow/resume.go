@@ -7,7 +7,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -79,7 +78,7 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 	}
 	for _, owner := range owners.suspended {
 		issue, held := owner.issue, owner.run.Claim
-		if !held.SuspendedBy.ByRule() || !StartFor(owner.run, owner.root, issue.Generation, issue.Phase) {
+		if !held.SuspendedBy.ByRule() || !StartFor(owner.run, owner.root, issue.Generation, WorkStanding(issue, owner.role).Phase) {
 			continue
 		}
 		row, err := e.phaseRow(ctx, tx, issue.Key, owner.role)
@@ -133,7 +132,9 @@ type phaseOwners struct {
 // the boot reads its phase workers by a read of its own (admit's phaseWorkers) and sends only the
 // work of an entry a claim stands behind (owedEntryRoles). It writes nothing.
 //
-// The phase's owner is the role that works the issue's phase (phase.RoleFor) on an issue in the
+// The phase's owners are the workers of the issue's open phase (OpenRoles): the role that works
+// the issue's phase, and the implementer while a fix runs beside its step, whose start the boot
+// builds as the fix's (resumeFix). They are owners on an issue in the
 // workflow whose tree is running — this generation of it, by the one rule every reader of that
 // question asks (record.RunningRoots, record.TreeRuns): its lifecycle stands open under the
 // workflow, its root does not linger, and its root is not itself waiting in the line for the
@@ -172,8 +173,11 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 	}
 	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, facts)}
 	for _, issue := range issues {
-		role := phase.RoleFor(issue.Phase)
-		if role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {
+		if record.OutOfWorkflow(issue.Status) {
+			continue
+		}
+		roles := OpenRoles(issue)
+		if len(roles) == 0 {
 			continue
 		}
 		root, ok := byKey[issue.Tree]
@@ -199,18 +203,20 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if err != nil {
 			return phaseOwners{}, err
 		}
-		token, err := claim.NewToken(project, issue.Key, role)
-		if err != nil {
-			return phaseOwners{}, err
+		for _, role := range roles {
+			token, err := claim.NewToken(project, issue.Key, role)
+			if err != nil {
+				return phaseOwners{}, err
+			}
+			run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
+			if err != nil {
+				return phaseOwners{}, err
+			}
+			if held := run.Claim; held == nil || held.State != supervise.StateSuspended {
+				continue
+			}
+			owners.suspended = append(owners.suspended, suspendedOwner{issue: issue, root: root, role: role, token: token, run: run})
 		}
-		run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
-		if err != nil {
-			return phaseOwners{}, err
-		}
-		if held := run.Claim; held == nil || held.State != supervise.StateSuspended {
-			continue
-		}
-		owners.suspended = append(owners.suspended, suspendedOwner{issue: issue, root: root, role: role, token: token, run: run})
 	}
 	return owners, nil
 }
@@ -239,6 +245,9 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspendedOwner, row record.PhaseRow) (behind bool, err error) {
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
+	}
+	if sent, err := e.resumeFix(ctx, tx, owner.issue, owner.role, row, 0, startMarks{resumeTask: true, ruleResume: true}); sent || err != nil {
+		return false, err
 	}
 	resume, err := e.ResumeTask(ctx, tx, owner.issue)
 	if err != nil {

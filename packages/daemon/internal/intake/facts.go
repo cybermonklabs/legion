@@ -1185,6 +1185,21 @@ type ConflictConfirmDone struct {
 
 func (f ConflictConfirmDone) namedIssue() (string, bool) { return f.Issue, true }
 
+// FixJobRead is the outbox's read of the CI job a fix starts for (record.FixJobRead) finishing:
+// never decoded from an event. Dispatch answered the failed job of fix Fix of Task of issue Key at
+// Generation with its name and the address of its page (Name, URL), or no read found it, and
+// ReadFailed is the last read's error. The workflow then starts the fix, naming the job where the
+// read found one, while the fix still reads its job (record.FixReading).
+type FixJobRead struct {
+	Key                   string
+	Generation            uint64
+	Task                  string
+	Fix                   int
+	Name, URL, ReadFailed string
+}
+
+func (f FixJobRead) namedIssue() (string, bool) { return f.Key, true }
+
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
 // is in implementing with no open or merged pull request recorded: never decoded from an event.
@@ -1288,6 +1303,10 @@ type HandoffComplete struct {
 	// (record.PhaseRow.ReturnTo), and returns a fail the states decide to it. A pass does not use
 	// it. 0 on every other completion, and on a tester's that names none.
 	ReturnTo int
+	// Fix is the fix whose task the completion ends (record.TaskFix), 0 for a completion of no
+	// fix: the route reads it from the entry the claim serves, the running fix's entry. A fix's
+	// completion ends the fix, not the step of the phase the issue stands in.
+	Fix int
 }
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
@@ -1296,7 +1315,9 @@ func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 // architect's request from accepting (Requester claim.RoleArchitect, api's phaseBackward): the
 // claim of the architect, the issue's generation and the run of the step the issue stood in
 // (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
-// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three.
+// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three. Fix is
+// the fix whose task the worker's move ends (record.TaskFix), 0 for a move of no fix: the route
+// reads it from the entry the claim serves, the running fix's entry, as HandoffComplete.Fix is.
 type BackwardMove struct {
 	Issue      string
 	Requester  claim.Role
@@ -1305,6 +1326,7 @@ type BackwardMove struct {
 	By         claim.Token
 	Generation uint64
 	Entry      record.StepEntry
+	Fix        int
 }
 
 func (f BackwardMove) namedIssue() (string, bool) { return f.Issue, true }
@@ -2285,20 +2307,26 @@ func RetryOfHeldParent(issue, holding string) *Refusal {
 // each issue of that hold in the words of the sign-off's refusal of it — the issues beneath it
 // still in the workflow, the roots that rest on its approval still in the workflow, or its open
 // Dispatch children (workflow's acceptanceHold.holding) — and then what starts the retro
-// (HeldParentRetroStarts). It says what is true of the issue for whoever reads it, a person beside
-// a set-back todo included, and carries none of the architect's rules for ending a child, which
-// the architect's own retro-held notice gives.
+// (HeldParentRetroStarts), the hold of the task's end among it. It says what is true of the issue
+// for whoever reads it, a person beside a set-back todo included, and carries none of the
+// architect's rules for ending a child, which the architect's own retro-held notice gives.
 func HeldParentWaitsForChildren(issue, holding string) string {
 	return fmt.Sprintf("%s waits before its retro while %s. %s", issue, holding, HeldParentRetroStarts)
 }
 
 // HeldParentRetroStarts is what starts the retro of a parent held before it (record.HoldForChildren):
 // none of the three holds on its acceptance holding it any longer, which Legion reads again at the
-// settle of each fact and at each admission pass, with nobody acting (workflow's StartHeldRetro).
-// The reason beside a held root's set-back todo, the refusal of a release of the hold
-// (HeldParentWaitsForChildren) and the architect's retro-held notice say it in these words.
+// settle of each fact and at each admission pass, with nobody acting (workflow's StartHeldRetro),
+// unless the task's end holds it before the retro still (RetroUnlessEndHold). The reason beside a
+// held root's set-back todo, the refusal of a release of the hold (HeldParentWaitsForChildren) and
+// the architect's retro-held notice say it in these words.
 const HeldParentRetroStarts = "Legion starts the retro by itself once nothing holds it any longer: no issue beneath it is still in the workflow, " +
-	"no root that rests on its approval is still in the workflow, and no Dispatch child of it is open."
+	"no root that rests on its approval is still in the workflow, and no Dispatch child of it is open. Legion then starts the retro, " +
+	RetroUnlessEndHold + "."
+
+// RetroUnlessEndHold is what a text that tells when Legion starts a retro adds: the hold of the
+// task's end, which can follow the wait that text names (workflow's retroHold, StartHeldRetro).
+const RetroUnlessEndHold = "unless it holds the task before its retro still, while a fix of the task runs or until each check a CI job runs passes at the task's head"
 
 // RetryOfHeldParentUntilTreeRuns is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold
 // where issue, a parent held before its retro (record.HoldForChildren), has no issue holding it any
@@ -2308,15 +2336,16 @@ func RetryOfHeldParentUntilTreeRuns(issue, tree string, lingers bool) *Refusal {
 }
 
 // HeldParentWaitsForTree says why issue, a parent held before its retro that no issue holds any
-// longer, still waits: its retro waits only for its tree, tree, to run. The tree lingers after its
+// longer, still waits: its retro waits for its tree, tree, to run. The tree lingers after its
 // root left the workflow, where lingers says so, and otherwise its root waits in the line for the
-// tree to be opened. The reopen or the promotion that runs the tree starts the retro.
+// tree to be opened. The reopen or the promotion that runs the tree starts the retro, unless the
+// task's end holds it before the retro still (RetroUnlessEndHold).
 func HeldParentWaitsForTree(issue, tree string, lingers bool) string {
 	waits := fmt.Sprintf("its tree %s waits in the line to be opened, and Legion starts the retro once the tree runs", tree)
 	if lingers {
 		waits = fmt.Sprintf("its tree %s lingers after its root left the workflow, and Legion starts the retro once the tree runs again", tree)
 	}
-	return fmt.Sprintf("%s waits before its retro, and no issue holds it any longer: %s.", issue, waits)
+	return fmt.Sprintf("%s waits before its retro, and no issue holds it any longer: %s, %s.", issue, waits, RetroUnlessEndHold)
 }
 
 // ChildInOtherTree is the 409 CHILD_IN_OTHER_TREE refusal of key, a child recorded in the tree of

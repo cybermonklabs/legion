@@ -117,6 +117,10 @@ export interface HandoffReportInput {
   readonly latestHandoff: LatestHandoff;
   /** PATH's jj by default, the one the pane's own shell runs. */
   readonly jj?: JjRunner;
+  /** The directory the completion's work stands in, in place of the pane's `LEGION_WORKSPACE`:
+   * a running fix's working copy beside the workspace (the issue record's `fix.dir`), where the
+   * fix's round stands and pushes from. Absent for every other completion. */
+  readonly dir?: string;
 }
 
 /** The handoff a file-backed phase ends with, by the phase's word, and the role that works it:
@@ -179,19 +183,21 @@ export function paneLatestHandoff(
 
 /** What a completion by `role` reports in the pane while the issue stands at `phase`
  * (`findHandoffReport` with the pane's environment `env` and its Dispatch,
- * `paneLatestHandoff(file, env, cwd, session)`), as each harness's `legion` tool asks it. */
+ * `paneLatestHandoff(file, env, cwd, session)`), as each harness's `legion` tool asks it, read in
+ * `dir` where the tool names one (a running fix's working copy). */
 export function paneHandoffReport(
   file: SessionConfigFile,
   env: NodeJS.ProcessEnv,
   cwd: string,
   session: string
-): (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport> {
-  return (phase, role) =>
+): (phase: LegionPhase, role: LegionRole, dir?: string) => Promise<HandoffReport> {
+  return (phase, role, dir) =>
     findHandoffReport({
       phase,
       role,
       env,
       latestHandoff: paneLatestHandoff(file, env, cwd, session),
+      ...(dir === undefined ? {} : { dir }),
     });
 }
 
@@ -303,7 +309,10 @@ async function standingReport(env: NodeJS.ProcessEnv, jj: JjRunner): Promise<Han
 /** What a completion by `role` reports while the issue stands at `phase`: the report of the phase
  * the completion is of (`completedPhase`). */
 export async function findHandoffReport(input: HandoffReportInput): Promise<HandoffReport> {
-  const { role, env } = input;
+  const { role } = input;
+  // A fix's round stands in the fix's own working copy, so every read of the workspace below is
+  // made there (HandoffReportInput.dir).
+  const env = input.dir === undefined ? input.env : { ...input.env, LEGION_WORKSPACE: input.dir };
   const jj = input.jj ?? pathJj;
   const of = completedPhase(role, input.phase);
   const handoff = FILE_BACKED[of];

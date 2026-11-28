@@ -173,7 +173,8 @@ func stepRecordsPullRequest(issue string, number int) record.PullRequest {
 // root handed to Legion at admitted, its gate opened, its lifecycle under the workflow and its
 // architect's claim a launch a previous daemon began and never recorded, which the boot relaunches.
 // Its pull request is recorded open at stepRecordsHead, which GitHub reports clean, so a review
-// that approves that head ends its round and the implementer's completions find it.
+// that approves that head ends its round and the implementer's completions find it. Dispatch holds
+// no check of it at that head (noChecksAt), so its task's end waits for no CI.
 func (r *stepRecordsRig) seed(rank string, seq int64) {
 	t := r.t
 	t.Helper()
@@ -196,6 +197,7 @@ func (r *stepRecordsRig) seed(rank string, seq int64) {
 	}); err != nil {
 		t.Fatalf("seed %s: %v", r.key, err)
 	}
+	noChecksAt(t, r.st.Pool(), r.key, liveRepo, stepRecordsHead)
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
 	}

@@ -195,10 +195,14 @@ var stepRecordsSeven = []stepWant{
 // A rollback of this release and its roll forward, through the whole daemon and the store it
 // left. The walk stops with Dispatch down and the review sent back, so the implementer's second
 // run is open and the outbox holds the issue's step records and its other writes unsent, beside a
-// count of starts of each step that ran. With the daemon stopped, the operator's way back runs as
-// the roll forward's header carries it (internal/textcheck holds it to docs/kubernetes.md), and
-// every outbox row and every count stands after it as it stood before. The earlier release came
-// before the owner's plan too, so the rollback also takes the way back of the plan's migration
+// count of starts of each step that ran. With the daemon stopped, the ways back run newest first:
+// the way back of the release that starts a fix beside the other steps comes first
+// (rollBackFixBesideSteps), since its migration adds columns to step_starts and plan_tasks, which
+// the two ways back after it drop, and the roll forward then adds them again. Then the operator's
+// way back runs as the roll forward's header carries it (internal/textcheck holds it to
+// docs/kubernetes.md), and every outbox row and every count stands after it as it stood before.
+// The earlier release came before the owner's plan too, so the rollback also takes the way back
+// of the plan's migration
 // (rollBackOwnersPlans), which drops the issue's plan rows: kept, the place of its task would stand
 // at implementing while the earlier release moves the issue to testing. The earlier release's move
 // is then written as the rows this release reads of it: the issue in testing, and the tester's
@@ -222,6 +226,7 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	implementer := r.worker(claim.RoleImplementer)
 	implementer.receive()
 	r.d.stop()
+	r.rollBackFixBesideSteps()
 
 	outbox, starts := r.storeRows(stepRecordsOutboxRows), r.storeRows(stepRecordsStartRows)
 	var stepRows, otherRows int
@@ -380,6 +385,22 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 		r.t.Fatalf("read the way back of the roll forward: %v", err)
 	}
 	r.exec(block)
+}
+
+// rollBackFixBesideSteps runs the way back of the release that starts a fix beside the other steps
+// (migrations.WayBack of migrations.FixBesideSteps), with <PROJECT> the run's project, as an
+// operator runs it with the daemon stopped. That release stands above both releases this rig rolls
+// back, and its migration adds columns to step_starts and plan_tasks, whose ways back drop and
+// recreate them, so a rollback past it runs this one first (docs/kubernetes.md): left recorded, its
+// migration would never run again, and the roll forward would leave those tables without its
+// columns for every daemon of the database.
+func (r *stepRecordsRig) rollBackFixBesideSteps() {
+	r.t.Helper()
+	block, err := migrations.WayBack(migrations.FixBesideSteps)
+	if err != nil {
+		r.t.Fatalf("read the way back of the release that starts a fix beside the other steps: %v", err)
+	}
+	r.exec(strings.ReplaceAll(block, "<PROJECT>", r.cfg.Project))
 }
 
 // rollBackOwnersPlans runs the way back of the migration that adds the plan rows
@@ -628,7 +649,8 @@ func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body a
 
 // seedChildInReviewing records a child of the walk's root, created in Dispatch and held by the
 // daemon's store in reviewing at generation 1, on an open pull request of its own at
-// stepRecordsHead that GitHub reports clean, and answers its key and its pull request's number.
+// stepRecordsHead that GitHub reports clean, where Dispatch holds no check of it (noChecksAt), and
+// answers its key and its pull request's number.
 func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	t := r.t
 	t.Helper()
@@ -649,6 +671,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	}); err != nil {
 		t.Fatalf("seed %s: %v", created.Key, err)
 	}
+	noChecksAt(t, r.st.Pool(), created.Key, liveRepo, stepRecordsHead)
 	return created.Key, number
 }
 

@@ -29,6 +29,7 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 - `no_head`: Dispatch holds no pull request head of the issue.
 
 - `neutral`, `skipped` or `cancelled`: the run concluded and proved nothing.
+  On a task that takes a fix, Legion counts each of these as a failure.
 
 - `github_unreadable`: Dispatch could not read GitHub; treat it as a run still going.
 
@@ -36,12 +37,15 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 
 - The implementer copies each such check's `Pull request line` into the `Checks` block.
   The next role that writes the body reads `dispatch results` again and replaces a no-result line.
+  On a task that takes a fix, a failure at the head goes to the implementer's step or starts a fix, as its role prompt says.
 
 - The tester runs and records only the checks with no `ci_check`.
-  A `ci_check` check goes in `failures` only when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label, whose run is `absent` until the label is on (the last bullet below).
-  A run still going fails no round: say so in `implementerProof.how`.
+  It neither reads nor records a `ci_check` check, which is CI's.
+  Each failure of a check it runs is a fail result on that check in Dispatch, never a field of its handoff.
 
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
+  A check that its task, or a message of a fix, names as a running fix's check is the fix's, and so is its named run: the reviewer may approve while it is red, but that red still holds the merge, and the run must be green before the merge, like any other required check.
+  On a task that takes a fix, a prompt to read Dispatch again comes when a check's state changes at the head: it names no verdict.
 
 - A job the repository runs on a pull request only under a label (on cybermonklabs/legion, the slow suites) does not run without it.
   A job that holds its own steps then has a run concluded `skipped`; a job that calls a workflow, as each such job on cybermonklabs/legion does, has only its own run, under its bare name (`test`), concluded `skipped`, and no job of the called file starts, so the run a check names (`test / test`) is `absent`.
@@ -60,7 +64,7 @@ When the head's checks have settled and no run of the name answers:
    The check's words are right: the implementer adds the label and pushes, and each other role sends the issue back to the implementer for it, as for any check with no pass.
 
 3. Otherwise the check's words are wrong, as a called workflow's job named without its caller is (`test` for `test / test`).
-   Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, the implementer sends it during retro.
+   Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, Legion holds the task before its retro, and the architect reads the name in the `retro-held` notice.
    No role fails the round or requests changes for it.
 
 ## What the evidence is

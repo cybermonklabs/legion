@@ -213,7 +213,13 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
 		},
 		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt,
+		RunningFix: 1,
 	}
+	// The fix the record names, which runs beside the issue's step: the store answers it for the
+	// task the issue's plan holds at its generation.
+	started := projectedAt.Add(-15 * time.Minute)
+	running := record.TaskFix{Issue: held, Generation: 3, Task: "a", Fix: 1, State: record.FixRunning,
+		Check: "unit", Head: "c0de0000000000000000000000000000000000ff", Place: 1, Entry: 6, StartedAt: &started}
 	// The root the child reads its tree's facts from. It does not linger, a linger of the tree
 	// being what suppresses the hold's reason.
 	tree := record.Issue{
@@ -296,6 +302,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	store := projectionStore{
 		issues:      []record.Issue{tree, issue},
 		assignments: map[string][]record.Assignment{root: {drawn}},
+		planTasks:   []record.PlanTask{{Issue: held, Generation: 3, Task: "a"}},
+		fixes:       map[string]record.TaskFix{held: running},
 	}
 	state, err := Project(context.Background(), Inputs{
 		Store: store, Project: "LEGION",
@@ -401,6 +409,11 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,
+			},
+			// The fix the issue's task runs: no row of its implementer names an entry and no claim
+			// of it was given one, so the fix carries neither, and no workspace is named here.
+			"fix": map[string]any{
+				"task": running.Task, "step": running.Place, "check": running.Check, "head": running.Head,
 			},
 			"workers":        map[string]any{},
 			"memoryGroup":    drawn.Variant,

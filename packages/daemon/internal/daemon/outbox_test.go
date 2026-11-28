@@ -226,9 +226,10 @@ func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.Desi
 // upload answers the slug Dispatch files the name under, which for a message's document is its
 // name (record.MessageArtifact), a read of a plan document at a version finds none, since no
 // executor of the outbox reads one, and a read of an ask by its id Dispatch's 404, since it keeps
-// no ask either. It also takes every role-holder publication and keeps none. Every fake of the
-// client that no test drives through a message's document, an ask's read or a role-holder
-// publication embeds it.
+// no ask either. It also takes every role-holder publication and every write of a step record's
+// commits and keeps none, and answers a read of a CI job with none. Every fake of the client that
+// no test drives through a message's document, an ask's read, a role-holder publication, a
+// record's commits or a fix's job read embeds it.
 type noArtifacts struct{}
 
 func (noArtifacts) Artifacts(context.Context, string) ([]dispatch.Artifact, error) {
@@ -248,6 +249,12 @@ func (noArtifacts) Ask(context.Context, string) (dispatch.Ask, error) {
 	return dispatch.Ask{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "ask not found"}
 }
 func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
+func (noArtifacts) PutStepCommits(context.Context, string, string, dispatch.StepWrite, dispatch.StepCommits) error {
+	return nil
+}
+func (noArtifacts) CIJob(context.Context, string, string, string) (dispatch.CIJob, error) {
+	return dispatch.CIJob{}, nil
+}
 
 func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
 	t.Parallel()
@@ -2718,7 +2725,7 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 		{name: "an issue the workflow never recorded", issue: "LEGION-999", queuedFor: phase.Implementing, generation: 1, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := holds(context.Background(), tc.issue, tc.queuedFor, tc.generation)
+			got, err := holds(context.Background(), tc.issue, tc.queuedFor, tc.generation, 0)
 			if err != nil {
 				t.Fatalf("phaseHolds: %v", err)
 			}
@@ -2732,7 +2739,7 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 		Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "phase holds",
 		Phase: phase.Testing, Generation: 2, Status: "testing", Rank: "00000",
 	})
-	implementing, err := holds(context.Background(), "LEGION-208", phase.Implementing, 2)
+	implementing, err := holds(context.Background(), "LEGION-208", phase.Implementing, 2, 0)
 	if err != nil {
 		t.Fatalf("phaseHolds after the phase moved: %v", err)
 	}

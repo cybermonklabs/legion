@@ -87,6 +87,10 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if _, err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
 		return err
 	}
+	// A fix of the run that leaves ends with it and takes no way (dropFixWay).
+	if err := e.dropRunFix(ctx, tx, issue, ""); err != nil {
+		return err
+	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		if issue.Lingers() {
 			return nil

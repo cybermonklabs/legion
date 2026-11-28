@@ -112,8 +112,10 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // reviewer's claim (workflow.Engine.ReviewerSession, read once per pull request that has a
 // candidate), anyone else's against the write access GitHub gives the account as a webhook's
 // review reads it (intake.ResolveAuthorCanWrite with reviewerCanWrite) - and the head the
-// review says it read, and it says of a refusal whether it stands at every head
-// (workflow.RefusedAtEveryHead), which is what this read remembers one by.
+// review says it read, which beside a fix may be the commit the running review step started at
+// (workflow.Engine.ReviewBesideFix, read in the same transaction as the reviewer's session), and
+// it says of a refusal whether it stands at every head (workflow.RefusedAtEveryHead), which is
+// what this read remembers one by.
 //
 // GitHub lists reviews in the order they were created, and a draft keeps its place when it is
 // submitted later, so the list's order decides nothing. Its body is the review's whole body,
@@ -180,7 +182,7 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 		}
 		return 0
 	})
-	var reviewerSession string
+	var reviewerSession, besideFix string
 	sessionRead := false
 	for _, review := range candidates {
 		if w.reviewRefused(review.ID) {
@@ -189,10 +191,13 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 		if !sessionRead {
 			if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
-				reviewerSession, err = w.engine.ReviewerSession(ctx, tx, pr.Issue)
+				if reviewerSession, err = w.engine.ReviewerSession(ctx, tx, pr.Issue); err != nil {
+					return err
+				}
+				besideFix, err = w.engine.ReviewBesideFix(ctx, tx, pr.Issue)
 				return err
 			}); err != nil {
-				return intake.PullRequestReview{}, false, fmt.Errorf("read the session of %s's reviewer: %w", pr.Issue, err)
+				return intake.PullRequestReview{}, false, fmt.Errorf("read the session of %s's reviewer and the commit its review step started at beside a fix: %w", pr.Issue, err)
 			}
 			sessionRead = true
 		}
@@ -200,13 +205,13 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 		if err != nil {
 			return intake.PullRequestReview{}, false, fmt.Errorf("read whether %s may decide review %d: %w", review.Author, review.ID, err)
 		}
-		refusal := w.engine.RefusesRound(resolved, pr, reviewerSession)
+		refusal := w.engine.RefusesRound(resolved, pr, reviewerSession, besideFix)
 		if refusal.Reason == "" {
 			return resolved, true, nil
 		}
 		w.log.Warn("workflow: a review GitHub lists decides nothing; this read passes over it and reads the review below it",
 			"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "review", resolved.ID, "author", resolved.Author,
-			"state", resolved.State, "refused", refusal.Reason, "footer_head", resolved.LegionHead(), "head", pr.HeadSHA)
+			"state", resolved.State, "refused", refusal.Reason, "footer_head", resolved.LegionHead(), "head", pr.HeadSHA, "beside_fix", besideFix)
 		// Only a refusal that stands at every head is remembered: a review refused for the head
 		// its footer names is refused at the head the record holds now, and the next read of the
 		// issue judges it at the head the record holds then; one that waits for the reviewer's

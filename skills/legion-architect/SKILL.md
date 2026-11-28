@@ -33,7 +33,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
    Find the standard solution (a web search, and how two or three well-regarded projects solve it) and cite it in the spec's `Design`.
    Ask a person only what neither settles, with a recommendation.
 
-2. Where you doubt that a design is the right thing to build, state the problem to `task(agent="design-outsider")` and read its answer with `wait`: it asks whether the thing should exist at all, what the smallest thing that gives the person what they asked for is, and what to delete.
+2. Where you doubt that a design is the right thing to build, state the problem to `task(agent="design-outsider")` and read its answer with `wait`.
 
 3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except two kinds it names.
    A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
@@ -77,14 +77,14 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 - Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
   A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
-- While the work is built, a role runs the application from the issue's branch and uses it as its user would:
-  a passing check does not show that a person can do their job with it.
+- While the work is built, a role runs the application from the issue's branch and uses it as its user would.
 
 - For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none. The deployment instructions say how a pod runs one.
 
 ## 5. Retro
 
 Where your acceptance is the task's last step, your `sign_off` starts retro; otherwise the pass of the task's last step starts it, or holds a parent before it.
+A fix or its CI can hold any issue there first (`retro-held`).
 Never message the implementer to start retro.
 A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do while it holds the phase.
 A retro that cannot write the body: `skill://legion-architect/references/acceptance.md`, "Retro's result".
@@ -98,6 +98,7 @@ Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its 
 Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label.
+Beside a running fix, the check its message names is the fix's: it holds no acceptance, and the hold before the retro waits for it.
 Merge holds, finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close

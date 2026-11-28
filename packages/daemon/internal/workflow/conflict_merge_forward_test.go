@@ -500,6 +500,7 @@ func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
 	t.Parallel()
 	every := &record.BaseRules{Required: []string{"ci", "pr-title"}}
 	pool := seedConflictIssue(t, phase.Reviewing, "needs_review", settledGreen("ci", "pr-title"))
+	ciPassedAt(t, pool, "LEGION-208", "sjawhar/legion", conflictHead, "ci", "pr-title")
 	confirmsConflict(t, pool, every)
 	apply := func(after time.Duration, fact intake.Fact) {
 		t.Helper()
@@ -1541,6 +1542,7 @@ func TestAMergersMergeForwardMessageEndsWhenTheIssueMovesBack(t *testing.T) {
 	for _, target := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro} {
 		t.Run(string(target), func(t *testing.T) {
 			pool := seedConflictIssue(t, phase.Merging, "retro", settledGreen("lint"))
+			noChecksAt(t, pool, "LEGION-208", "sjawhar/legion", conflictHead)
 			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 			pr := recordedPR(t, pool, "LEGION-208")
 			issue := storedIssue(t, pool, "LEGION-208")
@@ -1573,6 +1575,7 @@ func TestALandedMergeForwardKeepsItsReviewAfterABackwardMove(t *testing.T) {
 	pool := seedConflictIssue(t, phase.Merging, "retro", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 	landsMergeForward(t, pool)
+	noChecksAt(t, pool, "LEGION-208", "sjawhar/legion", forwardHead)
 	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleMerger,
 		To: phase.Retro, Reason: "retro needs to read the merged code"})
 	pr := recordedPR(t, pool, "LEGION-208")

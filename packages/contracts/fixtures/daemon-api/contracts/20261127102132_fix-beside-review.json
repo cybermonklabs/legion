@@ -1,0 +1,74 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "fix",
+        "fix.check",
+        "fix.dir",
+        "fix.entry",
+        "fix.givenEntry",
+        "fix.head",
+        "fix.step",
+        "fix.task"
+      ],
+      "addValues": {
+        "holdReason": [
+          "ci",
+          "fix"
+        ]
+      }
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.fix",
+        "issues.*.fix.check",
+        "issues.*.fix.dir",
+        "issues.*.fix.entry",
+        "issues.*.fix.givenEntry",
+        "issues.*.fix.head",
+        "issues.*.fix.step",
+        "issues.*.fix.task"
+      ],
+      "addValues": {
+        "admission.held.*.reason": [
+          "ci_at_head",
+          "fix_running"
+        ],
+        "issues.*.holdReason": [
+          "ci",
+          "fix"
+        ]
+      }
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "admission.held.*.reason",
+      "values": [
+        "ci_at_head",
+        "fix_running"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.holdReason",
+      "values": [
+        "ci",
+        "fix"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "holdReason",
+      "values": [
+        "ci",
+        "fix"
+      ]
+    }
+  ]
+}

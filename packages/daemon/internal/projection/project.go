@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // Inputs are the facts one projection is built from: the transaction it reads through, the
@@ -68,6 +69,12 @@ type Inputs struct {
 	// Now is the instant the held rows are read at (record.Store.HeldRows) and their waits are
 	// measured from.
 	Now time.Time
+	// WorkspaceDir is the directory the daemon's runtime places an issue's workspace in, the one
+	// every task the engine composes names (internal/daemon's engineWorkspaceDir), and "" where it
+	// can place none. A running fix's directory is beside it (workspace.FixDir), which the issue's
+	// `fix` names (api.FixView.Dir). Nil places no workspace, and a fix is served with no
+	// directory.
+	WorkspaceDir func(record.Issue) string
 }
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
@@ -115,8 +122,10 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		return api.State{}, err
 	}
 	taskCounts := make(map[string]record.ReturnCounts, len(planTasks))
+	tasks := make(map[string]string, len(planTasks))
 	for _, task := range planTasks {
 		taskCounts[task.Issue] = task.Counts
+		tasks[task.Issue] = task.Task
 	}
 	place := declaredPlaces(in.Experiments)
 	slots, err := in.Store.Slots(ctx, in.Tx)
@@ -337,6 +346,21 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if handshakeRole != "" {
 			view.EntryQueuedAt, view.EntryConfirmedAt =
 				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
+		}
+		// The fix that runs beside the issue's step, which the issue record names
+		// (record.Issue.RunningFix): read for that issue alone, through the one read the
+		// completion route makes of the fix a claim works (api.RunningFixOf), so the state names
+		// the fix the route takes a completion of. Its two entries are the implementer's, read as
+		// the pair above is read for the role of the issue's phase: the fix raised the
+		// implementer's row, and its task is queued to the implementer's claim.
+		fix, err := api.RunningFixOf(ctx, in.Tx, in.Store, &issue, tasks[issue.Key])
+		if err != nil {
+			return api.State{}, err
+		}
+		if fix != nil {
+			view.Fix = &api.FixView{Task: fix.Task, Step: fix.Place, Check: fix.Check, Head: fix.Head,
+				Dir: fixDir(in.WorkspaceDir, issue), Entry: record.PhaseRowOf(phases, claim.RoleImplementer).Entry,
+				GivenEntry: entries[issueRole{issue: issue.Key, role: claim.RoleImplementer}].given}
 		}
 
 		var pr *record.PullRequest
@@ -841,6 +865,16 @@ func handshakeTimes(h supervise.EntryHandshake, generation uint64) (*time.Time, 
 		confirmed = &at
 	}
 	return queued, confirmed
+}
+
+// fixDir is the directory of the working copy a fix of issue works in, beside the workspace
+// workspaceDir places the issue's roles in, as the shim makes it from its own workspace
+// (workspace.FixDir, which owns the rule). It is "" where no function places a workspace.
+func fixDir(workspaceDir func(record.Issue) string, issue record.Issue) string {
+	if workspaceDir == nil {
+		return ""
+	}
+	return workspace.FixDir(workspaceDir(issue))
 }
 
 // checkView is an open production check as the state shows it (api.CheckView): the role the check

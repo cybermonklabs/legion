@@ -212,6 +212,17 @@ type Delivery struct {
 	// release before this one, an operator or a delivery the release before stored can be, is sent
 	// with the daemon's sentences naming no commit and no entry at its end.
 	RoundNamed bool
+	// Fix is the fix of the issue's task this task is of, from the start that queued it
+	// (RequestDeliver.Fix), 0 for a task of no fix. FixFrom is the head the fix's working copy is
+	// made at and FixBranch the fix's own branch (claim.BesideBranch), which only a fix's task
+	// names, and MoveTo the head the task's working copy moves to before the task, "" for none. The
+	// send's adoption names them (adopt), and a shim that answers no echo of one it was asked holds
+	// the task (runtime.ErrAdoptionUnsupported). They are persisted with the delivery, so a restart
+	// sends the same adoption.
+	Fix       int
+	FixFrom   string
+	MoveTo    string
+	FixBranch string
 }
 
 // StillWorked says whether a claim in state will still work this task as the task of generation's
@@ -607,7 +618,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(),
-		RoundNamed: request.RoundNamed}
+		RoundNamed: request.RoundNamed, Fix: request.Fix, FixFrom: request.FixFrom, MoveTo: request.MoveTo, FixBranch: request.FixBranch}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
@@ -1026,8 +1037,13 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// it for all of them: an adoption run while another role is in a turn moves that role's worker
 	// onto a fresh commit mid-write, and the work it goes on to do lands authored by this role —
 	// a review App's adoption took the implementer's next commit that way (dispatch://INFRA-714).
-	// The task waits for that turn instead. Nothing is written and nothing moves: the delivery is
-	// left exactly as it was, and the hold is decided again, from the claims as they stand then,
+	// The task waits for that turn instead. The hold is scoped to each working copy the task's
+	// adoption rewrites (copiesOf): a fix works a copy of its own beside the shared one, so a fix's
+	// task that rewrites only that copy waits for no turn in the shared copy, and a task of the
+	// shared copy waits for no turn of such a fix, which writes nothing there; a task that moves
+	// the shared copy (Delivery.MoveTo) rewrites it, fix or not, and waits for turns there. Nothing
+	// is written and nothing moves: the delivery is left exactly as it was, and the hold is decided
+	// again, from the claims as they stand then,
 	// at the next trigger — the turn's end elsewhere on the issue, which the daemon posts here
 	// (IssueTurnEnded), the sweep's observation, the shim's hello, this claim's own ready. That is
 	// what keeps the task from being stranded by a turn that never ends: a claim whose process
@@ -1047,7 +1063,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// with no agent round trip in it. Two sends that start inside each other's tail are what
 	// remains, and no answer read outside the other machine's lock can rule that out.
 	if m.adopts(*p) {
-		if other, inTurn := m.issueInTurn(); inTurn {
+		if other, inTurn := m.issueInTurn(copiesOf(*p)); inTurn {
 			m.log.Info("supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share",
 				"delivery", p.ID, "issue", m.claim.Issue, "inTurn", other)
 			return nil
@@ -1413,16 +1429,18 @@ func (m *Machine) relaunchAfterDrop(ctx context.Context) error {
 	return m.sendPending(ctx)
 }
 
-// phaseHolds asks whether the issue is still in the phase and run this task was queued for. A delivery
-// that names no phase is nobody's to drop — an operator's own, an architect's — and is never put
-// to the answer at all, so the exemption this package documents is this package's own rather
-// than a promise every implementation has to keep. A daemon with no workflow configured supplies
-// no answer, and every delivery holds.
+// phaseHolds asks whether this task is still its issue's work: the issue is still in the phase and
+// run it was queued for, or, for a fix's task (Delivery.Fix), that fix still runs on that run,
+// whatever phase the issue stands in, since it runs beside the step of the phase (the daemon
+// answers with record.PhaseHolds). A delivery that names no phase is nobody's to drop — an
+// operator's own, an architect's — and is never put to the answer at all, so the exemption this
+// package documents is this package's own rather than a promise every implementation has to keep.
+// A daemon with no workflow configured supplies no answer, and every delivery holds.
 func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 	if m.deps.PhaseHolds == nil || d.Phase == "" {
 		return true, nil
 	}
-	holds, err := m.deps.PhaseHolds(ctx, m.claim.Issue, d.Phase, d.Generation)
+	holds, err := m.deps.PhaseHolds(ctx, m.claim.Issue, d.Phase, d.Generation, d.Fix)
 	if err != nil {
 		return false, fmt.Errorf("read the phase of %s: %w", m.claim.Token, err)
 	}
@@ -1647,23 +1665,66 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 // is the issue's rather than this claim's: an adoption made for a prompt that writes no phase
 // commit only takes the workspace from whichever role is working in it (dispatch://INFRA-714). A
 // daemon with no GitHub Apps (Deps.Identity nil) adopts nothing at all, and neither does the
-// project's controller, which works no checkout.
+// project's controller, which works no checkout. A fix's task is a phase task too: its commits
+// carry the role's identity, in the fix's working copy the same adoption makes (adopt).
 func (m *Machine) adopts(d Delivery) bool {
 	return m.deps.Identity != nil && m.claim.Role != claim.RoleController && d.Phase != ""
 }
 
-// issueInTurn names another claim of this claim's issue whose agent is in a turn now, or whose
-// prompt is on its way to one, when there is such a claim. The answer is the state those claims'
-// machines keep (Deps.IssueInTurn reads StateWorking, which a turn's start sets and its end
-// clears, and the send in flight those machines publish beside it) rather than a second record of
-// who is in a turn kept beside them: the machines' own state is the only account that moves with
-// everything that ends a turn — the agent's own end of it, a process found dead, a suspension, a
-// close — where a record of turn times would have to be told of each of those again.
-func (m *Machine) issueInTurn() (claim.Token, bool) {
+// WorkingCopies is a set of an issue's working copies: CopyIssue, the workspace the issue's roles
+// share (LEGION_WORKSPACE), and CopyFix, a fix's own copy beside it, which the shim makes and moves
+// (its FixDir). The turn hold guards each working copy an adoption rewrites (sendPending's hold,
+// Deps.IssueInTurn).
+type WorkingCopies uint8
+
+const (
+	// CopyIssue is the working copy the issue's roles share.
+	CopyIssue WorkingCopies = 1 << iota
+	// CopyFix is a fix's own working copy.
+	CopyFix
+)
+
+// copiesOf is each working copy the adoption before d rewrites, which is what the shim does with
+// d's two members (Delivery.FixFrom, Delivery.MoveTo): the fix's own copy where d names the head
+// it is made at, else the shared copy, which the adoption hands the role's identity; and the shared
+// copy too where d names a head it moves to first. It reads the members, not d.Fix, because the
+// members are what the adoption acts on: a fix's task that names no head of its own copy adopts
+// the shared one, and one that moves the shared copy rewrites it, fix or not.
+func copiesOf(d Delivery) WorkingCopies {
+	copies := CopyIssue
+	if d.FixFrom != "" {
+		copies = CopyFix
+	}
+	if d.MoveTo != "" {
+		copies |= CopyIssue
+	}
+	return copies
+}
+
+// servedCopies is each working copy the delivery a claim serves touches, pending or confirmed —
+// the claim holds it until it is retired (Claim.Pending) — and the shared copy for a claim that
+// serves none: a turn no task started, an Envoy message's among them, is held to work there, as is
+// every turn of a task whose adoption rewrote the shared copy.
+func servedCopies(pending *Delivery) WorkingCopies {
+	if pending == nil {
+		return CopyIssue
+	}
+	return copiesOf(*pending)
+}
+
+// issueInTurn names another claim of this claim's issue whose agent is in a turn in one of copies
+// now, or whose prompt is on its way to one, when there is such a claim. The answer is the state
+// those claims' machines keep (Deps.IssueInTurn reads StateWorking, which a turn's start sets and
+// its end clears, the send in flight those machines publish beside it, and the working copies each
+// serves) rather than a second record of who is in a turn kept beside them: the machines' own
+// state is the only account that moves with everything that ends a turn — the agent's own end of
+// it, a process found dead, a suspension, a close — where a record of turn times would have to be
+// told of each of those again.
+func (m *Machine) issueInTurn(copies WorkingCopies) (claim.Token, bool) {
 	if m.deps.IssueInTurn == nil || m.claim.Issue == "" {
 		return "", false
 	}
-	return m.deps.IssueInTurn(m.claim.Issue, m.claim.Token)
+	return m.deps.IssueInTurn(m.claim.Issue, m.claim.Token, copies)
 }
 
 // adopt hands the working copy the role's App identity before the phase task d reaches the agent,
@@ -1680,6 +1741,15 @@ func (m *Machine) issueInTurn() (claim.Token, bool) {
 // with the shim's own work inside it. The refusals are logged where the send's outcome is
 // (refused); without this line nothing in the log tells which tasks adopted the working copy,
 // which is what a production check reads to see the rule held (dispatch://INFRA-2695).
+//
+// The adoption names d's fix's commit, the fix's own branch and its move (Delivery.FixFrom,
+// FixBranch, MoveTo): the shim makes or moves the fix's working copy, at the fix's branch where it
+// makes it and origin holds the branch, and adopts it in the workspace's place, and moves the task's
+// working copy first. A shim echoes each member it acted on: the fix's working copy (FixDir) for
+// the fix's commit and its branch, the commit for the move. An answer that lacks the echo of a
+// member d named is a shim built before the members, which ignored them and adopted the task's
+// working copy as it always did; the task must not run there, so the send fails with an error that
+// wraps runtime.ErrAdoptionUnsupported, which the refusal charges nothing (table.go's refused).
 func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locator, d *Delivery) error {
 	if loc == nil {
 		return fmt.Errorf("adopt the working copy of %s: the claim has no locator", m.claim.Token)
@@ -1689,8 +1759,14 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 		return fmt.Errorf("%w: the git identity of %s: %w", runtime.ErrIdentityUnavailable, m.claim.Token, err)
 	}
 	started := m.deps.Clock.Now()
-	if err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id); err != nil {
+	adoption := runtime.Adoption{FixFrom: d.FixFrom, MoveTo: d.MoveTo, FixBranch: d.FixBranch}
+	adopted, err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id, adoption)
+	if err != nil {
 		return err
+	}
+	if ((d.FixFrom != "" || d.FixBranch != "") && adopted.FixDir == "") || adopted.MovedTo != d.MoveTo {
+		return fmt.Errorf("%w: adopt the working copy of %s for delivery %s naming fixFrom %q, fixBranch %q and moveTo %q: the shim answered fixDir %q and movedTo %q",
+			runtime.ErrAdoptionUnsupported, m.claim.Token, d.ID, d.FixFrom, d.FixBranch, d.MoveTo, adopted.FixDir, adopted.MovedTo)
 	}
 	m.log.Info("supervise: the working copy was adopted for the phase task",
 		"delivery", d.ID, "phase", string(d.Phase), "identity", id.Name, "took", m.deps.Clock.Now().Sub(started))

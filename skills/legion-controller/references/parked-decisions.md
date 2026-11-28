@@ -4,7 +4,7 @@ Read this on a `parked-decision` wake, and for the parked-root walk at every sta
 
 A person's own approval of a parked root's primary document while no tree is live is no decision for you: the daemon sets the root `todo` itself, unless the daemon sends it as a `parked-decision` whose `reason` says the root's status changed after the approval and Legion queued nothing; decide that one as [Deciding](#deciding) says. A carried approval, or one on a root that keeps a Dispatch parent, is a decision. A session's reply on a parked tree is none.
 
-A held root is not a parked one: `todo` on a root at `phase: held` releases the hold at the same generation. A root still in the workflow whose architect stopped takes `backlog`, then `todo`, which re-admits the tree.
+A held root is not a parked one: `todo` on a root at `phase: held` releases the hold at the same generation. A hold for its children, a fix or its CI stays: the daemon sets the status back, and the hold ends by itself. A root still in the workflow whose architect stopped takes `backlog`, then `todo`, which re-admits the tree.
 
 ## Deciding
 

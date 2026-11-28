@@ -240,8 +240,8 @@ const promptPart = (name: string) =>
 // addressing, then the design gate fragment the daemon gives a deployment that gates no step.
 test.skipIf(skip)(
   "gives a tree's root architect's pane its prompt, ending with no design gate step",
-  () => {
-    const pane = workerPane(
+  async () => {
+    const pane = await workerPane(
       { rig, port: 13399, profile: "rig-profile" },
       inherited,
       { project: "skillsrig", issue: "LWEVAL-1", role: "architect" },

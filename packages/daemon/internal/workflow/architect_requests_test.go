@@ -29,6 +29,7 @@ func subTreeTarget(t *testing.T, pool *pgxpool.Pool, engine *Engine, at phase.Ph
 	seedIssue(t, pool, target)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: target.Key, Repo: "sjawhar/legion", Number: 44,
 		Branch: "legion/LEGION-211", HeadSHA: "head-44", Failing: []string{}})
+	noChecksAt(t, pool, target.Key, "sjawhar/legion", "head-44")
 	seedStepsPlan(t, pool, target.Key, target.Generation, "implementer", "acceptance:owner")
 	walkTargetTo(t, pool, engine, target.Key, at)
 	return issueOf(t, pool, engine, target.Key)

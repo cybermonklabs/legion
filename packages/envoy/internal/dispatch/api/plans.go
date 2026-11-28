@@ -17,9 +17,9 @@ import (
 // (PUT /api/v1/issues/{key}/plans/{id}), and the read of a project's finished issues
 // (GET /api/v1/projects/{key}/plans): each with its plan, the rating each retro gave it with the
 // reason, the time from the first start of its step records to the last end, its count of failed
-// steps, and the experiment and the variant the step records of its newest run name, null where
-// they name none. Both live in internal/dispatch/workflowstore, the one writer of the nodes and
-// tuples that hold the plans and the step records.
+// steps, its count of fixes, and the experiment and the variant the step records of its newest run
+// name, null where they name none. Both live in internal/dispatch/workflowstore, the one writer of
+// the nodes and tuples that hold the plans and the step records.
 //
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
 // event and reads the issue with no open check. The read writes nothing, reads the project, then
@@ -155,6 +155,7 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 			Issue: issue.Issue, Title: issue.Title, ClosedAt: issue.ClosedAt,
 			Ratings:   make([]model.PlanRating, len(issue.Ratings)),
 			StartedAt: issue.StartedAt, EndedAt: issue.EndedAt, FailedSteps: issue.FailedSteps,
+			Fixes: issue.Fixes,
 		}
 		if issue.Plan != nil {
 			plan := planRecord(*issue.Plan)

@@ -28,9 +28,9 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 }
 
 // Client calls GitHub with an installation token. Its API is a repository's REST base
-// (RepositoryAPI), which Get, Post, GetPages and GetListPages take paths under; an empty endpoint
-// is api.github.com. A client whose API is GitHub's GraphQL endpoint (GraphQLEndpoint) sends
-// queries (GraphQL) instead.
+// (RepositoryAPI), which Get, Post, Delete, GetPages and GetListPages take paths under; an empty
+// endpoint is api.github.com. A client whose API is GitHub's GraphQL endpoint (GraphQLEndpoint)
+// sends queries (GraphQL) instead.
 //
 // ETags, when set, makes every GET the client sends conditional: it carries the ETag GitHub last
 // answered for the same URL under the same Scope (If-None-Match), and GitHub's 304, which says the
@@ -66,14 +66,23 @@ func (c Client) Post(ctx context.Context, path string, body, into any) error {
 	return c.send(ctx, http.MethodPost, path, body, into)
 }
 
+// Delete deletes path under the client's API, sending no body. An answer other than 2xx is an
+// *Answer, so a caller reads GitHub's 404 or 422 from its Status.
+func (c Client) Delete(ctx context.Context, path string) error {
+	return c.send(ctx, http.MethodDelete, path, nil, nil)
+}
+
 // send sends body, as JSON, to path under the client's API with method, and reads GitHub's answer
-// into into when into is not nil.
+// into into when into is not nil. A nil body sends none.
 func (c Client) send(ctx context.Context, method, path string, body, into any) error {
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("encode %s %s: %w", method, path, err)
+	var encoded []byte
+	if body != nil {
+		var err error
+		if encoded, err = json.Marshal(body); err != nil {
+			return fmt.Errorf("encode %s %s: %w", method, path, err)
+		}
 	}
-	_, _, err = c.call(ctx, method, c.API+path, encoded, into)
+	_, _, err := c.call(ctx, method, c.API+path, encoded, into)
 	return err
 }
 

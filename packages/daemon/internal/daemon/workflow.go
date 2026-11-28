@@ -1158,12 +1158,6 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
 		Experiments:  cfg.ExperimentsDeclared(),
 		WorkspaceDir: engineWorkspaceDir(cfg),
-		// The testing move reads every check, those a CI job runs among them, until the end of a
-		// task holds the checks a CI job runs: a task whose steps after testing hold no review and
-		// no acceptance would otherwise end with no gate on them. The change that builds that hold
-		// at the end of a task, beside the review's fix of a failed CI check, turns this on.
-		// TestTheDaemonWiresTheTestingMoveToReadEveryCheck holds it false until then.
-		TestingLeavesCI: false,
 	}
 }
 
@@ -1298,23 +1292,25 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 //
 // A claim on an issue the daemon does not record holds too. The workflow never deletes an issue,
 // so there is no record only for a claim the workflow never made — the operator's own spawn, whose
-// issue key need not be an issue key at all. The comparison itself is record.PhaseHolds, which a
-// test that wires this answer without a daemon calls too.
-func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
+// issue key need not be an issue key at all. A fix's task (fix above 0) runs beside the step of
+// the phase, so it holds while that fix runs on that run, whatever phase the issue stands in. The
+// comparison itself is record.PhaseHolds, which a test that wires this answer without a daemon
+// calls too.
+func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor phase.Phase, generation uint64, fix int) (bool, error) {
 	issue, err := w.recordedIssue(ctx, key)
 	if err != nil {
 		return false, fmt.Errorf("read %s for the phase of its task: %w", key, err)
 	}
-	return record.PhaseHolds(issue, queuedFor, generation), nil
+	return record.PhaseHolds(issue, queuedFor, generation, fix), nil
 }
 
-// phaseRole answers supervise's Deps.PhaseRole from the issue record: the worker of key's open
-// phase (workflow.OpenPhaseRole), which the pod start gate puts first among the starts no request
+// phaseRole answers supervise's Deps.PhaseRole from the issue record: the first of key's open
+// roles (workflow.OpenRoles), which the pod start gate puts first among the starts no request
 // raised — deaths, a roles container's restart, a pod an update round replaced
 // (dispatch://INFRA-5297/spec R3). An issue in a phase the architect works (admitted, accepting)
-// has no phase worker, so the order falls back to claim.Roles there, and so does an issue the
-// daemon does not record, which has no phase: the answer is "" for both, as it is for a phase no
-// role works.
+// has no phase worker, so the order falls back to claim.Roles there unless a fix runs, whose
+// implementer is then the first open role; an issue the daemon does not record has no phase, and
+// the answer is "" for it, as it is for a phase no role works with no fix running.
 func (w *workflowRuntime) phaseRole(ctx context.Context, key string) (claim.Role, error) {
 	issue, err := w.recordedIssue(ctx, key)
 	if err != nil {
@@ -1323,7 +1319,10 @@ func (w *workflowRuntime) phaseRole(ctx context.Context, key string) (claim.Role
 	if issue == nil {
 		return "", nil
 	}
-	return workflow.OpenPhaseRole(issue.Phase), nil
+	if roles := workflow.OpenRoles(*issue); len(roles) > 0 {
+		return roles[0], nil
+	}
+	return "", nil
 }
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a
@@ -1548,6 +1547,19 @@ func (w *workflowRuntime) recordedIssue(ctx context.Context, key string) (*recor
 		return err
 	})
 	return issue, err
+}
+
+// updatePushes is where each role of key pushes at an update round's ask
+// (supervision.updatePushes), the engine's one answer (workflow.(*Engine).UpdatePushes) read in a
+// transaction of its own, as recordedIssue reads: the sweep that asks holds no transaction.
+func (w *workflowRuntime) updatePushes(ctx context.Context, key string) (map[claim.Role]supervise.UpdatePush, error) {
+	var pushes map[claim.Role]supervise.UpdatePush
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		pushes, err = w.engine.UpdatePushes(ctx, tx, key)
+		return err
+	})
+	return pushes, err
 }
 
 // reconcile takes Dispatch's bounded boot read to admission. Only admission acts on a snapshot:
@@ -1916,7 +1928,9 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
 // unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
 // and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
-// which also drops that repository (podEndsOn).
+// which also drops that repository (podEndsOn). The outbox reads where each role pushes at an
+// update round's ask through the same read the sweep's ask is written from (updatePushes), so it
+// publishes an ask only while the role's push is the one the ask names (the outbox's updateAsk).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
@@ -1929,6 +1943,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
+	w.outbox.updatePushes = w.updatePushes
 	w.outbox.sweepEvery = w.outboxSweep
 	w.outbox.catchUps = w.catchUps
 	w.outboxWake.Store(w.outbox)
@@ -1936,6 +1951,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
+	supervision.updatePushes = w.updatePushes
 	if w.pauses != nil {
 		// The flag is read again at each sweep (decision 18), so a pause made or ended through
 		// another daemon of a rolling restart reaches this daemon's machines within one sweep.

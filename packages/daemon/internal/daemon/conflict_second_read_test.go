@@ -335,8 +335,35 @@ func newReadRig(t *testing.T, seed func(*testing.T, *store.Pool), answer func(re
 	rig.w = readRuntime(rig.pool, api, slog.New(slog.NewJSONHandler(rig.logs, nil)))
 	rig.w.mergeStateRetry = readRigWait
 	rig.runner = secondReadRunner(rig.w)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(rig.read())
+		}
+	})
 	return rig
 }
+
+// read is the runtime's log as a failing test prints it: how many lines it holds, the first
+// readRigHead of them and the last readRigTail, so a test that waited on a reader which looped
+// says what it looped on rather than only that it waited.
+func (rig *readRig) read() string {
+	lines := strings.Split(strings.TrimRight(rig.logs.String(), "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return "the reader logged nothing"
+	}
+	shown := lines
+	if len(lines) > readRigHead+readRigTail {
+		shown = slices.Concat(lines[:readRigHead], []string{fmt.Sprintf("… %d lines …", len(lines)-readRigHead-readRigTail)},
+			lines[len(lines)-readRigTail:])
+	}
+	return fmt.Sprintf("the reader logged %d lines:\n%s", len(lines), strings.Join(shown, "\n"))
+}
+
+// How many lines of the runtime's log a failure prints from each end (readRig.read).
+const (
+	readRigHead = 40
+	readRigTail = 40
+)
 
 // readRigWait is the runtime's wait between reads in a readRig (workflowRuntime.mergeStateRetry).
 const readRigWait = 10 * time.Millisecond

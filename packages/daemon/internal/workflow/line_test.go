@@ -148,6 +148,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		issue := stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: issue.Key, Repo: "sjawhar/legion", Number: 43,
 			Branch: "legion/LEGION-209", HeadSHA: "child-head", Failing: []string{}})
+		noChecksAt(t, pool, issue.Key, "sjawhar/legion", "child-head")
 		return issue
 	}
 

@@ -46,6 +46,9 @@ const implementer: StepRecord = {
   rating_reason: null,
   experiment: null,
   variant: null,
+  start_commit: null,
+  end_commit: null,
+  fix_check: null,
 };
 
 /** The tester's run of step 3, still running: no end, no result, and no session or model, which
@@ -72,6 +75,9 @@ const tester: StepRecord = {
   rating_reason: null,
   experiment: null,
   variant: null,
+  start_commit: null,
+  end_commit: null,
+  fix_check: null,
 };
 
 /**
@@ -100,6 +106,9 @@ const mergedByGitHub: StepRecord = {
   rating_reason: null,
   experiment: null,
   variant: null,
+  start_commit: null,
+  end_commit: null,
+  fix_check: null,
 };
 
 /** The docs task's first run, which started before any run of task default. */
@@ -125,6 +134,9 @@ const docsDraft: StepRecord = {
   rating_reason: null,
   experiment: null,
   variant: null,
+  start_commit: null,
+  end_commit: null,
+  fix_check: null,
 };
 
 /** A second run of a review of another task, sent back to step 1 of that task. */
@@ -150,6 +162,9 @@ const docsReview: StepRecord = {
   rating_reason: null,
   experiment: null,
   variant: null,
+  start_commit: null,
+  end_commit: null,
+  fix_check: null,
 };
 
 /** The implementer's retro of LEG-1, which rated the plan: a retro is the one kind of run that
@@ -176,6 +191,9 @@ const ratedRetro: StepRecord = {
   rating_reason: "The plan fit the work; the review sent it back once.",
   experiment: null,
   variant: null,
+  start_commit: null,
+  end_commit: null,
+  fix_check: null,
 };
 
 /** A merger's run that failed and sent its task back to place 0, the retro: a destination of 0
@@ -202,6 +220,28 @@ const mergeSentBack: StepRecord = {
   rating_reason: null,
   experiment: null,
   variant: null,
+  start_commit: null,
+  end_commit: null,
+  fix_check: null,
+};
+
+/** Two commits of LEG-1's head, in the order the head moved; a line prints the first ten
+ *  characters of each. */
+const HEAD_X = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+const HEAD_Y = "b2c3d4e5f60718293a4b5c6d7e8f9012345678a1";
+
+/** The implementer's second run of step 2, a fix of the CI check k-ci that failed at X: the head
+ *  was at X when it started and at Y when it ended. */
+const fixRun: StepRecord = {
+  ...implementer,
+  id: "8e0a2c4e-5b7d-5f9a-8c1e-4a6c8e0b2d58",
+  attempt: 2,
+  started_at: "2026-11-16T10:30:00Z",
+  ended_at: "2026-11-16T10:50:00Z",
+  report: null,
+  start_commit: HEAD_X,
+  end_commit: HEAD_Y,
+  fix_check: "k-ci",
 };
 
 const config = {
@@ -365,6 +405,104 @@ describe("dispatch steps", () => {
       issue: "LEG-1",
       tasks: [{ task: "default", steps: [implementer, ratedRetro] }],
     });
+  });
+
+  // A run's line ends with the commits its task's head was at when it started and when it ended,
+  // each cut to ten characters, and a fix's line then names the CI check it fixes.
+  test("a fix's line ends with its commits and the check it fixes", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [implementer, fixRun] }],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text.split("\n")[2]).toBe(
+      "default 2 step implementer implementation attempt 2 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T10:30:00Z 2026-11-16T10:50:00Z passed at a1b2c3d4e5..b2c3d4e5f6 fix of k-ci"
+    );
+    expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
+  });
+
+  // The control of the line above: a run that names no check prints no `fix of`, a run whose
+  // record holds no commit prints no `at`, and a commit the record does not hold yet prints `-`,
+  // as a running run's end commit.
+  test("a run with no check prints no fix of, and a run with no commit prints no at", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          steps: [implementer, { ...fixRun, fix_check: null }, { ...tester, start_commit: HEAD_Y }],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+    const [, uncommitted, unchecked, running] = result.text.split("\n");
+
+    expect(uncommitted).toBe(
+      "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed"
+    );
+    expect(unchecked).toBe(
+      "default 2 step implementer implementation attempt 2 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T10:30:00Z 2026-11-16T10:50:00Z passed at a1b2c3d4e5..b2c3d4e5f6"
+    );
+    expect(running).toBe(
+      "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running at b2c3d4e5f6..-"
+    );
+  });
+
+  // A check id is a Dispatch block id, which holds whatever the writer of the check wrote: a line
+  // break in one would print a line of a run nobody ran, and a space in one would hide where the
+  // id begins. So the column prints the id as it stands only where it is a plain word, as `k-ci`
+  // is above, and otherwise as one JSON string, which reads back as the id. The line breaks below
+  // are the ones a reader splitting lines the Unicode way breaks at: the line feed JSON escapes
+  // itself, and U+0085, U+2028 and U+2029, which it leaves as they are. A format character prints
+  // as an escape too, inside the quotes: a bidi override (U+202E) or isolate (U+2066 to U+2069)
+  // would show the rest of the line in another order, and a zero-width joiner (U+200D) an id that
+  // reads as `k-ci`. So does a character that shows nothing: an invisible mark (`\p{Mn}`: a
+  // variation selector U+FE0F, or U+034F), a Hangul filler, which is a letter (U+3164, U+115F,
+  // U+1160, U+FFA0), or the blank Braille pattern U+2800, each of which makes an id read as
+  // another. An id holding `##[` is quoted as well, which writes that `[` as `\u005b`: a runner
+  // reads a `##[` as the opening of a workflow command.
+  test("a check id that is no plain word prints as one JSON string, and the line keeps its lines", async () => {
+    const forged = "default 9 step reviewer review attempt 1 - - - - failed";
+    for (const [check, printed] of [
+      ["k-ci", "k-ci"],
+      ["ci / go test (1.27)", '"ci / go test (1.27)"'],
+      ['the check "k-ci"', '"the check \\"k-ci\\""'],
+      [`k-ci\n${forged}`, `"k-ci\\n${forged}"`],
+      [`k-ci\u0085${forged}`, `"k-ci\\u0085${forged}"`],
+      [`k-ci\u2028${forged}`, `"k-ci\\u2028${forged}"`],
+      [`k-ci\u2029${forged}`, `"k-ci\\u2029${forged}"`],
+      [`k-ci\u202e${forged}`, `"k-ci\\u202e${forged}"`],
+      ["k-ci\u2066x\u2069", '"k-ci\\u2066x\\u2069"'],
+      ["k\u200d-ci", '"k\\u200d-ci"'],
+      ["k-ci\ufe0f", '"k-ci\\ufe0f"'],
+      ["k-ci\u034f", '"k-ci\\u034f"'],
+      ["k-ci\u3164", '"k-ci\\u3164"'],
+      ["k-ci\u115f", '"k-ci\\u115f"'],
+      ["k-ci\u1160", '"k-ci\\u1160"'],
+      ["k-ci\uffa0", '"k-ci\\uffa0"'],
+      ["k-ci\u2800", '"k-ci\\u2800"'],
+      ["k-ci##[set-output]", '"k-ci##\\u005bset-output]"'],
+    ] as const) {
+      const { result } = await readSteps({
+        issue: "LEG-1",
+        tasks: [{ task: "default", steps: [{ ...fixRun, fix_check: check }] }],
+      });
+
+      const lines = result.text.split("\n");
+      expect(lines, JSON.stringify(check)).toHaveLength(2);
+      expect(lines[1], JSON.stringify(check)).toBe(
+        "default 2 step implementer implementation attempt 2 legion-leg-leg-1-implementer " +
+          `anthropic/claude-opus-5 2026-11-16T10:30:00Z 2026-11-16T10:50:00Z passed at a1b2c3d4e5..b2c3d4e5f6 fix of ${printed}`
+      );
+      // The details hold the id as Dispatch answered it, whatever the line prints.
+      expect(result.details, JSON.stringify(check)).toEqual({
+        issue: "LEG-1",
+        tasks: [{ task: "default", steps: [{ ...fixRun, fix_check: check }] }],
+      });
+    }
   });
 
   // Dispatch stores passed, failed or stopped as the result of a run that ended, and "" as that of

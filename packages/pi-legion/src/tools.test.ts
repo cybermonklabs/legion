@@ -1566,7 +1566,8 @@ test("a named look's report leaves the phase open and a step's completion closes
   ]);
   await tool.execute(
     "",
-    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    // A testing phase's completion carries no verdict: Dispatch's check states decide it.
+    { op: "handoff_complete", summary: "tested" },
     undefined,
     undefined,
     context()
@@ -3545,6 +3546,29 @@ test("read_state's summary names the live trees and each held issue with its rea
   expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: stripped }).daemon))).toEqual(
     ["active (none)", "waiting (none)"]
   );
+
+  // A holder that is not an issue is a check a CI job runs, by its name, or the head the check is
+  // read at (entry 20261127102132 (fix-beside-review)), and a check's name may hold a space. Such a
+  // holder is written quoted, so it reads as one holder; an issue key and a head are written as they
+  // stand.
+  const head = "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29";
+  const byCheck = legionState({
+    admission: {
+      cap: 8,
+      active: [],
+      waiting: [],
+      trees: [],
+      blocked: [],
+      held: [{ issue: "LEGION-250", heldBy: ["LEGION-231", "ci / test (ubuntu-24.04)", head] }],
+      free: 8,
+    },
+  });
+  expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: byCheck }).daemon))).toEqual([
+    "active (none)",
+    "waiting (none)",
+    "trees (none)",
+    `held LEGION-250 - by LEGION-231 "ci / test (ubuntu-24.04)" ${head}`,
+  ]);
 });
 
 // What the controller reads of the pause in `read_state` with no field (dispatch://INFRA-3759,

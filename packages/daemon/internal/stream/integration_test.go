@@ -571,9 +571,9 @@ func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 		t.Fatalf("Await: %v", err)
 	}
 
-	err = conn.AdoptWorkingCopy(ctx, runtime.GitIdentity{
+	_, err = conn.AdoptWorkingCopy(ctx, runtime.GitIdentity{
 		Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com",
-	}, slowCommandTimeout)
+	}, runtime.Adoption{}, slowCommandTimeout)
 
 	var refused *stream.RefusedError
 	if !errors.As(err, &refused) || !errors.Is(err, runtime.ErrAdoptRefused) {

@@ -302,7 +302,8 @@ export function handoffBody() {
 }
 
 /** `GET /api/v1/issues/{key}/steps`: one ended run and one still running, so the record holds a
- *  line of each and the `-` of a field with no value. */
+ *  line of each and the `-` of a field with no value. The ended run is a fix of a CI check, with
+ *  both its commits, and the running one holds its start commit alone. */
 export function stepsBody() {
   const run = {
     issue: ISSUE,
@@ -331,6 +332,9 @@ export function stepsBody() {
             started_at: AT,
             ended_at: AT,
             result: "passed",
+            start_commit: COMMIT,
+            end_commit: COMMIT,
+            fix_check: "k-ci",
           },
           {
             ...run,
@@ -344,6 +348,9 @@ export function stepsBody() {
             started_at: AT,
             ended_at: null,
             result: "",
+            start_commit: COMMIT,
+            end_commit: null,
+            fix_check: null,
           },
         ],
       },
@@ -389,6 +396,7 @@ export function plansBody() {
         ended_at: "2026-01-02T03:01:05Z",
         duration_seconds: 5400,
         failed_steps: 1,
+        fixes: 1,
       },
     ],
   };

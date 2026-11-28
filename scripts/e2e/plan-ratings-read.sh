@@ -44,11 +44,11 @@ read_dispatch plans --project "$project"
 
 # Each line after the header is one finished issue, as `dispatch plans` prints it
 # (packages/envoy-client/src/dispatch-commands/plans.ts):
-#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps|->)> ratings <none|<r>/<most> "<reason>", …> time <-|<h>h<m>m> failed steps <n>[ variant <experiment>/<variant>]
+#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps|->)> ratings <none|<r>/<most> "<reason>", …> time <-|<h>h<m>m> failed steps <n> fixes <n>[ variant <experiment>/<variant>]
 # The line ends with ` variant <experiment>/<variant>` where the records of the issue's newest run
-# name an experiment, and at `failed steps <n>` where they name none. Each reason is a JSON string,
-# so a quotation mark or a line break in it keeps the issue on one line; the ratings are separated
-# by `, ` outside those strings.
+# name an experiment, and at `fixes <n>` where they name none. Each reason is a JSON string, so a
+# quotation mark or a line break in it keeps the issue on one line; the ratings are separated by
+# `, ` outside those strings. The verdict does not judge the count of fixes.
 awk -v project="$project" -v issue="$issue" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit }
   # ratingsOf reads the ratings text of one line: the number of ratings it lists, 0 for `none`,
@@ -88,7 +88,7 @@ awk -v project="$project" -v issue="$issue" '
   NF == 0 { next }
   {
     line = $0
-    if ($2 != "closed" || $4 != "plan" || !match(line, / time (-|[0-9]+h[0-9]+m) failed steps [0-9]+( variant [a-z0-9-]+\/[a-z0-9-]+)?$/)) unknown("the line is no finished issue: " line)
+    if ($2 != "closed" || $4 != "plan" || !match(line, / time (-|[0-9]+h[0-9]+m) failed steps [0-9]+ fixes [0-9]+( variant [a-z0-9-]+\/[a-z0-9-]+)?$/)) unknown("the line is no finished issue: " line)
     tail = substr(line, RSTART + 1)
     lead = length($1 " closed " $3 " plan ")
     middle = substr(line, lead + 1, RSTART - lead - 1)
@@ -110,7 +110,7 @@ awk -v project="$project" -v issue="$issue" '
     if (reasonless) faults[++count] = issue " lists a rating with no reason: " line
     if (spent == "-") spent = "unknown"
     said = "plan " plan ", ratings " ratings ", time " spent ", failed steps " failed
-    if (parts[7] != "") said = said ", variant " parts[7]
+    if (parts[9] != "") said = said ", variant " parts[9]
   }
   END {
     if (status) exit status

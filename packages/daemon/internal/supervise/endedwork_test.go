@@ -725,7 +725,7 @@ func TestARelaunchRecordsAReportOlderThanATurnTheAgentSaysItIsInAsNoReport(t *te
 			t.Run(through.name+": "+row.name, func(t *testing.T) {
 				h := newBareHarness(t)
 				holds := true
-				h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return holds, nil }
+				h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64, int) (bool, error) { return holds, nil }
 				if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
 					t.Fatal(err)
 				}

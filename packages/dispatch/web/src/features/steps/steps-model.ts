@@ -12,11 +12,20 @@ export type StepEnd =
   | { state: "failed" | "stopped"; returnedTo: string | null }
   | { state: "other"; result: string };
 
+/** The commits a run's task's head was at when the run started and when it ended, the record's
+ *  whole ids, each null where the record holds none yet. */
+export interface StepCommits {
+  start: string | null;
+  end: string | null;
+}
+
 /** One run of one step, as the Steps tab draws it: the fields of its row, and nothing the row
  *  does not show (the task is the table's, `StepTaskRows`). `label` names the step: its place in
  *  the task for a step of the plan, and `Retro` or `Merge` for the two runs that no plan names
  *  (step 0). An empty `agent`, `model` or `type` is a field the record does not hold, as is a
- *  null `started` or `ended`; `attempt` is the server's count of this step's runs in its task. */
+ *  null `started` or `ended`; `attempt` is the server's count of this step's runs in its task.
+ *  `commits` is null for a record that holds no commit, and `fixOf` is the CI check a fix run
+ *  fixes, null for every other run. */
 export type StepRow = StepEnd & {
   id: string;
   label: string;
@@ -27,6 +36,8 @@ export type StepRow = StepEnd & {
   attempt: number;
   started: string | null;
   ended: string | null;
+  commits: StepCommits | null;
+  fixOf: string | null;
 };
 
 /** One task's runs, in the order the server read them. */
@@ -68,11 +79,17 @@ function stepEnd(record: StepRecord): StepEnd {
 }
 
 function stepRow(record: StepRecord): StepRow {
+  // A record of an older Dispatch holds none of the three fields, and reads as one that holds
+  // them null.
+  const start = record.start_commit || null;
+  const end = record.end_commit || null;
   return {
     ...stepEnd(record),
     agent: record.agent,
     attempt: record.attempt,
+    commits: start === null && end === null ? null : { end, start },
     ended: record.ended_at,
+    fixOf: record.fix_check || null,
     id: record.id,
     // A kind only a newer Dispatch sends, which this build's contract does not name, keeps its
     // own word rather than a step number it lacks.

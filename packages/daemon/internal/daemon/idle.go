@@ -631,16 +631,11 @@ func releaseHold(cause store.ReleaseCause) (workflow.IdleHold, string) {
 //     that volume: its pod and its Secrets go (runtime.IssueReleaser).
 //
 // The role the check reads through, which the mark names, is the role told when the check
-// declines (declineRelease): the worker of the issue's open phase where it is live
-// (workflow.OpenPhaseRole), since that is the role whose work the phase is, and otherwise the
-// first live role. Every role of the issue shares the one workspace, so any of them reads the
-// same answer.
+// declines (declineRelease): a worker of the issue's open phase where one is live (openWorkerAmong),
+// since that is the role whose work the phase is, and otherwise the first live role. Every role of
+// the issue shares the one workspace, so any of them reads the same answer.
 func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
-	told := decision.Roles[0]
-	if open := workflow.OpenPhaseRole(view.Phase); slices.Contains(decision.Roles, open) {
-		told = open
-	}
-	mark := store.IdleReleaseMark{Generation: view.Generation, Role: told}
+	mark := store.IdleReleaseMark{Generation: view.Generation, Role: openWorkerAmong(view, decision.Roles)}
 	rows := markRows{issue: view.Issue, act: "release", now: now, rows: make([]store.IdleReleaseRow, 0, len(decision.Roles)+2)}
 	if err := rows.add(record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
 		TreeGeneration: view.Root.Generation, Role: mark.Role}, false); err != nil {
@@ -695,10 +690,7 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 		check.Close = true
 	} else {
 		check = record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
-			TreeGeneration: view.Root.Generation, Role: decision.Roles[0], CloseRoles: decision.Roles}
-		if open := workflow.OpenPhaseRole(view.Phase); slices.Contains(decision.Roles, open) {
-			check.Role = open
-		}
+			TreeGeneration: view.Root.Generation, Role: openWorkerAmong(view, decision.Roles), CloseRoles: decision.Roles}
 	}
 	check.TurnStart = view.NewestTurnStart()
 	rows := markRows{issue: view.Issue, act: "close", now: now}
@@ -716,6 +708,21 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 func launcherCheck(view pods.IdleView) record.IssueWorkspaceCheck {
 	return record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
 		TreeGeneration: view.Root.Generation, Launcher: true, PodUID: view.PodUID}
+}
+
+// openWorkerAmong is the first worker of the issue's open phase that roles holds, and roles[0]
+// where it holds none of them. The workers are workflow.OpenRolesOf over the view's phase and
+// whether a fix runs beside its step (pods.IdleView.FixRunning, read by the expression every read
+// of the issue record reads it by): the phase's own worker first, then the running fix's
+// implementer, which works the open phase beside it. roles is never empty: a release and a close
+// that name live roles name one at least.
+func openWorkerAmong(view pods.IdleView, roles []claim.Role) claim.Role {
+	for _, open := range workflow.OpenRolesOf(view.Phase, view.FixRunning) {
+		if slices.Contains(roles, open) {
+			return open
+		}
+	}
+	return roles[0]
 }
 
 // leftPodStopsAfterCheck is the decision the close's workspace check makes once its read found

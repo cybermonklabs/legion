@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The events. Each carries the claim it is for and the fields its fences read: an observation its
@@ -352,6 +353,10 @@ type PodUpdateOpen struct {
 // the reviewer creates no commit and pushes nothing (its role part), so its text says so in step 1
 // and asks no commit or push of what its work made (createsNoCommit).
 //
+// push is where role pushes (UpdatePush): its zero value gives the text above, step 1 pushing to
+// the issue's branch, and a step beside a fix, the fix, and the implementer while a fix reads its
+// job each get their own step 1 (updatePushStep), every other sentence the same.
+//
 // The step to answer is the one step a role can be unable to do: the op list its `legion` tool
 // holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
 // ready_for_update in it. Such a role is told to do the first three steps all the same, because
@@ -380,15 +385,17 @@ type PodUpdateOpen struct {
 //
 // Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
 // and no word that has a second reading.
-func UpdateTask(role claim.Role, round, reasons string, endsAt time.Time) string {
+func UpdateTask(role claim.Role, round, reasons string, endsAt time.Time, push UpdatePush) string {
 	ends := endsAt.UTC().Format(time.RFC3339)
-	push := "1. Push every commit that you want to keep to this issue's branch."
+	step := updatePushStep(push)
 	made := " Then commit and push what it made."
 	after := "If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again"
-	if createsNoCommit(role) {
-		push = "1. You create no commit, so you push nothing."
+	if createsNoCommit(role) || push.FixReads {
 		made = ""
 		after = "If a subagent or a background job finishes after you answer, call `ready_for_update` again"
+	}
+	if createsNoCommit(role) {
+		step = "1. You create no commit, so you push nothing."
 	}
 	read := "When the round ends, the daemon reads the workspace on the pod's disk before it replaces the pod. " +
 		"If the read finds work that no branch or tag on origin holds, or the read fails, the daemon does not replace the pod: " +
@@ -432,7 +439,36 @@ These things go with the pod when the daemon replaces it:
 - The pod's test database.
 - The pod's caches.
 
-The daemon starts your process again on the new pod, in this same session. %[4]s Do not start new work now.`, round, ends, read, held, push, made, after)
+The daemon starts your process again on the new pod, in this same session. %[4]s Do not start new work now.`, round, ends, read, held, step, made, after)
+}
+
+// UpdatePush is where a role pushes at an update round's ask: the zero value for a role that
+// pushes to the issue's branch, as every role does where no fix of the issue reads or runs. Branch
+// is the role's own branch beside the fix (claim.BesideBranch), which a step beside a running fix
+// pushes to, and which the fix's own push names with OwnFix. FixReads marks the implementer while a
+// fix of the issue reads its failed job: that fix's working copy and branch do not exist yet, and
+// the issue's branch has one writer then, so the implementer pushes nothing.
+type UpdatePush struct {
+	Branch   string
+	OwnFix   bool
+	FixReads bool
+}
+
+// updatePushStep is step 1 of the update task for push. It receives the push alone and no branch
+// of the issue: the zero push pushes to the issue's branch, as every role did before a fix ran
+// beside the other steps, and every other push names only its own branch.
+func updatePushStep(push UpdatePush) string {
+	switch {
+	case push.FixReads:
+		return "1. A fix of this issue reads its failed job, and you run that fix next. Its task names the branch that you push to. Push nothing to this issue's branch now."
+	case push.OwnFix:
+		return fmt.Sprintf("1. Push every commit of your fix that you want to keep to the branch %[1]s, not to this issue's branch: run jj -R \"$LEGION_WORKSPACE-fix\" bookmark set %[1]s -r @-, then jj -R \"$LEGION_WORKSPACE-fix\" git push --remote origin --bookmark %[1]s. Push to this issue's branch only when your fix ends. On the new pod, the daemon gives you your fix's task again, and the start of that task makes your fix's working copy first.", push.Branch)
+	case push.Branch != "":
+		return "1. This step keeps its own branch until it ends. Push nothing to this issue's branch. Push every commit that you want to keep to the branch " + push.Branch + ": " +
+			workspace.BesidePushCommand(push.Branch) + ". On the new pod, the daemon gives you your task again, and that task names the branch of your pushed commits where the daemon holds a push of it."
+	default:
+		return "1. Push every commit that you want to keep to this issue's branch."
+	}
 }
 
 // createsNoCommit says whether role creates no commit and pushes nothing: the reviewer, whose
@@ -814,6 +850,17 @@ type RequestDeliver struct {
 	// gives way to a task of an entry while no turn has taken it (Machine.supersedes), since the
 	// start of an entry carries the same news itself.
 	NewsOnly bool
+	// Fix is the fix of the issue's task this task is of, from the start row that queued it
+	// (record.SuperviseRequest.Fix), 0 for a task of no fix: such a task is its issue's work while
+	// that fix runs, whatever phase the issue stands in (record.PhaseHolds). FixFrom is the head the
+	// fix's working copy is made at, and FixBranch the fix's own branch, which the adoption reads
+	// on origin where the copy holds nothing yet; only a fix's task names them. MoveTo is the head
+	// the task's working copy moves to before the task, "" for none. An operator's task names none
+	// of them.
+	Fix       int
+	FixFrom   string
+	FixBranch string
+	MoveTo    string
 	// ResumesNothing marks the daemon's own task that carries no ID and is no operator's: the
 	// controller keeper's start message (internal/daemon's controllerKeeper.ready). A suspended
 	// claim refuses it with a *RefusedError, queuing nothing and launching nothing (deliverResuming),
@@ -1854,6 +1901,12 @@ func ackedInTurn(m *Machine, ctx context.Context, ev Event) error {
 // name of its own: it is raised before any frame leaves, and an operator told the transport lost
 // the prompt would look at the network while the GitHub App is the thing that is down.
 //
+// So does an adoption a shim built before a fix ran beside the other steps answered with no echo
+// of the fix's commit or the task's move it was asked (runtime.ErrAdoptionUnsupported): that shim
+// ignored the members, so the task waits rather than run in the wrong working copy. It is charged
+// nothing, since asking that shim again changes nothing and spending the budget would only fail a
+// claim whose pod the update round replaces; its one WARN line names the claim and the pod.
+//
 // Every failure here, charged or not, is recorded on the pending delivery before the split acts:
 // how many sends of this task have failed, when this one failed and the error it failed
 // with (Delivery.SendFailures and its two companions). That record is a diagnosis rather than a
@@ -1936,6 +1989,9 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		msg, charge = "supervise: the shim refused to adopt the working copy; the prompt was never sent", "the working copy was not adopted: "
 	case errors.Is(r.Err, runtime.ErrIdentityUnavailable):
 		msg = "supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits"
+	case errors.Is(r.Err, runtime.ErrAdoptionUnsupported):
+		msg = "supervise: the issue's pod runs a shim that does not make a fix's working copy or move the task's; the task waits, charged nothing, until the pod's update round replaces it"
+		args = append(args, "pod", podOf(m.claim.Locator))
 	}
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()
@@ -1959,6 +2015,19 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		return m.sendPending(ctx)
 	}
 	return nil
+}
+
+// podOf names the place loc's process runs in for a log line: the pod a sandbox locator names,
+// and otherwise the process's incarnation, which is all a pane has of a place. A claim with no
+// locator names none.
+func podOf(loc *runtime.Locator) string {
+	switch {
+	case loc == nil:
+		return ""
+	case loc.Sandbox != nil:
+		return loc.Sandbox.PodUID
+	}
+	return loc.Incarnation
 }
 
 // refusedElsewhere is the part of a late refusal every state shares, and it reports whether that

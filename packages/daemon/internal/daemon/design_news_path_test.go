@@ -165,8 +165,8 @@ func fullCommitOf(name string) string {
 func pathHead(key string) string { return fullCommitOf(key) }
 
 // member records m, the i-th member of the tree, with its pull request open and mergeable at its
-// head, and the phases row of the role its phase names: a reviewer's holding its approval of that
-// head, so that its completion ends the round.
+// head, where Dispatch holds no check of it (noChecksAt), and the phases row of the role its phase
+// names: a reviewer's holding its approval of that head, so that its completion ends the round.
 func (r *newsPathRig) member(m pathMember, i int) {
 	r.t.Helper()
 	issue := record.Issue{Key: m.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
@@ -192,6 +192,7 @@ func (r *newsPathRig) member(m pathMember, i int) {
 		}
 		return r.records.PutPhase(r.ctx, tx, row)
 	})
+	noChecksAt(r.t, r.pool, m.key, "acme/widgets", pathHead(m.key))
 }
 
 // told raises issue's audience row to version of the spec, writing the row where there is none.

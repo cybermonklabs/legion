@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -70,8 +71,10 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // own level (0 for P0 to 3 for P3, null for none), which scanIssue reads through
 // DispatchPriority. The four issues.memory_* columns are no part of it: what a unit was drawn is
 // an assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
-// runs reads the columns but the back-fill of 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, resolved_known, resolved_priority, priority_from`
+// runs reads the columns but the back-fill of 20261111045636_experiment_assignments. Its last
+// column is no column of issues: the number of the fix that runs at the issue's generation
+// (Issue.RunningFix), read from task_fixes by one expression of the row (migrations.RunningFixSQL).
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, resolved_known, resolved_priority, priority_from, ` + migrations.RunningFixSQL
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -556,7 +559,8 @@ func scanIssue(row scanner) (*Issue, error) {
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt,
 		&issue.ViewOf, &childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &childrenWaitChildren,
-		&childrenWaitedAt, &issue.MembersOwed, &priority, &issue.Resolved.Known, &resolvedPriority, &issue.Resolved.From); err != nil {
+		&childrenWaitedAt, &issue.MembersOwed, &priority, &issue.Resolved.Known, &resolvedPriority, &issue.Resolved.From,
+		&issue.RunningFix); err != nil {
 		return nil, err
 	}
 	// The columns' checks hold both to Dispatch's 0 to 3 or null, each of which DispatchPriority
@@ -3073,9 +3077,11 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // reviveArchitect), the roles brought back beside a member's phase worker (admit's
 // startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled idle
 // release — and each of them is a start of its own that must still run. None of them is ever
-// taken out here.
+// taken out here. Nor is the start of a fix's task (SuperviseRequest.Fix), which names a phase and
+// carries a task but runs beside the start the issue owes its phase: it waits for no slot, and
+// EnqueueFixStart alone writes it and takes an older start of the same fix out.
 const pendingPhaseStart = `issue = $1 and kind = 'supervise'
-				and payload->>'op' = 'start' and payload ? 'task' and payload ? 'phase'`
+				and payload->>'op' = 'start' and payload ? 'task' and payload ? 'phase' and not payload ? 'fix'`
 
 // EnqueueStart writes a phase worker's start as a row of its own, in one statement that takes
 // out the start the issue already owes its worker for the same wait — its oldest pending start
@@ -3203,6 +3209,55 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 		from (values (1)) as caller(one) left join owed on true`,
 		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError); err != nil {
 		return fmt.Errorf("enqueue the start of %s: %w", row.Issue, err)
+	}
+	return nil
+}
+
+// EnqueueFixStart writes the start of a fix's task (SuperviseRequest.Fix) as a row of its own, in
+// one statement that takes out only an unleased pending start of the same issue that names the
+// same fix of the same run of the same task (an older start of that fix, such as the resend a
+// resume writes), and writes row in its place carrying that row's attempts, next_at, last_error
+// and created_at, as EnqueueStart carries what it takes out; row is written with its own values
+// where the issue owes no such start. A fix's start carries no slot mark, so it stands in no
+// waiting line (OwedStarts) and admission's repair of the line never reads it, and EnqueueStart
+// never takes it out (pendingPhaseStart), so a start of the phase the issue stands in and a fix's
+// start both stand. A row that is no start of a fix, or a fix's start that waits for a slot, is
+// refused before anything is written.
+//
+// The task is named by the fix's own branch (SuperviseRequest.FixBranch), the one member of a
+// fix's start that holds it: it is claim.BesideBranch of the implementer, which writes the issue,
+// the generation, the task and the fix, and two tasks never give one branch (claim's besideTask).
+// A generation holds one task while plan.Supported takes a plan of one, so fix 1 of a second task
+// cannot be queued today; without the branch in the predicate it would take out the first task's
+// fix 1, whose implementer would then never start. A start that names no branch, which only the
+// wire's own rule allows (DecodeOutboxPayload refuses a branch without a fix, not a fix without a
+// branch), is matched by its fix and its generation alone, as every start was.
+func (s *Postgres) EnqueueFixStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
+	var start SuperviseRequest
+	if err := json.Unmarshal(row.Payload, &start); err != nil {
+		return fmt.Errorf("enqueue the start of a fix of %s: %w", row.Issue, err)
+	}
+	if row.Kind != OutboxKindSupervise || start.Op != "start" || start.Fix < 1 {
+		return fmt.Errorf("enqueue the start of a fix of %s: the %s row is no start of a fix", row.Issue, row.Kind)
+	}
+	if start.NeedsSlot {
+		return fmt.Errorf("enqueue the start of fix %d of %s: a fix's start waits for no slot", start.Fix, row.Issue)
+	}
+	if _, err := tx.Exec(ctx, `with owed as (
+			delete from outbox where id = (select id from outbox
+				where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
+					and payload->>'fix' = ($2::jsonb)->>'fix' and payload->>'generation' = ($2::jsonb)->>'generation'
+					and coalesce(payload->>'fixBranch', '') = coalesce(($2::jsonb)->>'fixBranch', '')
+					and (lease_until is null or lease_until <= $3)
+				order by created_at, id limit 1)
+				and (lease_until is null or lease_until <= $3)
+			returning attempts, next_at, last_error, created_at)
+		insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
+		select 'supervise', $1, $2, coalesce(owed.attempts, $4), coalesce(owed.next_at, $3), coalesce(owed.last_error, $5),
+			coalesce(owed.created_at, now()), '', null
+		from (values (1)) as caller(one) left join owed on true`,
+		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError); err != nil {
+		return fmt.Errorf("enqueue the start of fix %d of %s: %w", start.Fix, row.Issue, err)
 	}
 	return nil
 }
@@ -3684,14 +3739,14 @@ var (
 // phase-ended message, a hook's words, an update ask and a merge forward's message name the role of
 // the row's own issue, as the executors read it (the daemon's roleToken); the merge-queue message
 // and the message that the project's merge holds changed go to the issue's merger, whose token
-// their executors build (the daemon's mergeQueueRemoval and mergeHoldsChanged); a role message
-// names the claim's token itself (record.RoleMessage.Role).
+// their executors build (the daemon's mergeQueueRemoval and mergeHoldsChanged); a role message and
+// a task's CI news name the claim's token itself (record.RoleMessage.Role, record.CINews.Role).
 func pauseHeldClaim(project string, row OutboxRow, role string) claim.Token {
 	switch row.Kind {
 	case OutboxKindSupervise, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
 	case OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged:
 		role = string(claim.RoleMerger)
-	case OutboxKindRoleMessage:
+	case OutboxKindRoleMessage, OutboxKindCINews:
 		if _, ok := claim.Token(role).Role(); ok {
 			return claim.Token(role)
 		}

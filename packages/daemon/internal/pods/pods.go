@@ -155,8 +155,12 @@ type IdleView struct {
 	Status      string
 	Generation  uint64
 	LingerUntil *time.Time
-	Root        IdleRoot
-	Claims      []IdleClaim
+	// FixRunning is whether a fix runs beside the issue's step (record.Issue.RunningFix, read by
+	// the same expression, migrations.RunningFixSQL): its implementer works the issue's open phase
+	// beside the phase's own worker (workflow.OpenRolesOf), with a phase reminder of its own.
+	FixRunning bool
+	Root       IdleRoot
+	Claims     []IdleClaim
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
 	// role of its pod. A start queued for news of the approved design alone is not counted, and
 	// neither is a worker start that waits for an admission slot its issue does not hold: each

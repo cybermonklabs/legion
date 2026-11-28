@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -307,7 +308,8 @@ func (d IdleDecision) TurnsOnKeptVolume() bool {
 //     is what makes a host that cannot report degrade safely;
 //
 //   - no live phase worker whose phase is open has a phase reminder due inside the idle period. A
-//     phase worker's phase is open when the issue's current phase is that worker's role and its
+//     phase worker's phase is open when that worker's role works the issue's open phase — the role
+//     of the issue's current phase, or the implementer while a fix runs beside its step — and its
 //     claim serves the current generation;
 //
 //   - the pod has done nothing the daemon recorded for the whole idle period;
@@ -780,8 +782,9 @@ func idleStateReleasable(c pods.IdleClaim) bool {
 	return false
 }
 
-// idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenPhaseRole),
-// serving the current generation: the one shape of claim a phase reminder is armed in.
+// idlePhaseOpen is whether the claim is a worker of the issue's open phase (OpenRolesOf, with the
+// fix that runs beside its step), serving the current generation: the one shape of claim a phase
+// reminder is armed in.
 func idlePhaseOpen(view pods.IdleView, c pods.IdleClaim) bool {
-	return OpenPhaseRole(view.Phase) == c.Role && c.ServingGeneration == view.Generation
+	return slices.Contains(OpenRolesOf(view.Phase, view.FixRunning), c.Role) && c.ServingGeneration == view.Generation
 }

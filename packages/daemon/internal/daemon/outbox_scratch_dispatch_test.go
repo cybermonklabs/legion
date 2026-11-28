@@ -24,11 +24,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -406,6 +409,14 @@ func startScratchDispatchWithNATS(t *testing.T, natsURL string) (string, string)
 type scratchDispatchOptions struct {
 	// natsURL is the NATS server the server publishes its events on; empty runs it with NATS off.
 	natsURL string
+	// github is the fake GitHub the server's App calls (DISPATCH_GITHUB_API_BASE). The server
+	// then holds that fake's App (githubtest.App) to call it with, as
+	// packages/dispatch/e2e/run-server.sh gives it a throwaway App: a client id and a key made for
+	// that fake alone, whose JWT and tokens the fake checks. Nil runs it with no App, so it reads
+	// GitHub for nothing: a check its CI job proves is then unread at every head. With natsURL
+	// set, the App is what the delivery settings need (writeDeliverySettings), and they are what
+	// Dispatch's delivery intake waits for before it reads a settlement of a pull request's checks.
+	github *githubtest.Checks
 	// root is the checkout whose packages/envoy the server runs in and whose
 	// packages/dispatch/web/dist it serves; empty is this one, four directories above the
 	// package's. The binary is not built from it: testbuild.EnvoyBinary builds the checkout
@@ -437,12 +448,16 @@ type scratchDispatch struct {
 	token    string
 	home     string
 	log      io.Writer
-	env      []string
-	port     int
-	base     string
-	command  *exec.Cmd
-	exited   chan error
-	output   *syncBuffer
+	// github is the GitHub the server's App calls, and app that App; both empty for a server with
+	// no App.
+	github  string
+	app     githubtest.App
+	env     []string
+	port    int
+	base    string
+	command *exec.Cmd
+	exited  chan error
+	output  *syncBuffer
 }
 
 // startScratchDispatchOn gives the server a scratch database of its own on the test DSN's
@@ -464,6 +479,9 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 		webDist: filepath.Join(root, "packages", "dispatch", "web", "dist"), database: database,
 		natsURL: options.natsURL, token: scratchAgentToken, home: filepath.Join(t.TempDir(), "home"),
 		log: options.log, env: options.env,
+	}
+	if options.github != nil {
+		d.github, d.app = options.github.URL, options.github.App
 	}
 	if err := os.MkdirAll(d.home, 0o700); err != nil {
 		t.Fatalf("create scratch Dispatch home: %v", err)
@@ -524,6 +542,15 @@ func (d *scratchDispatch) start() {
 		"DISPATCH_WEB_DIST="+d.webDist,
 		"HOME="+d.home,
 	)
+	// The App, where the test gave the server a GitHub: the fake's own client id and key, which
+	// sign each call to that GitHub alone, as run-server.sh's throwaway App does.
+	if d.github != "" {
+		command.Env = append(command.Env,
+			"DISPATCH_APP_CLIENT_ID="+d.app.ClientID,
+			"DISPATCH_APP_PEM_B64="+d.app.Key,
+			"DISPATCH_GITHUB_API_BASE="+d.github,
+		)
+	}
 	command.Env = append(command.Env, d.env...)
 	command.ExtraFiles = []*os.File{held}
 	output := &syncBuffer{}
@@ -610,6 +637,69 @@ func (d *scratchDispatch) stop() {
 		<-d.exited
 		d.t.Error("scratch Dispatch did not stop after SIGINT")
 	}
+}
+
+// writeDeliverySettings writes the server's delivery settings, deploying from repo, "owner/name",
+// and waits until the server's delivery intake has taken its durable on the notification stream.
+// It is the order a user keeps, and the wait is what the caller needs: the intake binds the
+// durable whether or not a settings row is saved, once the settings cache's first read has
+// answered (Envoy's delivery.Intake.Run), and the take-over that binds it marks every issue with
+// an open head owed, so that marking ends here, before the caller writes a head. The settlement
+// of a pull request's checks, which marks the check states of the issue at that pull request's
+// open head owed, is handed to its handler with no settings saved as well (Envoy's
+// delivery.Intake.route), so the settings are no part of its road. The write proves that the App
+// reads repo (Envoy's putDeliverySettings), so the server must run with an App and with NATS.
+func (d *scratchDispatch) writeDeliverySettings(repo string) {
+	t := d.t
+	t.Helper()
+	if d.github == "" || d.natsURL == "" {
+		t.Fatal("writeDeliverySettings needs a scratch Dispatch with an App and NATS (scratchDispatchOptions.github and natsURL)")
+	}
+	dispatchCall(t, d.base, http.MethodPut, "/api/v1/settings/delivery", map[string]any{
+		"deploy_repo": repo, "deploy_workflow_path": ".github/workflows/deploy.yml", "production_job_names": []string{"deploy / production"},
+		"pr_checks_workflow_path": ".github/workflows/pr-checks.yml", "population_authors": []string{"legion-implementer[bot]"},
+	}, nil)
+	js, err := jetstream.New(testnats.Connect(t, d.natsURL))
+	if err != nil {
+		t.Fatalf("open JetStream on %s: %v", d.natsURL, err)
+	}
+	// The durable is a push consumer, which JetStream's Consumer refuses to answer for (it answers
+	// pull consumers alone), so it is read as one.
+	var last string
+	const within = 30 * time.Second
+	if !testwait.Holds(testwait.Bounded(t, within, time.Second), 100*time.Millisecond, func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		consumer, err := js.PushConsumer(ctx, "ENVOY_NOTIFICATIONS", githubtest.DispatchDeliveryDurable)
+		if err != nil {
+			last = err.Error()
+			return false
+		}
+		info, err := consumer.Info(ctx)
+		if err != nil {
+			last = err.Error()
+			return false
+		}
+		last = fmt.Sprintf("push bound %t", info.PushBound)
+		return info.PushBound
+	}) {
+		t.Fatalf("Dispatch's delivery intake did not take its durable %s within %s of the delivery settings of %s: its last read %q\nDispatch's log of its delivery intake:\n%s",
+			githubtest.DispatchDeliveryDurable, within, repo, last, d.deliveryLog())
+	}
+	t.Logf("Dispatch's delivery intake reads %s (%s) after the delivery settings of %s", githubtest.DispatchDeliveryDurable, last, repo)
+}
+
+// deliveryLog is the last 40 lines of the server's log that name its delivery intake, its duties
+// or a warning or an error.
+func (d *scratchDispatch) deliveryLog() string {
+	var lines []string
+	for line := range strings.SplitSeq(d.output.String(), "\n") {
+		if strings.Contains(line, "delivery") || strings.Contains(line, "duty") || strings.Contains(line, "level=WARN") ||
+			strings.Contains(line, "level=ERROR") {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines[max(0, len(lines)-40):], "\n")
 }
 
 func createScratchDispatchIssue(t *testing.T, baseURL string) string {

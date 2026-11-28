@@ -30,10 +30,13 @@ const approvalWait = "only once the reviewer's approval of"
 
 // plannedConflictIssue is seedConflictIssue on a run with plan rows: the owner's plan whose steps
 // are steps, with task a running at the place of at (the step whose role runs as at, its retro or
-// its merge), the Dispatch status of at, and pr as the record holds the pull request.
+// its merge), the Dispatch status of at, and pr as the record holds the pull request. Dispatch holds
+// no check of the issue at the conflicting head (noChecksAt): these tests read GitHub's checks of
+// the base, and a task's end waits for no CI of Dispatch's.
 func plannedConflictIssue(t *testing.T, at phase.Phase, pr record.PullRequest, steps ...string) *pgxpool.Pool {
 	t.Helper()
 	pool := seedConflictIssue(t, at, PhaseStatus(at), pr)
+	noChecksAt(t, pool, "LEGION-208", "sjawhar/legion", conflictHead)
 	seedStepsPlan(t, pool, "LEGION-208", 1, steps...)
 	place := record.TaskPlace{Kind: record.PlaceRetro}
 	switch at {

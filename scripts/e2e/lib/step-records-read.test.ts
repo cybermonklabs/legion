@@ -78,6 +78,7 @@ function finished(issue: string, tasks: string[][] | null): FinishedIssue {
     ended_at: null,
     duration_seconds: null,
     failed_steps: 1,
+    fixes: 0,
     experiment: null,
     variant: null,
   };
@@ -146,6 +147,34 @@ describe("step-records-read.sh", () => {
     expect(stdout).toContain(`PASS: ${key}: 10 records`);
     expect(stderr).toContain(warning.trim());
     expect(code).toBe(0);
+  });
+
+  // steps.ts ends the line of a run whose record holds a commit with ` at <start>..<end>`: the
+  // commits its task's head was at when the run started and when it ended, each cut to ten
+  // characters, or `-` for one the record does not hold yet. A fix's line then ends with ` fix of
+  // <check>`, the CI check it fixes. Both follow the result and move no column the read judges, so
+  // the whole answer with them passes. The control is a line with another word after its result,
+  // which is no run.
+  test("runs that print their commits, and a fix that names its check, pass, exit 0", () => {
+    const committed = changed(whole, /^default /, (line) => {
+      if (/ 2 step implementer implementation attempt 2 /.test(line)) {
+        return `${line} at a1b2c3d4e5..b2c3d4e5f6 fix of k-ci`;
+      }
+      if (/ merge merger /.test(line)) return `${line} at b2c3d4e5f6..-`;
+      return `${line} at a1b2c3d4e5..a1b2c3d4e5`;
+    });
+    const passed = read(committed);
+    expect(passed.stdout).toContain(`PASS: ${key}: 10 records`);
+    expect(passed.stdout).not.toContain("FAIL");
+    expect(passed.code).toBe(0);
+    const stray = read(
+      changed(whole, / 3 step tester testing attempt 2 /, (line) => `${line} again`)
+    );
+    expect(stray.stdout).toContain(
+      "UNKNOWN: the line is no run: default 3 step tester testing attempt 2"
+    );
+    expect(stray.stdout).not.toContain("PASS");
+    expect(stray.code).toBe(2);
   });
 
   test("the line of the issue's experiment right after the header is no fault: the read passes", () => {

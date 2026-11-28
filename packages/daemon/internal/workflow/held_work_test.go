@@ -34,8 +34,9 @@ var heldWorks = []heldWork{
 }
 
 // heldBeneath is the open issue beneath a parent held for its children: the transition writes
-// that hold only while a hold on the parent's acceptance holds it (retroHeld), here an issue
-// beneath it in the workflow, and the last one's leave starts the retro.
+// that hold only while a hold on the parent's acceptance holds it (retroHeld, which retroHold
+// reads first), here an issue beneath it in the workflow, and the last one's leave starts the
+// retro.
 const heldBeneath = "LEGION-210"
 
 func (h heldWork) held() bool { return h.reason != "" }
@@ -76,7 +77,7 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 
 // A stopped task and a parent held for its children stand in held, and each path that
 // brings an issue back to work picks the role it gives work to by the role of the issue's phase,
-// which held has none of (phase.RoleFor, OpenPhaseRole). So none of these paths gives either one
+// which held has none of (phase.RoleFor, OpenRoles). So none of these paths gives either one
 // work: the ready of a claim (readyWorkerTask), the boot's resume by rule (booted, through
 // suspendedPhaseOwners), the silence repair (workerSilent, through phaseWorkerRecord), and the CI
 // settlement's wake of a released pod (wakeOnSettlement). The fifth path, a re-admission's

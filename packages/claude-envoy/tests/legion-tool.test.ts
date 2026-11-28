@@ -201,11 +201,7 @@ test("answerLegionTool closes only a step and answers an update without closing 
     hook,
   )
   expect(calls).toEqual([])
-  await legionTool.answerLegionTool(
-    runtime,
-    { op: "handoff_complete", summary: "tested" },
-    hook,
-  )
+  await legionTool.answerLegionTool(runtime, { op: "handoff_complete", summary: "tested" }, hook)
   expect(calls).toEqual(["closed"])
   await legionTool.answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
   expect(calls).toEqual(["closed", "update"])

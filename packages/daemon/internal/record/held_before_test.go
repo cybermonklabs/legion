@@ -24,7 +24,7 @@ func TestTheHeldWordsThatTakeTheBlockedArmAreTheSevenTheLadderReadsBeforeTheLink
 		t.Errorf("the words HeldBefore reads before dispatch_blocker = %v, want %v", before, want)
 	}
 	for _, word := range []HeldReason{HeldDispatchBlocker, HeldChildrenFirst, HeldAcceptedAncestor, HeldChildrenBeforeRetro,
-		HeldTaskStopped, HeldAtWork, HeldUnclassified, "", "not_a_word"} {
+		HeldTaskStopped, HeldFixRunning, HeldCIAtHead, HeldAtWork, HeldUnclassified, "", "not_a_word"} {
 		if HeldBefore(word, HeldDispatchBlocker) {
 			t.Errorf("HeldBefore(%q, dispatch_blocker) = true, want false", word)
 		}

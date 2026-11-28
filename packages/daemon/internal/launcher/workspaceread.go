@@ -21,11 +21,12 @@ import (
 // of the role the daemon asked through. Its hello says it answers (shimwire.LauncherHello's
 // ReadsWorkspace), since a launcher before it closes its connection on the frame.
 
-// The read's first command snapshots the working copy, which writes a commit, and every jj command
-// reads the user's, the repository's and the workspace's configuration, which a role can write: a
-// signing program for that write, a file monitor, a template or revset alias that calls a
-// signature's verifier or changes what the read counts. The launcher holds every role's launcher
-// token, which no role may read, so its read runs no program that any configuration names, and
+// The read snapshots the working copy, and a fix's working copy beside it where there is one
+// (workspace.ReadWork), which writes a commit, and every jj command reads the user's, the
+// repository's and the workspace's configuration, which a role can write: a signing program for
+// that write, a file monitor, a template or revset alias that calls a signature's verifier or
+// changes what the read counts. The launcher holds every role's launcher token, which no role may
+// read, so its read runs no program that any configuration names, and
 // counts what the read's own revset says, whichever jj the image carries. So it isolates the
 // configuration rather than switching known keys off one by one: jj runs with an environment of
 // the read's own (launcherReadEnv), whose home is an empty directory made for the one read. jj
@@ -35,12 +36,12 @@ import (
 // inside the repository's own directories too (`config.toml` of the repository,
 // `.jj/workspace-config.toml` of the workspace) where the id file beside it is missing, migrating
 // it into the configuration it reads. So before jj runs, the read runs the guards the daemon's own
-// jj commands run (workspace.GuardJJ): the workspace and the shared clone that the layout puts
-// beside it, and each such legacy file removed. The image's jj keeps a repository's configuration
-// by id (0.38 and later), so after the guards no file a role wrote loads. A workspace the guards
-// refuse, or whose legacy file cannot be removed, is not read, and the daemon keeps its pod as it
-// keeps one whose read cannot be made. The snapshot still runs, so a change in the working copy is
-// counted (R5).
+// jj commands run (workspace.GuardJJ): the workspace, a fix's working copy beside it, and the
+// shared clone that the layout puts beside them, and each such legacy file removed. The image's jj
+// keeps a repository's configuration by id (0.38 and later), so after the guards no file a role
+// wrote loads. A workspace the guards refuse, or whose legacy file cannot be removed, is not read,
+// and the daemon keeps its pod as it keeps one whose read cannot be made. The snapshots still run,
+// so a change in either working copy is counted (R5).
 
 // launcherReadEnv is the whole environment of the read's jj: the launcher's PATH, and a home of the
 // read's own, home, for every place jj reads a configuration or a state from. No other variable of
@@ -119,8 +120,8 @@ func (m *manager) workspaceWork(ctx context.Context, request shimwire.WorkspaceW
 	bounded, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	started, env := time.Now(), launcherReadEnv(home)
-	run := func(args ...string) (string, error) {
-		return workspace.RunCommand(bounded, start, budget, started, env, dir, nil, args)
+	run := func(in string, args ...string) (string, error) {
+		return workspace.RunCommand(bounded, start, budget, started, env, in, nil, args)
 	}
 	return workspace.ReadWork(run, jj, dir, launcherReadConfig...)
 }

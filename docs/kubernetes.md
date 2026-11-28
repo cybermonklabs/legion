@@ -3235,7 +3235,7 @@ The earlier release names the column in no statement, and each row it inserts ta
 Its header's way back is owed to the roll-forward alone: it drops the column and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the column back at 0 on every row:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 alter table phases drop column if exists return_to;
 delete from schema_version where version = 20261126110302;
@@ -3250,7 +3250,7 @@ This release writes nothing to the column, so a daemon of the earlier release, d
 Its header's way back is owed to the roll-forward and to that earlier daemon's reads: it empties `phases.verdict`, drops `phases.states_serial`, deletes the keys `head`, `waits_for`, `waiting` and `failing` from each queued notice and the keys `pull_request`, `head`, `check`, `ci_case`, `checks` and `statuses` from each queued role message, and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the serial back at 0 on every row:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 update phases set verdict = '' where verdict <> '';
 alter table phases drop column if exists states_serial;
@@ -3270,7 +3270,7 @@ The `verdict` key needs nothing: the earlier release decodes a notice with no `v
 Then run the way back in the header of `20261126110300_check_states`, which drops the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq` and deletes that migration's row:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 drop table if exists check_states;
 drop table if exists check_state_sets;
@@ -3282,6 +3282,78 @@ SQL
 ```
 
 The earlier release names none of the three tables and not the column, so this second transaction is owed to the roll-forward alone: its first catch-up of each issue reads the event log from the start again and applies each state event in it, whether or not `processed_events`, which the way back leaves standing, records the event, so each state event this release held before the rollback is held again, and each one the earlier release took as no fact is held as well.
+
+#### Rolling back the release that starts a fix beside the other steps
+
+This release starts a task's first implementation step again as a fix, in a working copy of its own, when a check that a CI job runs fails at the task's head, while the other steps of the task go on.
+Its migration `20261127131056_fix_beside_steps` adds the column `plan_tasks.fixes_ci`, the tables `task_fixes` and `ci_failures`, the columns `step_starts.start_commit`, `end_commit`, `fix_check`, `beside_fix` and `push_branch`, and the columns `pending_task_deliveries.fix`, `fix_from`, `move_to` and `fix_branch`.
+`task_fixes.pushed` holds, for each role, the head of that role's branch beside the fix that a push showed, and `step_starts.beside_fix` and `push_branch` the latest fix that ran beside a step's start and the branch beside a fix that step pushes to.
+It also adds `fix_job_read`, `ci_news` and `beside_branches_delete` to the outbox's kind check (`outbox_kind_check`), keeping every kind the database's check holds: it reads the list the check holds and writes it again with the three added, so a kind that a migration which ran before it added stays in it.
+A migration that runs after it and writes the whole list again drops the three, so this migration sorts after each migration that does.
+An earlier release names none of the two tables and none of the ten columns in a statement.
+It decodes a `notice`, a `controller_notice`, a `supervise` row, an `update_ask` row and a `step_record` row strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), and fails at every attempt a row that carries what it does not know.
+This release queues such rows: the `ci-failed` notice, a fix's start with `fix`, `fixFrom` and `fixBranch`, a start with `moveTo`, an update round's ask with `branch`, `ownFix` and `fixReads`, and a step record with `startCommit`, `endCommit` and `fixCheck`.
+It also records the fix that owns a merge forward under `fix` on the pull request's `merge_forward` and on each landing in its `earlier`, which the earlier release does not know.
+It also writes two new reasons of a hold on `issues.hold_reason`: `fix`, an issue held while its fix runs, and `ci`, an issue held until each check a CI job runs passes at its head.
+
+At the rollback, with every daemon of the database stopped and before the earlier image is pinned, run the way back below in one `PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1` session, with `<PROJECT>` the key of the project whose daemon rolls back.
+The outbox and `pending_task_deliveries` hold the rows of every project that shares the database, and the tables and the columns are the database's, so every daemon of one database moves back together.
+Run the block once for each project: a later run drops nothing again, and deletes and strips that project's rows.
+
+```sql
+begin;
+delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' = 'ci-failed' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'fix_job_read';
+delete from outbox where kind in ('ci_news', 'beside_branches_delete');
+update outbox set payload = payload - 'branch' - 'ownFix' - 'fixReads' where kind = 'update_ask' and payload ?| array['branch', 'ownFix', 'fixReads'] and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'supervise' and (payload ? 'fix' or payload ? 'fixFrom') and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'moveTo' where kind = 'supervise' and payload ? 'moveTo' and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'startCommit' - 'endCommit' - 'fixCheck' where kind = 'step_record' and payload ?| array['startCommit', 'endCommit', 'fixCheck'] and split_part(issue, '-', 1) = '<PROJECT>';
+update step_starts set record = record - 'startCommit' - 'endCommit' - 'fixCheck' where record ?| array['startCommit', 'endCommit', 'fixCheck'] and split_part(issue, '-', 1) = '<PROJECT>';
+update pull_requests set merge_forward = (merge_forward - 'fix') || case when jsonb_typeof(merge_forward->'earlier') = 'array' then jsonb_build_object('earlier', (select coalesce(jsonb_agg(landed - 'fix' order by at), '[]'::jsonb) from jsonb_array_elements(merge_forward->'earlier') with ordinality as earlier(landed, at))) else '{}'::jsonb end where (merge_forward ? 'fix' or jsonb_path_exists(merge_forward, '$.earlier[*].fix')) and split_part(issue, '-', 1) = '<PROJECT>';
+delete from pending_task_deliveries delivery where (to_jsonb(delivery) ->> 'fix')::int > 0;
+alter table pending_task_deliveries drop column if exists move_to, drop column if exists fix_from, drop column if exists fix, drop column if exists fix_branch;
+update issues set hold_reason = null where hold_reason in ('fix', 'ci') and split_part(key, '-', 1) = '<PROJECT>';
+alter table step_starts drop column if exists push_branch, drop column if exists beside_fix, drop column if exists fix_check, drop column if exists end_commit, drop column if exists start_commit;
+drop table if exists ci_failures;
+drop table if exists task_fixes;
+alter table plan_tasks drop column if exists fixes_ci;
+do $$ declare held text[]; begin
+  select array_agg(m[1]) into held from pg_constraint c, regexp_matches(pg_get_constraintdef(c.oid), '''([a-z0-9_]+)''', 'g') as m where c.conrelid = 'outbox'::regclass and c.conname = 'outbox_kind_check';
+  if held is null then raise exception 'outbox_kind_check holds no kind list to take the fix''s kinds out of'; end if;
+  alter table outbox drop constraint outbox_kind_check;
+  execute format('alter table outbox add constraint outbox_kind_check check (kind in (%s))', (select string_agg(quote_literal(kind), ', ' order by kind) from unnest(held) as kind where kind not in ('fix_job_read', 'ci_news', 'beside_branches_delete')));
+end $$;
+delete from schema_version where version = 20261127131056;
+commit;
+```
+
+The header of `20261127131056_fix_beside_steps.up.sql` carries this same block.
+The deletes and the updates of the outbox, the update of `step_starts.record` and the update of `pull_requests.merge_forward` are owed to the earlier release.
+The record a step's start keeps is copied into a step record by the roll forward of a rollback below the release that records each step, so its three members go too.
+The update of the merge forward takes `fix` off the ask and off each earlier landing, and leaves every other member and the landings in their order.
+Three statements take the rows of every project, not only of `<PROJECT>`: the kind check the block writes again without the release's three kinds refuses a `fix_job_read`, a `ci_news` and a `beside_branches_delete` row of any project, and a pending delivery of a fix goes with the columns that name it.
+That delete reads the column through the row's JSON, so a later run, which finds the column dropped, deletes nothing.
+The block takes those three kinds out of the list the check holds and keeps every other kind in it, so a kind a later migration added stays taken after the way back.
+The drops and the deleted version row are owed to the roll-forward: its `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row), which creates the two tables again empty and adds the columns again at their defaults.
+
+What the way back costs is each fix that was reading or running at the rollback, and each telling of a failed check that was still queued.
+A deleted `ci-failed` notice is a failure the issue's architect is never told of; the failed check still stands on the pull request, where the earlier release reads the CI results.
+A deleted fix start, or a deleted pending delivery of a fix, is a fix that does not run, and the rows of `task_fixes` and `ci_failures` go with their tables, so nothing after the roll-forward resumes it.
+An issue whose `fix` or `ci` reason the way back cleared is a plain hold under the earlier release, and a retry of that release releases it without waiting for the fix or the checks.
+So read the CI checks at the head of its pull request before that retry, and move the issue back to its implementer where one fails.
+An idle release takes no pod whose workspace holds work origin does not hold, and the fix's working copy is a working copy of the same repository, so its unpushed commits are in that read (`workspace.WorkRevset`, `working_copies()`): the way back changes nothing of that.
+A deleted `ci_news` row is a report of CI runs or a prompt to read Dispatch that nobody gets; a step starts by reading Dispatch, so none is owed after the way back.
+A deleted `beside_branches_delete` row leaves its branches on GitHub, as the way back leaves every branch beside a fix.
+After the roll-forward, each task reads `fixes_ci` false, so a run that started before the rollback takes no fix, and its CI messages are as the earlier release sent them.
+
+The branches `legion-beside/<KEY>/<generation>/<task>/fix-<n>/<role>` on GitHub stay after the way back: no row of the earlier release deletes one.
+Each holds the commits a step pushed beside a fix, which the fix may not have taken yet, so a person reads each before deleting it.
+List them, for each repository the project works, with:
+
+```sh
+gh api --paginate repos/<owner>/<repo>/git/matching-refs/heads/legion-beside/<PROJECT>-
+```
 
 #### Rolling back the release that holds a parent's start while a child of it is open
 
@@ -4039,6 +4111,7 @@ A rollback of a store that the release that backs a production check off a check
 A rollback of a store that the release that lets a message wake go ahead of the other paced wakes migrated runs the way back in the header of `20261125163328_message_wake_pacing.up.sql` first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, takes `paced_turns` off every queued catch-up and clears every claim's message mark; it drops no column and deletes no version row, so that store then reports 20261125163328, whose two columns an earlier release names in no statement.
 A rollback of a store that #5285's release migrated runs the way back of the line above first, since #5285's release carries the release that lets a message wake go ahead and `20261125163328_message_wake_pacing` is the newest of the three migrations, then the ways back in the headers of `20261125023100_pod_replacements.up.sql` and `20261125023041_idle_release_declines_told_pod.up.sql`, newest first ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)), which delete those two versions' rows, and then the steps of the line for the release that backs a production check off, since #5285's release carries that release too.
 A rollback of a store that the release with `20261126110302_phase_return_to` migrated runs the way back in that migration's header before that of 20261126110301_phase_verdict_gone, the newest first, as [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states) gives them, which deletes that version's row too; both run before the way back of `20261125000600_production_check_failed_looks`, which is older.
+A rollback of a store that the release that starts a fix beside the other steps migrated runs the way back of its own section, [Rolling back the release that starts a fix beside the other steps](#rolling-back-the-release-that-starts-a-fix-beside-the-other-steps), before each of those, the newest first, which deletes the row of 20261127131056 too.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -4149,6 +4222,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126110300_check_states adds the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the way back in its own header drops them.
 20261126110301_phase_verdict_gone gives `phases.verdict`, which it keeps for every earlier release, the default `''`, adds `phases.states_serial` and takes the key `verdict` out of each queued notice, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, which empties `phases.verdict` and drops `phases.states_serial` for the roll-forward.
 20261126110302_phase_return_to adds `phases.return_to` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, which drops the column and deletes its version row for the roll-forward.
+20261127131056_fix_beside_steps adds `plan_tasks.fixes_ci`, five columns of `step_starts`, four columns of `pending_task_deliveries` and the tables `task_fixes` and `ci_failures`, and adds `fix_job_read`, `ci_news` and `beside_branches_delete` to the outbox's kind check, keeping every kind the check holds, and touches none of the six, so the block holds over it and leaves all of them standing; a rollback to a release before it runs the way back of its own section, [Rolling back the release that starts a fix beside the other steps](#rolling-back-the-release-that-starts-a-fix-beside-the-other-steps), first, which drops them and deletes its version row for the roll-forward.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -8397,8 +8471,8 @@ The round is recorded on every claim of the issue that has a session and has not
 One rule says which of those claims the round asks and which it waits for (`roundAsks`), so the round waits for each claim it asks and for no other (dispatch://INFRA-4109 R2).
 It asks each of them but a `failed` claim, a claim that left the round's pod, a claim the round passes over, and a claim whose launch waits on the round's pod (below).
 The daemon publishes one message to each role the round asks, on the role's own Envoy topic, the architect's included (`askRound`, `record.UpdateAsk`):
-it names the drift, the round's own id and the moment the round ends, it says that only the role's own push keeps its work, and it gives the role five steps in this order: push its work to the issue branch; let each subagent and background job it started finish, or stop one that cannot finish before the round ends, and push what it made; put a scratch file it needs as evidence on Dispatch; answer `ready_for_update` with that id; end its turn.
-The text is the one `supervise.UpdateTask` builds from the reasons and the opening the round recorded, so every role of one round reads one text.
+it names the drift, the round's own id and the moment the round ends, it says that only the role's own push keeps its work, and it gives the role five steps in this order: push its work to the issue branch, or, beside a running fix, to the branch of its own that the message names (the fix to the fix's own branch), while the implementer of a fix that still reads its job pushes nothing; let each subagent and background job it started finish, or stop one that cannot finish before the round ends, and push what it made; put a scratch file it needs as evidence on Dispatch; answer `ready_for_update` with that id; end its turn.
+The text is the one `supervise.UpdateTask` builds from the reasons, the opening the round recorded and where the role pushes (`supervise.UpdatePush`, which the record's `branch`, `ownFix` and `fixReads` copy), so every role of one round reads one text but for its first step.
 Each role the round asks that has not answered is asked once per round by an ask that reaches its session: the daemon marks the claim asked (the `update_tasked_at` column) when the publish reached a session, an ask that finds no live session on the role's topic marks nothing, the next sweep that finds the role ready asks it again, and no sweep asks a role while an ask of the round still waits for it in the outbox.
 The daemon asks a role only once its agent has said it is ready (`supervise.SaidReady`).
 A claim that is queued, launching, registered but not ready, or under a suspension that holds (the operator's or the controller's) has no live session on its role's topic, so the sweep asks it nothing yet and writes no mark on it, and the round waits for it all the same.
@@ -8656,7 +8730,7 @@ None of it reaches the next pod: the issue's scratch, a role's temporary directo
 A kept volume carries all of it to the issue's next pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)), and the round's message still tells each role to push, because a reset or a suspension of the issue deletes that volume.
 What does reach it is what lives elsewhere
 — each role's session, a row in the session database ([Selecting the store](#selecting-the-store));
-the issue's branch on GitHub, `legion/<KEY>`, which every pushed turn is in;
+the issue's branch on GitHub, `legion/<KEY>`, which every pushed turn is in, and, while a fix runs, the branches of their own that the fix and each step beside it push to;
 the issue's record in the daemon's own Postgres; and the repository's cache, which fills the next pod's feed.
 
 A pod's lifetime is not a role's, and this paragraph is the one place that says how they differ.
@@ -8841,6 +8915,7 @@ The move to `backlog` suspends the issue, and the suspension deletes its Sandbox
 After the move to `todo`, the issue's next launch makes a new Sandbox, and its pod provisions on a new, empty volume.
 For a root, the two moves give every issue of its tree a new volume.
 Have each role push its work first, because the reset deletes all the work on the volume that no role pushed.
+The move to `backlog` also has the daemon delete the branches beside a fix of the issue's tasks, so let a running fix end, or copy those branches, before the reset.
 
 Never delete the claim by hand.
 Agent Sandbox then makes a new, empty claim under the live Sandbox.
@@ -8997,7 +9072,8 @@ The wakes are these:
 - a phase start, task, backward move, notice, merge-forward message, hook prompt, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
 
 - a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own reads of a pull request run at the moments [Running Legion](https://cybermonklabs.github.io/legion/legion/running-legion/) names).
-  One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
+  One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once.
+  On a task that takes a fix the settlement wakes nobody itself: its report of the runs that newly ended, and a prompt to read Dispatch when a check's state changes at the head (outbox rows of kind `ci_news`), wake the reader each names, the worker of the step that runs or the implementer of a running fix, as a hook prompt does;
 
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.
   Envoy keeps it for one hour, until the `kept_until` its publish answers with, and it reaches the woken role if the role is back inside that hour.
@@ -10795,7 +10871,8 @@ A `BROKER_EXCHANGE_ACCOUNTS` entry whose fixed session is `legion-daemon:<its ow
 The broker reads the session the entry fixes, case included, and never a session the request names, so a pod of an entry that fixes no session gets no `legion-status` whatever session it names.
 The entry decides the scope of a trade that asks for none, and a request that names `legion-status` is refused `invalid_scope`, under every entry.
 A result entry decides its scope whatever the request asks: its run's trade that asks for `read`, and a request under any entry that names the scope `results`, are refused `invalid_scope`.
-A trade under any entry but a result entry, and every other trade, may ask for `read` (`scope=read`, alone or beside `machine`): its token keeps the session, person, service, machine and projects the same trade would have carried, carries the narrowed word of its project scope and holds `read`, with `person` beside it for a `read-person` token that names a person, and nothing that writes. A Legion daemon's trade that asks for `read` holds no `legion-status`.
+A trade under any entry but a result entry, and every other trade, may ask for `read` (`scope=read`, alone or beside `machine`): its token keeps the session, person, service, machine and projects the same trade would have carried, carries the narrowed word of its project scope and holds `read`, with `person` beside it for a `read-person` token that names a person, and nothing that writes.
+A Legion daemon's trade that asks for `read` holds no `legion-status`.
 Such a trade may also name a cut (`as_of`, an RFC 3339 time with at most six fractional digits, no later than the trade); a cut on a trade that does not ask for `read`, a later one, one at the zero time (`0001-01-01T00:00:00Z`, under any offset), which would read as no cut, and one in any other form are refused `invalid_request`.
 A token that holds `read` is never the subject of a trade.
 It is never bound to a key a live launcher credential is bound to: a trade whose proof key holds one binds its token to a key made for the token's holder, which it proves in a second DPoP proof in the `DPoP-Holder` header, and a person's sign-in always does.

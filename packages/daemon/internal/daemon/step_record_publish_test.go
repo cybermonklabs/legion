@@ -141,15 +141,18 @@ func (d *stepRecordDispatch) statusWrites() []string {
 
 // stepRecordOf is the end of a review that asked for changes, with every field the end of a step
 // carries set: all but the rating and its reason, which only the retro's rating carries
-// (ratingRecordOf).
+// (ratingRecordOf). It names a fix's check too, which only a fix's record carries, so that one
+// fixture sets every field of the record's commits.
 func stepRecordOf() record.StepRecord {
 	started := time.Date(2026, 11, 16, 22, 0, 0, 0, time.UTC)
 	ended := started.Add(time.Hour)
 	session, model, result, report := "ses-reviewer", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+	startCommit, endCommit, fixCheck := "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222", "k-ci"
 	returnedTo := 2
 	return record.StepRecord{ID: stepRecordID, Task: "default", Step: 4, Kind: "step", Role: "reviewer", Type: "review",
 		Agent: "legion-legion-legion-1-reviewer", Generation: 1, Session: &session, Model: &model, StartedAt: &started,
-		EndedAt: &ended, Result: &result, ReturnedTo: &returnedTo, Report: &report}
+		EndedAt: &ended, Result: &result, ReturnedTo: &returnedTo, Report: &report,
+		StartCommit: &startCommit, EndCommit: &endCommit, FixCheck: &fixCheck}
 }
 
 // stepRecordRig is one issue's row on the record lane, a step record or a plan, drained by hand
@@ -299,11 +302,18 @@ func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
 		defer mu.Unlock()
 		asked++
 		w.Header().Set("Content-Type", "application/json")
-		if !routed || req.Method != http.MethodPut || req.URL.Path != route {
+		if !routed || req.Method != http.MethodPut || (req.URL.Path != route && req.URL.Path != route+"/commits") {
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"code": "NOT_FOUND", "error": "no route for " + req.Method + " " + req.URL.Path, "hint": "GET /api/v1 lists every route",
 			})
+			return
+		}
+		// The record names its commits, which the record's commits route takes after the record
+		// (TestAnOlderDispatchKeepsTheRowWaiting holds that route's own wait); a Dispatch that
+		// serves the step route here serves that one too.
+		if req.URL.Path == route+"/commits" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": stepRecordID})
 			return
 		}
 		var write dispatch.StepWrite
@@ -560,31 +570,34 @@ func TestAStepRecordLandsWhileItsVariantWaitsForItsRoute(t *testing.T) {
 // A step record and the writes Dispatch gets are the same fields, the record's id aside, and the
 // publication copies them one by one (stepWriteOf), since the dispatch package imports no record
 // of the daemon's. A field added to both types and left out of the copy compiles and drops that
-// field from every write. So the record's fields but its rating and its experiment are held to the
-// step write's, each of the same type under the same JSON name, and its rating (record.PlanRating)
-// and its experiment (record.StepExperiment) to the write's mirrors of them in dispatch
-// (dispatch.PlanRating and dispatch.StepExperiment), the rating route's and the experiment route's
-// own arguments (Client.PutStepRating, Client.PutStepExperiment), which the copy converts: each
-// pair of structs has the same fields, each of the same type under the same JSON name, so a field
-// added to one alone fails here or stops the build. The fixtures are the two writes production
-// makes, to a value in every field between them, which a new field must get in the write that
-// carries it: the end of a step carries every field but the rating, the retro's rating (workflow's
-// rateRetro) carries the step's identity and the rating, and each, as the write of an issue a
-// draw put in an experiment, carries the experiment and the variant. The run (outbox.run) sends
-// each to its own route and then its pair to the experiment route, and each write carries its own
-// record's value of each field.
+// field from every write. So the record's fields but its rating, its commits and its experiment
+// are held to the step write's, each of the same type under the same JSON name, and its rating
+// (record.PlanRating) and its experiment (record.StepExperiment) to the write's mirrors of them in
+// dispatch (dispatch.PlanRating and dispatch.StepExperiment), the rating route's and the
+// experiment route's own arguments (Client.PutStepRating, Client.PutStepExperiment), which the copy
+// converts: each pair of structs has the same fields, each of the same type under the same JSON
+// name, so a field added to one alone fails here or stops the build. The record's two commits and
+// a fix's check (StartCommit, EndCommit, FixCheck) are no field of the step write either: they go
+// to Dispatch on a route of their own. The fixtures are the two writes production makes, to a
+// value in every field between them, which a new field must get in the write that carries it: the
+// end of a step carries every field but the rating, the retro's rating (workflow's rateRetro)
+// carries the step's identity and the rating, and each, as the write of an issue a draw put in an
+// experiment, carries the experiment and the variant. The run (outbox.run) sends each to its own
+// route, the commits a record names to the commits route, and then its pair to the experiment
+// route, and each write carries its own record's value of each field.
 func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 	t.Parallel()
 	recordType, writeType := reflect.TypeFor[record.StepRecord](), reflect.TypeFor[dispatch.StepWrite]()
 	recordFields := map[string]reflect.StructField{}
 	for i := range recordType.NumField() {
 		field := recordType.Field(i)
-		if field.Name != "ID" && field.Name != "PlanRating" && field.Name != "StepExperiment" {
+		if name := field.Name; name != "ID" && name != "PlanRating" && name != "StepExperiment" &&
+			name != "StartCommit" && name != "EndCommit" && name != "FixCheck" {
 			recordFields[field.Name] = field
 		}
 	}
 	if len(recordFields) != writeType.NumField() {
-		t.Errorf("record.StepRecord has %d fields beside its ID, its rating and its experiment, dispatch.StepWrite %d: a field of one is not a field of the other",
+		t.Errorf("record.StepRecord has %d fields beside its ID, its rating, its commits and its experiment, dispatch.StepWrite %d: a field of one is not a field of the other",
 			len(recordFields), writeType.NumField())
 	}
 	for i := range writeType.NumField() {

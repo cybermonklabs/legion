@@ -427,6 +427,103 @@ test("workflow runs and jobs of each head, by head, by run and by job, and GitHu
   });
 });
 
+/** The route gh-standin.ts answers `call` with in the world's `state`: the first whose match names
+ * it and that answers in that state. */
+function routeIn(table: RouteTable, state: string, call: string): Route {
+  const route = table.routes.find(
+    (candidate) =>
+      (candidate.when === undefined || candidate.when === state) &&
+      new RegExp(candidate.match, "s").test(call)
+  );
+  if (route === undefined) throw new Error(`no route of state '${state}' names: ${call}`);
+  return route;
+}
+
+// Catches: a world whose failed job, once its re-run is pressed, still answers its failed first
+// attempt (the role presses again, or reads a pass that never came), a second press GitHub would
+// refuse taken as a new run, a settled attempt never read, and the first attempt's job and log lost
+// once the second exists.
+test("a named job run once more: the press, the second attempt running, then settled, and the first attempt kept", () => {
+  const UNIT_LOG = "unit-tests\tRun bun test\t(fail) notify > retries a refused send [5001.12ms]\n";
+  const unit = {
+    name: "unit-tests",
+    checkRun: 9301,
+    run: 44,
+    suite: 44,
+    status: "completed",
+    conclusion: "failure",
+    log: UNIT_LOG,
+    rerun: { checkRun: 9302, conclusion: "success" },
+  };
+  const rerun = renderHeadsRoutes(world({ named: [unit], only702: true }));
+  // Before the press: the failed attempt, and each press moves the world on.
+  expect(routeIn(rerun, "", "gh run view 44 --log-failed")).toMatchObject({ stdout: UNIT_LOG });
+  expect(routeIn(rerun, "", "gh pr checks 702").exit).toBe(1);
+  for (const press of [
+    "gh run rerun 44 --failed",
+    "gh run rerun --job 9301",
+    "gh api -X POST repos/example/widgets/actions/runs/44/rerun-failed-jobs",
+  ])
+    expect(routeIn(rerun, "", press)).toMatchObject({ moves: "running" });
+  // `--help` presses nothing; the world holds no answer of it, so the stand-in fails loudly.
+  expect(() => routeIn(rerun, "", "gh run rerun 44 --help")).toThrow();
+  // While the second attempt runs: every read answers it, and a press is refused.
+  expect(routeIn(rerun, "running", "gh run view 44 --log-failed")).toMatchObject({
+    stderr: "run 44 is still in progress; logs will be available when it is complete\n",
+    exit: 1,
+  });
+  expect(routeIn(rerun, "running", "gh run view 44 --json status,attempt")).toMatchObject({
+    stdout: { status: "in_progress", attempt: 2, conclusion: "" },
+  });
+  expect(routeIn(rerun, "running", "gh pr checks 702").exit).toBe(8);
+  expect(routeIn(rerun, "running", "gh run rerun 44 --failed")).toMatchObject({
+    stderr: "run 44 cannot be rerun; This workflow is already running\n",
+    exit: 1,
+  });
+  expect(routeIn(rerun, "running", "gh run rerun 44 --failed").moves).toBeUndefined();
+  expect(
+    routeIn(rerun, "running", "gh api repos/example/widgets/actions/runs/44").stdout
+  ).toMatchObject({ status: "in_progress", run_attempt: 2 });
+  // The first attempt answers by its job's id and by its attempt in each state after the press.
+  for (const state of ["running", "settled"]) {
+    expect(
+      routeIn(rerun, state, "gh api repos/example/widgets/actions/jobs/9301").stdout
+    ).toMatchObject({ id: 9301, conclusion: "failure" });
+    expect(routeIn(rerun, state, "gh run view 44 --attempt 1 --log-failed")).toMatchObject({
+      stdout: UNIT_LOG,
+    });
+    expect(
+      routeIn(rerun, state, "gh api repos/example/widgets/actions/runs/44/attempts/1/jobs").stdout
+    ).toMatchObject({ jobs: [{ id: 9301, conclusion: "failure" }] });
+  }
+  // Settled: the second attempt as it concluded, and a press moves nothing.
+  expect(routeIn(rerun, "settled", "gh run view 44 --json status,conclusion")).toMatchObject({
+    stdout: { status: "completed", conclusion: "success", attempt: 2 },
+  });
+  expect(routeIn(rerun, "settled", "gh pr checks 702").exit).toBe(0);
+  expect(
+    routeIn(rerun, "settled", "gh api repos/example/widgets/actions/runs/44/attempts/2/jobs").stdout
+  ).toMatchObject({ jobs: [{ id: 9302, conclusion: "success" }] });
+  expect(routeIn(rerun, "settled", "gh run rerun 44 --failed")).toMatchObject({ stdout: "" });
+  expect(routeIn(rerun, "settled", "gh run rerun 44 --failed").moves).toBeUndefined();
+  // A world with no job run once more renders one table, with no state.
+  expect(plain.routes.every((route) => route.when === undefined)).toBe(true);
+});
+
+// Catches: a pull request served on legion/<key>-<number> where the world names its branch, as a
+// fix's task names the issue's own branch.
+test("a pull request on the branch its world names", () => {
+  const named = world({ only702: true });
+  const onBranch = renderHeadsRoutes({
+    ...named,
+    pulls: named.pulls.map((pull) => ({ ...pull, branch: "legion/ACME-7" })),
+  });
+  expect(answer(onBranch, "gh pr view")).toMatchObject({
+    headRefName: "legion/ACME-7",
+    head: { ref: "legion/ACME-7" },
+  });
+});
+
 // Catches: a review or comment the run posts that is never kept (the stand-in then never lists
 // it), a read of the reviews taken for a write, and an approval that names another head.
 test("reviews and comments: the writes kept, the lists, a review by its id, and the approval", () => {

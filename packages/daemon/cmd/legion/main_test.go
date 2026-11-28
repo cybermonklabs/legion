@@ -3247,6 +3247,16 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 				`{"issue":"LEGION-218","reason":"accepted_ancestor","heldBy":["LEGION-216"]}]`,
 			want: "admission.held: 4 issues — accepted_ancestor 1, children_before_retro 1, task_stopped 1, unclassified 1\n",
 		},
+		{
+			// The two holds of a task's end stand after task_stopped and before at_work in the
+			// ladder, so they are counted there, whatever order the rows come in.
+			name: "the two holds of a task's end, in the ladder's order",
+			held: `[{"issue":"LEGION-219","reason":"at_work"},` +
+				`{"issue":"LEGION-220","reason":"ci_at_head","heldBy":["ci / build"]},` +
+				`{"issue":"LEGION-221","reason":"fix_running","heldBy":["ci / test","c0de0000000000000000000000000000000000ff"]},` +
+				`{"issue":"LEGION-222","reason":"task_stopped"}]`,
+			want: "admission.held: 4 issues — task_stopped 1, fix_running 1, ci_at_head 1, at_work 1\n",
+		},
 		{name: "none", held: `[]`, want: "admission.held: none\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

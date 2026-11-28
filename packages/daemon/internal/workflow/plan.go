@@ -87,6 +87,51 @@ func takesNoPlan(group record.Assignment) bool {
 	return config.PlanGroup(group.Plan) == config.PlanGroupDefault
 }
 
+// takesNoStop is the group of issue key and whether its owner stops none of its tasks: a group
+// that takes no plan from its owner (takesNoPlan) takes no stop of its tasks either. The refusal of
+// a stop (taskStopped) and every text that offers stop_task (ciActsOf) read this one answer, so the
+// offer and the refusal cannot disagree.
+func (e *Engine) takesNoStop(ctx context.Context, tx pgx.Tx, key string) (record.Assignment, bool, error) {
+	group, err := e.groupOf(ctx, tx, key)
+	return group, takesNoPlan(group), err
+}
+
+// ciActs is what the owner of a task can do before its CI passes, which the ci-failed notice
+// (ciFailedNotice), the notice of a fix whose branch cannot be named (refuseFixName), the
+// retro-held notice of a hold for CI (endHoldNotice) and the CI_PENDING refusal (endHoldRefusal)
+// each offer from this one value: send the task back with request_backward_move, always, and stop
+// its task with stop_task (Stop) only where that stop is taken.
+type ciActs struct{ Stop bool }
+
+// ciActsOf is the ciActs of issue on w, the walk of its run: the stop where the issue runs a
+// plan's task, its walk having plan rows and its group taking its owner's stop (takesNoStop). An
+// issue with no plan rows has no task to stop, and a group that runs the project's default steps
+// answers a stop PLAN_NOT_TAKEN.
+func (e *Engine) ciActsOf(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (ciActs, error) {
+	if !w.Stored {
+		return ciActs{}, nil
+	}
+	_, none, err := e.takesNoStop(ctx, tx, issue.Key)
+	return ciActs{Stop: !none}, err
+}
+
+// decide is the owner's acts as the ci-failed notice names them after "Decide with the person:".
+func (a ciActs) decide() string {
+	if a.Stop {
+		return "send the task back with request_backward_move, or stop it with stop_task"
+	}
+	return "send it back with request_backward_move"
+}
+
+// before is the owner's acts as a hold for CI names them, the retro-held notice's and the
+// CI_PENDING refusal's sentence.
+func (a ciActs) before() string {
+	if a.Stop {
+		return "To act before then, send it back with request_backward_move, or stop its task with stop_task."
+	}
+	return "To act before then, send it back with request_backward_move."
+}
+
 // planFirstStep settles the plan the first step of issue's run walks, in the transaction that
 // starts it (gateOpened) and before the transition reads it (walk), so each run that starts its
 // work in this release has plan rows. A plan an earlier owner gave is passed over first
@@ -138,8 +183,11 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 // takeFirstPlan writes stored, the plan the first step of issue's run walks, at the run's
 // generation, and tells what passed over earlier (tellPassedOver): the project's default steps for
 // none (defaultRows), a plan of another generation carried from its start (CarryPlan without
-// carried), and the generation's own rows kept as they are. planFirstStep and the stop of a task
-// before that step (taskStopped) take the first plan through it.
+// carried), and the generation's own rows kept as they are. Each task of the run then takes a fix
+// (MarkRunFixesCI): the run starts in this release, so a check that a CI job runs and that fails
+// at a task's head starts the task's first implementation step again beside its other steps.
+// planFirstStep and the stop of a task before that step (taskStopped) take the first plan through
+// it.
 func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan, earlier []record.PlanVersion) error {
 	switch {
 	case stored == nil:
@@ -152,6 +200,9 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 		if err := e.store.CarryPlan(ctx, tx, issue.Key, stored.Version.Generation, issue.Generation, false); err != nil {
 			return err
 		}
+	}
+	if err := e.store.MarkRunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil {
+		return err
 	}
 	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
 }
@@ -391,19 +442,33 @@ func planHold(issue record.Issue, stored bool) bool {
 	return stored && (record.HeldFor(issue, record.HoldTaskStopped) || record.HeldForChildren(issue))
 }
 
+// fixOrCIHold says whether issue is held for a fix of its task or for the CI of its head, whatever
+// its walk: holds no plan makes, so planHold never reads them, and the one move out of either is
+// moveFromHold.
+func fixOrCIHold(issue record.Issue) bool {
+	return record.HeldFor(issue, record.HoldForFix) || record.HeldFor(issue, record.HoldForCI)
+}
+
 // planHoldRefusal is the answer to a release of issue's hold — the architect's retry or
 // escalation (retryOrEscalate), the operator's restart (restartPhase) — where its plan holds it
-// (planHold), and nil for any other hold. A retry would start the role of the phase the hold is
-// from and an escalation would overwrite the reason, so each is refused with what starts the work
-// again: for a stopped task a later version of its plan (RetryOfStoppedTask), for a parent held
-// for its children why it still waits (heldParentWait's refusal).
+// (planHold), or its fix or its CI does (fixOrCIHold), and nil for any other hold. A retry would
+// start the role of the phase the hold is from and an escalation would overwrite the reason, so
+// each is refused with what starts the work again: for a stopped task a later version of its plan
+// (RetryOfStoppedTask), for a parent held for its children why it still waits (heldParentWait's
+// refusal), and for a task held for its fix or its CI what it waits for (endHoldRefusal).
 func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue) (*intake.Refusal, error) {
 	if issue.Phase != phase.Held || issue.Hold == nil {
 		return nil, nil
 	}
 	w, err := e.walk(ctx, tx, issue)
-	if err != nil || !planHold(issue, w.Stored) {
+	if err != nil {
 		return nil, err
+	}
+	if fixOrCIHold(issue) {
+		return e.endHoldRefusal(ctx, tx, issue, w)
+	}
+	if !planHold(issue, w.Stored) {
+		return nil, nil
 	}
 	if record.HeldForChildren(issue) {
 		wait, err := e.heldParentWaitOf(ctx, tx, issue)
@@ -413,6 +478,39 @@ func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 		return wait.refusal(), nil
 	}
 	return intake.RetryOfStoppedTask(issue.Key, w.Task, w.StoppedReason), nil
+}
+
+// endHoldRefusal is the refusal of a release of issue's hold for its fix or for its CI
+// (fixOrCIHold), on w, the walk of its run, which names what ends the hold: FIX_RUNNING, the
+// fix's end, which moves the task on; CI_PENDING, the CI at its task's head (ciWaits), each check
+// of which starts the retro by passing, or a fix or the owner's notice by failing, and the
+// owner's acts before then (ciActsOf).
+func (e *Engine) endHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (*intake.Refusal, error) {
+	if record.HeldFor(issue, record.HoldForFix) {
+		fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+		if err != nil {
+			return nil, err
+		}
+		check, head := "", ""
+		if fix != nil {
+			check, head = fix.Check, fix.Head
+		}
+		return &intake.Refusal{Status: 409, Code: "FIX_RUNNING", Message: fmt.Sprintf(
+			"%s is held while a fix of task %s runs (check %s at %s); it goes on when the fix ends. This retry changed nothing.",
+			issue.Key, w.Task, check, head)}, nil
+	}
+	head, waits, err := e.ciWaits(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	acts, err := e.ciActsOf(ctx, tx, issue, w)
+	if err != nil {
+		return nil, err
+	}
+	return &intake.Refusal{Status: 409, Code: "CI_PENDING", Message: fmt.Sprintf(
+		"%s passed its last step and waits for CI at %s: %s. Legion starts its retro when each passes; a failure starts a fix where the task has one, else Legion tells you once. "+
+			"%s This retry changed nothing.",
+		issue.Key, head, strings.Join(waits, ", "), acts.before())}, nil
 }
 
 // pastReport is the run that a completion of a phase its issue no longer stands in reports, which

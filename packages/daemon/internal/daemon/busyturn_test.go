@@ -51,7 +51,7 @@ func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
 			// The issue is in the implementing phase until the implementer's own turn finishes it.
 			var implementing atomic.Bool
 			implementing.Store(true)
-			rig.sup.deps.PhaseHolds = func(_ context.Context, _ string, p phase.Phase, _ uint64) (bool, error) {
+			rig.sup.deps.PhaseHolds = func(_ context.Context, _ string, p phase.Phase, _ uint64, _ int) (bool, error) {
 				return p != phase.Implementing || implementing.Load(), nil
 			}
 			implementerConn := fake.NewConn()

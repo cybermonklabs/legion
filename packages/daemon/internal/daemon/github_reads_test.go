@@ -137,9 +137,16 @@ func readCapture(t *testing.T, w *workflowRuntime) {
 // its pull request (record.PullRequest.HeadUpdatedAt), which is GitHub's own updated_at for it.
 var captureHeadUpdated = time.Date(2026, 10, 8, 22, 15, 0, 0, time.UTC)
 
-// seedCapture records CAPTURE-1 in from with its pull request 86 at head code, whose required
-// check passed there and which GitHub's last read found clean, and its phases. A test about what
-// an unread or another merge state leaves undone sets its own (clearCaptureMergeState).
+// seedCapture records CAPTURE-1 in from with its pull request 86 at head code on base main, whose
+// required check passed there and which GitHub's last read found clean, and its phases. A test
+// about what an unread or another merge state leaves undone sets its own
+// (clearCaptureMergeState).
+//
+// The base is part of the record for every open pull request, and the reads of the merge state
+// need it: the fact that opens one carries GitHub's own base.ref, and the start read keeps the
+// base the list answer names even when the detail read after it fails (issue_reads.go), so that a
+// read of GitHub which answers nothing can still hand the head to the reads of its base
+// (followOnBase). A record with none has that handover refused and the head read by nobody.
 func seedCapture(t *testing.T, pool *store.Pool, from phase.Phase, status string, phases ...record.PhaseRow) {
 	t.Helper()
 	records := record.NewStore()
@@ -149,7 +156,7 @@ func seedCapture(t *testing.T, pool *store.Pool, from phase.Phase, status string
 			return err
 		}
 		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "CAPTURE-1", Repo: "acme/widgets",
-			Number: 86, Branch: "legion/CAPTURE-1", HeadSHA: "code", HeadUpdatedAt: captureHeadUpdated,
+			Number: 86, Branch: "legion/CAPTURE-1", Base: "main", HeadSHA: "code", HeadUpdatedAt: captureHeadUpdated,
 			CheckedHead: "code", Failing: []string{},
 			CheckRuns:  []record.AttemptRun{{Name: "pr-checks-result", ID: 1}, {Name: "review", ID: 2}},
 			Generation: 1, Snapshot: "settled", Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean}); err != nil {

@@ -57,8 +57,9 @@ import (
 // for. Each makes at most mergeStateLadderReads attempts, each with at most one read, and reads
 // again mergeStateLadderWait (mergeStateWait) later, or after GitHub's Retry-After when that is
 // longer. So a change to either number changes those reads too. mergeStateFollowWaits is the
-// longest wait between two reads after a climb, counted in the ladder's waits: twenty half
-// minutes, ten minutes.
+// longest wait between two reads after a climb, and the longest a climb waits to read again after
+// a read of the record that failed with nothing to hand to a base (climbMergeState), counted in
+// the ladder's waits: twenty half minutes, ten minutes.
 const (
 	mergeStateLadderReads = 5
 	mergeStateLadderWait  = 30 * time.Second
@@ -163,9 +164,13 @@ func (w *workflowRuntime) readMergeStates(ctx context.Context) {
 			delete(w.mergeStateQueued, issue)
 			if run, running := w.mergeStateRunning[issue]; running {
 				run.asked = true
+				select {
+				case run.wake <- struct{}{}:
+				default:
+				}
 				continue
 			}
-			w.mergeStateRunning[issue] = &mergeStateRun{}
+			w.mergeStateRunning[issue] = &mergeStateRun{wake: make(chan struct{}, 1)}
 			started[issue] = follow
 		}
 		w.mergeStateMu.Unlock()
@@ -178,9 +183,14 @@ func (w *workflowRuntime) readMergeStates(ctx context.Context) {
 }
 
 // mergeStateRun is one running ladder's bookkeeping (workflowRuntime.mergeStateRunning): asked is
-// whether a request for a read arrived since its climb began.
+// whether a request for a read arrived since its climb began, and wake ends a climb's wait after a
+// failed read of the record for that request (climbWait). wake holds one signal at most:
+// readMergeStates sends it without blocking and mergeStateEnds drains it as it takes the request
+// up, both under mergeStateMu, so a request a climb answers leaves no signal behind to cut a later
+// wait short.
 type mergeStateRun struct {
 	asked bool
+	wake  chan struct{}
 }
 
 // mergeStateLadder runs issue's ladder: it climbs (climbMergeState) - or, when follow names a pull
@@ -213,6 +223,10 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 	defer w.mergeStateMu.Unlock()
 	if run := w.mergeStateRunning[issue]; run != nil && run.asked && ctx.Err() == nil {
 		run.asked = false
+		select {
+		case <-run.wake:
+		default:
+		}
 		return false
 	}
 	delete(w.mergeStateRunning, issue)
@@ -227,23 +241,35 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 // climb asks again for each; every other answer, the read finding no open pull request among
 // them, is an answer, and the climb ends on it and answers nil. Below, `unknown` stands for both.
 // After the last `unknown` it ends too, and answers the pull request that read was made of, as
-// readMergeState
-// holds it, which the ladder then hands to its base's reads (followOnBase) with no read of the
-// record between the two. A read that fails - the record's read, or GitHub's, which answers 403
-// for up to an hour once the implement App's REST budget is spent - ends the climb as well. After
-// an `unknown` it answers the pull request the last `unknown` was read of, so the head goes to its
-// base's reads as after the last read, and they read it until GitHub answers it a state, as they
-// keep a pull request whose read fails owed (readBase): a failed read says nothing of the head, and
-// GitHub has already answered that it is still computing it (dispatch://INFRA-4374 R4). A read
-// that fails before any `unknown` answers the pull request the record holds, on its own base,
-// when no base's reads hold the issue yet, so those reads read it until GitHub answers: a round
-// that waits quietly on the head has no event coming that would read it again. Where a base's
-// reads already hold the issue it answers nil, and they read it on their own ladder. A read that
-// fails on the record's read answers nil, as there is no pull request to hand. A read
-// GitHub answered whose answer the record did not take (errUnapplied: the database failed the
-// write) ends the climb and answers that read's pull request, whatever GitHub answered, so its
-// base's reads read it again on its ladder: the record still holds what it held before, and
-// nothing else would read the head again until its next event (dispatch://INFRA-4374 R4).
+// readMergeState holds it, which the ladder then hands to its base's reads (followOnBase) with no
+// read of the record between the two. A read that fails - the record's read, or GitHub's, which
+// answers 403 for up to an hour once the implement App's REST budget is spent - ends the climb as
+// well, but for the one case below. After an `unknown` it answers the pull request the last
+// `unknown` was read of, so the head goes to its base's reads as after the last read, and they
+// read it until GitHub answers it a state, as they keep a pull request whose read fails owed
+// (readBase): a failed read says nothing of the head, and GitHub has already answered that it is
+// still computing it (dispatch://INFRA-4374 R4). A read that fails before any `unknown` answers
+// the pull request the record holds, on its own base, when no base's reads hold the issue yet, so
+// those reads read it until GitHub answers: a round that waits quietly on the head has no event
+// coming that would read it again. Where a base's reads already hold the issue it answers nil,
+// and they read it on their own ladder. A read GitHub answered whose answer the record did not
+// take (errUnapplied: the database failed the write) ends the climb and answers that read's pull
+// request, whatever GitHub answered, so its base's reads read it again on its ladder: the record
+// still holds what it held before, and nothing else would read the head again until its next
+// event (dispatch://INFRA-4374 R4).
+//
+// The one case is a read of the record that fails before any `unknown` while no base's reads hold
+// the issue: there is no pull request to hand, and nobody else owes the head a read. The climb
+// keeps the read it owes and makes it again: it logs the failure and waits, the ladder's wait after
+// the first failure and twice the one before after each failure that follows it, up to
+// mergeStateFollowWaits of the ladder's waits (climbWait). A request for a read of the issue ends
+// the wait, before it or during it, and the climb answers nil, so the ladder climbs again at once
+// (mergeStateEnds): once the database is back, the read the request asked for is not held behind
+// the rest of a wait of up to mergeStateFollowWaits of the ladder's. ctx's end ends the wait and
+// the ladder. Such a failed read is none of the climb's mergeStateLadderReads reads. A climb that
+// ended on that failure left mergeStateEnds to take the issue off, and nothing read the head again
+// until another fact asked, so an answer GitHub had by then - the one an approval after a fix waits
+// on, a CONFLICTING one among them - reached nothing.
 //
 // The climb takes the issue out of its base's reads once: after its first read, when GitHub
 // answered and the record took the answer, or the record held no open pull request to read, and
@@ -256,7 +282,8 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *record.PullRequest {
 	key, asked := w.heldUnder(issue)
 	var unknown *record.PullRequest
-	for read := 1; ; read++ {
+	var backoff time.Duration
+	for read := 1; ; {
 		state, incomplete, pr, err := w.readMergeState(ctx, issue)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -275,6 +302,17 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *re
 			if handed == nil && key == "" {
 				handed = pr
 			}
+			if handed == nil && key == "" {
+				// The record's read failed, so there is no pull request to hand, and no base
+				// reads the issue: the climb reads again after the wait.
+				backoff = min(max(2*backoff, w.mergeStateWait()), mergeStateFollowWaits*w.mergeStateWait())
+				w.log.Warn("read GitHub's merge state for an issue whose read was asked for; the record's read failed, and the read is made again after the wait",
+					"issue", issue, "read", read, "wait", backoff, "error", err)
+				if !w.climbWait(ctx, issue, backoff) {
+					return nil
+				}
+				continue
+			}
 			w.log.Warn("read GitHub's merge state for an issue whose read was asked for; the record stands as it was until the next read",
 				"issue", issue, "read", read, "handedToBase", handed != nil, "error", err)
 			if pr != nil {
@@ -292,11 +330,40 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *re
 		if read >= mergeStateLadderReads {
 			return unknown
 		}
+		read++
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-time.After(w.mergeStateWait()):
 		}
+	}
+}
+
+// climbWait waits wait before a climb makes again the read of the record that failed
+// (climbMergeState), and says whether to make that read: false once a request for a read of issue
+// has arrived, before the wait or during it, since the ladder then climbs at once (mergeStateEnds),
+// and false when ctx ends.
+func (w *workflowRuntime) climbWait(ctx context.Context, issue string, wait time.Duration) bool {
+	w.mergeStateMu.Lock()
+	run := w.mergeStateRunning[issue]
+	asked := run != nil && run.asked
+	var wake chan struct{}
+	if run != nil {
+		wake = run.wake
+	}
+	w.mergeStateMu.Unlock()
+	if asked {
+		return false
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-wake:
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -335,10 +402,11 @@ func followed(pr record.PullRequest, pull githubPullRequest) record.PullRequest 
 }
 
 // mergeStateWait is how long the ladder waits between reads of a head GitHub is still computing
-// the merge state of, the unit the reads after it wait in (followBase), and how long the outbox's
-// merge-queue read and second conflict read wait before they read again (mergeQueueRead,
-// conflictConfirm, which attach hands this wait): mergeStateLadderWait, which a test shortens
-// through the runtime's own field.
+// the merge state of, the unit the reads after it (followBase) and a climb's reads again after a
+// read of the record that failed (climbMergeState) wait in, and how long the outbox's merge-queue
+// read and second conflict read wait before they read again (mergeQueueRead, conflictConfirm,
+// which attach hands this wait): mergeStateLadderWait, which a test shortens through the runtime's
+// own field.
 func (w *workflowRuntime) mergeStateWait() time.Duration {
 	if w.mergeStateRetry > 0 {
 		return w.mergeStateRetry

@@ -2,14 +2,13 @@
 
 Read this when you need to know where an issue stands in admission, what an `admission.held` word means, or which trees are live, and before you move an issue to `todo`.
 An issue's `phase` alone does not say it: read its key against the `admission` lists and the root its `tree` names.
-The `read_state` summary prints `admission.active`, `admission.waiting`, `admission.blocked` and `admission.trees` as its `active`, `waiting`, `blocked` and `trees` lines, and each entry of `admission.held` as a `held` line.
-The rules behind them: [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label).
+The `read_state` summary prints each `admission.<list>` as a line of the list's name, and each `admission.held` entry as a `held` line.
 
 ## The lists
 
 - `admission.active`: every issue holding a slot, a root or a child, at work, `held` or waiting on a person.
   The regular cap counts only holders that are not P0 (`admission.p0Holders` gives how many are P0), so `admission.active` can hold more issues than `admission.cap`.
-  An issue in `accepting`, `retro` or `merging` holds none (in the default steps, the phases after the review), and a step after `accepting` whose phase keeps a slot waits for one again.
+  An issue in `accepting`, `retro` or `merging` holds none, and a step after `accepting` whose phase keeps a slot waits for one again.
   A started issue that waits on another issue holds none either, except three roots that keep theirs:
   one in `awaiting_person`, one at `admitted` whose gate has never opened, and one carried from another tree.
 
@@ -25,14 +24,14 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
   It is ordered by the priority Dispatch resolves first: P0, P1, P2, P3, then the issues with no priority.
   Within one priority, first the issues whose work came back, oldest first; then the issues whose first phase can start, by their root's Dispatch rank and then their own.
   A priority changed in Dispatch moves the issue at the next admission pass; priority takes no slot back from work that runs.
-  `issues.<KEY>.priority` is the issue's own priority (0 for P0 to 3 for P3, null for none), `resolvedPriority` is what Dispatch resolves (with `priorityFrom` naming the ancestor when inherited), and `waitingLine.priority` is the one it waits at (null for one that waits after P3).
+  `issues.<KEY>.priority` is the issue's own priority (null for none), `resolvedPriority` is what Dispatch resolves (with `priorityFrom` naming the ancestor when inherited), and `waitingLine.priority` is the one it waits at (null for one that waits after P3).
   `issues.<KEY>.waitingLine` says where one stands (`priority`, `part`, `kind`, `holdsSlot`, `reason`): quote its `reason` before you call an order wrong.
 
 - `admission.blocked`: issues waiting on an unfinished `blocked_by` issue, or a parent waiting for its open children.
   A started issue here gave its slot back and takes one again by itself; nothing of its work stops.
 
 - `phase: awaiting_person` with `waitingOn`: a root waiting on a person's answer or review keeps its slot and is in no line.
-  `waitingOn.answeredAt` means the daemon has put it in `admission.waiting` as well, within its priority, among the issues whose work came back, oldest first, where it stands until the pass that resumes it.
+  `waitingOn.answeredAt` means the daemon has put it in `admission.waiting` as well, within its priority, among the issues whose work came back, oldest first.
 
 - `phase: admitted`, in no list, with a `child_of` parent: a child that has not started.
   Leave it to its tree.
@@ -49,7 +48,7 @@ Holding no slot is no fault by itself.
 
 ## `admission.held`: what nothing starts
 
-Every issue the record holds in the workflow that is in neither `admission.active` nor `admission.waiting`, with one word for why nothing of it runs and `heldBy`, the issues that hold it.
+Every issue the record holds in the workflow that is in neither `admission.active` nor `admission.waiting`, with one word for why nothing of it runs and `heldBy`, what holds it: the issues, or the CI checks and head its row names.
 The `tick` wake carries it as `held`, and a held issue's record (`read_state` with `issue`) gives its word's sentence in `why`.
 Each waits for what ends it, in the table's last column.
 Name them in the day's report and take nothing for them.
@@ -66,7 +65,9 @@ Name them in the day's report and take nothing for them.
 | `children_first` | An open child under it | The last open child leaving the workflow |
 | `accepted_ancestor` | The daemon has accepted the head an ancestor's last step passed | That ancestor standing in neither `retro` nor `merging` (a `held` ancestor stands in the phase it was held from) |
 | `children_before_retro` | A parent whose task's last step is not `acceptance:owner` is held before retro while its children run | The last `heldBy` issue leaves the workflow, then Legion starts retro |
-| `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, a root's `todo`, or a child's restart (`backlog`, then `rerun_child`) starts its first step, and an issue whose experiment's group runs the project's default steps takes no later version |
+| `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, a root's `todo`, or a child's restart (`backlog`, then `rerun_child`) starts its first step |
+| `fix_running` | Its task's last step passed, and a fix of the task runs; `heldBy` is the fix's check and head | The fix's end |
+| `ci_at_head` | Its task's last step passed, and a check a CI job runs has not passed at its head; `heldBy` is each such check | Each such check passing at the head |
 | `at_work` | In `accepting`, `retro` or `merging`, not `held`, on no slot | Its own sign-off, retro and merge |
 | `unclassified` | None of the above | Nothing of yours: name it with its `phase` and `status` |
 
@@ -83,7 +84,7 @@ Every move to `todo` you make is one of these:
 
 - an issue a person asks you to start, a parked one included;
 
-- a root in the workflow whose architect failed, once you found no cause or checked that its cause is gone; one that is held, once you checked that its cause is gone; one whose architect retired, once a person's decision gives its work a next step and you found no cause or checked that its cause is gone;
+- a root in the workflow whose architect failed, once you found no cause or checked that its cause is gone; one that is held, once you checked that its cause is gone, but not one held for its children, a fix or its CI, which a `todo` leaves held; one whose architect retired, once a person's decision gives its work a next step and you found no cause or checked that its cause is gone;
 
 - a tree you parked with the mark `Parked by Legion while it waits on:`, once its cause is gone or its event happened (comment the mark and what you checked), or a person's later decision gives it a next step;
 

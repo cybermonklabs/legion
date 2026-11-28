@@ -63,6 +63,8 @@ func TestAParentHeldForAChildNeverReleasedStartsItsRetroWhenDispatchClosesIt(t *
 		"A child that runs as a tree of its own is moved by its own architect or a person. " +
 		"Legion starts the retro by itself once nothing holds it any longer: no issue beneath it is still in the workflow, " +
 		"no root that rests on its approval is still in the workflow, and no Dispatch child of it is open. " +
+		"Legion then starts the retro, unless it holds the task before its retro still, while a fix of the task runs or " +
+		"until each check a CI job runs passes at the task's head. " +
 		record.StatusNotTakenYet + " " + record.EndChildRule}}
 	if got := gateNotices(t, pool, spParent, "retro-held"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the retro-held notices after two passes = %+v, want %+v", got, want)

@@ -307,33 +307,37 @@ func (c *Conn) Shutdown(ctx context.Context) error {
 	return c.write(shimwire.Shutdown{})
 }
 
-// AdoptWorkingCopy asks the shim to set the author of its workspace's working copy. The shim
-// runs the command within timeout; the answer is awaited for that plus the RPC timeout, the
-// round trip (worker-rpc.ts:492-505).
-func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentity, timeout time.Duration) error {
+// AdoptWorkingCopy asks the shim to set the author of its workspace's working copy, naming the
+// fix's commit, the fix's own branch and the task's move where the adoption names them
+// (shimwire.AdoptWorkingCopy). The shim runs the command within timeout; the answer is awaited for
+// that plus the RPC timeout, the round trip (worker-rpc.ts:492-505). An ok answer is handed on as
+// it came, with whatever echo it carries: a shim built before the members answers neither, and the
+// caller decides what a missing echo means.
+func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentity, adoption runtime.Adoption, timeout time.Duration) (runtime.Adopted, error) {
 	id := rand.Text()
-	frame := shimwire.AdoptWorkingCopy{ID: id, JJUser: identity.Name, JJEmail: identity.Email, TimeoutMs: int(timeout.Milliseconds())}
+	frame := shimwire.AdoptWorkingCopy{ID: id, JJUser: identity.Name, JJEmail: identity.Email, TimeoutMs: int(timeout.Milliseconds()),
+		FixFrom: adoption.FixFrom, MoveTo: adoption.MoveTo, FixBranch: adoption.FixBranch}
 	if err := frame.Validate(); err != nil {
-		return fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+		return runtime.Adopted{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
 	}
 	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
 	if err != nil {
-		return err
+		return runtime.Adopted{}, err
 	}
 	switch answer := answer.(type) {
 	case shimwire.AdoptWorkingCopyResult:
 		if answer.OK {
-			return nil
+			return runtime.Adopted{FixDir: answer.FixDir, MovedTo: answer.MovedTo}, nil
 		}
-		return &RefusedError{Claim: c.claim, Command: shimwire.TypeAdoptWorkingCopy, Reason: answer.Error}
+		return runtime.Adopted{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeAdoptWorkingCopy, Reason: answer.Error}
 	case shimwire.Response:
 		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
 		// it does not know.
 		if !answer.Success {
-			return &RefusedError{Claim: c.claim, Command: shimwire.TypeAdoptWorkingCopy, Reason: answer.Error}
+			return runtime.Adopted{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeAdoptWorkingCopy, Reason: answer.Error}
 		}
 	}
-	return fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAdoptWorkingCopy, answer.FrameType())
+	return runtime.Adopted{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAdoptWorkingCopy, answer.FrameType())
 }
 
 // WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag on

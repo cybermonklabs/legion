@@ -239,6 +239,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "when the parent last waited on its children, which the late-completion guard compares a phase entry against after the return: the daemon's own mark, reaching no surface"},
 	{Field: "MembersOwed", Column: ColumnWithheld,
 		Reason: "the mark that a re-admission still owes its tree's members their return, which the root's promotion or the pass that finds its tree running clears in the same transaction that brings them back: it is the daemon's own record of a return still to make, and a reader acts on what it causes, the members' starts and their places in `admission.waiting`"},
+	{Field: "RunningFix", Column: ColumnAgents, Keys: []string{"fix"},
+		Reason: "the fix that runs beside the issue's step, served as the fix itself (api.FixView): the implementer completes it in the directory of its working copy, and a reader tells its two entries apart from the issue's own"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares

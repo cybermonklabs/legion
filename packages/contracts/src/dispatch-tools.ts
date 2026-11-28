@@ -3261,6 +3261,12 @@ export const dispatchToolSpecs = [
       "from 1. agent is the claim of the role that ran the step, and model is the model that " +
       "answered it, as provider/model. result is passed, failed or stopped. A field with no " +
       "value prints -, and a run that has not ended prints running for its end and its result. " +
+      "A run whose record holds a commit then prints `at <start>..<end>`: the commits its " +
+      "task's head was at when it started and when it ended, each its first 10 characters, or - " +
+      "for one not recorded yet. A fix of a failed CI check then prints `fix of <check>`, the " +
+      "check's id, which is the rest of the line: as it stands where it is a plain word, and " +
+      "otherwise as one JSON string, so that an id holding a space or a line break neither " +
+      "hides where it begins nor prints a line of a run nobody ran. " +
       "A closed issue's steps read too. An issue that no step ran on prints 0 steps in 0 tasks, " +
       "and a key Dispatch does not hold fails as dispatch read fails for it, NOT_FOUND: not " +
       `found. ${ISSUE_REFERENCE}`,
@@ -3275,19 +3281,21 @@ export const dispatchToolSpecs = [
     description:
       "Print each finished issue of a project, newest close first, with the plan Legion ran it " +
       "from, the rating each retro gave that plan with its reason, its time, its count of " +
-      "failed steps, and the experiment and the variant it was drawn into, where its records " +
-      "name one. An issue is finished when its status is done and Dispatch closed it. The " +
-      "first line is `<PROJECT>: <n> finished issues`. Then each issue prints one line: `<KEY> " +
-      "closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings " +
-      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n>[ variant <experiment>/<variant>]\`. ` +
+      "failed steps, its count of fixes, and the experiment and the variant it was drawn into, " +
+      "where its records name one. An issue is finished when its status is done and Dispatch " +
+      "closed it. The first line is `<PROJECT>: <n> finished issues`. Then each issue prints one " +
+      "line: `<KEY> closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) " +
+      "ratings " +
+      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n> fixes <n>[ variant <experiment>/<variant>]\`. ` +
       "The line ends with variant <experiment>/<variant> where the records of the issue's " +
-      "newest run name an experiment, and at failed steps <n> where they name none. " +
+      "newest run name an experiment, and at fixes <n> where they name none. " +
       "source is default (Legion's default steps) or owner (the plan the issue's owner wrote), " +
       `and the plan is the one of the issue's newest run. A rating is ${LEGION_PLAN_RATING_LEAST} (the plan cost the ` +
       `work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), one for each retro in the order the retros ran, and ` +
       "its reason prints as a JSON string. time runs from the first start of the issue's steps " +
       "to the last end, in whole hours and minutes rounded down. failed steps counts the runs " +
-      "of a step that failed, retros and merges left out. An issue with no plan prints plan " +
+      "of a step that failed, retros and merges left out, and fixes counts the runs of a step " +
+      "that ran as a fix of a failed CI check. An issue with no plan prints plan " +
       "none, one with no rating prints ratings none, and one whose time is not known prints " +
       "time -: an issue Legion never ran prints all three. since and until, each an RFC 3339 " +
       "time, keep the issues closed at or after since and before until.",

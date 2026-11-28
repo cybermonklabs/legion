@@ -329,8 +329,9 @@ const SUMMARY_LEGEND =
   "admission cap; p0 holders <count> [bound <n|none> [set <n|none> by <who> at <time>: <reason>]], " +
   "the P0 issues holding a slot outside the cap and the P0 bound in force, with the value set " +
   "while the daemon runs that stands; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
-  "live tree and held <issue> <reason> [by <issue>...] one per issue the workflow holds that is " +
-  "neither active nor waiting; wakes waiting <count> [next <earliest due time>], the " +
+  "live tree and held <issue> <reason> [by <holder>...] one per issue the workflow holds that is " +
+  "neither active nor waiting, a holder being an issue, a head or a check's name, quoted as JSON " +
+  "where it holds a space or a quote mark; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
   "intake give-ups <consumer> open <count> newest seq <stream sequence>, one line for each " +
   "consumer with messages the daemon's intake gave up on and no replay or discard has closed, " +
@@ -392,7 +393,13 @@ function stateSummary(state: LegionState): string {
       lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy?.join(" ") ?? "(none)"}`);
     }
     for (const held of admission.held ?? []) {
-      const by = held.heldBy === undefined ? "" : ` by ${held.heldBy.join(" ")}`;
+      // A holder is an issue key, a head, or a check a CI job runs, by its name (contract entry
+      // 20261127102132_fix-beside-review), and a check's name may hold a space: such a holder is
+      // written quoted, so it reads as one.
+      const holders = held.heldBy?.map((holder) =>
+        /[\s"]/.test(holder) ? JSON.stringify(holder) : holder
+      );
+      const by = holders === undefined ? "" : ` by ${holders.join(" ")}`;
       lines.push(`held ${held.issue ?? "-"} ${held.reason ?? "-"}${by}`);
     }
   }
@@ -848,8 +855,14 @@ export function createLegionTool(deps: {
    * the commit the workspace stands on, alone. Throws
    * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
    * in implementing, the implementer's record names no head, the commit its workspace stands on
-   * is not pushed, or its record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+   * is not pushed, or its record's head is not that pushed commit. `dir`, where given, is the
+   * directory the report is found in, in place of the pane's workspace: a running fix's working
+   * copy (the issue record's `fix.dir`). */
+  readonly handoffReport: (
+    phase: LegionPhase,
+    role: LegionRole,
+    dir?: string
+  ) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
   readonly branchHead: () => Promise<string>;
@@ -929,7 +942,8 @@ export function createLegionTool(deps: {
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
-        "gate and its line, as any task does before its first step); retry_or_escalate does not start it again (TASK_STOPPED). On an " +
+        "gate and its line, as any task does before its first step); retry_or_escalate does not start it again (TASK_STOPPED). " +
+        "A fix of the task ends with the stop, and nothing the fix would have run after it runs. On an " +
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
         "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
@@ -940,7 +954,8 @@ export function createLegionTool(deps: {
         "refuses, changing nothing, a stop of an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run " +
         "of the issue that ended before Legion applied it: read the issue again (TASK_STALE_GENERATION). " +
         "sign_off is the architect's acceptance of an issue in accepting, moving its task to its next step, or to retro where the " +
-        "acceptance is the task's last step. The daemon refuses, changing nothing, a " +
+        "acceptance is the task's last step. Legion holds it before that retro, `holdReason` `fix` or `ci`, while a fix of its task " +
+        "runs or a CI check has not passed at its head. The daemon refuses, changing nothing, a " +
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
         "its evidence again), one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING) and one on an issue in awaiting_children " +

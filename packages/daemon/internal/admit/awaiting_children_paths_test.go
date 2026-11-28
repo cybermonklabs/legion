@@ -58,10 +58,10 @@ func TestTheTickNamesAWaitingParentBlockedByItsOpenChildren(t *testing.T) {
 // The repair of a role behind the entry its phases row names (owedEntryRoles, which the entry
 // sweep and every admission pass send through resumeSlottedWorkers) starts no role of a parent
 // waiting in awaiting_children (dispatch://INFRA-3320 R11): that phase has no worker
-// (workflow.OpenPhaseRole), so the selection passes over it. The parent here even holds a slot
-// row, which puts it among the repair's candidates, and its implementer's claim stands behind the
-// entry its phases row names. The control is the same record in implementing, whose implementer
-// the sweep sends that entry's work.
+// (workflow.OpenRoles, where no fix runs), so the selection passes over it. The parent here even
+// holds a slot row, which puts it among the repair's candidates, and its implementer's claim
+// stands behind the entry its phases row names. The control is the same record in implementing,
+// whose implementer the sweep sends that entry's work.
 func TestTheEntrySweepStartsNoRoleOfAWaitingParent(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

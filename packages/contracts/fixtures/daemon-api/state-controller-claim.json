@@ -42,6 +42,22 @@
         "heldBy": [
           "LEGION-208"
         ]
+      },
+      {
+        "issue": "LEGION-212",
+        "reason": "fix_running",
+        "heldBy": [
+          "ci / test (ubuntu-24.04)",
+          "c0de0000000000000000000000000000000000ff"
+        ]
+      },
+      {
+        "issue": "LEGION-213",
+        "reason": "ci_at_head",
+        "heldBy": [
+          "ci / build",
+          "ci / test (ubuntu-24.04)"
+        ]
       }
     ]
   },
@@ -188,6 +204,58 @@
       },
       "treeMovedAt": "0001-01-01T00:00:00Z",
       "quietHours": 2562047.7880152157
+    },
+    "LEGION-212": {
+      "key": "LEGION-212",
+      "generation": 1,
+      "phase": "held",
+      "status": "in_progress",
+      "tree": "LEGION-212",
+      "treeRuns": false,
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "holdReason": "fix",
+      "heldFrom": "retro",
+      "priority": null,
+      "workers": {},
+      "designGate": {
+        "artifactId": "artifact-LEGION-212",
+        "currentVersion": 1,
+        "approvedVersion": 1
+      },
+      "why": {
+        "state": "unlisted",
+        "reason": "It passed the last step of its task, so the daemon holds it before its retro while a fix of its task reads its failed job or runs, started for the check and the head ci / test (ubuntu-24.04) and c0de0000000000000000000000000000000000ff. Its retro does not start while the fix runs."
+      }
+    },
+    "LEGION-213": {
+      "key": "LEGION-213",
+      "generation": 1,
+      "phase": "held",
+      "status": "in_progress",
+      "tree": "LEGION-213",
+      "treeRuns": false,
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "holdReason": "ci",
+      "heldFrom": "retro",
+      "priority": null,
+      "workers": {},
+      "pullRequest": {
+        "repo": "acme/widgets",
+        "number": 213,
+        "head": "c0de0000000000000000000000000000000000ff",
+        "state": "open"
+      },
+      "designGate": {
+        "artifactId": "artifact-LEGION-213",
+        "currentVersion": 1,
+        "approvedVersion": 1
+      },
+      "why": {
+        "state": "unlisted",
+        "reason": "It passed the last step of its task, so the daemon holds it before its retro until each check a CI job runs passes at its task's head; these have not passed there yet: ci / build and ci / test (ubuntu-24.04). Its retro does not start while one of them has not passed."
+      }
     }
   },
   "pendingStatusWrites": [],

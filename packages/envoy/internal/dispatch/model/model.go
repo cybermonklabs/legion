@@ -4186,7 +4186,10 @@ type HandoffRecordedEventPayload struct {
 // the retro gave the plan the issue ran, and its reason, each null where the record holds none
 // (PUT /api/v1/issues/{key}/steps/{id}/rating writes them). Experiment and Variant are the
 // experiment a draw put the issue in and the variant it drew there, each null where the record
-// holds none (PUT /api/v1/issues/{key}/steps/{id}/experiment writes them).
+// holds none (PUT /api/v1/issues/{key}/steps/{id}/experiment writes them). StartCommit and
+// EndCommit are the commits the task's head was at when the run started and when it ended, and
+// FixCheck, a step's alone, the block id of the CI check a fix run fixes, each null where the
+// record holds none (PUT /api/v1/issues/{key}/steps/{id}/commits writes them).
 type StepRecord struct {
 	ID           string     `json:"id"`
 	Issue        string     `json:"issue"`
@@ -4209,6 +4212,9 @@ type StepRecord struct {
 	RatingReason *string    `json:"rating_reason"`
 	Experiment   *string    `json:"experiment"`
 	Variant      *string    `json:"variant"`
+	StartCommit  *string    `json:"start_commit"`
+	EndCommit    *string    `json:"end_commit"`
+	FixCheck     *string    `json:"fix_check"`
 }
 
 // StepTask is one task of an issue with every run of its steps, in the order they ran.
@@ -4264,9 +4270,10 @@ type PlanRating struct {
 // work started before Legion wrote plans or that Legion never ran), the rating of each of its
 // retros in the order they ran, the earliest start and the latest end of its step records and the
 // whole seconds between them (each null where no record holds one, and the seconds null too where
-// that end is before that start), its count of step records of kind step that failed, and the
+// that end is before that start), its count of step records of kind step that failed, the
 // experiment a draw put it in and the variant it drew there, as the step records of its newest run
-// name them (each null where they name none).
+// name them (each null where they name none), and its count of fixes, the step records that name a
+// fix_check.
 type FinishedIssue struct {
 	Issue           string       `json:"issue"`
 	Title           string       `json:"title"`
@@ -4279,6 +4286,7 @@ type FinishedIssue struct {
 	FailedSteps     int          `json:"failed_steps"`
 	Experiment      *string      `json:"experiment"`
 	Variant         *string      `json:"variant"`
+	Fixes           int          `json:"fixes"`
 }
 
 // ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project, newest

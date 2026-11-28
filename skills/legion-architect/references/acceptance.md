@@ -18,20 +18,19 @@ Read, against the goal, every check and every requirement:
 
 2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed;
 
-3. where a reviewer step comes before your acceptance, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim of its prose, against the code at that head;
+3. where a reviewer step comes before your acceptance, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim of its prose, against the code at that head; beside a fix that head is the one its step started at, even after the fix pushed;
 
 4. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head whose checks passed is accepted as any other (*A conflicting head*, below).
 
 - `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
 
-- A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the `phase-finished` may never have reached you.
+- A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake.
 
 - `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, and sign off again.
 
 - A finding ask holds the acceptance: one a worker sent you, or one `dispatch read` lists under `Open asks:` whose question opens `Finding from ` or `Clear defect from `.
   Follow it (`dispatch follow --ask <id> --action follow`) and publish its reference to the controller topic.
-  Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://` or `Not filed:`):
-  a closed issue hides its open questions from the controller.
+  Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://` or `Not filed:`).
 
 - No `after_merge` result is asked here; the production check records it after the close.
 
@@ -49,7 +48,6 @@ Each check needs a pass at that head; one in another repository needs a pass sta
 a `default_branch` check needs the default branch.
 A criterion proven on a deployed system is proven after that child's deploy, as the repository's deploy skill says.
 A child's result proves no check of the parent: a child carrying part of a parent's requirement proves it with a check of its own whose `serves` names it.
-Nothing builds on the parent's merge, which comes last.
 Until those children close, leave the issue in `accepting`.
 Then start the last round: `request_backward_move` to `testing`, or to `implementing` where no tester step comes before your acceptance, its reason naming the children that closed and the checks of the parent that need their code.
 The tester sizes that round like any other; with no tester step before your acceptance, the implementer's evidence for those checks at its head is the round.
@@ -66,6 +64,7 @@ If the pull request merged before its last round, move nothing back. Once the ch
 ## After your sign-off
 
 The steps after your acceptance in the task run, then retro, then the merger merges the last step's head under the repository's rules; you start none of it.
+Before retro, Legion can hold the issue for a fix or its CI (`retro-held`); while CI holds it, the move back is yours.
 A person's request after your sign-off is a requirement of this issue: the role that holds the phase makes the `request_backward_move`.
 When the merger reports:
 
@@ -74,8 +73,7 @@ When the merger reports:
 - a merge GitHub refuses for a repository setting or an App permission:
   open a `dispatch ask` naming the pull request, the head and GitHub's refusal, and never bypass a rule;
 
-- a required approving review that no reviewer step gave: open a `dispatch ask` naming the base rule.
-  Do not wait for a reviewer phase the task does not have;
+- a required approving review that no reviewer step gave: open a `dispatch ask` naming the base rule;
 
 - a squash into a base other than the default branch:
   tell the implementer of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward.
@@ -94,7 +92,6 @@ You start nothing for the merge.
 Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or request changes; the merger merges the new head only once that approval is on the pull request.
 In `accepting`, wait for that approval before `sign_off`, and send the issue back with `request_backward_move` when the reviewer requests changes.
 A reviewer step after yours reviews the new head when it runs.
-A task with no reviewer step has no review to await.
 
 ## A review thread GitHub will not resolve
 

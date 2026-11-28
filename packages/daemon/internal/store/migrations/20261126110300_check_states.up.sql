@@ -28,7 +28,7 @@
 -- So the way back is the one transaction below, run with this release's daemon stopped and before
 -- the release before starts:
 --
---   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   drop table if exists check_states;
 --   drop table if exists check_state_sets;

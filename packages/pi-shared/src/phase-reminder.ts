@@ -255,7 +255,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
   /**
    * D5: this session's own issue record, read as `read_record` reads it, bounded. The reminder is
    * dropped when the record says this role no longer works this phase — the shape of a worker
-   * that completed its phase from the shell instead of the tool — and when the daemon has failed
+   * that completed its phase from the shell instead of the tool — unless the role is the
+   * implementer and the record names a running fix, which runs the task's first implementation
+   * step again beside the issue's phase, so the implementer works it — and when the daemon has failed
    * this role's claim, which is the daemon's own word that this process is finished: a claim the
    * daemon failed runs no further turn in this process — its retry relaunches this session in a
    * new process, or starts a new session once the daemon's `forgetSession` (its supervise package)
@@ -284,7 +286,8 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       });
       return { reminds: true };
     }
-    if (roleForPhase(record.phase) !== claim.role) {
+    const worksAFix = claim.role === "implementer" && record.fix !== undefined;
+    if (roleForPhase(record.phase) !== claim.role && !worksAFix) {
       deps.log.debug("legion: this role no longer works this phase; no reminder is sent", {
         issue: claim.issue,
         phase: record.phase,

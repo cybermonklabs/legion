@@ -36,10 +36,10 @@ function bodyRows(table: HTMLElement): string[][] {
     );
 }
 
-// One table per task, in the server's order, each run one row with nine columns: step, role,
-// type, agent, model, attempt, start, end and result. A review that failed says where it sent the
-// task back to, a run that has not ended says it runs, and a field the record does not hold reads
-// as a dash rather than as an empty cell.
+// One table per task, in the server's order, each run one row with ten columns: step, role,
+// type, agent, model, attempt, start, end, result and commits. A review that failed says where it
+// sent the task back to, a run that has not ended says it runs, and a field the record does not
+// hold reads as a dash rather than as an empty cell.
 test("the Steps tab draws each task's runs as a table, a running run as running", async () => {
   const tab = renderTab(async () => ({
     issue: "CORE-1",
@@ -63,7 +63,18 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
       within(table)
         .getAllByRole("columnheader")
         .map((header) => header.textContent)
-    ).toEqual(["Step", "Role", "Type", "Agent", "Model", "Attempt", "Started", "Ended", "Result"]);
+    ).toEqual([
+      "Step",
+      "Role",
+      "Type",
+      "Agent",
+      "Model",
+      "Attempt",
+      "Started",
+      "Ended",
+      "Result",
+      "Commits",
+    ]);
     const rows = bodyRows(table);
     expect(rows.map((cells) => [cells[0], cells[1], cells[5], cells[8]])).toEqual([
       ["2", "implementer", "1", "passed"],
@@ -83,6 +94,57 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
       )
     ).toEqual(["2026-11-16T09:00:00Z", "2026-11-16T09:40:00Z"]);
     expect(tab.listSteps).toHaveBeenCalledWith("CORE-1");
+  } finally {
+    tab.restore();
+  }
+});
+
+// Two commits of the head of CORE-1's task, in the order it moved.
+const HEAD_X = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+const HEAD_Y = "b2c3d4e5f60718293a4b5c6d7e8f9012345678a1";
+
+// A run's Commits cell shows the commits its task's head was at when it started and when it
+// ended, each cut to ten characters and whole in the cell's title, and a fix's Step cell carries
+// the mark "Fix of <check>". The control is in the same table: a run that names no check carries
+// no mark, a run with no commit shows the dash, and a commit not held yet shows the dash too.
+test("the Steps tab draws each run's commits, and marks a fix with the check it fixes", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          defaultRuns.implement1,
+          record({
+            attempt: 2,
+            end_commit: HEAD_Y,
+            fix_check: "k-ci",
+            id: "fix-1",
+            start_commit: HEAD_X,
+          }),
+          record({
+            attempt: 3,
+            ended_at: null,
+            id: "implement-3",
+            result: "",
+            start_commit: HEAD_Y,
+          }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
+
+  try {
+    const table = await screen.findByRole("table", { name: "Steps of task default" });
+    const rows = bodyRows(table);
+    expect(rows.map((cells) => [cells[0], cells[9]])).toEqual([
+      ["2", "—"],
+      ["2Fix of k-ci", "a1b2c3d4e5..b2c3d4e5f6"],
+      ["2", "b2c3d4e5f6..—"],
+    ]);
+    expect(within(table).getByText("Fix of k-ci")).toBeDefined();
+    expect(within(table).getAllByText(/^Fix of /u)).toHaveLength(1);
+    expect(within(table).getByTitle(`${HEAD_X}..${HEAD_Y}`)).toBeDefined();
   } finally {
     tab.restore();
   }

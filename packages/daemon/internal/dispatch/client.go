@@ -321,6 +321,43 @@ func (c *HTTPClient) PutStepExperiment(ctx context.Context, key, id string, writ
 	}, nil)
 }
 
+// PutStepCommits writes the commits of a run onto the record id of the issue key, through the
+// record's commits route, PUT /api/v1/issues/{key}/steps/{id}/commits, as the daemon's own
+// session: the commits the run's task's head was at when the run started and when it ended, and
+// the check a fix's run is of. The body is the run's identity out of write, of which Dispatch sets
+// each field the record does not hold yet, and the commits, and no other field: the start and the
+// end are the record's own write, which the outbox sends first (the daemon's publishStepRecord),
+// so a Dispatch older than this route takes the record and only the commits wait. The commits
+// have a route of their own because the step route ignores a member it does not declare, so a
+// commit sent there would be answered 200 and lost. Dispatch answers the step route's refusals,
+// and 400 STEP_INPUT for a commit that is not 40 lowercase hexadecimal digits or a fix_check on a
+// run of another kind than step; a Dispatch older than the route answers its router's 404
+// (NoRoute), which the outbox's row waits on.
+func (c *HTTPClient) PutStepCommits(ctx context.Context, key, id string, write StepWrite, commits StepCommits) error {
+	identity := StepWrite{Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role, Type: write.Type,
+		Agent: write.Agent, Generation: write.Generation}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/commits", stepCommitsWrite{
+		StepWrite:   identity,
+		StepCommits: commits,
+		Actor:       c.actor(key),
+	}, nil)
+}
+
+// CIJob reads GET /api/v1/issues/{key}/results once and answers the CI job of the issue's check
+// check at head. Name is the check's ci.run, the name of the check run its CI job makes. URL is the
+// last line starting with https:// of the observed text of the newest result of role ci whose
+// commit is head: for the result Dispatch derives from that run, the run's page. Dispatch lists a
+// check's results newest first, so that result is the first of them at head. Each is "" where the
+// answer holds none: a check it does not list, a check no CI job proves (no ci), or no result of
+// role ci at head.
+func (c *HTTPClient) CIJob(ctx context.Context, key, check, head string) (CIJob, error) {
+	var response checkResultsResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/results", nil, &response); err != nil {
+		return CIJob{}, err
+	}
+	return response.ciJob(check, head), nil
+}
+
 // PutPlan writes the plan one run of the issue key carries out onto Dispatch's plan id of that
 // issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session: the route takes
 // a plan of the issue from a Legion daemon's session alone. The write appends no event and
@@ -897,4 +934,61 @@ func dispatchError(status int, statusText string, payload []byte) *Error {
 		response.Error = statusText
 	}
 	return &Error{Status: status, Code: response.Code, Message: response.Error}
+}
+
+// stepCommitsWrite is the body of a run's commits write: the run's identity, its commits and the
+// daemon's actor.
+type stepCommitsWrite struct {
+	StepWrite
+	StepCommits
+	Actor actor `json:"actor"`
+}
+
+// checkResultsResponse is the answer of GET /api/v1/issues/{key}/results as CIJob reads it: each
+// check's block id, the run its CI job makes (absent for a check no CI job proves), and its
+// results, newest first, each with its role, its commit and its observed text.
+type checkResultsResponse struct {
+	Checks []struct {
+		BlockID string `json:"block_id"`
+		CI      *struct {
+			Run string `json:"run"`
+		} `json:"ci"`
+		Results []struct {
+			Role      string `json:"role"`
+			CommitSHA string `json:"commit_sha"`
+			Observed  string `json:"observed"`
+		} `json:"results"`
+	} `json:"checks"`
+}
+
+// ciJob is the CI job of check at head in the answer (HTTPClient.CIJob).
+func (r checkResultsResponse) ciJob(check, head string) CIJob {
+	for _, listed := range r.Checks {
+		if listed.BlockID != check {
+			continue
+		}
+		var job CIJob
+		if listed.CI != nil {
+			job.Name = listed.CI.Run
+		}
+		for _, result := range listed.Results {
+			if result.Role == "ci" && result.CommitSHA == head {
+				job.URL = lastPage(result.Observed)
+				break
+			}
+		}
+		return job
+	}
+	return CIJob{}
+}
+
+// lastPage is the last line of observed that starts with https://, "" where none does.
+func lastPage(observed string) string {
+	page := ""
+	for line := range strings.SplitSeq(observed, "\n") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, "https://") {
+			page = line
+		}
+	}
+	return page
 }

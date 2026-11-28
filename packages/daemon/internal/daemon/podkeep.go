@@ -54,7 +54,7 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 	keep, err := s.supervisor.store.PodKeepOf(ctx, s.plan.project, issue)
 	if err == nil {
 		var told bool
-		if told, err = s.recordPodKept(ctx, issue, round, pod, reasons, read, group, keep.Phase, false); err == nil {
+		if told, err = s.recordPodKept(ctx, issue, round, pod, reasons, read, group, keep.Phase, keep.FixRunning, false); err == nil {
 			s.log.Info("supervise: the read of this update round's pod found work that no branch or tag on origin holds, or could not be made; the round ends with no replacement, and the pod and its roles keep working on the old image and settings",
 				append([]any{"issue", issue, "round", round, "pod", pod, "reasons", reasons, "told", told}, read.attrs()...)...)
 			s.endPodUpdates(issue, group, round)
@@ -81,9 +81,10 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 // (keptPodReadDue). A turn that started after read.at owes that read anyway (the Legion
 // reviewer's point 1).
 //
-// The open phase's worker (workflow.OpenPhaseRole of issuePhase) is told, where its claim has a
-// process in the pod and is not gone, and the read could read: by a role message that the pod
-// waits for the push of the work (podKeptMessage). Otherwise the issue's architect is told, by the
+// A worker of the open phase (openPhaseWorker, over issuePhase and fixRunning, whether a fix runs
+// beside the issue's step) is told, where its claim has a process in the pod and is not gone, and
+// the read could read: by a role message that the pod waits for the push of the work
+// (podKeptMessage). Otherwise the issue's architect is told, by the
 // workspace-kept notice (record.WorkspaceKeptNotice, roundKeptMessage) on the decline a launcher's
 // read records too (keptNoticeDecline), with each claim's state and what the read found or why it
 // failed. Each is told once: the store queues a role's message only where the decline names other
@@ -91,13 +92,13 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 // recordDecline). So a read after a turn that finds the same work moves the row's moment and tells
 // nobody. again is a read that may end an earlier round's keep of the pod, made with no round
 // (readKeptPod), whose messages name no round (podKeptMessage, roundKeptMessage).
-func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reasons string, read workspaceRead, group []supervise.Claim, issuePhase phase.Phase, again bool) (bool, error) {
+func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reasons string, read workspaceRead, group []supervise.Claim, issuePhase phase.Phase, fixRunning, again bool) (bool, error) {
 	after, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		return false, fmt.Errorf("read the claims of %s once the read of its pod is made: %w", issue, err)
 	}
 	at := keptMoment(read.at, append(slices.Clone(group), s.noticeGroup(claimsOf(after, issue))...))
-	if worker, live := openPhaseWorker(group, round, issuePhase); live && read.err == nil {
+	if worker, live := openPhaseWorker(group, round, issuePhase, fixRunning); live && read.err == nil {
 		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(worker.Token), Body: podKeptMessage(issue, pod, reasons, read.work, again)}, at)
 		if err != nil {
 			return false, fmt.Errorf("encode the message of %s's kept pod: %w", issue, err)
@@ -132,17 +133,16 @@ func keptMoment(readAt time.Time, group []supervise.Claim) time.Time {
 	return at
 }
 
-// openPhaseWorker is the claim of the open phase's worker of an issue in issuePhase
-// (workflow.OpenPhaseRole), where that claim records a process in round's pod and is not gone: the
-// one role a round's keep tells by a message of its own (recordPodKept).
-func openPhaseWorker(group []supervise.Claim, round string, issuePhase phase.Phase) (supervise.Claim, bool) {
-	role := workflow.OpenPhaseRole(issuePhase)
-	if role == "" {
-		return supervise.Claim{}, false
-	}
-	for _, c := range group {
-		if c.Role == role && inRoundPod(c, round) && !c.Gone() {
-			return c, true
+// openPhaseWorker is the claim of a worker of the open phase of an issue in issuePhase, with a fix
+// running beside its step where fixRunning (workflow.OpenRolesOf: the phase's own worker first,
+// then the running fix's implementer), where that claim records a process in round's pod and is
+// not gone: the one role a round's keep tells by a message of its own (recordPodKept).
+func openPhaseWorker(group []supervise.Claim, round string, issuePhase phase.Phase, fixRunning bool) (supervise.Claim, bool) {
+	for _, role := range workflow.OpenRolesOf(issuePhase, fixRunning) {
+		for _, c := range group {
+			if c.Role == role && inRoundPod(c, round) && !c.Gone() {
+				return c, true
+			}
 		}
 	}
 	return supervise.Claim{}, false
@@ -289,7 +289,7 @@ func (s *supervision) readKeptPod(ctx context.Context, step keptPodRead) {
 			append([]any{"issue", issue, "pod", pod}, read.attrs()...)...)
 		return
 	}
-	told, err := s.recordPodKept(ctx, issue, inPod, pod, step.reasons, read, group, keep.Phase, true)
+	told, err := s.recordPodKept(ctx, issue, inPod, pod, step.reasons, read, group, keep.Phase, keep.FixRunning, true)
 	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: record the read of a kept pod; the sweep opens no round over the pod, and the next sweep reads the workspace again",
@@ -351,9 +351,9 @@ func podKeptMessage(issue, pod, reasons string, work runtime.WorkspaceWork, agai
 	}
 	found := append([]string{opening}, workFound(work)...)
 	found = append(found, ended,
-		fmt.Sprintf("The daemon does not push for you. Push the work that you keep to legion/%s, and abandon the work that you do not keep. "+
-			"The daemon reads the workspace again after each turn of a role of this issue. When a read finds nothing that origin does not hold, a later round replaces the pod. "+
-			"You are told this once.", issue))
+		"The daemon does not push for you. Push the work that you keep, and abandon the work that you do not keep. "+keptWorkBranches(issue),
+		"The daemon reads the workspace again after each turn of a role of this issue. When a read finds nothing that origin does not hold, a later round replaces the pod. "+
+			"You are told this once.")
 	return strings.Join(found, " ")
 }
 
@@ -379,8 +379,8 @@ func roundKeptMessage(issue, pod, reasons string, claims store.ClaimStates, work
 			"The daemon opens no update round of its own over the pod until a later read finds nothing that origin does not hold, or the runtime makes another pod for the issue. "+
 			"The project's controller can still ask for a round. That round keeps the pod again if its read still finds work that origin does not hold, or if the read fails. "+
 			"The daemon reads the workspace again after a role of the issue starts or runs a turn.",
-		fmt.Sprintf("To keep the work, have a role of %s push it to legion/%s. If no role of %s runs, start one in this pod, for example with `legion claims resume` or `legion claims retry`. "+
-			"You are told this once for this pod.", issue, issue, issue))
+		fmt.Sprintf("To keep the work, have a role of %s push it. %s If no role of %s runs, start one in this pod, for example with `legion claims resume` or `legion claims retry`. "+
+			"You are told this once for this pod.", issue, keptWorkBranches(issue), issue))
 }
 
 // keptEnded is what a keep's message says of the round after stays, the sentence that says the pod

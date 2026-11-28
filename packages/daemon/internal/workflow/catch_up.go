@@ -202,7 +202,9 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // (dispatch://INFRA-714 R7).
 //
 // The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
-// one claim: the issue is recorded and in the workflow, its phase's role (RoleFor) is this claim's,
+// one claim: the issue is recorded and in the workflow, this claim's role works its open phase
+// (OpenRoles: the role of its phase, or the implementer while a fix runs beside its step, which
+// is given the fix's own work either way, as a start of the fix: SendOwedEntry, resumeFix),
 // its tree does not linger, and its phase's own terminating fact has not arrived (PhaseFinished) —
 // a merged root stands in merging for as long as the rest of its tree runs, and its merger must
 // not be handed merging again at every launch. A claim of another project's issue finds no record
@@ -265,8 +267,8 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil || issue == nil || record.OutOfWorkflow(issue.Status) {
 		return err
 	}
-	role := RoleFor(issue.Phase)
-	if role == "" || role == claim.RoleArchitect || role != fact.Role {
+	role := fact.Role
+	if !slices.Contains(OpenRoles(*issue), role) {
 		return nil
 	}
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
@@ -294,7 +296,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if held := run.Claim; held == nil || supervise.HoldsWork(held.Pending) {
 		return nil
 	}
-	if queuedRowCovers(run, *root, issue.Phase) {
+	if queuedRowCovers(run, *root, WorkStanding(*issue, role).Phase) {
 		return nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
@@ -308,6 +310,13 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		e.logOnCommit(ctx, "workflow: a ready worker behind the entry its phases row names is sent that entry's work",
 			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
+	}
+	if sent, err := e.resumeFix(ctx, tx, *issue, role, row, 0, startMarks{resumeTask: true}); sent || err != nil {
+		if sent {
+			e.logOnCommit(ctx, "workflow: a ready worker of the fix beside its issue's step is given the fix's task",
+				"issue", issue.Key, "role", role, "fix", issue.RunningFix, "launch", fact.Launch)
+		}
+		return err
 	}
 	resume, err := e.ResumeTask(ctx, tx, *issue)
 	if err != nil {

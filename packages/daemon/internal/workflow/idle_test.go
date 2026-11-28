@@ -258,6 +258,18 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
 		},
 		{
+			// The row above is its control: the same claim and reminder, with no fix beside the
+			// review, is released.
+			name: "a reminder of the implementer of a fix beside the review",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Phase, v.FixRunning = phase.Reviewing, true
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldReminder,
+		},
+		{
 			name: "a reminder of a worker serving an earlier generation",
 			view: func() pods.IdleView {
 				v := idleChild()

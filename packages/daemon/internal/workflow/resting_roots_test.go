@@ -45,6 +45,8 @@ const restingReturn = "Unless the pull request of LEGION-100 has merged, the nex
 
 // seedAcceptingAncestor records P as the root of a running tree of its own in accepting, on its
 // open pull request #41 at head with the reviewer's approval of that head (seedAccepting's rows).
+// Dispatch holds no check of P at head (noChecksAt), so the sign-off's move into the retro waits
+// for no CI.
 func seedAcceptingAncestor(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -53,6 +55,7 @@ func seedAcceptingAncestor(t *testing.T, pool *pgxpool.Pool) {
 	seedTreeLifecycle(t, pool, basisAncestor)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: basisAncestor, Repo: "sjawhar/legion", Number: 41,
 		Branch: "legion/" + basisAncestor, HeadSHA: "head", CheckedHead: "head", CheckRuns: []record.AttemptRun{{Name: acceptingCheck, ID: 1}}, Failing: []string{}})
+	noChecksAt(t, pool, basisAncestor, "sjawhar/legion", "head")
 	seedPhase(t, pool, record.PhaseRow{Issue: basisAncestor, Role: claim.RoleImplementer, Claim: "implement-claim", HandoffCommit: "implement-1"})
 	seedPhase(t, pool, record.PhaseRow{Issue: basisAncestor, Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: "review-1", HandoffVersion: 1,
 		Summary: "reviewed", Decision: &record.ReviewDecision{State: "approved", Head: "head"}})

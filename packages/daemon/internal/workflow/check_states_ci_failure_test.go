@@ -15,13 +15,12 @@ import (
 // its job's case. The CI result of #42 that settles while the tester works, its job acme-unit
 // failed with GitHub's word failure, is told to the implementer at once (tellChecks), before any
 // state of k3 arrives, and starts no implementer; the tester's completion then moves the issue by
-// every check, k3 among them, as the testing move reads them with the engine's TestingLeavesCI
-// false, the daemon's wiring. A state of k3 that says its job ended at the head of the pull
-// request without a pass is told to the implementer alone, at once, in any phase: one message
-// whose row names the pull request, the check, the head and the job's case, and no start of the
-// implementer. A state at a head the pull request has left, and a second state that says the same
-// failure, tell nobody. The test reads the rows' fields and the lines written from them, never a
-// word of a message.
+// the checks that no CI job runs, which pass, so k3, whose failure the end of the task holds, sends
+// no work back. A state of k3 that says its job ended at the head of the pull request without a
+// pass is told to the implementer alone, at once, in any phase: one message whose row names the
+// pull request, the check, the head and the job's case, and no start of the implementer. A state
+// at a head the pull request has left, and a second state that says the same failure, tell nobody.
+// The test reads the rows' fields and the lines written from them, never a word of a message.
 func TestAFailedCIJobReachesTheImplementerWhileTheReviewerWorks(t *testing.T) {
 	k3Failed := ofSet(inCI(stateOf("k3", "no", "fail", "ci"), "failure"), "k1", "k2", "k3")
 
@@ -44,7 +43,7 @@ func TestAFailedCIJobReachesTheImplementerWhileTheReviewerWorks(t *testing.T) {
 
 		r.states(headOne, 3, k3Failed)
 		r.complete(headOne, 3)
-		r.movedBackFailing(headOne, failingOf("k3", "no", "fail"))
+		assertPhase(t, r.pool, phase.Reviewing)
 	})
 
 	t.Run("a state of k3 arrives while the tester works", func(t *testing.T) {

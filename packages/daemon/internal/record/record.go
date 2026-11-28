@@ -329,6 +329,12 @@ type Issue struct {
 	// released_for_wait_at: every write site that records the root holds a copy read before its own
 	// fact, and a copy read before the clear would otherwise owe the members a second return.
 	MembersOwed bool
+	// RunningFix is the number of the fix of the issue's task that runs at its generation, 0 for
+	// none (TaskFix, in state FixRunning). A fix that still reads its failed job is none here: its
+	// entry is not raised, so no task of it is the issue's work yet. Every read of the record
+	// selects it (migrations.RunningFixSQL), and no write names it: a fix's own writes move it
+	// (PutFix, UpdateFix), so PutIssue keeps none.
+	RunningFix int
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -431,6 +437,17 @@ const HoldTaskStopped HoldReason = "task-stopped"
 // workflow, or an open Dispatch child of it (workflow's acceptanceHeld, dispatch://INFRA-3320 R8).
 // From is phase.Retro, which holds no slot: the retro starts once none of them holds it.
 const HoldForChildren HoldReason = "children"
+
+// HoldForFix is a hold on an issue whose task's fix runs (TaskFix) where the issue may not go on
+// yet: a step beside the fix failed and its return waits for the fix, or its last step passed and
+// the retro waits for it. From is the phase the issue was held from, whose slot it keeps. The fix's
+// claim keeps working: its task is the issue's work while the fix runs (PhaseHolds).
+const HoldForFix HoldReason = "fix"
+
+// HoldForCI is a hold that stands in place of the retro of an issue whose task's last step passed
+// while a check that a CI job runs has not passed at the task's head (From is phase.Retro, which
+// holds no slot): the retro starts once each such check passes there.
+const HoldForCI HoldReason = "ci"
 
 // Awaiting is what a root in awaiting_person waits on: an ask its architect opened on the root
 // (Ask, the ask's id), or the closed design gate at a spec version (GateVersion) on the document
@@ -1362,9 +1379,13 @@ type ConflictRead struct {
 // landed message read. Earlier is every merge forward that landed before this ask in the same
 // stretch of work, oldest first: a later ask replaces the one the record holds, so when the head a
 // merge left conflicts in its turn and is merged forward again, Earlier is what still names the
-// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). It is
-// stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil; the
-// jsonb takes Earlier and Role with no migration of their own, and leaves each out while it is
+// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). Fix is
+// the fix of the issue's task that took this ask as its own first work, nil for an ask no fix took:
+// a fix that opens while the implementer owes the merge of the task's head makes it in its own
+// working copy and pushes it in its one end push, so the ask's own messages, its landing and its
+// completion fence are the fix's (workflow's openFix, mergeForwardLanded, mergedForwardRefusal). It
+// is stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil; the
+// jsonb takes Earlier, Role and Fix with no migration of their own, and leaves each out while it is
 // empty.
 type MergeForward struct {
 	Head        string               `json:"head"`
@@ -1376,6 +1397,15 @@ type MergeForward struct {
 	Landed      string               `json:"landed,omitempty"`
 	ReviewAsked bool                 `json:"reviewAsked,omitempty"`
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
+	Fix         *MergeForwardFix     `json:"fix,omitempty"`
+}
+
+// MergeForwardFix names the fix that took a merge forward as its own (MergeForward.Fix,
+// LandedMergeForward.Fix): fix Number of Task in the issue's Generation.
+type MergeForwardFix struct {
+	Generation uint64 `json:"generation"`
+	Task       string `json:"task"`
+	Number     int    `json:"number"`
 }
 
 // Asked is the role the ask names: Role, or the implementer for an ask that names none, which a
@@ -1391,10 +1421,13 @@ func (m MergeForward) Asked() claim.Role {
 
 // LandedMergeForward is a merge forward that landed before the ask the record holds
 // (MergeForward.Earlier): Head is the head it was asked of, the one its merge replaced, and
-// Landed the head the merge left.
+// Landed the head the merge left. Fix is the fix whose one end push landed it, nil for a merge no
+// fix took (MergeForward.Fix): a later ask keeps it, so the completion fence still tells such a
+// landing from a merge forward of the shared working copy.
 type LandedMergeForward struct {
-	Head   string `json:"head"`
-	Landed string `json:"landed"`
+	Head   string           `json:"head"`
+	Landed string           `json:"landed"`
+	Fix    *MergeForwardFix `json:"fix,omitempty"`
 }
 
 // ConflictWhy is one of the reasons R0 acts on a confirmed conflict for (dispatch://INFRA-4374
@@ -2626,10 +2659,11 @@ type Store interface {
 	// OpenStep is the open run of a step of issue whose start wrote the latest moment, of the
 	// several an issue can have open (Postgres.OpenStep), and the zero StepEntry where none is open.
 	OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepEntry, error)
-	// EndStepStart marks the open run of place on issue ended and answers its start and true, in
-	// the transaction that writes the run's end (workflow's endRun); false where that run has its
-	// end already, so one run gets one end.
-	EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error)
+	// EndStepStart marks the open run of place on issue ended at endCommit, the commit its end
+	// names ("" for none), and answers its start and true, in the transaction that writes the
+	// run's end (workflow's endRun); false where that run has its end already, so one run gets one
+	// end.
+	EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, endCommit string) (StepStart, bool, error)
 	// OpenUncountedStep marks open, at the daemon's boot, the row of a run at place that no start
 	// of this release counted — at the count 0 for a place with no row, the next count for one
 	// that reads RunUncounted — keeping the write run builds from that count as a start keeps its
@@ -2680,6 +2714,48 @@ type Store interface {
 	// PlanTasksOf is every task of the plan of each issue of the Dispatch project at the issue's
 	// current generation, in one read; an issue with no plan rows at that generation has none.
 	PlanTasksOf(ctx context.Context, tx pgx.Tx, project string) ([]PlanTask, error)
+	// PutFix writes a new fix of its task, reading its job, numbered one above the task's latest:
+	// ErrFixOpen where another fix of the task reads its job or runs, and a number that is not
+	// the next refused, each before anything is written.
+	PutFix(ctx context.Context, tx pgx.Tx, f TaskFix) error
+	// RunningFix is the fix of task that reads its job or runs, nil for none.
+	RunningFix(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (*TaskFix, error)
+	// LatestFix is the fix of task with the highest number, in any state, nil for none.
+	LatestFix(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (*TaskFix, error)
+	// UpdateFix writes f over the stored fix of the same issue, generation, task and number; a fix
+	// the store does not hold is refused.
+	UpdateFix(ctx context.Context, tx pgx.Tx, f TaskFix) error
+	// RecordBesidePush writes that a push showed head ("" for a deleted branch) at role's branch
+	// beside fix of task: it changes that role's key of TaskFix.Pushed alone, in one statement.
+	RecordBesidePush(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, fix int, role, head string) error
+	// FixAt is fix number fix of task, in any state, nil for none.
+	FixAt(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, fix int) (*TaskFix, error)
+	// MarkStepBesideFix writes that a fix ran beside a start of place (StepStart.BesideFix): at
+	// that start, or at the fix's start; ErrStepStartMismatch where that start is not open.
+	MarkStepBesideFix(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, starts int64, fix int) error
+	// SetStepPushBranch binds a branch beside a fix to that exact open start of place, keeping a
+	// binding it holds; ErrStepStartMismatch where that start is not open.
+	SetStepPushBranch(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, starts int64, branch string) error
+	// EnqueueReadPrompt queues a prompt to read Dispatch (CINewsState) in the fact's transaction,
+	// joining the issue's unleased pending prompt of the same complete work identity (true) or
+	// queuing a row of its own (false).
+	EnqueueReadPrompt(ctx context.Context, tx pgx.Tx, issue string, n CINews, now time.Time) (bool, error)
+	// PutCIFailure writes a failure of a check at a head of a task and answers true; false, and
+	// nothing written, where that check at that head has a row already.
+	PutCIFailure(ctx context.Context, tx pgx.Tx, f CIFailure) (bool, error)
+	// CIFailureAt is the failure of check at head of task, nil for none.
+	CIFailureAt(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, check, head string) (*CIFailure, error)
+	// MarkCIFailureFix writes that fix took the failure of check at head of task; refused where
+	// the row names a fix already or the store holds no such failure.
+	MarkCIFailureFix(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, check, head string, fix int) error
+	// TellOwnerOnce marks the failure of check at head of task told to its owner: true the first
+	// time, false after, and refused where the store holds no such failure.
+	TellOwnerOnce(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, check, head string) (bool, error)
+	// MarkRunFixesCI marks every task of the plan of issue at generation as one whose run takes a
+	// fix; a generation with no plan rows has none to mark.
+	MarkRunFixesCI(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error
+	// RunFixesCI says whether a task of the plan of issue at generation takes a fix.
+	RunFixesCI(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (bool, error)
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.
@@ -2932,6 +3008,13 @@ type Store interface {
 	// caller's row is written beside it. A lapsed lease holds nothing and is taken out like any
 	// other.
 	EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error
+	// EnqueueFixStart writes the start of a fix's task (SuperviseRequest.Fix) as a row of its own,
+	// taking out only an unleased pending start of the same fix of the same run of the same task,
+	// which its branch names (SuperviseRequest.FixBranch), whose attempts,
+	// backoff, error and place it carries as EnqueueStart does. A fix's start carries no slot mark,
+	// so it stands in no waiting line, and EnqueueStart never takes it out; a row that names no fix
+	// or waits for a slot is refused.
+	EnqueueFixStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// OwedStarts is every pending worker start of the Dispatch project key project that waits for
 	// its issue's admission slot and that no live lease holds, a row whose lease has lapsed among
 	// them, oldest first by creation time and then id — the waiting line's own ordering key for
@@ -3420,15 +3503,26 @@ func (i Issue) Standing() pods.Standing {
 // other issue's.
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
 
-// PhaseHolds says whether a task queued for phase queuedFor on run generation is still the work
-// of issue, the record of the issue its claim works: the issue is in that phase and, for a task
-// of a run (generation above 0), on that run. An issue the record does not hold (nil) holds every
-// task, since only a claim the workflow never made has none. It is the one definition of that
-// question: the daemon answers supervise's Deps.PhaseHolds with it (daemon's
+// PhaseHolds says whether a task queued for phase queuedFor on run generation, of fix fix (0 for a
+// task of no fix), is still the work of issue, the record of the issue its claim works. A task of
+// no fix holds while the issue is in that phase and, for a task of a run (generation above 0), on
+// that run. A fix's task holds while that fix runs (Issue.RunningFix), whatever phase the issue
+// stands in, on that run: it runs beside the step of the phase. An issue the record does not hold
+// (nil) holds every task, since only a claim the workflow never made has none. It is the one
+// definition of that question: the daemon answers supervise's Deps.PhaseHolds with it (daemon's
 // workflowRuntime.phaseHolds, which says why each half is compared), and a test that wires the
 // answer itself calls it too, so the rule it exercises is the one production runs.
-func PhaseHolds(issue *Issue, queuedFor phase.Phase, generation uint64) bool {
-	return issue == nil || (issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation))
+func PhaseHolds(issue *Issue, queuedFor phase.Phase, generation uint64, fix int) bool {
+	if issue == nil {
+		return true
+	}
+	if generation != 0 && generation != issue.Generation {
+		return false
+	}
+	if fix > 0 {
+		return issue.RunningFix == fix
+	}
+	return fix == 0 && issue.Phase == queuedFor
 }
 
 // ParentOf is an observed parent key as a record holds it: nil for none. Dispatch says "no parent"

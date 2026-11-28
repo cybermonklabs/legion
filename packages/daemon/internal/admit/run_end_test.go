@@ -487,7 +487,7 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
 		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
 		intake.Handover{}, intake.CloseRoot{}, intake.MergeHoldsChanged{Project: "LEGION", Event: "dispatch-71"}, intake.ControllerMemoryGuardKill{}, intake.PendingBasisRead{},
-		intake.BasisChangesRead{}, intake.ReparentRead{},
+		intake.BasisChangesRead{}, intake.ReparentRead{}, intake.FixJobRead{},
 		// A change of the P0 bound, which records it and makes the pass every fact that is not a
 		// Dispatch issue makes.
 		intake.P0BoundChanged{Change: store.P0BoundChange{Mode: store.P0BoundUnbounded, By: store.PauseActor{Kind: store.PauseByOperator}, Reason: "runaway"}},

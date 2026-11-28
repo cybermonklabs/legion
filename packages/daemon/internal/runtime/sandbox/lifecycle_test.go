@@ -430,7 +430,8 @@ func (t *versionedTracker) Patch(gvr schema.GroupVersionResource, obj k8sruntime
 	return t.ObjectTracker.Patch(gvr, obj, ns, opts...)
 }
 
-// Adoption goes over the claim's connection, to the recorded process only.
+// Adoption goes over the claim's connection, to the recorded process only, naming the fix's commit
+// and the task's move it was given, and answers the shim's echo of each.
 func TestAdoptWorkingCopyAsksTheRecordedProcess(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
@@ -438,13 +439,19 @@ func TestAdoptWorkingCopyAsksTheRecordedProcess(t *testing.T) {
 	g.conns.Register(workerToken, conn)
 	loc := g.spawn(workerSpec(t))
 	id := runtime.GitIdentity{Name: "legion-implement[bot]", Email: "1+legion-implement[bot]@users.noreply.github.com"}
-	if err := g.r.AdoptWorkingCopy(g.ctx, loc, id); err != nil {
+	adoption := runtime.Adoption{FixFrom: "c0de000000000000000000000000000000000001", MoveTo: "c0de000000000000000000000000000000000002"}
+	adopted, err := g.r.AdoptWorkingCopy(g.ctx, loc, id, adoption)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if adoptions := conn.Adoptions(); len(adoptions) != 1 || adoptions[0].Identity != id {
+	if want := (runtime.Adopted{FixDir: fake.FixDir, MovedTo: adoption.MoveTo}); adopted != want {
+		t.Fatalf("adopted %+v, want the shim's echo %+v", adopted, want)
+	}
+	if adoptions := conn.Adoptions(); len(adoptions) != 1 || adoptions[0].Identity != id ||
+		adoptions[0].FixFrom != adoption.FixFrom || adoptions[0].MoveTo != adoption.MoveTo {
 		t.Fatalf("adoptions %+v", adoptions)
 	}
-	if err := g.r.AdoptWorkingCopy(g.ctx, sandboxLocator(workerToken, "uid-pod-stale"), id); err == nil {
+	if _, err := g.r.AdoptWorkingCopy(g.ctx, sandboxLocator(workerToken, "uid-pod-stale"), id, runtime.Adoption{}); err == nil {
 		t.Fatal("a stale locator's adoption was asked")
 	}
 }

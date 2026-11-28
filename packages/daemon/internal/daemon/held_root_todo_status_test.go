@@ -37,7 +37,9 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 	// naming the issue beneath it.
 	const heldSentence = "LEGION-208 waits before its retro while these issues beneath it are still in the workflow: LEGION-209. " +
 		"Legion starts the retro by itself once nothing holds it any longer: no issue beneath it is still in the workflow, " +
-		"no root that rests on its approval is still in the workflow, and no Dispatch child of it is open."
+		"no root that rests on its approval is still in the workflow, and no Dispatch child of it is open. " +
+		"Legion then starts the retro, unless it holds the task before its retro still, while a fix of the task runs or " +
+		"until each check a CI job runs passes at the task's head."
 	for _, tc := range []struct {
 		name string
 		// moved is the status the board is moved to before the last issue leaves, "" for none, and

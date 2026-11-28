@@ -179,8 +179,7 @@ func TestARetryOfAParentHeldForItsChildrenSaysWhyItsRetroWaits(t *testing.T) {
 		}
 		assertHeldForChildren(t, pool, inRetro, "while its tree lingers")
 
-		assertRetriesRefused(t, pool, admission, engine, inRetro, inRetro+" waits before its retro, and no issue holds it any longer: its tree "+finishedRoot+
-			" lingers after its root left the workflow, and Legion starts the retro once the tree runs again. This retry changed nothing.")
+		assertRetriesRefused(t, pool, admission, engine, inRetro, intake.RetryOfHeldParentUntilTreeRuns(inRetro, finishedRoot, true).Message)
 	})
 
 	t.Run("it waits in the line as a root of its own with nothing beneath it", func(t *testing.T) {
@@ -229,9 +228,8 @@ func TestARetryOfAParentHeldForItsChildrenSaysWhyItsRetroWaits(t *testing.T) {
 		}
 		assertHeldForChildren(t, pool, parent, "while it waits in the line")
 
-		waits := parent + " waits before its retro, and no issue holds it any longer: its tree " + parent +
-			" waits in the line to be opened, and Legion starts the retro once the tree runs."
-		assertRetriesRefused(t, pool, admission, engine, parent, waits+" This retry changed nothing.")
+		waits := intake.HeldParentWaitsForTree(parent, parent, false)
+		assertRetriesRefused(t, pool, admission, engine, parent, intake.RetryOfHeldParentUntilTreeRuns(parent, parent, false).Message)
 
 		// A person moves the waiting root and sets it to todo again. The todo leaves the hold, and
 		// the board is set back at the root's status with the same why beside it, so the person

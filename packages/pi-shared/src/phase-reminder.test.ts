@@ -8,6 +8,7 @@ import {
   type PublishResult,
 } from "@legion/envoy-client/transport";
 import { createLegionDaemonClient } from "./daemon-client";
+import type { ClaimCapability } from "./legion-phase-ops";
 import { createPhaseReminder, type EnvoyPublish, type PhaseReminder } from "./phase-reminder";
 import { type PhaseStallEntry, REMINDER } from "./phase-stall";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
@@ -693,4 +694,49 @@ test("the wait an update answer creates arms no reminder, where a WAITING reply 
 
   expect(timers).toHaveLength(1);
   expect(timers[0]?.delayMs).toBe(DEFAULT_STALL_LIMITS.waitingMs);
+});
+
+/** A reminder over `claim`'s session whose record check reads `record`, with nothing told to the
+ * architect. */
+function reminderOver(claim: ClaimCapability, record: LegionIssue): PhaseReminder {
+  const reminder = createPhaseReminder({
+    sendReminder: () => {},
+    armTimer: () => {},
+    saveEntry: () => {},
+    claim: () => claim,
+    readRecord: async () => record,
+    publisher: async () => undefined,
+    project: "legion",
+    limits: DEFAULT_STALL_LIMITS,
+    log: { debug: () => {}, warn: () => {} },
+  });
+  reminder.apply({ kind: "assignment" });
+  return reminder;
+}
+
+// A fix runs the task's first implementation step again beside the step the issue stands at, so
+// while the record names one the implementer works, whatever phase the issue stands in: its
+// claim is reminded as the claim of the issue's phase is. The control is a role that works
+// neither the issue's phase nor a fix: the reviewer of an issue in implementing is not reminded,
+// fix or not. The record carries the two fields the check reads, cast as `claimFailed` is.
+test("a fix's implementer is reminded while the issue stands in reviewing, and a role that works neither is not", async () => {
+  const fix = {
+    task: "a",
+    step: 1,
+    check: "unit",
+    head: "c".repeat(40),
+    dir: "/workspaces/LEGION-208-fix",
+    entry: 4,
+    givenEntry: 4,
+  };
+  const fixing = reminderOver(implementer, { phase: "reviewing", fix } as unknown as LegionIssue);
+  expect(await fixing.settle(said("Pushed."))).toBeString();
+
+  const reviewer: ClaimCapability = {
+    ...implementer,
+    role: "reviewer",
+    claimToken: "legion-legion-legion-208-reviewer",
+  };
+  const idle = reminderOver(reviewer, { phase: "implementing", fix } as unknown as LegionIssue);
+  expect(await idle.settle(said("Reviewed."))).toBeUndefined();
 });

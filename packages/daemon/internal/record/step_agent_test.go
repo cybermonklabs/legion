@@ -43,7 +43,7 @@ func TestTheRecordNamesTheAgentOfARunThatIsNotEnded(t *testing.T) {
 		on(architect, "LEGION-3", true)
 		anywhere(architect, true)
 
-		if _, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3); err != nil || !ended {
+		if _, ended, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3, ""); err != nil || !ended {
 			t.Fatalf("EndStepStart of the tester's run = %t, %v; want it ended now", ended, err)
 		}
 		on(tester, "LEGION-1", false)

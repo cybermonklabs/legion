@@ -315,6 +315,11 @@ type overrides struct {
 	// the decision would hold the machine's lock, which an agent's request waits on at its grant
 	// check (supervise.Machine.Claim).
 	beforeDecision func(claim.Token, supervise.Event)
+	// outbox runs on the workflow's outbox once the boot has built it (workflowRuntime.attach)
+	// and before its lanes run (workflowRuntime.run). It is a test's way to hold the outbox of a
+	// whole daemon, so the test wakes a lane once it has written a row in the store itself, as the
+	// commit of a row the workflow writes wakes it. nil, in production, is nothing.
+	outbox func(*outbox)
 	// experimentSource is the random source admission and the workflow draw every `random`
 	// experiment with: admission's draw of each tree and issue it records, and the workflow's of
 	// each child it records (experiment.Draw). nil, in production, is experiment.CryptoSource; a
@@ -772,6 +777,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		log.Info("legion workflow boot stage", "stage", "admission")
 		workflow.attach(s)
+		if o.outbox != nil {
+			o.outbox(workflow.outbox)
+		}
 		if o.supervising != nil {
 			o.supervising(s.supervisor, func(ctx context.Context, source, eventID string, fact intake.Fact) (intake.Result, error) {
 				return intake.ApplyFact(ctx, workflow.pool, source, eventID, fact, workflow.handlers...)
@@ -1188,7 +1196,7 @@ type plan struct {
 	// phaseHolds, rootHears, rootTask, designNews and treeClosable are the workflow's answers to
 	// the supervisor's predicates; nil without a workflow, where every delivery is sent as it was
 	// queued and every tree closes.
-	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64, fix int) (bool, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
 	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
@@ -1927,6 +1935,15 @@ type supervision struct {
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets enqueue above.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
+	// updatePushes answers, for each role of issue, where it pushes at an update round's ask
+	// (supervise.UpdatePush): a step beside a running fix to its own branch, the fix to its own, the
+	// implementer while a fix reads its job nowhere, and every other role, the zero push, to the
+	// issue's branch (workflow.(*Engine).UpdatePushes, in one read transaction). askRound reads it
+	// once for each issue it asks, and the outbox reads the same function again before it publishes
+	// each ask (the outbox's updateAsk), so an ask goes only while the role's push is the one it
+	// names. nil in a deployment with no workflow, whose rounds ask every role with the zero push.
+	// The workflow sets it where it attaches, as it sets enqueue above.
+	updatePushes func(ctx context.Context, issue string) (map[claim.Role]supervise.UpdatePush, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
@@ -3151,6 +3168,9 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// and the NoPluginInstall option three lines below).
 			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 			architectStalls: architectStalls,
+			// The directory the runtime places an issue's roles in, as the engine names it in
+			// every task, beside which a fix's working copy is made: the state's `fix` names it.
+			workspaceDir: engineWorkspaceDir(cfg),
 			// Under dispatch_token_broker alone: without it the state carries no
 			// `dispatchCredential` (dispatchTokensOf).
 			dispatchSession: dispatch.DaemonSession(cfg.Project),
@@ -3365,6 +3385,11 @@ type source struct {
 	// which State serves as each root's `architectStalls`; nil for a daemon with no workflow,
 	// which weighs no architect and serves no arm.
 	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
+	// workspaceDir is the directory this daemon's runtime places an issue's workspace in
+	// (engineWorkspaceDir, the directory every task the engine composes names), beside which a
+	// running fix's working copy is made: State serves an issue's `fix` naming that directory
+	// (projection.Inputs.WorkspaceDir). Nil, in a source a test builds by hand, names none.
+	workspaceDir func(record.Issue) string
 }
 
 // projectRecords scopes the shared daemon database to the daemon's configured project without
@@ -3397,14 +3422,15 @@ type source struct {
 // Its writes take the same rule from the other side: no row is written into the outbox keyed by
 // another project's issue (ownsKey, claim.KeyOfProject). Every write of record.Store that inserts,
 // upserts, expedites or deletes outbox rows by a key — Enqueue, EnqueueID, EnqueueStart,
-// ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps, DropStatusWrites, and
-// ClearGeneration and ClearTreeGeneration, which queue the publication of the gates they empty —
-// refuses a key of another project, and EnqueueID refuses it with claim.ErrKeyOfAnotherProject.
-// The rest act on a row by its id under a lease this daemon holds of a row its own scope gave it
-// (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and need no rule
-// here.
+// EnqueueFixStart, EnqueueReadPrompt, ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps,
+// DropCatchUps, DropStatusWrites, and ClearGeneration and ClearTreeGeneration, which queue the
+// publication of the gates they empty — refuses a key of another project, and EnqueueID refuses
+// it with claim.ErrKeyOfAnotherProject. The rest act on a row by its id under a lease this daemon
+// holds of a row its own scope gave it (ClaimRow, RenewOutboxLease, FinishOutbox,
+// FinishLeasedOutbox, RetryOutbox), and need no rule here.
 //
-// It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
+// It is also where the outbox learns of its rows: every write that makes a row due — Enqueue,
+// EnqueueID, EnqueueStart, EnqueueFixStart, EnqueueReadPrompt, EnqueueDesignGates and
 // ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
 // the transaction's commit hooks (store.OnCommit), so no lane runs a row it cannot yet read, and
 // no lane polls for one. wake is nil where there is no workflow to wake, or where the writer wakes
@@ -3578,6 +3604,39 @@ func (s projectRecords) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.
 	}
 	s.wakeOnCommit(ctx, row)
 	return nil
+}
+
+// EnqueueFixStart wakes the row's lane as EnqueueStart does: the workflow writes a fix's start
+// through this statement, beside the line of starts that wait for a slot
+// (record.Store.EnqueueFixStart), so without the wake here the fix whose failed job was just read
+// would wait for the lane's next sweep, up to one outbox lease after the read committed.
+func (s projectRecords) EnqueueFixStart(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+	if !s.ownsKey(row.Kind, row.Issue) {
+		return nil
+	}
+	if err := s.Store.EnqueueFixStart(ctx, tx, row); err != nil {
+		return err
+	}
+	s.wakeOnCommit(ctx, row)
+	return nil
+}
+
+// EnqueueReadPrompt wakes the lane of a prompt to read Dispatch that it queued as a row of its
+// own, as Enqueue does: the record writes that row with its own Enqueue
+// (record.Postgres.EnqueueReadPrompt), past this store, so without the wake here the prompt would
+// wait for the lane's next sweep or for another row of its lane. A prompt joined to a pending one
+// wakes nothing: the pending row's own write woke its lane, and the join leaves it as due as it
+// was.
+func (s projectRecords) EnqueueReadPrompt(ctx context.Context, tx pgx.Tx, issue string, n record.CINews, now time.Time) (bool, error) {
+	if !s.ownsKey(record.OutboxKindCINews, issue) {
+		return false, nil
+	}
+	joined, err := s.Store.EnqueueReadPrompt(ctx, tx, issue, n, now)
+	if err != nil || joined {
+		return joined, err
+	}
+	s.wakeOnCommit(ctx, record.OutboxRow{Issue: issue, Kind: record.OutboxKindCINews})
+	return false, nil
 }
 
 // EnqueueID wakes the row's lane as Enqueue does: a start or catch-up naming kept decisions is
@@ -3788,7 +3847,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	state, err := projection.Project(ctx, projection.Inputs{
 		Tx: tx, Store: records, Project: s.project, Steps: s.gatedSteps, Experiments: s.experiments,
 		Claims: claims, Stranded: stranded, Reports: s.reports(),
-		Wakes: api.WakesWaitingOf(held, paced), Now: now,
+		Wakes: api.WakesWaitingOf(held, paced), Now: now, WorkspaceDir: s.workspaceDir,
 	})
 	if err != nil {
 		return api.State{}, nil, err

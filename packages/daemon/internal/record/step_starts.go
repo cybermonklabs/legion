@@ -41,13 +41,30 @@ const (
 // the record's id from and writes again (workflow's endStep), so the start and the end agree
 // whichever reaches Dispatch first. The zero StepStart is a place no start of this release has
 // raised: a step that was running when the release deployed. StartedAt is zero where the moment
-// is unknown: an end of such a step whose role's entry recorded none.
+// is unknown: an end of such a step whose role's entry recorded none. StartCommit and FixCheck are
+// the commit the latest start named and, for a fix's start, the check the fix is of, and
+// EndCommit the commit the end of that start's run named: "" for none, and EndCommit "" until the
+// run ends. BesideFix is the latest fix of the task that ran beside the latest start's run
+// (MarkStepBesideFix): the open fix that start named, or a fix that started while the run was open,
+// 0 for none; and PushBranch the branch beside a fix that start's step pushes to
+// (SetStepPushBranch), "" for none: each start writes both again, so neither outlives the start
+// that took it.
 type StepStart struct {
-	Starts    int64
-	Agent     string
-	StartedAt time.Time
-	Run       StepRun
+	Starts      int64
+	Agent       string
+	StartedAt   time.Time
+	Run         StepRun
+	StartCommit string
+	EndCommit   string
+	FixCheck    string
+	BesideFix   int
+	PushBranch  string
 }
+
+// ErrStepStartMismatch is the answer of a write to one start of a place (MarkStepBesideFix,
+// SetStepPushBranch) where that start is not the place's open run: a later start counted since,
+// or the run ended.
+var ErrStepStartMismatch = errors.New("the start is not the open run of its place")
 
 // RaiseStepStarts counts one more start of place on issue, marks its run open whatever the run
 // before it stood at, and answers that start's write: run, given the count with that start in it,
@@ -55,8 +72,10 @@ type StepStart struct {
 // moment that write names, which the run's end writes again, and the write itself — the identity
 // of the record, its id among them, and the moment; a start writes nothing else (workflow's
 // startStep) — which the roll forward of a rollback ends the record under where an earlier
-// release ended the run (store migration 20261117064152_step_starts_roll_forward). It is called
-// in the transaction that writes the start's record.
+// release ended the run (store migration 20261117064152_step_starts_roll_forward). The start names
+// no fix and no branch beside one until MarkStepBesideFix and SetStepPushBranch write them for it,
+// so a binding of an earlier start never reaches it. It is called in the transaction that writes
+// the start's record.
 func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error) {
 	var starts int64
 	if err := tx.QueryRow(ctx, `insert into step_starts (issue, task, kind, place, starts, agent, run) values ($1, $2, $3, $4, 1, '', 'open')
@@ -65,32 +84,44 @@ func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string,
 		return StepRecord{}, fmt.Errorf("count a start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	write := run(starts)
-	if err := keepStart(ctx, tx, issue, place, write); err != nil {
+	if err := s.keepStart(ctx, tx, issue, place, write); err != nil {
 		return StepRecord{}, err
 	}
 	return write, nil
 }
 
 // keepStart keeps write, the record of the latest start of place on issue, on the place's row: the
-// agent and the moment it names, which the run's end writes again, and the write itself, which the
-// roll forward of a rollback ends the record under where an earlier release ended the run.
-func keepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, write StepRecord) error {
+// agent, the moment, the commit and the fix's check it names, which the run's end writes again, and
+// the write itself, which the roll forward of a rollback ends the record under where an earlier
+// release ended the run. The start is a run of its own, so the row names no end commit, no fix
+// beside it and no branch beside a fix after it.
+func (s *Postgres) keepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, write StepRecord) error {
 	identity, err := json.Marshal(write)
 	if err != nil {
 		return fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
-	if _, err := tx.Exec(ctx, `update step_starts set agent = $5, started_at = $6, record = $7
+	if _, err := tx.Exec(ctx, `update step_starts set agent = $5, started_at = $6, record = $7, start_commit = $8, fix_check = $9,
+			end_commit = '', beside_fix = 0, push_branch = ''
 		where issue = $1 and task = $2 and kind = $3 and place = $4`,
-		issue, place.Task, place.Kind, place.Place, write.Agent, write.StartedAt, identity); err != nil {
+		issue, place.Task, place.Kind, place.Place, write.Agent, write.StartedAt, identity,
+		textOf(write.StartCommit), textOf(write.FixCheck)); err != nil {
 		return fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	return nil
 }
 
+// textOf is the text a field of a step record names, "" for one it leaves out.
+func textOf(field *string) string {
+	if field == nil {
+		return ""
+	}
+	return *field
+}
+
 // StepStarts is the count of starts of place on issue, with the agent, the moment and the run of
 // the latest, unchanged: the zero StepStart where the place has no row.
 func (s *Postgres) StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error) {
-	start, err := scanStepStart(tx.QueryRow(ctx, `select starts, agent, started_at, run from step_starts
+	start, err := scanStepStart(tx.QueryRow(ctx, `select `+stepStartColumns+` from step_starts
 		where issue = $1 and task = $2 and kind = $3 and place = $4`, issue, place.Task, place.Kind, place.Place))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StepStart{}, nil
@@ -134,14 +165,15 @@ func (s *Postgres) OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepE
 }
 
 // EndStepStart is the end of the step running at place on issue, in the transaction that writes
-// that run's end. An open run it marks ended, and answers that start, marked, and true. It marks
-// nothing otherwise, and answers false: the run's end was written already, since the settle of an
-// earlier fact ended it. The update locks the row, so two transactions that end one run at one time
-// end it once: the second finds no open run once the first commits.
-func (s *Postgres) EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error) {
-	start, err := scanStepStart(tx.QueryRow(ctx, `update step_starts set run = 'ended'
+// that run's end, at endCommit, the commit the end names ("" for none). An open run it marks ended
+// with that commit, and answers that start, marked, and true. It marks nothing otherwise, and
+// answers false: the run's end was written already, since the settle of an earlier fact ended it.
+// The update locks the row, so two transactions that end one run at one time end it once: the
+// second finds no open run once the first commits.
+func (s *Postgres) EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, endCommit string) (StepStart, bool, error) {
+	start, err := scanStepStart(tx.QueryRow(ctx, `update step_starts set run = 'ended', end_commit = $5
 		where issue = $1 and task = $2 and kind = $3 and place = $4 and run = 'open'
-		returning starts, agent, started_at, run`, issue, place.Task, place.Kind, place.Place))
+		returning `+stepStartColumns, issue, place.Task, place.Kind, place.Place, endCommit))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StepStart{}, false, nil
 	}
@@ -178,17 +210,68 @@ func (s *Postgres) OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue strin
 	} else if err != nil {
 		return false, fmt.Errorf("open the uncounted step of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
-	if err := keepStart(ctx, tx, issue, place, run(starts)); err != nil {
+	if err := s.keepStart(ctx, tx, issue, place, run(starts)); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// scanStepStart reads one step_starts row's starts, agent, started_at and run.
+// MarkStepBesideFix writes that fix, a fix of its task, ran beside start number starts of place on
+// issue (StepStart.BesideFix): in the transaction that counted that start (RaiseStepStarts), which
+// writes 0 for every start, where the start named the fix open, and in the transaction that starts
+// the fix, where the start's run was open then. A start that is not the place's open run is
+// refused with ErrStepStartMismatch, and nothing is written.
+func (s *Postgres) MarkStepBesideFix(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, starts int64, fix int) error {
+	describe := fmt.Sprintf("mark start %d of %s %s/%s/%d beside fix %d", starts, issue, place.Task, place.Kind, place.Place, fix)
+	if fix < 0 {
+		return fmt.Errorf("%s: a fix counts from 1", describe)
+	}
+	tag, err := tx.Exec(ctx, `update step_starts set beside_fix = $6
+		where issue = $1 and task = $2 and kind = $3 and place = $4 and starts = $5 and run = 'open'`,
+		issue, place.Task, place.Kind, place.Place, starts, fix)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s: %w", describe, ErrStepStartMismatch)
+	}
+	return nil
+}
+
+// SetStepPushBranch binds branch, a branch beside a fix, to start number starts of place on issue:
+// the branch that step pushes to until its run ends (StepStart.PushBranch). A start that holds a
+// binding keeps it, so a step keeps its branch when a later fix of its task starts, and a start
+// that is not the place's open run is refused with ErrStepStartMismatch, writing nothing.
+func (s *Postgres) SetStepPushBranch(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, starts int64, branch string) error {
+	describe := fmt.Sprintf("bind branch %q to start %d of %s %s/%s/%d", branch, starts, issue, place.Task, place.Kind, place.Place)
+	if branch == "" {
+		return fmt.Errorf("%s: a binding names a branch", describe)
+	}
+	// The update takes the open start alone and binds it only where it holds no branch yet; the
+	// row lock it takes keeps two bindings of one start in one order.
+	var bound string
+	err := tx.QueryRow(ctx, `update step_starts set push_branch = case when push_branch = '' then $6 else push_branch end
+		where issue = $1 and task = $2 and kind = $3 and place = $4 and starts = $5 and run = 'open'
+		returning push_branch`,
+		issue, place.Task, place.Kind, place.Place, starts, branch).Scan(&bound)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%s: %w", describe, ErrStepStartMismatch)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	return nil
+}
+
+// stepStartColumns is the columns of a step_starts row in the order scanStepStart reads them.
+const stepStartColumns = `starts, agent, started_at, run, start_commit, end_commit, fix_check, beside_fix, push_branch`
+
+// scanStepStart reads one step_starts row of stepStartColumns.
 func scanStepStart(row pgx.Row) (StepStart, error) {
 	var start StepStart
 	var at *time.Time
-	if err := row.Scan(&start.Starts, &start.Agent, &at, &start.Run); err != nil {
+	if err := row.Scan(&start.Starts, &start.Agent, &at, &start.Run, &start.StartCommit, &start.EndCommit, &start.FixCheck,
+		&start.BesideFix, &start.PushBranch); err != nil {
 		return StepStart{}, err
 	}
 	if at != nil {

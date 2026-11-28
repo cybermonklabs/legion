@@ -25,7 +25,6 @@ const NO_COMMAND: Readonly<Partial<Record<ClientMethod, string>>> = {
   sendRoute: "dispatch api's write of the route its caller names (src/dispatch-commands/api.ts)",
 };
 
-
 /** The route a Dispatch older than it has none for, which `syncArchitectureSources` then sends
  *  its older route in place of. */
 const SOURCES_SYNC = "/api/v1/projects/DSP/architecture-sources/sync";

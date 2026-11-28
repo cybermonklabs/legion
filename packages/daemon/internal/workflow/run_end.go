@@ -46,15 +46,17 @@ type runAt struct {
 }
 
 // factRuns is what one fact names of the runs it ends that the record does not hold: the end each
-// move of the table names for the run it leaves, and the trees whose linger it closed. unrested is
+// move of the table names for the run it leaves, the trees whose linger it closed, and the task
+// branch deletions a leave or a new generation defers until every old start ended. unrested is
 // each ancestor a root stopped resting on in the fact (restEnded), which writes no record of the
 // ancestor's tree. settled says the fact's runs are settled already: an engine and the admission
 // that holds it share one fact.
 type factRuns struct {
-	ends     map[runAt]StepEnd
-	closed   map[string]bool
-	unrested []string
-	settled  bool
+	ends               map[runAt]StepEnd
+	closed             map[string]bool
+	deleteAfterOldRuns map[runAt]record.Issue
+	unrested           []string
+	settled            bool
 }
 
 // factRunsKey is the context key of a fact's factRuns.
@@ -87,7 +89,7 @@ func (runs *factRuns) endOf(run runAt) StepEnd {
 // fact, is answered as it is (intake.Settler).
 func (e *Engine) OpenFact(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(factRunsKey{}).(*factRuns); !ok {
-		ctx = context.WithValue(ctx, factRunsKey{}, &factRuns{ends: map[runAt]StepEnd{}, closed: map[string]bool{}})
+		ctx = context.WithValue(ctx, factRunsKey{}, &factRuns{ends: map[runAt]StepEnd{}, closed: map[string]bool{}, deleteAfterOldRuns: map[runAt]record.Issue{}})
 	}
 	return record.WithIssueWrites(ctx)
 }
@@ -235,6 +237,9 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 	if err != nil {
 		return err
 	}
+	// dropped is each task of an earlier generation whose fix this settle took off already
+	// (dropFixWay), so several runs of it that end here queue one deletion of its branches.
+	dropped := map[runAt]bool{}
 	for _, row := range stored {
 		if row.Run != record.RunOpen {
 			continue
@@ -263,14 +268,63 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 		if err != nil {
 			return err
 		}
-		var onWalk bool
-		if stood.Phase, onWalk = phaseAt(w, row.Place); !onWalk {
-			if err := e.endOffWalk(ctx, tx, row, runs.endOf(run)); err != nil {
+		// A run of an earlier generation is over, and so is that run's fix, which takes no way
+		// (dropFixWay): the new generation judges its head again. It is taken off once for its task.
+		if task := (runAt{issue: row.Issue, generation: row.Generation, place: record.StepPlace{Task: w.Task}}); now != nil &&
+			row.Generation != now.Generation && !dropped[task] {
+			dropped[task] = true
+			if err := e.dropFixWay(ctx, tx, stood, w, ""); err != nil {
 				return err
 			}
+		}
+		var onWalk bool
+		if stood.Phase, onWalk = phaseAt(w, row.Place); !onWalk {
+			err = e.endOffWalk(ctx, tx, row, runs.endOf(run))
+		} else {
+			err = e.endStep(ctx, tx, stood, w, runs.endOf(run))
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if err := e.queueDeletesAfterOldRuns(ctx, tx, runs); err != nil {
+		return err
+	}
+	return nil
+}
+
+// queueDeletesAfterOldRuns queues each deletion a leave or a new generation asked for, once this
+// fact's settle has ended every open start of that task at the generation that asked. The old
+// generation's agent can push until its own start ends, so dropFixWay asks for the deletion and
+// queues none. Where a start of that task is still open, this queues nothing and says so, and the
+// next leave or new generation of the task asks again. A deletion the task's own end queued
+// already (queueTaskEnd) is queued again here, naming the same branches, which the second row
+// deletes as the first did (TestALeaveOfATaskInItsMergeQueuesItsDeletionAgain).
+//
+// No state these tests reach keeps such a start open: a leave ends its issue's task with its run
+// (leave, endTaskWithLeave), so the settle that follows it holds every run of the issue over
+// (runOver), and a run of an earlier generation is over by its generation alone. So what becomes
+// of the branches of a task whose start stays open is proved by nothing here, and this says only
+// what the code does.
+func (e *Engine) queueDeletesAfterOldRuns(ctx context.Context, tx pgx.Tx, runs *factRuns) error {
+	for task, issue := range runs.deleteAfterOldRuns {
+		starts, err := e.store.StepRuns(ctx, tx, []string{task.issue})
+		if err != nil {
+			return err
+		}
+		open := false
+		for _, start := range starts {
+			if start.Generation == task.generation && start.Place.Task == task.place.Task && start.Run == record.RunOpen {
+				open = true
+				e.logOnCommit(ctx, "workflow: a start of the task is still open, so no deletion of the branches beside its fixes is queued here; the next leave or new generation of the task asks again", "issue", task.issue,
+					"generation", task.generation, "task", task.place.Task, "kind", start.Place.Kind, "place", start.Place.Place)
+				break
+			}
+		}
+		if open {
 			continue
 		}
-		if err := e.endStep(ctx, tx, stood, w, runs.endOf(run)); err != nil {
+		if err := e.queueBesideDelete(ctx, tx, issue, task.place.Task); err != nil {
 			return err
 		}
 	}
@@ -308,8 +362,10 @@ type issueReader func(key string) (*record.Issue, error)
 // (nil for none), restarted whether a start of its place is about to begin, and read how its tree's
 // root is read. A run is over when its issue has no record, or stands at another place on the walk
 // of its run or in another generation (standingStep, which an issue its plan holds stands in no
-// step of); when a start of its place begins; or when its tree's root lingers, unless it is a
-// merge that can still land in that linger (mergeCanLand, whose closed lingers runs holds).
+// step of), but the run of the step the task's running fix runs again, which stands beside the
+// issue's own step until the fix ends it (fixRunsAt); when a start of its place begins; or when its
+// tree's root lingers, unless it is a merge that can still land in that linger (mergeCanLand,
+// whose closed lingers runs holds).
 func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run runAt, now *record.Issue, restarted bool, read issueReader) (bool, error) {
 	if restarted || now == nil {
 		return true, nil
@@ -322,7 +378,10 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 		return false, err
 	}
 	if step, ok := standingStep(w, *now); !ok || step.place != run.place {
-		return true, nil
+		fixes, err := e.fixRunsAt(ctx, tx, *now, w, run.place)
+		if err != nil || !fixes {
+			return err == nil, err
+		}
 	}
 	root := now
 	if now.Tree != now.Key {

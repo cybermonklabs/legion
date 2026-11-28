@@ -718,6 +718,9 @@ type Admission struct {
 	// the one that waits: a root whose Legion label is off, a task that was stopped
 	// (`task_stopped`), an issue none of the other words is true of, or an issue in accepting, retro or merging
 	// under `at_work`, which no other issue holds (record.HeldAtWork says which issues read it).
+	// Under the two words of a task's end `heldBy` names what holds it other than an issue: the
+	// check and the head of the running fix under `fix_running`, and each check a CI job runs that
+	// has not passed at the head under `ci_at_head` (record.LineFacts.EndHolds).
 	// Never null; empty when every issue of the workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
@@ -815,12 +818,17 @@ type Issue struct {
 	DefaultBranch string `json:"defaultBranch,omitempty"`
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
 	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
-	// it ran (record.HoldTaskStopped), and `children` while a parent whose task's last step is not
-	// the owner's acceptance waits, before its retro, for the issues beneath it, the roots that rest
-	// on its approval or its open Dispatch children (record.HoldForChildren). A hold of either of
-	// the last two is no architect's to retry or escalate: a later version of the plan
-	// starts a stopped task again, and a parent's retro starts once none of those holds it. A
-	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
+	// it ran (record.HoldTaskStopped), `children` while a parent whose task's last step is not the
+	// owner's acceptance waits, before its retro, for the issues beneath it, the roots that rest on
+	// its approval or its open Dispatch children (record.HoldForChildren), `fix` while an issue
+	// waits, before its retro, for the fix of its task that runs (record.HoldForFix), and `ci` while
+	// it waits, before its retro, until each check a CI job runs passes at its head
+	// (record.HoldForCI). A hold of any of the last four is no architect's to retry or escalate: a
+	// later version of the plan starts a stopped task again, a parent's retro starts once none of
+	// those holds it, the fix's end ends the hold of `fix`, and the checks passing at the head end
+	// the hold of `ci`. A caller below the contract a reason arrived at is served no reason for it:
+	// OwnerPlanContract for `task-stopped` and `children`, FixBesideReviewContract for `fix` and
+	// `ci` (withoutUnadmittedHoldReason).
 	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
 	// reason, and the view shows it again once the tree is re-admitted.
 	HoldReason string `json:"holdReason,omitempty"`
@@ -1001,6 +1009,12 @@ type Issue struct {
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
 	// the body the route serves a caller below 141 (shapeIssue, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
+	// Fix is the fix that runs beside the issue's step (record.TaskFix, whose number the issue
+	// record names in record.Issue.RunningFix), absent while none runs: a fix that still reads its
+	// failed job has raised no entry, and none of its task is the implementer's work yet. It
+	// arrived at FixBesideReviewContract, and a caller below it is served every issue without it
+	// (shaping.go's withoutFix).
+	Fix *FixView `json:"fix,omitempty"`
 	// PodHold is the standing hold of the issue's pod: why the idle rule keeps that pod running
 	// past the idle period, from when, until which pass, and what holds it (PodHoldView). It is
 	// the streak of store's pod_holds that no pass has ended, read in this state's own snapshot
@@ -1009,6 +1023,28 @@ type Issue struct {
 	// issue of the body the route serves a caller below podHoldContract (shapeIssue,
 	// withoutPodHold).
 	PodHold *PodHoldView `json:"podHold,omitempty"`
+}
+
+// FixView is the fix that runs beside an issue's step as the state shows it (record.TaskFix): a
+// check a CI job runs failed at the task's head, and the task's first implementation step runs
+// again, in a working copy of its own, while the other steps go on. Task is the task the fix is
+// of, and Step the place in that task of the step it runs again, 1 for the task's first. Check
+// and Head are the check that failed and the head it failed at, which the fix started for. Dir is
+// the directory of the fix's working copy, beside the issue's workspace in the runtime the
+// daemon runs (workspace.FixDir), where the implementer's completion of the fix finds its report;
+// it is absent where the daemon cannot place the issue's workspace, which no launch can work
+// either. Entry is the entry the fix raised on the implementer's phases row and GivenEntry the
+// entry of the last task the implementer's claim was queued, as the issue's own PhaseEntry and
+// GivenEntry are for the role of its phase: a reader tells a fix whose task its claim holds from
+// one the daemon has still to send it. Each is absent where it is 0.
+type FixView struct {
+	Task       string `json:"task"`
+	Step       int    `json:"step"`
+	Check      string `json:"check"`
+	Head       string `json:"head"`
+	Dir        string `json:"dir,omitempty"`
+	Entry      int64  `json:"entry,omitempty"`
+	GivenEntry int64  `json:"givenEntry,omitempty"`
 }
 
 // PodHoldView is one pod's standing hold as the state shows it (store.PodHold): Reason, the idle

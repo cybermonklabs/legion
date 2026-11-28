@@ -169,6 +169,38 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		lifecycles: []string{"LEGION-100"},
 		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
 	}
+	// A root whose task's last step passed, held before its retro while a fix of its task reads its
+	// failed job (record.HoldForFix), and a root held there until each check a CI job runs passes at
+	// the head of its open pull request (record.HoldForCI), where one check's job runs, one passed
+	// and one failed. Each stands in a tree under an open gate, and neither keeps a row, since
+	// retro keeps none.
+	fixHeldRoot := treeRoot("LEGION-100", "needs_review", phase.Held)
+	fixHeldRoot.Hold = &record.Hold{From: phase.Retro, Reason: record.HoldForFix}
+	fixRunning := projectionStore{
+		issues:     []record.Issue{fixHeldRoot},
+		lifecycles: []string{"LEGION-100"},
+		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+		planTasks:  []record.PlanTask{{Issue: "LEGION-100", Generation: 1, Task: "a"}},
+		fixes: map[string]record.TaskFix{"LEGION-100": {Issue: "LEGION-100", Generation: 1, Task: "a", Fix: 1,
+			State: record.FixReading, Check: "ci / test", Head: fixHead, Place: 1}},
+	}
+	ciHeldRoot := treeRoot("LEGION-100", "needs_review", phase.Held)
+	ciHeldRoot.Hold = &record.Hold{From: phase.Retro, Reason: record.HoldForCI}
+	ciAtHead := projectionStore{
+		issues:     []record.Issue{ciHeldRoot},
+		lifecycles: []string{"LEGION-100"},
+		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+		pullRequests: map[string]*record.PullRequest{"LEGION-100": {Issue: "LEGION-100", Repo: "acme/widgets", Number: 7,
+			Branch: "legion/LEGION-100", HeadSHA: fixHead, Generation: 1, State: record.PullRequestOpen}},
+		headStates: map[string]map[string]record.HeadStates{"LEGION-100": {fixHead: {
+			Checks: []string{"ci / build", "ci / lint", "ci / test"},
+			States: map[string]record.CheckState{
+				"ci / build": {Check: "ci / build", State: "no", Reason: "no_result", CICase: record.CINotCompleted},
+				"ci / lint":  {Check: "ci / lint", State: "yes", CICase: "success"},
+				"ci / test":  {Check: "ci / test", State: "no", Reason: "fail", CICase: "failure"},
+			},
+		}}},
+	}
 
 	byRoot := []string{"LEGION-100"}
 	fixtures := map[heldEntry]heldFixture{
@@ -223,6 +255,12 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		{record.HeldTaskStopped, api.WhyUnlisted}: {taskStopped,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldTaskStopped},
 			"Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs until a later version of its plan changes the task (register_plan) or, on a root, a person sets it todo; a retry of its hold starts none."},
+		{record.HeldFixRunning, api.WhyUnlisted}: {fixRunning,
+			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldFixRunning, HeldBy: []string{"ci / test", fixHead}},
+			"It passed the last step of its task, so the daemon holds it before its retro while a fix of its task reads its failed job or runs, started for the check and the head ci / test and c0de0000000000000000000000000000000000ff. Its retro does not start while the fix runs."},
+		{record.HeldCIAtHead, api.WhyUnlisted}: {ciAtHead,
+			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldCIAtHead, HeldBy: []string{"ci / build", "ci / test"}},
+			"It passed the last step of its task, so the daemon holds it before its retro until each check a CI job runs passes at its task's head; these have not passed there yet: ci / build and ci / test. Its retro does not start while one of them has not passed."},
 		{record.HeldUnclassified, api.WhyUnlisted}: {unclassified,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldUnclassified},
 			"The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."},

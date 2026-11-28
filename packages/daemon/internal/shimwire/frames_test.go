@@ -583,6 +583,97 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 	}
 }
 
+// An adoption names, where it has them, the commit a fix's working copy starts from (fixFrom)
+// and the commit the task's working copy moves to (moveTo), each a full commit id: 40
+// lowercase hex digits. The shim's answer echoes each one it acted on: the directory it made the
+// fix's working copy in (fixDir) and the commit it moved the task's working copy to (movedTo). The
+// request still names no path, since the shim derives the fix's directory from its own
+// workspace. A member that is no full commit id is refused, and a frame with neither member is
+// taken, as a daemon before these members sends it, so the refusal is of the member's form.
+func TestAnAdoptionNamesTheFixAndTheMove(t *testing.T) {
+	const (
+		fixFrom = "0123456789abcdef0123456789abcdef01234567"
+		moveTo  = "89abcdef0123456789abcdef0123456789abcdef"
+		head    = `{"type":"adopt-working-copy","id":"r5","jjUser":"legion","jjEmail":"legion@example.com","timeoutMs":30000`
+	)
+	adoption := func(t *testing.T, line string) AdoptWorkingCopy {
+		t.Helper()
+		decoded, err := Decode([]byte(line))
+		if err != nil {
+			t.Fatalf("Decode(%s): %v", line, err)
+		}
+		frame, ok := decoded.(AdoptWorkingCopy)
+		if !ok {
+			t.Fatalf("Decode(%s) = %#v, want an AdoptWorkingCopy", line, decoded)
+		}
+		return frame
+	}
+	t.Run("the request and its answer keep each member through the wire", func(t *testing.T) {
+		for _, line := range []string{
+			head + `,"fixFrom":"` + fixFrom + `","moveTo":"` + moveTo + `"}`,
+			head + `,"fixFrom":"` + fixFrom + `"}`,
+			head + `,"moveTo":"` + moveTo + `"}`,
+			`{"type":"adopt-working-copy-result","id":"r5","ok":true,"fixDir":"/s/workspaces/o/r/widgets-42-fix","movedTo":"` + moveTo + `"}`,
+		} {
+			decoded, err := Decode([]byte(line))
+			if err != nil {
+				t.Fatalf("Decode(%s): %v", line, err)
+			}
+			encoded, err := json.Marshal(decoded)
+			if err != nil {
+				t.Fatalf("Marshal(%#v): %v", decoded, err)
+			}
+			if string(encoded) != line {
+				t.Errorf("%s decodes to %#v and encodes as %s: the frame loses a member", line, decoded, encoded)
+			}
+		}
+		if err := adoption(t, head+`,"fixFrom":"`+fixFrom+`","moveTo":"`+moveTo+`"}`).Validate(); err != nil {
+			t.Errorf("Validate of an adoption naming both commits = %v, want nil", err)
+		}
+	})
+	t.Run("a member that is no full commit id is refused", func(t *testing.T) {
+		for _, member := range []string{
+			`"fixFrom":"abc"`,
+			`"moveTo":"abc"`,
+			`"fixFrom":"` + strings.ToUpper(fixFrom) + `"`,
+			`"moveTo":"` + moveTo + `0"`,
+			`"fixFrom":"` + fixFrom[:39] + `g"`,
+		} {
+			line := head + "," + member + "}"
+			if err := adoption(t, line).Validate(); !errors.Is(err, ErrMalformedFrame) {
+				t.Errorf("Validate(%s) = %v, want ErrMalformedFrame", line, err)
+			}
+		}
+	})
+	t.Run("a frame with neither member is taken, as a daemon before them sends it", func(t *testing.T) {
+		if err := adoption(t, head+"}").Validate(); err != nil {
+			t.Errorf("Validate of an adoption naming no commit = %v, want nil", err)
+		}
+	})
+	t.Run("the fix's own branch is taken only where it is a branch beside a fix", func(t *testing.T) {
+		const fixBranch = "legion-beside/INFRA-1/2/a/fix-1/implementer"
+		line := head + `,"fixFrom":"` + fixFrom + `","fixBranch":"` + fixBranch + `"}`
+		decoded, err := Decode([]byte(line))
+		if err != nil {
+			t.Fatalf("Decode(%s): %v", line, err)
+		}
+		if encoded, err := json.Marshal(decoded); err != nil || string(encoded) != line {
+			t.Errorf("%s decodes to %#v and encodes as %s (%v): the frame loses fixBranch", line, decoded, encoded, err)
+		}
+		if err := adoption(t, line).Validate(); err != nil {
+			t.Errorf("Validate(%s) = %v, want nil", line, err)
+		}
+		// The control: an issue's own branch, which a fix pushes to only at its end, is no
+		// branch of the fix's work in progress, and neither is a name outside legion-beside/.
+		for _, branch := range []string{"legion/INFRA-1", "main", "other/legion-beside/INFRA-1/2/a/fix-1/implementer"} {
+			line := head + `,"fixFrom":"` + fixFrom + `","fixBranch":"` + branch + `"}`
+			if err := adoption(t, line).Validate(); !errors.Is(err, ErrMalformedFrame) {
+				t.Errorf("Validate(%s) = %v, want ErrMalformedFrame", line, err)
+			}
+		}
+	})
+}
+
 // A volume report may hold each of its four lists up to the list's cap and not one entry past
 // it. The caps are the ones the launcher's trimmer cuts its reports at (internal/launcher's
 // bound), and this is the daemon's side of them: a report over a cap is refused rather than

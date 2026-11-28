@@ -37,6 +37,13 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
   A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
 
+- A test in which a real Dispatch reads the check runs of a commit takes its GitHub from `githubtest.ServeChecks`, the one fake GitHub whose state is the package's.
+  It answers what Dispatch's App client asks first, the App's installation, an installation token and the repository, and then the check runs a test set on the commit with `SetCheckRun`; it answers every other request 404 and keeps it for `Unanswered`.
+  It checks each credential as GitHub does: the installation and the mint take only a JWT its own `App` signed, the reads only a token it minted, and it answers each other request 401 and keeps it for `Refused`.
+  `githubtest.PublishChecksSettlement` publishes on the notification stream the settlement of a pull request's checks that the listener's CI summary loop publishes, commit statuses included, so the test drives Dispatch's check states by the trigger production uses.
+  The fake copies Envoy's settlement, subject segment and delivery durable by hand, and `packages/contracts/fixtures/checks-settlement/published.json` holds what Envoy's own code makes of each: a test in each module reads it, so a copy that drifts fails one of the two.
+  The daemon's `internal/daemon` holds the rig over both: a scratch Dispatch that holds the fake's App (`scratchDispatchOptions.github`), its delivery settings written (`writeDeliverySettings`), and the self-test `TestTheScratchDispatchPublishesACIStateFromTheSettlement`.
+
 - A test of the leak guard, or of code that runs it, names the fixture rule file of `packages/daemon/internal/leakguard/leakguardtest`.
   `WriteRules` writes the file into a directory of the test's and returns its path, which the test gives `LEGION_PRIVATE_NAME_RULES_FILE`, and `Rules` is the file's text, which a test compiles with `leakguard.LoadRules` where it runs a compiled set itself (`RuleSet.Check`) or hands one to the daemon's branch create.
   Every name in it is an invented word, and its constants (`RulesHost`, `PairName` and `PairWord`, `Word`, and each rule's class) are what a test puts in the write it checks and looks for in the report, so a Go test of the guard assembles no name of any deployment's rules.

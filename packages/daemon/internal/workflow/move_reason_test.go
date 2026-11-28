@@ -16,7 +16,7 @@ func TestOnlyTheBackwardMovePostsAReasonOnTheIssue(t *testing.T) {
 	t.Parallel()
 	const given = "the review's whole body, which must not reach the issue a second time"
 	for _, trigger := range allWorkflowTriggers {
-		got := moveReason(trigger, phase.Testing, phase.Implementing, given)
+		got := moveReason(trigger, phase.Testing, phase.Implementing, mover{}, given)
 		if trigger == TriggerBackward {
 			want := "Legion moved this issue from testing back to implementing at the tester's request: " + given + "."
 			if got != want {
@@ -47,7 +47,7 @@ func TestABackwardMoveNamesWhoAskedAndGivesTheirWords(t *testing.T) {
 		{phase.Merging, phase.Testing, "  \n",
 			"Legion moved this issue from merging back to testing at the merger's request, which gave no reason."},
 	} {
-		if got := moveReason(TriggerBackward, tc.from, tc.to, tc.reason); got != tc.want {
+		if got := moveReason(TriggerBackward, tc.from, tc.to, mover{}, tc.reason); got != tc.want {
 			t.Fatalf("%s to %s with %q posts %q, want %q", tc.from, tc.to, tc.reason, got, tc.want)
 		}
 	}

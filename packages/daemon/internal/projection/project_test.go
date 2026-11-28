@@ -44,12 +44,47 @@ type projectionStore struct {
 	// in experiment order, as record.Store.Assignments answers them.
 	assignments map[string][]record.Assignment
 	// planTasks is the task of each issue that has plan rows at its generation, as
-	// record.Store.PlanTasksOf answers them.
+	// record.Store.PlanTasksOf answers them. Plan answers from it too.
 	planTasks []record.PlanTask
+	// fixes is the fix the store holds of each issue's task: what record.Store.RunningFix answers
+	// for the task, a fix that reads its job or runs, and none for a fix that ended or one of
+	// another task or run.
+	fixes map[string]record.TaskFix
+	// headStates is what the store holds of each issue's checks at each head, by issue and then by
+	// head, as record.Store.HeadStates answers it: a head with no entry holds no set of checks.
+	headStates map[string]map[string]record.HeadStates
 }
 
 func (s projectionStore) PlanTasksOf(context.Context, pgx.Tx, string) ([]record.PlanTask, error) {
 	return s.planTasks, nil
+}
+
+// Plan is the plan of issue at generation as record.Store.Plan answers it, built of the one task
+// planTasks names there, with no steps, since no read of the projection walks them; nil where
+// planTasks names none.
+func (s projectionStore) Plan(_ context.Context, _ pgx.Tx, issue string, generation uint64) (*record.StoredPlan, error) {
+	for _, task := range s.planTasks {
+		if task.Issue == issue && task.Generation == generation {
+			return &record.StoredPlan{Version: record.PlanVersion{Issue: issue, Generation: generation},
+				Tasks: []record.PlanTask{task}, Steps: map[string][]record.PlanStep{}}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s projectionStore) RunningFix(_ context.Context, _ pgx.Tx, issue string, generation uint64, task string) (*record.TaskFix, error) {
+	fix, held := s.fixes[issue]
+	if !held || fix.Generation != generation || fix.Task != task || fix.State == record.FixEnded {
+		return nil, nil
+	}
+	return &fix, nil
+}
+
+func (s projectionStore) HeadStates(_ context.Context, _ pgx.Tx, issue, _, head string) (record.HeadStates, error) {
+	if held, ok := s.headStates[issue][head]; ok {
+		return held, nil
+	}
+	return record.HeadStates{States: map[string]record.CheckState{}}, nil
 }
 
 func (s projectionStore) Assignments(context.Context, pgx.Tx, string) (map[string][]record.Assignment, error) {
@@ -110,6 +145,12 @@ func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []st
 		}
 	}
 	return of, nil
+}
+
+// PullRequestRow answers the one pull request of issue the store holds, nil for none, as the real
+// store reads its row alone: the held list's read of a hold for CI (record.EndHoldsOf).
+func (s projectionStore) PullRequestRow(_ context.Context, _ pgx.Tx, issue string) (*record.PullRequest, error) {
+	return s.pullRequests[issue], nil
 }
 func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map[record.DesignStep]record.DesignGate, error) {
 	return s.gates[issue], nil

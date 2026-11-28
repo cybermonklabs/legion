@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/checkstatetest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -43,5 +45,21 @@ func testedAs(t *testing.T, pool store.TxPool, issue, head string, passes bool, 
 	fact, id := testedFact(t, pool, issue, head, passes)
 	if result, err := intake.ApplyFact(context.Background(), pool, "dispatch", id, fact, handlers...); err != nil || result.Refusal != nil {
 		t.Fatalf("apply the state event %s: %+v, %v", id, result.Refusal, err)
+	}
+}
+
+// noChecksAt holds the set of checks Dispatch publishes of issue at head of repo where the head
+// has none, as its check.state_changed of that head carries it, at sequence 1, below every event a
+// test applies (checkstatetest.Seq), so a later event of the head replaces it. A task whose head
+// holds no set waits for CI at its end; one whose head has no check waits for none. A rig whose
+// daemon runs no consumer of Dispatch's events holds what Dispatch would publish, as testedAs does.
+func noChecksAt(t *testing.T, pool store.TxPool, issue, repo, head string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := record.NewStore().PutCheckSet(ctx, tx, issue, repo, head, []string{}, 1)
+		return err
+	}); err != nil {
+		t.Fatalf("hold the empty set of checks of %s at %s: %v", issue, head, err)
 	}
 }

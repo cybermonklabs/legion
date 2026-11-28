@@ -57,7 +57,7 @@ func TestRuntimeRecordsEveryCallInOrderWithItsArguments(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 	identity := runtime.GitIdentity{Name: "Legion", Email: "legion@example.com"}
-	if err := fake.AdoptWorkingCopy(ctx, locator, identity); err != nil {
+	if _, err := fake.AdoptWorkingCopy(ctx, locator, identity, runtime.Adoption{}); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 
@@ -100,6 +100,75 @@ func TestRuntimeRecordsEveryCallInOrderWithItsArguments(t *testing.T) {
 	if of := fake.CallsOf("Release"); len(of) != 2 || of[1].Released.Claim != suspended {
 		t.Errorf("CallsOf(Release): %+v", of)
 	}
+}
+
+// An adoption names a fix's commit, the fix's own branch and the task's move beside the identity,
+// and the fake records each member with the call. It answers as the shim of this release does,
+// echoing each member it was asked: the fix's working copy (FixDir) for a fix's commit or its own
+// branch, and the commit it moved to for a move. Told to answer as a shim built before those
+// members, it answers ok with neither echo, which is what the daemon reads as a pod its update round
+// must replace.
+func TestAnAdoptionRecordsItsFixAndMoveAndEchoesThem(t *testing.T) {
+	ctx := context.Background()
+	identity := runtime.GitIdentity{Name: "Legion", Email: "legion@example.com"}
+	const fixFrom, moveTo = "c0de000000000000000000000000000000000001", "c0de000000000000000000000000000000000002"
+	const fixBranch = "legion-beside/LEGION-208/1/default/fix-1/implementer"
+	for _, tc := range []struct {
+		name     string
+		older    bool
+		adoption runtime.Adoption
+		want     runtime.Adopted
+	}{
+		{name: "a fix's commit and a move", adoption: runtime.Adoption{FixFrom: fixFrom, MoveTo: moveTo},
+			want: runtime.Adopted{FixDir: FixDir, MovedTo: moveTo}},
+		{name: "a move alone", adoption: runtime.Adoption{MoveTo: moveTo}, want: runtime.Adopted{MovedTo: moveTo}},
+		{name: "neither", adoption: runtime.Adoption{}},
+		{name: "a fix's commit and a move to an older shim", older: true, adoption: runtime.Adoption{FixFrom: fixFrom, MoveTo: moveTo}},
+		{name: "a fix's commit and its own branch", adoption: runtime.Adoption{FixFrom: fixFrom, FixBranch: fixBranch},
+			want: runtime.Adopted{FixDir: FixDir}},
+		{name: "a fix's commit and its own branch to an older shim", older: true, adoption: runtime.Adoption{FixFrom: fixFrom, FixBranch: fixBranch}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := NewRuntime()
+			locator, err := fake.Spawn(ctx, spec("legion-omp-LEGION-208-implementer"))
+			if err != nil {
+				t.Fatalf("spawn: %v", err)
+			}
+			fake.AnswerAdoptionsAsAnOlderShim(tc.older)
+			adopted, err := fake.AdoptWorkingCopy(ctx, locator, identity, tc.adoption)
+			if err != nil || adopted != tc.want {
+				t.Fatalf("AdoptWorkingCopy = %+v, %v; want %+v", adopted, err, tc.want)
+			}
+			calls := fake.CallsOf("AdoptWorkingCopy")
+			if len(calls) != 1 || calls[0].Adoption != tc.adoption || calls[0].Identity != identity || calls[0].Locator != locator {
+				t.Fatalf("AdoptWorkingCopy recorded %+v, want one call of %+v under %v at %+v", calls, tc.adoption, identity, locator)
+			}
+
+			conn := NewConn()
+			conn.AnswerAdoptionsAsAnOlderShim(tc.older)
+			adopted, err = conn.AdoptWorkingCopy(ctx, identity, tc.adoption, time.Minute)
+			if err != nil || adopted != tc.want {
+				t.Fatalf("the connection's AdoptWorkingCopy = %+v, %v; want %+v", adopted, err, tc.want)
+			}
+			want := Adoption{Identity: identity, Timeout: time.Minute, FixFrom: tc.adoption.FixFrom, MoveTo: tc.adoption.MoveTo, FixBranch: tc.adoption.FixBranch}
+			if adoptions := conn.Adoptions(); len(adoptions) != 1 || adoptions[0] != want {
+				t.Fatalf("the connection recorded %+v, want %+v", adoptions, want)
+			}
+		})
+	}
+
+	t.Run("a scripted failure answers no echo", func(t *testing.T) {
+		fake := NewRuntime()
+		locator, err := fake.Spawn(ctx, spec("legion-omp-LEGION-208-implementer"))
+		if err != nil {
+			t.Fatalf("spawn: %v", err)
+		}
+		refused := errors.New("the shim refused")
+		fake.FailAdoptWorkingCopy(refused)
+		if adopted, err := fake.AdoptWorkingCopy(ctx, locator, identity, runtime.Adoption{FixFrom: fixFrom}); !errors.Is(err, refused) || adopted != (runtime.Adopted{}) {
+			t.Fatalf("AdoptWorkingCopy = %+v, %v; want no echo and the scripted failure", adopted, err)
+		}
+	})
 }
 
 // A locator the fake mints is a locator the daemon could have stored: the supervisor validates
@@ -477,7 +546,7 @@ func TestConnRecordsWhatTheDaemonAskedOfTheAgent(t *testing.T) {
 	}
 
 	identity := runtime.GitIdentity{Name: "Legion", Email: "legion@example.com"}
-	if err := conn.AdoptWorkingCopy(ctx, identity, 30*time.Second); err != nil {
+	if _, err := conn.AdoptWorkingCopy(ctx, identity, runtime.Adoption{}, 30*time.Second); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 	adoptions := conn.Adoptions()

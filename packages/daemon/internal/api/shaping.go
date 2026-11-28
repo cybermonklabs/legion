@@ -1359,6 +1359,17 @@ func withoutAssignmentPlans(issue Issue) (Issue, bool) {
 	return issue, true
 }
 
+// withoutFix is the issue with no `fix`, the one key FixBesideReviewContract added to an issue
+// (Issue.Fix). No plugin before that contract completes a fix: the daemon relaunches each claim
+// of an older plugin on this contract at its boot (internal/daemon's refreshStalePlugins), and
+// until then such a plugin is served no fix, so its completion is the step's as before. The key is
+// written only while a fix runs, so the band reports a move only for an issue that carries one.
+func withoutFix(issue Issue) (Issue, bool) {
+	moved := issue.Fix != nil
+	issue.Fix = nil
+	return issue, moved
+}
+
 // withoutCauseTimes is the issue with no claim view carrying `lastDeathAt` or
 // `lastStartFailureAt`, the two keys causeTimesContract added to the claim views; every other key
 // of each view stays, its causes among them.
@@ -1771,12 +1782,13 @@ func withoutUnadmittedCapabilitySources(state State, restore int) (State, bool) 
 // withoutUnadmittedHoldReason is the issue with no `holdReason` where that reason is one
 // restore's reader does not admit. It follows the declared table (answers.go's holdReasons) and
 // takes any reason the table holds back from restore (fieldArrivals.heldBack says which reasons
-// and why): today the `task-stopped` and `children` of OwnerPlanContract, and tomorrow any reason
-// the table gives a later arrival. A reader below that contract reads the key with
-// `z.literal("escalated")` and refuses the whole body for another word, and reads it as optional,
-// so such an issue is served as a hold of no reason is: its `heldFrom` and every other field of
-// the hold stay, and so does every escalated hold. `holdReason` is `omitempty`, so the emptied
-// field writes no key.
+// and why): today the `task-stopped` and `children` of OwnerPlanContract and the `fix` and `ci`
+// of FixBesideReviewContract, and tomorrow any reason the table gives a later arrival. A reader
+// below OwnerPlanContract reads the key with `z.literal("escalated")`, and a reader from it up to
+// FixBesideReviewContract with a `z.enum` of the three reasons before; each refuses the whole body
+// for another word, and reads the key as optional, so such an issue is served as a hold of no
+// reason is: its `heldFrom` and every other field of the hold stay, and so does every escalated
+// hold. `holdReason` is `omitempty`, so the emptied field writes no key.
 //
 // The issue is a value of its own and the field a string of it, so the state the source answered
 // is left as it was. It reports whether it took the reason, which is what the log line of this
@@ -1792,21 +1804,23 @@ func withoutUnadmittedHoldReason(issue Issue, restore int) (Issue, bool) {
 // withoutUnadmittedHeldWords is state whose `admission.held` names no row by a word restore's
 // reader does not admit. It follows the declared table (answers.go's heldReasons) and takes any
 // word the table holds back from restore (fieldArrivals.heldBack says which words and why): today
-// the `children_before_retro` and `task_stopped` of OwnerPlanContract and the
-// `awaiting_children` of gateBasisContract, and tomorrow any word the table gives a later
-// arrival. A reader from heldContract up to such a contract reads `reason` with a `z.enum` of the
-// words before it and refuses the whole body for another.
+// the `children_before_retro` and `task_stopped` of OwnerPlanContract, the `awaiting_children`
+// of gateBasisContract and the `fix_running` and `ci_at_head` of FixBesideReviewContract, and
+// tomorrow any word the table gives a later arrival. A reader from heldContract up to such a
+// contract reads `reason` with a `z.enum` of the words before it and refuses the whole body for
+// another.
 //
 // The row is rewritten rather than dropped, which is where this parts company with
 // withoutUnadmittedStrandedStates: an older word does stand for it. A word an older word of the
 // field stands in for is served as that word, with its `heldBy`, which names what that word names
 // (heldReasonStandIn): `awaiting_children` as `children_first`, the wait that word named before
 // gateBasisContract gave it its own. Every other such word is served as `unclassified` with no
-// `heldBy`: each issue of the two holds OwnerPlanContract added read `unclassified` at every
-// daemon before that contract, and a word no row of the table declares is no word any older
-// reader is known to admit. `unclassified` and `children_first` both arrived with the field, so
-// every reader that knows the field admits them. So the row is served as that reader read it
-// before, and every other row as it stands.
+// `heldBy`: each issue of the two holds OwnerPlanContract added, and of the two
+// FixBesideReviewContract added, read `unclassified` at every daemon before its word's contract,
+// and a word no row of the table declares is no word any older reader is known to admit.
+// `unclassified` and `children_first` both arrived with the field, so every reader that knows the
+// field admits them. So the row is served as that reader read it before, and every other row as
+// it stands.
 //
 // A state whose rows name no such word is returned as it is, with no copy made. Otherwise the
 // rows are copied before one is written, so the state the source answered is left as it was. It

@@ -47,6 +47,8 @@ type Call struct {
 	Known    []runtime.Known
 	Grace    time.Duration
 	Identity runtime.GitIdentity
+	// Adoption is AdoptWorkingCopy's: the fix's commit and the task's move it named.
+	Adoption runtime.Adoption
 	// Tree is CleanupTree's tree.
 	Tree string
 	// Issue is IssuePod's, WorkspaceWork's and ReplaceIssuePod's issue.
@@ -170,6 +172,9 @@ type Runtime struct {
 	holdProbe  func(runtime.Locator)
 	queue      []runtime.Observation
 	minted     int
+	// olderShim is whether AdoptWorkingCopy answers as a shim built before an adoption named a
+	// fix's commit and the task's move (AnswerAdoptionsAsAnOlderShim).
+	olderShim bool
 }
 
 // NewRuntime is a fake ready to record: no script, controller launched by the daemon, real time.
@@ -249,6 +254,16 @@ func (r *Runtime) FailReconcileOrphans(err error) { r.fail("ReconcileOrphans", e
 
 // FailAdoptWorkingCopy makes every later AdoptWorkingCopy return err.
 func (r *Runtime) FailAdoptWorkingCopy(err error) { r.fail("AdoptWorkingCopy", err) }
+
+// AnswerAdoptionsAsAnOlderShim makes every later AdoptWorkingCopy answer as a shim built before
+// an adoption named a fix's commit and the task's move: ok, with neither echo, whatever it was
+// asked, which is what the daemon reads as a pod its update round must replace. false puts back the
+// shim of this release, which echoes each member it is asked (Echo).
+func (r *Runtime) AnswerAdoptionsAsAnOlderShim(older bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.olderShim = older
+}
 
 // FailCleanupTree makes every later CleanupTree return err; nil clears it.
 func (r *Runtime) FailCleanupTree(err error) { r.fail("CleanupTree", err) }
@@ -745,11 +760,35 @@ func copyKnown(k runtime.Known) runtime.Known {
 	return k
 }
 
-func (r *Runtime) AdoptWorkingCopy(_ context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+// AdoptWorkingCopy records its call with the adoption's members and answers a scripted failure,
+// else the echo a shim of this release gives (Echo), else, told to answer as an older shim, none.
+func (r *Runtime) AdoptWorkingCopy(_ context.Context, loc runtime.Locator, id runtime.GitIdentity, adoption runtime.Adoption) (runtime.Adopted, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "AdoptWorkingCopy", Locator: loc, Identity: id})
-	return r.failures["AdoptWorkingCopy"]
+	r.calls = append(r.calls, Call{Method: "AdoptWorkingCopy", Locator: loc, Identity: id, Adoption: adoption})
+	if err := r.failures["AdoptWorkingCopy"]; err != nil {
+		return runtime.Adopted{}, err
+	}
+	if r.olderShim {
+		return runtime.Adopted{}, nil
+	}
+	return Echo(adoption), nil
+}
+
+// FixDir is the directory the fakes answer as the fix's working copy, where the shim of this
+// release answers workspace.FixDir of its own workspace: the fakes know no workspace.
+const FixDir = "/fake/workspace-fix"
+
+// Echo is the answer a shim of this release gives an adoption that went through: FixDir for a
+// fix's commit or its own branch and the commit itself for a move, each only where the adoption
+// named it.
+func Echo(adoption runtime.Adoption) runtime.Adopted {
+	var adopted runtime.Adopted
+	if adoption.FixFrom != "" || adoption.FixBranch != "" {
+		adopted.FixDir = FixDir
+	}
+	adopted.MovedTo = adoption.MoveTo
+	return adopted
 }
 
 func (r *Runtime) ProvisionsWorkspaces() bool {

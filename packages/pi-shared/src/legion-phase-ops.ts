@@ -332,12 +332,19 @@ export const PHASE_OP_SENTENCES = {
     "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. " +
     "A held issue names in `heldFrom` the phase the hold took it out of, and in `holdReason` why it is held when its hold has a reason: " +
     "`escalated` (its architect sent it to the controller), `task-stopped` (its owner stopped its task with stop_task) or `children` (it " +
-    "waits, before its retro, for the issues beneath it, the roots that rest on its approval or its open Dispatch children). A failed claim carries `failure`: the " +
+    "waits, before its retro, for the issues beneath it, the roots that rest on its approval or its open Dispatch children). " +
+    "`holdReason` may also be `fix`: the issue waits for the fix of its task that runs now. " +
+    "It is held from the phase of a step beside the fix that failed, or before its retro, and goes on when the fix ends. " +
+    "Or it is `ci`: the issue waits before its retro until each check a CI job runs passes at its head. " +
+    "While a fix runs, the record names it in `fix`: its task, step, failed check and head, and `dir`, its working copy. " +
+    "A failed claim carries `failure`: the " +
     "`cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and " +
     "`attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts " +
     "that phase again, as the architect's retry_or_escalate with retry does, but a root held `task-stopped` starts its task again at its " +
     "first step (a task that never started waits for its gate and its line, as any task does before its first step), and a root held " +
-    "`children` stays held until none of those holds it any longer. ",
+    "`children` stays held until none of those holds it any longer. Neither a todo on a held root nor retry_or_escalate ends a hold of `fix` or " +
+    "`ci`: a retry or an escalation is refused FIX_RUNNING or CI_PENDING, and a todo keeps the hold. " +
+    "To act on a `ci` hold before CI passes, send the issue back with request_backward_move. ",
   readReleaseRecords:
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
@@ -347,6 +354,9 @@ export const PHASE_OP_SENTENCES = {
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+    "Beside a running fix, any other move back moves nothing now: the issue is held `fix` until the fix ends. " +
+    "The implementer's move while it runs the fix is the fix's failure. " +
+    "It ends the fix failed, and the task returns to `to`, a step before the fix's, once the step beside it ends. " +
     "The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester " +
     "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
     "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
@@ -392,7 +402,7 @@ export function legionToolDescription(host: {
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
     (host.before ?? "") +
     "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
-    "the daemon accepts a completion only from the role working the issue's current phase, " +
+    "the daemon accepts a completion only from the role working the issue's current phase, from the implementer of the task's running fix, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report naming its production check with `check_opened_at`) reports this phase complete: `summary` (two sentences for the " +
     "architect), and `verdict` pass|pending|fail on a production check report alone (pending: production does not carry the merge " +
@@ -404,6 +414,7 @@ export function legionToolDescription(host: {
     "Without it, the task goes back to the first implementation step before the testing step. " +
     "Only a tester's completion names it (RETURN_TO_NEEDS_FAIL). " +
     "A place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to (RETURN_REFUSED). " +
+    "Beside a running fix, a failed step moves nothing now: the issue is held `fix`, and the fix's end decides where the task goes. " +
     "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
@@ -412,7 +423,10 @@ export function legionToolDescription(host: {
     "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
     "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, a test record naming no head, since the daemon " +
     "reads the check states at the head it names and refuses a tester's completion naming none (TESTED_HEAD_REQUIRED), and, in implementing, an implement record naming no head, an " +
-    "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
+    "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. " +
+    "While a fix runs, the implementer's completion is the fix's, taken at implementing whatever phase the issue stands in. " +
+    "This call then reads `@-` and `legion/<issue>@origin` in `fix.dir`, its working copy, and refuses a fix with no `dir`. " +
+    "A production check report " +
     "names `check_opened_at`, the RFC 3339 opening time in its `Production check of <KEY>` task, with its stored microseconds unchanged. " +
     "Only that field selects a check report, on any phase. Without it the call completes a step. A report carries its verdict and summary, " +
     "no handoff or commit: this tool reads no record first. A pending report names `wake_at` when it asks for another look. " +
@@ -430,10 +444,12 @@ export function legionToolDescription(host: {
     "pull request on `legion/<issue>` and none recorded " +
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
+    "HANDOFF_STALE_ENTRY also refuses a completion of a fix that runs no more: it changed nothing, and its words name the fix. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
     "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
     "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
-    "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
+    "first; beside a running fix, push them to your own branch beside the fix, which your task names, and not to the issue branch. " +
+    "Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
     "before you answer. The daemon replaces the pod and its disk when the round ends. A kept volume stays with its Sandbox " +
     "through the round, but a reset or a change of its disk shape still deletes it, so push first there too. If the daemon " +
     "finds work that origin does not hold, it keeps the pod and says so; push that work. A round over a drift that breaks the " +
@@ -488,8 +504,14 @@ export interface PhaseOpRuntime {
    * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
    * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
    * implementer's record names no head, the commit its workspace stands on is not pushed, or its
-   * record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+   * record's head is not that pushed commit. `dir`, where given, is the directory the report is
+   * found in, in place of the pane's workspace: a running fix's working copy (the record's
+   * `fix.dir`). */
+  readonly handoffReport: (
+    phase: LegionPhase,
+    role: LegionRole,
+    dir?: string
+  ) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A
    * throw leaves the head out of the signal, which is still sent, and the throw's message goes
@@ -951,9 +973,24 @@ async function completeHandoff(
     );
   }
   // The record and the commit are found before the grant is minted. The phase is the issue
-  // record's, the role the claim's.
+  // record's, the role the claim's. A fix runs the task's first implementation step again beside
+  // the step the issue stands at, in a working copy of its own (the record's `fix`): while one
+  // runs, the implementer's completion is the fix's, so its report is the implementing step's,
+  // found in the fix's directory and never in the shared workspace, where `@-` is another
+  // step's. A fix the daemon names no directory for cannot be reported, and is refused before
+  // anything is minted or posted.
   const record = await recordFrom(daemon, claim.issue);
-  const report = await runtime.handoffReport(record.phase, claim.role);
+  const fix = record.fix;
+  const fixes = claim.role === "implementer" && fix !== undefined;
+  if (fixes && fix.dir === undefined) {
+    throw new Error(
+      `${claim.issue} runs a fix, and the daemon names no directory of its working copy, so handoff_complete cannot find the fix's report; nothing was posted; tell the architect`
+    );
+  }
+  const report =
+    fixes && fix.dir !== undefined
+      ? await runtime.handoffReport("implementing", claim.role, fix.dir)
+      : await runtime.handoffReport(record.phase, claim.role);
   return daemon.handoffComplete({
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,

@@ -1343,7 +1343,7 @@
       "outcome": "result",
       "text": [
         "INFRA: 1 finished issues",
-        "INFRA-1 closed 2026-01-02T03:04:05Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 \"The plan fit the work.\" time 1h30m failed steps 1"
+        "INFRA-1 closed 2026-01-02T03:04:05Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 \"The plan fit the work.\" time 1h30m failed steps 1 fixes 1"
       ]
     },
     {
@@ -2024,8 +2024,8 @@
       "outcome": "result",
       "text": [
         "DSP-1: 2 steps in 1 tasks",
-        "default 2 step implementer implementation attempt 1 legion-dsp-dsp-1-implementer anthropic/claude-opus-5 2026-01-02T03:04:05Z 2026-01-02T03:04:05Z passed",
-        "default 3 step tester testing attempt 1 legion-dsp-dsp-1-tester - 2026-01-02T03:04:05Z running running"
+        "default 2 step implementer implementation attempt 1 legion-dsp-dsp-1-implementer anthropic/claude-opus-5 2026-01-02T03:04:05Z 2026-01-02T03:04:05Z passed at 1111111111..1111111111 fix of k-ci",
+        "default 3 step tester testing attempt 1 legion-dsp-dsp-1-tester - 2026-01-02T03:04:05Z running running at 1111111111..-"
       ]
     },
     {

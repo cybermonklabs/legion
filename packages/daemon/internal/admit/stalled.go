@@ -505,6 +505,13 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // a stopped task waits for its owner's next version of the plan or for a person, the tree's own
 // work or a person's (TestAHoldOfAPlanIsNoWaitByDesign).
 //
+// The two holds of a task's end do not silence either: a task held before its retro while its
+// fix runs (fix_running) and one held there until each check a CI job runs passes at its head
+// (ci_at_head). Each stands on an issue in held, which the same rule reads as stopped first, so
+// false says the same as that rule here too. A quiet tree of one is no wait by design: the claim
+// of a running fix keeps its tree at work, and a fix whose claim is idle, or CI that no longer
+// moves, is the stall itself (TestAStalledSweepNamesTheCIHold).
+//
 // A word with no row here fails admit's TestTheMeasureAnswersEveryHeldReason, which reads the
 // words from the record package's own source: a word added to the vocabulary and left out of
 // this table would otherwise be ignored quietly, which is the fault rather than a new place to
@@ -522,6 +529,8 @@ var silencedTree = map[record.HeldReason]bool{
 	record.HeldAcceptedAncestor:    false,
 	record.HeldChildrenBeforeRetro: false,
 	record.HeldTaskStopped:         false,
+	record.HeldFixRunning:          false,
+	record.HeldCIAtHead:            false,
 	record.HeldAtWork:              false,
 	record.HeldUnclassified:        false,
 }

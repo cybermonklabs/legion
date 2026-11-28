@@ -21,7 +21,8 @@ import (
 // (record.PhaseRow.LastHandoff), the phase entry the completing role's current phase is on
 // (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start that raised it
 // moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record, nil while none
-// is recorded, and its production check, nil while none was ever opened.
+// is recorded, its production check, nil while none was ever opened, and, for the implementer, the
+// fix that runs beside the issue's step (runningFix), nil while none runs.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
@@ -33,6 +34,7 @@ type completionPosition struct {
 	lastHandoff    string
 	pullRequest    *record.PullRequest
 	check          *record.ProductionCheck
+	fix            *record.TaskFix
 }
 
 // handoffPosition reads key's position (completionPosition) for the completing role, whose phases
@@ -81,10 +83,36 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		if err != nil {
 			return err
 		}
+		// A fix runs the task's first implementation step again, so it is the implementer's work and
+		// no other role's.
+		var fix *record.TaskFix
+		if role == claim.RoleImplementer {
+			if fix, err = RunningFixOf(ctx, tx, s.records, issue, task); err != nil {
+				return err
+			}
+		}
 		position = completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: counts.Pass,
 			lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
-			pullRequest: pr, check: check}
+			pullRequest: pr, check: check, fix: fix}
 		return nil
 	})
 	return position, err
+}
+
+// RunningFixOf is the fix of issue's running task that runs beside the issue's step, read in tx:
+// the fix the issue record names (record.Issue.RunningFix), in state running with its entry raised
+// on the implementer's phases row, which the task the fix's start queued carries. It is nil while
+// none runs: a fix that still reads its failed job has raised no entry, so no task of it is the
+// implementer's work yet, and an issue with no plan rows (task "") runs no fix. The completion
+// route and the move back read the fix a claim works by it, and the projection the fix the state
+// serves (Issue.Fix), so the three read one fix.
+func RunningFixOf(ctx context.Context, tx pgx.Tx, records record.Store, issue *record.Issue, task string) (*record.TaskFix, error) {
+	if issue.RunningFix == 0 || task == "" {
+		return nil, nil
+	}
+	fix, err := records.RunningFix(ctx, tx, issue.Key, issue.Generation, task)
+	if err != nil || fix == nil || fix.Fix != issue.RunningFix || fix.State != record.FixRunning || fix.Entry == 0 {
+		return nil, err
+	}
+	return fix, nil
 }

@@ -48,7 +48,7 @@ read_dispatch_quiet plans --project "$project"
 
 # Each line after the header is one finished issue, as `dispatch plans` prints it
 # (packages/envoy-client/src/dispatch-commands/plans.ts):
-#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps of the first|->)> ratings … time … failed steps <n>
+#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps of the first|->)> ratings … time … failed steps <n> fixes <n>
 # The awk prints the line of the issue, then the steps of its plan, or the reason it cannot.
 planned=$(awk -v project="$project" -v issue="$issue" '
   function unknown(why) { print why; status = 2; exit status }
@@ -90,6 +90,9 @@ printf '%s\n' "${planned%%$'\n'*}"
 # issue's newest run name an experiment, the line `Experiment <experiment>: variant <variant>.`,
 # and no such line where they name none; then one run per line:
 #   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>
+# then, where the record holds a commit, ` at <start|->..<end|->`, the commits the run's task's
+# head was at when it started and when it ended, and for a fix ` fix of <check>`, the CI check it
+# fixes, which is the rest of the line. The read judges the twelve columns alone.
 # The line `Experiment …` is read only right after the header; anywhere else it is no run.
 awk -v issue="$issue" -v steps="${planned#*$'\n'}" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit status }
@@ -102,7 +105,11 @@ awk -v issue="$issue" -v steps="${planned#*$'\n'}" '
   NF == 0 { next }
   NR == 2 && /^Experiment [a-z0-9-]+: variant [a-z0-9-]+\.$/ { next }
   {
-    if (NF != 12 || $6 != "attempt") unknown("the line is no run: " $0)
+    # tail is what the line prints after its twelfth column, steps.ts joining each with one space.
+    tail = $0
+    for (i = 1; i <= 12; i++) if (!sub(/^[^ ]+ ?/, "", tail)) break
+    if (tail != "") tail = " " tail
+    if (NF < 12 || $6 != "attempt" || tail !~ /^( at ([0-9a-f]+|-)\.\.([0-9a-f]+|-))?( fix of .+)?$/) unknown("the line is no run: " $0)
     runs++
     place = ($3 == "step") ? "step " $2 : "the " $3
     seen[place] = 1

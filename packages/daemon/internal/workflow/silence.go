@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -65,7 +66,7 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if issue.Generation != generation {
 		return nil, nil
 	}
-	if working := OpenPhaseRole(issue.Phase); working == "" || working != role {
+	if !slices.Contains(OpenRoles(*issue), role) {
 		return nil, nil
 	}
 	row, owed, err := PhaseWorkerOwedTurn(ctx, e.store, tx, *issue, role)
@@ -130,6 +131,8 @@ type phaseWorkerReading struct {
 // is what keeps the outbox from delivering a second prompt to a claim that holds its phase's
 // task by the time the start runs (record.SuperviseRequest.ResumeTask). It is built through
 // Engine.started, so it waits for the issue's admission slot as the boot's level start does.
+// The implementer of the fix that runs beside the issue's step is sent the fix's work either way,
+// at the same entry, as a start of the fix that waits for no slot (resumeFix).
 //
 // Neither start marks a movement of the issue (startMarks.reasserts). Both are the daemon
 // re-asserting work the record already owes the worker: nothing outside the daemon happened, and
@@ -150,7 +153,9 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, startMarks{}); err != nil {
 			return err
 		}
-	} else {
+	} else if sent, err := e.resumeFix(ctx, tx, issue, fact.Role, row, 0, startMarks{resumeTask: true}); err != nil {
+		return err
+	} else if !sent {
 		resume, err := e.ResumeTask(ctx, tx, issue)
 		if err != nil {
 			return err
@@ -160,7 +165,7 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 		}
 	}
 	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerSilentNotice, Role: fact.Role, Phase: issue.Phase, Reason: found}); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerSilentNotice, Role: fact.Role, Phase: WorkStanding(issue, fact.Role).Phase, Reason: found}); err != nil {
 		return err
 	}
 	e.warnOnCommit(ctx, "workflow: a phase worker nothing will prompt was found silent; its architect is told",

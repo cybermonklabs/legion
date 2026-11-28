@@ -1457,7 +1457,9 @@ func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChil
 // refuses the tester's move out of testing alike, since a testing step ends by its checks'
 // states (workflow's backwardRefusal), so a move it applies ends the requester's own step — the
 // worker's phase, or accepting, the owning architect's — which apply waits for the requester's
-// stream before.
+// stream before. An implementer's move while its claim serves the entry of the fix that runs
+// beside the issue's step names that fix (workerFix): it is the fix's report of a failure, which
+// the workflow judges as the fix's and not as a move of the phase the issue stands in.
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -1504,8 +1506,62 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		s.writeFailure(w, r, http.StatusBadRequest, "ISSUE_NOT_GRANTS", fmt.Sprintf("a phase worker moves only its own issue %s, not %s", grant.Issue, req.Issue))
 		return
 	}
+	fix, ok := s.workerFix(w, r, grant)
+	if !ok {
+		return
+	}
 	s.applyFact(w, r, requestFactID("phase/backward"),
-		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})
+		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason, Fix: fix}, PhaseBackwardResponse{})
+}
+
+// workerFix is the fix a phase worker's move back ends (intake.BackwardMove.Fix), 0 for a move of
+// no fix: the implementer's claim serves the entry of the fix that runs beside its issue's step
+// (runningFix), the entry the fix raised and its task carries, as the completion route reads a
+// fix's completion. Every other role, an implementer whose claim serves another entry and a claim
+// the daemon supervises no machine for move no fix, and the workflow judges each as before. A
+// failed read is answered 500 RECORD_UNAVAILABLE; a daemon that holds no record leaves the fix
+// unread, and applyFact answers the move as it answers every fact there.
+func (s *server) workerFix(w http.ResponseWriter, r *http.Request, grant credential.Grant) (int, bool) {
+	if grant.Role != claim.RoleImplementer || s.pool == nil || s.records == nil {
+		return 0, true
+	}
+	machine, running := s.supervisor.Machine(grant.Claim)
+	if !running {
+		return 0, true
+	}
+	fix, err := s.issueFix(r.Context(), grant.Issue)
+	if err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the fix the issue runs")
+		return 0, false
+	}
+	if fix == nil || machine.Claim().ServingEntry() != fix.Entry {
+		return 0, true
+	}
+	return fix.Fix, true
+}
+
+// issueFix is the fix that runs beside key's step (runningFix), read with the issue record and its
+// running task in one read-only transaction: nil where the record holds no such issue, the issue
+// has no plan rows or no fix runs.
+func (s *server) issueFix(ctx context.Context, key string) (*record.TaskFix, error) {
+	var fix *record.TaskFix
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := s.records.Issue(ctx, tx, key)
+		if err != nil || issue == nil || issue.RunningFix == 0 {
+			return err
+		}
+		stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
+		if err != nil || stored == nil {
+			return err
+		}
+		running, err := stored.Task()
+		if err != nil {
+			return err
+		}
+		fix, err = RunningFixOf(ctx, tx, s.records, issue, running.Task)
+		return err
+	})
+	return fix, err
 }
 
 func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {

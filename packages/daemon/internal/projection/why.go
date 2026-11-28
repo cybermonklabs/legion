@@ -328,11 +328,12 @@ func atWorkInSlotlessPhase(issue record.Issue, running map[string]struct{}) bool
 
 // heldSentences is the sentence table of `why`'s held words: for each word of record.HeldReason
 // that `why` can serve, the states it serves the word under (states) and the sentence it serves
-// (sentence), rendered over heldBy, the issues of the row record.HeldList published for the
-// issue, joined by englishIssues. It is the one statement of the rule below; whyStates reads it
-// in both arms that serve a held word, through heldReason (heldWordReason). The design gate's
-// word is the one exception to the table's sentence: a tree whose root holds a step on an
-// ancestor's approval reads basisGateReason instead.
+// (sentence), rendered over heldBy, what holds the issue in the row record.HeldList published for
+// it (issues, save the check and the head, or the checks, of a task's end: record.HeldIssue),
+// joined by englishIssues. It is the one statement of the rule below; whyStates reads it in both
+// arms that serve a held word, through heldReason (heldWordReason). The design gate's word is the
+// one exception to the table's sentence: a tree whose root holds a step on an ancestor's approval
+// reads basisGateReason instead.
 //
 // The arms. A blocked issue (api.WhyBlocked) reads one of three sentences, in this order. First,
 // a child whose own blocked_by link holds it under an ancestor in its tree (a children-first
@@ -410,6 +411,22 @@ var heldSentences = map[record.HeldReason]heldSentence{
 	record.HeldTaskStopped: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
 		return "Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs " +
 			"until a later version of its plan changes the task (register_plan) or, on a root, a person sets it todo; a retry of its hold starts none."
+	}},
+	record.HeldFixRunning: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(heldBy string) string {
+		started := ""
+		if heldBy != "" {
+			started = ", started for the check and the head " + heldBy
+		}
+		return "It passed the last step of its task, so the daemon holds it before its retro while a fix of its task reads its failed job or runs" +
+			started + ". Its retro does not start while the fix runs."
+	}},
+	record.HeldCIAtHead: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(heldBy string) string {
+		waits := "; the daemon holds no set of checks at that head yet"
+		if heldBy != "" {
+			waits = "; these have not passed there yet: " + heldBy
+		}
+		return "It passed the last step of its task, so the daemon holds it before its retro until each check a CI job runs passes at its task's head" +
+			waits + ". Its retro does not start while one of them has not passed."
 	}},
 	record.HeldAtWork: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
 		return "It stands in a phase that keeps no admission slot, and the waiting line does not carry it: " +

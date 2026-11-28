@@ -310,9 +310,10 @@ type EnumeratedValue struct {
 // at its own field's arrival. An entry writes each value it adds to an older field in its own
 // file (contracts.go's enumeratedValues): the gate-basis entry adds `awaiting_children` to a held
 // row's `reason` and to an issue's `phase`, `heldFrom` and `pendingTask.phase`, and
-// `open_on_basis` and `pending_on_basis` to `gatedSteps[].status`. (`suspendedBy` gained
-// `released` at 48 and is no row here: the operator claim answers carry it and no plugin parses
-// them.)
+// `open_on_basis` and `pending_on_basis` to `gatedSteps[].status`, and the fix-beside-review
+// entry adds `fix` and `ci` to an issue's `holdReason` and `fix_running` and `ci_at_head` to a
+// held row's `reason`. (`suspendedBy` gained `released` at 48 and is no row here: the operator
+// claim answers carry it and no plugin parses them.)
 func EnumeratedFields() []EnumeratedField { return registry().enumeratedFields }
 
 // enumeratedFields is every row the numbered entries wrote: the state's own, the record's taken
@@ -482,12 +483,14 @@ var stateEnumeratedFields = []EnumeratedField{
 	// `unclassified` below that contract (shaping.go's withoutUnadmittedHeldWords); and
 	// `awaiting_children` arrived at gateBasisContract, and a row of it is served as
 	// `children_first` below that contract, the one word the strip stands another in for
-	// (shaping.go's heldReasonStandIn).
+	// (shaping.go's heldReasonStandIn); and `fix_running` and `ci_at_head` arrived at
+	// FixBesideReviewContract, and a row of either is served as `unclassified` below it.
 	{Answer: AnswerState, KeyPath: "admission.held.*.reason", Values: heldReasons},
 	// `holdReason` of a held issue, why it is held (api.Issue.HoldReason, record.HoldReason).
 	// Older than the floor, and read with a literal of its one value until OwnerPlanContract,
-	// which added `task-stopped` and `children`; an issue held for either is served without
-	// its `holdReason` below that contract (shaping.go's withoutUnadmittedHoldReason).
+	// which added `task-stopped` and `children`; the fix-beside-review entry adds `fix` and `ci`
+	// in its own file. An issue held for a reason is served without its `holdReason` below the
+	// contract that reason arrived at (shaping.go's withoutUnadmittedHoldReason).
 	{Answer: AnswerState, KeyPath: "issues.*.holdReason", Values: holdReasons},
 	// `reason` of one open give-up of the intake, why it gave the message up (api.IntakeGiveUpView,
 	// record.IntakeGiveUpReason). It arrived with `intakeGiveUps`, which is served down below that
@@ -636,7 +639,9 @@ var lineKinds = []EnumeratedValue{
 // `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219). So
 // it is written out value by value, sorted by value, as waitAnswers is. The gate-basis entry adds
 // `awaiting_children`, a parent waiting on its open children (record.HeldAwaitingChildren), in its
-// own file. It names each constant rather than
+// own file, and the fix-beside-review entry adds `fix_running`, a task held before its retro while
+// its fix runs, and `ci_at_head`, a task held before its retro until each check a CI job runs
+// passes at its head, in its own. It names each constant rather than
 // reading record.HeldReasons, because a word added to the ladder later arrives at its own
 // contract.
 var heldReasons = []EnumeratedValue{
@@ -658,7 +663,10 @@ var heldReasons = []EnumeratedValue{
 // holdReasons is every reason an issue's hold can carry (record.HoldReason). `escalated` is older
 // than the floor; `children`, a parent whose last step is not the owner's acceptance, waiting before its retro
 // for the issues beneath it, and `task-stopped`, a task its owner stopped, arrived at
-// OwnerPlanContract. Written out value by value, sorted by value, as waitAnswers is.
+// OwnerPlanContract. Written out value by value, sorted by value, as waitAnswers is. The
+// fix-beside-review entry adds `fix`, an issue waiting before its retro for a fix of its task that
+// runs, and `ci`, one waiting before its retro until each check a CI job runs passes at its head,
+// in its own file.
 var holdReasons = []EnumeratedValue{
 	{Value: string(record.HoldForChildren), Since: OwnerPlanContract},
 	{Value: string(record.HoldEscalated), Since: ServingFloor},

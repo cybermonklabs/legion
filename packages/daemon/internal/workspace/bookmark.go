@@ -438,7 +438,8 @@ func ownCommitsRevset(workspaceName string) string {
 // (rolefile.RemoveTree), which a kill can interrupt partway through a large tree.
 const removingSuffix = ".removing"
 
-// removingPath is where Remove renames workspace.Dir to before deleting it.
+// removingPath is where Remove renames each directory it removes to before deleting it: the
+// issue's workspace, and the working copy of a fix beside it.
 func removingPath(dir string) string { return dir + removingSuffix }
 
 // Remove ports workspace.ts's removeIssueWorkspace, with one addition: the workspace directory is
@@ -449,6 +450,13 @@ func removingPath(dir string) string { return dir + removingSuffix }
 // colocated worktree of a directory already gone, so Remove deletes that entry itself, also when
 // the workspace is neither registered nor present (a crash after the forget). workspace is
 // Location's, which names the clone; any other is refused before anything is removed.
+//
+// It takes two working copies of the clone out of it, in this order: the issue's workspace and
+// the working copy of a fix of its task beside it (FixDir). That copy is a workspace of the same
+// clone, which the shim's adoption adds and nothing else removes, and it is the issue's as much
+// as the workspace is: left behind, it holds the commits of a fix of an issue that no longer has
+// a workspace, and the next provisioning and the next fix of that issue find a copy of a dead
+// fix registered at that name. A clone with no such copy leaves its half of this nothing to do.
 //
 // store is the repository's store lock, the one a provision is handed as Request.StoreLock (nil
 // holds nothing). Remove holds it for every command on the shared clone, the rename aside and the
@@ -467,43 +475,63 @@ func Remove(ctx context.Context, run Runner, workspace Workspace, store sync.Loc
 	// again later, or a previous pass's delete itself never ran): cleared before the rename so it
 	// never refuses with "already exists", and before the store lock, since it holds nothing of the
 	// clone's.
-	aside := removingPath(workspace.Dir)
-	if err := rolefile.RemoveTree(aside); err != nil {
-		return fmt.Errorf("clear a stale removal-in-progress directory: %w", err)
+	dirs := []string{workspace.Dir, FixDir(workspace.Dir)}
+	for _, dir := range dirs {
+		if err := rolefile.RemoveTree(removingPath(dir)); err != nil {
+			return fmt.Errorf("clear a stale removal-in-progress directory: %w", err)
+		}
 	}
 	held := &storeLock{locker: store}
 	held.lock()
 	defer held.unlock()
-	cloneDir, workspaceName := workspace.Clone, filepath.Base(workspace.Dir)
+	cloneDir := workspace.Clone
 	cloneExists, err := pathExists(filepath.Join(cloneDir, ".jj"))
 	if err != nil {
 		return err
 	}
-	registered := false
-	var commits []string
+	var registered []string
 	if cloneExists {
 		listed, err := runCheckedOnClone(ctx, run, cloneDir, "workspace", "list", "-T", `name ++ "\n"`)
 		if err != nil {
 			return err
 		}
-		for _, name := range nonEmptyLines(listed.Stdout) {
-			if name == workspaceName {
-				registered = true
-				break
-			}
+		registered = nonEmptyLines(listed.Stdout)
+	}
+	for _, dir := range dirs {
+		if err := removeFromClone(ctx, run, cloneDir, dir, cloneExists, slices.Contains(registered, filepath.Base(dir))); err != nil {
+			return err
 		}
 	}
+	held.unlock()
+	for _, dir := range dirs {
+		if err := rolefile.RemoveTree(removingPath(dir)); err != nil {
+			return fmt.Errorf("remove workspace directory: %w", err)
+		}
+	}
+	return nil
+}
+
+// removeFromClone takes one working copy of the clone at cloneDir out of it, with the store lock
+// held: the commits no other working copy, bookmark, remote or tag holds (ownCommitsRevset), its
+// registration, and the git worktree entry of its directory, with the directory renamed aside
+// first (removingPath) for the caller to delete once the lock is free. cloneExists says whether
+// the clone is there to read at all, and registered whether the clone still registers a workspace
+// of this directory's name, which the caller reads once for every directory it removes. A
+// directory that is neither registered nor present leaves the entry alone to delete, which is the
+// shape a crash after the forget leaves.
+func removeFromClone(ctx context.Context, run Runner, cloneDir, dir string, cloneExists, registered bool) error {
+	var commits []string
 	if registered {
-		own, err := runCheckedOnClone(ctx, run, cloneDir, "log", "-r", ownCommitsRevset(workspaceName), "--no-graph", "-T", `commit_id ++ "\n"`)
+		own, err := runCheckedOnClone(ctx, run, cloneDir, "log", "-r", ownCommitsRevset(filepath.Base(dir)), "--no-graph", "-T", `commit_id ++ "\n"`)
 		if err != nil {
 			return err
 		}
 		commits = nonEmptyLines(own.Stdout)
 	}
-	if present, err := pathExists(workspace.Dir); err != nil {
+	if present, err := pathExists(dir); err != nil {
 		return err
 	} else if present {
-		if err := os.Rename(workspace.Dir, aside); err != nil {
+		if err := os.Rename(dir, removingPath(dir)); err != nil {
 			return fmt.Errorf("rename workspace directory aside before removing it: %w", err)
 		}
 	}
@@ -513,18 +541,14 @@ func Remove(ctx context.Context, run Runner, workspace Workspace, store sync.Loc
 				return err
 			}
 		}
-		if _, err := runCheckedOnClone(ctx, run, cloneDir, "workspace", "forget", workspaceName); err != nil {
+		if _, err := runCheckedOnClone(ctx, run, cloneDir, "workspace", "forget", filepath.Base(dir)); err != nil {
 			return err
 		}
 	}
 	if cloneExists {
-		if err := removeGitWorktree(cloneDir, workspace.Dir); err != nil {
+		if err := removeGitWorktree(cloneDir, dir); err != nil {
 			return err
 		}
-	}
-	held.unlock()
-	if err := rolefile.RemoveTree(aside); err != nil {
-		return fmt.Errorf("remove workspace directory: %w", err)
 	}
 	return nil
 }

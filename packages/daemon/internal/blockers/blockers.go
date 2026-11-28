@@ -420,7 +420,10 @@ func startedWaits(rows map[string]Row, issues []record.Issue, started map[string
 // only the keys it does not hold, so a pass that reads the line twice makes one mirror read in
 // all. The facts come back with the held set, the child waits and the started issues' waits
 // filled, so the release, the promotion, the architect's notice and the state's `blocked` all
-// answer from the one judgement.
+// answer from the one judgement. They come back with what holds each task's end as well
+// (record.LineFacts.EndHolds, record.EndHoldsOf), which only the held rows name: it is read once
+// for a set of facts, so a later judgement of the same pass that is handed them reads it no more,
+// since nothing an admission pass writes moves a fix or the state of a check.
 // slots is the caller's own read of the slots table, which record.Waiting reads as the set of
 // issues already holding one.
 //
@@ -460,6 +463,11 @@ func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project strin
 	}
 	facts.Held = HeldIssues(rows, issues)
 	facts.ChildWaits = record.ChildWaitsOf(facts)
+	if facts.EndHolds == nil {
+		if facts.EndHolds, err = record.EndHoldsOf(ctx, tx, store, issues); err != nil {
+			return rows, facts, nil, nil, fmt.Errorf("read what holds the end of each task of %s: %w", project, err)
+		}
+	}
 	facts.Waits = startedWaits(rows, issues, started, facts)
 	line, held := record.Waiting(issues, slots, facts)
 	rows, err = loadMissing(ctx, tx, store, project, Judged(issues, record.WaitingIssues(line)), rows)
