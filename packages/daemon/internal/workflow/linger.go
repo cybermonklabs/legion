@@ -197,9 +197,6 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if current == nil || current.Phase != phase.Verifying {
 			continue
 		}
-		if err := e.askCloseRead(ctx, tx, *current); err != nil {
-			return err
-		}
 		if err := e.judgeClose(ctx, tx, *current); err != nil {
 			return err
 		}
