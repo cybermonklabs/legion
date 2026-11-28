@@ -1,9 +1,9 @@
 {
-  "commit": "b6b199e50ce9b5742178717dca3aca6f31365eca",
+  "commit": "be82379a05f9b62d5e6bba8e440f62e6314f87b6",
   "format": 4,
   "parts": [
-    "9223b587fd4689b580c00ba73c779b0306a1be01",
-    "b6b199e50ce9b5742178717dca3aca6f31365eca",
+    "a5bd76db81d8fdaa653434fc589a634b1d4c14a9",
+    "be82379a05f9b62d5e6bba8e440f62e6314f87b6",
     "e18d2df4f6b3213f7774eff779db623dc29f8062"
   ],
   "view": "spec",
@@ -27,33 +27,28 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[9]",
+              "name": "children[6]",
               "ranks": {
                 "key": 0
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[9]}\":\n    - /url: /issues/{children[9]}\n  - text: \"Child 10: the plan's chart reads the next page only when the reader presses for itIn progress · Blocked by\"\n  - link \"{children[11]}\":\n    - /url: /issues/{children[11]}",
+          "aria": "- listitem:\n  - link \"{children[6]}\":\n    - /url: /issues/{children[6]}\n  - text: \"Child 7: the reply line names the next page only when the reader presses for itDone\"",
           "hidden": [],
-          "key": "{children[9]}",
+          "key": "{children[6]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[9]}", "/issues/{children[11]}"],
+          "links": ["/issues/{children[6]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[9]}",
-              "role": null,
-              "tag": "a"
-            },
-            {
-              "name": "{children[11]}",
+              "name": "{children[6]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[9]} Child 10: the plan's chart reads the next page only when the reader presses for itIn progress · Blocked by {children[11]}"
+          "words": "{children[6]} Child 7: the reply line names the next page only when the reader presses for itDone"
         },
         {
           "address": null,
@@ -86,36 +81,9 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[11]",
-              "ranks": {
-                "key": 2
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[11]}\":\n    - /url: /issues/{children[11]}\n  - text: \"Child 12: each page of comments keeps every node the answer holds, in the order the read givesTriage\"",
-          "hidden": [],
-          "key": "{children[11]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[11]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[11]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[11]} Child 12: each page of comments keeps every node the answer holds, in the order the read givesTriage"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
               "name": "children[7]",
               "ranks": {
-                "key": 3
+                "key": 2
               }
             }
           ],
@@ -140,9 +108,68 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[12]",
+              "name": "children[9]",
+              "ranks": {
+                "key": 3
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[9]}\":\n    - /url: /issues/{children[9]}\n  - text: \"Child 10: the plan's chart reads the next page only when the reader presses for itIn progress · Blocked by\"\n  - link \"{children[11]}\":\n    - /url: /issues/{children[11]}",
+          "hidden": [],
+          "key": "{children[9]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[9]}", "/issues/{children[11]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[9]}",
+              "role": null,
+              "tag": "a"
+            },
+            {
+              "name": "{children[11]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[9]} Child 10: the plan's chart reads the next page only when the reader presses for itIn progress · Blocked by {children[11]}"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[17]",
               "ranks": {
                 "key": 4
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[17]}\":\n    - /url: /issues/{children[17]}\n  - text: \"Child 18: the reply line reads every node the answer holds, in the order the read givesDone\"",
+          "hidden": [],
+          "key": "{children[17]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[17]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[17]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[17]} Child 18: the reply line reads every node the answer holds, in the order the read givesDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[12]",
+              "ranks": {
+                "key": 5
               }
             }
           ],
@@ -162,33 +189,6 @@
             }
           ],
           "words": "{children[12]} Child 13: a folded branch orders the next page only when the reader presses for itDone"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[16]",
-              "ranks": {
-                "key": 5
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[16]}\":\n    - /url: /issues/{children[16]}\n  - text: \"Child 17: the verification filter pages one row for each statement, with its checks under itTesting\"",
-          "hidden": [],
-          "key": "{children[16]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[16]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[16]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[16]} Child 17: the verification filter pages one row for each statement, with its checks under itTesting"
         },
         {
           "address": null,
@@ -226,28 +226,28 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[17]",
+              "name": "children[13]",
               "ranks": {
                 "key": 7
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[17]}\":\n    - /url: /issues/{children[17]}\n  - text: \"Child 18: the reply line reads every node the answer holds, in the order the read givesDone\"",
+          "aria": "- listitem:\n  - link \"{children[13]}\":\n    - /url: /issues/{children[13]}\n  - text: \"Child 14: the first load counts one row for each statement, with its checks under itBacklog\"",
           "hidden": [],
-          "key": "{children[17]}",
+          "key": "{children[13]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[17]}"],
+          "links": ["/issues/{children[13]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[17]}",
+              "name": "{children[13]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[17]} Child 18: the reply line reads every node the answer holds, in the order the read givesDone"
+          "words": "{children[13]} Child 14: the first load counts one row for each statement, with its checks under itBacklog"
         },
         {
           "address": null,
@@ -280,28 +280,28 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[13]",
+              "name": "children[16]",
               "ranks": {
                 "key": 9
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[13]}\":\n    - /url: /issues/{children[13]}\n  - text: \"Child 14: the first load counts one row for each statement, with its checks under itBacklog\"",
+          "aria": "- listitem:\n  - link \"{children[16]}\":\n    - /url: /issues/{children[16]}\n  - text: \"Child 17: the verification filter pages one row for each statement, with its checks under itTesting\"",
           "hidden": [],
-          "key": "{children[13]}",
+          "key": "{children[16]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[13]}"],
+          "links": ["/issues/{children[16]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[13]}",
+              "name": "{children[16]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[13]} Child 14: the first load counts one row for each statement, with its checks under itBacklog"
+          "words": "{children[16]} Child 17: the verification filter pages one row for each statement, with its checks under itTesting"
         },
         {
           "address": null,
@@ -334,9 +334,36 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[18]",
+              "name": "children[21]",
               "ranks": {
                 "key": 11
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[21]}\":\n    - /url: /issues/{children[21]}\n  - text: \"Child 22: the tree read counts the next page only when the reader presses for itDone\"",
+          "hidden": [],
+          "key": "{children[21]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[21]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[21]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[21]} Child 22: the tree read counts the next page only when the reader presses for itDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[18]",
+              "ranks": {
+                "key": 12
               }
             }
           ],
@@ -356,33 +383,6 @@
             }
           ],
           "words": "{children[18]} Child 19: the outline holds the next page only when the reader presses for itIn progress"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[23]",
-              "ranks": {
-                "key": 12
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[23]}\":\n    - /url: /issues/{children[23]}\n  - text: \"Child 24: a folded branch draws every node the answer holds, in the order the read givesNeeds review\"",
-          "hidden": [],
-          "key": "{children[23]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[23]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[23]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[23]} Child 24: a folded branch draws every node the answer holds, in the order the read givesNeeds review"
         },
         {
           "address": null,
@@ -415,9 +415,36 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[20]",
+              "name": "children[19]",
               "ranks": {
                 "key": 14
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[19]}\":\n    - /url: /issues/{children[19]}\n  - text: \"Child 20: the contents pane keeps one row for each statement, with its checks under itDone\"",
+          "hidden": [],
+          "key": "{children[19]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[19]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[19]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[19]} Child 20: the contents pane keeps one row for each statement, with its checks under itDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[20]",
+              "ranks": {
+                "key": 15
               }
             }
           ],
@@ -447,136 +474,114 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[21]",
-              "ranks": {
-                "key": 15
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[21]}\":\n    - /url: /issues/{children[21]}\n  - text: \"Child 22: the tree read counts the next page only when the reader presses for itDone\"",
-          "hidden": [],
-          "key": "{children[21]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[21]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[21]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[21]} Child 22: the tree read counts the next page only when the reader presses for itDone"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[19]",
+              "name": "children[23]",
               "ranks": {
                 "key": 16
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[19]}\":\n    - /url: /issues/{children[19]}\n  - text: \"Child 20: the contents pane keeps one row for each statement, with its checks under itDone\"",
+          "aria": "- listitem:\n  - link \"{children[23]}\":\n    - /url: /issues/{children[23]}\n  - text: \"Child 24: a folded branch draws every node the answer holds, in the order the read givesNeeds review\"",
           "hidden": [],
-          "key": "{children[19]}",
+          "key": "{children[23]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[19]}"],
+          "links": ["/issues/{children[23]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[19]}",
+              "name": "{children[23]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[19]} Child 20: the contents pane keeps one row for each statement, with its checks under itDone"
+          "words": "{children[23]} Child 24: a folded branch draws every node the answer holds, in the order the read givesNeeds review"
         },
         {
           "address": null,
           "anchors": [
             {
-              "name": "children[25]",
+              "name": "children[26]",
               "ranks": {
                 "key": 17
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[25]}\":\n    - /url: /issues/{children[25]}\n  - text: \"Child 26: the children's section reads one row for each statement, with its checks under itTesting\"",
+          "aria": "- listitem:\n  - link \"{children[26]}\":\n    - /url: /issues/{children[26]}\n  - text: \"Child 27: the view row holds every node the answer holds, in the order the read givesDone\"",
           "hidden": [],
-          "key": "{children[25]}",
+          "key": "{children[26]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[25]}"],
+          "links": ["/issues/{children[26]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[25]}",
+              "name": "{children[26]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[25]} Child 26: the children's section reads one row for each statement, with its checks under itTesting"
+          "words": "{children[26]} Child 27: the view row holds every node the answer holds, in the order the read givesDone"
         },
         {
           "address": null,
           "anchors": [
             {
-              "name": "children[24]",
+              "name": "children[27]",
               "ranks": {
                 "key": 18
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[24]}\":\n    - /url: /issues/{children[24]}\n  - text: \"Child 25: the first load pages the next page only when the reader presses for itDone\"",
+          "aria": "- listitem:\n  - link \"{children[27]}\":\n    - /url: /issues/{children[27]}\n  - text: \"Child 28: the verification filter keeps the next page only when the reader presses for itIn progress · Blocked by\"\n  - link \"{children[23]}\":\n    - /url: /issues/{children[23]}",
           "hidden": [],
-          "key": "{children[24]}",
+          "key": "{children[27]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[24]}"],
+          "links": ["/issues/{children[27]}", "/issues/{children[23]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[24]}",
+              "name": "{children[27]}",
+              "role": null,
+              "tag": "a"
+            },
+            {
+              "name": "{children[23]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[24]} Child 25: the first load pages the next page only when the reader presses for itDone"
+          "words": "{children[27]} Child 28: the verification filter keeps the next page only when the reader presses for itIn progress · Blocked by {children[23]}"
         },
         {
           "address": null,
           "anchors": [
             {
-              "name": "children[28]",
+              "name": "children[29]",
               "ranks": {
                 "key": 19
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[28]}\":\n    - /url: /issues/{children[28]}\n  - text: \"Child 29: the reply line orders one row for each statement, with its checks under itDone\"",
+          "aria": "- listitem:\n  - link \"{children[29]}\":\n    - /url: /issues/{children[29]}\n  - text: \"Child 30: the outline counts every node the answer holds, in the order the read givesTriage\"",
           "hidden": [],
-          "key": "{children[28]}",
+          "key": "{children[29]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[28]}"],
+          "links": ["/issues/{children[29]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[28]}",
+              "name": "{children[29]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[28]} Child 29: the reply line orders one row for each statement, with its checks under itDone"
+          "words": "{children[29]} Child 30: the outline counts every node the answer holds, in the order the read givesTriage"
         },
         {
           "address": "/issues/{key}#b-r2",
@@ -584,8 +589,8 @@
             {
               "name": "ask \"Should the view row keeps the first 50 children of a node and a control for the rest?\"",
               "ranks": {
-                "closed": 2,
-                "made": 0
+                "closed": 1,
+                "made": 2
               }
             }
           ],
@@ -606,8 +611,8 @@
             {
               "name": "ask \"Should the view row keeps the first 50 children of a node and a control for the rest?\"",
               "ranks": {
-                "closed": 2,
-                "made": 0
+                "closed": 1,
+                "made": 2
               }
             }
           ],
@@ -621,72 +626,6 @@
           "tabStop": false,
           "tabStops": [],
           "words": "The Contents pane names a child's status, what blocks it and who holds it, whatever the size of the issue.2 checks"
-        },
-        {
-          "address": "/issues/{key}#b-r6",
-          "anchors": [
-            {
-              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
-              "ranks": {
-                "closed": 0,
-                "made": 1
-              }
-            }
-          ],
-          "aria": "- treeitem \"A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width. 3 checks\" [level=1]:\n  - paragraph: A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width.\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r6",
-          "hidden": [],
-          "key": "spec#b-r6",
-          "kind": "requirement",
-          "level": 1,
-          "links": ["/issues/{key}/verification#b-r6"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width.3 checks"
-        },
-        {
-          "address": "/issues/{key}#b-r9",
-          "anchors": [
-            {
-              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
-              "ranks": {
-                "closed": 0,
-                "made": 1
-              }
-            }
-          ],
-          "aria": "- treeitem \"The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue. 4 checks\" [level=1]:\n  - paragraph: The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue.\n  - link \"4 checks\":\n    - /url: /issues/{key}/verification#b-r9",
-          "hidden": [],
-          "key": "spec#b-r9",
-          "kind": "requirement",
-          "level": 1,
-          "links": ["/issues/{key}/verification#b-r9"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue.4 checks"
-        },
-        {
-          "address": "/issues/{key}#b-r11",
-          "anchors": [
-            {
-              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
-              "ranks": {
-                "closed": 0,
-                "made": 1
-              }
-            }
-          ],
-          "aria": "- treeitem \"The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue. 3 checks\" [level=1]:\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue.\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r11",
-          "hidden": [],
-          "key": "spec#b-r11",
-          "kind": "requirement",
-          "level": 1,
-          "links": ["/issues/{key}/verification#b-r11"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue.3 checks"
         },
         {
           "address": "/issues/{key}#b-r10",
@@ -777,12 +716,100 @@
           "words": "A folded branch holds the questions that wait on the reader before anything else, whatever the size of the issue.3 checks"
         },
         {
+          "address": "/issues/{key}#b-r6",
+          "anchors": [
+            {
+              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
+              "ranks": {
+                "closed": 4,
+                "made": 4
+              }
+            }
+          ],
+          "aria": "- treeitem \"A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width. 3 checks\" [level=1]:\n  - paragraph: A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width.\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r6",
+          "hidden": [],
+          "key": "spec#b-r6",
+          "kind": "requirement",
+          "level": 1,
+          "links": ["/issues/{key}/verification#b-r6"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width.3 checks"
+        },
+        {
+          "address": "/issues/{key}#b-r9",
+          "anchors": [
+            {
+              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
+              "ranks": {
+                "closed": 4,
+                "made": 4
+              }
+            }
+          ],
+          "aria": "- treeitem \"The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue. 4 checks\" [level=1]:\n  - paragraph: The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue.\n  - link \"4 checks\":\n    - /url: /issues/{key}/verification#b-r9",
+          "hidden": [],
+          "key": "spec#b-r9",
+          "kind": "requirement",
+          "level": 1,
+          "links": ["/issues/{key}/verification#b-r9"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue.4 checks"
+        },
+        {
+          "address": "/issues/{key}#b-r11",
+          "anchors": [
+            {
+              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
+              "ranks": {
+                "closed": 4,
+                "made": 4
+              }
+            }
+          ],
+          "aria": "- treeitem \"The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue. 3 checks\" [level=1]:\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue.\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r11",
+          "hidden": [],
+          "key": "spec#b-r11",
+          "kind": "requirement",
+          "level": 1,
+          "links": ["/issues/{key}/verification#b-r11"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue.3 checks"
+        },
+        {
+          "address": "/issues/{key}#b-r12",
+          "anchors": [
+            {
+              "name": "ask \"Should the reply line draws a child's status, what blocks it and who holds it?\"",
+              "ranks": {
+                "closed": 10,
+                "made": 7
+              }
+            }
+          ],
+          "aria": "- treeitem \"The children's section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width. No plan task 3 checks\" [level=1]:\n  - paragraph: The children's section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width.\n  - text: No plan task\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r12",
+          "hidden": [],
+          "key": "spec#b-r12",
+          "kind": "requirement",
+          "level": 1,
+          "links": ["/issues/{key}/verification#b-r12"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "The children's section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width.No plan task3 checks"
+        },
+        {
           "address": "/issues/{key}#b-r33",
           "anchors": [
             {
               "name": "ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"",
               "ranks": {
-                "closed": 7,
+                "closed": 11,
                 "made": 9
               }
             }
@@ -799,34 +826,12 @@
           "words": "The tree read holds one row for each statement, with its checks under it, whatever the size of the issue.2 checks"
         },
         {
-          "address": "/issues/{key}#b-r12",
-          "anchors": [
-            {
-              "name": "ask \"Should the reply line draws a child's status, what blocks it and who holds it?\"",
-              "ranks": {
-                "closed": 10,
-                "made": 11
-              }
-            }
-          ],
-          "aria": "- treeitem \"The children's section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width. No plan task 3 checks\" [level=1]:\n  - paragraph: The children's section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width.\n  - text: No plan task\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r12",
-          "hidden": [],
-          "key": "spec#b-r12",
-          "kind": "requirement",
-          "level": 1,
-          "links": ["/issues/{key}/verification#b-r12"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "The children's section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width.No plan task3 checks"
-        },
-        {
           "address": "/issues/{key}#b-r38",
           "anchors": [
             {
               "name": "ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"",
               "ranks": {
-                "closed": 16,
+                "closed": 14,
                 "made": 14
               }
             }
@@ -848,7 +853,7 @@
             {
               "name": "ask \"Should the children's section draws the 200 newest comments and the position of the oldest?\"",
               "ranks": {
-                "closed": 17,
+                "closed": 16,
                 "made": 16
               }
             }
@@ -870,7 +875,7 @@
             {
               "name": "ask \"Should the children's section draws the 200 newest comments and the position of the oldest?\"",
               "ranks": {
-                "closed": 17,
+                "closed": 16,
                 "made": 16
               }
             }
@@ -892,8 +897,8 @@
             {
               "name": "ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"",
               "ranks": {
-                "closed": 22,
-                "made": 19
+                "closed": 21,
+                "made": 18
               }
             }
           ],
@@ -914,7 +919,7 @@
             {
               "name": "posts[1]",
               "ranks": {
-                "made": 27
+                "made": 25
               }
             }
           ],
@@ -955,7 +960,7 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The plan's chart draws the questions that wait on the reader before anything else, whatever the size of the issue. The tree read pages the 200 newest comments and the position of the oldest at every width.because: “Decision 1: The Contents pane names a child's status, what blocks it and who holds it Each page of…” — {day} · informed by Decision 13: The reply line… · {day}, Decision 19: The Verification… · {day}, Decision 25: The view row names… · {day}, Decision 7: The outline pages… · 27 Nov4 checks"
+          "words": "The plan's chart draws the questions that wait on the reader before anything else, whatever the size of the issue. The tree read pages the 200 newest comments and the position of the oldest at every width.because: “Decision 1: The Contents pane names a child's status, what blocks it and who holds it Each page of…” — {day} · informed by Decision 13: The reply line… · {day}, Decision 19: The Verification… · {day}, Decision 25: The view row names… · {day}, Decision 7: The outline pages… · {day}4 checks"
         },
         {
           "address": "/issues/{key}#b-r23",
@@ -963,7 +968,7 @@
             {
               "name": "posts[11]",
               "ranks": {
-                "made": 58
+                "made": 54
               }
             }
           ],
@@ -984,7 +989,7 @@
             {
               "name": "posts[9]",
               "ranks": {
-                "made": 59
+                "made": 58
               }
             }
           ],
@@ -1005,7 +1010,7 @@
             {
               "name": "posts[14]",
               "ranks": {
-                "made": 87
+                "made": 85
               }
             }
           ],
@@ -1047,7 +1052,7 @@
             {
               "name": "posts[29]",
               "ranks": {
-                "made": 115
+                "made": 117
               }
             }
           ],
@@ -1068,7 +1073,7 @@
             {
               "name": "posts[24]",
               "ranks": {
-                "made": 117
+                "made": 118
               }
             }
           ],
@@ -1089,7 +1094,7 @@
             {
               "name": "posts[34]",
               "ranks": {
-                "made": 135
+                "made": 136
               }
             }
           ],
@@ -1110,7 +1115,7 @@
             {
               "name": "posts[39]",
               "ranks": {
-                "made": 153
+                "made": 152
               }
             }
           ],
@@ -1152,7 +1157,7 @@
             {
               "name": "posts[49]",
               "ranks": {
-                "made": 181
+                "made": 180
               }
             }
           ],
@@ -1242,7 +1247,7 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The view row orders one row for each statement, with its checks under it, whatever the size of the issue.because: “Decision 14: The view row reads the words of a row whole, with no cut at six lines The Contents pane…” — {day} · informed by Decision 2: The reply line… · {day}, Decision 20: The children's… · {day}, Decision 26: The first load… · {day}, Decision 8: The Verification… · 27 Nov4 checks"
+          "words": "The view row orders one row for each statement, with its checks under it, whatever the size of the issue.because: “Decision 14: The view row reads the words of a row whole, with no cut at six lines The Contents pane…” — {day} · informed by Decision 2: The reply line… · {day}, Decision 20: The children's… · {day}, Decision 26: The first load… · {day}, Decision 8: The Verification… · {day}4 checks"
         },
         {
           "address": "/issues/{key}#b-r18",
@@ -1347,7 +1352,7 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The Verification filter names the 200 newest comments and the position of the oldest, whatever the size of the issue.because: “Decision 10: A folded branch counts a child's status, what blocks it and who holds it The children's…” — {day} · informed by Decision 16: Each page of… · {day}, Decision 22: The tree read… · {day}, Decision 28: The plan's chart… · {day}, Decision 4: The first load… · 27 Nov3 checks"
+          "words": "The Verification filter names the 200 newest comments and the position of the oldest, whatever the size of the issue.because: “Decision 10: A folded branch counts a child's status, what blocks it and who holds it The children's…” — {day} · informed by Decision 16: Each page of… · {day}, Decision 22: The tree read… · {day}, Decision 28: The plan's chart… · {day}, Decision 4: The first load… · {day}3 checks"
         },
         {
           "address": "/issues/{key}#b-r31",
@@ -1396,13 +1401,13 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "Each page of comments keeps every node the answer holds, in the order the read gives, whatever the size of the issue. A folded branch orders the next page only when the reader presses for it at every width.because: “Decision 11: The tree read orders each reply under the post it answers The outline names the first…” — {day} · informed by Decision 17: The plan's chart… · {day}, Decision 23: The Contents pane… · {day}, Decision 29: The outline holds… · {day}, Decision 5: Each page of… · 27 Nov3 checks"
+          "words": "Each page of comments keeps every node the answer holds, in the order the read gives, whatever the size of the issue. A folded branch orders the next page only when the reader presses for it at every width.because: “Decision 11: The tree read orders each reply under the post it answers The outline names the first…” — {day} · informed by Decision 17: The plan's chart… · {day}, Decision 23: The Contents pane… · {day}, Decision 29: The outline holds… · {day}, Decision 5: Each page of… · {day}3 checks"
         }
       ]
     },
     "1440": {
       "focus": {
-        "key": "spec#b-r6",
+        "key": "spec#b-r2",
         "parentKey": null
       },
       "keys": [
@@ -1720,95 +1725,9 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[6]",
-              "ranks": {
-                "key": 0
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[6]}\":\n    - /url: /issues/{children[6]}\n  - text: \"Child 7: the reply line names the next page only when the reader presses for itDone\"",
-          "hidden": [],
-          "key": "{children[6]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[6]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[6]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[6]} Child 7: the reply line names the next page only when the reader presses for itDone"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[9]",
-              "ranks": {
-                "key": 1
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[9]}\":\n    - /url: /issues/{children[9]}\n  - text: \"Child 10: the plan's chart reads the next page only when the reader presses for itIn progress · Blocked by\"\n  - link \"{children[11]}\":\n    - /url: /issues/{children[11]}",
-          "hidden": [],
-          "key": "{children[9]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[9]}", "/issues/{children[11]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[9]}",
-              "role": null,
-              "tag": "a"
-            },
-            {
-              "name": "{children[11]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[9]} Child 10: the plan's chart reads the next page only when the reader presses for itIn progress · Blocked by {children[11]}"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[7]",
-              "ranks": {
-                "key": 2
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[7]}\":\n    - /url: /issues/{children[7]}\n  - text: \"Child 8: the outline draws one row for each statement, with its checks under itTesting\"",
-          "hidden": [],
-          "key": "{children[7]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[7]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[7]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[7]} Child 8: the outline draws one row for each statement, with its checks under itTesting"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
               "name": "children[10]",
               "ranks": {
-                "key": 3
+                "key": 0
               }
             }
           ],
@@ -1833,28 +1752,82 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[13]",
+              "name": "children[11]",
               "ranks": {
-                "key": 4
+                "key": 1
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[13]}\":\n    - /url: /issues/{children[13]}\n  - text: \"Child 14: the first load counts one row for each statement, with its checks under itBacklog\"",
+          "aria": "- listitem:\n  - link \"{children[11]}\":\n    - /url: /issues/{children[11]}\n  - text: \"Child 12: each page of comments keeps every node the answer holds, in the order the read givesTriage\"",
           "hidden": [],
-          "key": "{children[13]}",
+          "key": "{children[11]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[13]}"],
+          "links": ["/issues/{children[11]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[13]}",
+              "name": "{children[11]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[13]} Child 14: the first load counts one row for each statement, with its checks under itBacklog"
+          "words": "{children[11]} Child 12: each page of comments keeps every node the answer holds, in the order the read givesTriage"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[6]",
+              "ranks": {
+                "key": 2
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[6]}\":\n    - /url: /issues/{children[6]}\n  - text: \"Child 7: the reply line names the next page only when the reader presses for itDone\"",
+          "hidden": [],
+          "key": "{children[6]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[6]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[6]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[6]} Child 7: the reply line names the next page only when the reader presses for itDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[7]",
+              "ranks": {
+                "key": 3
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[7]}\":\n    - /url: /issues/{children[7]}\n  - text: \"Child 8: the outline draws one row for each statement, with its checks under itTesting\"",
+          "hidden": [],
+          "key": "{children[7]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[7]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[7]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[7]} Child 8: the outline draws one row for each statement, with its checks under itTesting"
         },
         {
           "address": null,
@@ -1862,7 +1835,7 @@
             {
               "name": "children[12]",
               "ranks": {
-                "key": 5
+                "key": 4
               }
             }
           ],
@@ -1887,55 +1860,28 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[16]",
+              "name": "children[13]",
               "ranks": {
-                "key": 6
+                "key": 5
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[16]}\":\n    - /url: /issues/{children[16]}\n  - text: \"Child 17: the verification filter pages one row for each statement, with its checks under itTesting\"",
+          "aria": "- listitem:\n  - link \"{children[13]}\":\n    - /url: /issues/{children[13]}\n  - text: \"Child 14: the first load counts one row for each statement, with its checks under itBacklog\"",
           "hidden": [],
-          "key": "{children[16]}",
+          "key": "{children[13]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[16]}"],
+          "links": ["/issues/{children[13]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[16]}",
+              "name": "{children[13]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[16]} Child 17: the verification filter pages one row for each statement, with its checks under itTesting"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[15]",
-              "ranks": {
-                "key": 7
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[15]}\":\n    - /url: /issues/{children[15]}\n  - text: \"Child 16: the view row draws the next page only when the reader presses for itDone\"",
-          "hidden": [],
-          "key": "{children[15]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[15]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[15]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[15]} Child 16: the view row draws the next page only when the reader presses for itDone"
+          "words": "{children[13]} Child 14: the first load counts one row for each statement, with its checks under itBacklog"
         },
         {
           "address": null,
@@ -1943,7 +1889,7 @@
             {
               "name": "children[17]",
               "ranks": {
-                "key": 8
+                "key": 6
               }
             }
           ],
@@ -1970,7 +1916,7 @@
             {
               "name": "children[14]",
               "ranks": {
-                "key": 9
+                "key": 7
               }
             }
           ],
@@ -2000,60 +1946,82 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[5]",
+              "name": "children[16]",
               "ranks": {
-                "key": 10
+                "key": 8
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[5]}\":\n    - /url: /issues/{children[5]}\n  - text: \"Child 6: the verification filter counts every node the answer holds, in the order the read givesNeeds review\"",
+          "aria": "- listitem:\n  - link \"{children[16]}\":\n    - /url: /issues/{children[16]}\n  - text: \"Child 17: the verification filter pages one row for each statement, with its checks under itTesting\"",
           "hidden": [],
-          "key": "{children[5]}",
+          "key": "{children[16]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[5]}"],
+          "links": ["/issues/{children[16]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[5]}",
+              "name": "{children[16]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[5]} Child 6: the verification filter counts every node the answer holds, in the order the read givesNeeds review"
+          "words": "{children[16]} Child 17: the verification filter pages one row for each statement, with its checks under itTesting"
         },
         {
           "address": null,
           "anchors": [
             {
-              "name": "children[20]",
+              "name": "children[15]",
               "ranks": {
-                "key": 11
+                "key": 9
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[20]}\":\n    - /url: /issues/{children[20]}\n  - text: \"Child 21: the plan's chart orders every node the answer holds, in the order the read givesTriage · Blocked by\"\n  - link \"{children[18]}\":\n    - /url: /issues/{children[18]}",
+          "aria": "- listitem:\n  - link \"{children[15]}\":\n    - /url: /issues/{children[15]}\n  - text: \"Child 16: the view row draws the next page only when the reader presses for itDone\"",
           "hidden": [],
-          "key": "{children[20]}",
+          "key": "{children[15]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[20]}", "/issues/{children[18]}"],
+          "links": ["/issues/{children[15]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[20]}",
-              "role": null,
-              "tag": "a"
-            },
-            {
-              "name": "{children[18]}",
+              "name": "{children[15]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[20]} Child 21: the plan's chart orders every node the answer holds, in the order the read givesTriage · Blocked by {children[18]}"
+          "words": "{children[15]} Child 16: the view row draws the next page only when the reader presses for itDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[0]",
+              "ranks": {
+                "key": 10
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[0]}\":\n    - /url: /issues/{children[0]}\n  - text: \"Child 1: each page of comments pages the next page only when the reader presses for itIn progress\"",
+          "hidden": [],
+          "key": "{children[0]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[0]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[0]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[0]} Child 1: each page of comments pages the next page only when the reader presses for itIn progress"
         },
         {
           "address": null,
@@ -2061,7 +2029,7 @@
             {
               "name": "children[22]",
               "ranks": {
-                "key": 12
+                "key": 11
               }
             }
           ],
@@ -2088,7 +2056,7 @@
             {
               "name": "children[23]",
               "ranks": {
-                "key": 13
+                "key": 12
               }
             }
           ],
@@ -2108,6 +2076,33 @@
             }
           ],
           "words": "{children[23]} Child 24: a folded branch draws every node the answer holds, in the order the read givesNeeds review"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[18]",
+              "ranks": {
+                "key": 13
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[18]}\":\n    - /url: /issues/{children[18]}\n  - text: \"Child 19: the outline holds the next page only when the reader presses for itIn progress\"",
+          "hidden": [],
+          "key": "{children[18]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[18]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[18]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[18]} Child 19: the outline holds the next page only when the reader presses for itIn progress"
         },
         {
           "address": null,
@@ -2167,87 +2162,87 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[18]",
+              "name": "children[20]",
               "ranks": {
                 "key": 16
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[18]}\":\n    - /url: /issues/{children[18]}\n  - text: \"Child 19: the outline holds the next page only when the reader presses for itIn progress\"",
+          "aria": "- listitem:\n  - link \"{children[20]}\":\n    - /url: /issues/{children[20]}\n  - text: \"Child 21: the plan's chart orders every node the answer holds, in the order the read givesTriage · Blocked by\"\n  - link \"{children[18]}\":\n    - /url: /issues/{children[18]}",
           "hidden": [],
-          "key": "{children[18]}",
+          "key": "{children[20]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[18]}"],
+          "links": ["/issues/{children[20]}", "/issues/{children[18]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
+            {
+              "name": "{children[20]}",
+              "role": null,
+              "tag": "a"
+            },
             {
               "name": "{children[18]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[18]} Child 19: the outline holds the next page only when the reader presses for itIn progress"
+          "words": "{children[20]} Child 21: the plan's chart orders every node the answer holds, in the order the read givesTriage · Blocked by {children[18]}"
         },
         {
           "address": null,
           "anchors": [
             {
-              "name": "children[27]",
+              "name": "children[29]",
               "ranks": {
                 "key": 17
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[27]}\":\n    - /url: /issues/{children[27]}\n  - text: \"Child 28: the verification filter keeps the next page only when the reader presses for itIn progress · Blocked by\"\n  - link \"{children[23]}\":\n    - /url: /issues/{children[23]}",
+          "aria": "- listitem:\n  - link \"{children[29]}\":\n    - /url: /issues/{children[29]}\n  - text: \"Child 30: the outline counts every node the answer holds, in the order the read givesTriage\"",
           "hidden": [],
-          "key": "{children[27]}",
+          "key": "{children[29]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[27]}", "/issues/{children[23]}"],
+          "links": ["/issues/{children[29]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[27]}",
-              "role": null,
-              "tag": "a"
-            },
-            {
-              "name": "{children[23]}",
+              "name": "{children[29]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[27]} Child 28: the verification filter keeps the next page only when the reader presses for itIn progress · Blocked by {children[23]}"
+          "words": "{children[29]} Child 30: the outline counts every node the answer holds, in the order the read givesTriage"
         },
         {
           "address": null,
           "anchors": [
             {
-              "name": "children[26]",
+              "name": "children[25]",
               "ranks": {
                 "key": 18
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[26]}\":\n    - /url: /issues/{children[26]}\n  - text: \"Child 27: the view row holds every node the answer holds, in the order the read givesDone\"",
+          "aria": "- listitem:\n  - link \"{children[25]}\":\n    - /url: /issues/{children[25]}\n  - text: \"Child 26: the children's section reads one row for each statement, with its checks under itTesting\"",
           "hidden": [],
-          "key": "{children[26]}",
+          "key": "{children[25]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[26]}"],
+          "links": ["/issues/{children[25]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[26]}",
+              "name": "{children[25]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[26]} Child 27: the view row holds every node the answer holds, in the order the read givesDone"
+          "words": "{children[25]} Child 26: the children's section reads one row for each statement, with its checks under itTesting"
         },
         {
           "address": null,
@@ -2277,88 +2272,13 @@
           "words": "{children[24]} Child 25: the first load pages the next page only when the reader presses for itDone"
         },
         {
-          "address": "/issues/{key}#b-r6",
-          "anchors": [
-            {
-              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
-              "ranks": {
-                "closed": 5,
-                "made": 1
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width. because: Should the children''s section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — Written by a person alice · {day} 3 checks Unknown\" [level=1]':\n  - paragraph: A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width.\n  - paragraph:\n    - text: \"because: Should the children's section keeps the next page only when the reader presses for it?\"\n    - link \"“The first load holds every node the answer holds, in the order the read gives.”\":\n      - /url: /issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}\n    - text: —\n    - img \"Written by a person\"\n    - text: alice · {day}\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r6\n  - img \"Unknown\"",
-          "hidden": [],
-          "key": "spec#b-r6",
-          "kind": "requirement",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
-            "/issues/{key}/verification#b-r6"
-          ],
-          "parentKey": null,
-          "tabStop": true,
-          "tabStops": [],
-          "words": "A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width.because: Should the children's section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — alice · 27 Nov3 checks"
-        },
-        {
-          "address": "/issues/{key}#b-r9",
-          "anchors": [
-            {
-              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
-              "ranks": {
-                "closed": 5,
-                "made": 1
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue. because: Should the children''s section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — Written by a person alice · {day} 4 checks Unknown\" [level=1]':\n  - paragraph: The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue.\n  - paragraph:\n    - text: \"because: Should the children's section keeps the next page only when the reader presses for it?\"\n    - link \"“The first load holds every node the answer holds, in the order the read gives.”\":\n      - /url: /issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}\n    - text: —\n    - img \"Written by a person\"\n    - text: alice · {day}\n  - link \"4 checks\":\n    - /url: /issues/{key}/verification#b-r9\n  - img \"Unknown\"",
-          "hidden": [],
-          "key": "spec#b-r9",
-          "kind": "requirement",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
-            "/issues/{key}/verification#b-r9"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue.because: Should the children's section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — alice · 27 Nov4 checks"
-        },
-        {
-          "address": "/issues/{key}#b-r11",
-          "anchors": [
-            {
-              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
-              "ranks": {
-                "closed": 5,
-                "made": 1
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue. because: Should the children''s section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — Written by a person alice · {day} 3 checks Unknown\" [level=1]':\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue.\n  - paragraph:\n    - text: \"because: Should the children's section keeps the next page only when the reader presses for it?\"\n    - link \"“The first load holds every node the answer holds, in the order the read gives.”\":\n      - /url: /issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}\n    - text: —\n    - img \"Written by a person\"\n    - text: alice · {day}\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r11\n  - img \"Unknown\"",
-          "hidden": [],
-          "key": "spec#b-r11",
-          "kind": "requirement",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
-            "/issues/{key}/verification#b-r11"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue.because: Should the children's section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — alice · 27 Nov3 checks"
-        },
-        {
           "address": "/issues/{key}#b-r2",
           "anchors": [
             {
               "name": "ask \"Should the view row keeps the first 50 children of a node and a control for the rest?\"",
               "ranks": {
-                "closed": 2,
-                "made": 2
+                "closed": 0,
+                "made": 0
               }
             }
           ],
@@ -2372,9 +2292,9 @@
             "/issues/{key}/verification#b-r2"
           ],
           "parentKey": null,
-          "tabStop": false,
+          "tabStop": true,
           "tabStops": [],
-          "words": "The outline counts the 200 newest comments and the position of the oldest, whatever the size of the issue. The Contents pane names a child's status, what blocks it and who holds it at every width.because: Should the view row keeps the first 50 children of a node and a control for the rest? “The Verification filter orders the words of a row whole, with no cut at six lines.” — alice · 27 Nov3 checks"
+          "words": "The outline counts the 200 newest comments and the position of the oldest, whatever the size of the issue. The Contents pane names a child's status, what blocks it and who holds it at every width.because: Should the view row keeps the first 50 children of a node and a control for the rest? “The Verification filter orders the words of a row whole, with no cut at six lines.” — alice · {day}3 checks"
         },
         {
           "address": "/issues/{key}#b-r5",
@@ -2382,8 +2302,8 @@
             {
               "name": "ask \"Should the view row keeps the first 50 children of a node and a control for the rest?\"",
               "ranks": {
-                "closed": 2,
-                "made": 2
+                "closed": 0,
+                "made": 0
               }
             }
           ],
@@ -2399,7 +2319,7 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The Contents pane names a child's status, what blocks it and who holds it, whatever the size of the issue.because: Should the view row keeps the first 50 children of a node and a control for the rest? “The Verification filter orders the words of a row whole, with no cut at six lines.” — alice · 27 Nov2 checks"
+          "words": "The Contents pane names a child's status, what blocks it and who holds it, whatever the size of the issue.because: Should the view row keeps the first 50 children of a node and a control for the rest? “The Verification filter orders the words of a row whole, with no cut at six lines.” — alice · {day}2 checks"
         },
         {
           "address": "/issues/{key}#b-r10",
@@ -2407,8 +2327,8 @@
             {
               "name": "ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"",
               "ranks": {
-                "closed": 0,
-                "made": 5
+                "closed": 3,
+                "made": 1
               }
             }
           ],
@@ -2424,7 +2344,7 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The reply line counts each reply under the post it answers, whatever the size of the issue. The outline names the first 50 children of a node and a control for the rest at every width.because: Should the first load keeps the 200 newest comments and the position of the oldest? “The tree read pages the 200 newest comments and the position of the oldest.” — alice · 27 Nov3 checks"
+          "words": "The reply line counts each reply under the post it answers, whatever the size of the issue. The outline names the first 50 children of a node and a control for the rest at every width.because: Should the first load keeps the 200 newest comments and the position of the oldest? “The tree read pages the 200 newest comments and the position of the oldest.” — alice · {day}3 checks"
         },
         {
           "address": "/issues/{key}#b-r13",
@@ -2432,8 +2352,8 @@
             {
               "name": "ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"",
               "ranks": {
-                "closed": 0,
-                "made": 5
+                "closed": 3,
+                "made": 1
               }
             }
           ],
@@ -2449,7 +2369,7 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The outline names the first 50 children of a node and a control for the rest, whatever the size of the issue.because: Should the first load keeps the 200 newest comments and the position of the oldest? “The tree read pages the 200 newest comments and the position of the oldest.” — alice · 27 Nov4 checks"
+          "words": "The outline names the first 50 children of a node and a control for the rest, whatever the size of the issue.because: Should the first load keeps the 200 newest comments and the position of the oldest? “The tree read pages the 200 newest comments and the position of the oldest.” — alice · {day}4 checks"
         },
         {
           "address": "/issues/{key}#b-r16",
@@ -2457,8 +2377,8 @@
             {
               "name": "ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"",
               "ranks": {
-                "closed": 0,
-                "made": 5
+                "closed": 3,
+                "made": 1
               }
             }
           ],
@@ -2474,7 +2394,7 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The Contents pane draws the words of a row whole, with no cut at six lines, whatever the size of the issue. The plan's chart pages each reply under the post it answers at every width.because: Should the first load keeps the 200 newest comments and the position of the oldest? “The tree read pages the 200 newest comments and the position of the oldest.” — alice · 27 Nov4 checks"
+          "words": "The Contents pane draws the words of a row whole, with no cut at six lines, whatever the size of the issue. The plan's chart pages each reply under the post it answers at every width.because: Should the first load keeps the 200 newest comments and the position of the oldest? “The tree read pages the 200 newest comments and the position of the oldest.” — alice · {day}4 checks"
         },
         {
           "address": "/issues/{key}#b-r17",
@@ -2482,8 +2402,8 @@
             {
               "name": "ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"",
               "ranks": {
-                "closed": 0,
-                "made": 5
+                "closed": 3,
+                "made": 1
               }
             }
           ],
@@ -2499,32 +2419,82 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "A folded branch holds the questions that wait on the reader before anything else, whatever the size of the issue.because: Should the first load keeps the 200 newest comments and the position of the oldest? “The tree read pages the 200 newest comments and the position of the oldest.” — alice · 27 Nov3 checks"
+          "words": "A folded branch holds the questions that wait on the reader before anything else, whatever the size of the issue.because: Should the first load keeps the 200 newest comments and the position of the oldest? “The tree read pages the 200 newest comments and the position of the oldest.” — alice · {day}3 checks"
         },
         {
-          "address": "/issues/{key}#b-r12",
+          "address": "/issues/{key}#b-r6",
           "anchors": [
             {
-              "name": "ask \"Should the reply line draws a child's status, what blocks it and who holds it?\"",
+              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
               "ranks": {
-                "closed": 8,
-                "made": 7
+                "closed": 4,
+                "made": 4
               }
             }
           ],
-          "aria": "- 'treeitem \"The children''s section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width. No plan task because: Should the reply line draws a child''s status, what blocks it and who holds it? “Each page of comments reads a child''s status, what blocks it and who holds it.” — Written by a person alice · {day} 3 checks Unknown\" [level=1]':\n  - paragraph: The children's section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width.\n  - text: No plan task\n  - paragraph:\n    - text: \"because: Should the reply line draws a child's status, what blocks it and who holds it?\"\n    - link \"“Each page of comments reads a child's status, what blocks it and who holds it.”\":\n      - /url: /issues/{key}/asks/{ask \"Should the reply line draws a child's status, what blocks it and who holds it?\"}\n    - text: —\n    - img \"Written by a person\"\n    - text: alice · {day}\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r12\n  - img \"Unknown\"",
+          "aria": "- 'treeitem \"A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width. because: Should the children''s section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — Written by a person alice · {day} 3 checks Unknown\" [level=1]':\n  - paragraph: A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width.\n  - paragraph:\n    - text: \"because: Should the children's section keeps the next page only when the reader presses for it?\"\n    - link \"“The first load holds every node the answer holds, in the order the read gives.”\":\n      - /url: /issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}\n    - text: —\n    - img \"Written by a person\"\n    - text: alice · {day}\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r6\n  - img \"Unknown\"",
           "hidden": [],
-          "key": "spec#b-r12",
+          "key": "spec#b-r6",
           "kind": "requirement",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Should the reply line draws a child's status, what blocks it and who holds it?\"}",
-            "/issues/{key}/verification#b-r12"
+            "/issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
+            "/issues/{key}/verification#b-r6"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The children's section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width.No plan taskbecause: Should the reply line draws a child's status, what blocks it and who holds it? “Each page of comments reads a child's status, what blocks it and who holds it.” — alice · 27 Nov3 checks"
+          "words": "A folded branch reads one row for each statement, with its checks under it, whatever the size of the issue. The first load holds every node the answer holds, in the order the read gives at every width.because: Should the children's section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — alice · {day}3 checks"
+        },
+        {
+          "address": "/issues/{key}#b-r9",
+          "anchors": [
+            {
+              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
+              "ranks": {
+                "closed": 4,
+                "made": 4
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue. because: Should the children''s section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — Written by a person alice · {day} 4 checks Unknown\" [level=1]':\n  - paragraph: The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue.\n  - paragraph:\n    - text: \"because: Should the children's section keeps the next page only when the reader presses for it?\"\n    - link \"“The first load holds every node the answer holds, in the order the read gives.”\":\n      - /url: /issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}\n    - text: —\n    - img \"Written by a person\"\n    - text: alice · {day}\n  - link \"4 checks\":\n    - /url: /issues/{key}/verification#b-r9\n  - img \"Unknown\"",
+          "hidden": [],
+          "key": "spec#b-r9",
+          "kind": "requirement",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
+            "/issues/{key}/verification#b-r9"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "The first load holds every node the answer holds, in the order the read gives, whatever the size of the issue.because: Should the children's section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — alice · {day}4 checks"
+        },
+        {
+          "address": "/issues/{key}#b-r11",
+          "anchors": [
+            {
+              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
+              "ranks": {
+                "closed": 4,
+                "made": 4
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue. because: Should the children''s section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — Written by a person alice · {day} 3 checks Unknown\" [level=1]':\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue.\n  - paragraph:\n    - text: \"because: Should the children's section keeps the next page only when the reader presses for it?\"\n    - link \"“The first load holds every node the answer holds, in the order the read gives.”\":\n      - /url: /issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}\n    - text: —\n    - img \"Written by a person\"\n    - text: alice · {day}\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r11\n  - img \"Unknown\"",
+          "hidden": [],
+          "key": "spec#b-r11",
+          "kind": "requirement",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
+            "/issues/{key}/verification#b-r11"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "The tree read pages the 200 newest comments and the position of the oldest, whatever the size of the issue.because: Should the children's section keeps the next page only when the reader presses for it? “The first load holds every node the answer holds, in the order the read gives.” — alice · {day}3 checks"
         },
         {
           "address": "/issues/{key}#b-r33",
@@ -2532,8 +2502,8 @@
             {
               "name": "ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"",
               "ranks": {
-                "closed": 7,
-                "made": 11
+                "closed": 10,
+                "made": 10
               }
             }
           ],
@@ -2549,29 +2519,32 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The tree read holds one row for each statement, with its checks under it, whatever the size of the issue.because: Should the tree read keeps the questions that wait on the reader before anything else? “A folded branch holds the questions that wait on the reader before anything else.” — alice · 27 Nov2 checks"
+          "words": "The tree read holds one row for each statement, with its checks under it, whatever the size of the issue.because: Should the tree read keeps the questions that wait on the reader before anything else? “A folded branch holds the questions that wait on the reader before anything else.” — alice · {day}2 checks"
         },
         {
-          "address": "/issues/{key}#b-r38",
+          "address": "/issues/{key}#b-r12",
           "anchors": [
             {
-              "name": "ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"",
+              "name": "ask \"Should the reply line draws a child's status, what blocks it and who holds it?\"",
               "ranks": {
-                "closed": 16,
-                "made": 13
+                "closed": 11,
+                "made": 11
               }
             }
           ],
-          "aria": "- treeitem \"The Contents pane reads the 200 newest comments and the position of the oldest, whatever the size of the issue. The plan's chart holds a child's status, what blocks it and who holds it at every width. 1 check Unknown\" [level=1]:\n  - paragraph: The Contents pane reads the 200 newest comments and the position of the oldest, whatever the size of the issue. The plan's chart holds a child's status, what blocks it and who holds it at every width.\n  - link \"1 check\":\n    - /url: /issues/{key}/verification#b-r38\n  - img \"Unknown\"",
+          "aria": "- 'treeitem \"The children''s section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width. No plan task because: Should the reply line draws a child''s status, what blocks it and who holds it? “Each page of comments reads a child''s status, what blocks it and who holds it.” — Written by a person alice · {day} 3 checks Unknown\" [level=1]':\n  - paragraph: The children's section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width.\n  - text: No plan task\n  - paragraph:\n    - text: \"because: Should the reply line draws a child's status, what blocks it and who holds it?\"\n    - link \"“Each page of comments reads a child's status, what blocks it and who holds it.”\":\n      - /url: /issues/{key}/asks/{ask \"Should the reply line draws a child's status, what blocks it and who holds it?\"}\n    - text: —\n    - img \"Written by a person\"\n    - text: alice · {day}\n  - link \"3 checks\":\n    - /url: /issues/{key}/verification#b-r12\n  - img \"Unknown\"",
           "hidden": [],
-          "key": "spec#b-r38",
+          "key": "spec#b-r12",
           "kind": "requirement",
           "level": 1,
-          "links": ["/issues/{key}/verification#b-r38"],
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the reply line draws a child's status, what blocks it and who holds it?\"}",
+            "/issues/{key}/verification#b-r12"
+          ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The Contents pane reads the 200 newest comments and the position of the oldest, whatever the size of the issue. The plan's chart holds a child's status, what blocks it and who holds it at every width.1 check"
+          "words": "The children's section keeps the next page only when the reader presses for it, whatever the size of the issue. The view row orders one row for each statement, with its checks under it at every width.No plan taskbecause: Should the reply line draws a child's status, what blocks it and who holds it? “Each page of comments reads a child's status, what blocks it and who holds it.” — alice · {day}3 checks"
         },
         {
           "address": "/issues/{key}#b-r34",
@@ -2580,7 +2553,7 @@
               "name": "ask \"Should the children's section draws the 200 newest comments and the position of the oldest?\"",
               "ranks": {
                 "closed": 17,
-                "made": 14
+                "made": 13
               }
             }
           ],
@@ -2602,7 +2575,7 @@
               "name": "ask \"Should the children's section draws the 200 newest comments and the position of the oldest?\"",
               "ranks": {
                 "closed": 17,
-                "made": 14
+                "made": 13
               }
             }
           ],
@@ -2618,13 +2591,35 @@
           "words": "The outline pages the questions that wait on the reader before anything else, whatever the size of the issue.1 check"
         },
         {
+          "address": "/issues/{key}#b-r38",
+          "anchors": [
+            {
+              "name": "ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"",
+              "ranks": {
+                "closed": 14,
+                "made": 14
+              }
+            }
+          ],
+          "aria": "- treeitem \"The Contents pane reads the 200 newest comments and the position of the oldest, whatever the size of the issue. The plan's chart holds a child's status, what blocks it and who holds it at every width. 1 check Unknown\" [level=1]:\n  - paragraph: The Contents pane reads the 200 newest comments and the position of the oldest, whatever the size of the issue. The plan's chart holds a child's status, what blocks it and who holds it at every width.\n  - link \"1 check\":\n    - /url: /issues/{key}/verification#b-r38\n  - img \"Unknown\"",
+          "hidden": [],
+          "key": "spec#b-r38",
+          "kind": "requirement",
+          "level": 1,
+          "links": ["/issues/{key}/verification#b-r38"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "The Contents pane reads the 200 newest comments and the position of the oldest, whatever the size of the issue. The plan's chart holds a child's status, what blocks it and who holds it at every width.1 check"
+        },
+        {
           "address": "/issues/{key}#b-r39",
           "anchors": [
             {
               "name": "ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"",
               "ranks": {
-                "closed": 20,
-                "made": 20
+                "closed": 21,
+                "made": 19
               }
             }
           ],
@@ -2640,12 +2635,33 @@
           "words": "A folded branch orders the next page only when the reader presses for it, whatever the size of the issue.No plan task"
         },
         {
+          "address": "/issues/{key}#b-r1",
+          "anchors": [
+            {
+              "name": "posts[1]",
+              "ranks": {
+                "made": 27
+              }
+            }
+          ],
+          "aria": "- treeitem \"The children's section holds each reply under the post it answers, whatever the size of the issue. 2 checks Unknown\" [level=1]:\n  - paragraph: The children's section holds each reply under the post it answers, whatever the size of the issue.\n  - link \"2 checks\":\n    - /url: /issues/{key}/verification#b-r1\n  - img \"Unknown\"",
+          "hidden": [],
+          "key": "spec#b-r1",
+          "kind": "requirement",
+          "level": 1,
+          "links": ["/issues/{key}/verification#b-r1"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "The children's section holds each reply under the post it answers, whatever the size of the issue.2 checks"
+        },
+        {
           "address": "/issues/{key}#b-r8",
           "anchors": [
             {
               "name": "posts[4]",
               "ranks": {
-                "made": 27
+                "made": 28
               }
             }
           ],
@@ -2665,28 +2681,7 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The plan's chart draws the questions that wait on the reader before anything else, whatever the size of the issue. The tree read pages the 200 newest comments and the position of the oldest at every width.because: “Decision 1: The Contents pane names a child's status, what blocks it and who holds it” — Planner · {day} · informed by Decision 13: The reply line… · {day}, Decision 19: The Verification… · {day}, Decision 25: The view row names… · {day}, Decision 7: The outline pages… · 27 Nov4 checks"
-        },
-        {
-          "address": "/issues/{key}#b-r1",
-          "anchors": [
-            {
-              "name": "posts[1]",
-              "ranks": {
-                "made": 28
-              }
-            }
-          ],
-          "aria": "- treeitem \"The children's section holds each reply under the post it answers, whatever the size of the issue. 2 checks Unknown\" [level=1]:\n  - paragraph: The children's section holds each reply under the post it answers, whatever the size of the issue.\n  - link \"2 checks\":\n    - /url: /issues/{key}/verification#b-r1\n  - img \"Unknown\"",
-          "hidden": [],
-          "key": "spec#b-r1",
-          "kind": "requirement",
-          "level": 1,
-          "links": ["/issues/{key}/verification#b-r1"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "The children's section holds each reply under the post it answers, whatever the size of the issue.2 checks"
+          "words": "The plan's chart draws the questions that wait on the reader before anything else, whatever the size of the issue. The tree read pages the 200 newest comments and the position of the oldest at every width.because: “Decision 1: The Contents pane names a child's status, what blocks it and who holds it” — Planner · {day} · informed by Decision 13: The reply line… · {day}, Decision 19: The Verification… · {day}, Decision 25: The view row names… · {day}, Decision 7: The outline pages… · {day}4 checks"
         },
         {
           "address": "/issues/{key}#b-r23",
@@ -2694,7 +2689,7 @@
             {
               "name": "posts[11]",
               "ranks": {
-                "made": 54
+                "made": 55
               }
             }
           ],
@@ -2715,7 +2710,7 @@
             {
               "name": "posts[9]",
               "ranks": {
-                "made": 56
+                "made": 58
               }
             }
           ],
@@ -2757,7 +2752,7 @@
             {
               "name": "posts[19]",
               "ranks": {
-                "made": 106
+                "made": 107
               }
             }
           ],
@@ -2773,33 +2768,12 @@
           "words": "Each page of comments holds the words of a row whole, with no cut at six lines, whatever the size of the issue.3 checks"
         },
         {
-          "address": "/issues/{key}#b-r30",
-          "anchors": [
-            {
-              "name": "posts[29]",
-              "ranks": {
-                "made": 115
-              }
-            }
-          ],
-          "aria": "- treeitem \"The plan's chart reads the next page only when the reader presses for it, whatever the size of the issue. The tree read holds one row for each statement, with its checks under it at every width. No plan task 5 checks Unknown\" [level=1]:\n  - paragraph: The plan's chart reads the next page only when the reader presses for it, whatever the size of the issue. The tree read holds one row for each statement, with its checks under it at every width.\n  - text: No plan task\n  - link \"5 checks\":\n    - /url: /issues/{key}/verification#b-r30\n  - img \"Unknown\"",
-          "hidden": [],
-          "key": "spec#b-r30",
-          "kind": "requirement",
-          "level": 1,
-          "links": ["/issues/{key}/verification#b-r30"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "The plan's chart reads the next page only when the reader presses for it, whatever the size of the issue. The tree read holds one row for each statement, with its checks under it at every width.No plan task5 checks"
-        },
-        {
           "address": "/issues/{key}#b-r26",
           "anchors": [
             {
               "name": "posts[24]",
               "ranks": {
-                "made": 118
+                "made": 114
               }
             }
           ],
@@ -2813,6 +2787,27 @@
           "tabStop": false,
           "tabStops": [],
           "words": "The view row counts the questions that wait on the reader before anything else, whatever the size of the issue. The Verification filter names the 200 newest comments and the position of the oldest at every width.3 checks"
+        },
+        {
+          "address": "/issues/{key}#b-r30",
+          "anchors": [
+            {
+              "name": "posts[29]",
+              "ranks": {
+                "made": 117
+              }
+            }
+          ],
+          "aria": "- treeitem \"The plan's chart reads the next page only when the reader presses for it, whatever the size of the issue. The tree read holds one row for each statement, with its checks under it at every width. No plan task 5 checks Unknown\" [level=1]:\n  - paragraph: The plan's chart reads the next page only when the reader presses for it, whatever the size of the issue. The tree read holds one row for each statement, with its checks under it at every width.\n  - text: No plan task\n  - link \"5 checks\":\n    - /url: /issues/{key}/verification#b-r30\n  - img \"Unknown\"",
+          "hidden": [],
+          "key": "spec#b-r30",
+          "kind": "requirement",
+          "level": 1,
+          "links": ["/issues/{key}/verification#b-r30"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "The plan's chart reads the next page only when the reader presses for it, whatever the size of the issue. The tree read holds one row for each statement, with its checks under it at every width.No plan task5 checks"
         },
         {
           "address": "/issues/{key}#b-r37",
@@ -2841,7 +2836,7 @@
             {
               "name": "posts[39]",
               "ranks": {
-                "made": 150
+                "made": 151
               }
             }
           ],
@@ -2862,7 +2857,7 @@
             {
               "name": "posts[44]",
               "ranks": {
-                "made": 167
+                "made": 165
               }
             }
           ],
@@ -2883,7 +2878,7 @@
             {
               "name": "posts[49]",
               "ranks": {
-                "made": 179
+                "made": 181
               }
             }
           ],
@@ -2973,7 +2968,7 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The view row orders one row for each statement, with its checks under it, whatever the size of the issue.because: “Decision 14: The view row reads the words of a row whole, with no cut at six lines” — Planner · {day} · informed by Decision 2: The reply line… · {day}, Decision 20: The children's… · {day}, Decision 26: The first load… · {day}, Decision 8: The Verification… · 27 Nov4 checks"
+          "words": "The view row orders one row for each statement, with its checks under it, whatever the size of the issue.because: “Decision 14: The view row reads the words of a row whole, with no cut at six lines” — Planner · {day} · informed by Decision 2: The reply line… · {day}, Decision 20: The children's… · {day}, Decision 26: The first load… · {day}, Decision 8: The Verification… · {day}4 checks"
         },
         {
           "address": "/issues/{key}#b-r18",
@@ -3078,7 +3073,7 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "The Verification filter names the 200 newest comments and the position of the oldest, whatever the size of the issue.because: “Decision 10: A folded branch counts a child's status, what blocks it and who holds it” — Planner · {day} · informed by Decision 16: Each page of… · {day}, Decision 22: The tree read… · {day}, Decision 28: The plan's chart… · {day}, Decision 4: The first load… · 27 Nov3 checks"
+          "words": "The Verification filter names the 200 newest comments and the position of the oldest, whatever the size of the issue.because: “Decision 10: A folded branch counts a child's status, what blocks it and who holds it” — Planner · {day} · informed by Decision 16: Each page of… · {day}, Decision 22: The tree read… · {day}, Decision 28: The plan's chart… · {day}, Decision 4: The first load… · {day}3 checks"
         },
         {
           "address": "/issues/{key}#b-r31",
@@ -3127,7 +3122,7 @@
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "Each page of comments keeps every node the answer holds, in the order the read gives, whatever the size of the issue. A folded branch orders the next page only when the reader presses for it at every width.because: “Decision 11: The tree read orders each reply under the post it answers” — Planner · {day} · informed by Decision 17: The plan's chart… · {day}, Decision 23: The Contents pane… · {day}, Decision 29: The outline holds… · {day}, Decision 5: Each page of… · 27 Nov3 checks"
+          "words": "Each page of comments keeps every node the answer holds, in the order the read gives, whatever the size of the issue. A folded branch orders the next page only when the reader presses for it at every width.because: “Decision 11: The tree read orders each reply under the post it answers” — Planner · {day} · informed by Decision 17: The plan's chart… · {day}, Decision 23: The Contents pane… · {day}, Decision 29: The outline holds… · {day}, Decision 5: Each page of… · {day}3 checks"
         }
       ]
     }
