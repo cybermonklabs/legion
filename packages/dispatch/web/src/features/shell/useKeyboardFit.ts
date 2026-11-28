@@ -12,14 +12,17 @@ export interface KeyboardWrites {
 /**
  * The frame the keyboard hooks share. While `enabled`, it calls the writes `start` makes for the
  * element and the visual viewport on each resize and scroll of the visual viewport, each resize of
- * the window, each focus that enters the element, and once as it starts, for a textarea that
- * already had focus: no listener was there to hear that focus. It calls `clear` as it stops.
- * `start` runs once per start, so its writes can hold state of their own; pass a function that
- * does not change between renders.
+ * the window, each focus that enters a textarea inside the element, and once as it starts, for a
+ * textarea that already had focus: no listener was there to hear that focus. It calls `clear` as
+ * it stops. `start` runs once per start, so its writes can hold state of their own; pass a
+ * function that does not change between renders.
  *
- * A blur writes nothing: the keyboard's own resize, which follows it, does. A write on the blur
- * moves what a tap on a focusable control is still landing on: Chrome focuses a tapped button,
- * lays the page out again, and sends the click to what is under the finger after that layout.
+ * A blur, and a focus that goes to anything but a textarea, write nothing: the keyboard's own
+ * resize, which follows them, does. A write there would move what a tap is still landing on:
+ * Chrome focuses a tapped button or link, lays the page out again, and sends the click to what is
+ * under the finger after that layout. With no on-screen keyboard (a desktop, a hardware
+ * keyboard), no resize follows the blur, so the last write stays until the next resize, scroll or
+ * focus on a textarea.
  *
  * Every write happens in the event's own task (no `requestAnimationFrame`, no state-keyed
  * effect), so the frame after a resize is already written.
@@ -39,24 +42,29 @@ export function useKeyboardFrame(
       const focused = document.activeElement;
       writes.write(focused instanceof HTMLTextAreaElement && element.contains(focused), event);
     };
+    const focusIn = (event: FocusEvent) => {
+      if (event.target instanceof HTMLTextAreaElement) write(event);
+    };
     window.addEventListener("resize", write);
     viewport.addEventListener("resize", write);
     viewport.addEventListener("scroll", write);
-    element.addEventListener("focusin", write);
+    element.addEventListener("focusin", focusIn);
     write();
     return () => {
       window.removeEventListener("resize", write);
       viewport.removeEventListener("resize", write);
       viewport.removeEventListener("scroll", write);
-      element.removeEventListener("focusin", write);
+      element.removeEventListener("focusin", focusIn);
       writes.clear();
     };
   }, [ref, enabled, start]);
 }
 
 /**
- * While `enabled` and a textarea inside `ref`'s element has focus, caps the element's inline
- * `max-height` so its bottom edge meets the visual viewport's bottom edge. The shell passes
+ * While `enabled`, caps the element's inline `max-height` as a textarea inside it takes focus,
+ * so its bottom edge meets the visual viewport's bottom edge, and takes the cap off at the next
+ * resize or scroll with no textarea in focus (`useKeyboardFrame`). On a desktop the cap that stays
+ * after a blur is the element's own height, so it moves nothing. The shell passes
  * `<main>` on a route that fills the viewport, so the page's composer, the textarea at its
  * bottom, keeps `<main>`'s bottom gutter above the on-screen keyboard. The shell moves focus to
  * `<main>` on every page change, so a textarea that has focus as the hook starts is rare. A

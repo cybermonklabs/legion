@@ -16,7 +16,8 @@ export const KEYBOARD_VIEW_CLASSES =
 /** A part of the view that is hidden while the keyboard is up. */
 export const HIDDEN_WITH_KEYBOARD = "group-data-[keyboard=up]/live:hidden";
 
-/** The message box's height while the keyboard is up: four lines of its text. */
+/** The message box's height while the keyboard is up: at most 96 px, so the thread keeps its
+ *  height above it. */
 export const BOX_WITH_KEYBOARD = "group-data-[keyboard=up]/live:max-h-24";
 
 /**
@@ -34,8 +35,10 @@ export const BOX_WITH_KEYBOARD = "group-data-[keyboard=up]/live:max-h-24";
  * `KEYBOARD_MIN_HEIGHT` shorter than the tallest the layout viewport has been at this width. iOS
  * Safari shrinks only the visual viewport; Chromium on Android, told
  * `interactive-widget=resizes-content`, shrinks the layout viewport too, which is why the height
- * is compared with the tallest one seen at the width, kept for each width so that a phone turned
- * with the keyboard up still reads it. A hardware keyboard takes little or no height, so it
+ * is compared with the tallest one seen at the width. That height is kept for each width, so a
+ * phone turned back to a width the view has seen with the keyboard up still reads the keyboard;
+ * a first turn to a new width with the keyboard up reads it only after the keyboard closes once
+ * there. A hardware keyboard takes little or no height, so it
  * leaves the view in the page. Only below `md`: a tablet's and a desktop's layout stay as they
  * are.
  *

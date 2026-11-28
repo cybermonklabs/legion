@@ -648,8 +648,8 @@ export function AgentThread({
                 the textarea's autosize can leave it far taller than its text (a load at a
                 phone's width, then a desktop's, left it 636px tall), and the composer then lay
                 over the row under it, so a press at Send reached that row. With a phone's
-                keyboard up, the screen is the part above the keyboard, and four lines leave the
-                thread its height. */}
+                keyboard up, the screen is the part above the keyboard, and the box stops at
+                96 px so the thread keeps its height. */}
             <ComposerPrimitive.Input
               className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-sm ${BOX_WITH_KEYBOARD} ${inputClasses(false)}`}
               // The one handle a browser row reaches this box by, since its accessible name is
@@ -664,9 +664,8 @@ export function AgentThread({
               submitMode="enter"
             />
             {/* The phone's keyboard, put away while the box has focus and brought back while it
-                holds a draft. A focus the script gives a textarea puts its selection back. On a
-                phone a press here and on Send keeps the box's focus: Chrome focuses a tapped
-                button, which would put the keyboard away under the finger. */}
+                holds a draft. A focus the script gives a textarea puts its selection back. A press
+                here keeps the box's focus until the click decides. */}
             {phone && (typing || !boxEmpty) ? (
               <button
                 aria-label={keyboardLabel}
@@ -680,7 +679,9 @@ export function AgentThread({
               </button>
             ) : null}
             {/* A submit button, so a click and Enter both reach the form's submit, which the
-                composer root turns into assistant-ui's own send: one way out for a message. */}
+                composer root turns into assistant-ui's own send: one way out for a message. On a
+                phone a press keeps the box's focus: Chrome focuses a tapped button, and the
+                keyboard would go down under the finger before the click lands. */}
             <RefusableButton
               busy={held ? "Send" : undefined}
               className="min-h-11"
