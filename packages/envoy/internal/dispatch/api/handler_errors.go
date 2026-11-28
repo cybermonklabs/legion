@@ -162,6 +162,13 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	// Only what the operator reads changes for a request its own client closed: its line says
 	// 499 and no ERROR line calls it a server fault (closedByClient).
 	closed := closedByClient(w, err)
+	// A refusal of the form of The Spec carries every finding beside its words, so it is written
+	// whole, at 409 SPEC_FORM (spec_form.go).
+	var formRefusal *specFormRefusal
+	if errors.As(err, &formRefusal) {
+		WriteJSON(w, http.StatusConflict, formRefusal.body())
+		return
+	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
 		if apiErr.retryAfter > 0 {
