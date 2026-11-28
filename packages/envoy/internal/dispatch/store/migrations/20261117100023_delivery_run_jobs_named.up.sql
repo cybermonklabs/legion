@@ -1,0 +1,31 @@
+-- pgmigrate:non-transactional
+-- 20261117100023_delivery_run_jobs_named.up.sql
+--
+-- The index behind the read of the deploy runs' named jobs (dispatch://INFRA-2916, R14). A deploy
+-- run is judged by its production jobs, which are read by name (delivery.runJobsNamedForRunsQuery:
+-- `repo = $1 and run_id = any($2) and name = any($3)`), and a delivery settings change reads them
+-- for every deploy run its rewrite rebuilds. Through the primary key (repo, run_id, name) that read
+-- descends once for each run, and each run's few named jobs sit on a heap page of their own among
+-- the pull-request runs' jobs, so a cold read reads about one heap page per run: at ten times the
+-- stated run rate one settings change's 80 such reads answered 159,989 rows in 1,123 ms and read
+-- 54,677 blocks from disk.
+--
+-- This index holds the named jobs of one repository together in name order, so the read of a few
+-- names over thousands of runs reads a few leaf pages per name rather than a heap page per run.
+-- It includes every column of delivery.JobColumns its key does not hold, so the read is an
+-- index-only scan, which reads no heap page that the visibility map marks all-visible. It costs
+-- one more index entry for each job a write records, and an update of a job's started_at,
+-- completed_at, apply_step or apply_step_conclusion, which no other index holds, is no longer a
+-- HOT update: it writes an entry of every index of the table, as an update of its conclusion
+-- already did (delivery_run_jobs_failed's predicate reads it).
+--
+-- It is built `concurrently`, outside the runner's transaction, because delivery_run_jobs is the
+-- table every job listing the intake and the reconcile store writes. A plain build holds SHARE on
+-- it for one read of the table, which blocks every one of those writes until it ends. A concurrent
+-- build takes SHARE UPDATE EXCLUSIVE, which no ordinary read or write waits on, at the cost of two
+-- passes over the table and a wait for the transactions already open, each wait bounded at five
+-- seconds and tried again as the runner tries every lock wait (pgmigrate.ExecNonTransactional). A
+-- failed build leaves an INVALID index of this name on delivery_run_jobs, which the runner drops
+-- with DROP INDEX CONCURRENTLY and builds again on its next attempt or boot.
+create index concurrently if not exists delivery_run_jobs_named on delivery_run_jobs (repo, name, run_id)
+    include (started_at, completed_at, conclusion, apply_step, apply_step_conclusion);

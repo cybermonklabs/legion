@@ -55,6 +55,7 @@ import {
   holdsSession,
   type LiveAgents,
   liveAgents,
+  priorityText,
   progressText,
   routeText,
 } from "./render-issue";
@@ -671,6 +672,11 @@ function issueListingRow(row: IssueSummary, atCut: boolean) {
     title: row.title,
     status: row.status,
     priority: row.priority,
+    // The priority the issue works at and the issue it takes it from, as Dispatch served them: a
+    // Dispatch release that sends no `resolved_priority` sends no `priority_from` either, and the
+    // JSON row then carries neither.
+    resolved_priority: row.resolved_priority,
+    priority_from: row.priority_from,
     parent: row.parent,
     labels: row.labels ?? [],
     open_asks: row.open_asks,
@@ -702,15 +708,17 @@ function listingRouteText(row: IssueSummary): string {
   return ` · route ${routeText(row, { name: rowPart })}`;
 }
 
-/** One issue of `dispatch issues` as a line: its key, status, priority and title, its parent and
- *  labels, its open asks, its claim, its progress, and its route (`listingRouteText`). Each title,
- *  label and holder that could split the row is quoted (`rowPart`). */
+/** One issue of `dispatch issues` as a line: its key, status, priority (`priorityText`) and
+ *  title, its parent and labels, its open asks, its claim, its progress, and its route
+ *  (`listingRouteText`). Each title, label and holder that could split the row is quoted
+ *  (`rowPart`). */
 function issueListingLine(row: IssueSummary, agents: LiveAgents | undefined): string {
   const claim = row.claim ?? null;
   const progress = progressText(row.progress, " · ");
   const labels = row.labels ?? [];
+  const priority = priorityText(row);
   return (
-    `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ` +
+    `${row.key} [${row.status}]${priority === undefined ? "" : ` ${priority}`} ` +
     rowPart(row.title) +
     // The help says each row carries its parent and labels: a root names no parent, so a reader
     // of the text tells the open roots from their children.

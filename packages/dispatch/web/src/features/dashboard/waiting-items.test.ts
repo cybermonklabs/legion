@@ -34,7 +34,12 @@ const ASKS: readonly IssueAskRow[] = asksOpenBody;
 const DECISIONS: IssueDecisions = decisionsBody;
 const CHANGES: readonly Comment[] = changesBody;
 const COVERAGE: IssueCoverage = coverageBody;
-const REPLIES: MyRepliesResponse = myRepliesBody;
+// Captured from a server of the release before `resolved_priority` and `priority_from`; each row
+// reads as an issue that inherits none, which no row of this file reads.
+const REPLIES: MyRepliesResponse = {
+  ...myRepliesBody,
+  rows: myRepliesBody.rows.map((row) => ({ ...row, priority_from: null, resolved_priority: null })),
+};
 
 function askOf(question: string): IssueAskRow {
   const found = ASKS.find((ask) => ask.question === question);
