@@ -682,37 +682,44 @@ before = tree()
 opened = []
 sys.addaudithook(lambda event, args: opened.append(args[0]) if event == "open" and isinstance(args[0], str) else None)
 
+import contextlib
 import secrets
 import time
 import warnings
 
 token = secrets.token_hex(16)
 print(f"::stop-commands::{token}", flush=True)
-with warnings.catch_warnings(record=True) as caught:
-    warnings.simplefilter("always")
-    import ci_filter_coverage
-    ci_filter_coverage.OPENED = opened
-    ci_filter_coverage.TREE_FILES = sorted(before) if isinstance(before, dict) else None
-    if os.environ["CI_FILTERS_MODE"] == "generate":
-        import ci_ts_listing
-        ci_ts_listing.COMPILER = "tsgo"
-        ci_ts_listing.start()
-    ci_filter_coverage.start_early()
-    started = time.monotonic()
-    try:
-        import ci_job_reads
-    except ci_filter_coverage.RepositoryInputError as exc:
-        ci_filter_coverage.stop_early()
-        print(f"::{token}::", flush=True)
-        ci_filter_coverage.print_annotation(exc.annotation())
-        sys.exit(1)
-    loaded = time.monotonic() - started
-    import ci_workflow_rules
-print(f"::{token}::", flush=True)
-print(f"the table, its gate files and the //ci: lines loaded in {loaded:.1f} s", flush=True)
-for import_warning in caught:
-    ci_filter_coverage.print_import_warning(import_warning)
-status = ci_filter_coverage.main()
+# Every way out after start_early() passes its one stop_early() before the second reading of the
+# tree: a table that fails to load, any other fault of the imports, and main(), however it ends.
+with contextlib.ExitStack() as stop:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        import ci_filter_coverage
+        ci_filter_coverage.OPENED = opened
+        ci_filter_coverage.TREE_FILES = sorted(before) if isinstance(before, dict) else None
+        if os.environ["CI_FILTERS_MODE"] == "generate":
+            import ci_ts_listing
+            ci_ts_listing.COMPILER = "tsgo"
+            ci_ts_listing.start()
+        ci_filter_coverage.start_early()
+        stop.callback(ci_filter_coverage.stop_early)
+        started = time.monotonic()
+        try:
+            import ci_job_reads
+        except ci_filter_coverage.RepositoryInputError as exc:
+            print(f"::{token}::", flush=True)
+            ci_filter_coverage.print_annotation(exc.annotation())
+            sys.exit(1)
+        loaded = time.monotonic() - started
+        progress = ci_filter_coverage.early_progress()
+        import ci_workflow_rules
+    print(f"::{token}::", flush=True)
+    print(f"the table, its gate files and the //ci: lines loaded in {loaded:.1f} s", flush=True)
+    if progress is not None:
+        print(progress, flush=True)
+    for import_warning in caught:
+        ci_filter_coverage.print_import_warning(import_warning)
+    status = ci_filter_coverage.main()
 after = tree(before if isinstance(before, dict) else None)
 
 mode = os.environ["CI_FILTERS_MODE"]
