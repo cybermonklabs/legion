@@ -30,8 +30,9 @@ var (
 // row moves it. Each pass of the row runs at a moment of it, so a claim's window (claimLive), a
 // request's timeout (verifyTimeout, at its production value) and a record's debounce are judged on
 // moments the row sets, never the wall clock's, and a row that needs one of them past moves the
-// fake past it rather than shortening it. The stores' waits run on the real clock (stampsOn): a
-// row's answer can lose its compare-and-swap to the listener's own write.
+// fake past it rather than shortening it. The stores' waits run on the real clock (stampsOn), where
+// each bounds a call answered at once in a correct run, and the budget of a write that lost a
+// compare-and-swap is read on the fake, which stands through the call.
 func verifyFake() *clocktest.Fake {
 	return clocktest.New(time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC))
 }
@@ -49,10 +50,15 @@ func openVerifyingStoreWithTTL(t *testing.T, conn *natsgo.Conn, fake *clocktest.
 }
 
 // dispatchWriter is a writer of the bucket as Dispatch's CI reconcile binds one: a store of its
-// own, with no cache.
+// own, with no cache. Its legacy JetStream context waits as long as testnats.MaxWait says, not
+// nats.go's five seconds, so a KV call of the writer's that takes no context (a write's read and
+// compare-and-swap, DoneVerifying's delete) is answered late on a loaded machine rather than
+// failed. Its store's waits run on the real clock, where each bounds a call answered at once in a
+// correct run; a row whose answer loses a compare-and-swap puts the writer's store on a fake it
+// moves through each backoff the write arms (onBackoffFake, drive).
 func dispatchWriter(t *testing.T, conn *natsgo.Conn) *Writer {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -170,13 +176,16 @@ func TestAVerifyReadThatBeganBeforeTheRequestAuthorizesNothing(t *testing.T) {
 // answer's compare-and-swap then lost to the listener's own write of the record (the claim's
 // refresh as it wrote the newer request), and the retry wrote after the newer request existed.
 // The retry keeps the revision the reconcile read first, so it authorizes nothing; an answer at the
-// newer request's revision publishes.
+// newer request's revision publishes. The answer's retry backs off and reads its budget on a fake
+// the row moves to each backoff the write arms (onBackoffFake, drive), so it is within the budget
+// on that fake however long the listener's write in between takes.
 func TestARetriedAnswerKeepsTheRevisionItReadFirst(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	fake := verifyFake()
 	s := openVerifyingStore(t, conn, fake)
 	writer := dispatchWriter(t, conn)
+	writerClock, steps, start := onBackoffFake(writer.store)
 	readyHead(t, s)
 	z, pub := testSummarizer(s, 0), &recPub{}
 	z.pass(pub, logging.New("test"), fake.Now().UnixMilli())
@@ -194,8 +203,13 @@ func TestARetriedAnswerKeepsTheRevisionItReadFirst(t *testing.T) {
 			z.pass(pub, logging.New("test"), fake.Now().UnixMilli())
 		})
 	}
-	if _, err := writer.MarkVerified(context.Background(), verifyHead, read, streamOf(t, writer)); err != nil {
-		t.Fatalf("mark verified: %v", err)
+	stream := streamOf(t, writer)
+	var marked error
+	drive(t, writerClock, steps, start, func() {
+		_, marked = writer.MarkVerified(context.Background(), verifyHead, read, stream)
+	})
+	if marked != nil {
+		t.Fatalf("mark verified: %v", marked)
 	}
 	writer.store.casHook = nil
 	if attempts < 2 {
@@ -609,13 +623,17 @@ func TestAStampReadInABucketSinceCreatedAgainAuthorizesNothing(t *testing.T) {
 
 // A batch of a head's runs that loses its compare-and-swap to a write landing between its read
 // and its write applies every rule again to the record it reads anew: a newer run of a name that
-// landed meanwhile is not replaced by the batch's older one, and the batch's other runs land.
+// landed meanwhile is not replaced by the batch's older one, and the batch's other runs land. The
+// batch's retry backs off and reads its budget on a fake the row moves to each backoff the write
+// arms (onBackoffFake, drive), so it is within the budget on that fake however long the write in
+// between takes.
 func TestRecordRunsAppliesEveryRuleAgainAfterLosingItsCompareAndSwap(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	ctx := context.Background()
 	s := openStore(t, conn)
 	writer := dispatchWriter(t, conn)
+	writerClock, steps, start := onBackoffFake(writer.store)
 	if err := s.Record(ctx, recordRunsCheck("ci-ok", 5, "completed", "failure", "2026-11-22T00:05:00Z")); err != nil {
 		t.Fatalf("record: %v", err)
 	}
@@ -628,9 +646,12 @@ func TestRecordRunsAppliesEveryRuleAgainAfterLosingItsCompareAndSwap(t *testing.
 			}
 		}
 	}
-	_, err := writer.RecordRuns(ctx, []contracts.CIObservation{
-		recordRunsCheck("ci-ok", 7, "queued", "", "2026-11-22T00:07:00Z"),
-		recordRunsCheck("lint", 11, "completed", "success", "2026-11-22T00:07:30Z"),
+	var err error
+	drive(t, writerClock, steps, start, func() {
+		_, err = writer.RecordRuns(ctx, []contracts.CIObservation{
+			recordRunsCheck("ci-ok", 7, "queued", "", "2026-11-22T00:07:00Z"),
+			recordRunsCheck("lint", 11, "completed", "success", "2026-11-22T00:07:30Z"),
+		})
 	})
 	writer.store.casHook = nil
 	if err != nil || attempts < 2 {

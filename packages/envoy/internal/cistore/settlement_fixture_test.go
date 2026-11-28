@@ -179,7 +179,7 @@ func settlesAsTheFixtureSays(t *testing.T, fixture settlementFixture, head fixtu
 	store := openListener(t, client.Conn, c.options()...)
 	// The reconcile's writer, which records the statuses Dispatch reads of GitHub into the same
 	// bucket the listener's store settles from, and stamps them on the same clock.
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("reconcile"), cistore.WithClock(c.fake))
+	writer, err := cistore.OpenWriter(client.Connection(), writerJS(t, client.Connection()), logging.New("reconcile"), cistore.WithClock(c.fake))
 	if err != nil {
 		t.Fatalf("open the reconcile's writer: %v", err)
 	}

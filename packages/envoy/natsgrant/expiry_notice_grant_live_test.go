@@ -118,7 +118,9 @@ func TestOnlyUsersOnTheListenersGrantWriteOrReadAnExpiryNotice(t *testing.T) {
 
 	t.Run("the listener's user stores a message on the subject and Dispatch's user reads it back", func(t *testing.T) {
 		body := []byte(`{"role":"` + expiryNoticeRole + `","sequence":3}`)
-		_, err := hub.owner.JS().Publish(subject, body, natsgo.MsgId("expiry-grant-stored-row"), natsgo.Context(ctx))
+		listenerJS, err := hub.owner.Conn.JetStream(testnats.MaxWait(t))
+		require.NoError(t, err)
+		_, err = listenerJS.Publish(subject, body, natsgo.MsgId("expiry-grant-stored-row"), natsgo.Context(ctx))
 		require.NoError(t, err, "the listener's user stores a message on %s", subject)
 		outbox, err := bus.Connect([]string{hub.uri}, bus.WithName("dispatch"), seedEnvironment(hub.dispatch))
 		require.NoError(t, err, "Dispatch's user connects")

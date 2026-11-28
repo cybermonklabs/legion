@@ -347,6 +347,20 @@ func driveBackoffs(t *testing.T, fake *clocktest.Fake, steps <-chan writeStep, s
 	}
 }
 
+// drive runs call on a goroutine of its own and moves fake, the clock onBackoffFake put the
+// writing store on, standing at start, to each backoff the write serving call arms
+// (driveBackoffs), until call has returned. The write's budget, and its caller's record wait, run
+// on fake, which moves only to those backoffs. call runs off the test goroutine, so it calls no
+// method of t that ends the test; what it writes is the caller's to read once drive returns.
+func drive(t *testing.T, fake *clocktest.Fake, steps chan writeStep, start time.Time, call func()) {
+	t.Helper()
+	go func() {
+		call()
+		steps <- writeStep{returned: true}
+	}()
+	driveBackoffs(t, fake, steps, start)
+}
+
 // calls runs numbered calls against one record, each in its own goroutine, and keeps each one's
 // error. kv is the writeKV wrapStore returned with s, on whose queueChanged queue waits.
 type calls struct {
@@ -403,11 +417,7 @@ func (c *calls) wait(what string) []error {
 // backoffs the write arms.
 func (c *calls) driven(fake *clocktest.Fake, steps chan writeStep, start time.Time, what string) []error {
 	c.t.Helper()
-	go func() {
-		c.wg.Wait()
-		steps <- writeStep{returned: true}
-	}()
-	driveBackoffs(c.t, fake, steps, start)
+	drive(c.t, fake, steps, start, c.wg.Wait)
 	return c.wait(what)
 }
 
@@ -1162,11 +1172,9 @@ func TestADeletedBucketFailsAWriteWithinTheBudget(t *testing.T) {
 	}
 	h := head{"example-org", "example-repo", "42", "6666666666666666666666666666666666666666"}
 	var writeErr error
-	go func() {
+	drive(t, fake, steps, start, func() {
 		writeErr = s.Record(context.Background(), h.check("check-0", 800, "completed", "success", "2026-09-24T01:00:00Z"))
-		steps <- writeStep{returned: true}
-	}()
-	driveBackoffs(t, fake, steps, start)
+	})
 	failedAt := fake.Now()
 	if writeErr == nil {
 		t.Fatal("the write succeeded against a deleted bucket, want an error")

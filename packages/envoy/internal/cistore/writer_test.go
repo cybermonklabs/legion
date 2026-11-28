@@ -35,6 +35,19 @@ func openListener(t *testing.T, conn *natsgo.Conn, options ...cistore.Option) *c
 	return store
 }
 
+// writerJS is the legacy JetStream context a row hands a writer it opens on conn
+// (cistore.OpenWriter): its requests wait as long as testnats.MaxWait says, where a bus client's
+// own context (bus.Client.JS) waits the product's ten seconds, so a KV call of the writer's that
+// takes no context is answered late on a loaded machine rather than failed.
+func writerJS(t *testing.T, conn *natsgo.Conn) natsgo.JetStreamContext {
+	t.Helper()
+	js, err := conn.JetStream(testnats.MaxWait(t))
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	return js
+}
+
 // A writer's record reaches a settlement, not only a key: it writes a check run and a check suite
 // of one head into the bucket with no watcher of its own, and the listener's store sees them
 // through its cache watcher and its real summary loop publishes the head's settlement. The record
@@ -51,7 +64,7 @@ func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 	defer client.Close()
 	c := newLoopClock()
 	store := openListener(t, client.Conn, c.options()...)
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithClock(c.fake))
+	writer, err := cistore.OpenWriter(client.Connection(), writerJS(t, client.Connection()), logging.New("writer"), cistore.WithClock(c.fake))
 	if err != nil {
 		t.Fatalf("open the writer: %v", err)
 	}
@@ -143,7 +156,7 @@ func TestOpenWriterFailsAndCreatesNothingWithoutTheBucket(t *testing.T) {
 	}
 	defer client.Close()
 
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+	writer, err := cistore.OpenWriter(client.Connection(), writerJS(t, client.Connection()), logging.New("writer"))
 	if !errors.Is(err, natsgo.ErrBucketNotFound) {
 		t.Fatalf("OpenWriter without the bucket = %v, want %v", err, natsgo.ErrBucketNotFound)
 	}
@@ -171,7 +184,7 @@ func TestHasRecordReadsTheBucketRatherThanACache(t *testing.T) {
 	}
 	defer client.Close()
 	store := openListener(t, client.Conn)
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+	writer, err := cistore.OpenWriter(client.Connection(), writerJS(t, client.Connection()), logging.New("writer"))
 	if err != nil {
 		t.Fatalf("open the writer: %v", err)
 	}
@@ -236,7 +249,7 @@ func TestAWriterReportsWhetherTheObservationChangedTheRecord(t *testing.T) {
 	// The listener's store makes the bucket a writer only binds; no cache of this test's own is
 	// read, since the writer answers from what it wrote.
 	openListener(t, client.Conn)
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+	writer, err := cistore.OpenWriter(client.Connection(), writerJS(t, client.Connection()), logging.New("writer"))
 	if err != nil {
 		t.Fatalf("open the writer: %v", err)
 	}
@@ -304,7 +317,7 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 	// The listener's store makes the bucket a writer only binds; the record itself is read out of
 	// that bucket below, since a writer keeps no cache to read it from.
 	openListener(t, client.Conn)
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+	writer, err := cistore.OpenWriter(client.Connection(), writerJS(t, client.Connection()), logging.New("writer"))
 	if err != nil {
 		t.Fatalf("open the writer: %v", err)
 	}
@@ -361,7 +374,8 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 	failures := make([]error, len(callers))
 	// Every caller waits on one channel rather than on a sleep, so they reach the record
 	// together whatever the machine is doing, and the test waits for all six rather than for a
-	// moment by the clock.
+	// moment by the clock, through the shared wait (testwait.Returns), which names the callers if
+	// one never returns.
 	start := make(chan struct{})
 	var running sync.WaitGroup
 	running.Add(len(callers))
@@ -373,7 +387,7 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 		}()
 	}
 	close(start)
-	running.Wait()
+	testwait.Returns(t, "the six concurrent callers of one head to return", running.Wait)
 
 	changed := 0
 	for i, answer := range answers {

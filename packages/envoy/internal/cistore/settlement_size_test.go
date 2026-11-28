@@ -2,6 +2,7 @@ package cistore
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,13 +38,14 @@ func TestASettlementAtItsBoundIsStored(t *testing.T) {
 	)
 	url := func(i int) string { return "https://github.com/example-org/example-repo/runs/" + strconv.Itoa(1000+i) }
 	name := func(i, runes int) string { return fmt.Sprintf("%s%04d", strings.Repeat(`"`, runes-4), i) }
-	// sizeWith is the size of the settlement the record would publish with one more failing check,
-	// named name, which the store would accept only within maxSettlementBytes. A few bytes are
-	// left for what the record's later writes add (a longer generation).
+	// sizeOf is the size of the settlement state would publish with one more failing check, check i
+	// named name, which the store would accept only within maxSettlementBytes. It adds the check to
+	// a copy of state's checks, so one read of the record sizes every name tried beside it. A few
+	// bytes are left for what the record's later writes add (a longer generation).
 	const slack = 16
-	sizeWith := func(i int, name string) int {
+	sizeOf := func(state State, i int, name string) int {
 		t.Helper()
-		state := getState(t, store, owner, repo, number, sha)
+		state.Checks = maps.Clone(state.Checks)
 		state.Checks[name] = Check{Name: name, CheckRunID: checkRunID(1000 + i), URL: url(i), Status: "completed", Conclusion: "failure", ObservedAt: "2026-09-27T00:00:00Z"}
 		size, err := settlementSize(state)
 		if err != nil {
@@ -59,16 +61,68 @@ func TestASettlementAtItsBoundIsStored(t *testing.T) {
 	}
 
 	// Checks named at the envelope text cap while the next one fits, then one whose name is as long
-	// as still fits.
+	// as still fits. Each name is sized beside the record as the bucket holds it after the write
+	// before: the store's write leaves its cache to the watcher, which applies the record it wrote
+	// later, so the store holds no copy of it when Record returns.
+	//
+	// A check named at 2048 runes grows the settlement by the same bytes each time, give or take a
+	// digit of the record's generation: its name, run id and URL take one width for every check
+	// here (%04d of i, 1000+i, four digits up to 8999). So the growth the second check makes places
+	// the last one that fits, and the checks up to one short of it are recorded with no read
+	// between them, one at a time as before. Their record is then read once and sized whole: a
+	// settlement only grows with its checks, so a whole size within the bound shows that each of
+	// those checks fitted beside the record before it, as the loop below asks of each check it
+	// records. The loop goes on from that read a check at a time, so the check it stops at is one
+	// that does not fit beside the record as the bucket holds it.
 	record(0, name(0, 2048))
 	checks := 1
-	for ; sizeWith(checks, name(checks, 2048)) <= maxSettlementBytes; checks++ {
+	state := getState(t, store, owner, repo, number, sha)
+	over := sizeOf(state, checks, name(checks, 2048))
+	if first := over; first <= maxSettlementBytes {
 		record(checks, name(checks, 2048))
+		checks++
+		state = getState(t, store, owner, repo, number, sha)
+		over = sizeOf(state, checks, name(checks, 2048))
+		if growth := over - first; growth > 0 && over <= maxSettlementBytes {
+			if unread := (maxSettlementBytes - over) / growth; unread > 0 {
+				for range unread {
+					record(checks, name(checks, 2048))
+					checks++
+				}
+				state = getState(t, store, owner, repo, number, sha)
+				whole, err := settlementSize(state)
+				if err != nil {
+					t.Fatalf("settlement size: %v", err)
+				}
+				if whole+slack > maxSettlementBytes {
+					t.Fatalf("the %d checks recorded with no read between them settle in %d bytes, past the %d-byte bound less %d: a check did not grow the settlement by the %d bytes the second one did",
+						unread, whole, maxSettlementBytes, slack, growth)
+				}
+				over = sizeOf(state, checks, name(checks, 2048))
+			}
+		}
 	}
-	last := sort.Search(2048-4, func(runes int) bool { return sizeWith(checks, name(checks, runes+5)) > maxSettlementBytes }) + 4
+	for over <= maxSettlementBytes {
+		record(checks, name(checks, 2048))
+		checks++
+		state = getState(t, store, owner, repo, number, sha)
+		over = sizeOf(state, checks, name(checks, 2048))
+	}
+	// The last name is sized beside the record the loop read last, which no write has changed
+	// since. A name's settlement grows by the same bytes for each rune, so the sizes at 5 runes and
+	// at 2048 place the longest name that fits; the lengths at and past that place confirm it, and a
+	// search of the whole range runs only where they do not.
+	fits := func(runes int) bool { return sizeOf(state, checks, name(checks, runes)) <= maxSettlementBytes }
+	last := 4
+	if shortest := sizeOf(state, checks, name(checks, 5)); shortest <= maxSettlementBytes {
+		last = 5 + (maxSettlementBytes-shortest)*(2048-5)/(over-shortest)
+		if !fits(last) || fits(last+1) {
+			last = sort.Search(2048-4, func(runes int) bool { return !fits(runes + 5) }) + 4
+		}
+	}
 	record(checks, name(checks, last))
 	checks++
-	state := getState(t, store, owner, repo, number, sha)
+	state = getState(t, store, owner, repo, number, sha)
 	size, err := settlementSize(state)
 	if err != nil {
 		t.Fatalf("settlement size: %v", err)

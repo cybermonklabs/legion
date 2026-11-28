@@ -28,11 +28,14 @@ import (
 
 // grantedConnection connects to uri as the nkey user whose seed is seed, with options, and
 // returns the connection with the asynchronous errors the server sends it, a refused publish's
-// among them.
+// among them. It connects through testnats.AwaitConnectSeed, which makes the connect again when a
+// try times out, until the test binary's deadline less testwait's margin, so a handshake a loaded
+// machine answers late costs the row time and not its connection; a refusal of the connect fails
+// the row, which needs the connection.
 func grantedConnection(t *testing.T, uri, seed string, options ...natsgo.Option) (*natsgo.Conn, <-chan error) {
 	t.Helper()
 	errs := make(chan error, 16)
-	conn, err := testnats.ConnectSeed(t, uri, seed, append(options, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
+	conn, err := testnats.AwaitConnectSeed(t, uri, seed, append(options, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
 		select {
 		case errs <- err:
 		default:
@@ -149,13 +152,15 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	const durable = "listener-shared"
-	_, err = owner.JS().AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
+	ownerJS, err := owner.Conn.JetStream(testnats.MaxWait(t))
+	require.NoError(t, err)
+	_, err = ownerJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
 		Durable: durable, DeliverSubject: owner.Conn.NewInbox(), FilterSubjects: []string{"notifications.dispatch.>"}, AckPolicy: natsgo.AckExplicitPolicy,
 	}, natsgo.Context(ctx))
 	require.NoError(t, err, "the shared listener's user creates its durable")
 	reader, _ := grantedConnection(t, uri, readerSeed)
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 
 	t.Run("a push consumer delivers on a subject the grant does not publish", func(t *testing.T) {
@@ -177,7 +182,7 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 	})
 	t.Run("it reads another project's stored Dispatch event", func(t *testing.T) {
 		const event = "notifications.dispatch.issue.INFRA.INFRA-1.comment.created"
-		_, err := owner.JS().Publish(event, []byte("another project's event"), natsgo.Context(ctx))
+		_, err := ownerJS.Publish(event, []byte("another project's event"), natsgo.Context(ctx))
 		require.NoError(t, err, "the shared user stores another project's Dispatch event")
 		inbox := natsgrant.EdgeInboxPrefix("m") + ".read"
 		read, err := edgeConn.SubscribeSync(inbox)
@@ -203,11 +208,11 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 			Durable: durable, DeliverSubject: stolen, FilterSubjects: []string{"notifications.dispatch.>"}, AckPolicy: natsgo.AckExplicitPolicy,
 		}, natsgo.Context(ctx))
 		require.NoError(t, err, "the edge updates %s", durable)
-		info, err := owner.JS().ConsumerInfo(bus.Stream, durable, natsgo.Context(ctx))
+		info, err := ownerJS.ConsumerInfo(bus.Stream, durable, natsgo.Context(ctx))
 		require.NoError(t, err)
 		require.Equal(t, stolen, info.Config.DeliverSubject, "%s delivers to the edge's inbox", durable)
 		require.NoError(t, edgeJS.DeleteConsumer(bus.Stream, durable, natsgo.Context(ctx)), "the edge deletes %s", durable)
-		_, err = owner.JS().ConsumerInfo(bus.Stream, durable, natsgo.Context(ctx))
+		_, err = ownerJS.ConsumerInfo(bus.Stream, durable, natsgo.Context(ctx))
 		require.ErrorIs(t, err, natsgo.ErrConsumerNotFound, "%s is still there", durable)
 	})
 	t.Run("a subscription under deliver.> is admitted and gets two tokens past the prefix", func(t *testing.T) {
@@ -297,7 +302,7 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 	), []string{"-js"}, false)
 	ctx := callContext(t)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	adminStreams, err := jetstream.New(adminConn)
 	require.NoError(t, err)
@@ -320,7 +325,7 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		return err
 	}
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 
 	err = refusedRequest(t, edgeErrs, `Publish to "$JS.API.STREAM.UPDATE.KV_`+bus.InterestBucket+`"`, func(ctx context.Context) error {
@@ -392,7 +397,7 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 	), []string{"-js"}, false)
 	ctx := callContext(t)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	adminStreams, err := jetstream.New(adminConn)
 	require.NoError(t, err)
@@ -545,12 +550,12 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	adminStreams, err := jetstream.New(adminConn)
 	require.NoError(t, err)
 	otherConn, _ := grantedConnection(t, uri, otherSeed)
-	other, err := otherConn.JetStream()
+	other, err := otherConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	scratch := func(js natsgo.JetStreamContext, name string) {
 		t.Helper()
@@ -598,7 +603,7 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 	var received atomic.Int64
 	const kept, keptEmpty = "kept, 1 messages, max_msgs -1", "kept, 0 messages, max_msgs -1"
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 
 	for i, delivery := range []struct {
@@ -715,7 +720,7 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	for _, name := range []string{"SCRATCH_HB", "SCRATCH_HB_UNSUBSCRIBED"} {
 		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage}, natsgo.Context(ctx))
@@ -727,7 +732,7 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 	require.NoError(t, adminConn.FlushWithContext(ctx))
 
 	edgeConn, _ := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	// heartbeat is the shortest idle heartbeat nats-server takes: it refuses a push consumer's under
 	// 100 ms (NewJSConsumerSmallHeartbeatError). A consumer with nothing to deliver sends its first
@@ -774,7 +779,7 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	for _, name := range []string{"SCRATCH_PULL", "SCRATCH_ACK", "SCRATCH_CONTROL"} {
 		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage}, natsgo.Context(ctx))
@@ -782,7 +787,7 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	}
 
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	inbox := natsgrant.EdgeInboxPrefix("m") + ".probe"
 	replies, err := edgeConn.SubscribeSync(inbox)

@@ -78,6 +78,8 @@ type verdictListener struct {
 	store      *cistore.Store
 	// passes counts the passes its summary loop ended.
 	passes *summaryPasses
+	// loopStart is where the fake stood as its summary loop started, where the loop's grid starts.
+	loopStart time.Time
 	// messages is what the subscription receives.
 	messages chan *nats.Msg
 	logged   *logtest.Buffer
@@ -111,7 +113,12 @@ func (p *summaryPasses) count() int {
 }
 
 // verdictListenerOn is a listener on d whose ENVOY_VERDICT_APP_ID is verdictAppID, "" for unset, as
-// cmd/listener builds one: the setting goes to the webhook handler.
+// cmd/listener builds one: the setting goes to the webhook handler. It returns once the listener's
+// summary loop has armed its first instant, a tick past where the fake stood as the loop started.
+// The loop arms it on a goroutine of its own, and one that armed it only after the row's first
+// move of the fake would arm it a tick past that move: a move to the head's debounce and a tick
+// past its last write (settledByDebounce), made while no loop had armed anything, would then leave
+// the loop's first pass unreached, and the head would read as held with no pass run.
 func verdictListenerOn(d *verdictDeployment, verdictAppID string) *verdictListener {
 	t := d.t
 	t.Helper()
@@ -126,7 +133,17 @@ func verdictListenerOn(d *verdictDeployment, verdictAppID string) *verdictListen
 	store := openListener(t, d.client.Conn, cistore.WithClock(d.fake), cistore.WithSummaryObserver(passes))
 	loop, endLoop := context.WithCancel(t.Context())
 	t.Cleanup(endLoop)
+	loopStart := d.fake.Now()
 	cistore.StartSummaryLoop(loop, store, d.client, loopDebounce, loopTick, metrics.New().NewGauge("held", ""), logging.New("e2e"))
+	// Every loop of d started at this moment arms its first instant at the same deadline, which the
+	// fake, standing where it stood as they started, has not reached: each such timer is pending.
+	started := 1
+	for _, other := range d.listeners {
+		if other.loopStart.Equal(loopStart) {
+			started++
+		}
+	}
+	d.fake.AwaitArmedCountAt(t, fmt.Sprintf("the first pass of each of the %d summary loops started at %s", started, loopStart.Format(time.RFC3339Nano)), loopStart.Add(loopTick), started)
 	messages := make(chan *nats.Msg, 64)
 	sub, err := d.client.Conn.ChanSubscribe(verdictSubject, messages)
 	if err != nil {
@@ -135,7 +152,7 @@ func verdictListenerOn(d *verdictDeployment, verdictAppID string) *verdictListen
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 	handler := webhook.GitHubHandler(verdictSecret, "@legion", "", verdictAppID, d.client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	deliveries := 0
-	l := &verdictListener{t: t, deployment: d, store: store, passes: passes, messages: messages, logged: logged, handler: func(event, body string) {
+	l := &verdictListener{t: t, deployment: d, store: store, passes: passes, loopStart: loopStart, messages: messages, logged: logged, handler: func(event, body string) {
 		t.Helper()
 		deliveries++
 		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(body))
@@ -250,11 +267,15 @@ func TestASuiteWithNoAppIDStillHoldsTheHead(t *testing.T) {
 }
 
 // settledByDebounce reports the settlement a summary loop of the deployment published on what its
-// listeners have recorded, and false when none did. It moves the fake to each moment a loop armed,
-// up to the head's debounce and a tick past its last write (pastDebounce), and then there, once
-// every cache holds that write (cached); after each move it waits for every pass the move fired to
-// end. While the head is held, each loop's one timer, at the next instant of its grid, is all
-// there is armed; a ready head would be attempted at the first instant past its debounce. Then it
+// listeners have recorded, and false when none did. A row calls it before it first moves the fake,
+// so each listener's loop has its first instant armed (verdictListenerOn). Once every cache holds
+// the head's last write (cached), it moves the fake to each moment a loop armed, earliest first, up
+// to the head's debounce and a tick past that write (pastDebounce), and after each move waits for
+// every pass the move fired to end, by which each of those loops has armed its next instant, if it
+// has one (cistore.SummaryObserver); once nothing is armed up to there, it moves there. Each loop's
+// one timer is all that is armed on the fake meanwhile, so the timers a move fires are passes. So
+// every loop runs its first pass and each pass armed after it up to there, and a ready head is
+// attempted at the first instant of its loop's grid past its debounce, which is no later. Then it
 // publishes verdictMarker on the subscription's subject over the connection the loops publish on,
 // and reads the subscription's first message: NATS hands a subscriber one connection's messages in
 // the order they were published, so a settlement any of those passes published comes before it.

@@ -499,7 +499,10 @@ func TestRewatchRestartsStoppedWatcher(t *testing.T) {
 
 	url := conn.ConnectedUrl()
 	conn.Close()
-	testwait.Eventually(t, "the stopped watcher to become unhealthy", func() bool { return s.WatchErr() != nil })
+	testwait.Until(t, "the stopped watcher to become unhealthy", func() (error, bool) {
+		err := s.WatchErr()
+		return err, err != nil
+	})
 	if err := s.Ping(); err == nil {
 		t.Fatal("stopped watcher should make the CI store unhealthy")
 	}
