@@ -45,6 +45,7 @@ import {
   isReader,
   PRESET_NAMES,
   STATE_LINES,
+  VIEW_LOADING_LINES,
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "../slots/failed-read-line";
@@ -52,6 +53,7 @@ import { focusIsLoose } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
+import { ViewLoadingLine } from "../view-loading-line";
 import { DecisionsRow } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
@@ -199,9 +201,8 @@ export function DecisionsFilterBody({
   view: TreeNode;
 }): ReactNode {
   const navigate = useNavigate();
-  const { failures, parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries(
-    { issue, reader, root, view }
-  );
+  const { failures, out, parts, readsHeld, retry, retrying, unreadable, writeUps } =
+    useDecisionsEntries({ issue, reader, root, view });
   // The page's one rule for naming a person (`AgentText.author`), which the panel's facts of the
   // focused row name its keeper by: a name, never an id (R9, R22).
   const agentText = useAgentText();
@@ -797,6 +798,9 @@ export function DecisionsFilterBody({
           retrying={line.retrying}
         />
       ))}
+      {unreadable.length === 0 && out.length > 0 ? (
+        <ViewLoadingLine names={out.map((read) => VIEW_LOADING_LINES.decisions[read])} />
+      ) : null}
       {/* The foot's rows stand after its control, outside this element, and are this tree's
           all the same (`aria-owns`), so the page holds one tree. The element itself takes the
           focus only to pass it on (`passFocus`), and only from a script: a press on it outside

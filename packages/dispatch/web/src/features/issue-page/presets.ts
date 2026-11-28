@@ -39,11 +39,18 @@ import type { FILTER_SIGNAL_WORDS, NodeType, Preset } from "./page-words";
  *  Dashboard, which draws no view of the tree (dispatch://INFRA-5702/spec#b-r-new-page), and
  *  Threads, which draws the issue's threads and no view of the tree either
  *  (dispatch://INFRA-5704/spec#b-r-control). */
-export type Filter = Exclude<Preset, "conversation" | "dashboard" | "threads">;
+// Part N's Documents is no filter either: it draws its list in the outline's place, and no
+// outline, words box or Contents pane (its R4).
+export type Filter = Exclude<Preset, "conversation" | "dashboard" | "threads" | "documents">;
 
 /** Whether `preset` is a filter rather than the page with no filter on, Dashboard or Threads. */
 export function isFilter(preset: Preset): preset is Filter {
-  return preset !== "conversation" && preset !== "dashboard" && preset !== "threads";
+  return (
+    preset !== "conversation" &&
+    preset !== "dashboard" &&
+    preset !== "threads" &&
+    preset !== "documents"
+  );
 }
 
 /** The kinds each filter draws as rows of its own (R2). */

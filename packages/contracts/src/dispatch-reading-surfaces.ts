@@ -76,6 +76,7 @@ export type DispatchReadingSurface =
   | "spec-requirement-words"
   | "spec-version-summary"
   | "artifact-version-summary"
+  | "issue-page-version-summary"
   | "change-view-diff"
   | "credential-request-reason"
   | "issue-components-reason"
@@ -1016,6 +1017,18 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: false,
     rendered: false,
     surface: "artifact-version-summary",
+  },
+  {
+    files: [
+      "packages/dispatch/web/src/features/issue-page/DocumentVersions.tsx",
+      "packages/dispatch/web/src/features/issue-page/VersionControl.tsx",
+    ],
+    reach:
+      "/issues/<ISSUE>/artifacts/<SLUG> with the new issue page on, the opened document's version control and its list of versions",
+    reason: `A version's summary names the version it was given to. ${ONE_LINE_FIELD_REASON}`,
+    record: false,
+    rendered: false,
+    surface: "issue-page-version-summary",
   },
   // The diff between two versions of a document, at the three places that compare them.
   {

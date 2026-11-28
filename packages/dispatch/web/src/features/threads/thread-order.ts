@@ -9,6 +9,7 @@
  * is still `inbox.thread-order`: it is the reader's own choice, not worth dropping to a rename.
  */
 
+import type { EventFreshness } from "../../hooks/useIsHuman";
 import { useUserPreference } from "../shell/userPreference";
 
 export const THREAD_ORDERS = ["oldest", "newest"] as const;
@@ -21,10 +22,14 @@ export const THREAD_ORDER_LABELS: Record<ThreadOrder, string> = {
 };
 
 /** The reader's thread order, kept for their browser. */
-export function useThreadOrder(): [ThreadOrder, (next: ThreadOrder) => void] {
+export function useThreadOrder(
+  freshness?: EventFreshness
+): [ThreadOrder, (next: ThreadOrder) => void] {
   return useUserPreference<ThreadOrder>(
     "inbox.thread-order",
     (stored) => (stored === "newest" ? "newest" : "oldest"),
-    (value) => value
+    (value) => value,
+    // Who is reading, kept fresh by events where the host says so; by default, the app's.
+    { freshness }
   );
 }

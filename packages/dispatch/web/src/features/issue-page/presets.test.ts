@@ -5,7 +5,7 @@ import { actorLabelText } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { deletedLineText } from "../refs/post-marks";
 import type { TreeNode } from "./issue-tree";
-import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
+import { NODE_TYPE_NAMES, type NodeType, PRESET_ORDER, type Preset } from "./page-words";
 import { filterSignals, isFilter, presetView } from "./presets";
 import { parentLinkWords } from "./projection-fixture";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
@@ -224,6 +224,23 @@ test("each filter's signal is its count, with what of it asks something of the r
   });
   // A filter by words narrows every count with it.
   expect(filterSignals(issue(), "b-t2").plan.count).toBe(1);
+});
+
+// Part N's R4: Documents draws its list in the outline's place, and no outline, words box or
+// Contents pane, so it is no filter: it holds no signal of the row's, and were its view read it
+// is the page with no filter on.
+test("Documents is no filter", () => {
+  expect(isFilter("documents")).toBe(false);
+  expect(PRESET_ORDER.filter(isFilter)).toEqual(["spec", "verification", "plan", "decisions"]);
+  expect(Object.keys(filterSignals(issue(), "")).sort()).toEqual([
+    "decisions",
+    "plan",
+    "spec",
+    "verification",
+  ]);
+  const root = issue();
+  expect(presetView(root, "documents", "").filtering).toBe(false);
+  expect(drawn(root, "documents")).toEqual(drawn(root, "conversation"));
 });
 
 // R35: "to review" counts the review list alone. A decision that waits and is tied to no

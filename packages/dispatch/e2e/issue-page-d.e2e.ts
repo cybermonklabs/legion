@@ -59,9 +59,11 @@ The view row is one line at every width.
 `;
 
 /** What the seed below gives each control of the view row to count: no question and no thread
- *  of the reader's, two statements, one check, no plan and no decision. Dashboard draws no count,
- *  and neither does Threads, since no thread waits on the reader. */
-const SEEDED_COUNTS: Readonly<Record<Exclude<Preset, "dashboard" | "threads">, number>> = {
+ *  of the reader's, two statements, one check, no plan and no decision. Dashboard and Documents
+ *  draw no count, and neither does Threads, since no thread waits on the reader. */
+const SEEDED_COUNTS: Readonly<
+  Record<Exclude<Preset, "dashboard" | "threads" | "documents">, number>
+> = {
   conversation: 0,
   decisions: 0,
   plan: 0,
@@ -503,7 +505,8 @@ test("the controls are toggles with an address each, one line at every width, an
 
     // The toolbar Filters: the controls in `PRESET_ORDER`, Dashboard first, each named by its
     // view's word alone. The four filters are described by their signals, with the seed's counts.
-    // Dashboard and Conversation have no count, and Threads has none for this seed (below).
+    // Dashboard, Conversation and Documents have no count, and Threads has none for this seed
+    // (below).
     await expect(presetToolbar(page), "no toolbar named Filters holds the controls").toHaveCount(1);
     await expect(presetToggles(page)).toHaveCount(PRESET_ORDER.length);
     const expectedNames = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]);
@@ -521,6 +524,10 @@ test("the controls are toggles with an address each, one line at every width, an
         preset === "conversation" ? "true" : "false"
       );
       if (preset === "dashboard" || preset === "conversation") continue;
+      if (preset === "documents") {
+        await expect(presetCount(page, preset), "Documents draws a count").toHaveCount(0);
+        continue;
+      }
       // Threads counts the rows of Waiting on me, and no thread of this seed waits on the reader,
       // so it draws no count (dispatch://INFRA-5704/spec#b-r-control).
       if (preset === "threads") {
@@ -580,8 +587,8 @@ test("the controls are toggles with an address each, one line at every width, an
     await page.keyboard.press("ArrowLeft");
     await expect(presetToggle(page, PRESET_ORDER[PRESET_ORDER.length - 1])).toBeFocused();
 
-    // Keys opens the list of keys, which names each view's chord; the five of Conversation and
-    // the filters are read here.
+    // Keys opens the list of keys, which names each view's chord; Conversation's and the four
+    // filters' (Spec, Verification, Plan and Decisions) are read here.
     await filterRow(page).getByRole("button", { exact: true, name: "Keys" }).click();
     const keys = page.getByRole("dialog", { name: "Keyboard shortcuts" });
     await expect(keys).toBeVisible();
@@ -600,6 +607,7 @@ test("the controls are toggles with an address each, one line at every width, an
       ["d", "decisions"],
       ["c", "conversation"],
     ] as const) {
+      // no opening focus: /collaborators lands it in Details, and the press after it is no load.
       await focusThePage(page);
       await page.keyboard.press("t");
       await page.keyboard.press(second);

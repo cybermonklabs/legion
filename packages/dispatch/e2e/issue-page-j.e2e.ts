@@ -20,6 +20,7 @@ import {
   VERIFICATION_WORDS,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
+import { isFilter } from "../web/src/features/issue-page/presets";
 import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import { pageFocusedRow } from "../web/src/theme/classes";
 import {
@@ -74,6 +75,7 @@ import {
   DESKTOP,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   focusRow,
   focusThePage,
   longWords,
@@ -985,6 +987,7 @@ test("a spec node shows the decisions that shaped it at every version", async ({
     // decisions read, which go out together and answer in either order.
     const yours = issuePage(page).locator('[data-spec-cell][data-said="you"]');
     await expect(yours, "the person's decision is not drawn once").toHaveCount(1);
+    await expectOpeningLanded(page);
     // Nothing is focused and nothing is hovered: the lines are drawn by the page itself.
     await focusThePage(page);
 
@@ -2462,7 +2465,7 @@ test("a comment the Spec view's address keeps is drawn whole with the focus on i
 // it moved right: Decisions from x 442-519 to x 537-615, so a press meant for it opened Plan.
 // Here those three reads are held from the page's load, so the row is drawn with no count
 // (`slots/view-row.tsx`), a press of the pointer on Decisions opens Decisions, and once the reads
-// are let go and every filter draws its count, each of the seven controls - its toggle and the
+// are let go and every filter draws its count, each of the eight controls - its toggle and the
 // label beside it that holds its signal - stands where it stood, at 1440 px; at 390 px the one
 // control and each item of its open menu do too. The boxes are read after the press, since the
 // control that is on is drawn semibold, which is wider, and once the page's typeface has loaded,
@@ -2490,9 +2493,7 @@ test("a press on Decisions before the counts arrive opens Decisions, and no cont
     };
     // The four filters. Threads is no filter: its count comes from the reader's unread threads,
     // which no held read answers, and it draws none at 0 (dispatch://INFRA-5704/spec#b-r-control).
-    const filters = PRESET_ORDER.filter(
-      (preset) => preset !== "conversation" && preset !== "dashboard" && preset !== "threads"
-    );
+    const filters = PRESET_ORDER.filter(isFilter);
     const counts = presetRow(page).locator(
       filters.map((preset) => `[data-preset-count="${preset}"]`).join(", ")
     );

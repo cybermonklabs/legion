@@ -537,16 +537,24 @@ export const NODE_ROW_LAYOUT = {
  * focus, so a row taller than the screen would be put at its top under the band and the
  * page would open scrolled past its header. Read when the row is placed rather than as a
  * cause of placing it, so the row turning back to placing itself moves nothing at that moment.
+ *
+ * `afterPlacing` is a view's own placing step, run on the row each time the rule has placed it,
+ * as it takes the focus and as it grows, and never while a press is held: a view whose own
+ * sticky heads stand under the band places its rows below them by it (decision 373), with no
+ * second observer or press tracking of its own.
  */
 export function useRowOnScreen(
   row: RefObject<HTMLElement | null>,
   focused: boolean,
   below: number = BELOW_WHAT_STAYS,
-  placesItself = true
+  placesItself = true,
+  afterPlacing?: (element: HTMLElement) => void
 ): () => void {
   const pressed = useRef(false);
   const placing = useRef(placesItself);
   placing.current = placesItself;
+  const step = useRef(afterPlacing);
+  step.current = afterPlacing;
   const press = () => {
     pressed.current = true;
     const ended = new AbortController();
@@ -565,6 +573,7 @@ export function useRowOnScreen(
       if (pressed.current) return;
       bringOnScreen(element);
       belowWhatStays(element, below);
+      step.current?.(element);
     };
     place();
     if (typeof ResizeObserver === "undefined") return;

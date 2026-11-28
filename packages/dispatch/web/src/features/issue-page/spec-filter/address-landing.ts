@@ -23,13 +23,13 @@ import { useFollowing } from "../slots/following";
  * each time the view draws other rows (`drawn`), and waits while it draws none; the address is
  * taken only once its item is found. The reader's first act since they followed the address ends
  * the landing (`acts`), as it ends the outline's: a reader who acted before the reads settled - a
- * key, a turn of the wheel, a press on another control, while the stage held the focus on the
- * view's tab stop - keeps the focus where they put it and the page where they had it, and the
- * landing does nothing to the page: no focus, no scroll, no hold. The acts are watched from the
- * following's start and not the landing's, since a read that answered late would otherwise pull
- * them back to the address's item. The landing is keyed on the following and the node, as the
- * outline's is: a link to the node the reader moved away from, followed again, lands again, and
- * the rows drawn again at the same following land nowhere again.
+ * key, a turn of the wheel, a press on another control, while the stage gave the view's tab stop
+ * no focus, its landing undecided (`ViewStage`) - keeps the focus where they put it and the page
+ * where they had it, and the landing does nothing to the page: no focus, no scroll, no hold. The
+ * acts are watched from the following's start and not the landing's, since a read that answered
+ * late would otherwise pull them back to the address's item. The landing is keyed on the
+ * following and the node, as the outline's is: a link to the node the reader moved away from,
+ * followed again, lands again, and the rows drawn again at the same following land nowhere again.
  *
  * Answers what holds the landing and then the item it landed on (`landOnRow`'s `held`), which a
  * hold the view starts of its own takes the place of, so one item is held at a time. The view

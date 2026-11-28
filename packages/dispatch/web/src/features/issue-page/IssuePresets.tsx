@@ -5,6 +5,7 @@ import {
   focusVisibleRing,
   pageDecisionText,
   pageFailedText,
+  pageField,
   pageHairBorder,
   pageHeaderControl,
   pageInkBorder,
@@ -31,12 +32,12 @@ import { type Filter, isFilter, type PresetSignal } from "./presets";
 import { useShortcutHelpOpener } from "./shortcut-help-opener";
 
 /**
- * The view row (R2, R11, R20, and the prototype's view tabs): seven controls, Dashboard - the
+ * The view row (R2, R11, R20, and the prototype's view tabs): eight controls, Dashboard - the
  * page's opening view, which draws no signal (dispatch://INFRA-5702/spec#b-r-new-page) - and
- * Conversation - the page with no view on - then Spec, Verification, Plan, Decisions and Threads;
- * the four filters draw signals, Threads draws its count where it has one
- * (dispatch://INFRA-5704/spec#b-r-control), and Dashboard and Conversation draw none. Keys sits at
- * the right end.
+ * Conversation - the page with no view on - then Spec, Verification, Plan, Decisions and Threads,
+ * and part N's Documents; the four filters draw signals, Threads draws its count where it has one
+ * (dispatch://INFRA-5704/spec#b-r-control), and Dashboard, Conversation and Documents draw none.
+ * Keys sits at the right end.
  *
  * The row is one line at every width (the architect's ruling 5, the 1440 and 390 px pictures).
  * At 760 px and below the row is the one control and Outline,
@@ -48,7 +49,7 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  * turns it off, and pressing Conversation turns every view off. Each control's state is an
  * address of its own (`issue-address.ts`'s `presetPath`), so pressing one is navigation and a
  * view survives a reload and a link. The toolbar is one tab stop, the control that is pressed;
- * the arrow keys, Home and End move between the seven, and Enter and Space press.
+ * the arrow keys, Home and End move between the eight, and Enter and Space press.
  *
  * A toggle is the prototype's `.tab`: its name, which is the button, named by that word alone -
  * the word a voice user says. A control's signal is beside the button in the same box, as a
@@ -58,32 +59,47 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  * counts are read (`Signal`), so no control moves when they arrive. Threads holds no room: it
  * draws its signal only where it has one.
  *
- * The row has two shapes and no third. From 1280 px it is the row of seven, which is where R2
- * says the views are one row; below it - R2's 1024 px and every width between, where the row of
- * five, before Dashboard, and the small controls measured up to 47 px wider than the row at
- * 1025 px with a view on - it is one control naming the one on, with its signal if drawn, which
- * opens a menu of the seven, each a `menuitemradio` that says whether it is the one on; below
- * 1024 px the Outline control stands beside it (R2, R14). One query and its negation decide the
- * two (`ONE_CONTROL_QUERY`), so no width answers both shapes or neither, and the row is one line
- * at every width. The one control is a WAI-ARIA menu button: Enter, Space, Down and Up open its
- * menu with the focus on the view that is on; Up and Down move in it, wrapping, and Home and End
- * go to its ends; Escape closes it and gives the focus back to the control, and Tab closes it.
+ * The row has two shapes and no third. From 1280 px it is the row of eight (`PRESET_ORDER`),
+ * which is where R2 says the views are one row; below it - R2's 1024 px and every width between,
+ * where the row of five, before Dashboard and Documents, and the small controls measured up to
+ * 47 px wider than the row at 1025 px with a view on - it is one control naming the one on, with
+ * its signal if drawn, which opens a menu of the eight, each a `menuitemradio` that says whether
+ * it is the one on; below 1024 px the Outline control stands beside it (R2, R14). One query and
+ * its negation decide the two (`ONE_CONTROL_QUERY`), so no width answers both shapes or neither,
+ * and the row is one line at every width. The one control is a WAI-ARIA menu button: Enter,
+ * Space, Down and Up open its menu with the focus on the view that is on; Up and Down move in it,
+ * wrapping, and Home and End go to its ends; Escape closes it and gives the focus back to the
+ * control, and Tab closes it.
  */
 export function IssuePresets({
   active,
+  filter,
   issueKey,
+  onFilterChange,
   outline,
   signals,
+  sheet,
   threads,
+  toolbar,
 }: {
+  /** What the filter by words holds, which is `?q=`. No words control is drawn without it and
+   *  `onFilterChange`. */
+  filter?: string;
   active: Preset;
   issueKey: string;
+  onFilterChange?: (next: string) => void;
   /** The Outline control, beside the one control below 1024 px where the Contents pane is not
    *  drawn (R14), and undefined wherever no Outline control is drawn. */
   outline?: ReactNode;
+  /** The Outline sheet below 1024 px, handed the two small controls this row moves into it there
+   *  - the version control and the filter by words (part N's R4) - with a view on too. Where it
+   *  is not given the two stand at the row's right end, as on Documents and on a document drawn
+   *  as the stage, which draw no sheet. A caller that gives it leaves `outline` undefined, so
+   *  the row draws one Outline control (`slots/view-row.tsx`). */
+  sheet?: (tools: ReactNode) => ReactNode;
   /** What each filter control draws after its name (`presets.ts`'s `filterSignals`). Dashboard
    *  draws no signal, since what waits on the reader is counted in the header
-   *  (dispatch://INFRA-5702/spec#b-r-header-count), and nor does Conversation.
+   *  (dispatch://INFRA-5702/spec#b-r-header-count), and nor do Conversation and Documents.
    *  The whole record is undefined until the counts can be read (`slots/view-row.tsx`), and until
    *  then each filter holds its signal's room empty. */
   signals?: Readonly<Record<Filter, PresetSignal>>;
@@ -92,11 +108,16 @@ export function IssuePresets({
    *  it is drawn whether or not `signals` is, and it is undefined at 0 and while its read has not
    *  answered (`slots/view-row.tsx`): then the control draws its name alone, and holds no room. */
   threads?: PresetSignal;
+  /** The version control: the view's document's while a view is on, or the opened document's;
+   *  none with neither (part N's R3). */
+  toolbar?: ReactNode;
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  // Part N's Documents hands its list the address it is pressed at (`press`).
+  const { search } = useLocation();
   const openKeys = useShortcutHelpOpener();
-  // The row of seven is drawn exactly where the one control is not.
+  // The row of eight is drawn exactly where the one control is not.
   const row = !useMediaQuery(ONE_CONTROL_QUERY);
   // Where the header scrolls away, the row holds the one control and Outline alone.
   const phone = useMediaQuery(HEADER_SCROLLS_QUERY);
@@ -118,12 +139,45 @@ export function IssuePresets({
   const signalId = (preset: Preset) => `${ids}-signal-${preset}`;
   const toggleId = (preset: Preset) => `${ids}-toggle-${preset}`;
   // What `preset`'s control draws after its name: a filter its signal, in the room it holds from
-  // its first draw; Threads its count where it has one; Dashboard and Conversation nothing.
+  // its first draw; Threads its count where it has one; Dashboard, Conversation and Documents
+  // nothing.
   const drawnSignal = (preset: Preset): DrawnSignal | undefined => {
     if (isFilter(preset)) return { preset, signal: signals?.[preset] };
     return preset === "threads" && threads !== undefined ? { preset, signal: threads } : undefined;
   };
   const activeSignal = drawnSignal(active);
+  // Part N's version control opens its panel, and the page still opens at most one menu at a
+  // time: opening the panel shuts the row's own, and the row's shuts the panel.
+  const [versionOpen, setVersionOpen] = useState(false);
+  const versionPanelId = `${ids}-version`;
+  useEffect(() => {
+    if (open !== undefined) setVersionOpen(false);
+  }, [open]);
+  useEffect(() => {
+    if (!versionOpen) return;
+    setOpen(undefined);
+    const inDialog = (target: EventTarget | null) =>
+      target instanceof Element && target.closest('[role="dialog"]') !== null;
+    const closeOutside = (event: PointerEvent) => {
+      if (inDialog(event.target)) return;
+      if (!(event.target instanceof Node) || wrapper.current?.contains(event.target) !== true) {
+        setVersionOpen(false);
+      }
+    };
+    // The press is the open menu's alone: the page's own Escape - which closes a document
+    // opened in place of the outline and turns a view off - waits for the next one.
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || inDialog(event.target)) return;
+      event.preventDefault();
+      setVersionOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [versionOpen]);
 
   useEffect(() => {
     const opened = wasOpen.current === undefined && open === "presets";
@@ -194,6 +248,23 @@ export function IssuePresets({
     ) {
       return;
     }
+    // Part N's words (its R4) go with the reader, as `?q=`, to the control they press.
+    const words =
+      filter === undefined || filter === "" ? "" : `?${new URLSearchParams({ q: filter })}`;
+    // Part N's Documents (its R4): its list goes back to the address it was opened from on
+    // Escape (the location's `outline`, `escape-order.ts`).
+    if (preset === "documents" && active !== "documents") {
+      navigate(`${presetPath(issueKey, "documents")}${words}`, {
+        state: { outline: `${pathname}${search}` },
+      });
+      return;
+    }
+    // The view pressed draws with the words, and the box keeps them.
+    if (words !== "") {
+      const to = preset === active && preset !== "conversation" ? "conversation" : preset;
+      navigate(`${presetPath(issueKey, to)}${words}`);
+      return;
+    }
     navigate(
       presetPath(issueKey, preset === active && preset !== "conversation" ? "conversation" : preset)
     );
@@ -206,7 +277,7 @@ export function IssuePresets({
     event.preventDefault();
     toggles.current[next]?.focus();
   };
-  // Inside the open menu, Up and Down move between the six, wrapping, and Home and End go to
+  // Inside the open menu, Up and Down move between the eight, wrapping, and Home and End go to
   // the ends. Tab closes it: the focus goes back to the control first, so Tab moves on from the
   // control, and the items take no tab stop of their own.
   const walkMenu = (event: KeyboardEvent<HTMLElement>) => {
@@ -246,6 +317,51 @@ export function IssuePresets({
     );
   // The small controls, at the row's right end from 761 px up.
   const atTheEnd = <div className="flex shrink-0 items-center gap-2">{keys}</div>;
+  // Part N's two small controls (R4): the version control, while a view is on or a document is
+  // open, and the filter by words. They stand at the row's right end before Keys, and below
+  // 1024 px in the Outline sheet (`sheet`); where no sheet is drawn - on Documents, and on a
+  // document drawn as the stage - at the row's end.
+  const tools = (
+    <div className="flex shrink-0 items-center gap-2">
+      {toolbar === undefined ? null : (
+        <div className="relative flex shrink-0">
+          <button
+            aria-controls={versionPanelId}
+            aria-expanded={versionOpen}
+            className={pageHeaderControl}
+            onClick={() => setVersionOpen((shown) => !shown)}
+            type="button"
+            {...pageChrome}
+          >
+            {CONTROL_LABELS.version}
+            <MenuMark />
+          </button>
+          {/* Drawn while it is shut too, so a version the reader picked, a name they typed and
+              a comparison they opened outlive the control closing. */}
+          <div
+            className={`absolute top-full right-0 z-30 mt-1 w-max max-w-[min(480px,calc(100vw-24px))] rounded-[10px] border p-2 shadow-[0_12px_30px_rgba(28,25,23,0.18)] ${pageHairBorder} ${pagePaperBg}`}
+            hidden={!versionOpen}
+            id={versionPanelId}
+          >
+            {toolbar}
+          </div>
+        </div>
+      )}
+      {filter === undefined || onFilterChange === undefined ? null : (
+        <WordsFilter filter={filter} onFilterChange={onFilterChange} />
+      )}
+    </div>
+  );
+  // The same two in the Outline sheet below 1024 px, each drawn open: the sheet is where the
+  // reader went to find them.
+  const inTheSheet = (
+    <>
+      {toolbar}
+      {filter === undefined || onFilterChange === undefined ? null : (
+        <WordsFilter filter={filter} inSheet onFilterChange={onFilterChange} />
+      )}
+    </>
+  );
   const filterRow = { [FILTER_ROW_ATTRIBUTE]: "" };
 
   if (!row) {
@@ -326,13 +442,17 @@ export function IssuePresets({
           ) : null}
         </div>
         {/* After the one control, as the 390 px picture draws it. */}
+        {sheet === undefined ? null : sheet(inTheSheet)}
         {outline}
         {phone ? null : (
           <>
             <span className="flex-1" />
+            {sheet === undefined ? tools : null}
             {atTheEnd}
           </>
         )}
+        {/* At 760 px and below too, where no sheet is drawn: Documents and a document. */}
+        {phone && sheet === undefined ? tools : null}
       </div>
     );
   }
@@ -409,6 +529,7 @@ export function IssuePresets({
         })}
       </div>
       <span className="flex-1" />
+      <div className="mb-[7px]">{tools}</div>
       <div className="mb-[7px]">{atTheEnd}</div>
     </div>
   );
@@ -474,8 +595,9 @@ function step(
  * insets) and the 1328 px it has at 1440 px hold on one line. Below 1280 px the one control's
  * widest name and room, Decisions', take 230 px of the 362 px it has at 390 px; the menu is at
  * least 260 px wide (`pageMenu`), and its widest item, Decisions with its room, takes 214 px of
- * the 246 px inside its padding and rule, so no item widens it when the signals arrive. Threads,
- * the last control of the row, holds no room (`Signal`), so these widths leave it out.
+ * the 246 px inside its padding and rule, so no item widens it when the signals arrive. The last
+ * two controls of the row hold no room: Threads, whose count `Signal` draws with none, and
+ * Documents, which draws no signal (`drawnSignal`); so these widths leave them out.
  */
 const SIGNAL_ROOM: Readonly<Record<Filter, string>> = {
   decisions: "min-w-[14.5ch]",
@@ -544,3 +666,67 @@ function Signal({
     </span>
   );
 }
+
+/**
+ * The filter by words (R2's `?q=`, `t f`, part N's R4 and its ST-1): one small control while it
+ * holds no words, which opens the box with the caret in it, and the box itself while it holds
+ * words or the caret: emptied with the caret in it, it stays open, and left empty it shuts back
+ * into its control. In the Outline sheet the box is drawn open. The box shows its name as its
+ * placeholder, so a reader sees what it is for before typing (WCAG 3.3.2), and is at least 24 px
+ * tall at every width, as the row's controls are.
+ */
+function WordsFilter({
+  filter,
+  inSheet = false,
+  onFilterChange,
+}: {
+  filter: string;
+  inSheet?: boolean;
+  onFilterChange: (next: string) => void;
+}): ReactNode {
+  // Whether the box holds the caret, or was opened to take it.
+  const [caret, setCaret] = useState(false);
+  const box = useRef<HTMLInputElement>(null);
+  // The control's press opens the box with the caret in it, once the box is drawn.
+  useEffect(() => {
+    if (caret) box.current?.focus();
+  }, [caret]);
+  if (!inSheet && !caret && filter === "") {
+    return (
+      <button
+        className={pageHeaderControl}
+        {...{ [WORDS_FILTER_ATTRIBUTE]: "" }}
+        onClick={() => setCaret(true)}
+        type="button"
+        {...pageChrome}
+      >
+        {CONTROL_LABELS.filter}
+      </button>
+    );
+  }
+  return (
+    <input
+      aria-label={CONTROL_LABELS.filter}
+      ref={box}
+      className={`min-h-6 min-w-0 rounded-[7px] border px-2 text-xs leading-5 outline-none ${focusVisibleRing} ${pageField} ${
+        inSheet ? "w-full basis-full text-sm" : "w-40 md:py-px"
+      }`}
+      data-testid="issue-filter"
+      {...{ [WORDS_FILTER_ATTRIBUTE]: "" }}
+      onBlur={() => setCaret(false)}
+      onChange={(event) => onFilterChange(event.target.value)}
+      onFocus={() => setCaret(true)}
+      placeholder={CONTROL_LABELS.filter}
+      type="search"
+      value={filter}
+    />
+  );
+}
+
+/** The mark the filter by words carries, its small control and its box alike, by which `t f`
+ *  finds it (`useIssueKeymap.ts`). */
+export const WORDS_FILTER_ATTRIBUTE = "data-words-filter";
+
+/** The view row's Outline control, whose sheet holds the filter by words below 1024 px: `t f`
+ *  opens it where the words control is not drawn (`useIssueKeymap.ts`). */
+export const OUTLINE_CONTROL = `[${FILTER_ROW_ATTRIBUTE}] button[aria-haspopup="dialog"]`;

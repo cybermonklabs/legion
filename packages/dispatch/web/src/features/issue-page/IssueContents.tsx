@@ -1,7 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
-import { whoAmIQuery } from "../../api/queries";
 import {
   focusVisibleRing,
   pageFailedText,
@@ -20,7 +18,6 @@ import {
   pageQuietText,
   pageWaitingBg,
 } from "../../theme/classes";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { isContentsEntry } from "./contents-entries";
 import { drawnLine, firstLineOf } from "./first-line";
 import { useFocusedNode, useLastFocusedNodeId } from "./focused-node";
@@ -39,6 +36,7 @@ import {
   sentenceCase,
 } from "./page-words";
 import { pathTo } from "./tree-fold";
+import { useWhoIsReading } from "./useIssueTree";
 import { CAP } from "./verification-filter/VerificationFilterBody";
 
 /** One entry of the list: a question, or a thread the reader began, with the entries under it,
@@ -184,7 +182,7 @@ export function ContentsList({
 }): ReactNode {
   // The reader, read as the tree reads it (`useIssueTree`, `EVENT_FRESH`): staleness is per
   // observer, so under the app's 30 s `staleTime` the list drawn later would ask for it again.
-  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   const entries = useMemo(() => contentsOf(root, viewer, producing), [producing, root, viewer]);
   const entryIds = useMemo(() => {
     const ids = new Set<string>();

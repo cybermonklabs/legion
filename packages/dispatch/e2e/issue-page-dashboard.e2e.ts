@@ -715,7 +715,11 @@ test("Details on a focused ask reads that ask and its references", async ({ brow
       "data-focused-node",
       ask
     );
-    await expect(facts).toContainText(new RegExp(`\\b${NODE_TYPE_NAMES.ask}\\b`, "i"));
+    const kind = facts
+      .locator("dl > div")
+      .filter({ has: page.getByText(`${CONTROL_LABELS.node_kind}:`, { exact: true }) })
+      .locator("dd");
+    await expect(kind).toContainText(new RegExp(`\\b${NODE_TYPE_NAMES.ask}\\b`, "i"));
 
     // What references the ask is read when the reader opens it, and not before.
     const references = facts.locator("section[data-node-references] > button[aria-expanded]");

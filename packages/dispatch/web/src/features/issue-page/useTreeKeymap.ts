@@ -87,6 +87,10 @@ export interface TreeKeyboard {
    *  the next open question or the decision behind a row may be a node that has not arrived, so
    *  `q` and `w` with nowhere to go say nothing rather than an absence that may be false. */
   readonly readsHeld: boolean;
+  /** `w`'s own flag in place of `readsHeld`, where the decision behind a row comes from a read of
+   *  its own: a view that draws the decisions from a read beside the tree's holds `w`'s report
+   *  until that read holds too (decision 373). Unset, `w` takes `readsHeld`, as `q` always does. */
+  readonly readsHeldFor?: Readonly<{ w?: boolean }>;
   /** The rows as drawn, in the order the keys move through them. */
   readonly rows: readonly DrawnRow[];
   /** The tree the preset left, which the keys that look past the drawn rows walk. */
@@ -561,6 +565,11 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const node = focusedRow()?.node;
         const decision = node === undefined ? undefined : decisionBehind(tree.root, node.id);
         if (decision === undefined) {
+          const held = tree.readsHeldFor?.w;
+          if (held !== undefined) {
+            tree.onReport(held ? KEY_REPORTS.no_decision : "");
+            return;
+          }
           tree.onReport(tree.readsHeld ? KEY_REPORTS.no_decision : "");
           return;
         }

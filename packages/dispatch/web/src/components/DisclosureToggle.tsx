@@ -30,9 +30,12 @@ export function DisclosureToggle({
   expanded,
   label,
   onToggle,
+  chevronClassName = disclosureButtonText,
   textClassName = textSecondaryOnCanvas,
 }: {
   expanded: boolean;
+  /** The chevron's tone: `disclosureButtonText` by default; the new issue page gives its own. */
+  chevronClassName?: string;
   label: string;
   onToggle: () => void;
   textClassName?: string;
@@ -45,7 +48,7 @@ export function DisclosureToggle({
       type="button"
     >
       {label}
-      <span className={disclosureButtonText}>
+      <span className={chevronClassName}>
         <ChevronIcon expanded={expanded} />
       </span>
     </button>

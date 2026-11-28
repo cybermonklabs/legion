@@ -34,6 +34,7 @@ import type {
   CreateCommentInput,
 } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
+import type { EventFreshness } from "../../hooks/useIsHuman";
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { appendToDraft, type DraftUpload, useDraftUpload } from "../artifacts/ArtifactUpload";
 import { ASK_FORM_WORDS } from "../ask-body/ask-body-words";
@@ -70,6 +71,9 @@ interface UseAskAnswerFormOptions {
     bounds: WriteBounds
   ) => Promise<Comment>;
   getAskThread: (id: string) => Promise<AskRead>;
+  /** How the read of who is reading is kept fresh, where the host keeps it fresh by events; by
+   *  default, the app's. */
+  freshness?: EventFreshness;
   /** Data the Inbox response already hydrated for this card's first render. */
   initialThread?: AskRead;
   /** Timestamp of the Inbox snapshot that supplied initialThread. */
@@ -282,6 +286,7 @@ export function useAskAnswerForm({
   answer,
   ask,
   createReply,
+  freshness,
   getAskThread,
   initialThread,
   initialThreadUpdatedAt,
@@ -290,7 +295,7 @@ export function useAskAnswerForm({
   readThread = true,
 }: UseAskAnswerFormOptions): AskAnswerForm {
   const queryClient = useQueryClient();
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useQuery({ ...whoAmIQuery(), ...freshness }).data?.login;
   // Each AskCard instance owns its answer field label so cards with the same
   // ask id never collide when a responsive transition briefly renders both.
   const answerFieldId = `${useId()}-answer`;

@@ -11,10 +11,121 @@
  *   `./page-words-parts`, and values from `./page-structure`. A value import from
  *   `page-words.ts` or `./page-words-parts` makes an import cycle.
  */
+import { freeze } from "./page-structure";
 import type { PartWords } from "./page-words-parts";
 
+/**
+ * What a view says while a read it needs is out, which a view opened by its address draws on
+ * load (part N's R19, `view-loading-line.tsx`): "Loading the statements and the results…". The
+ * line is `loading`, then the words of each read still out in the view's own order, as the view
+ * names them here, one key per view, joined by commas and the last by `and`. Each read is named
+ * as the line that says it failed names it (`STATE_LINES`), without "Could not load", but the
+ * decisions, whose failed line says "this issue's decisions" and which a loading line calls "the
+ * decisions".
+ */
+export const VIEW_LOADING_LINES = freeze({
+  and: "and",
+  loading: "Loading",
+  /** The Decisions view's two reads, the decisions and the asks (`decisions-entries.ts`). */
+  decisions: {
+    asks: "the questions",
+    decisions: "the decisions",
+  },
+  /** The Plan view's two reads, the plan document's blocks and the spec's (`view-plan.tsx`). */
+  plan: {
+    plan: "the plan",
+    statements: "the spec",
+  },
+  /** The Spec view's reads: coverage and the spec's blocks, results and the Verification
+   *  document's blocks, then decisions and asks (`SpecFilterBody.tsx`). */
+  spec: {
+    asks: "the questions",
+    checks: "the verification document",
+    coverage: "which checks serve each statement",
+    decisions: "the decisions",
+    results: "the results",
+    statements: "the statements",
+  },
+  /** The Verification view's three reads (`view-verification.tsx`). */
+  verification: {
+    blocks: "the verification document",
+    coverage: "which checks serve each statement",
+    results: "the checks' results",
+  },
+} as const);
+/**
+ * How the issue's pull request stands, in the page's own words, drawn on the header's pull
+ * request link beside its number (part N's R22, `PullRequestLink.tsx`): one word per state
+ * `IssueDetails.pull_request.state` carries (`open`, `merged`, `closed`).
+ */
+export const PULL_REQUEST_STATE_WORDS = freeze({
+  closed: "Closed",
+  merged: "Merged",
+  open: "Open",
+} as const);
+
 export default {
-  add: {},
-  unasked: [],
+  add: {
+    EMPTY_STATE_LINES: {
+      /** What a document's own address says where the issue holds no document or file at that
+       *  address (part N's R2): never the slug the address wrote, and never the old tab's word. */
+      document_missing: "This issue holds no document at this address.",
+      /** What Documents' list says where the issue holds no document and no file (part N's R2,
+       *  R4), as every other control of the view row says where it draws nothing. */
+      documents: "This issue has no documents yet.",
+    },
+    ANSWER_LINES: {
+      /** What the opened document's comparison of two versions says while it reads their text,
+       *  which the reader asked for, when it could not, and of two files that hold the same bytes
+       *  (part N's R2): today's comparison's words. */
+      versions_loading: "Loading versions to compare…",
+      versions_unreadable: "Could not load versions to compare.",
+      versions_same: "The two versions are the same.",
+      /** What Documents' list's Remove says while its removal is out, which today's control draws
+       *  (`DocumentWayBack.tsx`) and the list marks as the page's own words (part N's R9). */
+      saving_remove: "Removing…",
+    },
+    CONTROL_LABELS: {
+      /** What the list of keys says of `t e`, which opens `/steps`, Details at the issue's steps
+       *  where today's page has its Steps tab (part N's R6, `useIssueKeymap.ts`). */
+      open_steps: "Open the issue's steps in Details",
+      /** What the list of keys says of `t a`, which opens Documents' list at `/documents` with
+       *  the focus on its first row, where today's page has its Artifacts tab (part N's R4,
+       *  `useIssueKeymap.ts`). */
+      open_documents: "Open the issue's documents",
+      /** The opened document's way back to Documents' list, in its head (part N's R2): it opens
+       *  the list at `/issues/<key>/documents` with the focus on the document's row. */
+      back_to_documents: "Back to Documents",
+      /** What the list of keys says of Escape on an opened document, which closes it: back to
+       *  Documents' list, or to the row that holds the chip that opened it (part N's R1). */
+      close_opened_document: "Close the document",
+      /** What the list of keys says of Escape on Documents' list, which returns to the control
+       *  the reader opened it from, or to Conversation (part N's R1, R2). */
+      leave_documents: "Leave Documents",
+      /** The opened document's comparison of any two versions under its editor or picture (part
+       *  N's R2), today's comparison's words: its heading, the name its region takes before the
+       *  document's own name ("Compare versions for notes.md"), the press that opens it and
+       *  closes it, and its two pickers, "From" and "To", each named after the document as well
+       *  ("Compare notes.md from"). */
+      compare_versions: "Compare versions",
+      compare_versions_for: "Compare versions for",
+      show_comparison: "Show comparison",
+      hide_comparison: "Hide comparison",
+      compare: "Compare",
+      compare_from: "From",
+      compare_to: "To",
+    },
+    FILE_WORDS: {
+      /** What the head of a document or file opened in place of the outline says of the version it
+       *  shows, before that version's number, its author and its day: "version 3 · alice · 5 Nov"
+       *  (part N's R2). */
+      version: "version",
+      /** The opened document's list of its versions (part N's R2): its heading, and the name its
+       *  region takes before the document's own name, "Versions for notes.md". */
+      versions: "Versions",
+      versions_for: "Versions for",
+    },
+  },
+  unasked: [VIEW_LOADING_LINES, PULL_REQUEST_STATE_WORDS],
   answers: [],
 } as const satisfies PartWords;

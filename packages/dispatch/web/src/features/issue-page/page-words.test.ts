@@ -414,6 +414,7 @@ test("the controls are named in the order the row draws them, and none is called
     "Plan",
     "Decisions",
     "Threads",
+    "Documents",
   ]);
   for (const preset of PRESET_ORDER) {
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);

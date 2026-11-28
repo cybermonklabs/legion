@@ -14,7 +14,9 @@ import {
   applyAskBlockShell,
   askShellSlots,
   renderAskBlockShell,
+  renderNamedTypedBlock,
   renderTypedBlock,
+  type TypedBlockNames,
 } from "./typed-block-drawing";
 
 /** The node view of a host-owned typed block other than `ask`: `renderTypedBlock`'s drawing,
@@ -349,5 +351,40 @@ export function installTypedBlocks(
   view.setProps({
     nodeViews,
     plugins: [...(view.props.plugins ?? []), askBlockEditingPlugin],
+  });
+}
+
+/**
+ * Draws every typed block but `ask` in an editor `installTypedBlocks` set up with the words
+ * `names` gives, in place of the schema's tokens (`renderNamedTypedBlock`): the eyebrow's type and
+ * each attribute's label. The new issue page calls it on the document it opens in place of its
+ * outline (dispatch://INFRA-1196 part N's R12, `features/issue-page/OpenedDocument.tsx`); no other
+ * page does, so they draw the tokens as before. Every other node view stays as it was.
+ */
+export function nameTypedBlocks(
+  view: EditorView,
+  blockSchema: BlockSchema,
+  names: TypedBlockNames
+): void {
+  view.setProps({
+    nodeViews: {
+      ...view.props.nodeViews,
+      ...Object.fromEntries(
+        blockSchema.types
+          .filter((type) => type.name !== "ask")
+          .map((type) => [
+            type.name,
+            (node: ProseMirrorNode): NodeView => {
+              const drawn = renderNamedTypedBlock(node, type, names);
+              const { dom, contentDOM } = DOMSerializer.renderSpec(view.dom.ownerDocument, drawn);
+              const blockId = node.attrs.blockId;
+              if (typeof blockId === "string" && blockId !== "") {
+                (dom as HTMLElement).dataset.blockId = blockId;
+              }
+              return { contentDOM, dom };
+            },
+          ])
+      ),
+    },
   });
 }

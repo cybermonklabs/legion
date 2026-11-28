@@ -38,9 +38,11 @@ import type { PartWords } from "./page-words-parts";
  * act, as `KEY_REPORTS.agents_thread` is (`page-structure.ts`), so this is one of the page's
  * answers (`answers` below, which `ANSWER_SOURCES` of `page-words.ts` holds). They are the words
  * of today's page for the same states (`issue/IssuePage.tsx`'s `ItemLandingFailure`), which
- * `slots/body.tsx` copies until that page is removed. A line that names the issue is cut where
- * the issue's key goes, as `BLOCKED_BY_REFUSALS` of `page-words.ts` cuts its sentences: the key
- * is drawn between `before` and `after`.
+ * `slots/body.tsx` copies until that page is removed, but for an ask: today's page says "ask",
+ * and this page's word for an ask is "question" (R34 of the root spec), with the article that
+ * goes with it. A line that names the issue is cut where the issue's key goes, as
+ * `BLOCKED_BY_REFUSALS` of `page-words.ts` cuts its sentences: the key is drawn between `before`
+ * and `after`.
  */
 export const ADDRESS_FALLBACK_WORDS = freeze({
   /** The link under each line that takes the reader to the issue's own address. */
@@ -61,13 +63,16 @@ export const ADDRESS_FALLBACK_WORDS = freeze({
   items: {
     ask: {
       missing: {
-        heading: "Ask not found",
+        heading: "Question not found",
         line: {
           after: " — it may have been deleted.",
-          before: "That link doesn't name an ask on ",
+          before: "That link doesn't name a question on ",
         },
       },
-      unreadable: { heading: "Couldn't load this ask", message: "Couldn't load this ask." },
+      unreadable: {
+        heading: "Couldn't load this question",
+        message: "Couldn't load this question.",
+      },
     },
     comment: {
       missing: {

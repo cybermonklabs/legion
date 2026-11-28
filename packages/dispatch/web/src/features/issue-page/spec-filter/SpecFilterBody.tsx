@@ -72,6 +72,7 @@ import {
   STATE_LINES,
   sentenceCase,
   VERIFICATION_WORDS,
+  VIEW_LOADING_LINES,
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
@@ -94,6 +95,7 @@ import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
+import { ViewLoadingLine } from "../view-loading-line";
 import { treeItemOf, useAddressActed, useAddressLanding } from "./address-landing";
 import { holdWhereItStands } from "./hold-where-it-stands";
 import { focusedTreeItem, statementWordsAt } from "./pressed-words";
@@ -323,11 +325,26 @@ export function SpecFilterBody({
       stands: counted[at].stands,
     }))
     .filter(({ stands }) => stands);
+  let waitingFor: string[] | undefined;
+  if (
+    !(statementsHeld && marked && decidedHeld) &&
+    unreadable.length === 0 &&
+    namesLine.length === 0
+  ) {
+    const words = VIEW_LOADING_LINES.spec;
+    waitingFor = [];
+    if (!coverageHeld) waitingFor.push(words.coverage);
+    if (!specBlocksHeld) waitingFor.push(words.statements);
+    if (!resultsHeld) waitingFor.push(words.results);
+    if (!verificationBlocksHeld) waitingFor.push(words.checks);
+    if (!decisionsHeld) waitingFor.push(words.decisions);
+    if (!asksHeld) waitingFor.push(words.asks);
+  }
   // What a reference a plain line cites is named by - in the three sentences, a quote, a
   // question, a group's heading - the names the page published, as a row of the outline names it
   // (`referenceStandIns`, `useIssueNames`); and how this issue addresses a node, which is the one
   // rule the tree was built with, so a `shaped` tie resolves to the node it names
-  // (`tree-drafts.ts`'s `treeContext`).
+  // (`target-naming.ts`'s `treeContext`).
   const lineNames = useIssueNames(issue.key);
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   const { groups, others } = useMemo(
@@ -614,13 +631,11 @@ export function SpecFilterBody({
     onFold: NOTHING,
     onOpenDeeper: NOTHING,
     onPin: NOTHING,
-    // The keymap's `q` and `w` say where they could not go only while its one `readsHeld` flag
-    // holds. `q` walks the open questions, which the asks read brings, so the flag is
-    // `asksHeld`; `w` walks the decisions, so its report waits on the decisions read as well,
-    // here (`decidedHeld`, which holds only where `asksHeld` does). This filter tells `w`'s
-    // report by its words because the keymap holds that one flag for every key; it goes once
-    // the keymap takes a flag per key, when `w`'s flag is `decidedHeld`.
-    onReport: (line) => reportHere(line === KEY_REPORTS.no_decision && !decidedHeld ? "" : line),
+    // The keymap's `q` and `w` say where they could not go only while their reads hold. `q`
+    // walks the open questions, which the asks read brings, so the tree's flag is `asksHeld`;
+    // `w` walks the decisions, so its report waits on the decisions read as well (`decidedHeld`,
+    // which holds only where `asksHeld` does), by its own flag (`readsHeldFor`).
+    onReport: reportHere,
     // `q` and `w` reach here with the node the keymap found: the next open question, or the
     // decision behind the focused row. Where the view draws a row or a cell for it the focus
     // goes there, and a decision named from a statement is that statement's own cell's to
@@ -642,6 +657,7 @@ export function SpecFilterBody({
     onZoom: NOTHING,
     oneNodeAtATime: false,
     readsHeld: asksHeld,
+    readsHeldFor: { w: decidedHeld },
     rows,
     // The whole tree, which `q` walks for the next open question, and `w` on a row that is no
     // statement for the decision behind it (`tree-keys.ts`'s `decisionBehind`).
@@ -734,6 +750,7 @@ export function SpecFilterBody({
           speaks={line.speaks}
         />
       ))}
+      {waitingFor === undefined ? null : <ViewLoadingLine names={waitingFor} />}
       <Legend />
       <div
         className={`sticky top-[var(--issue-identity-height,0px)] z-[6] grid grid-cols-[280px_minmax(0,1fr)] gap-x-5 border-b pt-2 pb-1.5 max-[901px]:hidden ${pageLineBorder} ${pagePaperBg}`}
@@ -942,52 +959,19 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
  * page's `scroll-padding-top`: it moves only a row whose top lies above that padding, and the
  * heads stand under the band, outside it, so on the tester's build a statement the arrows moved
  * up to stood with its top 27 px down, under heads 31 px tall. Where the item stands under the
- * heads it is scrolled down by the rest, by the rule's own clearance (`CLEARANCE`), again
- * whenever it grows - after the rule has placed it, since its observer is made first - and never
- * while a press inside it is held, as the rule holds its own placing. At 901 px and below the
- * heads are not drawn, and the rule alone places it.
+ * heads it is scrolled down by the rest, by the rule's own clearance (`CLEARANCE`): the rule's
+ * own placing step (`clearOfHeads`), which it runs after placing the item, again whenever the
+ * item grows, and never while a press inside it is held. At 901 px and below the heads are not
+ * drawn, and the rule alone places it.
  *
- * Answers the item's own `onPointerDown`, as `useRowOnScreen` does, which marks the press for
- * the rule's step and for this one.
- *
- * It is a copy of `useRowOnScreen`'s own press tracking and of its layout effect with a resize
- * observer (`NodeRow.tsx`), so a focused statement runs both: two observers, and two pairs of
- * window listeners for each press. It goes once `useRowOnScreen` takes an optional placing
- * step, which this view then passes.
+ * Answers the item's own `onPointerDown`, as `useRowOnScreen` does, which marks the press.
  */
 function useOnScreenUnderHeads(
   item: RefObject<HTMLElement | null>,
   focused: boolean,
   placesItself = true
 ): () => void {
-  const placeByRule = useRowOnScreen(item, focused, undefined, placesItself);
-  const pressed = useRef(false);
-  // As in `useRowOnScreen`, a change in who places the row does not itself move the page.
-  const placing = useRef(placesItself);
-  placing.current = placesItself;
-  useLayoutEffect(() => {
-    const element = item.current;
-    if (!focused || element === null) return;
-    const place = () => {
-      if (placing.current && !pressed.current) clearOfHeads(element);
-    };
-    place();
-    if (typeof ResizeObserver === "undefined") return;
-    const grown = new ResizeObserver(place);
-    grown.observe(element);
-    return () => grown.disconnect();
-  }, [focused, item]);
-  return () => {
-    placeByRule();
-    pressed.current = true;
-    const ended = new AbortController();
-    const release = () => {
-      pressed.current = false;
-      ended.abort();
-    };
-    window.addEventListener("pointerup", release, { capture: true, signal: ended.signal });
-    window.addEventListener("pointercancel", release, { capture: true, signal: ended.signal });
-  };
+  return useRowOnScreen(item, focused, undefined, placesItself, clearOfHeads);
 }
 
 /** Scrolls the page until `element` stands below its view's column heads, where its top is

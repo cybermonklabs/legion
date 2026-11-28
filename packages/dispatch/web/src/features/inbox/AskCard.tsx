@@ -12,6 +12,7 @@ import type {
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { useTooltips } from "../../components/tooltips";
+import type { EventFreshness } from "../../hooks/useIsHuman";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   askUrgencyAccent,
@@ -91,6 +92,10 @@ export interface AskCardProps {
    *  screen. Set only on the ask's own pages - its Conversation turn, its margin card, its
    *  decision block - so the Inbox, its drawer and the Answers page start no unread-set reads. */
   markRead?: boolean;
+  /** How the card keeps its reads of who is reading and of the thread's read set fresh, where the
+   *  host keeps them fresh by events (the new issue page's opened document, `EVENT_FRESH`); by
+   *  default, the app's. */
+  freshness?: EventFreshness;
   /** The ids of the ask's replies the reader has not read, from a host that holds the fact
    *  itself: the Inbox, whose row carries the thread's read mark. Without it the card reads the
    *  set from the mark it makes under `markRead`, and a card that does neither folds by count
@@ -173,6 +178,7 @@ export function AskCard({
   onAnswered,
   mode = "answer",
   markRead = false,
+  freshness,
   unread,
   currentReplyId,
 }: AskCardProps): ReactNode {
@@ -180,6 +186,7 @@ export function AskCard({
     answer,
     ask,
     createReply: reply,
+    freshness,
     getAskThread: getThread,
     initialThread,
     initialThreadUpdatedAt,
@@ -224,6 +231,7 @@ export function AskCard({
   // what its host passes, and folds by count alone where the host passes none.
   const threadRead = useMarkThreadRead({
     enabled: markRead,
+    freshness,
     newestShownAt: answerIsNewest ? recordedAnswer?.at : newestReply?.created_at,
     owner: askRepliesOwner(displayedAsk),
     threadId: displayedAsk.id,
@@ -234,7 +242,7 @@ export function AskCard({
   // The one order every thread reads in, the reader's own (`threads/thread-order.ts`): it places
   // the replies, this card's options and answer box, and the thread's reply composer. Where the
   // box goes is the layout's own rule, which this card reads rather than works out again.
-  const [threadOrder] = useThreadOrder();
+  const [threadOrder] = useThreadOrder(freshness);
   const answerFirst = composerFirst(threadOrder);
   const referencedByNode =
     reference === undefined || referencedByCount === 0 ? null : (
@@ -385,6 +393,7 @@ export function AskCard({
         askId={displayedAsk.id}
         claimant={threadQuery.data?.claimant ?? null}
         followers={threadQuery.data?.followers ?? []}
+        freshness={freshness}
         owner={displayedAsk}
         route={threadQuery.data?.route ?? null}
         routeHolder={threadQuery.data?.route_holder ?? null}

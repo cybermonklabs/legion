@@ -1,4 +1,5 @@
 import {
+  type FocusEvent,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -42,6 +43,8 @@ import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import { chipName } from "../first-line";
+import { useSetFocusedNode } from "../focused-node";
+import { focusedNodeOf, useReleaseFocus } from "../IssueTree";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
@@ -63,11 +66,14 @@ import {
   type StatementState,
   sentenceCase,
   VERIFICATION_WORDS,
+  VIEW_LOADING_LINES,
 } from "../page-words";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { useAddressActed, useAddressLanding } from "../spec-filter/address-landing";
+import { nodesInOrder } from "../tree-keys";
 import { moveToRow } from "../useTreeKeymap";
+import { ViewLoadingLine } from "../view-loading-line";
 import {
   type CheckReading,
   STATEMENT_STATES,
@@ -88,11 +94,17 @@ const VERIFICATION_READS = ["coverage", "results", "blocks"] as const;
  *  under the statements it serves. */
 export type VerificationRead = (typeof VERIFICATION_READS)[number];
 
-/** How the reads the body is drawn from stand: one still out, all of them answered, or one or
- *  more failed before they first answered, each by its name (`FailedRead`). The body says the
- *  failed ones in an order of its own (`VERIFICATION_READS`), whatever order they are given in. */
+/** How the reads the body is drawn from stand: one or more still out, all of them answered, or
+ *  one or more failed before they first answered, each by its name (`FailedRead`). The body
+ *  says the failed ones in an order of its own (`VERIFICATION_READS`), whatever order they are
+ *  given in, and names the ones still out in the order `out` gives them. */
 export type VerificationReads =
-  | { readonly state: "waiting" }
+  | {
+      /** Each read that holds no answer yet, which the loading line names (`ViewLoadingLine`);
+       *  all three where none is given. */
+      readonly out?: readonly VerificationRead[];
+      readonly state: "waiting";
+    }
   | { readonly state: "answered" }
   | {
       readonly state: "failed";
@@ -185,6 +197,7 @@ export function VerificationFilterBody({
   reads,
   readsSettled = false,
   reveal,
+  startsOn,
   view,
   whole,
 }: {
@@ -237,6 +250,12 @@ export function VerificationFilterBody({
    *  per following of the address, unless the reader has acted since they followed it
    *  (`addressActs`). */
   reveal?: string;
+  /** The nodes the address names (`useAddressTarget`'s `named`): where the view draws a row of
+   *  one, that row holds the tree's tab stop from the render that first draws it, in place of
+   *  the issue's row, so the address lands with the focus on it (part N's R14, decision 368),
+   *  unless the reader has acted since they followed the address (`addressActs`). Without it
+   *  the stop starts on the issue's row. */
+  startsOn?: ReadonlySet<string>;
   /** The tree as the Verification filter left it (`presetView`). */
   view: TreeNode;
   /** The Verification view with no words query, where a query is typed: what the issue holds,
@@ -368,6 +387,34 @@ export function VerificationFilterBody({
   // from has settled, as the Spec view's does (`useAddressLanding`).
   const tree = useRef<HTMLDivElement>(null);
   useAddressLanding({ acts: addressActs, drawn: rows.join(" "), id: addressRow, tree });
+  // The row of a node the address names takes the stop once for each node named, in the render
+  // that first draws it, as the stop is handed back above, and only where the reader has not
+  // acted since they followed the address, read in that render alone as the address's row reads
+  // it above; the reader's own moves keep it after. The named row is looked for only until the
+  // render that first draws it.
+  const [startedOn, setStartedOn] = useState<string | undefined>(undefined);
+  const startKey = startsOn === undefined ? undefined : [...startsOn].join(" ");
+  if (startsOn !== undefined && startedOn !== startKey) {
+    const startRow = namedRow(startsOn, shown, loose, others);
+    if (startRow !== undefined && rows.includes(startRow)) {
+      setStartedOn(startKey);
+      if (!acted) setRovingId(startRow);
+    }
+  }
+  // The row the reader's focus is on is F's focused node, as the outline's row is, so Details'
+  // facts of the row they are on follow it (part N's R14): a statement, a check, a result or
+  // another row by its node, and on the issue's row, its summary and its chips, the issue itself.
+  // The focus leaving the tree gives the issue back to Details by the outline's own rule, but
+  // where it goes to Details (`useReleaseFocus`); each row keeps its own focus, so the tree has
+  // nothing of a row to let go of.
+  const setFocusedNode = useSetFocusedNode();
+  const nodes = useMemo(() => new Map(nodesInOrder(view).map((node) => [node.id, node])), [view]);
+  const releaseFocus = useReleaseFocus({ editing: false, onLeave: HOLDS_NO_ROW });
+  const takeFocus = (event: FocusEvent<HTMLElement>) => {
+    const id = event.target.closest<HTMLElement>(TREE_ROW)?.dataset.nodeId;
+    const node = id === undefined ? undefined : nodes.get(id);
+    setFocusedNode(node === undefined || node.id === view.id ? undefined : focusedNodeOf(node));
+  };
   // Each drawn check's press, by its row's id in `rows`: true where the reader pressed its facts
   // open, false where they pressed them shut while the focus held them open, and no entry where
   // the focus alone decides. It is held here rather than in each check so the tree's keys and a
@@ -468,6 +515,13 @@ export function VerificationFilterBody({
   };
   const drawnBody = (
     <div className={BODY} data-verification-body="">
+      {reads.state === "waiting" ? (
+        <ViewLoadingLine
+          names={(reads.out ?? VERIFICATION_READS).map(
+            (read) => VIEW_LOADING_LINES.verification[read]
+          )}
+        />
+      ) : null}
       {/* Each line, the page's one line for a failed read (`FailedReadLine`): its words and a
           Retry that asks its read alone again. The view's own reads' lines stand in the body's
           own order whatever order the reads are given in, since the stage the view is drawn in
@@ -493,6 +547,8 @@ export function VerificationFilterBody({
       <div
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
+        onBlur={releaseFocus}
+        onFocus={takeFocus}
         onKeyDown={keyDown}
         ref={tree}
         role="tree"
@@ -763,6 +819,29 @@ function treeRows(
     ...others.map((node) => node.id),
   ];
 }
+
+/** The row the first node of `named` the body draws stands as, by its id in `treeRows`: a
+ *  statement's, a check's under the first statement it is drawn under, a check's that serves
+ *  none, or another row's; `undefined` where it draws none. */
+function namedRow(
+  named: ReadonlySet<string>,
+  statements: readonly StatementReading[],
+  loose: readonly CheckReading[],
+  others: readonly TreeNode[]
+): string | undefined {
+  for (const statement of statements) {
+    if (named.has(statement.node.id)) return statement.node.id;
+    const check = statement.checks.find(({ node }) => named.has(node.id));
+    if (check !== undefined) return checkRowId(statement.node.id, check.node.id);
+  }
+  return [...loose.map(({ node }) => node.id), ...others.map(({ id }) => id)].find((id) =>
+    named.has(id)
+  );
+}
+
+/** What the tree lets go of as the focus leaves it: nothing, since each row holds its own
+ *  focus (`useReleaseFocus`'s `onLeave`). */
+const HOLDS_NO_ROW = (): void => {};
 
 /** The id of a check's row under a statement. A check that serves two statements is drawn
  *  under each, so its node's id names two rows, and the statement's id beside it names one. */

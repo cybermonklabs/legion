@@ -1,9 +1,13 @@
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { type IssueTab, parseIssuePath } from "../refs/routes";
+import { buildIssuePath, type IssueTab, parseIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { DOCUMENT_OPEN_ATTRIBUTE, DOCUMENTS_LIST_ATTRIBUTE } from "./DocumentsList";
+import { useOutlineAddress } from "./document-address";
+import { OUTLINE_CONTROL, WORDS_FILTER_ATTRIBUTE } from "./IssuePresets";
 import { bringOnScreen } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
+import { wholeOnScreen } from "./on-screen";
 import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "./page-words";
 
 /**
@@ -12,6 +16,11 @@ import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "./page-words";
  * checks look for the same element and neither has a name of its own for a part of the page.
  */
 const PARTS = {
+  // Documents' list, which `t a` opens in place of the outline (part N's R2, R4).
+  documents: `[${DOCUMENTS_LIST_ATTRIBUTE}]`,
+  // The filter by words: its small control, which a press opens into the box, or the box
+  // (`IssuePresets.tsx`); below 1024 px both are in the Outline sheet (part N's R4).
+  filter: `[${WORDS_FILTER_ATTRIBUTE}]`,
   // The outline, by its name: the Contents pane's list is a tree too, and it stands before the
   // outline in the page.
   tree: `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`,
@@ -20,6 +29,11 @@ const PARTS = {
 /** What takes the focus inside each part, where the part itself does not: the tree's one tab
  *  stop. */
 const TAKES_FOCUS: Readonly<Record<keyof typeof PARTS, string | undefined>> = {
+  // Documents' list's first row, by its link to its document; the list itself where it holds no
+  // row.
+  documents: `[${DOCUMENT_OPEN_ATTRIBUTE}]`,
+  // The words box is its own focus.
+  filter: undefined,
   tree: '[data-node-row][tabindex="0"]',
 };
 
@@ -40,6 +54,11 @@ const SETTLING_FRAMES = 20;
 /** Shows `shown`, which is `found` where the whole part fits the screen and the control the
  *  chord leaves the focus on where it does not. */
 function showPart(found: HTMLElement, takes: HTMLElement): HTMLElement {
+  // A control the chord left the focus on that the reader already sees whole stays where it
+  // stands, and the page with it (part N's R1): a chord back to the outline (`t c`) finds the
+  // outline at the place the reader left it, the row they were on in view (`stage-landing.tsx`'s
+  // `ViewNodeKeeper`), which showing it again would move to the middle of the screen.
+  if (wholeOnScreen(takes)) return takes;
   const whole = found.getBoundingClientRect().height <= window.innerHeight;
   const shown = whole ? found : takes;
   shown.scrollIntoView({ block: whole ? "start" : "center" });
@@ -57,6 +76,17 @@ function showPart(found: HTMLElement, takes: HTMLElement): HTMLElement {
 function reachPart(part: keyof typeof PARTS, left = DRAWING_FRAMES): void {
   const found = document.querySelector<HTMLElement>(PARTS[part]);
   if (found === null || found.closest("[hidden]") !== null) {
+    // The words are in the Outline sheet where the row has no room for them: the chord opens
+    // the sheet, as the reader's press would, and goes on to the words once it is drawn.
+    if (part === "filter" && left === DRAWING_FRAMES) {
+      document.querySelector<HTMLElement>(OUTLINE_CONTROL)?.click();
+    }
+    if (left > 0) requestAnimationFrame(() => reachPart(part, left - 1));
+    return;
+  }
+  // The words' small control opens into the box, which is what takes the caret.
+  if (part === "filter" && found instanceof HTMLButtonElement) {
+    found.click();
     if (left > 0) requestAnimationFrame(() => reachPart(part, left - 1));
     return;
   }
@@ -176,6 +206,8 @@ export const CHORDS: readonly {
 export function useIssueKeymap(issueKey: string): void {
   const navigate = useNavigate();
   const { hash, pathname, search } = useLocation();
+  // Where `t a` leaves from (part N's R4).
+  const outline = useOutlineAddress(issueKey);
   // The view the address has on, which a view's chord toggles from: the issue's own address is
   // Dashboard's unless it names a node or words, so the whole address is read.
   const route = parseIssuePath(pathname);
@@ -197,4 +229,59 @@ export function useIssueKeymap(issueKey: string): void {
       },
     }))
   );
+  // `t a`, today's Artifacts tab, opens Documents' list at its own address (part N's R2, R4,
+  // R6), with the focus on its first row, as a press of Documents does: the list goes back to the
+  // address the chord left on Escape (the location's `outline`), and from the list itself to
+  // where the list was opened from.
+  useKeymap("issue", [
+    {
+      id: "tab-artifacts",
+      keys: "t a",
+      label: CONTROL_LABELS.open_documents,
+      run: () => {
+        navigate(presetPath(issueKey, "documents"), {
+          state: { outline: active === "documents" ? outline : `${pathname}${search}` },
+        });
+        requestAnimationFrame(() => reachPart("documents"));
+      },
+    },
+  ]);
+  // The filter by words narrows the view the reader is already on, so it opens no address of
+  // its own: what it types is `?q=`, which the box itself writes (part N's R4).
+  useKeymap("issue", [
+    {
+      id: "tab-filter",
+      keys: "t f",
+      label: "Filter by words",
+      run: () => {
+        // Where the row draws no Filter, in the row or in its Outline sheet - on Documents, on
+        // Dashboard and on Threads, which draw no outline - the chord turns Conversation on with
+        // the words kept, and opens its box there (part N's R4, ST-1).
+        if (
+          document.querySelector(PARTS.filter) === null &&
+          document.querySelector(OUTLINE_CONTROL) === null
+        ) {
+          const words = new URLSearchParams(search).get("q") ?? "";
+          const conversation = presetPath(issueKey, "conversation");
+          navigate(
+            words === "" ? conversation : `${conversation}?${new URLSearchParams({ q: words })}`
+          );
+          requestAnimationFrame(() => reachPart("filter"));
+          return;
+        }
+        reachPart("filter");
+      },
+    },
+  ]);
+  // `t e`, today's Steps tab, opens `/steps`, which opens Details at the issue's steps and puts
+  // the focus there (`stage-landing.tsx`): each press is a new arrival at it, so it opens them
+  // again after the reader closed Details (part N's R6).
+  useKeymap("issue", [
+    {
+      id: "tab-steps",
+      keys: "t e",
+      label: CONTROL_LABELS.open_steps,
+      run: () => navigate(buildIssuePath({ key: issueKey, kind: "steps" })),
+    },
+  ]);
 }

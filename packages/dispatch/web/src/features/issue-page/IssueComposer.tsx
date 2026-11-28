@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { Actor } from "../../api/types";
-import { pageComposer } from "../../theme/classes";
+import { pageComposer, pageInkText } from "../../theme/classes";
 import {
   type ListedReplies,
   type ListedReply,
@@ -302,7 +302,7 @@ export function IssueComposer({
   return (
     <section
       aria-label={CONTROL_LABELS.write}
-      className={pageComposer.foot}
+      className={`${pageComposer.foot} ${pageInkText}`}
       data-testid={FOOT_BOX_TEST_ID}
       {...{ [FOOT_BOX_ATTRIBUTE]: "" }}
       hidden={!shown}

@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
   type RefObject,
@@ -10,13 +9,11 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { whoAmIQuery } from "../../api/queries";
 import type { Artifact, DisplayTree } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { EditedMark } from "../refs/PostMarks";
 import { postDeletion } from "../refs/post-marks";
 import { PublishedReferenceNames, type PublishedReferences } from "../refs/reference-names";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
@@ -35,7 +32,7 @@ import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
-import { threadMarks } from "./outline-thread-read";
+import { type ThreadMark, threadMarks } from "./outline-thread-read";
 import {
   conversationItem,
   LANDING_WAIT_MS,
@@ -71,6 +68,7 @@ import {
   zoomBreadcrumb,
 } from "./tree-fold";
 import { everythingOpened, nodesInOrder, rowKeyOf } from "./tree-keys";
+import { useWhoIsReading } from "./useIssueTree";
 import { type OnEditing, useNodeEditing } from "./useNodeEditing";
 import { moveToRow, useTreeKeymap } from "./useTreeKeymap";
 
@@ -129,6 +127,7 @@ export function IssueTree({
   isClosed,
   landingReport,
   onEditing,
+  openingWaits = false,
   point,
   published,
   readsHeld = true,
@@ -142,8 +141,12 @@ export function IssueTree({
    *  starts as each following is drawn and the reader's first act since aborts
    *  (`slots/body.tsx`). A landing whose following saw an act before the address's row drew does
    *  nothing to the page: the row takes no focus and the page does not scroll to it, so the
-   *  focus and the page stay where the reader put them. Left out, the landing reads the reader's
-   *  acts from the moment its row is drawn. */
+   *  focus and the page stay where the reader put them. After the stage drew the outline in place
+   *  of a view that draws no node the address names, where the focus was the view's, the page
+   *  starts it at the outline's own first draw (`slots/stage.tsx`): an act made while the view
+   *  was drawn ends no landing, since nothing outside the view holds the focus, and the outline
+   *  lands as where the reader made no act. Left out, the landing reads the reader's acts from the
+   *  moment its row is drawn. */
   addressActs?: RefObject<AbortController | undefined>;
   /** Which following of the address `reveal` comes from (`useFollowing`, the location's key with
    *  its address), a new one at each link followed - one followed again to the address
@@ -189,6 +192,12 @@ export function IssueTree({
    *  editor rather than leaving the row with nothing to put a caret in, and hands that editor to
    *  the row; `undefined` whenever the reader is editing nothing. */
   onEditing: OnEditing;
+  /** Whether the page's opening waits, focusing nothing (dispatch://INFRA-1196 decision 413): an
+   *  address that names a node lands on it once, on its row, on the line drawn in the outline's
+   *  place that the issue holds none of it, or on a failed read's Retry, and until that landing
+   *  says where (`slots/body.tsx`), a question or a first row the opening focused would be a move
+   *  before it. No wait unless the page says otherwise. */
+  openingWaits?: boolean;
   /** The ids from the issue down to the conversation's current point (`current-point.ts`'s
    *  `useCurrentPoint`, R12), read from the whole tree rather than from the view, so a filter
    *  does not move it. Undefined draws no mark. */
@@ -274,7 +283,7 @@ export function IssueTree({
   const navigate = useNavigate();
   const takeRequest = useTakeOutlineRequest();
   // The reader, whose own new words a write from the line takes them to.
-  const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const reader = useWhoIsReading().data?.login;
   const body = useRef<HTMLDivElement | null>(null);
   const crumbLine = useRef<HTMLParagraphElement | null>(null);
   // The failed reads' lines over the tree, and the one whose Retry the page opens on where no
@@ -430,8 +439,15 @@ export function IssueTree({
       : drawn;
   const breadcrumb: readonly TreeNode[] =
     rootedAt === undefined ? [] : zoomBreadcrumb(root, rootedAt);
-  // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
-  const threads = useMemo(() => threadMarks(root), [root]);
+  // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row,
+  // once every read the rows come from has answered. Until then a row can stand that the settled
+  // outline draws no more - an answered question drawn whole until the decisions read puts its
+  // decision under it and folds it - and its mark read the unread set, and could mark the thread
+  // read, on a row the reader is not left with, as the reads happened to land.
+  const threads = useMemo(
+    () => (readsSettled ? threadMarks(root) : NO_THREAD_MARKS),
+    [readsSettled, root]
+  );
   // The rows that carry the conversation's current point (R12). `rows` is a new list at every
   // render, so there is nothing to memoise this on.
   const points = pointMarks(rows, point);
@@ -791,7 +807,12 @@ export function IssueTree({
   // before the row drew - the reads still out, a press on another control, a key, a turn of the
   // wheel - keeps the focus where they put it and the page where they had it: the landing does
   // nothing to the page - no focus, no scroll, no row's hold ended, no report - and the row is
-  // drawn where it stands, the branches the address opens opened. Watched only from the row's
+  // drawn where it stands, the branches the address opens opened. The acts are the following's,
+  // watched from its drawing whichever slot the stage draws, so an act made while a view was drawn
+  // in the outline's place counts too; but after a swap where the focus was the view's - the stage
+  // drew the outline in place of a view that draws no node the address names, and nothing outside
+  // the view held the focus - the outline watches the reader's acts from its own first draw
+  // (`slots/stage.tsx`), and lands as where the reader made no act. Watched only from the row's
   // drawing, a row that drew late took the focus from the control they had moved to; brought on
   // screen alone, it took the page away from the place they had scrolled to or the row they had
   // moved to, and ended that row's hold. Whatever else holds the focus keeps it, and from the
@@ -910,6 +931,13 @@ export function IssueTree({
     });
     return () => settle.abort();
   }, []);
+  // While an address that names a node has not landed (`openingWaits`, decision 413), the opening
+  // focuses nothing and waits: the address's own landing moves the focus, once. It is read at
+  // each run, and the page stops the wait only as the reads settle with one refused, which runs
+  // the opening anyway: the address's node may come from that read, and the page opens as it does
+  // with no node named, on a question that waits or on that read's Retry.
+  const openingHeld = useRef(openingWaits);
+  openingHeld.current = openingWaits;
   useEffect(() => {
     const held = opening.current;
     if (held.done) return;
@@ -918,6 +946,7 @@ export function IssueTree({
       return;
     }
     if (!readsSettled) return;
+    if (openingHeld.current) return;
     // The question that waits on the reader, which the page opens on wherever the tree holds it,
     // whatever reads failed: the one it opened on, or the first in the outline's order where it
     // has opened on none and has placed no first row. A tree drawn again zoomed to Focus
@@ -1421,6 +1450,9 @@ export function IssueTree({
 
 /** No branch folded in the cycle's last state: the state it starts in each time. */
 const NO_FOLDS: ReadonlySet<string> = new Set();
+
+/** No thread marked read while the rows' reads are still landing (`readsSettled`). */
+const NO_THREAD_MARKS: ReadonlyMap<string, ThreadMark> = new Map();
 
 /**
  * The events of the reader's keys and presses, which the tree counts to tell whether the reader

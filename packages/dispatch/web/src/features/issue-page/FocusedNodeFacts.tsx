@@ -10,7 +10,7 @@ import {
 import { flushSync } from "react-dom";
 
 import { api, type WriteBounds } from "../../api/client";
-import { askThreadQuery, whoAmIQuery } from "../../api/queries";
+import { askThreadQuery } from "../../api/queries";
 import type { Actor, UserState } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import {
@@ -43,7 +43,7 @@ import { type PressWatch, watchPresses } from "../margin/details-focus-keeper";
 import { useCommentActionQueue } from "../margin/useCommentActionQueue";
 import { type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
 import { postDeletion } from "../refs/post-marks";
-import { standsFailed } from "../refs/reference-target";
+import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import type { FocusedNode } from "./focused-node";
@@ -61,6 +61,7 @@ import {
   sentenceCase,
 } from "./page-words";
 import { useThreadsOpen } from "./threads-open";
+import { useWhoIsReading } from "./useIssueTree";
 
 /**
  * The facts of whatever the reader's focus is on, in the panel: what it is, how it stands and
@@ -279,7 +280,9 @@ function AskThreadFacts({
             askId={ask.id}
             claimant={thread.claimant}
             followers={thread.followers ?? []}
+            freshness={EVENT_FRESH}
             owner={ask}
+            palette="page"
             route={thread.route}
             routeHolder={thread.route_holder}
             routeStatus={thread.route_status}
@@ -328,7 +331,7 @@ function ItemControls({
   const queryClient = useQueryClient();
   const writer = useOutlineWriter();
   const threads = useThreadsOpen();
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   // The reads the outline is drawn from, under its keys, so the controls cost no request: never
   // stale here, since the outline's own reads and every invalidation keep them current, so
   // the focus landing on a row reads the cache however long ago the outline read it.

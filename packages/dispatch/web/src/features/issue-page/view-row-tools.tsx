@@ -1,0 +1,149 @@
+import type { ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+
+import type { Artifact } from "../../api/types";
+import { buildIssuePath } from "../refs/routes";
+import { type OpenedAddress, useOpenedDocument, useOutlineAddress } from "./document-address";
+import { issueAddress, presetPath } from "./issue-address";
+import type { Preset } from "./page-words";
+import type { SlotProps } from "./slot-props";
+import { useFollowing } from "./slots/following";
+import { useDocumentToolbars } from "./useDocumentToolbars";
+import { useIssueDetail } from "./useIssueDetail";
+import { VersionControl } from "./VersionControl";
+
+/** What part N hands the view row's `IssuePresets` beside part D's props (its R3, R4). */
+export interface ViewRowTools {
+  /** Documents, where a document Documents' list opened is drawn: the control that is on in
+   *  place of the address's preset, which is Conversation's there (part N's R4). The row's own
+   *  `active` stands everywhere else, so this is given there alone. */
+  readonly active?: Preset;
+  readonly filter: string;
+  /** How the box writes `?q=`; not given on Documents, which draws no Filter (part N's R4), nor on
+   *  Dashboard (dispatch://INFRA-5702/spec#b-r-new-page) or Threads, which draw no outline, so the
+   *  row draws no box there and still carries the words to the control pressed next. */
+  readonly onFilterChange?: (next: string) => void;
+  readonly toolbar: ReactNode;
+}
+
+/**
+ * How the filter by words writes `?q=`, the words it holds (part N's R4): in place, keeping the
+ * rest of the address, by a replace marked with the following the words were typed in
+ * (`slots/following.ts`), so the stage never swaps a view for the outline while the reader types
+ * (decision 368). The mark keeps the outline an opened document goes back to. No words take `?q=`
+ * out, as Escape's `words-clear` does (`escape-order.ts`).
+ */
+export function useWriteWords(issueKey: string): (words: string) => void {
+  const navigate = useNavigate();
+  const { hash, pathname, search } = useLocation();
+  const following = useFollowing();
+  const outline = useOutlineAddress(issueKey);
+  return (words) => {
+    const query = new URLSearchParams(search);
+    if (words === "") query.delete("q");
+    else query.set("q", words);
+    const rest = query.toString();
+    navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, {
+      replace: true,
+      state: { outline, words: following },
+    });
+  };
+}
+
+/**
+ * The view row's two small controls, as `IssuePresets` props (dispatch://INFRA-1196 part N's
+ * R3, R4): the filter by words, which writes `?q=` in place (`useWriteWords`); and the version
+ * control, which reads the opened document's versions, else the view's document's, else is not
+ * drawn. Below 1024 px the row draws the two in the Outline sheet (`slots/view-row.tsx`).
+ * Documents, on while its list or a document opened from the list is drawn, draws no Filter, and
+ * neither do Dashboard and Threads. With them, the document the address opens
+ * (`useOpenedDocument`), which the row reads too and which is no prop of `IssuePresets`.
+ */
+export function useViewRowTools(
+  props: SlotProps
+): ViewRowTools & { readonly opened: OpenedAddress | undefined } {
+  const { issue, route } = props;
+  const navigate = useNavigate();
+  const { hash, pathname, search } = useLocation();
+  const { planArtifact, primaryArtifact, verificationArtifact } = useIssueDetail(issue, route);
+  const address = issueAddress(route, search, hash, primaryArtifact?.slug);
+  const opened = useOpenedDocument(issue, route);
+  const outline = useOutlineAddress(issue.key);
+  const { diffs, showDiff, toolbars } = useDocumentToolbars();
+  // Documents is on while a document its list opened is drawn, whose way back is the list (the
+  // location's `outline`, which the list's rows hand over), as it is while the list is.
+  const documentsOn =
+    address.preset === "documents" ||
+    (opened !== undefined && outline === presetPath(issue.key, "documents"));
+  const isClosed = issue.closed_at !== null;
+  const onFilterChange = useWriteWords(issue.key);
+  // A document opened at a version of its own: its own address at that version, which keeps the
+  // outline it was opened from to go back to.
+  const openDocumentAt = (artifact: Artifact, version: number | undefined) =>
+    navigate(buildIssuePath({ key: issue.key, kind: "artifact", slug: artifact.slug, version }), {
+      state: { outline },
+    });
+  // The document a view's version control reads while the outline or a view is drawn (R3): the
+  // document of the view's role. The Decisions view has no document of its role, and with no
+  // view on no version control is drawn.
+  const viewDocument = (
+    {
+      conversation: undefined,
+      dashboard: undefined,
+      decisions: undefined,
+      documents: undefined,
+      plan: planArtifact,
+      spec: primaryArtifact,
+      threads: undefined,
+      verification: verificationArtifact,
+    } as const
+  )[address.preset];
+  const openedDocument = opened?.artifact?.kind === "doc" ? opened.artifact : undefined;
+  const toolbar =
+    openedDocument !== undefined ? (
+      <VersionControl
+        artifact={openedDocument}
+        isClosed={isClosed}
+        onShowDiffChange={(next) => showDiff(openedDocument.id, next)}
+        onVersionChange={(version) => {
+          showDiff(openedDocument.id, false);
+          openDocumentAt(openedDocument, version ?? undefined);
+        }}
+        showDiff={diffs.has(openedDocument.id)}
+        toolbar={toolbars.get(openedDocument.id)}
+        version={opened?.route.version}
+      />
+    ) : opened === undefined && viewDocument !== undefined ? (
+      <VersionControl
+        artifact={viewDocument}
+        isClosed={isClosed}
+        // Nothing in the view is the document's text to draw a comparison over, so the
+        // comparison opens the document at the pinned version with its changes drawn.
+        onShowDiffChange={(next) => {
+          showDiff(viewDocument.id, next);
+          if (next) openDocumentAt(viewDocument, address.version);
+        }}
+        // A version picked in a view pins the view's address to it (`?v=`), and keeps its words
+        // filter; the fragment is a node of the version the reader is leaving.
+        onVersionChange={(version) => {
+          const query = new URLSearchParams(search);
+          if (version === null) query.delete("v");
+          else query.set("v", String(version));
+          const rest = query.toString();
+          navigate(`${pathname}${rest === "" ? "" : `?${rest}`}`);
+        }}
+        showDiff={false}
+        toolbar={toolbars.get(viewDocument.id)}
+        version={address.version}
+      />
+    ) : undefined;
+  return {
+    ...(documentsOn && address.preset !== "documents" ? { active: "documents" as const } : {}),
+    filter: address.filter,
+    ...(documentsOn || address.preset === "dashboard" || address.preset === "threads"
+      ? {}
+      : { onFilterChange }),
+    opened,
+    toolbar,
+  };
+}

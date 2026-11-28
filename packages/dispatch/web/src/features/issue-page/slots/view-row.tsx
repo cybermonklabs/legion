@@ -1,9 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useLayoutEffect, useMemo, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { whoAmIQuery } from "../../../api/queries";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { CONTENTS_PANE_QUERY, OutlineSheet, PAGE_INSET } from "../contents-frame";
@@ -11,17 +9,19 @@ import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import { useOutlineReads } from "../outline-reads";
-import { filterSignals, type PresetSignal } from "../presets";
+import { filterSignals, isFilter, type PresetSignal } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useWaitingCount } from "../threads/ThreadList";
 import { useIssueKeymap } from "../useIssueKeymap";
+import { useWhoIsReading } from "../useIssueTree";
+import { useViewRowTools } from "../view-row-tools";
 
 /**
  * The view row (R2, R11): the view controls - Dashboard first, Conversation with no count, the
- * four filter controls with signals from the issue's tree, and Threads with a count of its own -
- * and Keys (`IssuePresets.tsx`). Below 1024 px, with no view on, the Outline control stands
- * beside the one control (`contents-frame.tsx`). The row binds the views' chords
- * (`useIssueKeymap.ts`).
+ * four filter controls with signals from the issue's tree, Threads with a count of its own, and
+ * Documents with no count - and Keys (`IssuePresets.tsx`). Below 1024 px, with no view on, the
+ * Outline control stands beside the one control (`contents-frame.tsx`). The row binds the views'
+ * chords (`useIssueKeymap.ts`).
  *
  * The filter signals wait for the tree's reads (`readsHeld`): a read still out or failed leaves
  * nodes missing from the counts. They also wait for the reader's login: `tree-drafts.ts` marks no
@@ -41,6 +41,12 @@ import { useIssueKeymap } from "../useIssueKeymap";
  * page scrolls; above, it scrolls away with the header. While it stays it stands over the page
  * and under the navigation's backdrop (`z-20`), so an open navigation dims it as it dims the
  * page, and its height is published (`VIEW_ROW_HEIGHT_PROPERTY`).
+ *
+ * Part N adds the row's two small controls, the version control and the filter by words, before
+ * Keys (`view-row-tools.tsx`), and below 1024 px the Outline sheet that holds them, with a view on
+ * too, in place of D's Outline control. Documents draws no outline and so no sheet (root R14),
+ * and neither do Dashboard (dispatch://INFRA-5702/spec#b-r-new-page) and a document drawn as the
+ * stage.
  */
 export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
@@ -48,7 +54,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
   // Decisions' flag counts the decisions marked `waiting` for the reader.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   // The four filter signals follow `?q=` and stay hidden until their reads are ready.
   const signals = useMemo(
     () =>
@@ -64,6 +70,15 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   useViewRowHeight(row);
   useIssueKeymap(issue.key);
+  // The document the address opens comes with the tools, and is no prop of `IssuePresets`.
+  const { opened, ...tools } = useViewRowTools(props);
+  // Below 1024 px, where root R14 opens the Contents list as the Outline sheet, the sheet holds
+  // the row's two small controls, with a view on too (part N's R4). Documents draws no outline,
+  // so no sheet: its version control stands at the row's end. Nor does a document drawn as the
+  // stage, whichever way it was opened: no Contents list is drawn while it is (the plan's preset
+  // table), and its small controls stand at the row's end too.
+  const on = tools.active ?? address.preset;
+  const drawsOutline = !paned && opened === undefined && (on === "conversation" || isFilter(on));
   return (
     <div
       className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[761px]:sticky max-[761px]:top-0 max-[761px]:z-[19]`}
@@ -72,13 +87,14 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       <IssuePresets
         active={address.preset}
         issueKey={issue.key}
-        // The Outline control stands only beside the outline: every filter draws its own view, and
-        // Dashboard draws none.
-        outline={
-          paned || address.preset !== "conversation" ? undefined : <OutlineSheet slot={props} />
+        sheet={
+          drawsOutline ? (inSheet) => <OutlineSheet slot={props} tools={inSheet} /> : undefined
         }
         signals={signals}
         threads={threads}
+        // Part N's: its two small controls, and Documents as the control that is on while a
+        // document its list opened is drawn (`view-row-tools.tsx`).
+        {...tools}
       />
     </div>
   );

@@ -11,10 +11,13 @@ import {
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
+import type { EventFreshness } from "../../hooks/useIsHuman";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { textMutedOnSurface } from "../../theme/classes";
+import type { AskPalette } from "../ask-body/ask-text";
 import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteReach";
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
+import { PAGE_REACHES } from "../issue-page/reaches-palette";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
@@ -72,7 +75,14 @@ export interface AskRecipientsProps {
   claimant: string | null;
   /** Oldest first, as `GET /api/v1/asks/{id}` returns them. */
   followers: readonly AskFollower[];
+  /** How the read of who is reading is kept fresh, where the host keeps it fresh by events; by
+   *  default, the app's. */
+  freshness?: EventFreshness;
   owner: AskOwner;
+  /** Whose colours the card draws its Reaches control in: the new issue page's (`page`, part N's
+   *  R13), which Details' facts of a focused question hand (`FocusedNodeFacts.tsx`), or by
+   *  default today's (`main`), as every other surface draws it. */
+  palette?: AskPalette;
   /** Write seam for tests; defaults to the real API. */
   removeFollower?: (askId: string, sessionId: string, bounds: WriteBounds) => Promise<void>;
   /** The ask's issue's route (`session:<id>` or `role:<name>`), from the same thread read. */
@@ -230,7 +240,9 @@ export function AskRecipients({
   askId,
   claimant,
   followers,
+  freshness,
   owner,
+  palette = "main",
   removeFollower = removeAskFollower,
   route,
   routeHolder,
@@ -241,7 +253,7 @@ export function AskRecipients({
   // The subscribers endpoints need the `person` scope, which a signed-in browser holds; the card
   // only asks once the sign-in read says the principal is a user, so nothing without the scope
   // cycles on a 403.
-  const human = useIsHuman();
+  const human = useIsHuman(freshness);
   // Same key as the issue header (`IssueHeader`) and the project document page
   // (`DocumentPage`), so an Inbox of cards on one issue shares one fetch with its header. Each
   // fetch is two Envoy listener round trips (interests + sessions), so it is held fresh for a
@@ -349,7 +361,8 @@ export function AskRecipients({
         expanded={open}
         label={counted ? reachLabel({ count, unknownRoute }) : "Recipients"}
         onToggle={() => setOpen((shown) => !shown)}
-        textClassName={textMutedOnSurface}
+        textClassName={palette === "page" ? PAGE_REACHES.text : textMutedOnSurface}
+        {...(palette === "page" ? { chevronClassName: PAGE_REACHES.chevron } : {})}
       />
       {!open ? null : (
         <>

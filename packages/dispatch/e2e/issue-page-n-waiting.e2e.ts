@@ -7,8 +7,9 @@
 
 /*
  * Piece N3 of part N (dispatch://INFRA-3940, dispatch://INFRA-6230): the row of the count's
- * presses, moved here out of part N's `issue-page-n.e2e.ts` so it lands on `main` alone. `main`
- * draws no opened document, so the row starts from `/issues/<key>/conversation`.
+ * presses, moved here out of part N's `issue-page-n.e2e.ts` so it lands on `main` alone. The row
+ * starts from `/issues/<key>/conversation`, and also from the spec opened in place of the outline
+ * at its own address, `/issues/<key>/artifacts/<slug>` (dispatch://INFRA-6480 R5).
  */
 
 import { PRESET_NAMES, type Preset } from "../web/src/features/issue-page/page-words";
@@ -31,6 +32,7 @@ import { countOf, drawnItems, itemsOf, nextFive, waitingOf } from "./dashboard-s
 import { asPlanner, PROJECT, pause } from "./issue-layout-seed-support";
 import { gotoIssue, issuePage, phase, presetChooser, presetToolbar } from "./issue-page";
 import { DESKTOP, PHONE } from "./issue-page-g";
+import { openedArtifact, specAddress } from "./issue-page-n-documents";
 import { waitingCount } from "./issue-page-p";
 import { settledState } from "./settled";
 import { expect, type Page, test } from "./test";
@@ -230,15 +232,17 @@ async function expectActiveControl(page: Page, preset: Preset): Promise<void> {
 // from Conversation pushes Dashboard's address and puts the focus on the list's first item. Each
 // press after goes on to the next item, shows the next five past the fifth and comes round to the
 // first, the list showing its first five again, so every item the count counts is reached by
-// presses alone. An approval request alone, at the bare address that draws Dashboard, takes the
-// press as a move of the focus, with no new address.
-// SLOW(>=2s): the seed of six items over five kinds, each polled until the server reads it; two
-// loads on chromium and one on iphone, with seven presses of the count at each width; and the
-// lone approval request's issue, written and loaded.
+// presses alone. The row also starts from the spec opened in place of the outline: there the first
+// press closes the document, pushes Dashboard's address and puts the focus on the list's first
+// item (dispatch://INFRA-6480 R5). An approval request alone, at the bare address that draws
+// Dashboard, takes the press as a move of the focus, with no new address.
+// SLOW(>=2s): the seed of six items over five kinds, each polled until the server reads it; four
+// loads on chromium and two on iphone, half of them of the opened spec, with eight presses of the
+// count at each width; and the lone approval request's issue, written and loaded.
 test("the count of what waits on the reader opens the first thing that waits @phone", async ({
   browser,
 }) => {
-  test.setTimeout(150_000);
+  test.setTimeout(170_000);
   await phase(browser, seedWaitingWalk, async (page, seeded) => {
     const desktopProject = test.info().project.name !== "iphone";
     const waiting = waitingOf(issuePage(page));
@@ -314,6 +318,35 @@ test("the count of what waits on the reader opens the first thing that waits @ph
         .toBe(first);
       await expect(items, "the list did not show its first five again").toHaveCount(5);
       await expect(showMore, "the control for the next five did not come back").toHaveCount(1);
+    }
+
+    // From the spec opened in place of the outline, the first press closes the document, pushes
+    // Dashboard's address and puts the focus on the list's first item (dispatch://INFRA-6480 R5).
+    for (const [width, key] of (desktopProject
+      ? [
+          [1440, "click"],
+          [390, "Enter"],
+        ]
+      : [[390, "click"]]) as readonly (readonly [number, "click" | "Enter"])[]) {
+      await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
+      await gotoIssue(page, await specAddress(seeded.key));
+      await expectLoadSettled(settling);
+      await expect(openedArtifact(page), "the document did not open").toBeVisible();
+      await expect(waitingCount(page)).toHaveText(`Waiting on you (${seeded.items})`);
+      await pressCount(key);
+      await expect(openedArtifact(page), "the count left the document open").toHaveCount(0);
+      await expect
+        .poll(focused, {
+          message: `the focus is not on the first item that waits after a press from the opened document at ${width} px`,
+        })
+        .toMatch(/^dashboard-item-/);
+      await expect(page, "the count did not push Dashboard's address").toHaveURL(
+        new RegExp(`/issues/${seeded.key}/dashboard$`)
+      );
+      expect(
+        await focused(),
+        `the focus is off Dashboard's first item after a press from the opened document at ${width} px`
+      ).toBe((await drawnItems(waiting))[0]);
     }
 
     // An approval request is all that waits: at the bare address, which draws Dashboard, the press

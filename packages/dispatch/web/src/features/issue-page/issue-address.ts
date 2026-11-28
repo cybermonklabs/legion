@@ -12,9 +12,8 @@ import { blockNodeId } from "./statement-rules";
  *
  * Every address the old page's nine tabs answered still resolves, and this module is the one
  * place that says what each one opens: which preset, which document is opened in place of the
- * outline, which node the page unfolds the path to and puts the focus on, whether the node menu
- * is open, and which version is pinned. `refs/routes.ts` still parses the address; this reads the
- * route it answers.
+ * outline, which node the page unfolds the path to and puts the focus on, and which version is
+ * pinned. `refs/routes.ts` still parses the address; this reads the route it answers.
  *
  * It is pure and holds no React, so the page, the margin's panel and the unit tests all read an
  * address the same way.
@@ -63,8 +62,9 @@ export interface IssueAddress {
     | undefined;
   /** What `?q=` narrows the preset to; `""` for an address that narrows nothing. */
   readonly filter: string;
-  /** Whether the address opens the node menu, which `/artifacts` does (R20). */
-  readonly nodeMenu: boolean;
+  /** The control of the view row the address turns on: Dashboard, Conversation, one of the four
+   *  filters, or Documents, whose list is drawn in place of the outline and of every view at
+   *  `/documents` and at `/artifacts`, the old page's Artifacts tab (part N's R1, R2, R4). */
   readonly preset: Preset;
   /** The record of Threads that `/threads/<id>` names, by the id the address writes: an ask's
    *  id, the id of a thread's first comment or root message, or the id of a reply that begins a
@@ -78,15 +78,18 @@ export interface IssueAddress {
   readonly version: number | undefined;
 }
 
-/** Which view each kind of route opens (R20): Dashboard's and Conversation's own addresses, each
- *  filter's, and Threads' list and records, `/threads` and `/threads/<id>`
- *  (dispatch://INFRA-5704/spec#b-r-addresses). Every route not named here is Conversation, but
- *  for the issue's own address, which opens Dashboard where it names no node and no words filter
- *  (`issueAddress`, dispatch://INFRA-5702/spec#b-r-new-page). */
+/** Which control each kind of route opens (R20, part N's R4): Dashboard's and Conversation's own
+ *  addresses, each filter's, Threads' list and records, `/threads` and `/threads/<id>`
+ *  (dispatch://INFRA-5704/spec#b-r-addresses), and Documents' (`/documents` and the old page's
+ *  `/artifacts`). Every route not named here is Conversation, but for the issue's own address,
+ *  which opens Dashboard where it names no node and no words filter (`issueAddress`,
+ *  dispatch://INFRA-5702/spec#b-r-new-page). */
 const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
+  artifacts: "documents",
   conversation: "conversation",
   dashboard: "dashboard",
   decisions: "decisions",
+  "issue-documents": "documents",
   plan: "plan",
   spec: "spec",
   threads: "threads",
@@ -94,10 +97,11 @@ const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
 };
 
 /** The address of `preset` on `key`, which is the address its own control carries (R2, R20):
- *  each filter its old tab's, Conversation `/conversation` and Dashboard `/dashboard`
- *  (dispatch://INFRA-5702/spec#b-r-new-page). Every place of the page that writes an address for
- *  Conversation writes it through here. */
+ *  each filter its old tab's, Conversation `/conversation`, Dashboard `/dashboard`
+ *  (dispatch://INFRA-5702/spec#b-r-new-page) and Documents `/documents` (part N's R4). Every
+ *  place of the page that writes an address for Conversation writes it through here. */
 export function presetPath(key: string, preset: Preset): string {
+  if (preset === "documents") return buildIssuePath({ key, kind: "issue-documents" });
   return buildIssuePath({ key, kind: preset });
 }
 
@@ -213,7 +217,6 @@ export function issueAddress(
         : undefined,
     documentItem,
     filter,
-    nodeMenu: route.kind === "artifacts",
     preset,
     record: route.kind === "threads" ? route.record : undefined,
     target,

@@ -1,14 +1,12 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type Ref, useLayoutEffect, useRef } from "react";
 
-import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import type { EditorHandle } from "../doc/editor";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { useReportAdmission } from "./document-admission";
 import { DocumentStage } from "./document-stage";
 import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
+import { useWhoIsReading } from "./useIssueTree";
 
 /**
  * One document's editor, on that document's own stage (`document-stage.tsx`).
@@ -57,7 +55,7 @@ export function StagedDocument({
   onVersionChange: (version: number | null) => void;
   showDiff: boolean;
 }): ReactNode {
-  const user = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
+  const user = useWhoIsReading();
   const reportAdmission = useReportAdmission();
   const box = useRef<HTMLDivElement>(null);
   // Whether the editor is made, and so the room has answered: `ProofDocument` hands it over as it

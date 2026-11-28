@@ -39,7 +39,7 @@ import { DocumentRuntime } from "../doc/runtime";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { parseIssuePath } from "../refs/routes";
 import { presetPath } from "./issue-address";
-import { DASHBOARD_WORDS } from "./page-words";
+import { CONTROL_LABELS, DASHBOARD_WORDS } from "./page-words";
 import { HeaderSlot } from "./slots/header";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
@@ -266,6 +266,7 @@ const BARE = `/issues/${KEY}`;
 const DASHBOARD = presetPath(KEY, "dashboard");
 const CONVERSATION = presetPath(KEY, "conversation");
 const DECISIONS = presetPath(KEY, "decisions");
+const VERIFICATION_DOCUMENT = `/issues/${KEY}/artifacts/verification-md`;
 
 /** The address the router is at. */
 function address(): string {
@@ -428,6 +429,29 @@ test("any control of the row other than Dashboard drawn: Enter on the count does
     await waitFor(() => expect(address()).toBe(DASHBOARD));
     await focusOn(keys[0] ?? "", "Enter on the count left the focus off the list's first item");
     await expectCounts(keys.length);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a document drawn: the first press closes it, opens Dashboard and puts the focus on the list's first item", async () => {
+  const user = userEvent.setup();
+  const store = six();
+  const keys = keysOf(store);
+  const view = drawPage(VERIFICATION_DOCUMENT, store);
+  try {
+    expect(
+      await screen.findByRole("button", { name: CONTROL_LABELS.back_to_documents }),
+      "the document did not open"
+    ).toBeVisible();
+    await expectCounts(keys.length, { list: false });
+    await pressCount(user, "pointer");
+    await waitFor(() => expect(address()).toBe(DASHBOARD));
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.back_to_documents }),
+      "the press left the document open"
+    ).toBeNull();
+    await focusOn(keys[0] ?? "", "the press from the document left the focus off the first item");
   } finally {
     view.unmount();
   }

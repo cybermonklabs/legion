@@ -14,6 +14,7 @@ import {
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { useDialog, useMediaQuery } from "../shell/useDialog";
 import { ContentsChosen } from "./contents-chosen";
+import { useOpenedDocument } from "./document-address";
 import { issueAddress } from "./issue-address";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -43,10 +44,14 @@ export const PAGE_INSET = "px-3.5 md:px-7";
 export function IssueContentsPane(props: SlotProps): ReactNode {
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const { hash, search } = useLocation();
+  // Part N's: a document drawn in place of the outline draws no Contents pane (its R2, root
+  // R14); Documents' list is no Conversation, so the rule below leaves it out too.
+  const opened = useOpenedDocument(props.issue, props.route);
   // Only Conversation draws the outline beside it: every filter draws its own view, and the
   // issue's own address opens Dashboard unless it names a node or a words filter.
   const outline = issueAddress(props.route, search, hash, undefined).preset === "conversation";
   if (!paned || !outline) return null;
+  if (opened !== undefined) return null;
   return (
     <aside
       aria-label={CONTROL_LABELS.contents}
