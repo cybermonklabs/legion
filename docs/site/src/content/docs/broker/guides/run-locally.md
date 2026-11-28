@@ -380,6 +380,7 @@ DEMO_CLI_TOKEN             ada@example.com  agent  -           -        -       
 DEMO_GITHUB_APP            legion-daemon    agent  github-app  -        -                 -          -              yes    -        -
 DEMO_GITHUB_APP_CASE_PAIR  legion-daemon    agent  github-app  -        -                 -          -              yes    -        -
 DEMO_GITHUB_APP_HUMAN      ada@example.com  human  github-app  -        -                 -          -              yes    -        -
+DEMO_GITHUB_APP_PROXIED    legion-daemon    agent  github-app  -        -                 -          -              yes    -        -
 DEMO_READ_TOKEN            ada@example.com  agent  -           -        -                 -          -              yes    -        -
 DEMO_SERVICE_TOKEN         legion-daemon    agent  -           -        -                 -          -              yes    -        -
 Every row is a secret in memory file /tmp/agent-secrets-dev.wO2D5i/memory-secrets.json.
