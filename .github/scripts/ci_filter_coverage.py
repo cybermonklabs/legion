@@ -1617,12 +1617,8 @@ def step_texts(step: dict):
     action. One walk per step keeps the set of action folders it has read, so each action is read
     once (a cycle ends there too) and the time is linear in the number of actions; a uses: path
     that resolves outside the repository is not followed, and no inner step's with: is read."""
-    if "run" in step:
-        yield str(step["run"])
-        return
-    if "uses" not in step:
-        return
-    yield from (str(value) for value in (step.get("with") or {}).values())
+    if "uses" in step and "run" not in step:
+        yield from (str(value) for value in (step.get("with") or {}).values())
     seen = set()
     pending = [step]
     while pending:
