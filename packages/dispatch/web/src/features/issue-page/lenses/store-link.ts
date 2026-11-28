@@ -123,10 +123,11 @@ export function placedStorePath(title: string): string | undefined {
  * Whether `readId`, a node's id in the tree read, is that of the node the store address `address`
  * names, as an address is built from a read id (`storeAddressOf`) for the kind the address names
  * (`storeKindOf`): with a leading `<kind>/` taken off, the address's id (`dispatch://<kind>/<id>`)
- * for a lens, a risk and a constraint. For a finding (`dispatch://lens/<id>#b-<block>`), the block
- * id is the part after the read id's last `#`, or the whole read id where it holds none, and where
- * it holds one the part before it is the lens's id; a read id of the block id alone names no lens,
- * since a finding's address takes its lens from the finding's parent.
+ * for a lens, a risk and a constraint. A finding (`dispatch://lens/<id>#b-<block>`) is named only
+ * by its own read id, `lens/<uuid>#<block id>`, as the server's `ParseFindingID` reads a finding's
+ * id: the lens's id is the part between its leading `lens/` and its last `#`, and the block id the
+ * part after that `#`. A read id with no leading `lens/` or no `#`, a bare block id among them,
+ * names no finding.
  */
 function namesNode(address: string, readId: string): boolean {
   const kind = storeKindOf(address);
@@ -135,10 +136,8 @@ function namesNode(address: string, readId: string): boolean {
       return false;
     case "finding": {
       const hash = readId.lastIndexOf("#");
-      const lens =
-        hash === -1
-          ? address.slice("dispatch://lens/".length, address.indexOf("#"))
-          : readId.slice(0, hash);
+      if (!readId.startsWith("lens/") || hash === -1) return false;
+      const lens = readId.slice(0, hash);
       return storeAddressReference(storeAddressOf(kind, readId, lens)) === address;
     }
     default:
@@ -160,8 +159,8 @@ export function storeKindOf(address: string): StoreKind | undefined {
  * after its kind, and for a finding its lens's, whose read id is `lens`, with the block id after
  * the last `#` of its own. The tree read answers no address per node, so the address is built
  * from the read id: a node's read id is its store id, bare or after its kind (`lens/<uuid>`), and
- * a finding's is its lens's and its block id after a `#` (`lens/<uuid>#<block id>`), or its block
- * id alone.
+ * a finding's is its lens's and its block id after a `#` (`lens/<uuid>#<block id>`), as the
+ * server's `ParseFindingID` reads it.
  */
 export function storeAddressOf(type: StoreKind, readId: string, lens = ""): string {
   if (type !== "finding") return `dispatch://${type}/${storeId(readId, type)}`;

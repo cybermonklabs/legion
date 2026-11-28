@@ -19,11 +19,10 @@ test("storeLinkPath takes only the path a name's link holds", () => {
   const finding = `dispatch://lens/${LENS}#b-first`;
 
   // The paths a name's link holds: the node's read id, bare or after its kind, and a finding's
-  // by its block id alone or by its lens's read id and its block id.
+  // by its lens's read id and its block id.
   for (const [href, readId] of [
     [risk, RISK],
     [risk, `risk/${RISK}`],
-    [finding, "first"],
     [finding, `lens/${LENS}#first`],
   ] as const) {
     const path = outlineRowPath("CORE-1", readId);
@@ -43,6 +42,12 @@ test("storeLinkPath takes only the path a name's link holds", () => {
     [risk, outlineRowPath("CORE-1", "e5000000-0000-4000-8000-000000000005"), PAGE],
     // A finding's row under another lens.
     [finding, outlineRowPath("CORE-1", "lens/b2000000-0000-4000-8000-000000000002#first"), PAGE],
+    // A finding's block id alone, which names no finding: a finding is named by its own id
+    // (ParseFindingID).
+    [finding, outlineRowPath("CORE-1", "first"), PAGE],
+    // A finding's lens id without its "lens/" kind, which ParseFindingID does not read as a
+    // finding.
+    [finding, outlineRowPath("CORE-1", `${LENS}#first`), PAGE],
     // The node's row with a words filter the name's link does not hold.
     [risk, outlineRowPath("CORE-1", RISK, "failover"), PAGE],
     // The node's row at another view of the issue.
