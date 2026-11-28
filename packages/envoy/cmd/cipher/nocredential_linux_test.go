@@ -21,17 +21,19 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 const notLoggedInNotice = "agent-secrets: this machine's agent-secrets-helper holds no credential at the secrets broker; not an agent session (the helper: no machine credential; run: agent-secrets machine login, and have a human approve it)\n"
 
 // runInSession runs `agent-secrets register --exec -- binary args...` against the helper at sock,
 // so the command runs as a freshly registered machine session, and returns its exit code and output.
-func runInSession(t *testing.T, binary, sock string, args ...string) (code int, stdout, stderr string) {
+// AGENT_SECRETS_URL is broker.
+func runInSession(t *testing.T, binary, sock, broker string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	cmd := exec.Command(binary, append([]string{"register", "--exec", "--", binary}, args...)...)
 	cmd.Env = append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=",
-		"AGENT_SECRETS_URL=http://127.0.0.1:1")
+		"AGENT_SECRETS_URL="+broker)
 	var out, errOut strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	_ = cmd.Run()
@@ -44,8 +46,8 @@ func runInSession(t *testing.T, binary, sock string, args ...string) (code int, 
 func TestIdentityOnAHelperWithoutALauncherCredential(t *testing.T) {
 	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
-	sock := realHelper(t)
-	code, stdout, stderr := runInSession(t, binary, sock, "identity")
+	sock, broker := realHelper(t)
+	code, stdout, stderr := runInSession(t, binary, sock, broker, "identity")
 	if code != 1 || stdout != "" || stderr != notLoggedInNotice {
 		t.Fatalf("identity in a registered session on a helper with no credential: exit %d, stdout %q, stderr %q; want 1, nothing, %q", code, stdout, stderr, notLoggedInNotice)
 	}
@@ -60,7 +62,7 @@ func TestIdentityOnAHelperWithoutALauncherCredential(t *testing.T) {
 func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
 	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireCommandOnTime, onTimeWithin at waits_test.go:245).
 	binary := buildAgentSecrets(t)
-	sock := realHelper(t)
+	sock, _ := realHelper(t)
 	cmd := exec.Command(binary, "register", "--wait", "10", "--exec", "--", "sh", "-c", "echo ran")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=")
 	var stderr strings.Builder
@@ -112,7 +114,9 @@ func TestIdentityWhileAHelperWithACredentialEnrolls(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	code, stdout, stderr := runInSession(t, binary, sock, "identity")
+	// The session's AGENT_SECRETS_URL is a port this test holds that refuses each dial, not the
+	// helper's broker: identity asks the helper alone.
+	code, stdout, stderr := runInSession(t, binary, sock, "http://"+testport.Refused(t), "identity")
 	if code != 0 || stdout != "" || stderr != "" {
 		t.Fatalf("identity in a registered, enrolling session on a logged-in helper: exit %d, stdout %q, stderr %q; want 0 and nothing", code, stdout, stderr)
 	}
@@ -124,14 +128,14 @@ func TestIdentityWhileAHelperWithACredentialEnrolls(t *testing.T) {
 func TestCommandsOnAHelperWithoutALauncherCredentialPrintTheNotice(t *testing.T) {
 	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
-	sock := realHelper(t)
+	sock, broker := realHelper(t)
 	for _, args := range [][]string{
 		{"SOME_KEY", "--reason", "test", "--", "true"},
 		{"request", "SOME_KEY", "--reason", "test"},
 		{"self"},
 		{"sign", "--method", "GET", "--url", "https://broker.internal.example/v1/enrollments/self"},
 	} {
-		code, stdout, stderr := runInSession(t, binary, sock, args...)
+		code, stdout, stderr := runInSession(t, binary, sock, broker, args...)
 		if code != 1 || stdout != "" || stderr != notLoggedInNotice {
 			t.Errorf("agent-secrets %s: exit %d, stdout %q, stderr %q; want 1, nothing, %q", strings.Join(args, " "), code, stdout, stderr, notLoggedInNotice)
 		}
@@ -193,6 +197,8 @@ func TestAHelperInIdentityModeIsQuotedAndNamesNoMachineLogin(t *testing.T) {
 		"register": {OK: true, State: "enrolling", Code: helper.CodeNoCredential, Error: helperSays},
 	})
 	env := []string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir()}
+	// refused is a port this test holds that refuses each dial.
+	refused := "http://" + testport.Refused(t)
 	for _, tc := range []struct {
 		args []string
 		exit int
@@ -203,7 +209,7 @@ func TestAHelperInIdentityModeIsQuotedAndNamesNoMachineLogin(t *testing.T) {
 		{[]string{"register", "--wait", "1", "--exec", "--", "true"}, 0,
 			"agent-secrets register: launching anyway, and this session's agent-secrets calls fail until the helper holds a credential again: " + none + " (the helper: " + helperSays + ")\n"},
 	} {
-		stdout, stderr, exit := runAgentSecrets(t, binary, "http://127.0.0.1:1", t.TempDir(), env, tc.args...)
+		stdout, stderr, exit := runAgentSecrets(t, binary, refused, t.TempDir(), env, tc.args...)
 		if exit != tc.exit || stdout != "" || stderr != tc.want || strings.Contains(stderr, "machine login") {
 			t.Errorf("%v on a helper in identity mode: exit %d, stdout %q, stderr %q; want %d, nothing, %q", tc.args, exit, stdout, stderr, tc.exit, tc.want)
 		}

@@ -1,8 +1,10 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-// The import above is the whole of this file's merge-base check: on the merge base there is no
-// `./stall-watchdog`, so every test here fails to resolve rather than passing vacuously.
+import { sweepOnFakeClock } from "../test/sweep-on-fake-clock";
+// The `./stall-watchdog` import below is the whole of this file's merge-base check: on the
+// merge base there is no `./stall-watchdog`, so every test here fails to resolve rather than
+// passing vacuously.
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs, type StallLimits } from "./stall-limits";
 import {
   callOverdue,
@@ -17,6 +19,12 @@ import {
   type StallWatchdog,
   type StallWatchdogDeps,
 } from "./stall-watchdog";
+
+// A row that holds Bun's fake clock (`sweepOnFakeClock`) and is ended by the command's guard never
+// reaches its own `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
@@ -496,11 +504,10 @@ test("the ladder runs its three steps, each one step gap after the last", async 
 
 test("an abort whose Promise never settles hands back at the step gap, and the ladder goes on", async () => {
   // The host's `abort()` resolves only once the call it aborts has ended, so on the hang this
-  // ladder exists for it may never resolve. The bound on that wait is a real host timer and the
-  // module takes no timer seam — it is a pure detector with one injected clock, and the clock it
-  // judges by is deliberately not the one it waits on — so this one number is wall-clock: a
-  // second, chosen short because the case pays it once. Every other number here is the fake
-  // clock's.
+  // ladder exists for it may never resolve. The bound on that wait is a host timer the module
+  // arms itself (`abortEnd`), apart from the one injected clock it judges by, so the case holds
+  // that timer on Bun's fake clock: the gap is a second of it, and every other number here is the
+  // rig's clock.
   const gap = SECOND;
   const r = rig({ limits: { stepMs: gap } });
   r.abortHangs = true;
@@ -510,17 +517,16 @@ test("an abort whose Promise never settles hands back at the step gap, and the l
   expect(r.steps.map((step) => step.step)).toEqual(["end-processes"]);
 
   // Step two: the abort is made and answers neither way. The step waits the ladder's own gap and
-  // hands the sweep back, rather than holding it for as long as the turn stays hung.
+  // hands the sweep back, rather than holding it for as long as the turn stays hung: a
+  // millisecond short of the gap the sweep is still held, and at the gap it has handed back.
   r.tick(2 * MINUTE);
-  const began = Date.now();
-  await r.watchdog.sweep();
-  const waited = Date.now() - began;
-  expect(r.aborts).toHaveLength(1);
-  // It waited, and it stopped waiting: the lower bound is half the gap rather than the gap
-  // itself, because a host timer may fire a millisecond early, and the upper bound is what
-  // fails on an unbounded wait — there the sweep never returns and this case times out.
-  expect(waited).toBeGreaterThan(gap / 2);
-  expect(waited).toBeLessThan(10 * gap);
+  await sweepOnFakeClock(r.watchdog, async (sweep) => {
+    expect(r.aborts).toHaveLength(1);
+    await sweep.advance(gap - 1);
+    expect(sweep.handedBack()).toBe(false);
+    await sweep.advance(1);
+    expect(sweep.handedBack()).toBe(true);
+  });
   expect(r.steps[1]?.outcome).toContain(
     "the host's abort() had not returned within the 1-second step gap"
   );
@@ -546,10 +552,10 @@ test("an abort whose Promise never settles hands back at the step gap, and the l
 
 test("two calls of one turn overdue together take one abort, one message and one step gap", async () => {
   // The abort ends the turn, not one call, so the second step is one act for the turn however
-  // many of its calls are overdue. Its wait on the host's `abort()` is bounded by a real host
-  // timer, as in the case above, so k aborts in one sweep would be k of those waits and the
-  // last call's third step would come (k-1) gaps late — which is the arithmetic the daemon's own
-  // backstop floor is computed from (`src/stall-limits.ts`, `stepMs`).
+  // many of its calls are overdue. Its wait on the host's `abort()` is bounded by the host timer,
+  // held on Bun's fake clock as in the case above, so k aborts in one sweep would be k of those
+  // waits and the last call's third step would come (k-1) gaps late — which is the arithmetic the
+  // daemon's own backstop floor is computed from (`src/stall-limits.ts`, `stepMs`).
   const gap = SECOND;
   const r = rig({ limits: { stepMs: gap } });
   r.abortHangs = true;
@@ -565,11 +571,16 @@ test("two calls of one turn overdue together take one abort, one message and one
   expect(r.steps.map((step) => step.step)).toEqual(["end-processes", "end-processes"]);
 
   // Step two, for both calls at once: one `abort()`, one message naming the call it was made
-  // for, and a record for each call saying what it got.
+  // for, and a record for each call saying what it got. The sweep pays the abort's bounded wait
+  // once and not twice: a millisecond short of one gap it is still held, and at the gap it has
+  // handed back.
   r.tick(2 * MINUTE);
-  const began = Date.now();
-  await r.watchdog.sweep();
-  const waited = Date.now() - began;
+  await sweepOnFakeClock(r.watchdog, async (sweep) => {
+    await sweep.advance(gap - 1);
+    expect(sweep.handedBack()).toBe(false);
+    await sweep.advance(1);
+    expect(sweep.handedBack()).toBe(true);
+  });
   expect(r.aborts).toHaveLength(1);
   expect(r.messages).toHaveLength(1);
   expect(r.messages[0]).toContain("toolu_1");
@@ -583,9 +594,6 @@ test("two calls of one turn overdue together take one abort, one message and one
     "this turn's abort() had already been run for toolu_1, so this call took no abort and no " +
       "message of its own"
   );
-  // The sweep paid the abort's bounded wait once and not twice.
-  expect(waited).toBeGreaterThan(gap / 2);
-  expect(waited).toBeLessThan(2 * gap);
 
   // So both calls reach the last step at the next gap, and not one of them a gap behind the
   // other. The fake's `exitProcess` returns where the host's own does not
@@ -603,7 +611,7 @@ test("two calls of one turn that reach the abort in sweeps of their own take one
   // turn's `abort()` twice, send two messages for one ended turn, and — where the second abort
   // falls in the sweep that carries the other call to its last step, which the map's order
   // decides — pay the bounded wait again ahead of that step and push it a gap late. The gap is
-  // a real host timer here, as in the two cases above, so it is wall-clock and short.
+  // the host timer here, as in the two cases above, held on Bun's fake clock.
   const gap = SECOND / 2;
   const r = rig({ limits: { stepMs: gap } });
   r.abortHangs = true;
@@ -637,17 +645,17 @@ test("two calls of one turn that reach the abort in sweeps of their own take one
   // makes none, sends nothing and waits for nothing — and `toolu_2`, which the map lists behind
   // it, takes its last step in this same sweep rather than a gap late.
   r.tick(2 * gap);
-  const began = Date.now();
-  await r.watchdog.sweep();
-  const waited = Date.now() - began;
   // The three facts the reviewer measured, in one answer: one `abort()` for the turn, one
-  // message for it, and a sweep that waited on no abort — a second one would have cost this
-  // sweep the whole bounded gap ahead of `toolu_2`'s last step below.
-  expect({
-    aborts: r.aborts.length,
-    messages: r.messages.length,
-    waitedOnAnAbort: waited > gap / 2,
-  }).toEqual({ aborts: 1, messages: 1, waitedOnAnAbort: false });
+  // message for it, and a sweep that waited on no abort — it has handed back with no time passed
+  // on the clock its bounded wait runs on, where a second abort would hold it the whole gap
+  // ahead of `toolu_2`'s last step below.
+  await sweepOnFakeClock(r.watchdog, (sweep) => {
+    expect({
+      aborts: r.aborts.length,
+      messages: r.messages.length,
+      waitedOnAnAbort: !sweep.handedBack(),
+    }).toEqual({ aborts: 1, messages: 1, waitedOnAnAbort: false });
+  });
   expect(r.steps.slice(3).map((step) => [step.call.toolCallId, step.step])).toEqual([
     ["toolu_1", "abort-turn"],
     ["toolu_2", "exit-process"],

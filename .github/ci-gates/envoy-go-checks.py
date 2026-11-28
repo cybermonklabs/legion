@@ -32,4 +32,7 @@ GATE = gate("envoy_go_checks", "envoy-go-checks", reads=reads(
     # verdict on them, so a change to the pool must start this job.
     (".github/scripts/harness-pool.sh",
      f"{at('envoy-go-checks', HARNESS_POOL_WAIT_STEP)}, and each harness step above it queues its harness through it"),
+    (".github/scripts/harness_line_times.py",
+     f"{at('envoy-go-checks', HARNESS_POOL_WAIT_STEP)}: .github/scripts/harness-pool.sh starts it beside each harness it runs, on that harness's log"),
+    (".github/actions/harness-times-upload/**", at("envoy-go-checks", "Upload the harness case times")),
 ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks"))

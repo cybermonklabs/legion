@@ -52,7 +52,7 @@ var waitingParentsAsk = record.MergeForwardMessage{Role: claim.RoleImplementer, 
 // testing, and its pull request #86 open at head sha-1 with no merge forward, since the move
 // dropped the one the conflict asked for (workflow's clearMergeForward). It drains on the caller's
 // goroutine and logs to the buffer it answers, as mergeForwardRunner's does.
-func waitingParentRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+func waitingParentRunner(t *testing.T, publisher outboxNotices) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
 	runner, sup, pool, logs := mergeForwardRunner(t, publisher, nil)
 	waited := time.Now().UTC().Add(-time.Minute)

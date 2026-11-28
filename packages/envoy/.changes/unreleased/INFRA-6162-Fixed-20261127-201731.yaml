@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  An `agentloop` model call that fails before it gets an answer no longer prints a part of a
+  password that the endpoint's base URL holds. Where `Endpoint.BaseURL` is not a clean http(s)
+  URL (`redact.Clean`), for example a URL with a user name and a password, the `Result.Detail` of
+  a run's `FaultProviderError`, and the `Detail` or the error of a `Decide` call, name the URL as
+  `redact.NotPrinted` and the failure by its class alone. Before, net/http's error quoted the URL
+  with only the password masked, and the error of a dial or of a name lookup named the host,
+  which holds the tail of a password that has an unencoded `@`. A clean base URL holds no
+  credential, so the failure of a call to it prints as before.
+time: 2026-11-27T20:17:31.000000000Z
+custom:
+    Issue: INFRA-6162

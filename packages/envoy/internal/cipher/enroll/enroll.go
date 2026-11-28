@@ -95,6 +95,14 @@ var (
 	// credential its exchange minted is no longer live: revoked, past the expiry its Google
 	// identity token gave it, or its account no longer listed for its service (Renew).
 	ErrMachineLoginEnded = errors.New("the machine login that enrolled this session has ended")
+	// ErrSignInCredentialEnded refuses a person's sign-in session a renewal because the launcher
+	// credential its sign-in holds on that machine is no longer live: past the expiry the
+	// person's last traded identity token gave it, revoked, or its machine's account no longer
+	// listed for its service (Renew), as ErrMachineLoginEnded refuses a machine's own session.
+	// The machine's renewer trades the person's identity again before the expiry, so that ending
+	// is reached when no trade could be made: the issuer or the broker refused the person, or the
+	// machine stopped trying.
+	ErrSignInCredentialEnded = errors.New("the sign-in that enrolled this session has ended: its credential lapsed with no new trade of the person's identity, or its machine's account is no longer listed for its service")
 	// ErrSessionHeld refuses an enrollment whose session name another principal holds and the
 	// enrollment's own principal may not take, read from the one table that says who holds a name
 	// — the same one the token exchange binds every token's name in (oauthstore.Store.BindSession,
@@ -2008,10 +2016,22 @@ func (s *Service) verifyPodToken(ctx context.Context, raw string) (PodClaims, er
 // (RevokeCredential), so what this adds is the two endings a revoke is not: the expiry, and the
 // delisting. The session ends one lease later at most, swept as any lapsed one is (EndLapsed).
 //
-// A person's session and a pod's are deliberately not held this way. A pod's renewal already
-// proves the pod's own projected token, and a person's sessions must outlive the hour their
-// box's credential lives: a person signs in once per box and their sessions are theirs until
-// they revoke the sign-in, which ends them at once (RevokePersonSignIn).
+// A person's sign-in session is held the same way, to its sign-in's credential, with
+// ErrSignInCredentialEnded: not revoked, not past its expiry, and its machine's account still
+// listed for its service, the account the sign-in's subject carries (exchange.PersonSubject), so
+// dropping a fleet from BROKER_VM_SERVICES ends its sign-ins' sessions with its machines' own, at
+// their next renewal. The credential's expiry is the person's last traded Google identity
+// token's, so a machine whose person can no longer be traded (an account suspended or deleted, a
+// grant revoked at Google) stops renewing within that token's life, and the session ends one
+// lease later at most (more by the length of a broker outage meanwhile, which ServingClock gives
+// back to every lease). The machine keeps the credential live while it renews by trading the
+// person's identity again before it expires (`agent-secrets renew --sign-in`, and
+// agent-secrets-helper's helper.Broker.keepSignIns); each trade moves the expiry of the same
+// credential row (IssueTokenLoginTx), so the session it enrolled renews on. A revoke of the
+// sign-in still ends its sessions at once (RevokePersonSignIn). A person's other sessions, under
+// a machine login a person approved, and a pod's are not held this way: a pod's renewal already
+// proves the pod's own projected token, and a person's machine login lasts as long as it keeps
+// refreshing (BROKER_LAUNCHER_CREDENTIAL_SECONDS).
 //
 // The ratchet is keyed on the pod UID. Every pod enrollment starts with pod_token_renewed_at null,
 // whether migration 0014 found it or Create made it, and the first renewal carrying an accepted
@@ -2072,12 +2092,8 @@ func (s *Service) Renew(ctx context.Context, id, podToken string) (Renewal, erro
 	if err != nil {
 		return Renewal{}, err
 	}
-	// The row's own half of "live" is credLive, read above; what is left is the configuration's
-	// half, the account still listed for the credential's service, which no column holds. cred
-	// is one machineCredential has answered for, so its subject and its service are both set.
-	if kind == "session" && machineCredential(cred) &&
-		!(credLive && s.tokenLoginListed(*cred.Subject, *cred.Service)) {
-		return Renewal{}, ErrMachineLoginEnded
+	if err := s.heldCredentialEnded(kind, cred, credLive); err != nil {
+		return Renewal{}, err
 	}
 	switch {
 	case kind != "pod" && withToken:
@@ -2337,6 +2353,33 @@ func machineCredential(cred Credential) bool {
 		return false
 	}
 	return exchange.ReadSubject(*cred.Subject).Kind == exchange.SubjectMachine
+}
+
+// heldCredentialEnded is Renew's one rule for a session its launcher credential holds to that
+// credential: a machine's own session (machineCredential) and a person's sign-in session on a
+// machine (signInCredential). Such a session renews only while credLive, the credential's own row
+// not revoked and not past its expiry, holds and its machine's account is still listed for the
+// credential's service (tokenLoginListed). Otherwise it answers the refusal that names which,
+// ErrMachineLoginEnded or ErrSignInCredentialEnded. Every other session, a pod's and one under a
+// machine login a person approved, is held to nothing here, and is nil. A sign-in's credential
+// with no service fails the listing, since no account can be listed for none.
+func (s *Service) heldCredentialEnded(kind string, cred Credential, credLive bool) error {
+	if kind != "session" {
+		return nil
+	}
+	var ended error
+	switch {
+	case machineCredential(cred):
+		ended = ErrMachineLoginEnded
+	case signInCredential(cred.Subject):
+		ended = ErrSignInCredentialEnded
+	default:
+		return nil
+	}
+	if credLive && cred.Service != nil && s.tokenLoginListed(*cred.Subject, *cred.Service) {
+		return nil
+	}
+	return ended
 }
 
 // Revoke ends the enrollment — revoking every live grant and cancelling every pending request

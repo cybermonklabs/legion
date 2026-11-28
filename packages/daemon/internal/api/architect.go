@@ -342,27 +342,30 @@ func requestFactID(route string) string {
 // applyFact applies one fact of a fact route and answers the empty object every fact route
 // answers (AnswerEmptyObject), or the refusal the workflow committed.
 func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, response any) {
-	s.applyFactAnswering(w, r, eventID, fact, AnswerEmptyObject, response)
+	if s.factTaken(w, r, eventID, fact) {
+		s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, response)
+	}
 }
 
-// applyFactAnswering is applyFact for a route whose answer is not the empty object: response is
-// written as the answer id names (register_plan's AnswerPlanRegister), so the route's body is
-// shaped and recorded as that answer and not as the empty object.
-func (s *server) applyFactAnswering(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, id AnswerID, response any) {
+// factTaken applies one fact of a fact route and says whether the workflow took it, or writes the
+// failure of the apply or the refusal the workflow committed and answers false. A route whose
+// answer is not the empty object, register_plan's (AnswerPlanRegister), reads what it answers once
+// the fact is taken and writes that itself.
+func (s *server) factTaken(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact) bool {
 	if s.pool == nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
-		return
+		return false
 	}
 	result, err := s.apply(r.Context(), "api", eventID, fact)
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact")
-		return
+		return false
 	}
 	if result.Refusal != nil {
 		s.writeRefusal(w, r, result.Refusal)
-		return
+		return false
 	}
-	s.writeAnswer(w, r, id, http.StatusOK, response)
+	return true
 }
 
 func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {

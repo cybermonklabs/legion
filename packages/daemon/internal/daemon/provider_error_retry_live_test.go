@@ -251,7 +251,11 @@ func (r *providerErrorLive) registerController() {
 	}, false); status != http.StatusOK {
 		t.Fatalf("register the controller = %d %s, want 200", status, body)
 	}
-	r.note("the project's controller is registered as %s, so a notice for it is published rather than dropped", session)
+	// The listener names the registered session the controller role's live holder, as it does once
+	// the controller claims the role, so a notice for it is published there (the outbox's
+	// controllerNotice).
+	r.notices.holds(string(claim.ControllerToken(r.project)), session)
+	r.note("the project's controller is registered as %s and holds its role, so a notice for it is published rather than kept waiting", session)
 }
 
 // overrides is the daemon this proof boots: the local runtime's own wiring (daemonOverrides), the
@@ -455,7 +459,7 @@ func (r *providerErrorLive) ladderWalks() {
 // turn in a row the controller is told, once, and nothing is held.
 func (r *providerErrorLive) controllerIsTold() {
 	t := r.t
-	topic := notify.ControllerTopic(r.project)
+	topic := notify.RoleTopicPrefix + string(claim.ControllerToken(r.project))
 	var told []listenerPublish
 	r.await("the controller's notice of a run of provider errors", 3*time.Minute, func() bool {
 		told = nil

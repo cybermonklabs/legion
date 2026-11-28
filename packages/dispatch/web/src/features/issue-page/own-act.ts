@@ -4,6 +4,7 @@ import { createContext, useContext } from "react";
 import type { DisplayTree } from "../../api/types";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import { nodeWords, type TreeNode } from "./issue-tree";
+import { rowSelectorOf } from "./tree-focus";
 import { pathTo } from "./tree-fold";
 
 /**
@@ -124,8 +125,27 @@ function sameOwnFields(before: TreeNode, after: TreeNode): boolean {
  * the reader's own letters under an authorship mark (`proofAuthored`) the stored markdown does
  * not write, and an address typed out bare under no mark, which the server's reading links.
  */
-export function editWords(block: DisplayTree): string {
+function editWords(block: DisplayTree): string {
   return flatWords(wordsOf(block));
+}
+
+/**
+ * The note of the reader's own edit in the row whose key is `row` (`tree-keys.ts`'s `rowKeyOf`),
+ * among the rows `container` draws: the row's node, the words the edit left in the row's block
+ * (`block`, read by `editWords`) and the tree or view drawn as the edit is noted (`root`). The
+ * outline and the Spec view each note it at each edit of the reader's that changes the document
+ * (`useNodeEditing.ts`'s `onOwnEdit`). Undefined where `container` draws no such row.
+ */
+export function editNote(
+  container: HTMLElement | null,
+  row: string,
+  block: DisplayTree,
+  root: TreeNode
+): OwnAct | undefined {
+  const id = container?.querySelector<HTMLElement>(rowSelectorOf(row))?.dataset.nodeId;
+  return id === undefined
+    ? undefined
+    : { ended: false, id, kind: "edit", root, row, words: editWords(block) };
 }
 
 /**
