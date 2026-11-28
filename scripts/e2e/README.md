@@ -4651,7 +4651,7 @@ Every read of the results is the `dispatch` command's.
   At the head they do within about five minutes, the reconcile's next pass.
 
 `first-start-tip` runs after every other case and phase (`first_start_tip`), on a NATS of its own and an emptied database.
-Each of its starts has the delivery reconcile's next pass an hour away, and the CI reconcile and the webhook redelivery sweep an hour apart, so the first pass of each, at a random moment in its hour, falls in a window whose calls the driver counts only about once in a thousand runs.
+Each of its starts runs the delivery reconcile every hour, and the CI reconcile and the webhook redelivery sweep an hour apart, so the first pass of each, at a random moment in its hour, falls in a window whose calls the driver counts only about once in a thousand runs.
 A server with no GitHub App, so with no delivery intake, starts and makes the stream, as a deployment's stream stands before the first start that runs an intake.
 
 The driver, `verification-results.ts`, acts as one session with the agent token (each write naming the session as `actor`) and as the person `alice` through `GET /auth/_dev/signin`.
@@ -4777,10 +4777,12 @@ Each item below names a case and how it is driven, then what must hold for it to
 **One-pass phases.**
 A check that says "after one pass" reads its answers at the boundary of one complete pass of the delivery reconcile.
 The script's `one_pass_phase` makes that boundary in up to four halves of the driver, each a process of its own (`--phase <phase>-prepare`, `-fixture`, `-before`, `-assert`).
-First the driver makes the phase's writes that need a server, while the server of the step before still runs with its next pass an hour away.
+First the driver makes the phase's writes that need a server, while the server of the step before still runs with its reconcile every hour; when that server can pass again is said below.
 Then the script stops the server, and the driver writes the fixture while no server runs and deletes the reconcile's records of its passes in `duty_passes`.
-A phase that reads before its pass then gets a server that starts with no pass at its start; the driver reads, checks that `duty_passes` still holds no record of a pass, and the script stops the server again.
-Then the script starts the server with a pass at its start and the next pass an hour away (`DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=1h`).
+A phase that reads before its pass then gets a server that starts with no pass at its start while the script holds the delivery reconcile's lease (`hold_reconcile_lease`: the session advisory lock that `duty.Exclusive` tries for, which skips each tick while another session holds it), so it runs no pass at all; with no pass at its start alone it could, since its first tick falls anywhere in its first hour, its first seconds included.
+The driver reads, checks that `duty_passes` still holds no record of a pass, and the script stops the server again and gives the lease back.
+Then the script starts the server with a pass at its start and its reconcile every hour (`DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=1h`).
+Its next tick falls within the hour, and the period of the lease that the start pass served refuses it unless a new period begins between the two (`duty.LeasePeriod` of an hour, 54 minutes): the reads before a pass are the only reads that no pass can reach.
 The driver waits for the two records of that pass (one by the lease's name, one by its period, at one boundary, each of the period the second one's key names), for the lease to be free, and for one more `dispatch delivery: pull request attribution` line in the log than at the fixture, and asserts.
 The period is the build's own (`duty.LeasePeriod` of the interval), read from its record: the driver writes down no period, so a change of that rule does not stop the phases.
 A reading other than that stops the driver at `setup the boundary of one pass`.
@@ -4831,8 +4833,9 @@ each pass also reads again the open pull requests the earlier cases left in `acm
   The new issue takes the key the probe foretold and compares with `#15001` alone
 
 - `key-reading-changes` — 5,000 merged pull requests of its own, `#20001` to `#25000` (k = (n − 20000) % 100), on `legion/<B(k) in lower case>` with the body `Follows T(k). Work of B(k).`, and the rows of `rule-reaches-each-row`.
-  The script starts the server with its reconcile every two seconds (`one_pass_phase key-reading-changes --store-every-2s`); the driver publishes the merged events of the 5,000, waits until the intake has stored each, and then until the passes have read the 5,000 by the batched query.
+  The script starts the server with its reconcile every two seconds (`one_pass_phase key-reading-changes --store-every-2s`); the driver publishes the merged events of the 5,000, waits until the intake has stored each, and then until each has texts with its commit messages, or until no texts row lacks its messages and the passes have read the 5,000 by the batched query, which is how a build that keeps no texts row stands.
   So a negative control's build stores them as it stores any pull request.
+  The fake counts a batched read as it answers it, before the server writes the answer, so its count of 5,000 alone can stand while the rows of the last query still wait for their messages; a server stopped then leaves them without, and the pass at the boundary reads them from GitHub.
   The driver records the key reading that `dispatch attribution` prints, then, while no server runs, applies `fixtures/attribution_reading_b.sql`: the lock and `create or replace function attribution_keys` whose branch reading takes no upper case, so `legion/<lower case>` names nothing
 
   at the boundary, the reading differs from the recorded one, each of the 5,000 and each pull request of `rule-reaches-each-row` is `T(k)`'s and no `B(k)`'s, the new issue compares with nothing, and the reads of GitHub are 0: the statement computes the keys of each row on another reading from its texts.
