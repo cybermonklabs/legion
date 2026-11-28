@@ -128,17 +128,17 @@ func TestTheMergePullRequestsOfAnIssueAreThoseOfItsMergingTasks(t *testing.T) {
 	})
 }
 
-// A parked issue's merge is still its task's pull request: a person parked LEGION-208, a child of one
-// task c, at c's review, so its leave wrote c left at its third step with its pull request #7 open.
-// The merge of the issue (MergePullRequest), its merges (MergePullRequests) and the merge of each of
-// several issues (PullRequestsOf) answer #7, as each did before tasks had merges of their own, and
-// once a person merges #7 they answer it merged.
+// The merge of an issue out of the workflow is still its task's pull request: a person moved
+// LEGION-208, a child of one task c, out of the workflow at c's review, so its leave wrote c left at
+// its third step with its pull request #7 open. The merge of the issue (MergePullRequest), its
+// merges (MergePullRequests) and the merge of each of several issues (PullRequestsOf) answer #7, as
+// each did before tasks had merges of their own, and once a person merges #7 they answer it merged.
 //
-// The fault it catches is a parked issue that loses its pull request in the served state and in the
-// reads of several issues, and whose merge a later leave at done never checks (its control: the
-// tasks that have a merge as the tasks that will merge and those whose work merged, under which
-// MergePullRequest answers none and PullRequestsOf holds no entry for the child).
-func TestAParkedIssuesMergePullRequestIsItsLeftTasks(t *testing.T) {
+// The fault it catches is an issue out of the workflow that loses its pull request in the served
+// state and in the reads of several issues, and whose merge a later leave at done never checks (its
+// control: the tasks that have a merge as the tasks that will merge and those whose work merged,
+// under which MergePullRequest answers none and PullRequestsOf holds no entry for the child).
+func TestAnIssueOutOfTheWorkflowsMergePullRequestIsItsLeftTasks(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()

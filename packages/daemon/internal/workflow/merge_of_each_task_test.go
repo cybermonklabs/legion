@@ -226,16 +226,17 @@ func TestAPersonsDoneChecksEachMergeBeforeMerging(t *testing.T) {
 	}
 }
 
-// A child parked while a merge of its run was to come, and set done later, gets the check of that
-// merge once it has landed, whenever it landed. (1) A child of one task a, parked at a's review with
-// its pull request #43 open, whose pull request a person then merges. (2) A child parked while its
-// last merge waits for the issue beneath it, #43 merged. (3) The same with the merge landing after
-// the park, from a merge queue. Each is set done after: one check, of a's merge.
+// A child moved out of the workflow while a merge of its run was to come, and set done later, gets
+// the check of that merge once it has landed, whenever it landed. (1) A child of one task a, moved
+// to backlog at a's review with its pull request #43 open, whose pull request a person then merges.
+// (2) A child moved to backlog while its last merge waits for the issue beneath it, #43 merged.
+// (3) The same with the merge landing after the move, from a merge queue. Each is set done after:
+// one check, of a's merge.
 //
-// The fault it catches is a parked issue's merge never checked in production (its controls: the
-// tasks that have a merge read without the left tasks, and a left task counted only at its merge,
-// under which case (1) opens none).
-func TestAParkedChildSetDoneChecksItsMerge(t *testing.T) {
+// The fault it catches is the merge of an issue out of the workflow never checked in production (its
+// controls: the tasks that have a merge read without the left tasks, and a left task counted only at
+// its merge, under which case (1) opens none).
+func TestAChildOutOfTheWorkflowSetDoneChecksItsMerge(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		at          record.TaskPlace
@@ -244,9 +245,9 @@ func TestAParkedChildSetDoneChecksItsMerge(t *testing.T) {
 		beneath     bool
 		mergedFirst bool
 	}{
-		{"parked at its review, merged by a person", atStep(2), []string{"implementer", "reviewer"}, phase.Reviewing, false, false},
-		{"parked while its last merge waits", atMerge, nil, phase.Merging, true, true},
-		{"parked with its merge in a queue", atMerge, nil, phase.Merging, false, false},
+		{"moved to backlog at its review, merged by a person", atStep(2), []string{"implementer", "reviewer"}, phase.Reviewing, false, false},
+		{"moved to backlog while its last merge waits", atMerge, nil, phase.Merging, true, true},
+		{"moved to backlog with its merge in a queue", atMerge, nil, phase.Merging, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -264,9 +265,9 @@ func TestAParkedChildSetDoneChecksItsMerge(t *testing.T) {
 			if tc.mergedFirst {
 				mustSpend(t, "the merge of a's pull request", apply("merged-a", mergedFact(43, "a")))
 			}
-			mustSpend(t, "the park", apply("child-backlog", statusMove(child.Key, "LEGION-208", "backlog", 2)))
+			mustSpend(t, "the move to backlog", apply("child-backlog", statusMove(child.Key, "LEGION-208", "backlog", 2)))
 			if task := tasksOf(t, pool, engine, child.Key)["a"]; task.State != record.TaskLeft || task.Place != tc.at {
-				t.Fatalf("premise: task a after the park is %s at %+v, want left at %+v", task.State, task.Place, tc.at)
+				t.Fatalf("premise: task a after the move to backlog is %s at %+v, want left at %+v", task.State, task.Place, tc.at)
 			}
 			checksAre(t, pool, child.Key)
 			if !tc.mergedFirst {
@@ -278,22 +279,23 @@ func TestAParkedChildSetDoneChecksItsMerge(t *testing.T) {
 	}
 }
 
-// A park opens no check: a child whose task a stands at its retro with its pull request #43 merged
-// (a merge before merging, with no check) is parked at backlog. It holds no check, and the park's
-// suspension of its pod is queued.
+// A move out of the workflow opens no check: a child whose task a stands at its retro with its pull
+// request #43 merged (a merge before merging, with no check) is moved to backlog. It holds no check,
+// and the move's suspension of its pod is queued.
 //
-// The fault it catches is a check opened under a park, whose suspension then stops its look (its
-// control: the leave opening the checks of its merges at any status, under which it holds one).
-func TestAParkOpensNoCheck(t *testing.T) {
+// The fault it catches is a check opened under a move out of the workflow, whose suspension then
+// stops its look (its control: the leave opening the checks of its merges at any status, under
+// which it holds one).
+func TestAMoveOutOfTheWorkflowOpensNoCheck(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
 	stepRoot(t, pool, phase.Implementing)
 	child := stepChild(t, pool, heldParentChild, phase.Retro, nil)
 	seedTasksAt(t, pool, child.Key, child.Generation, taskAt{id: "a", state: record.TaskRunning, place: atRetro, number: 43, merged: true})
-	mustSpend(t, "the park", applyFacts(t, pool, engine)("child-backlog", statusMove(child.Key, "LEGION-208", "backlog", 2)))
+	mustSpend(t, "the move to backlog", applyFacts(t, pool, engine)("child-backlog", statusMove(child.Key, "LEGION-208", "backlog", 2)))
 	checksAre(t, pool, child.Key)
 	if rows := issueSuspensions(t, pool, child.Key); len(rows) != 1 {
-		t.Fatalf("the issue_suspend rows of %s after the park = %+v, want one", child.Key, rows)
+		t.Fatalf("the issue_suspend rows of %s after the move to backlog = %+v, want one", child.Key, rows)
 	}
 }
 
@@ -420,24 +422,24 @@ func TestEachDoorFromTheTasksLeavesThroughOnePlace(t *testing.T) {
 	}
 }
 
-// A root parked and then set done while its tree lingers opens the check of each merge of its run.
-// LEGION-208, a root of one task a, is parked at triage at a's review, with its pull request #42
-// open: its tree lingers, and a is left at its review. A person merges #42, which moves no task, and
-// then sets the root done: it holds one check, of #42's merge, whose first look is a wake of the
-// checking role's suspended claim.
+// A root moved out of the workflow and then set done while its tree lingers opens the check of each
+// merge of its run. LEGION-208, a root of one task a, is moved to triage at a's review, with its
+// pull request #42 open: its tree lingers, and a is left at its review. A person merges #42, which
+// moves no task, and then sets the root done: it holds one check, of #42's merge, whose first look
+// is a wake of the checking role's suspended claim.
 //
 // The fault it catches is a merge of a lingering root never checked in production (its control:
 // the leave of a lingering root returning before it reads its merges, under which it holds none).
-func TestARootParkedThenSetDoneInItsLingerChecksItsMerge(t *testing.T) {
+func TestARootMovedOutOfTheWorkflowThenSetDoneInItsLingerChecksItsMerge(t *testing.T) {
 	pool := migratedPool(t)
 	engine, logged := loggedEngine()
 	root := stepRoot(t, pool, phase.Reviewing)
 	seedTasksAt(t, pool, root.Key, root.Generation,
 		taskAt{id: "a", steps: []string{"implementer", "reviewer"}, state: record.TaskRunning, place: atStep(2), number: 42})
 	apply := applyFacts(t, pool, engine)
-	mustSpend(t, "the park", apply("root-triage", statusMove(root.Key, "", "triage", 2)))
-	if parked := issueOf(t, pool, engine, root.Key); !parked.Lingers() {
-		t.Fatalf("premise: %s after its park does not linger", root.Key)
+	mustSpend(t, "the move to triage", apply("root-triage", statusMove(root.Key, "", "triage", 2)))
+	if moved := issueOf(t, pool, engine, root.Key); !moved.Lingers() {
+		t.Fatalf("premise: %s after its move to triage does not linger", root.Key)
 	}
 	mustSpend(t, "the merge of #42", apply("merged-a", mergedFact(42, "a")))
 	checksAre(t, pool, root.Key)
