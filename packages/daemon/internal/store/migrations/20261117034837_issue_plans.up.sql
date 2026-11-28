@@ -33,6 +33,9 @@
 -- With the tables and columns dropped and the row deleted, store.apply runs this file again, and
 -- each issue the earlier release moved has no plan rows and walks today's line. What the way back
 -- costs is every plan given before the rollback, which its owner gives again.
+-- The drop of plan_tasks takes with it plan_tasks.parent_ref, which a later migration,
+-- 20261124022547_plan_tasks_parent_ref, adds. So the block deletes that migration's version row
+-- too, and store.apply runs that file again after this one, which adds the column again.
 --
 -- The deletes and the update are owed to the release before: it decodes a notice, a controller
 -- notice and a supervise row strictly, knows no notice of the kinds task-stopped, retro-held and
@@ -58,6 +61,7 @@
 -- delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop' and split_part(issue, '-', 1) = '<PROJECT>';
 -- update issues set hold_reason = null where hold_reason in ('task-stopped', 'children') and split_part(key, '-', 1) = '<PROJECT>';
 -- delete from schema_version where version = 20261117034837;
+-- delete from schema_version where version = 20261124022547;
 -- commit;
 create table issue_plans (
   issue text not null,

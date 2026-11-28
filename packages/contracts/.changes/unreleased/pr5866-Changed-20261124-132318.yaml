@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    `legionControllerNoticeSubject` is the controller topic a Go daemon of an earlier release
+    publishes to. A current daemon publishes its controller notices to the controller's role topic,
+    `notifications.role.legion-<project>-controller`.
+time: 2026-11-24T13:23:18Z
+custom:
+    Issue: pr5866

@@ -637,6 +637,13 @@ func (m *Machine) adoptPodLoad() {
 // as the park leaves it, launching, which a request that does not wait restores once the pause's
 // gate holds the wake (dropWakeFor).
 //
+// A parked try of a launch of the stale-plugin lane keeps the credit of the refresh gate that
+// launch was admitted on, since the launch is still owed (heldTryWake, laneLaunchOwed): the
+// decision of the grant, or of whatever drops the wake, gives it back as it ends unless the
+// launch leaves itself still owed. No view shows the park as a waiting wake, so the gate's
+// correction reads none for it, and the credit out is what the gate counts for it
+// (RefreshGate.Correct).
+//
 // A restart finds a claim whose launch was parked here stored launching with no process, as it
 // finds one the wake pacing parked over no process: internal/daemon's supervisor.restore writes
 // it launch_uncertain, and relaunchUnfinished, once the boot's reconciliation has proved that no
