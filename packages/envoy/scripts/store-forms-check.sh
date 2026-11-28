@@ -14,9 +14,14 @@
 # it reports the broker's answer to the reread of the name it asked for
 # (POST /v1/secrets/NAME/reread): `broker: serving NAME from `, `broker: NAME is deleted in `
 # after delete, or `broker: rereading NAME from ` where the broker could not be asked with a
-# session and answered 202; on show, the secret; on list --json, the secret in its array. It asks
-# no reread of its own: the broker holds rereads to a budget (secretstore.DefaultRereadBudget), and
-# a second reread per write would spend it on the check rather than on the forms.
+# session and answered 202; on show, the secret; on list --json, the secret in its array. A
+# broker's 202 says only that it took the reread, not what it now serves, so a write row also
+# reads its effect back before it passes: `secret show NAME --json` must show the tier retag set,
+# the deletion delete scheduled and restore cleared (a restore passes only after a delete that
+# was seen), and the store itself, read without the CLI (the memory secrets file, or Secret
+# Manager through gcloud), must hold the value create and set wrote. It asks no reread of its own:
+# the broker holds rereads to a budget (secretstore.DefaultRereadBudget), and a second reread per
+# write would spend it on the check rather than on the forms.
 #
 # --control vanished removes the secret behind the CLI's back after create (memory: from the
 # memory secrets file the broker follows; gcp: `gcloud secrets delete`), and the run must then fail
@@ -28,7 +33,7 @@
 # stack when it ends.
 #
 # Needs bash and jq, what dev-broker.sh needs (go, a Postgres: DEV_BROKER_POSTGRES_URL or Docker),
-# and, for --store gcp --control vanished, gcloud. dev-broker.sh and agent-secrets are taken from
+# and, for --store gcp, gcloud. dev-broker.sh and agent-secrets are taken from
 # PATH where a test puts stand-ins there, else from this directory and the stack.
 set -euo pipefail
 
@@ -155,23 +160,62 @@ form() {
 said() { grep -qF -- "$2" "$work/$1.out"; }
 # why ROW: the row's exit status and everything it printed, each on one line.
 why() { printf 'exit %s, stdout %s, stderr %s' "$(cat "$work/$1.exit")" "$(tr '\n' '|' <"$work/$1.out")" "$(tr '\n' '|' <"$work/$1.err")"; }
-# write_row ROW WANT ARGS...: a write form, which passes when it exits 0 and prints the broker's
-# answer to its reread: WANT, or the line of a reread the broker took with no proof.
+# shown ROW: the secret as `secret show NAME --json` answers it after ROW, kept in ROW.shown, which
+# is empty where show failed.
+shown() {
+  set +e
+  agent-secrets secret show "$name" --json </dev/null >"$work/$1.shown" 2>"$work/$1.shown.err"
+  local code=$?
+  set -e
+  if [ "$code" != 0 ]; then : >"$work/$1.shown"; fi
+}
+# stored_value ROW: the value the store itself holds for the secret ROW.shown names, read without
+# the CLI: the memory secrets file the broker follows, or Secret Manager's latest version.
+stored_value() {
+  local secret_name
+  secret_name="$(jq -r '.secret_name // empty' "$work/$1.shown" 2>/dev/null || true)"
+  if [ -z "$secret_name" ]; then return 0; fi
+  case "$store" in
+  memory)
+    jq -r --arg id "$secret_name" '.secrets[] | select(.name == $id) | .value' "$DEV_BROKER_DIR/memory-secrets.json" 2>/dev/null || true
+    ;;
+  gcp)
+    local project="${DEV_BROKER_GCP_PREFIX#projects/}"
+    gcloud secrets versions access latest --secret "${secret_name##*/secrets/}" --project "${project%%/*}" 2>/dev/null || true
+    ;;
+  esac
+}
+# write_row ROW WANT EFFECT VALUE ARGS...: a write form, which passes when it exits 0, prints the
+# broker's answer to its reread (WANT, or the line of a reread the broker took with no proof), and
+# its effect reads back: `secret show --json` answers true to the jq filter EFFECT, and, when VALUE
+# is set, the store itself holds VALUE.
 write_row() {
-  local row="$1" want="$2"
-  shift 2
+  local row="$1" want="$2" effect="$3" value="$4"
+  shift 4
   form "$row" "$@"
   if [ "$(cat "$work/$row.exit")" != 0 ]; then
     fail "$row" "$(why "$row")"
-  elif ! said "$row" "$want" && ! said "$row" "broker: rereading $name from "; then
-    fail "$row" "no reread line ($want): $(why "$row")"
-  else
-    pass "$row"
+    return
   fi
+  if ! said "$row" "$want" && ! said "$row" "broker: rereading $name from "; then
+    fail "$row" "no reread line ($want): $(why "$row")"
+    return
+  fi
+  shown "$row"
+  if ! jq -e "$effect" "$work/$row.shown" >/dev/null 2>&1; then
+    fail "$row" "show does not read the write back ($effect): $(tr '\n' ' ' <"$work/$row.shown")$(tr '\n' '|' <"$work/$row.shown.err")"
+    return
+  fi
+  if [ -n "$value" ] && [ "$(stored_value "$row")" != "$value" ]; then
+    fail "$row" "the store does not hold the value the form wrote"
+    return
+  fi
+  pass "$row"
 }
 
 printf 'store-check-value-1\n' >"$work/create.in"
-write_row create "broker: serving $name from " create "$name" --owner "$owner" --tier agent
+write_row create "broker: serving $name from " '.tier == "agent" and .has_value == true' store-check-value-1 \
+  create "$name" --owner "$owner" --tier agent
 
 if [ "$control" = vanished ]; then
   case "$store" in
@@ -204,16 +248,21 @@ else
 fi
 
 printf 'store-check-value-2\n' >"$work/set.in"
-write_row set "broker: serving $name from " set "$name"
+write_row set "broker: serving $name from " '.has_value == true' store-check-value-2 set "$name"
 
 : >"$work/retag.in"
-write_row retag "broker: serving $name from " retag "$name" --tier human
+write_row retag "broker: serving $name from " '.tier == "human"' "" retag "$name" --tier human
 
 : >"$work/delete.in"
-write_row delete "broker: $name is deleted in " delete "$name"
+write_row delete "broker: $name is deleted in " '.deleted != null' "" delete "$name"
 
+# A restore can be seen only after a deletion was: with none, `deleted` reads empty either way.
 : >"$work/restore.in"
-write_row restore "broker: serving $name from " restore "$name"
+if jq -e '.deleted != null' "$work/delete.shown" >/dev/null 2>&1; then
+  write_row restore "broker: serving $name from " '.deleted == null' "" restore "$name"
+else
+  fail restore "no deletion was seen before it, so a restore would show nothing"
+fi
 
 # The secret this run made is left deleted, so a run leaves nothing a broker serves.
 : >"$work/cleanup.in"
