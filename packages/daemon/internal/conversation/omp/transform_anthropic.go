@@ -96,8 +96,6 @@ func anthropicInput(blocks []conversation.Block, textOnly bool) []conversation.B
 				continue
 			}
 			sawText = true
-		} else if textOnly {
-			b = conversation.Block{Type: conversation.Text, Text: "[image omitted: model does not support vision]"}
 		} else {
 			mime := strings.ToLower(strings.TrimFunc(b.MediaType, isJSSpace))
 			if mime == "image/jpg" {

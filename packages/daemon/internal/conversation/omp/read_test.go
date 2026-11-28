@@ -504,22 +504,22 @@ func TestReadReplaysOnlyTrustedFailedTurnSignatures(t *testing.T) {
 	t.Run("OpenAI Responses continued error", func(t *testing.T) {
 		f := newFixture()
 		f.add(userEntry("request"))
-		f.add(withMessageFields(responsesEntry("error", `[{"type":"thinking","thinking":"earlier","thinkingSignature":"complete"},{"type":"text","text":"partial answer"},{"type":"thinking","thinking":"trailing","thinkingSignature":"incomplete"}]`), `,"continued":true`))
+		f.add(withMessageFields(responsesEntry("error", `[{"type":"thinking","thinking":"earlier","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_complete\"}"},{"type":"text","text":"partial answer"},{"type":"thinking","thinking":"trailing","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_incomplete\"}"}]`), `,"continued":true`))
 		f.add(continueReminderEntry())
 		f.add(responsesEntry("stop", `[{"type":"text","text":"answer"}]`))
 		assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
 			user("request"),
-			responses(thinking("earlier", "complete"), text("partial answer"), thinking("trailing", "")),
+			responses(text("partial answer")),
 			user("Pick up where you stopped."), responses(text("answer")),
 		})
 	})
 	t.Run("OpenAI Responses abandoned tool use", func(t *testing.T) {
 		f := newFixture()
 		f.add(userEntry("request"))
-		f.add(responsesEntry("stop", `[{"type":"thinking","thinking":"earlier","thinkingSignature":"stale"},{"type":"toolCall","id":"call","name":"read","arguments":{}},{"type":"thinking","thinking":"","thinkingSignature":"stale-empty"}]`))
+		f.add(responsesEntry("stop", `[{"type":"thinking","thinking":"earlier","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_stale\"}"},{"type":"toolCall","id":"call","name":"read","arguments":{}},{"type":"thinking","thinking":"","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_stale_empty\"}"}]`))
 		f.add(toolResultEntry("call", "read", "tool not run", true))
 		assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
-			user("request"), responses(thinking("earlier", ""), call("call", "read", `{}`)),
+			user("request"), responses(call("call", "read", `{}`)),
 			result("call", "read", "tool not run", true),
 		})
 	})

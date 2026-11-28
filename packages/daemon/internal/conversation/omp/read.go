@@ -98,9 +98,37 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // The sender groups adjacent Tool messages as one Anthropic user turn and puts any following
 // error-result attachment note and images at its end. It encodes empty successful tool output
 // as an empty string. It needs the endpoint and authentication policy to encode tool names
-// and to add the tool-result id alias where required. Read refuses images held in the Oh My Pi
-// blob store or images with URL or Anthropic file references. The neutral model carries inline
-// image data only.
+// and to add the tool-result id alias where required. When an image is kept, Read refuses
+// blob-store, URL, and provider file references. The neutral model carries inline data only.
+// The sender needs the bytes, a file ID, or a URL for those images. It also needs the recorded
+// image detail and the target's detail support. The session does not record images.blockImages
+// or whether a route strips images while its model still advertises image input.
+//
+// On Responses the sender supplies system prompts and the endpoint policy for placing them
+// in input or in instructions. The reader represents saved developer content as user blocks.
+// The sender needs the original developer attribution and policy if it sends a string.
+//
+// The reader carries eligible Responses native items and the original payload. The sender
+// needs the live native-history replay state, reasoning filter, and signature policy to
+// choose between native items and blocks. An incremental assistant payload adds its items.
+// A snapshot replaces the earlier wire input. A user compaction payload uses its items in
+// place of the summary. Preserve the earlier blocks until the sender chooses the replay path.
+//
+// The sender needs the resolved target identity and compatibility policy: image and computer
+// support, custom tool format, current tool declarations and wire names, and thinking mode.
+// The reader does not create the required reasoning item for targets that need one on every
+// assistant turn or tool call. The sender needs the replay requirements and filter policy.
+// On a model alias the reader cannot infer the wire model identity from the journal ID.
+//
+// The sender checks pairing and order again after it has chosen and combined native and
+// block replay. It needs the call kinds, retained IDs, active tool map, and endpoint pairing
+// policy for orphan repair, recovering calls absent from native items, and batch ordering.
+// The sender uses native computer metadata for actions, screenshots, and safety checks.
+// The replay items preserve that metadata when it is in a native payload. Neutral blocks
+// represent no computer-call metadata, freeform wire name, or tool namespace.
+//
+// The sender needs the original invalid argument string for a native JSON parse diagnostic.
+// Read does not reproduce the pinned JavaScript parser's error message.
 //
 // The reader does not apply these request-time branches of transform-messages.ts:
 //
@@ -113,9 +141,9 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 //     target has no compatible reasoning slot, the lineage is not portable, the source ended
 //     in error, or the block is not explicitly a full trace (summary: false).
 //   - The neutral conversation stores an OpenAI tool's call_id, not its item ID. It preserves
-//     provider-native Responses items on same-model replay. Block-only replay does not represent
-//     text item signatures or tool thought signatures. This loses no wire data on Anthropic,
-//     which does not encode either, or when the pin removes them on a model switch.
+//     eligible native items and assistant text phases from same-model text signatures. The
+//     sender needs the phase for a Responses message. Block-only replay does not carry the
+//     original text item ID or a tool thought signature. Anthropic encodes neither field.
 //   - The Anthropic encoder's default ID normalizer always returns a valid ID for a nonblank
 //     call. The fallback for a caller-supplied normalizer that returns an invalid ID is unused.
 //   - Read refuses a server tool on its original Anthropic Messages provider. It also refuses a
@@ -132,9 +160,9 @@ type Options struct {
 	// The option makes no difference on OpenAI Responses, or on Anthropic Messages history
 	// with no thinking blocks or tool IDs that need normalization.
 	ReplayUnsignedThinking bool
-	// AnthropicTextOnly is true if the target model accepts text but not images.
-	// The default assumes Anthropic image input support. It has no effect on Responses.
-	AnthropicTextOnly bool
+	// TextOnly is true if the resolved model accepts text but not images. On
+	// both APIs it replaces historical images before the encoder shapes text.
+	TextOnly bool
 }
 
 // Read reads a session's content.
@@ -174,7 +202,7 @@ func Read(content []byte, opts Options) (*Session, error) {
 	}
 	s.Messages, err = toRequest(built.messages, target{
 		provider: provider, api: s.API, model: model, signing: !opts.ReplayUnsignedThinking,
-		anthropicTextOnly: opts.AnthropicTextOnly,
+		textOnly: opts.TextOnly,
 	})
 	if err != nil {
 		return nil, err

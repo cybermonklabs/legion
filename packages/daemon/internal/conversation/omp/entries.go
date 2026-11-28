@@ -97,6 +97,7 @@ type message struct {
 type block struct {
 	Type              string `json:"type"`
 	Text              string `json:"text"`
+	TextSignature     string `json:"textSignature"`
 	Thinking          string `json:"thinking"`
 	ThinkingSignature string `json:"thinkingSignature"`
 	Data              string `json:"data"`

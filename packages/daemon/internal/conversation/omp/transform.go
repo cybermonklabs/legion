@@ -17,7 +17,7 @@ type target struct {
 	// signing is an Anthropic endpoint that verifies thinking signatures and replays no unsigned
 	// thinking (Options).
 	signing                   bool
-	anthropicTextOnly         bool
+	textOnly                  bool
 	classifier, prefixBinding bool
 	demotionClass             string
 }
@@ -44,10 +44,18 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 		if t.prefixBinding && m.rewriteAt != nil && (latestRewrite == nil || *m.rewriteAt > *latestRewrite) {
 			latestRewrite = m.rewriteAt
 		}
+		if t.textOnly && (m.role == "user" || m.role == "toolResult") {
+			m.blocks = replaceHistoryImages(m.blocks)
+		}
 		var err error
 		switch m.role {
 		case "user":
 			out[i], err = userMessage(m)
+			if t.api == conversation.OpenAIResponses && out[i].Native != nil {
+				native := *out[i].Native
+				native.Items = shapeNativeResponsesItems(native.Items, false)
+				out[i].Native = &native
+			}
 		case "assistant":
 			rewritten := latestRewrite != nil && m.timestamp != nil && *m.timestamp <= *latestRewrite
 			out[i], err = assistantMessage(m, t, i == latest, rewritten, ids)
@@ -65,21 +73,40 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 	deduplicateToolCalls(out, pairingKey)
 	paired := pairToolResults(messages, out, pairingKey)
 	if t.api == conversation.OpenAIResponses {
-		for _, m := range paired {
-			for i := range m.Content {
-				b := &m.Content[i]
-				if b.Type == conversation.ToolCall || b.Type == conversation.ToolResult {
-					b.ToolCallID = responsesCallID(b.ToolCallID)
-				}
-			}
-		}
-		return paired, nil
+		return shapeResponsesHistory(paired, t), nil
 	}
-	return shapeAnthropicHistory(paired, t.anthropicTextOnly), nil
+	return shapeAnthropicHistory(paired, t.textOnly), nil
 }
 
-// userMessage is a user message's text and images; blank text is dropped, as both providers'
-// encoders drop it.
+const historyImageOmission = "[image omitted: the active model does not support image input]"
+
+// replaceHistoryImages mirrors the session SDK's pre-encoder replacement. A
+// replaced image does not add a second copy immediately after the same note.
+func replaceHistoryImages(blocks []block) []block {
+	var out []block
+	for i, b := range blocks {
+		if b.Type != "image" {
+			if out != nil {
+				out = append(out, b)
+			}
+			continue
+		}
+		if out == nil {
+			out = make([]block, i, len(blocks))
+			copy(out, blocks[:i])
+		}
+		if len(out) > 0 && out[len(out)-1].Type == "text" && out[len(out)-1].Text == historyImageOmission {
+			continue
+		}
+		out = append(out, block{Type: "text", Text: historyImageOmission})
+	}
+	if out != nil {
+		return out
+	}
+	return blocks
+}
+
+// userMessage converts the saved text and inline images. Both encoders omit blank input text.
 func userMessage(m llmMessage) (conversation.Message, error) {
 	msg := conversation.Message{Role: conversation.User, Native: m.native}
 	for _, b := range m.blocks {
@@ -118,8 +145,8 @@ func inputBlock(b block) (conversation.Block, bool, error) {
 		if strings.HasPrefix(b.Data, "blob:") {
 			return conversation.Block{}, false, conversation.Unknown("an image held in Oh My Pi's blob store")
 		}
-		if b.URL != "" || (b.ProviderFile.Provider == "anthropic" && b.ProviderFile.ID != "") {
-			return conversation.Block{}, false, conversation.Unknown("an image held at a URL or in Anthropic's file store")
+		if b.URL != "" || b.ProviderFile.ID != "" {
+			return conversation.Block{}, false, conversation.Unknown("an image held at a URL or in a provider's file store")
 		}
 		return conversation.Block{Type: conversation.Image, MediaType: b.MimeType, ImageData: b.Data}, true, nil
 	}
@@ -135,6 +162,14 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 		return conversation.Message{}, err
 	}
 	msg.Native = native
+	hiddenEmpty := false
+	if native != nil && t.api == conversation.OpenAIResponses {
+		native.Items = shapeNativeResponsesItems(native.Items, true)
+		hiddenEmpty = native.Items == nil
+		if hiddenEmpty {
+			msg.Native = nil
+		}
+	}
 	sameModel := m.provider == t.provider && m.api == t.api && m.model == t.model
 	anthropicTarget := t.api == conversation.AnthropicMessages
 	anthropicReplay := anthropicTarget && m.api == conversation.AnthropicMessages
@@ -187,6 +222,9 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 			converted[i] = &thinking
 		case "text":
 			converted[i] = &conversation.Block{Type: conversation.Text, Text: b.Text}
+			if !anthropicTarget && sameModel {
+				converted[i].Phase = responsesTextPhase(b.TextSignature)
+			}
 		case "anthropicServerTool":
 			if anthropicReplay && !crossProvider {
 				return conversation.Message{}, conversation.Unknown("a native Anthropic server tool block from provider %s", m.provider)
@@ -210,11 +248,13 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 				ids.responses[responsesComponent(b.ID)] = id
 			}
 			arguments := b.Arguments
-			if len(arguments) == 0 || string(arguments) == "null" {
-				arguments = json.RawMessage("{}")
-			}
 			if anthropicTarget {
+				if len(arguments) == 0 || string(arguments) == "null" {
+					arguments = json.RawMessage("{}")
+				}
 				arguments = wellFormedAnthropicArguments(arguments)
+			} else if len(arguments) == 0 {
+				arguments = json.RawMessage("null")
 			}
 			converted[i] = &conversation.Block{Type: conversation.ToolCall, ToolCallID: id, ToolName: b.Name, Arguments: arguments}
 		}
@@ -238,8 +278,7 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 			continue
 		}
 		switch {
-		case block.Type == conversation.Text && blank(block.Text):
-			// Both encoders drop blank text.
+		case block.Type == conversation.Text && (anthropicTarget || hiddenEmpty) && blank(block.Text):
 			continue
 		case block.Type == conversation.RedactedThinking && blank(block.Data):
 			continue
@@ -253,6 +292,10 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 				*block = conversation.Block{Type: conversation.Text, Text: demotedThinking(t.demotionClass, block.Text)}
 			} else {
 				block.Signature = ""
+			}
+		case block.Type == conversation.Thinking && !anthropicTarget && msg.Native == nil:
+			if hiddenEmpty || m.stopReason == "error" || !responsesReasoningSignature(block.Signature) {
+				continue
 			}
 		}
 		msg.Content = append(msg.Content, *block)

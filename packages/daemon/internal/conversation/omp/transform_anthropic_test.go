@@ -35,9 +35,11 @@ func TestAnthropicHistoryShaping(t *testing.T) {
 		}
 		assertMessages(t, got, want)
 	}
-	t.Run("partition stable only on Anthropic", func(t *testing.T) {
+	t.Run("partition stable on both encoders for text", func(t *testing.T) {
 		source := assistant(textBlock("Before."), callBlock("x"), textBlock("After."), callBlock("y"))
 		source.api = conversation.OpenAIResponses
+		source.blocks[1].Arguments = []byte(`{}`)
+		source.blocks[3].Arguments = []byte(`{}`)
 		input := []llmMessage{source, toolResult("x", false, textBlock("x")), toolResult("y", false, textBlock("y"))}
 		x, y := call("x", "read", `{}`), call("y", "read", `{}`)
 		xResult, yResult := result("x", "read", "x", false), result("y", "read", "y", false)
@@ -48,7 +50,7 @@ func TestAnthropicHistoryShaping(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		assertMessages(t, got, []conversation.Message{turn(source, text("Before."), x, text("After."), y), xResult, yResult})
+		assertMessages(t, got, []conversation.Message{turn(source, text("Before."), text("After."), x, y), xResult, yResult})
 	})
 	t.Run("thinking alone does not trigger partition", func(t *testing.T) {
 		source := assistant(callBlock("x"), block{Type: "thinking", Thinking: "plan", ThinkingSignature: "c2ln"}, block{Type: "redactedThinking", Data: "cmVk"})
@@ -74,16 +76,16 @@ func TestAnthropicHistoryShaping(t *testing.T) {
 		pdf := block{Type: "image", MimeType: "application/pdf", Data: "eA=="}
 		check(t, []llmMessage{prompt(pdf, image)}, userBlocks(text("(see attached image)"), text("[unsupported image: application/pdf]"), jpeg))
 	})
-	t.Run("text only option replaces each image and joins text", func(t *testing.T) {
+	t.Run("text only coalesces adjacent image notes and joins text", func(t *testing.T) {
 		f := newFixture()
 		f.add(claudeEntry("stop", `[{"type":"text","text":"answer"}]`))
 		f.add(`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"first"},{"type":"image","mimeType":"image/png","data":"eA=="},{"type":"image","mimeType":"image/png","data":"eQ=="},{"type":"text","text":"last"}]}}`)
-		s, err := Read(f.bytes(), Options{AnthropicTextOnly: true})
+		s, err := Read(f.bytes(), Options{TextOnly: true})
 		if err != nil {
 			t.Fatal(err)
 		}
 		assertMessages(t, s.Messages, []conversation.Message{
-			claude(text("answer")), user("first\n[image omitted: model does not support vision]\n[image omitted: model does not support vision]\nlast"),
+			claude(text("answer")), user("first\n" + historyImageOmission + "\nlast"),
 		})
 	})
 	t.Run("error images follow the whole tool result run", func(t *testing.T) {

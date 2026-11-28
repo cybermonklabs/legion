@@ -115,7 +115,7 @@ func TestTransformToolResultRules(t *testing.T) {
 	turn := func(stop string, blocks ...block) llmMessage {
 		return llmMessage{role: "assistant", provider: "test", api: api, model: model, stopReason: stop, blocks: blocks}
 	}
-	callBlock := func(id string) block { return block{Type: "toolCall", ID: id, Name: "read"} }
+	callBlock := func(id string) block { return block{Type: "toolCall", ID: id, Name: "read", Arguments: []byte(`{}`)} }
 	out := func(id, text string) llmMessage {
 		return llmMessage{role: "toolResult", toolCallID: id, toolName: "read", blocks: []block{{Type: "text", Text: text}}}
 	}
@@ -304,14 +304,15 @@ func TestTransformAssistantReplayRules(t *testing.T) {
 	})
 	t.Run("same-model Responses encrypted reasoning has no text", func(t *testing.T) {
 		const responses = conversation.OpenAIResponses
+		const signature = `{"type":"reasoning","id":"rs_1","encrypted_content":"encrypted"}`
 		m := llmMessage{role: "assistant", api: responses, provider: "openai", model: id, stopReason: "stop",
-			blocks: []block{{Type: "thinking", ThinkingSignature: "encrypted"}, {Type: "thinking", Thinking: " "}, answer}}
+			blocks: []block{{Type: "thinking", ThinkingSignature: signature}, {Type: "thinking", Thinking: "unsigned"}, {Type: "thinking", ThinkingSignature: "invalid"}, answer}}
 		got, err := toRequest([]llmMessage{m}, target{api: responses, provider: "openai", model: id})
 		if err != nil {
 			t.Fatal(err)
 		}
 		assertMessages(t, got, []conversation.Message{{Role: conversation.Assistant, API: responses, Provider: "openai", Model: id,
-			Content: []conversation.Block{thinking("", "encrypted"), text("answer")}}})
+			Content: []conversation.Block{thinking("", signature), text("answer")}}})
 	})
 }
 

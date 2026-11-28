@@ -61,6 +61,8 @@ type Block struct {
 	Type BlockType
 	// Text is a Text block's text and a Thinking block's reasoning.
 	Text string
+	// Phase is a Text block's OpenAI Responses message phase, empty when unrecorded.
+	Phase string
 	// Signature is a Thinking block's signature, empty when unsigned.
 	Signature string
 	// Data is a RedactedThinking block's opaque payload.
@@ -85,9 +87,9 @@ type Block struct {
 type NativeKind string
 
 const (
-	// OpenAIResponsesHistory is the OpenAI Responses API's own output items for a turn (reasoning
-	// items with their id and encrypted_content, function_call items, message items), which the
-	// harness sends back as they came when the conversation runs on that API and model.
+	// OpenAIResponsesHistory is the OpenAI Responses API's native history, including reasoning
+	// items with encrypted content, function calls, and messages. The sender selects eligible
+	// items for replay on that API and model.
 	OpenAIResponsesHistory NativeKind = "openaiResponsesHistory"
 	// AnthropicCompaction is the Anthropic API's own compaction block for a summary it wrote,
 	// which the harness can send back in place of the summary's text.
@@ -102,7 +104,7 @@ type Native struct {
 	// Incremental is true for OpenAIResponsesHistory items that are this turn's own output, false
 	// for items that replace every earlier one (the history of a provider-side compaction).
 	Incremental bool
-	// Items are the OpenAIResponsesHistory items, each byte for byte.
+	// Items are the OpenAIResponsesHistory items, including any reader-side replay repairs.
 	Items []json.RawMessage
 	// Payload preserves the session's bytes for a message's providerPayload or a compaction's
 	// anthropicCompaction preserve data. For openaiRemoteCompaction, it holds the derived

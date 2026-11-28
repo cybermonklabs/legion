@@ -3,6 +3,8 @@ package omp
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -372,4 +374,229 @@ func TestThePinnedOhMyPiResumesAnOpenAIAnswerAskedForAgain(t *testing.T) {
 			break
 		}
 	}
+}
+
+func TestThePinnedOhMyPiShapesHandWrittenResponsesHistory(t *testing.T) {
+	model := newOpenAIStandIn(t)
+	rig := newOMPRig(t, conversation.OpenAIResponses, model)
+	rig.run(t, "", "Initial request.")
+	file := rig.sessionFile(t)
+	before, err := ReadFile(file, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	stamp := conversation.ISOTime(now)
+	appendRaw(t, file, fmt.Sprintf(
+		`{"type":"message","id":"d6000001","parentId":%q,"timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"toolUse","usage":%s,"timestamp":%d,"content":[{"type":"text","text":"Before the call.","textSignature":"{\"v\":1,\"id\":\"msg_before\",\"phase\":\"commentary\"}"},{"type":"toolCall","id":"call_fixture|fc_fixture","name":"read","arguments":null},{"type":"text","text":" "},{"type":"text","text":"After the call."}]}}`+"\n"+
+			`{"type":"message","id":"d6000002","parentId":"d6000001","timestamp":%q,"message":{"role":"toolResult","toolCallId":"call_fixture|fc_fixture","toolName":"read","content":[{"type":"text","text":"plum"}],"timestamp":%d}}`+"\n"+
+			`{"type":"message","id":"d6000003","parentId":"d6000002","timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"stop","usage":%s,"timestamp":%d,"content":[{"type":"text","text":"Fallback answer."}],"providerPayload":{"type":"openaiResponsesHistory","provider":%q,"dt":true,"items":[{"type":"item_reference","id":"msg_stale"},{"type":"function_call","call_id":"call_bad","name":"bad name","arguments":"{}"},{"type":"function_call_output","call_id":"call_bad","output":"must not replay"},{"type":"image_generation_call","id":"ig_incomplete"},{"type":"function_call","call_id":"call_native","name":"read","arguments":" "},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Native answer.","annotations":[]}],"status":"completed"}]}}}`+"\n"+
+			`{"type":"message","id":"d6000004","parentId":"d6000003","timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"stop","usage":%s,"timestamp":%d,"content":[{"type":"thinking","thinking":"Do not replay.","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_hidden\",\"encrypted_content\":\"hidden\"}"},{"type":"text","text":"\t"},{"type":"text","text":"Use visible fallback."}],"providerPayload":{"type":"openaiResponsesHistory","provider":%q,"dt":true,"items":[{"type":"reasoning","id":"rs_hidden","encrypted_content":"hidden","summary":[]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"\t","annotations":[]}],"status":"completed"}]}}}`+"\n",
+		before.Leaf, stamp, conversation.OpenAIResponses, standInProvider, standInGPT, handWrittenUsage, now.UnixMilli(),
+		stamp, now.UnixMilli(), stamp, conversation.OpenAIResponses, standInProvider, standInGPT, handWrittenUsage, now.UnixMilli(), standInProvider,
+		stamp, conversation.OpenAIResponses, standInProvider, standInGPT, handWrittenUsage, now.UnixMilli(), standInProvider))
+	rig.run(t, file, "Follow-up.")
+	body := model.last(t)
+	input := requestInput(t, body, sessionContent(t, file))
+	formatted, _ := json.Marshal(input)
+	t.Logf("Pinned Responses input: %s", formatted)
+	after := itemCarriedOnce(t, input, func(item map[string]any) bool { return messageText(item) == "After the call." }, "trailing assistant text")
+	phase := itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return messageText(item) == "Before the call." && item["phase"] == "commentary"
+	}, "assistant text with a recorded phase")
+	blankText := itemCarriedOnce(t, input, func(item map[string]any) bool { return messageText(item) == " " }, "blank assistant text")
+	if phase >= blankText || blankText >= after {
+		t.Errorf("want phased, blank, and trailing text in order; got indexes %d, %d, %d", phase, blankText, after)
+	}
+	rebuilt := resumedSession(t, before, sessionContent(t, file), Options{}, "Follow-up.")
+	var replay []map[string]any
+	for _, msg := range rebuilt.Messages {
+		if msg.Native == nil {
+			continue
+		}
+		for _, raw := range msg.Native.Items {
+			var item map[string]any
+			if err := json.Unmarshal(raw, &item); err != nil {
+				t.Fatal(err)
+			}
+			replay = append(replay, item)
+		}
+	}
+	foundFallback := false
+	for _, msg := range rebuilt.Messages {
+		for _, b := range msg.Content {
+			if b.Type == conversation.Text && b.Text == "Use visible fallback." {
+				foundFallback = true
+				if msg.Native != nil || !reflect.DeepEqual(msg.Content, []conversation.Block{text("Use visible fallback.")}) {
+					t.Errorf("hidden-empty history did not fall back to visible text only: %+v", msg)
+				}
+			}
+		}
+	}
+	if !foundFallback {
+		t.Error("reader did not retain the visible fallback")
+	}
+	itemCarriedOnce(t, replay, func(item map[string]any) bool {
+		return item["type"] == "function_call" && item["call_id"] == "call_native" && item["arguments"] == "{}"
+	}, "reader's native call with repaired arguments")
+	for _, item := range replay {
+		if item["type"] == "item_reference" {
+			t.Errorf("reader kept a native item_reference: %v", item)
+		}
+	}
+	found := false
+	for _, msg := range rebuilt.Messages {
+		if len(msg.Content) == 0 || msg.Content[0].Text != "Before the call." {
+			continue
+		}
+		found = true
+		want := []conversation.Block{
+			{Type: conversation.Text, Text: "Before the call.", Phase: "commentary"},
+			text(" "), text("After the call."),
+			{Type: conversation.ToolCall, ToolCallID: "call_fixture", ToolName: "read", Arguments: json.RawMessage("null")},
+		}
+		if !reflect.DeepEqual(msg.Content, want) {
+			t.Errorf("reader blocks = %+v, want %+v", msg.Content, want)
+		}
+	}
+	if !found {
+		t.Error("reader dropped the hand-written tool turn")
+	}
+	call := itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return item["type"] == "function_call" && item["call_id"] == "call_fixture" && item["arguments"] == "null"
+	}, "rebuilt call with null arguments")
+	output := itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return item["type"] == "function_call_output" && item["call_id"] == "call_fixture"
+	}, "rebuilt call output")
+	if after >= call || call >= output {
+		t.Errorf("want hoisted text, call, output in order; got indexes %d, %d, %d", after, call, output)
+	}
+	itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return item["type"] == "function_call" && item["call_id"] == "call_native" && item["arguments"] == "{}"
+	}, "native call with repaired arguments")
+	itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return item["type"] == "function_call_output" && item["call_id"] == "call_native" &&
+			item["output"] == "[No tool output recorded: the tool call was interrupted before it produced a result.]"
+	}, "native call's inserted result")
+	itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return messageText(item) == "Use visible fallback."
+	}, "visible fallback for a hidden-empty payload")
+	for _, item := range input {
+		if item["type"] == "item_reference" || item["type"] == "image_generation_call" ||
+			item["call_id"] == "call_bad" || item["encrypted_content"] == "hidden" || messageText(item) == "\t" {
+			t.Errorf("the pin replayed an item that should drop: %v", item)
+		}
+	}
+}
+
+const attachmentFixturePNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2rkAAAAASUVORK5CYII="
+
+func setStandInModalities(t *testing.T, rig *ompRig, textOnly bool) {
+	t.Helper()
+	config := filepath.Join(rig.home, ".omp", "agent", "models.yml")
+	yaml, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modalities := "        input: [text, image]\n"
+	if textOnly {
+		modalities = "        input: [text]\n"
+	}
+	if err := os.WriteFile(config, append(yaml, modalities...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestThePinnedOhMyPiShapesResponsesAttachments(t *testing.T) {
+	const png = attachmentFixturePNG
+	const id = "gpt-oss-120b"
+	for _, tc := range []struct {
+		name     string
+		textOnly bool
+	}{{"vision", false}, {"text only", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := newOpenAIStandIn(t)
+			rig := newOMPRigForModel(t, conversation.OpenAIResponses, id, model)
+			setStandInModalities(t, rig, tc.textOnly)
+			rig.run(t, "", "Initial request.")
+			file := rig.sessionFile(t)
+			before, err := ReadFile(file, Options{TextOnly: tc.textOnly})
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			stamp := conversation.ISOTime(now)
+			appendRaw(t, file, fmt.Sprintf(
+				`{"type":"message","id":"d7000001","parentId":%q,"timestamp":%q,"message":{"role":"user","content":[{"type":"image","mimeType":"image/png","data":%q},{"type":"text","text":" "},{"type":"text","text":"Image A <|start|>."},{"type":"image","mimeType":"image/png","data":%q},{"type":"text","text":"Image B."}],"timestamp":%d}}`+"\n"+
+					`{"type":"message","id":"d7000002","parentId":"d7000001","timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"toolUse","usage":%s,"timestamp":%d,"content":[{"type":"text","text":"Checking <|message|>."},{"type":"toolCall","id":"call_image|fc_image","name":"read","arguments":{"path":"<|channel|>"}}]}}`+"\n"+
+					`{"type":"message","id":"d7000003","parentId":"d7000002","timestamp":%q,"message":{"role":"toolResult","toolCallId":"call_image|fc_image","toolName":"read","content":[{"type":"text","text":"Before <|return|>."},{"type":"image","mimeType":"image/png","data":%q},{"type":"text","text":""},{"type":"text","text":"After."}],"timestamp":%d}}`+"\n",
+				before.Leaf, stamp, png, png, now.UnixMilli(), stamp, conversation.OpenAIResponses, standInProvider, id, handWrittenUsage, now.UnixMilli(), stamp, png, now.UnixMilli()))
+			rig.run(t, file, "Follow-up.")
+			input := requestInput(t, model.last(t), sessionContent(t, file))
+			part := func(s string) any { return map[string]any{"type": "input_text", "text": s} }
+			image := map[string]any{"type": "input_image", "image_url": "data:image/png;base64," + png, "detail": "auto"}
+			prompt := []any{part(`Image A <\|start\|>.`), part("Image B."), image, image}
+			var output any = []any{part(`Before <\|return\|>.`), image, part(""), part("After.")}
+			if tc.textOnly {
+				prompt = []any{part(historyImageOmission), prompt[0], part(historyImageOmission), prompt[1]}
+				output = "Before <\\|return\\|>.\n" + historyImageOmission + "\n\nAfter."
+			}
+			itemCarriedOnce(t, input, func(item map[string]any) bool {
+				return item["role"] == "user" && reflect.DeepEqual(item["content"], prompt)
+			}, "shaped historical prompt")
+			itemCarriedOnce(t, input, func(item map[string]any) bool {
+				return item["call_id"] == "call_image" && reflect.DeepEqual(item["output"], output)
+			}, "shaped historical tool output")
+			itemCarriedOnce(t, input, func(item map[string]any) bool {
+				return item["call_id"] == "call_image" && item["arguments"] == `{"path":"<\\|channel\\|>"}`
+			}, "escaped function arguments")
+			itemCarriedOnce(t, input, func(item map[string]any) bool {
+				return messageText(item) == `Checking <\|message\|>.`
+			}, "escaped assistant text")
+			if t.Failed() {
+				wire, _ := json.Marshal(input)
+				t.Logf("Pinned Responses input: %s", wire)
+			}
+		})
+	}
+}
+
+func TestThePinnedOhMyPiReplacesAnthropicHistoryAttachmentsBeforeEncoding(t *testing.T) {
+	model := newAnthropicStandIn(t)
+	rig := newOMPRig(t, conversation.AnthropicMessages, model)
+	setStandInModalities(t, rig, true)
+	opts := Options{ReplayUnsignedThinking: true, TextOnly: true}
+	rig.run(t, "", "Initial request.")
+	file := rig.sessionFile(t)
+	before, err := ReadFile(file, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	stamp := conversation.ISOTime(now)
+	image := `{"type":"image","mimeType":"image/png","data":` + quote(attachmentFixturePNG) + `}`
+	appendRaw(t, file, fmt.Sprintf(
+		`{"type":"message","id":"d8000001","parentId":%q,"timestamp":%q,"message":{"role":"user","content":[{"type":"text","text":"First."},%s,%s,{"type":"text","text":"Last."}],"timestamp":%d}}`+"\n"+
+			`{"type":"message","id":"d8000002","parentId":"d8000001","timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"toolUse","usage":%s,"timestamp":%d,"content":[{"type":"toolCall","id":"toolu_image","name":"read","arguments":{"path":"note.txt"}}]}}`+"\n"+
+			`{"type":"message","id":"d8000003","parentId":"d8000002","timestamp":%q,"message":{"role":"toolResult","toolCallId":"toolu_image","toolName":"read","content":[{"type":"text","text":"Before."},%s,{"type":"text","text":"After."}],"timestamp":%d}}`+"\n",
+		before.Leaf, stamp, image, image, now.UnixMilli(), stamp, conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, now.UnixMilli(), stamp, image, now.UnixMilli()))
+	before, err = ReadFile(file, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const followUp = "Follow-up."
+	rig.run(t, file, followUp)
+	saved := sessionContent(t, file)
+	rebuilt := resumedSession(t, before, saved, opts, followUp)
+	got := model.lastAnthropic(t).turns(t, saved)
+	want := append(readerTurns(t, rebuilt.Messages), wireTurn{Role: "user", Blocks: []wireBlock{{Type: "text", Text: followUp}}})
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("pinned request = %+v\nreader and follow-up = %+v", got, want)
+	}
+	carriedOnce(t, got, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "text" && b.Text == "First.\n"+historyImageOmission+"\nLast."
+	}, "coalesced image omission between prompt text")
+	carriedOnce(t, got, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "tool_result" && b.Result == "Before.\n"+historyImageOmission+"\nAfter."
+	}, "image omission between tool result text")
 }
