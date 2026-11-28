@@ -644,6 +644,26 @@ test("an orphaned suggestion shows its diff and Text changed but offers neither 
   }
 });
 
+// Dispatch refuses Accept on a suggestion tied to no text ("accept requires an anchored
+// suggestion"), and takes its Reject: the card offers Reject alone on one, collapsed or expanded.
+test("a suggestion tied to no text offers Reject and no Accept", () => {
+  const floating = suggestionThread({ anchor: null });
+
+  for (const expanded of [false, true]) {
+    const view = renderCard(floating, { expanded });
+    try {
+      const card = screen.getByTestId("margin-comment-root-1");
+      expect(
+        within(card).queryByRole("button", { name: "Accept suggestion" }),
+        "a suggestion tied to no text offers Accept"
+      ).toBeNull();
+      expect(within(card).getByRole("button", { name: "Reject suggestion" })).not.toBeNull();
+    } finally {
+      view.unmount();
+    }
+  }
+});
+
 test("a document-owned comment thread posts its inline reply to the artifact route", async () => {
   const user = userEvent.setup();
   const createArtifactComment = spyOn(api, "createArtifactComment").mockResolvedValue(

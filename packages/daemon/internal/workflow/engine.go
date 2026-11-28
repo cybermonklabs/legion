@@ -2453,9 +2453,12 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// The release puts the issue back in the phase the hold is from, which is no move between
 	// phases, so the merge forward stands as the hold left it; but the worker it starts again is
 	// held as a worker a move starts is, where the merge of the head is owed to another role
-	// (holdStartedWorker). A merge owed to that worker itself is asked again at the ready of its new
-	// launch (askAgainAtLaunch). Then it queues the reconcile of the tree's news as a move does
-	// after its start (queueMovedNews).
+	// (holdStartedWorker). Unlike the move into merging (askMergerAtEntry), it sends no ask: an
+	// issue held from merging stands in merging while it is held (record.StandsAt), so no row of
+	// the merger's ask ended for want of merging (leftMergeForwardAt), and a merge owed to the
+	// worker it starts again is asked at the ready of that worker's new launch
+	// (askAgainAtLaunch). Then it queues the reconcile of the tree's news as a move does after its
+	// start (queueMovedNews).
 	if err := e.holdStartedWorker(ctx, tx, issue, pr); err != nil {
 		return "", err
 	}

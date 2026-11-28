@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,7 +15,9 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // notDeployedRig is a listener's /v1 routes over a stream a hub move's quiesce can narrow, with
@@ -60,6 +65,35 @@ func (rig *notDeployedRig) restore(t *testing.T, original natsgo.StreamConfig, t
 	t.Helper()
 	bustest.RestoreStream(t, rig.js, original)
 	bustest.AwaitDeployedCapture(t, rig.harness.client, topic, true, 15*time.Second)
+}
+
+// narrowKeptLane narrows the stream as the quiesce does, but only the subjects that capture role's
+// kept lane (bus.KeptRoleSubject, under notifications.envoy.kept.>), and waits until the listener's
+// client has read it; it returns the kept lane's subject and what the restore puts back. Every
+// other subject stays captured, the wake topic among them, so a wake a refused send raised would be
+// stored and handed to the rig's core subscriber, which requireNothingSent reads.
+func (rig *notDeployedRig) narrowKeptLane(t *testing.T, role string) (string, natsgo.StreamConfig) {
+	t.Helper()
+	kept := bus.KeptRoleSubject(role)
+	original := bustest.NarrowStream(t, rig.js, func(subject string) bool { return !bus.SubjectContains(subject, kept) })
+	bustest.AwaitDeployedCapture(t, rig.harness.client, kept, false, 15*time.Second)
+	if !rig.harness.client.DeployedStreamCaptures(bus.LegionWakeTopic) {
+		t.Fatalf("the narrowed stream does not capture %s, so a wake the refused send raised would be refused too and the checks below could not see it", bus.LegionWakeTopic)
+	}
+	return kept, original
+}
+
+// requireKeptOnce fails unless a is the 202 of a send kept for role's next holder, which cost
+// sender one, the role's kept lane holds exactly one copy, and the role's wake was reported.
+func (rig *notDeployedRig) requireKeptOnce(t *testing.T, what string, a limitedAnswer, sender, role string) {
+	t.Helper()
+	a.requireStatus(t, what, http.StatusAccepted)
+	if !a.Kept {
+		t.Fatalf("%s: body %s, want kept", what, a.raw)
+	}
+	a.requireNamed(t, what, sender)
+	rig.requireStoredOnce(t, bus.KeptRoleSubject(role))
+	awaitWake(t, rig.wakes, wakeKindRole, role)
 }
 
 // subscribe starts the core subscriber of every notification topic and returns the stream's last
@@ -201,7 +235,7 @@ func TestASendToAStoppedSessionWhileTheDeployedStreamLacksItsSubjectCostsNothing
 	}
 
 	requireNotDeployedAnswer(t, "a send to a stopped session while the stream lacks its agent subject", rig.sendFrom(t, sender, target, nil), agent)
-	rig.requireNoWake(t, wakeKindAgent, target)
+	requireNoWake(t, rig.wakes, wakeKindAgent, target)
 
 	rig.restore(t, original, agent)
 	rig.sendFrom(t, sender, target, nil).requireStatus(t, "the same send after the restore", http.StatusOK)
@@ -215,6 +249,232 @@ func TestASendToAStoppedSessionWhileTheDeployedStreamLacksItsSubjectCostsNothing
 		if wakeNamed(wakeReportIn(t, msg), wakeKindAgent, target) {
 			break
 		}
+	}
+}
+
+// A send to a stopped Legion agent whose project last said it answers, while a hub move's quiesce
+// has narrowed the stream so that it no longer captures the hand-off subject
+// (notifications.legion.<project>.agents.<session>, under notifications.legion.>), is refused as
+// a send whose own subject the stream does not capture is: the 503 with Retry-After: 1 that says
+// the message was not sent and may be sent again later, recorded subject_not_deployed. The
+// hand-off's publish (bus.Client.PublishRetained) is judged by the deployed stream's subjects as
+// the listener's client last read them, as the route's own publish of the message is
+// (bus.Client.PublishAckWithin), so nothing goes out: no core subscriber is handed the hand-off,
+// and the stream stores nothing, on the hand-off subject or anywhere else. The refused send costs
+// its sender nothing, so its line names no sender. The narrowing keeps every subject that does not
+// capture the hand-off subject, the agent's own subject among them, so the refusal is the
+// hand-off's alone.
+//
+// The control is the same send once the stream captures the hand-off subject again and the
+// listener has read that: it is handed off, 200 with the agent as recipient and recipient_state
+// gone, and the stream holds one hand-off for the agent. That send costs the sender one, and the
+// limit of one message a minute with a burst of one would have refused it with a 429 had the
+// refused send cost one too. Before, the hand-off's publish judged its subject by the subjects
+// this build compiles and sent it over JetStream, where no stream stored or answered it: once the
+// publish's wait for an acknowledgement ran out, the send was answered the 503 that says the bus
+// did not answer and the stream may hold the message (maybe_stored), recorded bus_unavailable,
+// which cost its sender one.
+func TestASendToAStoppedLegionAgentWhileTheDeployedStreamLacksTheHandoffSubjectAnswers503AndStoresNothing(t *testing.T) {
+	// Not parallel: it holds a 500 ms quiet window in which the refused hand-off must reach no core
+	// subscriber (requireNothingSent).
+	const (
+		agent  = "ses_not_deployed_handoff"
+		sender = "ses_not_deployed_handoff_sender"
+		what   = "a send to a stopped Legion agent while the stream lacks the hand-off subject"
+	)
+	handoff := listenerwire.LegionHandoffSubject("infra", agent)
+	rig := newNotDeployedRig(t)
+	withLegionAgent(t, rig.deps, legionAgentEntry(agent, "INFRA-204", "implementer"))
+	original := bustest.NarrowStream(t, rig.js, func(subject string) bool { return !bus.SubjectContains(subject, handoff) })
+	bustest.AwaitDeployedCapture(t, rig.harness.client, handoff, false, 15*time.Second)
+	if own := contracts.LegacyAgentSubject(agent); !rig.harness.client.DeployedStreamCaptures(own) {
+		t.Fatalf("the narrowed stream does not capture %s, so the refusal below could be the send's own subject's and not the hand-off's", own)
+	}
+	baseline := rig.subscribe(t)
+
+	// Step 1: the refusal's answer and its one line, which names no sender, and nothing sent.
+	refused := rig.sendFrom(t, sender, agent, nil)
+	requireNotDeployedAnswer(t, what, refused, handoff)
+	refused.requireUnnamed(t, what)
+	rig.requireNothingSent(t, baseline)
+	if count, data := handoffs(t, rig.harness.client, agent); count != 0 {
+		t.Fatalf("%s: the stream holds %d hand-offs for %s, want none; the last: %s", what, count, agent, data)
+	}
+
+	// Step 2, the control: the same send, once the stream captures the hand-off subject again and
+	// the listener has read that, is handed off once, and costs the sender the one message the
+	// refused send left it.
+	rig.restore(t, original, handoff)
+	const again = "the same send after the restore"
+	handed := rig.sendFrom(t, sender, agent, nil)
+	handed.requireStatus(t, again, http.StatusOK)
+	var answer listenerwire.SendResponse
+	if err := json.Unmarshal([]byte(handed.raw), &answer); err != nil || answer.Recipient != agent || answer.RecipientState != session.Gone {
+		t.Fatalf("%s: body %s (%v), want it handed off to %s with recipient_state %s", again, handed.raw, err, agent, session.Gone)
+	}
+	handed.requireNamed(t, again, sender)
+	if count, data := handoffs(t, rig.harness.client, agent); count != 1 {
+		t.Fatalf("%s: the stream holds %d hand-offs for %s, want 1; the last: %s", again, count, agent, data)
+	}
+}
+
+// A role publish to a role nobody claims, whose copy the listener keeps for the role's next holder
+// (roleSend.noHolder, keepForNextHolder), while a hub move's quiesce has narrowed the stream so that
+// it no longer captures the role's kept lane (notifications.envoy.kept.role.<role>, under
+// notifications.envoy.kept.>), is the 503 with Retry-After: 1 that says the message was not sent and
+// may be sent again later, recorded subject_not_deployed. Before it reports the role's wake, the
+// route asks the bus whether it would refuse the keep's publish (keptLaneRefusal,
+// bus.Client.UndeployedRefusal, the verdict bus.Client.PublishStoredAck refuses by), judged by the
+// deployed stream's subjects as the listener's client last read them, so nothing goes out: no wake
+// report, no refusal exception, no kept copy, and no core subscriber is handed anything. The
+// refused send costs its sender nothing, so its line names no sender. The narrowing keeps every
+// subject that does not capture the kept lane, the wake topic among them, so a wake the refused
+// send raised would be stored.
+//
+// The control is the same send once the stream captures the kept lane again and the listener has
+// read that: it is kept, 202 with kept true, the lane holds its one copy, and the role's wake is
+// reported. That send costs the sender one, and the limit of one message a minute with a burst of
+// one would have refused it with a 429 had the refused send cost one too. Before, the route
+// reported the wake, which the stream stored, and the keep's publish judged no capture: it went
+// over JetStream to the narrowed lane, where the rig's core subscriber was handed its request and
+// no stream stored or answered it, and once the keep's window (roleKeepPublishWindow) ran out the
+// keep failed as one that may have stored the copy (bus.ErrUnacknowledged). The send was answered
+// the 404 unclaimed that says nothing was kept, recorded role_unclaimed, and the wake cost its
+// sender one.
+func TestARoleSendKeptWhileTheDeployedStreamLacksTheKeptLaneAnswers503AndStoresNothing(t *testing.T) {
+	// Not parallel: it holds a 500 ms quiet window in which the refused send must reach no core
+	// subscriber (requireNothingSent).
+	const (
+		sender = "ses_not_deployed_kept_sender"
+		role   = "not-deployed-kept"
+		what   = "a role send kept while the stream lacks the role's kept lane"
+	)
+	rig := newNotDeployedRig(t)
+	kept, original := rig.narrowKeptLane(t, role)
+	baseline := rig.subscribe(t)
+
+	// Step 1: the refusal's answer and its one line, which names no sender, and nothing sent.
+	refused := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, nil)
+	requireNotDeployedAnswer(t, what, refused, kept)
+	refused.requireUnnamed(t, what)
+	rig.requireNothingSent(t, baseline)
+
+	// Step 2, the control: the same send, once the stream captures the kept lane again and the
+	// listener has read that, is kept once, and costs the sender the one message the refused send
+	// left it.
+	rig.restore(t, original, kept)
+	rig.requireKeptOnce(t, "the same send after the restore", rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, nil), sender, role)
+}
+
+// notDeployedDispatchPrincipal is the principal these tests name as Dispatch's
+// (useDispatchPrincipal), the one whose sends may carry a role mark.
+const notDeployedDispatchPrincipal = "system:serviceaccount:dispatch:dispatch"
+
+// markedSendFrom is a send from sender to target marked with role, through rig's routes, under
+// notDeployedDispatchPrincipal's verified identity. It names sender as its source session and no
+// source, so the sender limit counts it as it counts an agent's message (senderLimit.take); a
+// send Dispatch makes under source dispatch is counted by no limit.
+func markedSendFrom(t *testing.T, rig *senderLimitRig, sender, target, role string) limitedAnswer {
+	t.Helper()
+	request := postJSON("/v1/messages/send", messageJSON(t, map[string]any{
+		"target_session": target, "source_session": sender, "message": countedMessage, "role": role,
+	}, nil))
+	request = request.WithContext(withVerifiedPrincipal(request.Context(), notDeployedDispatchPrincipal))
+	return serveLimited(t, rig.mux, rig.harness.logs.String, request)
+}
+
+// A send marked with a role nobody claims, which the listener keeps for the role's next holder
+// (handOffOrKeepRoleSend, keepRoleSend), is refused the same way while the stream does not capture
+// the role's kept lane: the not-sent 503 recorded subject_not_deployed, asked of the bus before the
+// role's wake is reported (keptLaneRefusal), with nothing sent, nothing stored, and a line that
+// names no sender. The send is counted by the sender limit (markedSendFrom), and the control reads
+// that count: the same send once the stream captures the kept lane again and the listener has read
+// that is 202 with kept true, one copy on the lane, the role's wake, and a cost of one, which the
+// limit of one message a minute with a burst of one would have refused with a 429 had the refused
+// send cost one too. Before, the route reported the wake and the keep failed as the role publish's
+// above did, and the send was answered the 503 that says the bus did not answer and the stream may
+// hold the message, recorded bus_unavailable, which cost its sender one.
+func TestARoleMarkedSendKeptWhileTheDeployedStreamLacksTheKeptLaneAnswers503AndStoresNothing(t *testing.T) {
+	// Not parallel: it holds a 500 ms quiet window in which the refused send must reach no core
+	// subscriber (requireNothingSent).
+	const (
+		sender = "ses_not_deployed_marked_sender"
+		target = "ses_not_deployed_marked_target"
+		role   = "not-deployed-marked"
+		what   = "a role-marked send kept while the stream lacks the role's kept lane"
+	)
+	rig := newNotDeployedRig(t)
+	useDispatchPrincipal(rig.deps, notDeployedDispatchPrincipal)
+	rig.live(t, target, nil)
+	kept, original := rig.narrowKeptLane(t, role)
+	baseline := rig.subscribe(t)
+
+	// Step 1: the refusal's answer and its one line, which names no sender, and nothing sent.
+	refused := markedSendFrom(t, rig.senderLimitRig, sender, target, role)
+	requireNotDeployedAnswer(t, what, refused, kept)
+	refused.requireUnnamed(t, what)
+	rig.requireNothingSent(t, baseline)
+
+	// Step 2, the control: the same send after the restore is kept once and costs the sender one.
+	rig.restore(t, original, kept)
+	rig.requireKeptOnce(t, "the same send after the restore", markedSendFrom(t, rig.senderLimitRig, sender, target, role), sender, role)
+}
+
+// A keep that found the role's kept lane captured before the wake (keptLaneRefusal), and whose own
+// publish the bus then refused before it sent anything (bus.ErrSubjectNotDeployed), as when the
+// listener's client reads a narrowing between the two, is answered as the refusals above are: the
+// not-sent 503 recorded subject_not_deployed, whose line names no sender, and which leaves the
+// sender's count holding the message it had, so its next message is not refused for its rate. The
+// role's wake was reported before the keep, and the refusal forgives it (senderCharge.published).
+// That holds for the role publish's keep (roleSend.noHolder) and for a role-marked send's
+// (keepRoleSend). The keep's publish is a stand-in that answers the error the bus answers, since
+// no narrowing can be timed to land between the question and the publish; it is asked once, and
+// the lane holds nothing.
+func TestAKeepTheBusRefusesAfterTheWakeAnswers503AndCostsNothing(t *testing.T) {
+	t.Parallel()
+	for _, path := range []struct {
+		name string
+		send func(t *testing.T, rig *senderLimitRig, sender, role string) limitedAnswer
+	}{
+		{"the role publish's keep", func(t *testing.T, rig *senderLimitRig, sender, role string) limitedAnswer {
+			return rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, nil)
+		}},
+		{"a role-marked send's keep", func(t *testing.T, rig *senderLimitRig, sender, role string) limitedAnswer {
+			const target = "ses_not_deployed_late_target"
+			useDispatchPrincipal(rig.deps, notDeployedDispatchPrincipal)
+			rig.live(t, target, nil)
+			return markedSendFrom(t, rig, sender, target, role)
+		}},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			t.Parallel()
+			const (
+				sender = "ses_not_deployed_late_sender"
+				role   = "not-deployed-late"
+			)
+			kept := bus.KeptRoleSubject(role)
+			rig := newSenderLimitRig(t)
+			rig.limit(1, 1)
+			delivery := *rig.deps.delivery
+			publishes := 0
+			delivery.keepPublish = func(context.Context, string, contracts.Envelope, string) (bus.StoredAck, error) {
+				publishes++
+				// As internal/bus's subjectNotDeployed names it: the sentinel, the stream and the topic.
+				return bus.StoredAck{}, fmt.Errorf("%w (stream %s, topic %s)", bus.ErrSubjectNotDeployed, bus.Stream, kept)
+			}
+			rig.deps.delivery = &delivery
+			what := path.name + " that the bus refused after the wake"
+
+			refused := path.send(t, rig, sender, role)
+			requireNotDeployedAnswer(t, what, refused, kept)
+			refused.requireUnnamed(t, what)
+			if publishes != 1 {
+				t.Fatalf("%s: the keep published %d times, want once", what, publishes)
+			}
+			awaitWake(t, rig.wakes, wakeKindRole, role)
+			assertNothingKept(t, rig.harness.client, role)
+			rig.requireCount(t, sender, true)
+		})
 	}
 }
 
