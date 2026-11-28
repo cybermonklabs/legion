@@ -2,14 +2,18 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	smithylogging "github.com/aws/smithy-go/logging"
 	"github.com/go-logr/stdr"
@@ -247,27 +251,46 @@ func (r *redirectedStderr) point(w io.Writer) {
 
 // TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger: the AWS configuration openStore loads
 // to sign in to an IAM database (databaseSignIn) is the one whose logger is the broker's own
-// (awssdk.Log), whose lines are the broker's rather than the SDK's own log.Logger on stderr, and it
-// signs in with the RDS IAM token minter built from that configuration; a database that signs in
-// as its URL says loads no AWS configuration at all. The AWS store's own configuration is the AWS
-// store package's (TestOpenStoreLogsThroughTheBrokersLogger there).
+// (awssdk.Log), whose lines are the broker's rather than the SDK's own log.Logger on stderr. The
+// minter it answers signs a token with the instance role's credentials, which a stand-in for the
+// instance metadata service serves with IMDSv1 alone, so the SDK logs its fall back to IMDSv1
+// through that configuration's logger, and the line is the broker's. A database that signs in as
+// its URL says gets no minter. The AWS store's own configuration is the AWS store package's
+// (TestOpenStoreLogsThroughTheBrokersLogger there).
 //
 // The named revert: load the IAM database's configuration with the SDK's own LoadDefaultConfig,
-// and its logger is the SDK's.
+// and the fall-back line goes to stderr, not the broker's log.
 func TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger(t *testing.T) {
 	isolateAWS(t)
-	opts, awsCfg, err := databaseSignIn(t.Context(), config.Config{DatabaseIAM: true})
-	if err != nil {
-		t.Fatalf("databaseSignIn(an IAM database): %v", err)
+	imds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest/api/token":
+			http.Error(w, "IMDSv2 is off", http.StatusForbidden)
+		case "/latest/meta-data/iam/security-credentials/":
+			fmt.Fprint(w, "broker-role")
+		case "/latest/meta-data/iam/security-credentials/broker-role":
+			fmt.Fprintf(w, `{"Code": "Success", "Type": "AWS-HMAC", "AccessKeyId": "AKIDEXAMPLE", "SecretAccessKey": "secret", "Token": "token", "Expiration": %q}`,
+				time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(imds.Close)
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "false")
+	t.Setenv("AWS_EC2_METADATA_SERVICE_ENDPOINT", imds.URL)
+	logged := captureLog(t)
+	mint, err := databaseSignIn(t.Context(), config.Config{DatabaseIAM: true})
+	if err != nil || mint == nil {
+		t.Fatalf("databaseSignIn(an IAM database) = minter %t, %v; want the RDS IAM token minter", mint != nil, err)
 	}
-	if len(opts) != 1 {
-		t.Fatalf("databaseSignIn(an IAM database) answers %d store options; want the one RDS IAM token minter", len(opts))
+	token, err := mint(t.Context(), "broker-db.example:5432", "broker")
+	if err != nil || token == "" {
+		t.Fatalf("the minter signed %q, %v; want a token over the instance role's credentials", token, err)
 	}
-	if _, ok := awsCfg.Logger.(awssdk.Log); !ok {
-		t.Fatalf("the IAM database's AWS configuration logs through %T; want awssdk.Log, the broker's own", awsCfg.Logger)
+	if got := logged.String(); !strings.Contains(got, awssdk.Message) || !strings.Contains(got, "falling back to IMDSv1") {
+		t.Fatalf("the broker's log after the IAM database's credentials were read:\n%s\nwant the SDK's IMDSv1 fall back as a %q line", got, awssdk.Message)
 	}
-	opts, awsCfg, err = databaseSignIn(t.Context(), config.Config{})
-	if err != nil || len(opts) != 0 || awsCfg.Logger != nil || awsCfg.Region != "" {
-		t.Fatalf("databaseSignIn(a password database) = %d options, logger %T, region %q, %v; want no option and no AWS configuration", len(opts), awsCfg.Logger, awsCfg.Region, err)
+	if mint, err := databaseSignIn(t.Context(), config.Config{}); err != nil || mint != nil {
+		t.Fatalf("databaseSignIn(a password database) = minter %t, %v; want none", mint != nil, err)
 	}
 }

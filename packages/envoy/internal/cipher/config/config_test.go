@@ -2378,8 +2378,8 @@ func TestSecondPrefixSetting(t *testing.T) {
 		"gcp, absent": func() map[string]string { e := onGCP(); delete(e, "BROKER_SECRETS_SECOND_PREFIX"); return e }(),
 	} {
 		cfg, err := Load(env(e))
-		if err != nil || cfg.SecretsSecondPrefix != "" {
-			t.Fatalf("Load(%s) = second prefix %q, %v; want none, and the broker it was", name, cfg.SecretsSecondPrefix, err)
+		if err != nil || cfg.Secrets.SecondPrefix() != "" {
+			t.Fatalf("Load(%s) = second prefix %q, %v; want none, and the broker it was", name, cfg.Secrets.SecondPrefix(), err)
 		}
 	}
 	for _, second := range []string{
@@ -2390,8 +2390,8 @@ func TestSecondPrefixSetting(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load(gcp, second prefix %q) = %v; want both prefixes read as given", second, err)
 		}
-		if cfg.SecretsSecondPrefix != second || cfg.Secrets.Prefix() != prefix {
-			t.Fatalf("Load(gcp, second prefix %q) = second prefix %q, prefix %q; want both read as given", second, cfg.SecretsSecondPrefix, cfg.Secrets.Prefix())
+		if cfg.Secrets.SecondPrefix() != second || cfg.Secrets.Prefix() != prefix {
+			t.Fatalf("Load(gcp, second prefix %q) = second prefix %q, prefix %q; want both read as given", second, cfg.Secrets.SecondPrefix(), cfg.Secrets.Prefix())
 		}
 	}
 	// The development store reads one as given, so a local run or a test can rehearse a move, and
@@ -2403,8 +2403,8 @@ func TestSecondPrefixSetting(t *testing.T) {
 		e["BROKER_MEMORY_SECRETS_FILE"] = "/srv/memory-secrets.json"
 		return e
 	}
-	if cfg, err := Load(env(with(onMemory(), "example/old-agent-secrets/"))); err != nil || cfg.SecretsSecondPrefix != "example/old-agent-secrets/" {
-		t.Fatalf("Load(memory, second prefix) = second prefix %q, %v; want it read as given", cfg.SecretsSecondPrefix, err)
+	if cfg, err := Load(env(with(onMemory(), "example/old-agent-secrets/"))); err != nil || cfg.Secrets.SecondPrefix() != "example/old-agent-secrets/" {
+		t.Fatalf("Load(memory, second prefix) = second prefix %q, %v; want it read as given", cfg.Secrets.SecondPrefix(), err)
 	}
 	if _, err := Load(env(with(onMemory(), validEnv()["BROKER_SECRETS_PREFIX"]+"old-"))); err == nil || !strings.Contains(err.Error(), "one starts with the other") {
 		t.Fatalf("Load(memory, a second prefix that nests) = %v; want the nesting refused", err)
@@ -2429,7 +2429,7 @@ func TestSecondPrefixSetting(t *testing.T) {
 	} {
 		cfg, err := Load(env(row.env))
 		if err == nil {
-			t.Fatalf("Load(a second prefix %s) accepted it as %q; want a refusal naming BROKER_SECRETS_SECOND_PREFIX", name, cfg.SecretsSecondPrefix)
+			t.Fatalf("Load(a second prefix %s) accepted it as %q; want a refusal naming BROKER_SECRETS_SECOND_PREFIX", name, cfg.Secrets.SecondPrefix())
 		}
 		if !strings.HasPrefix(err.Error(), "BROKER_SECRETS_SECOND_PREFIX") {
 			t.Fatalf("Load(a second prefix %s) = %v; want a refusal opening with BROKER_SECRETS_SECOND_PREFIX", name, err)

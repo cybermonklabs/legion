@@ -72,7 +72,7 @@ func (Backend) ParseConfig(prefix string, getenv func(string) string) (secretsto
 }
 
 // OpenStore opens the file cfg names (Open).
-func (Backend) OpenStore(_ context.Context, cfg secretstore.Config, _ secretstore.OpenEnv) (secretstore.Opened, error) {
+func (Backend) OpenStore(_ context.Context, cfg secretstore.Config) (secretstore.Opened, error) {
 	store, err := Open(cfg.(config).file)
 	if err != nil {
 		return secretstore.Opened{}, err

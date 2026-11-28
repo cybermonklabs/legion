@@ -1,8 +1,6 @@
-// Package settingsfields turns a contributor's fields of GET /v1/settings into the map the
-// settings answer carries beside its fixed fields. Each contributor - a secret store, and later a
-// caller identity provider - documents its fields in a struct of string fields with JSON tags,
-// which cipher-refgen reads, and hands the broker Of of that struct; the broker merges the maps
-// with Merge, which refuses a field two contributors would both answer.
+// Package settingsfields turns a secret store's fields of GET /v1/settings into the map the
+// settings answer carries beside its fixed fields. A store documents its fields in a struct of
+// string fields with JSON tags, which cipher-refgen reads, and hands the broker Of of that struct.
 package settingsfields
 
 import (
@@ -34,18 +32,4 @@ func Of(v any) map[string]string {
 		}
 	}
 	return fields
-}
-
-// Merge adds src's fields to dst, and refuses, changing nothing, when a key of src is one dst
-// already holds, naming the key.
-func Merge(dst, src map[string]string) error {
-	for key := range src {
-		if _, held := dst[key]; held {
-			return fmt.Errorf("the settings field %s is answered twice", key)
-		}
-	}
-	for key, value := range src {
-		dst[key] = value
-	}
-	return nil
 }

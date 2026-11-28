@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -24,7 +25,7 @@ var rereadBudgets = []struct {
 	// RereadLimitFor of it.
 	shared, address time.Duration
 }{
-	{"default", api.DefaultRereadFleetBudget, 2250 * time.Millisecond, 4500 * time.Millisecond},
+	{"default", secretstore.DefaultRereadBudget, 2250 * time.Millisecond, 4500 * time.Millisecond},
 	{"gcp", gcp.RereadBudget, 9 * time.Second, 18 * time.Second},
 }
 
@@ -142,7 +143,7 @@ func TestSetReplicasMovesTheLiveRereadBuckets(t *testing.T) {
 func TestABucketSpentBeforeASetReplicasKeepsItsRereads(t *testing.T) {
 	const address = "203.0.113.9"
 	const spent = 5
-	rate, _ := newRereadRate(api.DefaultRereadFleetBudget)
+	rate, _ := newRereadRate(secretstore.DefaultRereadBudget)
 	perAddress, _ := rate.Buckets()
 	before := time.Now()
 	for sent := range spent {
@@ -182,7 +183,7 @@ func TestARereadRefusalCarriesTheRateOfTheReplicaCountNow(t *testing.T) {
 		want     string
 	}{{2, "1"}, {3, "3"}} {
 		t.Run(strconv.Itoa(row.replicas)+" pods", func(t *testing.T) {
-			rate, _ := newRereadRate(api.DefaultRereadFleetBudget)
+			rate, _ := newRereadRate(secretstore.DefaultRereadBudget)
 			ts := newTestServerWith(t, func(d *api.Deps) { d.RereadRate = rate })
 			rate.SetReplicas(row.replicas)
 			for sent := 1; sent <= 100; sent++ {
@@ -209,7 +210,7 @@ func TestARereadRefusalCarriesTheRateOfTheReplicaCountNow(t *testing.T) {
 // count this sizing supports. A later test parses these out of a real broker's stdout, so their
 // words and keys are the thing asserted.
 func TestSetReplicasLogsEachRateOnceAndWarnsAboveFour(t *testing.T) {
-	rate, logged := newRereadRate(api.DefaultRereadFleetBudget)
+	rate, logged := newRereadRate(secretstore.DefaultRereadBudget)
 
 	rate.SetReplicas(2)
 	first := lines(t, logged)

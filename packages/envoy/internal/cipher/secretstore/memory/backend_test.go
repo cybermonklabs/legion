@@ -39,7 +39,7 @@ func TestTheBackendOpensItsFile(t *testing.T) {
 	if cfg.Store() != memory.Name || cfg.Prefix() != prefix || !maps.Equal(cfg.Settings(), map[string]string{"memory_secrets_file": path}) {
 		t.Fatalf("Config = %s %s %v; want memory, the prefix and the file's path", cfg.Store(), cfg.Prefix(), cfg.Settings())
 	}
-	opened, err := b.OpenStore(context.Background(), cfg, secretstore.OpenEnv{})
+	opened, err := b.OpenStore(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

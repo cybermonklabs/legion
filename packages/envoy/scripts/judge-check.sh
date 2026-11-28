@@ -316,13 +316,12 @@ front_backends_stack() {
 	sleep 2
 }
 
-# stack_facts reads the few settings the memory store needs and that the banner does not name: the
-# namespace prefix and key the brokers serve, read from their own /v1/settings route.
+# stack_facts reads the one setting the memory store needs and that the banner does not name: the
+# namespace prefix the brokers serve, read from their own /v1/settings route.
 stack_facts() {
 	local settings
 	settings="$(curl -sS "$AGENT_SECRETS_URL/v1/settings")"
 	STACK_SECRETS_PREFIX="$(printf '%s' "$settings" | jq -r .secrets_prefix)"
-	STACK_KMS_KEY_ARN="$(printf '%s' "$settings" | jq -r '.kms_key_arn // ""')"
 }
 
 psql_stack() { pg_url_run "$STACK_DB_URL" psql -Atq -v ON_ERROR_STOP=1 "$@"; }
@@ -366,7 +365,7 @@ reread_all() { # <name>
 # the policy version, without writing a profiles file of its own.
 add_fake_secret() { # <store name> <tags json> <value>
 	local tmp="$WORK_DIR/memory-secrets.json"
-	jq --arg name "$1" --argjson tags "$2" --arg value "$3" --arg kms "$STACK_KMS_KEY_ARN" \
+	jq --arg name "$1" --argjson tags "$2" --arg value "$3" \
 		'.secrets += [{name: $name, tags: $tags, value: $value}]' \
 		"$AIRLOCK_MEMORY_SECRETS_FILE" >"$tmp"
 	cat "$tmp" >"$AIRLOCK_MEMORY_SECRETS_FILE"

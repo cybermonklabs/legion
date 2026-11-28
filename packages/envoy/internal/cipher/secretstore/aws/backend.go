@@ -39,7 +39,7 @@ func (Backend) Variables() []string           { return []string{keyVariable} }
 
 // OpenStore loads the AWS configuration under the SDK's credential chain, with the broker's logger
 // (awssdk.LoadConfig), and reads through Secrets Manager and KMS (storeOn).
-func (Backend) OpenStore(ctx context.Context, cfg secretstore.Config, _ secretstore.OpenEnv) (secretstore.Opened, error) {
+func (Backend) OpenStore(ctx context.Context, cfg secretstore.Config) (secretstore.Opened, error) {
 	awsCfg, err := awssdk.LoadConfig(ctx)
 	if err != nil {
 		return secretstore.Opened{}, fmt.Errorf("load the AWS configuration: %w", err)

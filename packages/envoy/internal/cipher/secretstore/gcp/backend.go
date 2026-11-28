@@ -52,7 +52,7 @@ func (Backend) Variables() []string           { return []string{keyVariable} }
 
 // OpenStore opens Secret Manager under Application Default Credentials (NewClient) and reads the
 // agent secrets on the key cfg names.
-func (Backend) OpenStore(ctx context.Context, cfg secretstore.Config, _ secretstore.OpenEnv) (secretstore.Opened, error) {
+func (Backend) OpenStore(ctx context.Context, cfg secretstore.Config) (secretstore.Opened, error) {
 	client, err := NewClient(ctx)
 	if err != nil {
 		return secretstore.Opened{}, err

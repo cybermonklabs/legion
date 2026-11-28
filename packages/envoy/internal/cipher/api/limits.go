@@ -127,13 +127,12 @@ const perAddressFactor = 2
 //
 // It is a derivation rather than a constant because the two deployments do not mount the same
 // shared bucket: cmd/cipherd divides the fleet budget of the store it mounts (its registry entry's
-// RereadBudget: Secret Manager's own, and DefaultRereadFleetBudget for every other store), and each
-// pod divides whichever it has by the pods it counts, so no single constant serves both. One
-// derived from the
-// Google figure tightens every AWS deployment fourfold - at two pods, one write every eight
-// seconds against a shared bucket of its own that refills every second - for a Secret Manager
-// quota that deployment never touches. One derived from the default figure leaves a single
-// address on Secret Manager able to hold that fleet's whole reread budget at zero.
+// RereadBudget: Secret Manager's own, and secretstore.DefaultRereadBudget for every other store),
+// and each pod divides whichever it has by the pods it counts, so no single constant serves both.
+// One derived from the Google figure tightens every AWS deployment fourfold - at two pods, one
+// write every eight seconds against a shared bucket of its own that refills every second - for a
+// Secret Manager quota that deployment never touches. One derived from the default figure leaves a
+// single address on Secret Manager able to hold that fleet's whole reread budget at zero.
 //
 // What the ordering buys is the fan-out itself. This route takes no credential at all, and
 // ratelimit.Keyed.AllowBothAt charges a refusal to neither bucket, so a caller that never
@@ -178,14 +177,6 @@ const MinReplicas = 2
 // (replicas² × burst store reads), which dividing the rate does not hold down.
 const MaxSupportedReplicas = 4
 
-// DefaultRereadFleetBudget is the whole fleet's reread budget on a store that names none of its
-// own (secretstore.DefaultRereadBudget), written as the rate one pod alone could take: four
-// rereads a second. RereadOverallFor divides a budget among the pods, so at MinReplicas this is
-// DefaultRereadOverallLimit, the figure the comments below size; Google Secret Manager's budget
-// is its store's own (secretstore/gcp, RereadBudget), whose comment sizes it. The burst is the
-// fleet's and is divided by nothing, for the reason DefaultRereadOverallLimit gives.
-var DefaultRereadFleetBudget = secretstore.DefaultRereadBudget
-
 // RereadOverallFor is one pod's share of budget when replicas pods serve: the shared reread
 // bucket a process of that fleet mounts. Every reread a pod accepts costs a store read on every
 // pod (the fan-out, Deps.NotifyReread), so the fleet spends replicas² × this rate, and the
@@ -199,19 +190,19 @@ func RereadOverallFor(budget ratelimit.Limit, replicas int) ratelimit.Limit {
 // DefaultRereadOverallLimit is the default store's whole fleet budget divided among MinReplicas
 // pods: the bucket a process of that fleet mounts to bound POST /v1/secrets/{name}/reread
 // across every caller at once, whatever address each comes from. A process that counts more
-// pods runs at RereadOverallFor(DefaultRereadFleetBudget, n) instead, which RereadRate moves it
-// to at each count the serving clock gives. Every reread takes the policy's writer lock for one
-// DescribeSecret, so a per-address limit alone bounds nothing a flood spread over addresses
-// cannot pass: with no cap of its own it could keep that lock busy and hold up the five-minute
-// reload and the miss-path rereads a session's own request waits on.
+// pods runs at RereadOverallFor(secretstore.DefaultRereadBudget, n) instead, which RereadRate
+// moves it to at each count the serving clock gives. Every reread takes the policy's writer lock
+// for one DescribeSecret, so a per-address limit alone bounds nothing a flood spread over
+// addresses cannot pass: with no cap of its own it could keep that lock busy and hold up the
+// five-minute reload and the miss-path rereads a session's own request waits on.
 //
 // This bucket is per process, and every reread it accepts costs the fleet one read of the secret
 // store per pod rather than one in total: the pod that served the call reads the store, and the
 // fan-out (Deps.NotifyReread) makes every peer read it too. So the fleet's sustained store
 // traffic is replicas × this rate × replicas - replicas² × this rate - and RereadOverallFor
 // divides the whole fleet's budget by the replica count squared. The budget it divides is
-// DefaultRereadFleetBudget, four rereads a second. It is not the provider's quota: AWS Secrets
-// Manager serves DescribeSecret at 40,000 requests a second per Region
+// secretstore.DefaultRereadBudget, four rereads a second. It is not the provider's quota: AWS
+// Secrets Manager serves DescribeSecret at 40,000 requests a second per Region
 // (docs.aws.amazon.com/general/latest/gr/asm.html), which nothing this route could do would
 // approach. What four a second is, is the policy writer lock above - one pod's worth of reread
 // traffic that still leaves that lock free for the five-minute reload and the miss-path
@@ -274,7 +265,7 @@ func RereadOverallFor(budget ratelimit.Limit, replicas int) ratelimit.Limit {
 // two pods (Retry-After follows Every, ratelimit.RetryAfterSeconds, and SetReplicas moves Every
 // with the count) - and its write stands in the store either way; only the narrowing of who may
 // read it waits for the next token.
-var DefaultRereadOverallLimit = RereadOverallFor(DefaultRereadFleetBudget, MinReplicas)
+var DefaultRereadOverallLimit = RereadOverallFor(secretstore.DefaultRereadBudget, MinReplicas)
 
 // RereadRate derives this process's two reread buckets from the replica count it can see, and
 // moves them whenever that count changes. The count comes from the serving clock, which counts

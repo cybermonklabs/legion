@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
 	"github.com/sjawhar/envoy/internal/cipher/awssdk"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
@@ -68,7 +67,7 @@ func TestOpenStoreLogsThroughTheBrokersLogger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opened, err := aws.Backend{}.OpenStore(t.Context(), cfg, secretstore.OpenEnv{})
+	opened, err := aws.Backend{}.OpenStore(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

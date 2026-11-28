@@ -288,24 +288,6 @@ type Config struct {
 	// BROKER_MEMORY_SECRETS_FILE names). It decides BROKER_SECRETS_PREFIX's form and which of the
 	// stores' own variables is required; a variable of another store is refused.
 	Secrets secretstore.Config
-	// BROKER_SECRETS_SECOND_PREFIX: a second prefix, for a deployment that moves its store to
-	// another prefix: a grant whose request froze a secret's source under it counts as one of the
-	// source the broker serves the same name from under BROKER_SECRETS_PREFIX, the same remainder
-	// after the prefix and the same type, so that grant is released, reused and connected through
-	// the airlock, and not ended as a grant of another secret. A release still reads the value from
-	// BROKER_SECRETS_PREFIX's secret alone, which the broker listed and checked; nothing of the
-	// broker lists, reads, serves, freezes or writes under the second prefix. Empty (the default) is
-	// a broker that counts a frozen source only when it is the one served. The store's registry
-	// entry decides whether it reads one (Backend.ParseConfig): gcp-secret-manager reads one of
-	// BROKER_SECRETS_PREFIX's form, projects/<project number>/secrets/<secret-id prefix>-; memory,
-	// the development store, reads one so that a local run or a test can rehearse a move; and the
-	// broker refuses to start on any value under aws-secrets-manager, whose source is an ARN a move
-	// to another name always changes. Neither of the two prefixes may start with the other. A
-	// deployment sets it to the new store's prefix before the move, swaps the two at the move,
-	// rewrites the frozen sources of its live grants and pending requests to the new prefix once no
-	// pod of the earlier setting serves, and removes it once its database holds no such source
-	// under the old prefix.
-	SecretsSecondPrefix string
 	// BROKER_PROFILES_FILE: the path of the profiles file, profiles.json, whose kinds say which
 	// hosts a credential of each kind may reach and in which headers, and which names each
 	// profile a caller asks for: its source secret and its scope. The broker reads it once at
@@ -3154,13 +3136,9 @@ func LoadDatabase(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
-// lookupStore and allStores are the store registry Load reads (secretstore/backends): the store
-// BROKER_SECRETS_STORE names, and every store this build holds, whose own variables Load refuses
-// with any other store. A test swaps them for a build that holds other stores.
-var (
-	lookupStore = backends.Lookup
-	allStores   = backends.All
-)
+// lookupStore is the store registry Load reads the store BROKER_SECRETS_STORE names from
+// (secretstore/backends). A test swaps it for a build without the default store.
+var lookupStore = backends.Lookup
 
 func Load(getenv func(string) string) (Config, error) {
 	for _, removed := range removedVars {
@@ -3279,7 +3257,7 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		return Config{}, err
 	}
-	for _, other := range allStores() {
+	for _, other := range backends.All() {
 		if other.Name() == backend.Name() {
 			continue
 		}
@@ -3468,8 +3446,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	// The store reads BROKER_SECRETS_SECOND_PREFIX or refuses it (Backend.ParseConfig), so its
 	// answer is the one reading of the setting.
-	cfg.SecretsSecondPrefix = cfg.Secrets.SecondPrefix()
-	if err := secondPrefixRefusal(cfg.Secrets.Prefix(), cfg.SecretsSecondPrefix); err != nil {
+	if err := secondPrefixRefusal(cfg.Secrets.Prefix(), cfg.Secrets.SecondPrefix()); err != nil {
 		return Config{}, err
 	}
 	services, err := parseServiceAccounts("BROKER_SERVICES", getenv("BROKER_SERVICES"))

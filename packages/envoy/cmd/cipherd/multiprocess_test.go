@@ -1184,7 +1184,7 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 	//
 	// The budget it holds them to is the one the issue states: "two pods together cannot send
 	// more metadata traffic than one pod was allowed to". One pod was allowed four rereads a
-	// second against a store where a reread is one read (api.DefaultRereadFleetBudget, Every
+	// second against a store where a reread is one read (secretstore.DefaultRereadBudget, Every
 	// 250ms), and one a second against Google Secret Manager (gcp.RereadBudget), where
 	// gcp.RereadBudget's own comment turns that figure into the 120 metadata reads a
 	// minute the public route may spend of the project's shared 600. Those two figures are the

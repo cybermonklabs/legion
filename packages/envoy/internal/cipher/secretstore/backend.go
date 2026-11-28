@@ -2,7 +2,6 @@ package secretstore
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -28,18 +27,23 @@ type Config interface {
 	SourcePrefixes() (prefix, second string)
 }
 
-// SecondPrefixVariable is BROKER_SECRETS_SECOND_PREFIX, the prefix a deployment's move of its store
-// leaves or reaches (config.Config.SecretsSecondPrefix): a grant frozen under it counts as one of
-// the source the broker serves under BROKER_SECRETS_PREFIX. Each store's ParseConfig reads it or
-// refuses it (Config.SecondPrefix), so no store ignores it, which
-// backends.TestEachStoreTakesAStandOnTheSecondPrefix holds every registered store to.
+// BROKER_SECRETS_SECOND_PREFIX: a second prefix, for a deployment that moves its store to another
+// prefix: a grant whose request froze a secret's source under it counts as one of the source the
+// broker serves the same name from under BROKER_SECRETS_PREFIX, the same remainder after the
+// prefix and the same type, so that grant is released, reused and connected through the airlock,
+// and not ended as a grant of another secret. A release still reads the value from
+// BROKER_SECRETS_PREFIX's secret alone, which the broker listed and checked; nothing of the broker
+// lists, reads, serves, freezes or writes under the second prefix. Empty (the default) is a broker
+// that counts a frozen source only when it is the one served. Each store's registry entry reads it
+// or refuses it (Backend.ParseConfig, Config.SecondPrefix): gcp-secret-manager reads one of
+// BROKER_SECRETS_PREFIX's form, projects/<project number>/secrets/<secret-id prefix>-; memory, the
+// development store, reads one so that a local run or a test can rehearse a move; and the broker
+// refuses to start on any value under aws-secrets-manager, whose source is an ARN a move to another
+// name always changes. Neither of the two prefixes may start with the other. A deployment sets it
+// to the new store's prefix before the move, swaps the two at the move, rewrites the frozen sources
+// of its live grants and pending requests to the new prefix once no pod of the earlier setting
+// serves, and removes it once its database holds no such source under the old prefix.
 const SecondPrefixVariable = "BROKER_SECRETS_SECOND_PREFIX"
-
-// OpenEnv is what cipherd hands every store it opens.
-type OpenEnv struct {
-	// Log is the broker's logger, which a store's SDK logs through where it logs at all.
-	Log *slog.Logger
-}
 
 // Opened is a store Backend.OpenStore opened: the Store, the credentials it reads with as the
 // broker's boot line names them, and Close, which releases its client and may be nil.
@@ -59,8 +63,9 @@ type Backend interface {
 	// build tag that leaves it out (cipher_no_<id>), and the subtest name of every test that runs
 	// on each store.
 	ID() string
-	// ServiceSDKs are the import path prefixes no package but the store's own may import: its
-	// service's SDK.
+	// ServiceSDKs are the import path prefixes of the store's service SDK. Of the broker's
+	// packages only the store's own imports them; the agent-secrets CLI (cmd/cipher) imports them
+	// too, for its own reads and writes of the store.
 	ServiceSDKs() []string
 	// Development is true for a store that serves tests and local runs alone, with which cipherd
 	// accepts its development-only settings.
@@ -78,5 +83,5 @@ type Backend interface {
 	// Config.SecondPrefix; a store whose sources such a move changes refuses every value.
 	ParseConfig(prefix string, getenv func(string) string) (Config, error)
 	// OpenStore opens the store cfg, a Config this Backend parsed, describes.
-	OpenStore(ctx context.Context, cfg Config, env OpenEnv) (Opened, error)
+	OpenStore(ctx context.Context, cfg Config) (Opened, error)
 }

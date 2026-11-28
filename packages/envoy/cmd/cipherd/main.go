@@ -35,7 +35,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 
@@ -369,7 +368,7 @@ func main() {
 	// The secret store, opened by its registry entry and logged with how it signs in, so an
 	// operator reads it from the log: the AWS SDK's credential chain, Application Default
 	// Credentials, or the memory secrets file.
-	opened, err := storeBackend.OpenStore(ctx, cfg.Secrets, secretstore.OpenEnv{Log: slog.Default()})
+	opened, err := storeBackend.OpenStore(ctx, cfg.Secrets)
 	fatal(err)
 	if opened.Close != nil {
 		defer opened.Close()
@@ -1101,15 +1100,20 @@ func fatal(err error) {
 	}
 }
 
-// openStore opens the broker's database as cfg says, signing each new connection in as
-// databaseSignIn says, which for an IAM-form BROKER_DATABASE_URL loads the AWS configuration before
-// the database is opened. It migrates nothing: the server migrates after this, and the
-// end-sessions, versions and revoke-dispatch-signins subcommands must not. All four open the store
-// here, so each subcommand reaches the same database and signs in to it the same way as the server.
+// openStore opens the broker's database as cfg says, signing each new connection in with the
+// minter databaseSignIn answers, which for an IAM-form BROKER_DATABASE_URL loads the AWS
+// configuration before the database is opened. It migrates nothing: the server migrates after
+// this, and the end-sessions, versions and revoke-dispatch-signins subcommands must not. All four
+// open the store here, so each subcommand reaches the same database and signs in to it the same
+// way as the server.
 func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
-	opts, _, err := databaseSignIn(ctx, cfg)
+	mint, err := databaseSignIn(ctx, cfg)
 	if err != nil {
 		return nil, err
+	}
+	var opts []store.Option
+	if mint != nil {
+		opts = append(opts, store.WithTokenMinter(mint))
 	}
 	st, err := store.Open(ctx, cfg.DatabaseURL, opts...)
 	if err != nil {
@@ -1118,23 +1122,19 @@ func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 	return st, nil
 }
 
-// databaseSignIn is how cfg's database signs each new connection in. An IAM-form
-// BROKER_DATABASE_URL signs in with an RDS IAM token minted from the AWS configuration it loads
-// (awssdk.LoadConfig, whose logger is the broker's own), which it answers beside the minter's
-// option; any other URL signs in as it says, with no option and no AWS configuration loaded.
-func databaseSignIn(ctx context.Context, cfg config.Config) ([]store.Option, aws.Config, error) {
+// databaseSignIn is the minter of cfg's database: for an IAM-form BROKER_DATABASE_URL, the RDS IAM
+// token minter over the AWS configuration it loads (awssdk.LoadConfig, whose logger is the
+// broker's own); nil for any other URL, which signs in as it says, with no AWS configuration
+// loaded.
+func databaseSignIn(ctx context.Context, cfg config.Config) (store.TokenMinter, error) {
 	if !cfg.DatabaseIAM {
-		return nil, aws.Config{}, nil
+		return nil, nil
 	}
 	awsCfg, err := awssdk.LoadConfig(ctx)
 	if err != nil {
-		return nil, aws.Config{}, fmt.Errorf("load the AWS configuration: %w", err)
+		return nil, fmt.Errorf("load the AWS configuration: %w", err)
 	}
-	mint, err := rdsAuthTokens(awsCfg)
-	if err != nil {
-		return nil, aws.Config{}, err
-	}
-	return []store.Option{store.WithTokenMinter(mint)}, awsCfg, nil
+	return rdsAuthTokens(awsCfg)
 }
 
 // refusePortZeroPublicURLInProduction refuses a BROKER_PUBLIC_URL whose port is 0
@@ -1555,13 +1555,8 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	// The grant re-checks compare a frozen source under the two prefixes in the store's own source
 	// form (secretstore.Config.SourcePrefixes), the second one a store move leaves or reaches
-	// (BROKER_SECRETS_SECOND_PREFIX), and nothing else of the broker reads the second. config.Load
-	// always sets the store's configuration; a Config a test builds by hand may hold none, and then
-	// names no prefix, as an unset BROKER_SECRETS_PREFIX would.
-	var sourcePrefix, secondSourcePrefix string
-	if cfg.Secrets != nil {
-		sourcePrefix, secondSourcePrefix = cfg.Secrets.SourcePrefixes()
-	}
+	// (BROKER_SECRETS_SECOND_PREFIX), and nothing else of the broker reads the second.
+	sourcePrefix, secondSourcePrefix := cfg.Secrets.SourcePrefixes()
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		SecretsPrefix: sourcePrefix, SecondPrefix: secondSourcePrefix,

@@ -434,14 +434,13 @@ refusal_lines() { # <code> [host]
 }
 
 # stack_facts reads the few settings a second broker and the memory store need and that the
-# banner does not name: the namespace prefix and key the brokers serve (their own /v1/settings
-# route), and the resolve and dial-allow lists, which are the stack's bound hosts on their own
-# loopback addresses.
+# banner does not name: the namespace prefix the brokers serve (their own /v1/settings route), and
+# the resolve and dial-allow lists, which are the stack's bound hosts on their own loopback
+# addresses.
 stack_facts() {
 	local settings
 	settings="$(curl -sS "$AGENT_SECRETS_URL/v1/settings")"
 	STACK_SECRETS_PREFIX="$(printf '%s' "$settings" | jq -r .secrets_prefix)"
-	STACK_KMS_KEY_ARN="$(printf '%s' "$settings" | jq -r '.kms_key_arn // ""')"
 	STACK_DIAL_ALLOW=""
 	STACK_RESOLVE=""
 	local host addr
@@ -566,7 +565,7 @@ reread_all() { # <name>
 # profiles file of its own: a plain stored value no profile names is served by its own name.
 add_fake_secret() { # <store name> <tags json> <value>
 	local tmp="$WORK_DIR/memory-secrets.json"
-	jq --arg name "$1" --argjson tags "$2" --arg value "$3" --arg kms "$STACK_KMS_KEY_ARN" \
+	jq --arg name "$1" --argjson tags "$2" --arg value "$3" \
 		'.secrets += [{name: $name, tags: $tags, value: $value}]' \
 		"$AIRLOCK_MEMORY_SECRETS_FILE" >"$tmp"
 	cat "$tmp" >"$AIRLOCK_MEMORY_SECRETS_FILE"
