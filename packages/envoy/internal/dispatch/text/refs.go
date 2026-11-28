@@ -3,7 +3,6 @@ package text
 import (
 	"net/url"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -111,14 +110,14 @@ type Located struct {
 	InCode bool
 }
 
-// Extract parses Dispatch links from body. Links outside serverURL stay URL
-// references so a post never loses an ordinary external link. It reads what text cites, which the
-// graph indexes, so a reference past the bounds the index keys (inBound) names nothing there: a
-// `dispatch://` one is dropped, a dashboard page whose block is past them names its document
-// (pageInBound), and one whose document or item is past them is the URL it is, as one that names
-// no page is.
-func Extract(body, serverURL string) []Ref {
-	return Refs(ExtractAt(body, serverURL))
+// Extract parses Dispatch links from body. A dashboard URL of any of origins is the reference its
+// page names; links at any other address stay URL references so a post never loses an ordinary
+// external link. It reads what text cites, which the graph indexes, so a reference past the bounds
+// the index keys (inBound) names nothing there: a `dispatch://` one is dropped, a dashboard page
+// whose block is past them names its document (pageInBound), and one whose document or item is past
+// them is the URL it is, as one that names no page is.
+func Extract(body string, origins Origins) []Ref {
+	return Refs(ExtractAt(body, origins))
 }
 
 // Refs is the references of located, without their offsets.
@@ -132,8 +131,8 @@ func Refs(located []Located) []Ref {
 
 // ExtractAt is Extract with each reference's byte offset into body, so a caller can find the
 // block a mention sits in. Trailing punctuation the grammar trims never moves the start.
-func ExtractAt(body, serverURL string) []Located {
-	return extractAt(body, serverURL, true)
+func ExtractAt(body string, origins Origins) []Located {
+	return extractAt(body, origins, true)
 }
 
 // ParseRef reads value, the one reference a request names - an API route's `?to=` or `?from=`, or
@@ -145,8 +144,8 @@ func ExtractAt(body, serverURL string) []Located {
 // Ref and never the code fact: a request parameter is no markdown, and the one reference it
 // names starts at its first byte, which every code context would have taken for a fence, an
 // indent or a backtick.
-func ParseRef(value, serverURL string) (Ref, bool) {
-	located := extractAt(value, serverURL, false)
+func ParseRef(value string, origins Origins) (Ref, bool) {
+	located := extractAt(value, origins, false)
 	if len(located) != 1 || located[0].Offset != 0 || located[0].Kind == "url" {
 		return Ref{}, false
 	}
@@ -155,8 +154,8 @@ func ParseRef(value, serverURL string) (Ref, bool) {
 
 // extractAt is ExtractAt, holding what each reference names to the bounds the index keys when
 // bounded (Extract's reading of text, inBound) and not when not (ParseRef's of a request).
-func extractAt(body, serverURL string, bounded bool) []Located {
-	located, _ := extractSpans(body, serverURL, referencePattern.FindAllStringIndex(body, -1), bounded)
+func extractAt(body string, origins Origins, bounded bool) []Located {
+	located, _ := extractSpans(body, origins, referencePattern.FindAllStringIndex(body, -1), bounded)
 	return located
 }
 
@@ -165,24 +164,15 @@ func extractAt(body, serverURL string, bounded bool) []Located {
 // bare - scans body for them once. It reads body's code contexts once here too (codeRanges),
 // marking each reference that sits in one, and hands them back for that same reader to mark what
 // it finds in the gaps: no consumer reads them a second time.
-func extractSpans(body, serverURL string, spans [][]int, bounded bool) ([]Located, []codeRange) {
+func extractSpans(body string, origins Origins, spans [][]int, bounded bool) ([]Located, []codeRange) {
 	refs := []Located{}
 	code := codeRanges(body)
-	var base *url.URL
-	baseParsed := false
-	baseOf := func() *url.URL {
-		if !baseParsed {
-			base, _ = url.Parse(serverURL)
-			baseParsed = true
-		}
-		return base
-	}
 	for _, span := range spans {
 		raw := spanReference(body, span[0], span[1])
 		if raw == "" {
 			continue
 		}
-		if ref, ok := locateSpan(raw, baseOf, bounded); ok {
+		if ref, ok := locateSpan(raw, origins, bounded); ok {
 			refs = append(refs, Located{Ref: ref, Offset: span[0], InCode: inCode(code, span[0])})
 		}
 	}
@@ -191,16 +181,15 @@ func extractSpans(body, serverURL string, spans [][]int, bounded bool) ([]Locate
 
 // locateSpan is what raw, one reference span as spanReference leaves it, names as Extract reads
 // it: a `dispatch://` address that parses, held to the bounds the index keys when bounded
-// (inBound), else nothing; a page of the dashboard at base (parseServer), held to the bounds
-// when bounded (pageInBound); and any other URL as itself, Kind "url", so a post never loses an
-// ordinary link. base is called only for a span that needs it, so a text of addresses alone parses
-// no server URL.
-func locateSpan(raw string, base func() *url.URL, bounded bool) (Ref, bool) {
+// (inBound), else nothing; a page of the dashboard at one of origins (parseServer), held to the
+// bounds when bounded (pageInBound); and any other URL as itself, Kind "url", so a post never
+// loses an ordinary link.
+func locateSpan(raw string, origins Origins, bounded bool) (Ref, bool) {
 	if rest, dispatch := strings.CutPrefix(raw, "dispatch://"); dispatch {
 		ref, ok := parseDispatch(rest)
 		return ref, ok && (!bounded || inBound(ref))
 	}
-	if ref, ok := parseServer(raw, base()); ok {
+	if ref, ok := parseServer(raw, origins); ok {
 		if bounded {
 			ref, ok = pageInBound(ref)
 		}
@@ -286,6 +275,18 @@ func trimReference(raw string) string {
 	return ""
 }
 
+// ReferenceAt is the reference that starts at offset of body, cut as Extract cuts one: the span of
+// the reference grammar there (referencePattern), cut where a link's address ends and less what
+// trails it in prose (spanReference). offset is a Located.Offset of body. Where no reference
+// starts at offset, it is empty.
+func ReferenceAt(body string, offset int) string {
+	span := referencePattern.FindStringIndex(body[offset:])
+	if span == nil || span[0] != 0 {
+		return ""
+	}
+	return spanReference(body, offset, offset+span[1])
+}
+
 // DispatchSpans is where each `dispatch://` address stands in value, as text reads one: each
 // reference span (referencePattern) that starts with `dispatch://`, from its first byte to the end
 // of what spanReference leaves of it, in order, whether or not the address names anything. It is
@@ -305,21 +306,14 @@ func DispatchSpans(value string) [][2]int {
 	return spans
 }
 
-// issueTabs is every tab of an issue's page whose address names the issue itself, holding no
-// block, slug or id: the dashboard's `PLAIN_ISSUE_TABS` and its conversation
-// (web/src/features/refs/routes.ts). A reference to a tab, `dispatch://CORE-1/plan` or the
-// dashboard's `/issues/CORE-1/plan`, reads as the issue, as the dashboard draws it, so the graph
-// holds the edge the page shows. The shared text table holds a row per tab in both forms, so a tab
-// one reader names and the other does not fails there.
-var issueTabs = []string{"verification", "plan", "steps", "activity", "children", "artifacts", "collaborators", "conversation"}
-
 // parseDispatch reads a `dispatch://` reference, without its scheme, by the grammar the dashboard's
 // `parseDispatchReference` reads: a slug as written, an `@v` version, an agent's session id as
 // written, an item id decoded as `itemSegment` decodes it, a `#b-` block of a document, an
 // ask, a comment or a message as parseBlock reads it, and the three parties, `agent/<session
 // id>`, `role/<token>` and `person/<login>`. An issue's key with nothing after it, a trailing
-// slash, a tab of its page (issueTabs) or `log`, the conversation's older name, is the issue. A
-// reference holding a control character names nothing.
+// slash, or a tab of its page by its page's segment or by its reference's (issueTabPages,
+// issueTabReferences: `plan`, `conversation`, and `log`, the conversation's older name) is the
+// issue. A reference holding a control character names nothing.
 func parseDispatch(value string) (Ref, bool) {
 	if hasControl(value) {
 		return Ref{}, false
@@ -329,7 +323,7 @@ func parseDispatch(value string) (Ref, bool) {
 	}
 	key, tail, found := strings.Cut(value, "/")
 	if issueKeyPattern.MatchString(key) {
-		if !found || tail == "" || tail == "log" || slices.Contains(issueTabs, tail) {
+		if !found || tail == "" || issueTabPages[tail] || issueTabReferences[tail] {
 			return Ref{Kind: "issue", IssueKey: key, ID: key}, true
 		}
 		if tail == "spec" {
@@ -564,13 +558,13 @@ func FormatBlockRef(ref Ref) (string, bool) {
 
 // CanonicalBlockRef reads value as one block of a document written exactly as FormatBlockRef
 // writes it - the one way a typed block's `block[]` attribute holds a pointer: value is the one
-// reference text would cite there (ExtractAt with no server URL, so a dashboard URL is never one),
+// reference text would cite there (ExtractAt with no origins, so a dashboard URL is never one),
 // it starts at value's first byte, it is a block, and FormatBlockRef writes it back as value. That
 // last check refuses what the reader alone accepts: lower-case or needless percent-encoding, an
 // issue's primary document spelled `artifact/spec`, anything trailing the reference, and a block
 // of a comment or a message.
 func CanonicalBlockRef(value string) (Ref, bool) {
-	located := ExtractAt(value, "")
+	located := ExtractAt(value, Origins{})
 	if len(located) != 1 || located[0].Offset != 0 || located[0].Kind != "block" {
 		return Ref{}, false
 	}
@@ -660,20 +654,22 @@ func decodeItemID(value string) (string, bool) {
 	return decoded, err == nil && utf8.ValidString(decoded) && !hasControl(decoded)
 }
 
-// parseServer reads a dashboard URL against its parsed server URL as the dashboard's
-// `referenceRouteFromHref` reads it: the key and the path's item id as written, the query as
-// `searchParams` reads it, a version a positive decimal, and a `#b-` fragment on a document page
-// as documentPage reads it and on an issue ask's, comment's or message's page as pageBlock reads
-// it. A URL holding a control character names nothing; net/url refuses only the ASCII ones.
-func parseServer(raw string, base *url.URL) (Ref, bool) {
-	if base == nil || base.Scheme == "" || base.Host == "" {
-		return Ref{}, false
-	}
-	if hasControl(raw) {
+// parseServer reads a dashboard URL of one of origins, against that origin with its own base path,
+// as the dashboard's `referenceRouteFromHref` reads it: the key and the path's item id as written,
+// the query as `searchParams` reads it, a version a positive decimal, and a `#b-` fragment on a
+// document page as documentPage reads it and on an issue ask's, comment's or message's page as
+// pageBlock reads it. A URL holding a control character, or of no origin's scheme and host
+// (Origins.base), names nothing; net/url refuses only the ASCII control characters.
+func parseServer(raw string, origins Origins) (Ref, bool) {
+	if len(origins.urls) == 0 || hasControl(raw) {
 		return Ref{}, false
 	}
 	value, err := url.Parse(raw)
-	if err != nil || value.Scheme != base.Scheme || value.Host != base.Host {
+	if err != nil {
+		return Ref{}, false
+	}
+	base := origins.base(value)
+	if base == nil {
 		return Ref{}, false
 	}
 	basePath := strings.TrimSuffix(base.EscapedPath(), "/")
@@ -692,8 +688,8 @@ func parseServer(raw string, base *url.URL) (Ref, bool) {
 			return Ref{}, false
 		}
 		switch {
-		// The issue's page, or a tab of it that names the issue itself (issueTabs).
-		case len(parts) == 2 || (len(parts) == 3 && slices.Contains(issueTabs, parts[2])):
+		// The issue's page, or a tab of it that names the issue itself (issueTabPages).
+		case len(parts) == 2 || (len(parts) == 3 && issueTabPages[parts[2]]):
 			return Ref{Kind: "issue", IssueKey: key, ID: key}, true
 		// A document page of the issue, which `dispatch search` links to with the item in its query
 		// for an anchored comment or ask.
@@ -703,9 +699,10 @@ func parseServer(raw string, base *url.URL) (Ref, bool) {
 		// whatever its fragment, as the dashboard and the agent client read it.
 		case len(parts) == 3 && parts[2] == "decisions":
 			return Ref{Kind: "artifact", IssueKey: key, ID: "decisions-md"}, true
-		// A document's page, at `artifacts/<slug>` or at `artifact/<slug>`, which the issue page opens
-		// as the same document (the dashboard's `parseIssuePath`).
-		case len(parts) == 4 && (parts[2] == "artifacts" || parts[2] == "artifact"):
+		// A document of the issue by slug, under each segment the dashboard reads, `artifacts` and
+		// the singular `artifact` it opens as the same page, which the dashboard's pages file names
+		// (issueDocumentSegments).
+		case len(parts) == 4 && issueDocumentSegments[parts[2]]:
 			slug, err := url.PathUnescape(parts[3])
 			if err != nil || !artifactSlugPattern.MatchString(slug) {
 				return Ref{}, false

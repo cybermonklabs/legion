@@ -192,11 +192,15 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   /** The controller's `fresh_session`: the agent on `role` of `issue` leaves its recorded session
    * behind and starts again in a new one, the effect
-   * `legion claims retry --fresh-session` runs for an operator. The answer is empty wherever
-   * the agent came back and its start ran. `phaseNotRestarted` carries the workflow's refusal
-   * of the phase restart, where the agent came back owing no task, or the machine's refusal of
-   * a step that would have started the agent again, where this request stopped it. That
-   * sentence names the state its claim stands in: read it in `read_state`, and ask for a fresh
+   * `legion claims retry --fresh-session` runs for an operator. The answer comes once the start is
+   * under way or queued, never once it ended: the claim written `launching`, or its phase's start
+   * queued, which runs at once while the issue holds its admission slot; it is empty then, and
+   * `read_state` shows how the start ended. `phaseNotRestarted` carries one of four sentences: the
+   * workflow's refusal of the phase restart, where the agent came back owing no task; a start
+   * that waits for an admission slot its issue does not hold, naming the issues it waits on; a
+   * start refused after the recorded session was already left behind, with the state that leaves
+   * the claim in; or the machine's refusal of a step that would have started the agent again,
+   * where this request stopped it. Read the state it names in `read_state`, and ask for a fresh
    * session again only where the claim is suspended. */
   readonly freshSession: (
     input: z.input<typeof LegionClaimRequest>
@@ -227,7 +231,8 @@ export interface LegionDaemonClient {
    * whose claim is stored working (`CLAIM_IN_A_TURN`), for an agent the operator's own suspension
    * holds (`SUSPENDED_BY_OPERATOR`), and for every agent while the project is paused
    * (`PROJECT_PAUSED`, with the pause that stands; its resume lifts that refusal). The answer is
-   * the claim's state after the retry. */
+   * the claim's state after the retry, with `phaseNotRestarted` where a phase worker's start waits
+   * for an admission slot its issue does not hold, which names the wait. */
   readonly retryAgent: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionAgentActionResponse>>;
@@ -245,7 +250,8 @@ export interface LegionDaemonClient {
    * (`SUSPENDED_BY_OPERATOR`); an agent whose claim is stored working is refused
    * (`CLAIM_IN_A_TURN`), and so is every agent while the project is paused (`PROJECT_PAUSED`): an
    * agent the pause stopped is the project's resume's to bring back. A stop and a suspension still
-   * run while the project is paused. The answer is the claim's state after the resume. */
+   * run while the project is paused. The answer comes once the start is under way, never once it
+   * ended: 202 with the claim `launching`, and `read_state` shows how the start ended. */
   readonly resumeAgent: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionAgentActionResponse>>;
@@ -334,8 +340,10 @@ export interface LegionDaemonClient {
   /** The owner's `register_plan` (contract 219): the plan in one version of a document of the
    * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
    * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason it names in the
-   * sentence (the first reasons of each kind of cause and a count of the rest of that kind), and a plan
-   * of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
+   * sentence (the first reasons of each kind of cause and a count of the rest of that kind), and
+   * every other plan of an issue whose experiment's group runs the project's default steps
+   * `PLAN_NOT_TAKEN`: such an issue takes only a version that changes nothing but the text of its
+   * running task `default`. */
   readonly planRegister: (
     input: z.input<typeof LegionPlanRegisterRequest>
   ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
@@ -569,7 +577,9 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * repeat after the sequence moved is a new fact, which the gate takes as a re-registration of the
  * same document and tells no one again), `register_plan` (the daemon judges every give against its
  * store: a repeat of a give it applied is answered as taken while that version is in force, and
- * writes nothing), `stop_task` (a repeat finds the task stopped and changes nothing) and
+ * writes nothing; its answer names the same plan, and the act each running task stands at
+ * (`running`) as the record holds it at the repeat, which can be a later act), `stop_task` (a
+ * repeat finds the task stopped and changes nothing) and
  * `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
  * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive

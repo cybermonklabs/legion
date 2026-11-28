@@ -258,7 +258,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of one of the projects it names",
-			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
+			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository to work in, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its watched workflows, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
 				// order: one list carries both, so neither producer may write over the other.
@@ -374,7 +374,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "review_round_cap", Default: "`3`", RequiredBy: "no",
-			Description: "How many review rounds one pull request may take; it is the one cap left that blocks a pull request.",
+			Description: "How many counted review rounds an issue's task takes (`recordRound` in `internal/workflow/review.go` counts them, less the conflict rounds) before the daemon posts a message on the issue and sends the architect a `pr-blocked` notice, once for each value the cap holds. The cap moves nothing: the work goes on, and the architect decides what to do.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),
 		},
 		{
@@ -577,6 +577,8 @@ var nestedKeys = []memberGroup{
 			Description: "Who works the production check a merge closing one of this project's issues opens: `tester`, who takes its first look in the live session while the issue's other claims retire, or `off`, which opens none."},
 		{Name: "slack_channels", Default: "no channel's mentions reach the project", RequiredBy: "no",
 			Description: "The Slack channels whose mentions of the Legion app reach this project's controller, which answers in the thread; it needs `controller: daemon` and the secrets broker, and a channel belongs to one project."},
+		{Name: "watched_workflows", Default: "`[]`: the project's controller watches no workflow", RequiredBy: "no",
+			Description: "The workflows whose completed runs on their repository's default branch reach this project's controller, each `<owner>/<repo>/<file>` (a file of `.github/workflows/`, ending in `.yml` or `.yaml`) optionally followed by `@` and the trigger events that count, comma-separated; an entry with no `@` watches `schedule` runs alone. Write the owner and the repository as GitHub spells them (`gh api repos/<owner>/<repo> --jq .full_name`): a topic is case-sensitive, so an entry spelled otherwise hears nothing. A run a pull request names never reaches the controller. Needs no `controller` setting, runtime or secrets broker."},
 	}},
 	{Path: "projects.<KEY>.memory", Members: []member{
 		{Name: "mode", Default: "`off`", RequiredBy: "no",
@@ -608,7 +610,7 @@ var nestedKeys = []memberGroup{
 		{Name: "instructions", Default: "a role of a unit drawn into this arm gains nothing", RequiredBy: "no",
 			Description: "One Markdown file on the daemon's own disk, which the daemon reads at boot, and again before each launch, and appends to the system prompt of each role the experiment reaches (`roles`) of a unit drawn into this arm."},
 		{Name: "plan", Default: "the arm sets nothing: its issues run as with no experiment", RequiredBy: "when another arm of the experiment names it: each arm of an experiment that sets it names how its issues are done",
-			Description: "How the issues of this arm are done: `owner` writes its plan, `default` runs the project's default steps and Legion takes no plan from the owner; an experiment that names it must draw for each issue (`unit: issue`), and `experiments.memory` may not name it."},
+			Description: "How the issues of this arm are done: `owner` writes its plan, and `default` runs the project's default steps. Legion takes from the owner of a `default` issue only a version that changes nothing but the text of its running task `default`. An experiment that names it must draw for each issue (`unit: issue`), and `experiments.memory` may not name it."},
 	}},
 	{Path: "runtime.tmux", Members: []member{
 		{Name: "pane_env", Default: "a pane is told only what the runtime tells it", RequiredBy: "no",

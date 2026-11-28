@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // lossCutBefore is how many messages a loss cut's stream holds when the session consumer is
@@ -58,7 +56,7 @@ func runLossCut(t *testing.T, cut lossCut) {
 	if err != nil {
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
-	t.Cleanup(owner.Close)
+	t.Cleanup(func() { closeClient(t, owner) })
 	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect session consumers: %v", err)
@@ -103,11 +101,7 @@ func runLossCut(t *testing.T, cut lossCut) {
 	size, kept := srv.CutStream(t, Stream, keep)
 	t.Logf("cut the stream's first message block from %d bytes to %d and removed the stream's index", size, kept)
 	awaitReconnectsAfterCut(t, owner, consumers, ownerBefore, consumersBefore)
-	var state sessionStreamState
-	testwait.UntilPolling(t, 100*time.Millisecond, "the stream to answer a state read after the restart", func() (string, bool) {
-		state, err = consumers.streamState(ctx)
-		return fmt.Sprint(err), err == nil
-	})
+	state := streamStateAfterCut(t, consumers)
 	lost := state.lastSeq
 	t.Logf("after the cut the stream's last sequence is %d, where it was %d", lost, before+cut.acked)
 	if cut.whole && lost != 0 {

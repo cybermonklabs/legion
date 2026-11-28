@@ -26,11 +26,12 @@ afterEach(cleanup);
 
 /** Whether this deployment serves the machine-code page, which every pending row reads
  *  (`useMachineCodePage`, GET /api/v1/credentials/capabilities): it serves none unless the test
- *  under way says it does. */
+ *  under way says it does. No row of this section reads `dispatch_sign_in`. */
 let capabilities: Mock<typeof api.getCredentialCapabilities>;
 
 beforeEach(() => {
   capabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
 });
@@ -38,8 +39,10 @@ afterEach(() => capabilities.mockRestore());
 
 function pendingSecretRow(overrides: Partial<CredentialPendingRow> = {}): CredentialPendingRow {
   return {
+    dispatch_scopes: null,
     identifiers: ["ANTHROPIC_API_KEY"],
     kind: "agent_secret",
+    reason: "",
     record_id: "req-1",
     requested_at: "2026-09-27T00:00:00Z",
     session: { enrollment: null, request: null },
@@ -78,13 +81,15 @@ function renderSection(
 // /api/v1/credentials/capabilities), so the row's link is there once that answer is in.
 test("renders every pending credential request, linking a secret row to its broker page and a machine row to /credentials/machine", async () => {
   const machineRow: CredentialPendingRow = {
+    dispatch_scopes: null,
     identifiers: ["worker-7.example.com"],
     kind: "launcher_credential",
+    reason: "",
     record_id: "req-2",
     requested_at: "2026-09-27T01:00:00Z",
     session: { enrollment: null, request: null },
   };
-  capabilities.mockResolvedValue({ machine_code_page: true });
+  capabilities.mockResolvedValue({ dispatch_sign_in: false, machine_code_page: true });
   renderSection({
     requests: [
       pendingSecretRow({ approve_url: "https://secrets.example.com/approve/req-1" }),
@@ -105,6 +110,66 @@ test("renders every pending credential request, linking a secret row to its brok
   });
   expect(machine).toHaveAttribute("href", "/credentials/machine");
   expect(screen.getAllByText("No session named.")).toHaveLength(2);
+});
+
+// A pending Dispatch sign-in is decided on the same page as a machine login, but it is no machine
+// login: its row says what it is and the scopes it asks for, in the words Settings uses for them,
+// a word this build does not know as itself. A sign-in that asks for none says so. A sign-in names
+// no session, so under its line it shows the reason it gave, or that it gave none, never "No
+// session named.".
+test("a pending Dispatch sign-in's row names it, the scopes it asks for and its reason", async () => {
+  capabilities.mockResolvedValue({ dispatch_sign_in: true, machine_code_page: true });
+  renderSection({
+    requests: [
+      {
+        dispatch_scopes: ["person"],
+        identifiers: ["worker-7.example.com"],
+        kind: "launcher_credential",
+        reason: "the release tool",
+        record_id: "req-2",
+        requested_at: "2026-09-27T01:00:00Z",
+        session: { enrollment: null, request: null },
+      },
+      {
+        dispatch_scopes: [],
+        identifiers: ["worker-8.example.com"],
+        kind: "launcher_credential",
+        reason: "",
+        record_id: "req-3",
+        requested_at: "2026-09-27T01:00:00Z",
+        session: { enrollment: null, request: null },
+      },
+      {
+        dispatch_scopes: ["person", "triage"],
+        identifiers: ["worker-9.example.com"],
+        kind: "launcher_credential",
+        reason: "",
+        record_id: "req-4",
+        requested_at: "2026-09-27T01:00:00Z",
+        session: { enrollment: null, request: null },
+      },
+    ],
+    status: "listed",
+  });
+
+  const person = await screen.findByRole("link", {
+    name: /Dispatch sign-in.*worker-7\.example\.com.*asks for Act as you/s,
+  });
+  expect(person).toHaveAttribute("href", "/credentials/machine");
+  expect(
+    screen.getByRole("link", {
+      name: /Dispatch sign-in.*worker-8\.example\.com.*asks for no scope/s,
+    })
+  ).toBeDefined();
+  expect(
+    screen.getByRole("link", {
+      name: /Dispatch sign-in.*worker-9\.example\.com.*asks for Act as you, triage/s,
+    })
+  ).toBeDefined();
+  expect(screen.queryByText("Machine login")).toBeNull();
+  expect(screen.getByText("the release tool")).toBeDefined();
+  expect(screen.getAllByText("It gives no reason.")).toHaveLength(2);
+  expect(screen.queryByText("No session named.")).toBeNull();
 });
 
 // A broker older than its own approval page names none, and an approve_url that is not an
@@ -153,14 +218,16 @@ test("an expired row of either kind is marked, says when its deadline passed, li
     identifier: string,
     overrides: Partial<CredentialPendingRow> = {}
   ): CredentialPendingRow => ({
+    dispatch_scopes: null,
     identifiers: [identifier],
     kind: "launcher_credential",
+    reason: "",
     record_id: `machine-${identifier}`,
     requested_at: "2026-09-27T01:00:00Z",
     session: { enrollment: null, request: null },
     ...overrides,
   });
-  capabilities.mockResolvedValue({ machine_code_page: true });
+  capabilities.mockResolvedValue({ dispatch_sign_in: false, machine_code_page: true });
   renderSection({
     requests: [
       machineRow("worker-8.example.com"),

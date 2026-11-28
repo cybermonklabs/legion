@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // This file is the package's external test: its drives reach the API and the document service,
@@ -130,7 +131,7 @@ func newWritersRig(t *testing.T) *writersRig {
 
 	rig.database = storetest.Open(t)
 	broker := events.NewBroker()
-	rig.documents = docs.New(docs.Deps{Store: rig.database, Events: broker, ServerURL: writersServerURL, Settle: time.Hour})
+	rig.documents = docs.New(docs.Deps{Store: rig.database, Events: broker, Origins: text.NewOrigins(writersServerURL), Settle: time.Hour})
 	t.Cleanup(func() {
 		if err := rig.documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut down the document service: %v", err)
@@ -146,7 +147,7 @@ func newWritersRig(t *testing.T) *writersRig {
 	}
 	deps, err := api.NewDeps(api.DepsInput{
 		Store:       rig.database,
-		Identity:    identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:    identity.HeaderIdentity{People: people},
 		AgentTokens: tokens,
 		ServerURL:   writersServerURL,
 		EnvoyURL:    listener.URL,
@@ -286,7 +287,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindIssue), objectNodeCounted(graphstore.KindArtifact)),
 	}, {
 		Name: "api/artifacts.go#storeArtifact", Database: r.database,
-		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "refs/blocks.go#Queue"},
+		Sites: []string{"api/artifacts.go#storeArtifact", "docs/new_document.go#QueueNewArtifact", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			notes := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`

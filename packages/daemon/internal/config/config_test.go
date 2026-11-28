@@ -863,6 +863,201 @@ func TestLoadRefusesProjectCommitIssueTrailerRepos(t *testing.T) {
 	}
 }
 
+// watchedWorkflowsFile is minimalFile with DEMO's watched_workflows set to entries, each a YAML
+// value written as one item of a block list: an entry's events are comma-separated, and a flow
+// list would read the comma as the end of the entry.
+func watchedWorkflowsFile(t *testing.T, entries ...string) string {
+	t.Helper()
+	var list strings.Builder
+	for _, entry := range entries {
+		list.WriteString("      - " + entry + "\n")
+	}
+	body := strings.Replace(minimalFile, "projects:\n  DEMO: {}\n", "projects:\n  DEMO:\n    watched_workflows:\n"+list.String(), 1)
+	if body == minimalFile {
+		t.Fatal("the fixture's projects block was not replaced")
+	}
+	return body
+}
+
+// A project's watched_workflows are the workflows whose completed runs on their repository's
+// default branch reach its controller, each read into its repository, its file and the trigger
+// events it names, in the file's order, of the entries and of each entry's events alike; an entry
+// that names no event watches schedule runs alone. The owner and the repository keep the file's
+// spelling, which the documentation asks to be GitHub's: Envoy's topics are case-sensitive. A
+// project that names none, or names an empty list, has none.
+func TestLoadReadsProjectWatchedWorkflows(t *testing.T) {
+	body := strings.Replace(minimalFile, "projects:\n  DEMO: {}\n", "projects:\n"+
+		"  DEMO:\n    watched_workflows:\n"+
+		"      - acme/widgets/x.yaml@schedule,push\n"+
+		"      - acme/widgets/y.yml\n"+
+		"      - Acme/Gadgets/nightly-e2e.yaml@workflow_dispatch,schedule\n"+
+		"  OTHER: {}\n"+
+		"  EMPTY: { watched_workflows: [] }\n", 1)
+	cfg, err := Load(writeConfigFile(t, body), noEnv)
+	if err != nil {
+		t.Fatalf("Load project watched_workflows: %v", err)
+	}
+	want := []WatchedWorkflow{
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "y.yml", Events: []string{"schedule"}},
+		{Repository: ghrepo.MustParse("Acme/Gadgets"), File: "nightly-e2e.yaml", Events: []string{"workflow_dispatch", "schedule"}},
+	}
+	if got := cfg.Projects["DEMO"].WatchedWorkflows; !reflect.DeepEqual(got, want) {
+		t.Errorf("DEMO watched_workflows = %#v, want %#v", got, want)
+	}
+	for _, key := range []string{"OTHER", "EMPTY"} {
+		if got := cfg.Projects[key].WatchedWorkflows; got != nil {
+			t.Errorf("%s watched_workflows = %#v, want nil", key, got)
+		}
+	}
+}
+
+// The loader refuses a watched_workflows entry no topic could be named for, or that names one
+// workflow the list already names, and every refusal names the key, the entry's place in the list
+// and the entry: a repository GitHub serves no repository under; a file that is no file name of
+// .github/workflows; an entry of another shape, a string or not; an "@" with no event or an empty
+// one; a name that is not one of GitHub's trigger events, compared with case, as a workflow's `on:`
+// writes it; one event twice; and one workflow in two entries, the owner and the repository
+// compared without case, as GitHub compares them, and the file with case, as a repository's files
+// are named. Two files that differ in case alone are two workflows, and both load.
+func TestLoadRefusesProjectWatchedWorkflows(t *testing.T) {
+	const form = `"<owner>/<repo>/<file>", optionally followed by "@" and the trigger events that count, comma-separated`
+	const fileRule = `is not a file name of .github/workflows: letters, digits, ".", "_" and "-", ending in ".yml" or ".yaml"`
+	const emptyEvent = `"@" must be followed by trigger events, comma-separated, none of them empty; an entry with no "@" watches schedule runs alone`
+	const notAnEvent = `is not one of GitHub's trigger events, which a workflow's "on:" names in lower case (https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)`
+	const ownerRule = `has an owner GitHub does not allow: at most 39 ASCII letters, digits, "-" and "_", beginning with a letter or digit`
+	long := strings.Repeat("a", 40)
+	for _, tc := range []struct {
+		name    string
+		entries []string
+		want    string
+	}{
+		{"an owner past 39 characters", []string{long + "/widgets/x.yaml"},
+			`projects.DEMO.watched_workflows[0] "` + long + `/widgets/x.yaml": the repository "` + long + `/widgets" ` + ownerRule},
+		{"an owner with a dot", []string{"acme/widgets/x.yaml", "ac.me/widgets/x.yaml"},
+			`projects.DEMO.watched_workflows[1] "ac.me/widgets/x.yaml": the repository "ac.me/widgets" ` + ownerRule},
+		{"a repository with a slash", []string{"acme/wid/gets/x.yaml"},
+			`projects.DEMO.watched_workflows[0] "acme/wid/gets/x.yaml" is not ` + form},
+		{"a repository ending in .git", []string{"acme/widgets.git/x.yaml"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets.git/x.yaml": the repository "acme/widgets.git" ends in ".git", which GitHub strips from a repository's name: name it "acme/widgets"`},
+		{"a file with a space", []string{"acme/widgets/x y.yaml"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/x y.yaml": the workflow file "x y.yaml" ` + fileRule},
+		{"a file with a dollar sign", []string{"acme/widgets/x$.yaml"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/x$.yaml": the workflow file "x$.yaml" ` + fileRule},
+		{"a JSON file", []string{"acme/widgets/x.json"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/x.json": the workflow file "x.json" ` + fileRule},
+		{"a file that does not end in its .yaml", []string{"acme/widgets/x.yaml.txt"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml.txt": the workflow file "x.yaml.txt" ` + fileRule},
+		{"a file with a slash", []string{"acme/widgets/.github/workflows/x.yaml"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/.github/workflows/x.yaml" is not ` + form},
+		{"a repository and no file", []string{"acme/widgets"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets" is not ` + form},
+		{"a file under a directory", []string{"acme/widgets/sub/x.yaml"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/sub/x.yaml" is not ` + form},
+		{"an empty string", []string{`""`},
+			`projects.DEMO.watched_workflows[0] "" is not ` + form},
+		{"a number", []string{"acme/widgets/x.yaml", "42"},
+			`projects.DEMO.watched_workflows[1] is 42, not a string: an entry is ` + form},
+		{"a mapping", []string{"{repo: acme/widgets, file: x.yaml}"},
+			`projects.DEMO.watched_workflows[0] is a mapping, not a string: an entry is ` + form},
+		{"an @ with no event", []string{"acme/widgets/x.yaml@"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml@": ` + emptyEvent},
+		{"an empty event after a comma", []string{"acme/widgets/x.yaml@schedule,"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml@schedule,": ` + emptyEvent},
+		{"no such event", []string{"acme/widgets/x.yaml@nosuchevent"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml@nosuchevent": "nosuchevent" ` + notAnEvent},
+		{"dynamic, an event a run can name that no workflow triggers on", []string{"acme/widgets/x.yaml@schedule,dynamic"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml@schedule,dynamic": "dynamic" ` + notAnEvent},
+		{"an event in another case", []string{"acme/widgets/x.yaml@Schedule"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml@Schedule": "Schedule" ` + notAnEvent},
+		{"one event twice", []string{"acme/widgets/x.yaml@push,push"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml@push,push" names the event "push" twice`},
+		{"one workflow twice, the owner and the repository in another case", []string{"acme/widgets/x.yaml", "Acme/Widgets/x.yaml@push"},
+			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml" and projects.DEMO.watched_workflows[1] "Acme/Widgets/x.yaml@push" name one workflow: ` +
+				`GitHub compares an owner and a repository without case, and a file with it; name the workflow once, with every event it watches`},
+		{"two files that differ in case alone", []string{"acme/widgets/x.yaml", "acme/widgets/X.yaml"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeConfigFile(t, watchedWorkflowsFile(t, tc.entries...)), noEnv)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("Load: %v, want both workflows taken", err)
+				}
+				if got := cfg.Projects["DEMO"].WatchedWorkflows; len(got) != len(tc.entries) {
+					t.Fatalf("DEMO watched_workflows = %#v, want one workflow for each of %q", got, tc.entries)
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("Load error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A watched_workflows that is no list is refused, naming the key and the value it read.
+func TestLoadRefusesProjectWatchedWorkflowsThatAreNoList(t *testing.T) {
+	body := strings.Replace(minimalFile, "projects:\n  DEMO: {}\n", "projects:\n  DEMO:\n    watched_workflows: acme/widgets/x.yaml\n", 1)
+	const want = `projects.DEMO.watched_workflows is "acme/widgets/x.yaml", not a list of entries, each "<owner>/<repo>/<file>", optionally followed by "@" and the trigger events that count, comma-separated`
+	if _, err := Load(writeConfigFile(t, body), noEnv); err == nil || err.Error() != want {
+		t.Fatalf("Load error = %v, want %q", err, want)
+	}
+}
+
+// An entry takes every event GitHub triggers a workflow on, each as the workflow's `on:` writes
+// it: the events of
+// https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows,
+// as read on 2026-11-27. Some never start a run on the repository's own default branch (the pull
+// request events, merge_group, workflow_call, and release and create for a tag); the loader takes
+// them, and such an entry hears nothing, as running-legion.md says.
+func TestWatchedWorkflowsAcceptEveryGitHubTriggerEvent(t *testing.T) {
+	for _, event := range []string{
+		"branch_protection_rule", "check_run", "check_suite", "create", "delete", "deployment",
+		"deployment_status", "discussion", "discussion_comment", "fork", "gollum", "image_version",
+		"issue_comment", "issues", "label", "merge_group", "milestone", "page_build", "public",
+		"pull_request", "pull_request_review", "pull_request_review_comment", "pull_request_target",
+		"push", "registry_package", "release", "repository_dispatch", "schedule", "status", "watch",
+		"workflow_call", "workflow_dispatch", "workflow_run",
+	} {
+		t.Run(event, func(t *testing.T) {
+			cfg, err := Load(writeConfigFile(t, watchedWorkflowsFile(t, "acme/widgets/x.yaml@"+event)), noEnv)
+			if err != nil {
+				t.Fatalf("Load acme/widgets/x.yaml@%s: %v", event, err)
+			}
+			want := []WatchedWorkflow{{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{event}}}
+			if got := cfg.Projects["DEMO"].WatchedWorkflows; !reflect.DeepEqual(got, want) {
+				t.Errorf("DEMO watched_workflows = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+// Unlike slack_channels (TestSlackChannelsNeedTheDaemonsControllerEnrolledWithTheBroker), a
+// project's watched_workflows needs no `controller` setting, no runtime and no secrets broker: the
+// list loads for the operator's controller under the kubernetes runtime with no broker, and under
+// the tmux runtime for either controller.
+func TestWatchedWorkflowsNeedNoControllerSetting(t *testing.T) {
+	const list = "    watched_workflows:\n      - acme/widgets/x.yaml@schedule,push\n"
+	tmux := strings.Replace(minimalFile, "  DEMO: {}\n", "  DEMO:\n"+list, 1)
+	for _, tc := range []struct{ name, body, project string }{
+		{"controller: operator under the kubernetes runtime, with no secrets broker",
+			"controller: operator\n" + kubernetesWith("  LEGSMOKE: {}\n", "  LEGSMOKE:\n"+list), "LEGSMOKE"},
+		{"the tmux runtime, with no controller key", tmux, "DEMO"},
+		{"controller: daemon under the tmux runtime", "controller: daemon\n" + tmux, "DEMO"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
+			if err != nil {
+				t.Fatalf("LoadForValidation: %v, want it to load", err)
+			}
+			want := []WatchedWorkflow{{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}}}
+			if got := cfg.Projects[tc.project].WatchedWorkflows; !reflect.DeepEqual(got, want) {
+				t.Errorf("%s watched_workflows = %#v, want %#v", tc.project, got, want)
+			}
+		})
+	}
+}
+
 func TestLoadReadsPrivateKeyCommand(t *testing.T) {
 	body := strings.Replace(minimalFile, "private_key: implement-test-key", "private_key_command: printf command-key", 1)
 
@@ -2309,7 +2504,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "worker_background_hours", line: "worker_background_hours: 6", class: modelled},
 		{
 			key: "max_fix_attempts", line: "max_fix_attempts: 3", class: warned,
-			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml. review_round_cap is the one cap left on an issue's review rounds, and it moves nothing: after that many counted review rounds (recordRound in internal/workflow/review.go counts them, less the conflict rounds) the daemon posts a message on the issue and sends the architect a pr-blocked notice, once for each value the cap holds, and the work goes on (dispatch://INFRA-956 R4)",
 		},
 		{
 			key: "pod_update_retask_hours", line: "pod_update_retask_hours: 1", class: warned,

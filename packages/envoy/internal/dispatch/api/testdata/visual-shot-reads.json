@@ -14,6 +14,7 @@
     "/api/v1/broadcasts/{id}",
     "/api/v1/credential-grants",
     "/api/v1/credential-requests",
+    "/api/v1/credentials/capabilities",
     "/api/v1/inbox",
     "/api/v1/issues",
     "/api/v1/issues/{key}",
@@ -23,6 +24,7 @@
     "/api/v1/issues/{key}/coverage",
     "/api/v1/issues/{key}/decisions",
     "/api/v1/issues/{key}/events",
+    "/api/v1/issues/{key}/handoffs",
     "/api/v1/issues/{key}/references",
     "/api/v1/issues/{key}/results",
     "/api/v1/issues/{key}/subscribers",
@@ -49,6 +51,6 @@
     "/api/v1/signins",
     "/api/v1/whoami"
   ],
-  "live": ["events", "measures", "pipeline", "timeline"],
+  "live": ["events", "legion_issue", "measures", "pipeline", "timeline"],
   "auth": ["/auth/whoami"]
 }

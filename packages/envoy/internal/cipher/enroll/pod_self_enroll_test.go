@@ -711,7 +711,7 @@ func TestTheNextReleasesIndexDropWaitsForALoginInFlight(t *testing.T) {
 			}
 			var waiters int
 			if err := pool.QueryRow(context.Background(),
-				`select count(*) from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))`,
+				`select count(*) from pg_stat_activity where $1 = any(pg_blocking_pids(pid))`,
 				pid).Scan(&waiters); err != nil {
 				t.Errorf("read the backends waiting behind the login: %v", err)
 				return

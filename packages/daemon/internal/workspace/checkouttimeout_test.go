@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
 
 // checkoutDelay is how long the jj the cases below start sleeps before a checkout, and
@@ -33,7 +35,7 @@ func slowCheckoutTools(t *testing.T, delay time.Duration) map[string]string {
 	tools := testTools(t)
 	wrapper := filepath.Join(t.TempDir(), "jj")
 	script := "#!/bin/sh\ncase \" $* \" in *' sparse reset '*) sleep " + strconv.FormatFloat(delay.Seconds(), 'f', -1, 64) + " ;; esac\nexec '" + tools["jj"] + "' \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	tools["jj"] = wrapper
@@ -46,7 +48,7 @@ func slowCheckoutRunner(t *testing.T, delay, budget time.Duration) *recordingRun
 	t.Helper()
 	run := newLocalRunner(t)
 	run.timeout = budget
-	run.runner = NewRunner(budget, slowCheckoutTools(t, delay))
+	run.tools = slowCheckoutTools(t, delay)
 	return run
 }
 
@@ -59,6 +61,7 @@ func slowCheckoutRunner(t *testing.T, delay, budget time.Duration) *recordingRun
 // passes over them (isSharedCloneStep). A fresh workspace and one provisioned a second time are read
 // together, so both paths through Provision are covered.
 func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	checkouts, stale := 0, 0
@@ -102,6 +105,7 @@ func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
 // holds the whole tree: the checkout is bounded by CheckoutTimeout, an hour, and not by that
 // budget.
 func TestProvisionChecksOutPastTheRunnersBudget(t *testing.T) {
+	t.Parallel()
 	run := slowCheckoutRunner(t, checkoutDelay, checkoutBudget)
 	pushRemoteBranch(t, run.remote, "main", "history.txt")
 	working, err := Provision(context.Background(), run, provisionRequest(t))
@@ -124,6 +128,7 @@ func TestProvisionChecksOutPastTheRunnersBudget(t *testing.T) {
 // is bounded by that bound and by no other, so a request that gives it one second (CheckoutBound)
 // ends the checkout there, inside the five seconds the runner's own budget would have allowed it.
 func TestProvisionFailsWhenTheCheckoutOutlivesItsBound(t *testing.T) {
+	t.Parallel()
 	run := slowCheckoutRunner(t, checkoutDelay, checkoutBudget)
 	req := provisionRequest(t)
 	req.CheckoutBound = time.Second

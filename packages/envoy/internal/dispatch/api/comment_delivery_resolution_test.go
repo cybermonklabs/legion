@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -21,6 +23,8 @@ type roleMentionRegistry struct {
 	lookups      int
 	sessionReads int
 	sent         []map[string]any
+	// calls is set only by a test that advances the listener's clock through retry backoff.
+	calls *listenerCalls
 }
 
 // roleMentionListener is the Envoy listener the role-mention retry tests run against: it
@@ -30,6 +34,9 @@ type roleMentionRegistry struct {
 func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.Server {
 	t.Helper()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls := registry.calls; calls != nil {
+			defer calls.took()()
+		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
 			registry.lookups++
@@ -67,9 +74,12 @@ func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.
 
 func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	t.Parallel()
-	registry := &roleMentionRegistry{holder: "s1", s1Live: true}
+	fake := clocktest.New(time.Now())
+	calls := &listenerCalls{}
+	calls.on(fake)
+	registry := &roleMentionRegistry{holder: "s1", s1Live: true, calls: calls}
 	listener := roleMentionListener(t, registry)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, fake)
 	issue := createInteractionIssue(t, handler, "TEST", "Pending role mention", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -111,9 +121,15 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	registry.s1Live = false
 	registry.sent = nil
 	registry.sessionReads = 0
-	missingHolder := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
-		"delivery": "steer",
-	}, "alice")
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
+			"delivery": "steer",
+		}, "alice")
+	}()
+	// The create-time lookup and successful retry finished before any clock movement. Only
+	// this absent-holder branch advances the real takeover backoff the server has armed.
+	missingHolder := answerWhileCallsAreHeld(t, fake, calls, answered)
 	if missingHolder.Code != http.StatusCreated {
 		t.Fatalf("complete pending absent-holder mention: status=%d body=%s", missingHolder.Code, missingHolder.Body.String())
 	}
@@ -466,7 +482,7 @@ func TestInitialCommentDeliveryRechecksCapabilityAgainstCurrentRegistration(t *t
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Initial capability race", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body":     "Created while steer was advertised.",
@@ -507,7 +523,7 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Pending unresolved mention", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Keep the original resolution error.", "mentions": []map[string]any{{"target": "role:reviewer"}},

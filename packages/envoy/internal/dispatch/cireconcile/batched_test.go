@@ -113,6 +113,7 @@ func newBatched(t *testing.T) *batched {
 // line counts the queries it asked, the points they cost and the heads it had to read over
 // REST. It is the pass k17 describes.
 func TestAPassRecordsEveryRunOfEveryHeadFromQueriesAndTheRESTItCannotAnswer(t *testing.T) {
+	t.Parallel()
 	b := newBatched(t)
 	h := b.h
 
@@ -221,6 +222,7 @@ func TestAPassRecordsEveryRunOfEveryHeadFromQueriesAndTheRESTItCannotAnswer(t *t
 // answer is read over REST at every pass for as long as it is open, and those reads cost the
 // App's budget nothing. It is k6.
 func TestTheSecondPassReadsEveryOverflowHeadConditionally(t *testing.T) {
+	t.Parallel()
 	b := newBatched(t)
 	h := b.h
 	// The page GitHub refuses makes five more heads of the second repository REST reads, which
@@ -268,6 +270,7 @@ func TestTheSecondPassReadsEveryOverflowHeadConditionally(t *testing.T) {
 // over it. Counting it here would leave the line reporting a head that nothing will ever read,
 // and a cycle whose heads were all read would still look short of one.
 func TestAListedPullRequestWithNoHeadCommitIsNoHeadKnown(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), fakePull{number: 8, sha: ""})
@@ -295,11 +298,13 @@ func TestAListedPullRequestWithNoHeadCommitIsNoHeadKnown(t *testing.T) {
 // head no read of either kind reaches and no line names: the record of it stays as it was for
 // as long as GitHub answers that way.
 func TestARefusedPullRequestWithNoHeadIsReadOverREST(t *testing.T) {
+	t.Parallel()
 	for name, nullify := range map[string]func(h *harness, sha string){
 		"the node":        func(h *harness, sha string) { h.github.nullNode(gitHubRepository, sha) },
 		"the head commit": func(h *harness, sha string) { h.github.nullHeadCommit(gitHubRepository, sha) },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			h := newHarness(t, reviewerAppID)
 			h.seedProjectDefault(rowRepository)
 			refused, answered := head(7), head(8)

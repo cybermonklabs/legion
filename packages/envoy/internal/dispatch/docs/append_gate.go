@@ -61,15 +61,15 @@ const (
 // still taken as one made while the issue was open (observedBeforeClose). The close's notification
 // (dispatch_issue_open_changed) normally reaches every process's rooms within milliseconds of its
 // commit, and closes them (setRoomIssueOpen); the margin covers that latency, the moment between
-// the close's last statement and its commit, and the drift between this process's clock and the
-// database's over the update's age. It is measured from closed_at, which the close's transaction
-// stamps as its last statement before it commits (clock_timestamp(), in PATCH
+// the close's stamp of closed_at and its commit, and the drift between this process's clock and
+// the database's over the update's age. It is measured from closed_at, which the close's
+// transaction stamps after its last document write (clock_timestamp(), in PATCH
 // /api/v1/issues/{key}), not from the transaction's start: the close withdraws the issue's open
 // asks first, writing their blocks under each document's lock until it commits, and a browser
-// update waiting on that lock is no later for how long that took. An update observed later than
-// this is the case the gate's issue read exists for: a room on a process that has not heard the
-// close - its listener redialing, up to RedialBackoff's ceiling - still taking edits on a closed
-// issue.
+// update waiting on that lock is no later for how long that took. After the stamp the close
+// appends its events and writes no document. An update observed later than this is the case the
+// gate's issue read exists for: a room on a process that has not heard the close - its listener
+// redialing, up to RedialBackoff's ceiling - still taking edits on a closed issue.
 const closeMargin = 2 * time.Second
 
 // appendGateStatement is the gate's one read, under the document's advisory lock the appending
@@ -212,14 +212,14 @@ func (g *appendGate) result() (appendGateRead, error) {
 
 // observedBeforeClose is whether a browser update the room's observer took age ago, on this
 // process's monotonic clock, was taken no later than margin after its issue's close committed,
-// closedFor ago on the database's clock (closed_at, which the close stamps as its last statement
-// before its commit). margin is the store's (PgVersioned.closeMargin): closeMargin, unless a test
-// gave its service another (Deps.CloseMargin). Both are measured at the gate's read, so the two
-// clocks need not agree, only run at about the same rate. Such an update was made while the issue
-// was open, or before its room could have heard of the close, and is stored as it would have been
-// had its append reached the store just ahead of the close: the document owes a settlement for
-// it, which runs whether or not the issue is closed (settleRoomWithin). An update with no observed
-// time is not taken as one.
+// closedFor ago on the database's clock (closed_at, which the close stamps after its last
+// document write and just before its events and its commit). margin is the store's
+// (PgVersioned.closeMargin): closeMargin, unless a test gave its service another
+// (Deps.CloseMargin). Both are measured at the gate's read, so the two clocks need not agree, only
+// run at about the same rate. Such an update was made while the issue was open, or before its
+// room could have heard of the close, and is stored as it would have been had its append reached
+// the store just ahead of the close: the document owes a settlement for it, which runs whether or
+// not the issue is closed (settleRoomWithin). An update with no observed time is not taken as one.
 func observedBeforeClose(observed time.Time, age, closedFor, margin time.Duration) bool {
 	return !observed.IsZero() && age+margin >= closedFor
 }
@@ -245,7 +245,7 @@ func updateAge(observed time.Time) time.Duration {
 // (observedBeforeClose): the admitted updates are a prefix, because the run ascends in the order
 // the room took them and the rule is monotone in an update's age, so this stores exactly what the
 // same updates would have stored one transaction each, and ErrIssueClosed refuses the run only
-// when the prefix is empty. The rest stay queued, and each meets the gate again on its own call.
+// when the prefix is empty.
 // The whole run is refused when the room's history was replaced (historyReplaced); an
 // appendDerived run unless the room holds the head exactly. Equality for the derived rule, not
 // `through < head`: a room standing past the head holds a history the store no longer has.

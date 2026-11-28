@@ -250,6 +250,31 @@ their next command on, and the cache stays for every process no person signed in
 session an older client kept in the key dir (beside a `machine-session` file) is moved into the
 cache by the first command that finds it.
 
+A command that signs as a sign-in keeps the sign-in's enrollment renewed while the machine needs
+it, so a grant a person approved lasts to its own end and a request waits for its person however
+long the session waits between commands. It records its use, and a request it leaves waiting for a
+person, in the sign-in's renewal directory beside its record (a 0700 `<hash>.renewal` in the
+sign-in store), and starts `agent-secrets renew --sign-in` where no renewer holds that directory's
+`lock`: one renewer for each sign-in, in a session of its own, writing to `renewer.log` there. It
+renews at a third of the lease while a command used the sign-in less than one lease ago, a recorded
+request is still pending, or a grant of the enrollment that has an end is still live, and stops
+once none holds, once the record names no enrollment or is gone, once the broker refuses the
+enrollment for good (exit 76; the refused enrollment is recorded in `lock` and no later renewer
+sends it), or once for 30 minutes, or two leases where that is longer, no renewal got through
+or no broker answer said whether anything needs it (exit 1); the lease then lapses within one
+lease. The renewer registers no enrollment: a command that finds it ended registers the next,
+and keeps that one. While it renews, the renewer also trades the person's identity again, after
+its first renewal and each time a third of the sign-in credential's remaining life has passed,
+since the broker renews a sign-in's session only while that credential (an hour from each trade)
+is live; where the person can no longer be traded, as for a suspended Google account, the
+credential lapses, the broker refuses the next renewal, and the enrollment ends one lease later.
+`agent-secrets-helper` keeps the same credential live for the sessions it holds under a sign-in,
+and for the boxes it enrolled under one, while one of them may still need it, and trades nothing
+while none does; a helper that finds no record of its boxes keeps the sign-in on the box traded
+until that sign-in leaves the box.
+A command that cannot keep the sign-in renewed says so on stderr, for each enrollment it keeps,
+and goes on. The docs site's concepts page, "A sign-in's renewal", has the whole rule.
+
 A process started with no environment of its own, such as a systemd unit or a cron job, reads its
 settings from `~/.config/agent-secrets/config`: `KEY=value` lines, `#` comments and blank lines,
 no quotes, no `export`, no expansion. It takes `AGENT_SECRETS_URL`, `AGENT_SECRETS_SIGNIN_ISSUER`,
@@ -330,6 +355,36 @@ which ends every enrollment under that login at once (the "Revoke a session" gui
 
 The docs site's "Secrets Broker" section, built from `docs/site/src/content/docs/broker/`, has the
 quickstart, the guides and the generated CLI reference.
+
+A CI job uses its own signed workflow identity instead of a session's secret request:
+
+```sh
+agent-secrets result-grant -- dispatch result --project ACME --check BUNDLE-c1 \
+  --verdict pass --commit "$GITHUB_SHA" --observed 'the command the job ran'
+```
+
+`result-grant` trades the job's GitHub identity at the broker's token endpoint for the proxy
+placeholder of a result grant (`requested_token_type=urn:envoy:params:oauth:token-type:proxy-placeholder`),
+proving the trade with a key it makes in memory and never writes. It needs
+`AGENT_SECRETS_MACHINE_IDENTITY=github-actions` (or a run's token in
+`AGENT_SECRETS_MACHINE_TOKEN_FILE`), and runs nothing when the broker refuses the trade, and
+nothing when `DISPATCH_URL` names a host the grant does not bind, or is not `https` on port 443,
+since the command's writes would then go around the proxy with the placeholder in them: the
+child's `HTTPS_PROXY` covers https alone, and the proxy reads a bound host on 443 alone. In a GitHub job
+(`GITHUB_ACTIONS=true`) it first prints `::add-mask::<placeholder>`, so the job's log shows `***`
+for the proxy's password. The child receives only the `DISPATCH_RESULTS_TOKEN` placeholder, its
+proxy and certificate settings, and no `AGENT_SECRETS_MACHINE_IDENTITY`; the broker's airlock
+proxy holds the run's results token and the key it is bound to. No personal sign-in or secret
+approval is used. A refused, expired or lost grant never changes to a session's identity.
+
+The child's `NO_PROXY` keeps none of its fixed entries that covers a host the grant binds:
+Dispatch's tailnet name is under `.ts.net`, so with Dispatch bound `.ts.net` leaves the list
+and Dispatch's writes reach the proxy, while the broker's own name stays. The broker's own name
+is held to the bound hosts the same way: a broker host that is a bound host, a parent domain of
+one or a name under one is left out, so that bound host's writes still reach the proxy. An entry
+is compared without one trailing dot, its fully qualified spelling, so `dispatch.example.test.` is
+left out as `dispatch.example.test` is. See
+[`ci-results.md`](../../../envoy-client/docs/ci-results.md) for the job and broker settings.
 
 ## Install
 

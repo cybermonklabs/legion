@@ -203,6 +203,37 @@ func TestTheReadyOfTheLaunchAnAskWasDeliveredToSendsNothing(t *testing.T) {
 	askToldOnce(t, pool, publisher, owedAsk, launch)
 }
 
+// An ask whose role has no claim yet - its start still owed, as the merger's is when the move into
+// merging asks it in the transaction that queues that start - waits for the claim's first launch to
+// register its session (deliverHeld), whatever the listener would answer. The listener here takes
+// every publish: it names no holder while no session of the claim has registered, and the session
+// the claim records once one has, as the real listener names the session it stored a message for
+// (notify.Publisher.Publish). A delivery before that launch reaches no session of the claim and
+// credits no launch, so the ready of the claim's first launch would send the ask a second time. The
+// row is delivered once the launch has registered, credited to that launch, and the implementer is
+// told the ask once.
+func TestAnAskToARoleWithNoClaimYetWaitsForItsLaunch(t *testing.T) {
+	t.Parallel()
+	publisher := &holderPublisher{}
+	asked := implementersAsk()
+	runner, sup, pool, _ := mergeForwardRunner(t, publisher, &asked)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	publisher.holdBy(func() string { return runner.supervisedClaim(token).Session })
+	engine := workflow.New(runner.records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	sup.OnDurableState((&workflowRuntime{pool: pool, records: runner.records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", owedAsk, time.Now().Add(-time.Minute)))
+	drainAt(t, runner, 0, "the ask's attempt while the implementer has no claim")
+	if _, delivered := publisher.snapshot(); len(delivered) != 0 {
+		t.Fatalf("the ask was published %+v while the implementer had no claim, want it to wait for the claim's launch", delivered)
+	}
+
+	launchedClaim(t, sup, "LEGION-208", "LEGION-208", claim.RoleImplementer)
+	drainAt(t, runner, 10*time.Minute, "the attempt once the launch has registered")
+	drainAt(t, runner, 20*time.Minute, "a later attempt")
+	machine, _ := sup.Machine(token)
+	askToldOnce(t, pool, publisher, owedAsk, machine.Claim().Generation)
+}
+
 // A launch that resumes the session an earlier launch was told the ask in can be told the ask a
 // second time. The second ask names the same head, and its delivery changes nothing the daemon
 // holds: after the second row of the ask reaches the launch the first reached, the record's ask is
@@ -431,10 +462,12 @@ func TestARemovalReachesTheFreshSessionOfTheMergersLaunchWhileTheOldSessionHolds
 // The merger was asked to merge the base forward in merging, and the architect moved the issue
 // back to accepting, where that ask is owed to nobody, before the ask's row ran; the merger's
 // claim has failed. The row's attempt reads that the workflow no longer delivers it. Before the
-// row ends, the issue moves into merging again, where the ask is owed once more and the move asks
-// nothing again (mergeForwardOnEntry), and the operator's retry relaunches the merger, whose new
-// launch comes ready while the row is still queued and sends nothing. The end reads the ask's
-// owing again under the fact lock, so the merger's new launch is told the ask once.
+// row ends, the issue stands in merging again, where the ask is owed once more: the test writes
+// the issue's record there (PutIssue) rather than moving it through the engine, and a move
+// through the engine would send nothing for this claim, since a failed claim reads as launch 0 at
+// the move (askMergerAtEntry). The operator's retry relaunches the merger, whose new launch comes
+// ready while the row is still queued and sends nothing. The end reads the ask's owing again
+// under the fact lock, so the merger's new launch is told the ask once.
 func TestAMergersAskOwedAgainBeforeItsRowEndsReachesItsNewLaunch(t *testing.T) {
 	t.Parallel()
 	ask := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",

@@ -145,7 +145,12 @@ function Bar({ name, tile }: { name: string; tile: TileView }): ReactNode {
 
 /** The list under a tile: each entry a link to the node, named as every link to it is named,
  *  20 at a time with a control that says how many are left. A name is the node's own, and the
- *  page's word for the node's type stands in until the batched name read answers. */
+ *  page's word for the node's type stands in until the batched name read answers. A name wraps
+ *  inside its entry, a long unbroken one included, and is never cut: Dashboard draws no tooltip
+ *  to hold a cut name whole (the layout rule's point 2, `web/src/AGENTS.md`), and below the wide
+ *  layout a link is `inline-flex` (styles.css's touch floor), where a cut would draw no ellipsis.
+ *  So the link is held to its column, and a child's key keeps its gap from the title there,
+ *  where the key is a flex item of its own whose trailing space is dropped. */
 function TileList({ id, name, tile }: { id: string; name: string; tile: TileView }): ReactNode {
   const [pages, setPages] = useState(1);
   const { names } = useKnownReferences();
@@ -160,11 +165,11 @@ function TileList({ id, name, tile }: { id: string; name: string; tile: TileView
           const words = named ?? entry.fallback;
           const mark = named === undefined ? pageChrome : authorText;
           return (
-            <li className="min-w-0 truncate" key={entry.ref} {...mark}>
+            <li className="min-w-0 [overflow-wrap:anywhere]" key={entry.ref} {...mark}>
               {href === undefined ? (
                 words
               ) : (
-                <Link className={`underline ${pageInkText}`} to={href}>
+                <Link className={`max-w-full gap-x-1 underline ${pageInkText}`} to={href}>
                   {entry.before === undefined ? null : (
                     <span className={pageMutedText} {...authorText}>
                       {entry.before}{" "}

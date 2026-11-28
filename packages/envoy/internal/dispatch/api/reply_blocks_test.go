@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -137,7 +138,7 @@ func TestAReplyNamesTheBlockItAnswers(t *testing.T) {
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Reply blocks", "before")
 	x := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Alpha.\n\nBeta."}, "alice")
 	xRef := "dispatch://" + issue.Key + "/comment/" + x.ID
@@ -617,7 +618,7 @@ func TestRepliesWrittenBeforeThisChangeStillShow(t *testing.T) {
 	askReply := insert("ask_id", askID, "On the ask.")
 	for _, id := range []string{reply, askReply} {
 		owed := oweBlockGrammar(t, database, "comment", id)
-		if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, "https://dispatch.example"); err != nil || !indexed {
+		if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, testOrigins); err != nil || !indexed {
 			t.Fatalf("reindex comment %s = %v (%v), want it indexed", id, indexed, err)
 		}
 	}

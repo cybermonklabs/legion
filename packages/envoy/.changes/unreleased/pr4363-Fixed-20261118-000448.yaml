@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The read-back a document edit answers with holds 2,000 characters, each one Unicode code point whatever its script, where it held 2,000 bytes of UTF-8: an edit that writes 2,000 Chinese characters reads them back whole, where it read back 655 of them and a line naming the rest, and a cut still falls between two characters. The write advice of a document names the Legion design gate of every issue that is not `done`, so a gate whose issue stands in `triage`, `icebox` or `backlog` is named too; a gate on a step the project''s deployment does not gate still names none. A priority id and the name of the Cloud Storage bucket the file store setting names are measured in characters, the unit their refusals name: an id over 200 characters is refused for its length and named by its characters, and an id or a bucket name of accented letters inside its bound is refused for its letters, which neither grammar admits, and no longer for a length its bytes have and its characters do not.'
+time: 2026-11-18T00:04:48.363297499Z
+custom:
+    Issue: pr4363

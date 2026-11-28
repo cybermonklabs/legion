@@ -325,7 +325,12 @@ DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5
 ```
 
 It builds the dashboard twice (`web/dist`, and `web/dist-b` under another build id), then runs
-Playwright with `DISPATCH_E2E_PROCESSES=2`: Dispatch A on
+Playwright with `DISPATCH_E2E_PROCESSES=2`.
+Each half is a script you can call on its own: `bun run build:web-b` writes the second bundle,
+and `bun run e2e:multiprocess:run` runs Playwright over bundles that are already built, which
+is what CI's `dispatch-two-builds` job does after one `bun run build:web`, since its B is a
+previous build that brings its own web dist.
+The run is: Dispatch A on
 `DISPATCH_E2E_PORT_A` serving `web/dist`, Dispatch B on `DISPATCH_E2E_PORT_B` serving
 `DISPATCH_E2E_WEB_DIST_B` (here `web/dist-b`; default A's), and `e2e/round-robin-proxy.ts` on
 `DISPATCH_E2E_PORT`, which alternates requests and websockets between them. As every harness
@@ -378,8 +383,8 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
   DISPATCH_E2E_SIGNIN=oidc bun run e2e:multiprocess
 ```
 
-It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets; any value other than `oidc`
-or unset is refused.
+It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess:run` sets and `e2e:multiprocess`
+reaches through it; any value other than `oidc` or unset is refused.
 
 The rules a row follows:
 
@@ -404,6 +409,79 @@ The rules a row follows:
 - In the windowed Agents list, role queries skip a hidden row where CSS locators, `getByText` and
   counts do not (`shownAgentRows` and `agentRow` in `e2e/agents.ts`), and `toBeHidden()` passes
   when nothing matches, so put `toHaveCount(1)` beside it where the row must be mounted.
+
+## What a spec costs the browser lane
+
+In most merge groups the full browser lane is the last check to finish, and its slowest leg
+decides when it finishes. So the time a spec adds to its leg is time each change in the merge
+queue waits.
+
+A spec's cost here is the row time of its rows on the lane's shard and alone legs, which the
+merge job of `.github/workflows/dispatch-browser.yaml` joins into one Playwright report and
+uploads as `dispatch-browser-report-<attempt>`. The multiprocess, embedder and visual jobs write
+no row into that report (`.github/ci-notes/dispatch-browser.md`), so a spec that only they run is
+not in it. A row is one test in one project. Its time is the duration of every attempt it ran,
+summed, since a retry is time its leg spent. An attempt Playwright skipped counts no time, and a
+file whose every row was skipped is not listed. `e2e/tools/shard-weights.ts` reads a row's time
+the same way. A test runs once in each project that takes it: `chromium` by its file, and
+`iphone`, `webkit` and `firefox` by a tag in its title (see "Projects" below). So a spec that
+four projects run can cost up to four times its tests.
+
+To measure the lane, read the report of a passed merge-group run of ci.yaml. A run whose change
+did not select the browser lane holds no such report, and `gh run download` then fails. The
+report of a passed run is the one its last attempt uploaded. This prints every spec with a row
+that ran, the costliest first, with its rows, its share of the lane's row time and the projects
+that ran it, and fails on a report that holds none:
+
+```bash
+gh run list --repo cybermonklabs/legion --workflow ci.yaml --event merge_group --status success --limit 10
+run=<run id> # a passed run from the list above
+attempt="$(gh run view "$run" --repo cybermonklabs/legion --json attempt --jq .attempt)"
+dir="$(mktemp -d)"
+gh run download "$run" --repo cybermonklabs/legion --name "dispatch-browser-report-$attempt" --dir "$dir"
+jq -er '
+  [.. | objects | select(has("tests") and has("file")) as $spec
+    | $spec.tests[] | .projectName as $project
+    | [.results[] | select(.status != "skipped") | .duration] | select(length > 0)
+    | {file: $spec.file, project: $project, seconds: (add / 1000)}]
+  | (map(.seconds) | add // 0) as $lane
+  | if $lane == 0 then error("no row of this report ran") else . end
+  | group_by(.file)
+  | map({file: .[0].file, rows: length, seconds: (map(.seconds) | add),
+         projects: (map(.project) | unique | join(" "))})
+  | sort_by(-.seconds)
+  | (["seconds", "rows", "share", "projects", "file"] | @tsv),
+    (.[] | [(.seconds | round), .rows, "\(.seconds / $lane * 1000 | round / 10)%",
+            .projects, .file] | @tsv)
+' "$dir/report.json"
+```
+
+A spec that only the multiprocess, embedder or visual job runs is not in that report. Read the
+time of each job's browser step instead:
+
+```bash
+gh run view "$run" --repo cybermonklabs/legion --json jobs --jq '.jobs[] | select(.name | startswith("dispatch-browser / ")) | .name as $job | .steps[] | select(.name | startswith("Browser-test")) | [$job, .name, .startedAt, .completedAt] | @tsv'
+```
+
+To measure a new spec before it merges, run the full lane on its pull request and read that
+run's report with the same commands. Add the label `lane:dispatch_browser` to the pull request.
+The label takes effect at the next push, or when you close and reopen the pull request, and
+each later push runs the full lane again, so take the label off once the run passes
+(`.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request`). Then set
+`run` to the passed ci.yaml run of the pull request's head, and run the commands above from the
+`attempt=` line on:
+
+```bash
+pr=<number>
+gh pr edit "$pr" --repo cybermonklabs/legion --add-label lane:dispatch_browser
+# after the next push, once the CI run of the new head has passed:
+head="$(gh pr view "$pr" --repo cybermonklabs/legion --json headRefOid --jq .headRefOid)"
+run="$(gh run list --repo cybermonklabs/legion --workflow ci.yaml --event pull_request --commit "$head" --status success --limit 1 --json databaseId --jq '.[].databaseId')"
+```
+
+One run's times move with its runners (`.github/ci-notes/dispatch-browser.md` measures the spread
+on the shard job's browser step). Compare a spec's row-seconds with the lane's in the same run,
+not with another run's.
 
 ## Local instance
 
@@ -442,6 +520,13 @@ quoted so they paste as they read. The harness ports (`DISPATCH_E2E_PORT`, `FAKE
 unset, the OS chooses each, so two instances never collide; set, the port is used as given, and
 an occupied one fails with `address already in use`. psql runs without `PGHOSTADDR`
 (`e2e/psql.ts`), and a Ctrl-C ends a psql in flight too.
+
+`DISPATCH_E2E_SPEC_ROOTS` names the roots of The Spec for the server, which `e2e/run-server.sh`
+passes on as `DISPATCH_SPEC_ROOTS`.
+Unset, the root is `STE-1`, which the seeded workspace does not hold.
+Empty, the server names no root.
+To try the refusal of an approval request here, set it to the key of an issue that you make.
+Then give a child of that issue a spec.
 
 A spec runs against the instance with the printed command, which sets
 `DISPATCH_E2E_REUSE_SERVERS=1`, the five ports and the same `DATABASE_URL`; each spec empties the
@@ -997,7 +1082,8 @@ the two runs that need a network dropping TEST-NET-1, which skip with the reason
 network refuses that address at once, and `outside-path-reach-tmout.test.ts` for a list on a pipe,
 a named pipe or a process substitution under an inherited `TMOUT`. Each row carries its own
 timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
-zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
+zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui-harness` job (in
+`.github/workflows/ci-job-dispatch-ui.yaml`), which runs that file, installs it.
 
 `e2e/acceptance/outside-edge-refusals.sh` is the HTTPS refusal check of an outside edge: it asks the
 edge's one IPv4 address, on 443, for each path and Host the edge must not forward, and reads
@@ -1085,7 +1171,8 @@ reads a worker fixture is seen by neither the row map nor the replay (`e2e/tools
 `bun e2e/tools/row-map.ts` generates the row map and prints it. Git does not keep the map.
 `--write` writes it to `e2e/row-map.md`, which git ignores, so no commit keeps the file.
 `e2e/__tests__/row-map.test.ts` generates the map on each run and fails on each refusal of the
-tool. CI generates the map in each run of `dispatch-ui`, the job that runs that test.
+tool. CI generates the map in each run of `dispatch-ui-harness`, the job of
+`.github/workflows/ci-job-dispatch-ui.yaml` that runs that test.
 
 `e2e/stub/real-stack-reasons.ts` keeps the reasons of the real-stack spec files that were there
 when its list closed. A change to one of those reasons is made in `real-stack-reasons.ts`.
@@ -1102,6 +1189,7 @@ J, L, M, N, S, T, U, W, X, Y and Z. Dashboard keeps its words the same way in
 `page-words-dashboard.ts`, which also takes in the ask body's list
 (`web/src/features/ask-body/ask-body-words.ts`) and the decision card's
 (`web/src/features/decision-card/decision-card-words.ts`).
+Threads (dispatch://INFRA-5704) keeps its words the same way in `page-words-threads.ts`.
 
 A new key for a table that a part's file declares goes in that part's `page-words-<letter>.ts`,
 from any pull request. TypeScript reads the keys of a table where the table is declared. The tables
@@ -1231,8 +1319,9 @@ reader's choice in this browser draws another way (the new issue page, the proje
 the project page and its Architecture tab, which a project with an architecture source draws -
 over the review corpus and a stress layer that writes
 production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px, and again in
-each state a route names (the Peek drawer open, rows or agents selected). At each width
-`e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
+each state a route names (the Peek drawer open, rows or agents selected, the issues table searched
+for the stress issue, whose row the plain load's window does not draw, Dashboard's tiles opened).
+At each width `e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
 `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
 does for anything but a code block, one picture wider than the box, a data table or a board's
 lanes, something cut off at a side with no ellipsis (a code block's text, a picture and a fixed
@@ -1255,19 +1344,16 @@ in `en-US` and UTC, so a run on any machine measures the text CI measures.
 `e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
 case, and holds the instrument to reporting the one and not the other.
 `e2e/issue-header-layout.stub.e2e.ts` holds today's issue header below its title to a height at
-360 and 1280 px, and each issue tab whole inside its list and the viewport. A row fails on each
-breach no entry of `e2e/layout-breaches.ts` accepts - an entry names the locator the row prints
-for its breach (for a page that scrolls sideways, that of the deepest element past the viewport),
-matches only a breach of that locator, and accepts exactly its `count` of them, so the count is
-the bound of what it lets through - on a page whose own region drew fewer than 100 elements (or
-the route's own `minElements`), and on an entry whose route, state and width it measured and
-which its reading did not match exactly; and
-`e2e/__tests__/layout-routes.test.ts` refuses an entry that names a route or a state the rows
-never read; the type `LayoutWidth` holds its width to the five the rows read. That list holds the
-breaches main still has, in one array per INFRA-5200 fix pull request (the issue page's, the
-Inbox's and the other pages'); each fix pull request deletes every entry of its own array and
-leaves it empty, so the three merge in any order, and the list and its use go once all three are
-empty.
+360 and 1280 px, and each issue tab whole inside its list and the viewport. A row fails on every
+breach a reading finds, each named by the locator the row prints (for a page that scrolls
+sideways, that of the deepest element past the viewport), on a group the route must mark and the
+page does not, and on a page whose own region drew fewer than 100 elements (or the route's own
+`minElements`). Nothing lets a breach through: a page that breaks the rule is fixed in the change
+that finds it. `e2e/__tests__/layout-routes.test.ts` holds the routes to every reviewed page.
+
+Point 5 of the layout rule in `web/src/AGENTS.md` moves a header's properties into Details; a list
+row, a card, a table cell, a settings row and a status bar keep the marks they show, because a
+reader chooses an item by them (dispatch://INFRA-5200/artifact/decisions-md).
 
 ## Phone check
 

@@ -11,6 +11,11 @@ import type { WhoamiAgent, WhoamiUser } from "./dispatch-api.generated";
 export interface AuthenticatedUser {
   readonly kind: "user";
   readonly login: string;
+  /** The server's origins: the canonical one (`DISPATCH_SERVER_URL`) first, then each served
+   *  address (`DISPATCH_SERVED_ORIGINS`) and each former address (`DISPATCH_FORMER_ORIGINS`).
+   *  Absent where the server is configured with neither list, so the answer of a server at one
+   *  address is the one it always was. */
+  readonly origins?: readonly string[];
   /** The decimal id at or below which every event is final (committed or rolled back for good)
    *  when Dispatch answered. Every read the page makes after this answer holds every event at or
    *  below it, so the event feed resumes from it on its first
@@ -49,18 +54,24 @@ export interface AuthenticatedUser {
  *  older than the field leaves it out for every credential, and refuses a job's token outright.
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
- *  call and whether it may make an issue's own priority 0: all three (`person`, `approve`, `p0`)
- *  for a person at a browser, the set its row names for a personal token, `["person"]` for a
- *  broker-issued token acting for its person, and `[]` for the shared token, a verified service
- *  token and every other broker-issued token. A read-only
- *  credential, a broker's or a person's, is answered `read` after the scopes it holds
+ *  call and whether it may make work P0, as `DISPATCH_SCOPES` says. All three (`person`,
+ *  `approve`, `p0`) for a person at a browser, the set its row names for a personal token,
+ *  `["person"]` for a broker-issued token acting for its person, the ones of
+ *  `DISPATCH_SIGN_IN_SCOPES` its person approved, sorted, for a Dispatch sign-in's token (`p0`
+ *  only where its person ticked it), and `[]` for the shared token, a verified service token and
+ *  every other broker-issued token. A read-only credential, a broker's or a person's, is answered
+ *  `read` after the scopes it holds
  *  (`DISPATCH_TOKEN_SCOPES`), and `cut` names the past time it reads at, null for none and for
  *  every credential that writes. A Dispatch older than read-only tokens names neither. A Legion
  *  daemon's own broker token answers `["legion-status"]`: where Dispatch runs with
  *  `DISPATCH_LEGION_STATUS_SCOPE` on, that scope or `person` lets a credential write a Legion
  *  issue's status, take its `legion` label off, and move it out from under every labelled issue.
  *  The kind stays `agent` for a personal token holding `person`, because the kind names the
- *  credential and not the act; the person it acts for is `owner`. */
+ *  credential and not the act; the person it acts for is `owner`.
+ *
+ *  `origins`, on both forms, is the server's origins as `GET /auth/whoami` names them (the
+ *  canonical origin, the served addresses, the former addresses), absent where neither list is
+ *  configured. */
 export type WhoamiResponse = WhoamiUser | WhoamiAgent;
 
 export const UserIssueStateSchema = z

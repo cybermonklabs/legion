@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // blockDoc is one version of a test document as a render hands it to the block index: its
@@ -132,7 +133,7 @@ func (d parentDocument) indexVersion(t *testing.T, number int, doc blockDoc, rec
 		t.Fatalf("begin the index of version %d: %v", number, err)
 	}
 	defer tx.Rollback(ctx)
-	_, won, write, err := IndexBlocks(ctx, tx, d.artifact, number, record.at, doc.markdown, doc.blocks, nil, nil, "")
+	_, won, write, err := IndexBlocks(ctx, tx, d.artifact, number, record.at, doc.markdown, doc.blocks, nil, nil, text.Origins{})
 	if err != nil {
 		t.Fatalf("index version %d: %v", number, err)
 	}
@@ -486,7 +487,7 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 			t.Fatalf("begin the pass that rolls back: %v", err)
 		}
 		defer tx.Rollback(ctx)
-		_, stood, write, err := IndexBlocks(ctx, tx, nested.artifact, 2, rolledBack.at, added.markdown, added.blocks, nil, nil, "")
+		_, stood, write, err := IndexBlocks(ctx, tx, nested.artifact, 2, rolledBack.at, added.markdown, added.blocks, nil, nil, text.Origins{})
 		if err != nil {
 			t.Fatalf("index the version that rolls back: %v", err)
 		}

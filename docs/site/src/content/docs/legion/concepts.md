@@ -246,12 +246,17 @@ its earlier owner gave: at its first step Legion deletes that plan, logs
 `plan-not-taken` notice, which version it did not take and which plan the step runs instead, the
 new owner's or the default steps.
 An issue that a project's experiment drew into a group whose issues run the project's default
-steps (an arm's `plan: default`) takes no plan from its owner: once the daemon records it, the
-owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, naming the group, and
-a plan its owner or an earlier owner gave before is deleted at its first step, logged for each
-version as `workflow: a plan is not taken: the issue's group runs the project's default steps`,
-never as an earlier owner's line above, and told in the same `plan-not-taken` notice, which names
-each version and the group and offers no `register_plan`.
+steps (an arm's `plan: default`) runs the task `default`.
+Its owner can give a version that changes nothing but the text of that running task, which Legion
+takes as for any issue.
+Once the daemon records the issue, every other `register_plan` of its owner and every `stop_task`
+are answered `409 PLAN_NOT_TAKEN`, naming the group.
+A plan its owner or an earlier owner gave before the issue's first step is deleted at that step.
+Each version it deletes is logged as
+`workflow: a plan is not taken: the issue's group runs the project's default steps`.
+It is not logged as an earlier owner's plan.
+The step tells them in one `plan-not-taken` notice, which names each version and the group and
+offers no `register_plan`.
 
 A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
 against the issue's checks are the evidence, and a reviewer step refuses to approve while any of
@@ -540,7 +545,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
   Legion footer, and its review decides the round only when that head is the pull request's current
   head: GitHub rewrites a review's `commit_id` to the current head, so the footer is the review's
   own word for the code it read, and a person's review, which carries no footer, decides by its
-  webhook alone. An approval counts for the head it names and no
+  webhook alone. A person's approval ends the round only once the reviewer has completed its round:
+  an agent can approve on a person's account, so until the completion a review the reviewer
+  submits decides the round instead. An approval counts for the head it names and no
   other, since any push may change code, and a push on its way from that head leaves the approval
   undecided until the new head arrives; anything else sets it aside, and only an approval of the
   head itself or a request for changes ends the round. An approval does not end it on its own:
@@ -579,10 +586,13 @@ Legion uses GitHub's own review mechanisms rather than labels:
   workspace and push, with no handoff and no completion for it, and the tester or the reviewer
   holding the phase is told to stop writing the workspace and not to complete its phase at the old
   head, and keeps its turn, its background jobs, its process and its session. In `merging` the
-  merger is asked: the merge is its own, and it resolves the conflict itself. The architect is told
-  once with a `checks-red` notice naming the phase the issue stays in and the role asked. In
-  `implementing` only the implementer is told. A parent that waits in `awaiting_children` is asked
-  nothing, and once it is back in a phase this rule reads it as any other issue.
+  merger is asked: the merge is its own, and it resolves the conflict itself. Each launch of the
+  merger is told the merge forward it owes one time, a launch that comes up in `merging` and the
+  launch that is up when the issue moves back into `merging` after its message ended outside
+  `merging` alike. The architect is told once with a `checks-red` notice naming the phase the
+  issue stays in and the role asked. In `implementing` only the implementer is told. A parent
+  that waits in `awaiting_children` is asked nothing, and once it is back in a phase this rule
+  reads it as any other issue.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
@@ -816,6 +826,25 @@ board then shows the phase the issue ends in. Starting the worker's claim in a f
 does the same at the cost of that session. A restart, the root set to `backlog` and then to
 `todo`, runs the whole tree over as a new generation, which is the move for a tree that must start
 from its architect.
+
+**The Dispatch claim of a session the daemon leaves behind.** A fresh session leaves the claim's
+old session behind, and so does a retry or any other start of the claim in a new session. The
+daemon then releases the Dispatch claim that the old session holds on the claim's issue, so the
+new session can claim the issue. It leaves that claim where the operator holds the issue's tree
+(an operator's root spawn opened the tree under its root's key, and the tree's cleanup is not yet
+confirmed), and the issue's record says why (`operator-tree`). It also leaves the claim, and writes
+nothing, where the workflow does not record the issue: an operator can put a claim on such an
+issue with `legion claims spawn`. A move of an issue out of the workflow, to `backlog`, `icebox` or
+`triage`, releases the Dispatch claim that a session of the issue's tree holds: the current
+session of a claim of the tree, or a session that such a claim left behind. Dispatch keeps a claim
+while it reads the holder as live, and refuses the release with 409 `ISSUE_CLAIMED`. The daemon
+tries again for up to an hour. A release that leaves the claim of an issue the workflow records
+writes why into the issue's record, and the `legion` tool's `read_record` returns it as
+`claimLeft`: the holder, the reason and the time. The reason is one word, such as `person` (a
+person holds the claim), `other-tree` (a session of another tree holds it) or `held-an-hour`
+(Dispatch refused the release for an hour).
+[Contract entry 20261127202231 (claim-left)](https://github.com/cybermonklabs/legion/blob/main/packages/daemon/internal/api/contract_20261127202231_claim-left.go)
+lists all eleven reasons.
 
 A launch failure that is charged is spaced from the next try by a backoff: 2 s after the first,
 doubling after each further one, each wait drawn between half its step and the whole of it. A

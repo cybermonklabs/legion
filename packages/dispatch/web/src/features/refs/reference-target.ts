@@ -117,8 +117,9 @@ export function useNewIssuePageFreshness(): typeof EVENT_FRESH | undefined {
 /**
  * Whether a read stands failed, by its state (TanStack Query's; a read's observer gives the same
  * fields): it holds no answer, and a fetch of it has failed (`errorUpdateCount`). That count goes
- * back to 0 only with the read's answer - the read reset, or taken out of the cache - so a
- * failure it counts came after the read last held an answer.
+ * back to 0 only when the read is reset or made afresh, never with an answer. A read loses its
+ * answer only then, the same moment its count goes back to 0, so a failure it counts while it holds
+ * no answer came after it last held one.
  *
  * The read's status is not the rule, for two reasons. A read that holds an answer and whose
  * refresh failed reads `error`, though its rows are still drawn from that answer: it is not
@@ -618,7 +619,6 @@ export function useWholeRouteRead(
   route: DispatchReferenceRoute | undefined,
   observer: Partial<typeof REFERENCE_READ> = {}
 ): WholeRouteRead {
-  const origin = window.location.origin;
   const prefix = route === undefined ? undefined : prefixReference(route);
   const resolution = useQuery({
     ...referencesQuery(prefix),
@@ -631,7 +631,7 @@ export function useWholeRouteRead(
     route:
       route === undefined || prefix === undefined
         ? route
-        : routeWithWholeIds(route, resolvedPrefixItems(resolution.data), origin),
+        : routeWithWholeIds(route, resolvedPrefixItems(resolution.data)),
   };
 }
 

@@ -13,6 +13,7 @@ import {
   claimRoleAgainOnBusy,
   claimStandsWithoutHandover,
   listenerAskedToClaimAgain,
+  roleClaimWords,
 } from "@legion/pi-shared/legion-claim-core";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
@@ -33,6 +34,11 @@ import {
 } from "./classify";
 import { exitAfterHostStop, type HostStopExit } from "./host-stop";
 import { daemonControllerSlackChannels, daemonLaunchedController } from "./slack-channels";
+import {
+  subscribeWatchedTopics,
+  type WatchedTopic,
+  watchedWorkflowsKept,
+} from "./watched-workflows";
 
 /** The daemon API contract this build speaks, which the controller's registration states as
  * `pluginContract` (`daemonContract`, read once as the module loads). */
@@ -141,6 +147,56 @@ export function createControllerSession(
   // Aborts as the session's stop begins (`stop`): the role claim's signal, and what tells a claim
   // the stop overtook to end quietly (`claimOnce`).
   const stopped = new AbortController();
+  // The watched workflows this process follows: the list its first registration named. The process
+  // keeps it for its whole life, as it keeps its Slack channels (`watchedWorkflowsKept`). It is
+  // undefined until that registration.
+  let watchedWorkflows: readonly WatchedTopic[] | undefined;
+  // The watched topics whose landed notice this process owes: each one it told a session waits
+  // after a 503 and has not yet told landed (`subscribeWatchedTopic`), with the session it told the
+  // wait, or undefined once a failure other than a 503 followed it, so the next 503 tells it again.
+  // A later registration or a session change ends the watched task of the claim that told it, and
+  // a task whose claim's context moved to another session leaves the map as it is, so the map is
+  // the process's: whichever claim's subscription of such a topic lands tells the session it
+  // landed, and a claim for a session the map does not name tells that session the topic waits.
+  const watchedToldWaiting = new Map<string, string | undefined>();
+  // The watched subscriptions of the last claim that finished, which a later registration aborts,
+  // and a session change's re-claim as it starts (`reclaimAfterSessionChange`): the claim they were
+  // made for is replaced, and a claim of the new one makes its own.
+  let watchedSubscriptions: AbortController | undefined;
+
+  /**
+   * Subscribes this process's watched workflows for the session of a claim that has just finished
+   * (`claimWith`), in a task the claim does not wait for (`subscribeWatchedTopics`). Each claim
+   * subscribes the same list for its own session, as each claim subscribes the Slack channels. A
+   * later registration, a session change or the session's stop ends the task. `liveSession` reads
+   * the session the claim's context is on now: a claim that finds it moved off `sessionID` (a
+   * `/new` or `/resume` while the claim ran, past its role claim) starts no task, since the
+   * session change's re-claim found no task of this claim to end, and makes its own.
+   */
+  const subscribeWatchedWorkflows = (
+    sessionID: string,
+    liveSession: () => string,
+    claimToken: string,
+    envoyContext: SessionContext | undefined,
+    topics: readonly WatchedTopic[]
+  ): void => {
+    if (liveSession() !== sessionID) return;
+    const subscriptions = new AbortController();
+    watchedSubscriptions = subscriptions;
+    subscribeWatchedTopics(
+      {
+        pi,
+        sessionID,
+        liveSession,
+        claimToken,
+        envoyContext,
+        stopHeard: () => stopped.abort(),
+        toldWaiting: watchedToldWaiting,
+      },
+      topics,
+      AbortSignal.any([stopped.signal, subscriptions.signal])
+    );
+  };
 
   const serialised = (task: () => Promise<void>): Promise<void> => {
     claimsQueued += 1;
@@ -154,12 +210,14 @@ export function createControllerSession(
   /**
    * Makes the context's session the controller: it registers on the claim route with the
    * capability `legion controller start` fetched in place of a boot token, then claims the role
-   * token the registration names (`legion-<project>-controller`), then follows that project's
-   * controller topic (`notifications.legion.<project>.controller`, `notify.ControllerTopic` in
-   * the daemon, which lists what it carries) for as long as it holds the role: a later `legion
-   * controller start` takes the role, and Envoy drops the topic from this session's interest row
-   * and its consumer's filter at its next heartbeat. The project is `LEGION_PROJECT`, and it must
-   * be the daemon's, or the topic would be one nobody publishes on. Both are settled before
+   * token the registration names (`legion-<project>-controller`), on whose role topic the Go
+   * daemon publishes every controller notice once this registered session holds the role live
+   * (the daemon's outbox, `controllerNotice`, which lists what it carries), then follows that
+   * project's controller topic (`notifications.legion.<project>.controller`), where a daemon of an
+   * earlier release publishes them, for as long as it holds the role: a later `legion controller
+   * start` takes the role, and Envoy drops the topic from this session's interest row and its
+   * consumer's filter at its next heartbeat. The project is `LEGION_PROJECT`, and it must be the
+   * daemon's, or the role and the topic would be ones nobody publishes on. Both are settled before
    * registering, since a registration replaces the running controller's session and secret: an unset
    * `LEGION_PROJECT` stops the claim, and so does one whose controller role is not that of the
    * project `GET /healthz` names (`legionProjectToken`, the rule the daemon applies to its
@@ -202,15 +260,18 @@ export function createControllerSession(
    * claim after a failure past the send, and a later `/legion-claim-controller` in the same
    * session, send nothing more.
    *
-   * The controller topic is no live wake: this session receives what its own JetStream consumer
-   * delivers and nothing else (INFRA-771), and the registration above puts the topic in that
-   * consumer's filter, so a notice published while this session was away is delivered when it
-   * registers again. A notice published before any session followed the topic reaches none — a
-   * consumer new to it starts at the stream's end — and the controller skill reads the daemon's
-   * state (the `legion` tool's `read_state`) and Dispatch's triage listing at boot for what it
-   * missed. Its grants are minted with the registration's own secret, which a later
-   * `legion controller start` revokes. Nothing re-runs on a role regain: the daemon holds nothing
-   * for a controller, and the Envoy heartbeat keeps the role itself. A refusal is logged and
+   * Neither the role nor the controller topic is a live wake: this session receives what its own
+   * JetStream consumer delivers and nothing else (INFRA-771). A role notice is stored on this
+   * session's own agent subject, which that consumer follows from the session's first
+   * registration, so a notice the listener stored for this session while it was away is
+   * delivered when it registers again; once the role is another session's, the listener hands
+   * the next holder what this one did not read. A notice published to the controller topic
+   * before any session followed it reaches none — a consumer new to it starts at the stream's
+   * end — and the controller skill reads the daemon's state (the `legion` tool's `read_state`)
+   * and Dispatch's triage listing at boot for what it missed. Its grants are minted with the
+   * registration's own secret, which a later `legion controller start` revokes. Nothing re-runs on
+   * a role regain: the daemon publishes what it held for the controller once this session holds
+   * the role live again, and the Envoy heartbeat keeps the role itself. A refusal is logged and
    * propagates without exiting — the operator started this session and reads it; a refused
    * capability was replaced by a later start. The transcript is reported on every claim, a
    * takeover's included, because the route requires one; the daemon records only the session.
@@ -229,6 +290,18 @@ export function createControllerSession(
    * stop has ended (`claimOnce`). A root architect's or phase worker's pane carries a boot token
    * too, its own claim's: `/legion-claim-controller` run there is a takeover by hand like any
    * other, which needs the capability and stops before any daemon call without it.
+   *
+   * Either launch form, once its claim is done (the daemon's controller after its ready), follows
+   * the project's watched workflows (`watchedWorkflows`) for as long as it holds the role: one
+   * default-branch topic for each event of each entry, the completed runs of that workflow on its
+   * repository's default branch. The list is the one the process's first registration names. The
+   * process keeps that list for its whole life, as it keeps its Slack channels. Each later claim
+   * subscribes it for its own session, a claim after `/new`, `/resume`, `/fork` or `/branch` and a
+   * claim of the same session again included. A later registration that names another list
+   * changes nothing but one log line: the changed list takes effect at the controller's next
+   * launch (`watchedWorkflowsKept`). The topics are subscribed in a task the claim does not wait
+   * for (`subscribeWatchedWorkflows`), so nothing Envoy answers about one of them fails the claim
+   * or exits the process.
    *
    * One claim runs at a time, in the order they were asked for: each registration replaces the
    * controller secret the daemon holds, so two claims racing could leave this session holding the
@@ -277,7 +350,24 @@ export function createControllerSession(
     startedBy: ClaimStarter
   ): Promise<void> => {
     const supervised = daemonLaunchedController(process.env);
-    if (!supervised) return claimWith(context, false, progress, startedBy);
+    if (!supervised) {
+      // The session the claim reads first, which a refusal before the send leaves unmarked.
+      const claimed = context.sessionManager.getSessionId();
+      try {
+        await claimWith(context, false, progress, startedBy);
+      } catch (error) {
+        // Refused before the send, whichever command or session change ran the claim: the start
+        // `session_start` marked due is not coming from it, so the mark goes, and the Envoy entry,
+        // which reads an unsent mark again every second for up to 30 s, stops holding the
+        // session's startup cards for it at its next read. While another claim waits behind this
+        // one (`serialised` counts this claim and each claim queued after it until it ends), the
+        // mark stays: that claim may still send the start, and a card the cleared mark let take an
+        // idle turn would run ahead of it.
+        if (!startMessageSent && claimsQueued <= 1) clearStartupTurn(claimed);
+        throw error;
+      }
+      return;
+    }
     try {
       await claimWith(context, true, progress, startedBy);
     } catch (error) {
@@ -365,6 +455,13 @@ export function createControllerSession(
     controllerSessionID = sessionID;
     controllerTranscript = launched ? sessionFile : undefined;
     progress.registered = true;
+    // The registration replaces the one the watched subscriptions running now were made for. The
+    // abort ends their asking, and this claim makes its own once it is done. The list stays the
+    // one the process's first registration named (`watchedWorkflowsKept`).
+    watchedSubscriptions?.abort();
+    watchedSubscriptions = undefined;
+    const watched = watchedWorkflowsKept(watchedWorkflows, registration);
+    watchedWorkflows = watched;
     const envoyContext = "setInterval" in context ? context : undefined;
     // Once per process, ever, and before the role claim and the subscription below, so no card on
     // the role's lane and no wake on the controller topic can race the start turn for the one
@@ -390,11 +487,24 @@ export function createControllerSession(
         return;
       }
       if (context.isIdle?.() === false) {
-        pi.sendUserMessage(startMessage, { deliverAs: "followUp" });
+        // A follow-up is never marked sent, so a send the host fails clears nothing here; the host
+        // logs the failure itself, and the rejection is taken so that it is not left unhandled.
+        void Promise.resolve(pi.sendUserMessage(startMessage, { deliverAs: "followUp" })).catch(
+          () => undefined
+        );
       } else {
         markStartupTurnSent(sessionID);
         startTurnSession = sessionID;
-        pi.sendUserMessage(startMessage);
+        // A send the host fails (a prompt it drops before dispatch, or refuses) starts no run, so
+        // no `agent_start` clears the mark: it goes here, so no check the Envoy entry makes after
+        // this holds the session's startup cards for a start that never ran, where a sent mark
+        // holds them for 30 s from the send. Oh My Pi's `sendUserMessage` returns a promise that
+        // rejects when the send fails (`agent-session.ts`), which `PiApi` types as `void`, so the
+        // answer is taken as whatever it is: a promise's rejection clears the mark, and nothing
+        // else does. The host logs the failure itself.
+        void Promise.resolve(pi.sendUserMessage(startMessage)).catch(() =>
+          clearStartupTurn(sessionID)
+        );
       }
       startMessageSent = true;
     }
@@ -455,7 +565,7 @@ export function createControllerSession(
             envoyContext,
             registration.replaces
           ).catch(heardStop),
-        registration.claimToken,
+        roleClaimWords(registration.claimToken),
         supervised && startedBy === "daemon"
           ? {
               log: (line, error) => {
@@ -538,6 +648,17 @@ export function createControllerSession(
     // A re-claim's refusal or hand-over the widget still shows is out of date once a claim succeeds.
     claimWidget?.clear();
     claimWidget = undefined;
+    // The project's watched workflows, once the rest of the claim is done: after the ready, or
+    // for the operator's controller after its notice topic, and in a task the claim does not wait
+    // for (`subscribeWatchedWorkflows`). The claim's own context says which session the pane is on
+    // now, since `envoyContext` is undefined for a command's context.
+    subscribeWatchedWorkflows(
+      sessionID,
+      () => context.sessionManager.getSessionId(),
+      registration.claimToken,
+      envoyContext,
+      watched
+    );
   };
 
   /**
@@ -550,10 +671,14 @@ export function createControllerSession(
    * (`markStartupTurnPending`) and claims nothing: the Envoy entry opens the session's agent
    * subject at its own `session_start`, and a card that arrives from here until the start command
    * sends the start finds the mark, so it takes no turn and its wake waits for the start turn
-   * (`packages/pi-envoy/src/card-wake.ts`). The send marks it sent; the session's first
-   * `agent_start` (an operator turn started before the command, after which the start message
-   * goes as a follow-up) and its shutdown clear it, and so does the start command's claim when it
-   * fails before the send or hands over to a new session.
+   * (`packages/pi-envoy/src/card-wake.ts`), for at most 30 s from the Envoy entry's first read of
+   * the unsent mark. The send marks it sent, which holds them for at most 30 s from the send; the
+   * session's first `agent_start` (an operator turn started before the command, after which the
+   * start message goes as a follow-up) and its shutdown clear it, and so do a claim that fails
+   * before the send with no other claim queued behind it (`claimOnce`), a claim that hands over to
+   * a new session (`claimWith`), and a send the host fails (`claimWith`). A start that never comes
+   * (a claim that never answers, a start command that never runs) holds the cards back once, for
+   * those 30 s.
    */
   const handleSessionStart = async (context: SessionContext): Promise<void> => {
     if (!daemonLaunchedController(process.env)) {
@@ -578,8 +703,9 @@ export function createControllerSession(
    * controller's whole claim (`claim`), which sends the start message right before the role
    * claim. A refusal anywhere in it is logged and shown to the operator as one warning, which says
    * what the claim left: refused before the send, nothing was sent, the unsent `startupTurn` mark
-   * `session_start` set is cleared, and `/legion-claim-controller` claims again and sends the
-   * start message once that claim succeeds; refused after it (the role
+   * `session_start` set is cleared unless another claim waits behind this one (`claimOnce`), and
+   * `/legion-claim-controller` claims again and sends the start message once that claim succeeds;
+   * refused after it (the role
    * claim or the subscription), the start turn runs holding the registration, and
    * `/legion-claim-controller` claims the role and its wakes again. The command itself never fails
    * past that notice. A refusal that comes once the session's stop has begun (`stop`) is neither
@@ -613,8 +739,6 @@ export function createControllerSession(
         );
         return;
       }
-      // The session the claim reads first, which a refusal before the send leaves unmarked.
-      const claimed = context.sessionManager.getSessionId();
       try {
         await claimOnce(context, { registered: false }, "typed");
       } catch (error) {
@@ -623,9 +747,6 @@ export function createControllerSession(
         if (stopped.signal.aborted) return;
         const message = messageFor(error);
         logger.error(`[legion] the controller claim failed: ${message}`);
-        // Refused before the send: the start `session_start` marked due is not coming, so the
-        // Envoy entry is not left holding its startup cards for it.
-        if (!startMessageSent) clearStartupTurn(claimed);
         context.ui.notify(
           startMessageSent
             ? `legion: the controller claim failed after the start message was sent: ${message}. The start turn has the controller's registration; run /legion-claim-controller to claim the controller role and its wakes again.`
@@ -682,6 +803,15 @@ export function createControllerSession(
       }
       return;
     }
+    // A watched task that exists as this re-claim starts was made for another session or
+    // transcript, so it ends here rather than once the re-claim below has queued and registered,
+    // which it may never do; that re-claim makes its own once it has. This abort reaches only such
+    // a task, and the host moved the session before this runs: what keeps this session from
+    // hearing the old one's attempts, before this abort and after it, is that a watched task tells
+    // nothing once its claim's context is on another session (`subscribeWatchedTopic`), and that a
+    // claim in flight at the change starts none (`subscribeWatchedWorkflows`).
+    watchedSubscriptions?.abort();
+    watchedSubscriptions = undefined;
     const notices: { readonly message: string; readonly level: "info" | "warning" }[] = [];
     let shown = false;
     const notify = (message: string, level: "info" | "warning"): void => {

@@ -53,7 +53,8 @@ var experimentUnits = []ExperimentUnit{ExperimentTree, ExperimentIssue}
 // arm are done. PlanGroupOwner runs an issue as an issue of no experiment runs: its owner gives
 // the plan with register_plan, and an issue whose owner gives none runs the project's default
 // steps. PlanGroupDefault runs the project's default steps (Project.RunsByDefault), and Legion
-// takes no plan from the issue's owner. PlanGroupOwnerAlone is the owner doing the whole issue
+// takes from the issue's owner only a version that changes nothing but the text of its running
+// task default. PlanGroupOwnerAlone is the owner doing the whole issue
 // itself in one step, which this release refuses at load. The zero value is an arm that names no
 // plan, whose issues run as with no experiment.
 type PlanGroup string

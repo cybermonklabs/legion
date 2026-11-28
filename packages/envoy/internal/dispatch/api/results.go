@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -20,6 +20,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -560,8 +561,14 @@ type issueCheckResults struct {
 // The only read of GitHub it leaves is the check runs of a check CI proves, read at each open pull
 // request head as on every read: the derived result of each is that head's, and stands at the named
 // commit only where that commit is the head.
+//
+// At a cut the read reads the checks of the Verification document's version then, makes no read
+// of GitHub and writes nothing (results_as_of.go), and refuses ?at=.
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	if refuseResultsCommitAtCut(w, r) {
 		return
 	}
 	at := r.URL.Query().Get("at")
@@ -586,7 +593,13 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
+	_, atCut := asof.CutFrom(r.Context())
+	var checks []model.CheckBlock
+	if atCut {
+		checks, err = s.checkBlocksAtTheCut(r.Context(), artifact, trees)
+	} else {
+		checks, err = s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
+	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -614,15 +627,19 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		checks[index].Results = results
 	}
 	// Learn heads before deriving CI, so both reads use the same stored or request-local heads.
-	// The reader shares one merge-time fill across the comparison and every CI head.
-	reader := newComparisonReader(r.Context(), s, at)
-	reader.learn(r.Context(), checks)
-	headCI, err := s.deriveCIResults(r.Context(), reader, issueKey, checks)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// The reader shares one merge-time fill across the comparison and every CI head. A read at a
+	// cut reads nothing from GitHub and derives nothing.
+	var reader *comparisonReader
+	if !atCut {
+		reader = newComparisonReader(r.Context(), s, at)
+		reader.learn(r.Context(), checks)
+		headCI, err := s.deriveCIResults(r.Context(), reader, issueKey, checks)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		reader.headCI = headCI
 	}
-	reader.headCI = headCI
 	// Each result's observed text is registered for its tree once no check's results are replaced
 	// any more (deriveCIResults), since what is registered is a pointer into the row.
 	for index := range checks {
@@ -630,10 +647,14 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 			trees.text(&checks[index].Results[result].ObservedTree, checks[index].Results[result].Observed)
 		}
 	}
-	for index := range checks {
-		reader.answer(r.Context(), &checks[index])
+	if atCut {
+		checksAtTheCut(r.Context(), checks)
+	} else {
+		for index := range checks {
+			reader.answer(r.Context(), &checks[index])
+		}
+		answerCompatibilityCurrency(checks, at)
 	}
-	answerCompatibilityCurrency(checks, at)
 	body.Checks = checks
 	trees.resolve()
 	WriteJSON(w, http.StatusOK, body)
@@ -732,8 +753,8 @@ func (s *server) requireIssueExists(ctx context.Context, key string) error {
 // this package goes through here — the results routes, the check resolver and the approval
 // request's second document.
 func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, slug string) (model.Artifact, bool, error) {
-	artifact, err := scanArtifact(q.QueryRow(ctx, `
-		select `+artifactColumns+` from artifacts
+	artifact, err := docs.ScanArtifact(q.QueryRow(ctx, `
+		select `+docs.ArtifactColumns+` from artifacts
 		where issue_key = $1 and `+verificationRolePredicate+` and ($2 = '' or slug = $2)
 		limit 1
 	`, issueKey, slug))
@@ -935,8 +956,9 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // in document order, with its block id. The markdown is read live and parsed; nothing is
 // written. A rendering can repeat an id; the block index keys one row per id, and so does this,
 // so only the first holder of an id is visited. Both readers of a live document's typed blocks
-// come through here: the checks of a Verification document (checkBlocksIn) and the requirements
-// of a spec (requirementBlocksIn).
+// read it by this rule: the checks of a Verification document (checkBlocksIn, which takes its
+// two halves, typedBlockMarkdown and visitTypedBlocks, one at a time, so that a read at a cut
+// parses a stored version with the second) and the requirements of a spec (requirementBlocksIn).
 //
 // When trees is true, visit is handed as content the markdown the block's text_tree is read
 // from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
@@ -953,6 +975,14 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 	if err != nil {
 		return err
 	}
+	return visitTypedBlocks(artifactID, blockType, markdown, texts, trees, visit)
+}
+
+// visitTypedBlocks parses markdown, a rendering of document artifactID, and hands visit each block
+// of blockType in it as typedBlocksIn says. texts is the text the block index stores for each
+// block, by id, which visit is handed the tree's content of when trees is true; a block it holds
+// no text for answers its own content.
+func visitTypedBlocks(artifactID, blockType, markdown string, texts map[string]string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
 		return fmt.Errorf("read the %s blocks of document %s: %w", blockType, artifactID, err)
@@ -1022,9 +1052,19 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 // tree from (the rule GET /api/v1/reference-targets reads the same block by), once the slice has
 // stopped growing, since what is registered is a pointer into the row.
 func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
+	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, "check", trees != nil)
+	if err != nil {
+		return nil, err
+	}
+	return checkBlocksOfRendering(artifactID, markdown, texts, trees)
+}
+
+// checkBlocksOfRendering is checkBlocksIn of markdown, a rendering of document artifactID, with
+// texts the text the block index stores for each block, by id (visitTypedBlocks).
+func checkBlocksOfRendering(artifactID, markdown string, texts map[string]string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
 	var contents []string
-	err := s.typedBlocksIn(ctx, artifactID, "check", trees != nil, func(node *pmdoc.Node, _, content string) {
+	err := visitTypedBlocks(artifactID, "check", markdown, texts, trees != nil, func(node *pmdoc.Node, _, content string) {
 		check := docs.CheckBlockOf(node)
 		check.ArtifactID, check.Text, check.Results = artifactID, blockWords(node), []model.CheckResult{}
 		checks = append(checks, check)
@@ -1041,10 +1081,12 @@ func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *di
 	return checks, nil
 }
 
-// checkBlocksOf is checkBlocksIn with each block's reference, issue and indexed version and
-// digest filled in. The reference is built from the document's own slug, which is a property of
-// the artifacts row and not of a block row, so a Verification document whose blocks the index
-// does not hold yet still answers a reference every check can be addressed by.
+// checkBlocksOf is checkBlocksIn with each block's reference and issue filled in (addressChecks),
+// and from the block index the version its words last changed in and their digest. A check that
+// the index does not hold keeps neither. The reference is built from the document's own slug,
+// which is a property of the artifacts row and not of a block row, so a Verification document
+// whose blocks the index does not hold yet still answers a reference every check can be
+// addressed by.
 func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	checks, err := s.checkBlocksIn(ctx, artifact.ID, trees)
 	if err != nil {
@@ -1052,10 +1094,6 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	}
 	if len(checks) == 0 {
 		return []model.CheckBlock{}, nil
-	}
-	issueKey := ""
-	if artifact.IssueKey != nil {
-		issueKey = *artifact.IssueKey
 	}
 	indexed := make(map[string]model.CheckBlock, len(checks))
 	rows, err := q.Query(ctx, `
@@ -1077,15 +1115,27 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 	}
 	for index := range checks {
-		checks[index].IssueKey = issueKey
-		checks[index].Ref, _ = text.FormatBlockRef(text.Ref{
-			Kind: "block", IssueKey: issueKey, ID: artifact.Slug, Block: checks[index].BlockID,
-		})
 		if block, ok := indexed[checks[index].BlockID]; ok {
 			checks[index].Version, checks[index].SHA256 = block.Version, block.SHA256
 		}
 	}
+	addressChecks(checks, artifact)
 	return checks, nil
+}
+
+// addressChecks fills in each of checks, the check blocks of artifact, its issue and its
+// reference.
+func addressChecks(checks []model.CheckBlock, artifact model.Artifact) {
+	issueKey := ""
+	if artifact.IssueKey != nil {
+		issueKey = *artifact.IssueKey
+	}
+	for index := range checks {
+		checks[index].IssueKey = issueKey
+		checks[index].Ref, _ = text.FormatBlockRef(text.Ref{
+			Kind: "block", IssueKey: issueKey, ID: artifact.Slug, Block: checks[index].BlockID,
+		})
+	}
 }
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
@@ -1128,17 +1178,18 @@ func holdsLink(word string) bool {
 // recorded result's line carries (checkResultLine) and the check's words a CI result's line
 // carries (ciVerdictLine). The line is written into a pull request unchanged, and a pull request
 // can be public, so it keeps only a plain word (plainWord), and drops every word that holds `://`
-// (holdsLink), a private host (privateHost, tailnetHost), this Dispatch's own host, or an issue key
-// of a project this Dispatch holds. No line is stored: each is written when the record, its dry run
-// or the results read answers it, by the projects Dispatch holds then.
+// (holdsLink), a private host (privateHost, tailnetHost), a host of this Dispatch's own, or an
+// issue key of a project this Dispatch holds. No line is stored: each is written when the record,
+// its dry run or the results read answers it, by the projects Dispatch holds then.
 type lineWords struct {
 	// issueKey matches a word holding an issue key of a project this Dispatch holds; nil when it
 	// holds no project (lineWordsFor).
 	issueKey *regexp.Regexp
-	// host is the host name of this Dispatch's own URL in lower case, so a link to it written
-	// without its scheme is dropped too; "" when the configured URL names no host (none is
-	// configured, or it does not parse).
-	host string
+	// hosts are the host names of this Dispatch's own origins in lower case (text.Origins.Hosts:
+	// DISPATCH_SERVER_URL's and each of DISPATCH_SERVED_ORIGINS' and DISPATCH_FORMER_ORIGINS'), so
+	// a link to any of them written without its scheme is dropped too; none when no origin is
+	// configured.
+	hosts []string
 	// punctuation is the punctuation a plain word may hold: plainPunctuation, which lineWordsFor
 	// sets, and which a test widens by one rune to show its property can fail.
 	punctuation string
@@ -1202,7 +1253,7 @@ var (
 	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
 )
 
-// readLineWords is lineWords for every project q reads and for this Dispatch's own URL.
+// readLineWords is lineWords for every project q reads and for this Dispatch's own origins.
 func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error) {
 	rows, err := q.Query(ctx, `select key from projects`)
 	if err != nil {
@@ -1212,10 +1263,10 @@ func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error
 	if err != nil {
 		return lineWords{}, err
 	}
-	return lineWordsFor(keys, s.deps.ServerURL), nil
+	return lineWordsFor(keys, s.deps.Origins), nil
 }
 
-// lineWordsFor is lineWords for the projects keys names and the Dispatch at serverURL. A word
+// lineWordsFor is lineWords for the projects keys names and the Dispatch at origins. A word
 // holds an issue key where one of those keys stands in it, in any case, at the word's start or
 // after a character that is neither a letter nor a digit, followed by `-` and a number that ends
 // there: at the word's end, or before a character that is neither a letter, a digit, nor a `.`
@@ -1225,11 +1276,8 @@ func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error
 // project bears that name, and `kernel-6.8` holds none even where a project KERNEL exists, since a
 // number running on into a decimal part is a version. A shape alone, such as [A-Z]+-[0-9]+, would
 // drop UTF-8 and SHA-256 too, which is why the keys are the projects Dispatch holds.
-func lineWordsFor(keys []string, serverURL string) lineWords {
-	words := lineWords{punctuation: plainPunctuation}
-	if parsed, err := url.Parse(serverURL); err == nil {
-		words.host = strings.ToLower(parsed.Hostname())
-	}
+func lineWordsFor(keys []string, origins text.Origins) lineWords {
+	words := lineWords{punctuation: plainPunctuation, hosts: origins.Hosts()}
 	if len(keys) == 0 {
 		return words
 	}
@@ -1249,12 +1297,21 @@ func (w lineWords) drops(word string) bool {
 	return !plainWord(word, w.punctuation) || w.holds(word) || w.holds(norm.NFKC.String(word))
 }
 
-// holds reports whether word holds `://`, a private host, this Dispatch's own host or an issue
-// key of a project this Dispatch holds.
+// holds reports whether word holds `://`, a private host, a host of this Dispatch's own or an
+// issue key of a project this Dispatch holds.
 func (w lineWords) holds(word string) bool {
 	return holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
-		(w.host != "" && strings.Contains(strings.ToLower(word), w.host)) ||
-		(w.issueKey != nil && w.issueKey.MatchString(word))
+		w.holdsHost(word) || (w.issueKey != nil && w.issueKey.MatchString(word))
+}
+
+// holdsHost reports whether word holds a host of this Dispatch's own, in any case: none with no
+// hosts, so the word is lowered only where one can match.
+func (w lineWords) holdsHost(word string) bool {
+	if len(w.hosts) == 0 {
+		return false
+	}
+	lower := strings.ToLower(word)
+	return slices.ContainsFunc(w.hosts, func(host string) bool { return host != "" && strings.Contains(lower, host) })
 }
 
 // keep is text's words joined by single blanks, less every word the line drops.
@@ -1375,7 +1432,7 @@ func nonNilStrings(values []string) []string {
 // issue or of the check's issue, named by their dispatch:// reference.
 func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKey, checkIssueKey string, screenshots []string) error {
 	for _, screenshot := range screenshots {
-		ref, ok := text.ParseRef(screenshot, "")
+		ref, ok := text.ParseRef(screenshot, text.Origins{})
 		if !ok || ref.Kind != "artifact" || ref.IssueKey == "" ||
 			(ref.IssueKey != issueKey && ref.IssueKey != checkIssueKey) {
 			return errorf(http.StatusBadRequest, "RESULT_INPUT",

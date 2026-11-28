@@ -41,7 +41,7 @@ func secondProcess(t *testing.T, database *store.Store) (http.Handler, *eventStr
 	t.Helper()
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
-	documentService := docs.New(docs.Deps{Store: second, Events: broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
+	documentService := docs.New(docs.Deps{Store: second, Events: broker, Origins: testOrigins, Settle: 20 * time.Millisecond})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown the second process's document service: %v", err)

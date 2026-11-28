@@ -64,7 +64,7 @@ legion config check --config legion.yaml
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | As for a role's overlay: under Kubernetes an arm's overlay must be a file the operator's mounts carry, so mount the ConfigMap holding it, or add the item. It is refused at `mode: off` too, since a unit already drawn into the arm still names it. Mounting it replaces every live issue pod of the deployment, so add it when no role of an affected issue is mid-turn. |
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files …` or `projects.<KEY>.experiments.<NAME>.variants.<ARM>.instructions …` (another refusal) | The message names the entry: an empty list, a relative or unclean path, a path holding `:`, which separates the overlays `PI_CONFIG_FILES` names, a path named twice, or, under tmux, an overlay no role drawn into the arm could read. |
 | `instructions file <path> of experiment <experiment> variant <variant> could not be read: …` or `instructions file <path> of experiment <experiment> variant <variant> is empty` | Boot reads every declared arm's `instructions` from the daemon's own disk and puts its text in the prompt of every role of a unit drawn into that arm, so give it a readable file with text in it, or take the key out, which appends nothing. Boot reads it whatever the experiment's mode is, since a unit already drawn into the arm is given it. |
-| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner or default (got "…")` | An arm's `plan` says how the issues drawn into it are done: `owner`, whose issues take the plan their owner gives with `register_plan`, or `default`, whose issues run the project's `default_steps` and take no plan from their owner: once the daemon records such an issue, its owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner or default (got "…")` | An arm's `plan` says how the issues drawn into it are done, `owner` or `default`. An issue of `owner` takes the plan its owner gives with `register_plan`. An issue of `default` runs the project's `default_steps`. Legion takes from its owner only a version that changes nothing but the text of its running task `default`. Once the daemon records such an issue, every other `register_plan` and every `stop_task` of its owner are answered `409 PLAN_NOT_TAKEN`. |
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.` | This release takes `owner` and `default` alone: write one of them, or take `plan` out of every arm of the experiment. |
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM> names no plan: each variant of an experiment that sets plan names how its issues are done` | An experiment that names `plan` in one arm names it in every arm, so that each issue it draws is in a group: write `plan` in each arm, or in none. |
 | `projects.<KEY>.experiments.<NAME> sets plan and is unit <unit>: an experiment that sets how an issue is done draws for each issue, so write unit: issue` | Each issue keeps the group of its own draw for its whole life, so an experiment that sets `plan` draws for each issue: write `unit: issue`. |
@@ -144,8 +144,9 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
   kubectl -n agent-sandbox-system get deployment agent-sandbox-controller
   ```
 
-- **The image probe refuses.** The daemon runs the worker image's launch probes in a probe Sandbox,
-  `legion-probe-<project>-<digest prefix>`, and quotes the probe's log. The causes it names:
+- **The image probe refuses.** The daemon runs the worker image's plugin load probe and capability
+  check in a probe Sandbox, `legion-probe-<project>-<digest prefix>`, and quotes the probe's log.
+  The causes it names:
   - the image's plugin speaks another daemon contract than this binary: run the `legion` binary
     from the same commit as the image ([Upgrade](/legion/legion/running-legion/#upgrade));
   - the registry does not have the image (`… failed its probe: the registry does not have image
@@ -1035,9 +1036,13 @@ stood, is the usual cause — the command prints a second line under the claim's
 claim is back in a new session owing no task and why nothing restarted its phase, and the
 controller's `fresh_session` answers that same sentence as `phaseNotRestarted` rather than an
 empty answer: the claim is running with no work, so clear what the line names and run the
-command again to hand the claim its phase's task. `phaseNotRestarted` carries that sentence or
-the one about the forget or the start that was refused after the claim was stopped, and never
-both.
+command again to hand the claim its phase's task. `phaseNotRestarted` carries at most one
+sentence: that one; a start that waits for an admission slot its issue does not hold, naming the
+issues the issue waits on, where the claim stays failed or retired, or runs with its task waiting,
+until the slot comes; a start refused after the recorded session was already left behind, with
+the state that leaves the claim in; or the forget or the start that was refused after the claim
+was stopped. The plain `legion claims retry` prints the wait's sentence the same way, and the
+controller's own `retry` answers it in the `phaseNotRestarted` of its answer.
 
 When a failed architect's session was lost with its volume, clear the stopped claim's matching
 record before retrying:
@@ -1817,7 +1822,13 @@ These arrive as messages on the Dispatch issue:
   gets, and the remedy is the reviewer submitting again at the head it read, which it takes from
   `gh pr view <n> --json headRefOid`. A person's review decides by its webhook on the `commit_id`
   that event carried; read from GitHub's list, where that id has moved, it decides nothing, logged
-  as `workflow: a review decides nothing: a person's review read from the list`. A review-App
+  as `workflow: a review decides nothing: a person's review read from the list`. A person's
+  approval leaves the issue in `needs_review` until the reviewer completes its round, since an
+  agent can approve on a person's account: a review the reviewer submits after it decides the
+  round instead, and the reviewer's completion at the approved head with no review of its own ends
+  the round on the person's approval. A completion at another head, or at none, leaves the round
+  stuck, and the stuck notice names both heads: the reviewer has not read the approved code, and
+  its review of the head ends the round. A review-App
   review with no footer at all, whose footer is not valid JSON (an unquoted placeholder left in
   it, say), or whose
   footer names another session (the controller's, an architect's), is set aside and decides

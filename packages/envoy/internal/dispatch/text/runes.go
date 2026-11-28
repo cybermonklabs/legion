@@ -2,7 +2,6 @@ package text
 
 import (
 	"bytes"
-	"net/url"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -64,7 +63,7 @@ const longestWholeReferenceRunes = 1024
 // It reads value's first limit and longestWholeReferenceRunes runes, no more, so a cut costs the
 // same on a text of any length - which every read of the replies, the backlinks and the id
 // prefixes pays for each row it cuts. The references in them are the ones Dispatch holds
-// (cutReferences): a `dispatch://` address and a dashboard URL of the deployment at serverURL as
+// (cutReferences): a `dispatch://` address and a dashboard URL of one of origins as
 // Extract reads them, a bare issue key and a `#id` as Mentions reads its candidates, each taken
 // with the inline link around it whole, as goldmark reads links - a title, an address in angle
 // brackets, brackets in the words and words over a line break included. A URL of anywhere else
@@ -106,7 +105,7 @@ const longestWholeReferenceRunes = 1024
 //
 // The dashboard's headRefs (`packages/dispatch/web/src/features/refs/head-refs.ts`) cuts the
 // same way, and `testdata/head-refs.json` is the table both copies are held to.
-func HeadRefs(value string, limit int, ellipsis, serverURL string) string {
+func HeadRefs(value string, limit int, ellipsis string, origins Origins) string {
 	keep := max(limit-utf8.RuneCountInString(ellipsis), 0)
 	cut, window, count := 0, len(value), 0
 	over := false
@@ -126,32 +125,32 @@ func HeadRefs(value string, limit int, ellipsis, serverURL string) string {
 	if !over {
 		return value
 	}
-	return headOf(value[:window], window < len(value), cut, 0, ellipsis, serverURL) + ellipsis
+	return headOf(value[:window], window < len(value), cut, 0, ellipsis, origins) + ellipsis
 }
 
 // headOf is the head of window, value's first runes, cut at cut (HeadRefs), without its ellipsis:
 // window up to where the walk back ends (headEnd), or, where that leaves nothing past floor, the
 // cut by length with what it leaves open closed (closeCut). Floor is 0 for a whole head, and the
 // first byte of a link's words where those words are cut to leave room for the rest of the link.
-func headOf(window string, truncated bool, cut, floor int, ellipsis, serverURL string) string {
-	written := cutReferences(window, serverURL)
+func headOf(window string, truncated bool, cut, floor int, ellipsis string, origins Origins) string {
+	written := cutReferences(window, origins)
 	if truncated {
 		written = slices.DeleteFunc(written, func(reference cutReference) bool {
 			return reference.end >= len(window)
 		})
 	}
 	spans := windowSpans(window, truncated)
-	if end := headEnd(window, written, spans, cut, ellipsis, serverURL); end > floor {
+	if end := headEnd(window, written, spans, cut, ellipsis, origins); end > floor {
 		return window[:end]
 	}
-	return closeCut(window, written, spans, cut, floor, serverURL)
+	return closeCut(window, written, spans, cut, floor, origins)
 }
 
 // headEnd is where the head of window cut at cut ends (HeadRefs): cut moved back past every
 // reference written and every code span in spans that crosses it, and past every reference the
 // head with the ellipsis after it reads otherwise than the text does, less the whitespace before
 // it but the one a reference ends at. Each move is back, so it ends; at 0 it leaves nothing.
-func headEnd(window string, written []cutReference, spans []codeRange, cut int, ellipsis, serverURL string) int {
+func headEnd(window string, written []cutReference, spans []codeRange, cut int, ellipsis string, origins Origins) int {
 	head := cut
 	for head > 0 {
 		back := head
@@ -165,7 +164,7 @@ func headEnd(window string, written []cutReference, spans []codeRange, cut int, 
 				back = min(back, span.start)
 			}
 		}
-		read := cutReferences(window[:head]+ellipsis, serverURL)
+		read := cutReferences(window[:head]+ellipsis, origins)
 		for _, reference := range read {
 			if reference.start < head && !slices.Contains(written, reference) {
 				back = min(back, reference.start)
@@ -198,8 +197,8 @@ func headEnd(window string, written []cutReference, spans []codeRange, cut int, 
 // what it holds as the text does: the inline link or picture around a reference the cut is in
 // (closeLink), or else the code span it is in (closeSpan). Where it is in neither, or in a link it
 // cannot close and in no span, it is window[:cut].
-func closeCut(window string, written []cutReference, spans []codeRange, cut, floor int, serverURL string) string {
-	if head, closed := closeLink(window, written, cut, floor, serverURL); closed {
+func closeCut(window string, written []cutReference, spans []codeRange, cut, floor int, origins Origins) string {
+	if head, closed := closeLink(window, written, cut, floor, origins); closed {
 		return head
 	}
 	for _, span := range spans {
@@ -217,7 +216,7 @@ func closeCut(window string, written []cutReference, spans []codeRange, cut, flo
 // its `)`, all of it within the runes of window[:cut]. It closes nothing where no such link holds
 // the cut, where the rest of the link leaves no room for a word, or where the head would not read
 // as that link - a bracket the cut words leave open, or a backslash they end in, reads otherwise.
-func closeLink(window string, written []cutReference, cut, floor int, serverURL string) (string, bool) {
+func closeLink(window string, written []cutReference, cut, floor int, origins Origins) (string, bool) {
 	for _, link := range linkRanges(window) {
 		if link.open < floor || link.open >= cut || cut >= link.close {
 			continue
@@ -242,7 +241,7 @@ func closeLink(window string, written []cutReference, cut, floor int, serverURL 
 			_, size := utf8.DecodeRuneInString(window[wordsCut:])
 			wordsCut += size
 		}
-		head := headOf(window[:link.words], false, wordsCut, words, "", serverURL) + rest
+		head := headOf(window[:link.words], false, wordsCut, words, "", origins) + rest
 		if !slices.ContainsFunc(linkRanges(head), func(read linkRange) bool {
 			return read.open == link.open && read.close == len(head)
 		}) {
@@ -340,26 +339,17 @@ type cutReference struct {
 }
 
 // cutReferences is every reference body writes that Dispatch holds, in the reader's own terms:
-// each reference span Extract reads as a `dispatch://` address or a page of the dashboard at
-// serverURL (spanReference, locateSpan), a URL of anywhere else left out, and each bare key and
+// each reference span Extract reads as a `dispatch://` address or a page of the dashboard at one of
+// origins (spanReference, locateSpan), a URL of anywhere else left out, and each bare key and
 // `#id` Mentions would ask about (bareCandidates), whether or not it names anything, since a cut
 // that splits one changes what the text says. Each is widened over the inline link or picture
 // that holds it (linkRanges). A span that is a link's address is read as Extract reads it too,
 // not as the link parser's destination: spanReference ends it at the link's own `)` and drops the
 // punctuation a sentence leaves on it, so `[w](dispatch://CORE-1.)` names CORE-1 and a cut in it
 // moves back to the link's `[`, where the destination `dispatch://CORE-1.` would name nothing.
-func cutReferences(body, serverURL string) []cutReference {
+func cutReferences(body string, origins Origins) []cutReference {
 	spans := referencePattern.FindAllStringIndex(body, -1)
 	links := linkRanges(body)
-	var base *url.URL
-	baseParsed := false
-	baseOf := func() *url.URL {
-		if !baseParsed {
-			base, _ = url.Parse(serverURL)
-			baseParsed = true
-		}
-		return base
-	}
 	var found []cutReference
 	add := func(start, end int, ref Ref) {
 		for _, link := range links {
@@ -375,7 +365,7 @@ func cutReferences(body, serverURL string) []cutReference {
 		if raw == "" {
 			continue
 		}
-		if ref, ok := locateSpan(raw, baseOf, true); ok && ref.Kind != "url" {
+		if ref, ok := locateSpan(raw, origins, true); ok && ref.Kind != "url" {
 			add(start, start+len(raw), ref)
 		}
 	}

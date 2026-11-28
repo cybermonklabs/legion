@@ -85,6 +85,8 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
       route_status_reason: null,
     },
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     snoozed_until: null,
     question: "Which approach?",
     state: "open",
@@ -254,6 +256,35 @@ test("any other failure of the source lookup is shown, never silently turned int
     expect(screen.queryByRole("tab", { name: "Issues" })).not.toBeInTheDocument();
   } finally {
     page.restore();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 6: on Issues, the Architecture tab exists only
+// once the source read says there is a source, so Navigation says the read is still out, or that
+// it failed and can be retried, rather than gaining a tab from a read the reader never saw.
+test("on Issues, Navigation says the source read is pending, or failed with a Retry that brings the Architecture tab", async () => {
+  const user = userEvent.setup();
+  const pending = renderPage("/projects/CORE/issues", undefined, "alice", [], "pending");
+  try {
+    expect(await screen.findByText("Checking for an architecture…")).toHaveAttribute(
+      "role",
+      "status"
+    );
+    expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
+  } finally {
+    pending.restore();
+  }
+
+  const failed = renderPage("/projects/CORE/issues", undefined, "alice", [], new ApiError(500, {}));
+  try {
+    const alert = await screen.findByText(/^Could not check for an architecture\./);
+    expect(alert).toHaveAttribute("role", "alert");
+    failed.listProjectArchitectureSources.mockResolvedValue([coreSource]);
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("tab", { name: "Architecture" })).toBeInTheDocument();
+    expect(screen.queryByText("Could not check for an architecture.")).not.toBeInTheDocument();
+  } finally {
+    failed.restore();
   }
 });
 
@@ -583,6 +614,8 @@ function todo(key: string, title: string): IssueSummary {
     parent: null,
     primary_artifact_id: "artifact-1",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     progress: { tasks: null, children: null },
     rank: "a",
     repo: null,

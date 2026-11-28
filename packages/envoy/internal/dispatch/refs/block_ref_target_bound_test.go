@@ -35,7 +35,7 @@ func TestAMentionWhoseFarEndIsPastTheBoundLeavesOutItsTuple(t *testing.T) {
 	// far end a mention can hold.
 	target := randText(text.MaxTargetBytes - len("CORE-1/#x"))
 	markdown := "See dispatch://CORE-1/artifact/" + target + "#b-x.\n"
-	located := text.ExtractAt(markdown, server)
+	located := text.ExtractAt(markdown, text.NewOrigins(server))
 	if len(located) != 1 || located[0].Kind != "block" {
 		t.Fatalf("the reference at the bound parsed as %#v, want one block", located)
 	}
@@ -57,7 +57,7 @@ func TestAMentionWhoseFarEndIsPastTheBoundLeavesOutItsTuple(t *testing.T) {
 	}
 
 	blocks := []model.ArtifactBlock{{ID: blockID, Type: "paragraph", From: 0, To: len(markdown)}}
-	_, won, write, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil, "")
+	_, won, write, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil, text.Origins{})
 	if err != nil || !won {
 		t.Fatalf("index the version (won %v): %v", won, err)
 	}

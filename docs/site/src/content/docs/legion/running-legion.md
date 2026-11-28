@@ -440,8 +440,9 @@ Dispatch read them, delete the files, then install every App from
   500m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
   at a time and runs no lane, and a larger probe could keep the daemon from booting on a full
   pool. Its 500m was set while the probe also ran a TLS check of the image's clients, which it no
-  longer makes, and is kept until its other checks are audited and measured. A pool with no room
-  even for that does not stop the daemon: its probe pod
+  longer makes. The value is kept: no boot probe without the `pi.agents` probe, the session-storage
+  probe and the Claude lane, which the boot probe no longer makes either, has been measured yet. A
+  pool with no room even for that does not stop the daemon: its probe pod
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
   `pool-capacity` row of `legion state`'s capability report then records how many attempts waited
@@ -688,11 +689,15 @@ What each part is for:
   ([Running Legion on Kubernetes](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md),
   "Operator configuration").
   Before you turn one on, write its [pre-registration](#pre-registering-an-experiment).
-- **An arm's `plan`** says how the issues drawn into it are done: `owner`, whose issues take the
-  plan their owner gives with `register_plan`, or `default`, whose issues run the project's
-  `default_steps` and take no plan from their owner: once the daemon records such an issue, its
-  owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner
-  gave before is passed over at its first step and told in a `plan-not-taken` notice.
+- **An arm's `plan`** says how the issues drawn into it are done, `owner` or `default`.
+  An issue of `owner` takes the plan its owner gives with `register_plan`.
+  An issue of `default` runs the project's `default_steps`.
+  Legion takes from its owner only a version that changes nothing but the text of its running
+  task `default`.
+  Once the daemon records such an issue, every other `register_plan` and every `stop_task` of its
+  owner are answered `409 PLAN_NOT_TAKEN`.
+  A plan its owner gave before is passed over at its first step and told in a `plan-not-taken`
+  notice.
   The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
   whatever the file says later.
   An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at
@@ -722,6 +727,56 @@ What each part is for:
   The loader refuses a name that is no `owner/name` and a repository the list names twice,
   compared without case and through `repository_renames`, and a daemon that predates the key
   refuses it at boot, as it does any key it does not know.
+- **`projects.<KEY>.watched_workflows`** (optional) names the workflows whose completed runs on
+  their repository's default branch reach the project's controller:
+
+  ```yaml
+  projects:
+    WIDGETS:
+      watched_workflows:
+        - acme/widgets/nightly.yaml@schedule,workflow_dispatch
+        - acme/widgets/release.yml
+  ```
+
+  An entry is `<owner>/<repo>/<file>`: a repository, and the name of a file in its
+  `.github/workflows/`, of letters, digits, `.`, `_` and `-`, ending in `.yml` or `.yaml`.
+  It can end with `@` and the trigger events whose runs count, comma-separated, each written as a
+  workflow's `on:` writes it
+  ([GitHub's list](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)).
+  An entry with no `@` watches `schedule` runs alone, so `acme/widgets/release.yml` above hears its
+  scheduled runs and no other.
+  Write one entry a line, as above: in a flow list (`[…]`) a comma ends the entry, unless the entry
+  is quoted.
+  Write the owner and the repository as GitHub spells them, the repository's `full_name`
+  (`gh api repos/<owner>/<repo> --jq .full_name` prints it): Envoy names a run's topic with that
+  spelling, a topic is case-sensitive, and the loader cannot ask GitHub, so an entry spelled
+  otherwise loads and hears nothing.
+  Envoy publishes no run that a pull request names, so such a run never reaches the controller,
+  and neither does a run on another branch, or one from a fork's branch that has the default
+  branch's name.
+  The loader takes every trigger event, and an entry that names only events that never start a run
+  on the repository's own default branch — `pull_request`, `pull_request_target`,
+  `pull_request_review`, `pull_request_review_comment`, `merge_group` and `workflow_call`, and
+  `release` and `create` for a tag — hears nothing.
+  The key needs no `controller` setting, no runtime and no secrets broker.
+  The daemon gives the list to its controller when the controller registers, under either
+  `controller` setting, and the controller's prompt names each entry with its events.
+  A running controller keeps the list of its first registration for as long as its process
+  lives: each later claim, after a `/new`, a `/resume`, a `/fork`, a `/branch` or a typed
+  `/legion-claim-controller`, subscribes that same list for its own session, and a later
+  registration that names another list is one log line and changes nothing.
+  Every launch form takes a changed list at its next launch.
+  Under the sandbox runtime a daemon restarted with another list relaunches its controller into
+  its session, and the relaunched controller hears the new list.
+  Under the tmux runtime, and under `legion controller start`, the next start of the controller
+  takes it: its prompt, its subscriptions and the read of each entry's newest run at its start.
+  The loader refuses, naming the key, the entry's place in the list and the entry: an entry of
+  another shape; an `@` with no event, or an empty event; a name that is not one of GitHub's
+  trigger events, compared with case; an event an entry names twice; and one workflow in two
+  entries, the owner and the repository compared without case and the file with it.
+  `legion config check` prints the project's entries, each with its events, and prints no such
+  line for a project that names none.
+  A daemon that predates the key refuses it at boot, as it does any key it does not know.
 - **`repository_renames`** (optional) tells the daemon that two names are one repository, for a
   repository that moved: after a transfer GitHub's events name the new repository while every tree
   Legion has already recorded names the old one.
@@ -872,10 +927,10 @@ What each part is for:
   in the same section lists what a deployment makes true for it, and the order to turn it on.
   Each kind refuses the other's key. An omitted `session_store` and `pvc`, the file store of
   earlier releases, are refused with the same line and its reason: an issue pod's disk is deleted
-  with the pod, so a conversation kept as a file on it dies with the pod and the next launch's
-  resume fails on the missing file, retiring the claim after three failures. A kept volume does
-  not change this: a reset or a suspension of the issue deletes that volume. Name the store and
-  its key, and have the database reachable from the pods, before the daemon boots.
+  with the pod, so a conversation kept as a file on it dies with the pod, and the next launch
+  finds no session to resume, so the claim starts a fresh agent without that conversation. A kept
+  volume does not change this: a reset or a suspension of the issue deletes that volume. Name the
+  store and its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
@@ -1179,11 +1234,12 @@ answer. A pre-registration states seven things.
      lines and count the unit out of the exposure for that period.
    - **An arm the project's file no longer names.** The record keeps the arm, but a launch names
      only the files the file still holds, so from the moment the arm leaves the file its units load
-     none of its files. Its `plan` is the one part that stays: Legion reads each issue's group
-     from the draw it recorded, so an issue of an arm whose `plan` is `default` still runs the
-     project's default steps and takes no plan from its owner. Take an arm out of the file only
-     when the experiment is over, and record the date if you do it sooner, because every unit of
-     that arm is unexposed to its files from then on.
+     none of its files. Its `plan` is the one part that stays, since Legion reads each issue's
+     group from the draw it recorded. So an issue of an arm whose `plan` is `default` still runs
+     the project's default steps. Legion takes from its owner only a version that changes nothing
+     but the text of its running task `default`. Take an arm out of the file only when the
+     experiment is over, and record the date if you do it sooner, because every unit of that arm
+     is unexposed to its files from then on.
 
 A template to copy:
 
@@ -1284,9 +1340,9 @@ legion start --config legion.yaml
 ```
 
 The daemon runs in the foreground and logs JSON lines to standard error. At every boot it checks
-that Agent Sandbox is installed and runs the worker image's launch probes in a probe Sandbox
-(`legion-probe-<project>-<digest prefix>`): the image's Legion plugin must speak this daemon's contract
-and load with its Envoy plugin,
+that Agent Sandbox is installed and runs the worker image's plugin load probe and capability check
+in a probe Sandbox (`legion-probe-<project>-<digest prefix>`): the image's Legion plugin must
+speak this daemon's contract and load with its Envoy plugin,
 every agent's model must resolve, and every model key must work. Nothing restarts the daemon on its
 own, so run it under a process supervisor you trust. `legion stop --config legion.yaml` stops it,
 and `legion legions` lists the daemons registered on the machine.
@@ -1448,9 +1504,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    the new image before it serves.
 
    **After the first upgrade to a release that counts the moves back by kind,** every issue starts
-   at no counts: the migration fills none in from the past. An issue already in flight therefore
-   reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
-   first move back after the upgrade.
+   at no counts: the migration fills none in from the past. An issue's counts add up to no more
+   than its `pass`, which counts every move back, while its `rounds` counts review rounds alone,
+   a conflict round included. They can add up to less, for example where a move was made at a
+   conflicting head, which raises `pass` and no pair, or where the issue was already in flight at
+   the upgrade. A hook of `hooks:` counts from the first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
    or a resumed worker, runs the new one. At a release that moves the daemon API contract, the

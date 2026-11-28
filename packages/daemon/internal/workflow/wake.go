@@ -520,7 +520,24 @@ func (e *Engine) listenerWakeInRelease(ctx context.Context, tx pgx.Tx, held supe
 // has not arrived), and checks' drop line names it (logUnappliedSettlement); and a redelivery of a
 // settlement already applied wakes nobody either, since it applies nothing (dispatch://INFRA-4135
 // R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
-// issue's pull request).
+// issue's pull request). Nor does a settlement that applies and whose only change is runs of
+// checks it names skipped, each new to the head or a newer run of its name, beside newer runs of
+// checks that keep the word success (settledView.changesOnlySkippedRuns,
+// dispatch://INFRA-6293 R6): every review, each reply to a review thread among them, starts a
+// Large PR lanes run whose jobs skip on all but a trusted approval of a large pull request, and
+// every title or body edit runs pr-title again, a newer run that stays success, beside the
+// skipped run of the Large PR label job; checks tells no role of such a settlement (tellChecks),
+// and a wake whose task named it would be that CI message by another road, bringing a pod back
+// for a settlement that says nothing new of the head's CI: its skipped checks ran nothing, and
+// each other check it ran again stayed success. A newer settlement in which no run changed still
+// wakes, and so does one whose only change is newer runs that keep their word, with no skipped
+// run among them. So does one in which a check told failed or cancelled, or by any word but
+// success, has a newer run, whatever skipped runs stand beside it: a re-run that fails again
+// settles so, beside newer runs of the jobs that depend on it, which `gh run rerun --failed` runs
+// again and which skip again, and beside the skipped runs of a review or an edit that landed
+// while it ran; the worker that re-ran the red check is woken by that result, as
+// skills/legion-worker/references/results.md says, even where its line is the one told already
+// and checks tells no role of it.
 //
 // Only the worker of the pod's open phase is woken: the settlement is that worker's business and
 // no one else's, and an architect reads it from its own notices. A head that settles again as each
@@ -543,7 +560,8 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 		return "", err
 	}
 	if settled, applied := classify.ApplyCheckSettlement(*pr, settlementCandidate(fact)); !applied ||
-		settled.CheckedHead != fact.HeadSHA || settled.HeadSHA != fact.HeadSHA {
+		settled.CheckedHead != fact.HeadSHA || settled.HeadSHA != fact.HeadSHA ||
+		settledViewOf(settled).changesOnlySkippedRuns(settledViewOf(*pr)) {
 		return "", nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)

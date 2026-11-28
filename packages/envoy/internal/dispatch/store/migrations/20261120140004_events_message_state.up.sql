@@ -1,0 +1,47 @@
+-- pgmigrate:non-transactional
+-- 20261120140004_events_message_state.up.sql: the index on events through which a read at a cut
+-- finds the events of each message, built concurrently.
+--
+-- Why it exists. A read at a cut reads a message's edited_at and its body at the cut from its own
+-- events: its newest event at or before the cut whose payload is the whole message, and its first
+-- edit or delete after the cut (internal/dispatch/asof, messagesShadow). Each read finds the
+-- message's events by the message's id in their payload, as events_comment_state serves the
+-- comments' reads. Without this index the read of an issue message read every event of its issue
+-- from the table: on a copy of production's event log (843,238 events, 26,921 messages,
+-- 2026-11-20), 406 ms for the messages of one page of the event log at a cut. The index holds only
+-- the events of those types, keyed by the message's id in the payload and in id order for each
+-- message, and includes created_at, which the reads compare with the cut. On the copy it was
+-- 2.1 MB.
+--
+-- The predicate must stay the shadow's word for word. The types are asof.MessageStateTypes
+-- (internal/dispatch/asof/shadows_posts.go), in its order. Each read names these types or some
+-- of them, and the planner proves that a list of some of them implies the predicate. When the
+-- two lists do not agree, the answer stays correct, but a read does not use this index, or the
+-- index holds events that no read uses. asof.TestEachEventIndexNamesTheTypesItsShadowReads reads
+-- this file and compares the two lists, and asof.TestTheShadowsUseTheirIndexes reads the plan.
+--
+-- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
+-- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
+-- (packages/envoy/infra/README.md). So the build's time is downtime. The build reads all of
+-- events two times; on the copy, events and its indexes were 1,459 MB, and a plain build of this
+-- index took 4.2 s on the pod.
+--
+-- Why it is exempt from the census's size limit. events is larger than the 1 GiB that a
+-- migration may touch (pgmigrate.CensusTableLimit). A migration whose first line is
+-- `-- pgmigrate:non-transactional` and that holds exactly one non-unique
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction, and
+-- the census does not apply its size limit to it (pgmigrate/nontransactional.go, concurrentIndex,
+-- and pgmigrate/census.go, Census). The build takes SHARE UPDATE EXCLUSIVE on events, which no
+-- ordinary read or write of events waits on. It waits for each older snapshot between its two
+-- reads of the table.
+--
+-- What a failed build leaves. A build that fails, or that is cancelled or killed, leaves an index
+-- of this name that is marked invalid. The planner does not use an invalid index, and PostgreSQL
+-- can go on updating it on each write. Reads at a cut stay correct, but slow, until the index is
+-- built. The runner records the version only after a build that finished. At the next boot it
+-- drops the invalid index with DROP INDEX CONCURRENTLY and builds it again
+-- (pgmigrate/nontransactional.go, ExecNonTransactional and dropOwnLeftover). Do not drop it by
+-- hand.
+create index concurrently if not exists events_message_state
+    on events ((payload->>'id'), id desc) include (created_at)
+    where type in ('message.created', 'message.answered', 'message.edited', 'message.deleted');

@@ -2173,9 +2173,9 @@ const (
 // refused, never ignored. The store is required, and must keep sessions in a database: `pvc`,
 // which an omitted `session_store` also settles to, is refused rather than taken as a silent default
 // (INFRA-80). It kept each session as a file on the issue's disk, and that disk is now the pod's
-// own generic ephemeral volume, deleted with it: the file would die with the pod, the next
-// launch's resume would fail on the missing file (internal/launcher's sessionWritten), and three
-// such failures retire the claim.
+// own generic ephemeral volume, deleted with it: the file would die with the pod, and the next
+// launch would find no session to resume, so the claim would start a fresh agent without that
+// conversation (internal/supervise's startFresh).
 func readSessionStore(store, dsnSecret, database *yaml.Node) (ompsessions.Store, error) {
 	name, err := readString(store, sessionStoreKey)
 	if err != nil {
@@ -2190,7 +2190,7 @@ func readSessionStore(store, dsnSecret, database *yaml.Node) (ompsessions.Store,
 	case ompsessions.StoreVolume:
 		return ompsessions.Store{}, errors.New(sessionStoreKey + " must name a store that keeps sessions in a database, and is required (INFRA-80):" +
 			" an issue pod's disk is the pod's own ephemeral volume, deleted with the pod, so a session kept as a file on it ('pvc', also what an omitted session_store means) dies with it," +
-			" the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three such failures retire the claim")
+			" and the next launch finds no session to resume, so the claim starts a fresh agent without that conversation (internal/supervise's startFresh)")
 	default:
 		// A name this runtime does not take is told the two it does, and not `pvc`: the kind above
 		// refuses that one by name with its own reason, and a list of accepted values that holds a

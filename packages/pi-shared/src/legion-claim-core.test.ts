@@ -1,5 +1,7 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -7,11 +9,21 @@ import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./clai
 import { createLegionDaemonClient } from "./daemon-client";
 import {
   bootLegionClaim,
+  CLAIM_RECORD_FILE,
+  type ClaimStep,
   claimRoleAgainOnBusy,
   claimStandsWithoutHandover,
+  claimStepRecord,
   type LegionClaimHost,
+  roleClaimWords,
 } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
+
+// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+// `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 /** A contract the test's client states on every request. */
 const CONTRACT = 60;
@@ -373,7 +385,7 @@ test("the daemon-launched controller's claim is made again on a 503 with the sam
     async () => {
       if (++tries < 3) throw claimAnswered503();
     },
-    "controller",
+    roleClaimWords("controller"),
     { log: (line) => lines.push(line), firstDelayMs: 1 }
   );
   expect(tries).toBe(3);
@@ -385,7 +397,7 @@ test("the daemon-launched controller's claim is made again on a 503 with the sam
       async () => {
         throw refused;
       },
-      "controller",
+      roleClaimWords("controller"),
       { log: (line) => lines.push(line), firstDelayMs: 1 }
     )
   ).rejects.toBe(refused);
@@ -402,7 +414,7 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
         tries++;
         throw busy;
       },
-      "controller",
+      roleClaimWords("controller"),
       { log: (line) => lines.push(line), firstDelayMs: 1, maxAttempts: 3 }
     )
   ).rejects.toBe(busy);
@@ -414,10 +426,48 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
     async () => {
       if (++unbounded < 6) throw claimAnswered503();
     },
-    "controller",
+    roleClaimWords("controller"),
     { log: () => {}, firstDelayMs: 1 }
   );
   expect(unbounded).toBe(6);
+});
+
+// The same helper makes a subscription again on a 503: the controller's watched workflow topics
+// (`packages/pi-legion/src/controller-session.ts`), which an edge listener answers 503
+// `repositories_unknown` while it cannot read the project's repositories. Each wait's line names
+// what the listener answered and what is made again in the caller's own words, not a role claim's,
+// and the waits double as a role claim's do.
+test("a subscription made again on a 503 logs its own words and doubles its wait", async () => {
+  const topic =
+    "notifications.github.acme.widgets.default_branch.workflow.nightly_yaml.completed.schedule";
+  const lines: string[] = [];
+  const handed: unknown[] = [];
+  const busy = claimAnswered503();
+  let tries = 0;
+  await claimRoleAgainOnBusy(
+    async () => {
+      if (++tries < 4) throw busy;
+    },
+    { what: `subscription of ${topic}`, again: "subscribing it again" },
+    {
+      log: (line, error) => {
+        lines.push(line);
+        handed.push(error);
+      },
+      firstDelayMs: 1,
+    }
+  );
+
+  expect(tries).toBe(4);
+  expect(lines.map((line) => line.replace(/: .*$/, ""))).toEqual([
+    `subscription of ${topic} was answered 503 at attempt 1; subscribing it again in 1 ms`,
+    `subscription of ${topic} was answered 503 at attempt 2; subscribing it again in 2 ms`,
+    `subscription of ${topic} was answered 503 at attempt 3; subscribing it again in 4 ms`,
+  ]);
+  for (const line of lines) {
+    expect(line).toContain("the message bus refused the message because its stream is full");
+  }
+  expect(handed).toEqual([busy, busy, busy]);
 });
 
 /** The listener's 503 to a role claim with `body`, as envoy-client's `setRole` rejects with it. */
@@ -454,7 +504,7 @@ test("a claim 503 whose claim stands is told from one that wrote nothing, and ea
     async () => {
       if (++tries < 2) throw handover;
     },
-    "controller",
+    roleClaimWords("controller"),
     { log: (_line, error) => handed.push(error), firstDelayMs: 1 }
   );
   expect(handed).toEqual([handover]);
@@ -535,7 +585,7 @@ test("a regain whose claims/ready fails after the host's signal aborted writes n
   expect(control.lines.at(-1)).toStartWith(
     `claims/ready after role ${claimToken} was reclaimed failed;`
   );
-}, 10_000);
+});
 
 // The heartbeat regains the role, and the host stops while the regain's `claims/ready` is on the
 // wire; the daemon answers it 204 (R24 of dispatch://INFRA-3589). That regain writes no line, and
@@ -593,22 +643,75 @@ test("the name is taken at the host's first-turn callback and not before it", as
 });
 
 test("a boot that gets no first turn claims at the bound", async () => {
-  const waiting = claimHost({ overrides: { firstTurnBoundMs: 5 } });
-  const booted = await bootLegionClaim(waiting.host);
-  expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
+  // The bound is the boot's own timer, so the row holds its clock: a millisecond short of the
+  // bound the name is not taken, and at the bound it is, and the boot's record holds the delay it
+  // armed and that the bound's timer began the claim.
+  jest.useFakeTimers();
+  try {
+    const start = Date.now();
+    const record: ClaimStep[] = [];
+    const waiting = claimHost({
+      overrides: { firstTurnBoundMs: 5, recordClaimStep: (step) => record.push(step) },
+    });
+    const booted = await bootLegionClaim(waiting.host);
+    expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
 
-  // Nothing fires the signal: this session was given no task and started no turn, and the bound
-  // is what takes its name anyway, so the lane the listener kept for it is handed over.
-  await booted.claimed;
-  expect(waiting.firstTurn()).toBeDefined();
-  expect(waiting.steps).toEqual([
-    `claims/register ${JSON.stringify(registration)}`,
-    "onFirstTurn",
-    "setCapability",
-    `claims/ready ${readyBody()}`,
-    "onRoleRegained",
-    `claimRole ${claimToken}`,
-  ]);
+    // Nothing fires the signal: this session was given no task and started no turn, and the bound
+    // is what takes its name anyway, so the lane the listener kept for it is handed over. The
+    // bound's timer asks for the name in the step it fires in.
+    jest.advanceTimersByTime(4);
+    expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(waiting.firstTurn()).toBeDefined();
+    expect(waiting.steps).toEqual([
+      `claims/register ${JSON.stringify(registration)}`,
+      "onFirstTurn",
+      "setCapability",
+      `claims/ready ${readyBody()}`,
+      "onRoleRegained",
+      `claimRole ${claimToken}`,
+    ]);
+    // The held clock has not moved but for the row's 5 ms, so the record's moments are exact.
+    expect(record).toEqual([
+      { armed: start, boundMs: 5 },
+      { claimedBy: "bound", at: start + 5 },
+    ]);
+    await booted.claimed;
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// The record a test in another process is to read (`claimStepRecord`): one JSON line a step, in
+// the file `LEGION_CLAIM_RECORD_FILE` names, and no record at all where it names none. No host
+// builds it from its environment at this head: this row stands in for the pi-legion reader that
+// comes later, and builds the record from a literal environment.
+test("the claim record file holds the bound armed and the first turn that took the name", async () => {
+  expect(claimStepRecord({})).toBeUndefined();
+  expect(claimStepRecord({ [CLAIM_RECORD_FILE]: "" })).toBeUndefined();
+
+  const dir = await mkdtemp(path.join(tmpdir(), "legion-claim-record-"));
+  const file = path.join(dir, "claim-steps.jsonl");
+  // The steps are stamped on `Date.now()`, held here so each is read exactly.
+  jest.useFakeTimers();
+  try {
+    const start = Date.now();
+    const { host, firstTurn } = claimHost({
+      overrides: { recordClaimStep: claimStepRecord({ [CLAIM_RECORD_FILE]: file }) },
+    });
+    const booted = await bootLegionClaim(host);
+    firstTurn()?.();
+    await booted.claimed;
+
+    const lines = (await readFile(file, "utf8")).split("\n").filter(Boolean);
+    expect(lines.map((line): unknown => JSON.parse(line))).toEqual([
+      { armed: start, boundMs: 600_000 },
+      { claimedBy: "first-turn", at: start },
+    ]);
+  } finally {
+    jest.useRealTimers();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("a first turn that started before the boot registered its signal is not lost, and the name is taken once ready has answered", async () => {

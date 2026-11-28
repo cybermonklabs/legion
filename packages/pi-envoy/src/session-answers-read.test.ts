@@ -3,9 +3,17 @@
 // its own and on a clock of its own (`now`), handed on by `carriedAnswers`, the mapping the
 // extension's `sessionAnswersText` calls.
 import { expect, test } from "bun:test";
-import type { SessionAnswer } from "@legion/contracts";
+import {
+  DISPATCH_AS_OF_ABSENT_HEADER,
+  DISPATCH_AS_OF_HEADER,
+  type SessionAnswer,
+} from "@legion/contracts";
 import { bearerCredential } from "@legion/envoy-client/bearer";
-import { readSessionAnswers, renderSessionAnswers } from "@legion/envoy-client/session-answers";
+import {
+  readSessionAnswers,
+  renderSessionAnswers,
+  SESSION_ANSWERS_MARKER,
+} from "@legion/envoy-client/session-answers";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   ask,
@@ -321,5 +329,56 @@ test("a window the clock emptied keeps the list's place and bytes", async () => 
     placed,
     readCall,
     readResult,
+  ]);
+});
+
+// Dispatch's explicit omission of the list at a cut is its answer to the read, as a list is: it
+// ends the session's failure episode, so the next failed read is told again.
+test("an explicit omission at a cut ends the failure episode, so the next failed read is told again", async () => {
+  dispatchCount += 1;
+  const session = `ses_answers_dispatch_${dispatchCount}`;
+  const url = `http://answers-dispatch-${dispatchCount}.test`;
+  const env = { DISPATCH_STATE_DIR: stateDir() };
+  const cut = "2026-10-27T11:30:00.000000Z";
+  const missing = { session_id: session, since: "2026-10-24T11:30:00Z" };
+  const omission = {
+    [DISPATCH_AS_OF_HEADER]: cut,
+    [DISPATCH_AS_OF_ABSENT_HEADER]: "/items,/total",
+  };
+  let omitting = false;
+  const fetchImpl = (async (_input: string | URL | Request) => {
+    if (omitting) return Response.json(missing, { headers: omission });
+    return Response.json({ code: "INTERNAL", error: "database is down" }, { status: 500 });
+  }) as typeof fetch;
+  const read = async () =>
+    carriedAnswers(
+      await readSessionAnswers({
+        session,
+        dispatch: { enabled: true, url, credential: bearerCredential("token") },
+        env,
+        fetchImpl,
+        now: () => NOW,
+      })
+    );
+  const told: [string, boolean][] = [];
+  const request = {
+    ...requestOf(read, noBranch),
+    readFailed: (reason: string, shown: boolean) => {
+      told.push([reason, shown]);
+    },
+  };
+  const down = "INTERNAL: database is down";
+  const omitted = `${SESSION_ANSWERS_MARKER}\n\nThe list was left out at ${cut}. Do not use an earlier list as the answer at this cut.`;
+  const turn = [skill, ask, readCall, readResult];
+
+  await withSessionAnswers([skill, ask], request);
+  expect(told).toStrictEqual([[down, true]]);
+  omitting = true;
+  expect((await withSessionAnswers([...turn], request))?.at(-1)).toEqual(listMessage(omitted));
+  omitting = false;
+  await withSessionAnswers([...turn, grepCall, grepResult], request);
+  expect(told).toStrictEqual([
+    [down, true],
+    [down, true],
   ]);
 });
