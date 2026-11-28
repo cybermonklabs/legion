@@ -12,6 +12,7 @@ import {
   runPass,
   type ScoreClause,
 } from "./scored-runs-contracts";
+import { parsedSession } from "./transcript";
 
 // Each row plants a run directory as rig.sh, seed.ts, dispatch-proxy.ts and Oh My Pi leave one,
 // and scores it. No row reads a world text's words: a row plants a marker and finds it.
@@ -512,6 +513,60 @@ describe("judge-input.md", () => {
     });
     ownerWalk(d.dir, d.name, "ctl-D");
     expect(existsSync(path.join(d.dir, "judge-input.md"))).toBe(false);
+  });
+});
+
+describe("a custom message whose content is a string", () => {
+  // Catches: a transcript schema that refuses a message whose `content` is a string, the `custom`
+  // message Oh My Pi writes when the session uses the eval tool's JavaScript kernel, so the whole
+  // run is a rig error and drops out of the walk's sample; or a reader that then takes that
+  // message's text for the owner's own, so the score, the answer or judge-input.md changes.
+  test("parses as one text part, and leaves the run's clauses, reports and judge input as they were", () => {
+    const runs = fresh();
+    const planted: Planted = {
+      form: "A",
+      proxy: readFirst,
+      plan: planOf("implementer reviewer", "Finish the importer."),
+    };
+    const plain = plant(runs, { ...planted, n: 1 });
+    const kernel = plant(runs, { ...planted, n: 2 });
+    // The real line's shape: its role, a string content, and its other keys. The values of
+    // customType, display, attribution and timestamp are stand-ins of their types.
+    const reminder =
+      "<system-reminder>\nEval runtime state is host-retained, not reconstructed from transcript text.\nCurrent host registry:\n- JavaScript: alive\n</system-reminder>";
+    const custom = {
+      type: "message",
+      message: {
+        role: "custom",
+        content: reminder,
+        customType: "eval-state",
+        display: false,
+        attribution: "agent",
+        timestamp: 1795522225000,
+      },
+    };
+    const file = path.join(kernel.dir, "sessions", "2026-11-24T11-58-00-000Z_ses-owner.jsonl");
+    const lines = readFileSync(file, "utf8").trimEnd().split("\n");
+    // After the questions and before the owner's answer, the last line: a reader of every
+    // message's text would put the reminder into the answer.
+    const at = lines.length - 1;
+    lines.splice(at, 0, JSON.stringify(custom));
+    writeFileSync(file, `${lines.join("\n")}\n`);
+
+    const entries = parsedSession(file);
+    expect(entries[at]?.message?.role).toBe("custom");
+    expect(entries[at]?.message?.content).toEqual([{ type: "text", text: reminder }]);
+    expect(entries[at + 1]?.message?.role).toBe("assistant");
+
+    const without = ownerWalk(plain.dir, plain.name, "head");
+    const withCustom = ownerWalk(kernel.dir, kernel.name, "head");
+    expect(clauseOf(withCustom.clauses, "read").pass).toBe(true);
+    expect(withCustom.clauses).toEqual(without.clauses);
+    expect(withCustom.reported).toEqual(without.reported);
+    expect(withCustom.reach).toEqual(without.reach);
+    expect(readFileSync(path.join(kernel.dir, "judge-input.md"), "utf8")).toBe(
+      readFileSync(path.join(plain.dir, "judge-input.md"), "utf8")
+    );
   });
 });
 
