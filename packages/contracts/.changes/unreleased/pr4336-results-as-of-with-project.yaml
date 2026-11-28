@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The `dispatch_results` tool's input refuses `as_of` beside `project`, as it refuses `at` and
+  `brief` there: Dispatch keeps no history of the results that CI jobs store for checks of the
+  spec files (`GET /api/v1/projects/{key}/results`), so a read with `project` takes `commit`,
+  `check` and `json` alone. A read with `issue` takes `as_of` as before.
+time: 2026-11-28T04:53:21Z
+custom:
+    Issue: pr4336

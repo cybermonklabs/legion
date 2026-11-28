@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  The `dispatch` command's token files (`DISPATCH_BROKER_TOKEN_FILE` and
+  `DISPATCH_BROKER_DPOP_KEY_FILE`) take `DISPATCH_PUBLIC_URL` as the origin Dispatch checks each
+  proof against. With it set, a `DISPATCH_URL` on that origin works as before, and a `DISPATCH_URL`
+  whose host is a Kubernetes Service name (it ends in `.svc.cluster.local`) gets each request while
+  each proof names the request's path on the public origin, so a copy inside the cluster can reach
+  Dispatch at its Service address. Any other `DISPATCH_URL` stops the command at start, with exit
+  2 and a message that names both settings and quotes neither value. With `DISPATCH_PUBLIC_URL`
+  unset, each proof names the request's own URL, as before. The token still goes to
+  `DISPATCH_URL`'s origin alone.
+time: 2026-11-28T04:53:19Z
+custom:
+    Issue: pr4336
