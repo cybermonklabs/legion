@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -89,9 +90,11 @@ func readHelps(t *testing.T, gh string, env map[string]string) []string {
 // whose help help refused, which is never kept. Each must give the target, the refusal text and
 // the files sent that help gives directly. This package's own resolver calls run through it (the
 // rename pair's routing rows, the guard rig's reads). internal/ghroute's tests resolve their rows
-// there, through no keep; the keep is held instead to answer every path of gh's saved help as that
-// help does (TestGhHelpKeepAnswersEveryPathAsGhsSavedHelp), and TargetOf reads gh's help only path
-// by path, through its help argument.
+// there, through no keep, under gh's saved help or an edited help of it (ghroutetest.EditedHelps);
+// the keep is held instead to answer every path of gh's saved help as that help does
+// (TestGhHelpKeepAnswersEveryPathAsGhsSavedHelp), and every path of each edited help as that help
+// does (TestGhHelpKeepAnswersEveryPathAsEachEditedHelp), and TargetOf reads gh's help only path by
+// path, through its help argument.
 func ghTargetOfKept(t *testing.T, argv []string, env map[string]string, help func([]string) (string, error), remotes func() ([]ghroute.Remote, error), dirFor func(owner, name string) (string, error)) (ghroute.Target, error) {
 	t.Helper()
 	want, wantErr := ghroute.TargetOf(argv, env, help, remotes, dirFor)
@@ -142,16 +145,17 @@ func errorText(err error) string {
 // (ghHelpWalkDir), each directory read under a state of its own. Its paths are every file's, read
 // as the path ghroutetest.SavedHelp reads it for (gh.txt gh's own help, else the path's words
 // joined by "_"), help topics among them, and, where no file holds them, an unknown command, gh's
-// default alias co, and a subcommand pr does not list, which gh answers with pr's help. A walk
-// saves no gh alias's help, so its saved help refuses co as gh refuses an unknown command;
-// ghHelpDir holds the help gh printed for co. Two files are no path's help and are skipped:
-// VERSION, `gh --version`'s first line, and ghHelpDir's reference.txt, gh's reference, which
-// regenerate-gh-help.sh saves from `gh help reference` (the 2.98.0 walk's reference.txt, the help
-// of the topic reference, holds the same text and is read). A first keep reads every path from gh,
-// whose answer here is the saved help's, as nothing is kept yet, and keeps each help gh printed; a
-// new keep of the same state reads each kept path from its copy, reading nothing from gh, and a
-// refused path from gh again, since a refusal is never kept. Each answer, its text or its error's,
-// is the saved help's. A directory that yields no path fails, and so does a walk of no release.
+// default alias co, and a subcommand pr does not list, which gh answers with pr's help
+// (savedHelpPaths). A walk saves no gh alias's help, so its saved help refuses co as gh refuses an
+// unknown command; ghHelpDir holds the help gh printed for co. Two files are no path's help and
+// are skipped: VERSION, `gh --version`'s first line, and ghHelpDir's reference.txt, gh's
+// reference, which regenerate-gh-help.sh saves from `gh help reference` (the 2.98.0 walk's
+// reference.txt, the help of the topic reference, holds the same text and is read). A first keep
+// reads every path from gh, whose answer here is the saved help's, as nothing is kept yet, and
+// keeps each help gh printed; a new keep of the same state reads each kept path from its copy,
+// reading nothing from gh, and a refused path from gh again, since a refusal is never kept
+// (readThroughBothKeeps). Each answer, its text or its error's, is the saved help's. A directory
+// that yields no path fails, and so does a walk of no release.
 func TestGhHelpKeepAnswersEveryPathAsGhsSavedHelp(t *testing.T) {
 	t.Parallel()
 	dirs := []string{ghHelpDir}
@@ -169,82 +173,139 @@ func TestGhHelpKeepAnswersEveryPathAsGhsSavedHelp(t *testing.T) {
 	}
 	for _, dir := range dirs {
 		t.Run(dir, func(t *testing.T) {
-			entries, err := os.ReadDir(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var paths [][]string
-			for _, entry := range entries {
-				switch name := entry.Name(); {
-				case name == "VERSION" || dir == ghHelpDir && name == "reference.txt":
-				case !entry.Type().IsRegular() || !strings.HasSuffix(name, ".txt"):
-					t.Errorf("%s holds %s, which is no saved help", dir, name)
-				case name == "gh.txt":
-					paths = append(paths, nil)
-				default:
-					paths = append(paths, strings.Split(strings.TrimSuffix(name, ".txt"), "_"))
-				}
-			}
-			files := len(paths)
-			if files == 0 {
-				t.Fatalf("%s holds no saved help", dir)
-			}
-			for _, path := range [][]string{{"frobnicate"}, {"co"}, {"pr", "frobnicate"}} {
-				if !slices.ContainsFunc(paths, func(p []string) bool { return slices.Equal(p, path) }) {
-					paths = append(paths, path)
-				}
-			}
-			saved := ghroutetest.SavedHelp(dir)
-			refused := 0
-			for i, path := range paths {
-				if _, err := saved(path); err != nil {
-					refused++
-					if i < files {
-						t.Errorf("gh's saved help of %q, which %s holds a file for, is the error %q", path, dir, err)
-					}
-				}
-			}
-			if refused == 0 {
-				t.Errorf("%s answers every path read, want one gh refuses", dir)
-			}
-			// The gh the keep is keyed on, which it never runs: the saved help answers in its place.
-			gh := filepath.Join(t.TempDir(), "gh")
-			if err := execfile.Write(gh, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			env := helpKeepEnv(t)
-			const first = "the keep that keeps each help it reads"
-			for _, keeper := range []string{first, "the keep that reads the kept copies"} {
-				keep := newGhHelpKeep(context.Background(), gh, env, nil)
-				if keep.dir == "" {
-					t.Fatalf("a keep for %s keeps nothing", gh)
-				}
-				fromGh := false
-				keep.fresh = func(path []string) (string, error) {
-					fromGh = true
-					return saved(path)
-				}
-				for _, path := range paths {
-					want, wantErr := saved(path)
-					fromGh = false
-					got, err := keep.read(path)
-					if got != want || errorText(err) != errorText(wantErr) {
-						at := 0
-						for at < len(got) && at < len(want) && got[at] == want[at] {
-							at++
-						}
-						t.Errorf("%s answered gh's help of %q otherwise than %s: from byte %d, %q and the error %q, where the saved help holds %q and the error %q",
-							keeper, path, dir, at, got[at:min(len(got), at+40)], errorText(err), want[at:min(len(want), at+40)], errorText(wantErr))
-					}
-					if wantFromGh := keeper == first || wantErr != nil; fromGh != wantFromGh {
-						t.Errorf("%s read gh's help of %q from gh = %v, want %v: nothing is kept before the first keep reads, a refusal is never kept, and every other help is", keeper, path, fromGh, wantFromGh)
-					}
-				}
-			}
+			paths, files := savedHelpPaths(t, dir)
+			refused := readThroughBothKeeps(t, "gh's saved help in "+dir, paths, files, ghroutetest.SavedHelp(dir))
 			t.Logf("%s: %d paths read through both keeps, %d of its files and %d no file holds; %d kept and read from their copies, %d refused and read from gh's help again",
 				dir, len(paths), files, len(paths)-files, len(paths)-refused, refused)
 		})
 	}
+}
+
+// The keep answers every path of each edited help a resolver table's row is read under
+// (ghroutetest.EditedHelps) as that help does, as it answers gh's saved help
+// (TestGhHelpKeepAnswersEveryPathAsGhsSavedHelp), and so decides every call ghroute.TargetOf
+// resolves under an edited help as that help decides it: internal/ghroute's tests resolve those
+// rows through no keep. Each edited help is gh 2.98.0's saved help (ghHelpDir) with its edits
+// (ghroutetest.EditedHelp), read under a state of its own for the paths the saved help's test
+// reads in ghHelpDir and every path an edit names, through the two keeps that test reads them
+// through, with the edited help as gh's answer. The help of each path an edit names differs from
+// the saved help's, so each edited help is read for a help the saved help's test does not read.
+// A registry of no edited help fails.
+func TestGhHelpKeepAnswersEveryPathAsEachEditedHelp(t *testing.T) {
+	t.Parallel()
+	if len(ghroutetest.EditedHelps) == 0 {
+		t.Fatal("ghroutetest.EditedHelps holds no edited help")
+	}
+	saved := ghroutetest.SavedHelp(ghHelpDir)
+	for _, name := range slices.Sorted(maps.Keys(ghroutetest.EditedHelps)) {
+		t.Run(name, func(t *testing.T) {
+			edits := ghroutetest.EditedHelps[name]
+			edited := ghroutetest.EditedHelp(saved, edits)
+			paths, files := savedHelpPaths(t, ghHelpDir)
+			for key := range edits {
+				path := strings.Fields(key)
+				if text, err := edited(path); err != nil {
+					t.Errorf("gh's help of %q edited for %s is the error %q", path, name, err)
+				} else if was, _ := saved(path); text == was {
+					t.Errorf("gh's help of %q edited for %s is the saved help's: the edit changes nothing", path, name)
+				}
+				if !slices.ContainsFunc(paths, func(p []string) bool { return slices.Equal(p, path) }) {
+					paths = append(paths, path)
+				}
+			}
+			refused := readThroughBothKeeps(t, "gh's saved help in "+ghHelpDir+" edited for "+name, paths, files, edited)
+			t.Logf("%s: %d paths of %s read through both keeps, %d of them a path an edit names; %d kept and read from their copies, %d refused and read from gh's help again",
+				name, len(paths), ghHelpDir, len(edits), len(paths)-refused, refused)
+		})
+	}
+}
+
+// savedHelpPaths is every path TestGhHelpKeepAnswersEveryPathAsGhsSavedHelp reads in dir, a
+// directory of gh's saved help, as that test says, and how many of them, the first, are a file's.
+func savedHelpPaths(t *testing.T, dir string) (paths [][]string, files int) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		switch name := entry.Name(); {
+		case name == "VERSION" || dir == ghHelpDir && name == "reference.txt":
+		case !entry.Type().IsRegular() || !strings.HasSuffix(name, ".txt"):
+			t.Errorf("%s holds %s, which is no saved help", dir, name)
+		case name == "gh.txt":
+			paths = append(paths, nil)
+		default:
+			paths = append(paths, strings.Split(strings.TrimSuffix(name, ".txt"), "_"))
+		}
+	}
+	files = len(paths)
+	if files == 0 {
+		t.Fatalf("%s holds no saved help", dir)
+	}
+	for _, path := range [][]string{{"frobnicate"}, {"co"}, {"pr", "frobnicate"}} {
+		if !slices.ContainsFunc(paths, func(p []string) bool { return slices.Equal(p, path) }) {
+			paths = append(paths, path)
+		}
+	}
+	return paths, files
+}
+
+// readThroughBothKeeps reads every path of paths through two keeps of a state of its own, help
+// answering in gh's place, as TestGhHelpKeepAnswersEveryPathAsGhsSavedHelp says: a first keep,
+// which reads every path from gh and keeps each help gh printed, then a new keep of the same
+// state, which reads each kept path from its copy and a refused path from gh again. Each answer,
+// its text or its error's, must be help's; what names help in a failure. Each of the first files
+// paths is a file's, which help must answer, and help must refuse one path at least. It answers
+// how many paths help refused.
+func readThroughBothKeeps(t *testing.T, what string, paths [][]string, files int, help func([]string) (string, error)) (refused int) {
+	t.Helper()
+	for i, path := range paths {
+		if _, err := help(path); err != nil {
+			refused++
+			if i < files {
+				t.Errorf("%s answers %q, a path a file holds, with the error %q", what, path, err)
+			}
+		}
+	}
+	if refused == 0 {
+		t.Errorf("%s answers every path read, want one gh refuses", what)
+	}
+	// The gh the keep is keyed on, which it never runs: help answers in its place.
+	gh := filepath.Join(t.TempDir(), "gh")
+	if err := execfile.Write(gh, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env := helpKeepEnv(t)
+	const first = "the keep that keeps each help it reads"
+	for _, keeper := range []string{first, "the keep that reads the kept copies"} {
+		keep := newGhHelpKeep(context.Background(), gh, env, nil)
+		if keep.dir == "" {
+			t.Fatalf("a keep for %s keeps nothing", gh)
+		}
+		fromGh := false
+		keep.fresh = func(path []string) (string, error) {
+			fromGh = true
+			return help(path)
+		}
+		for _, path := range paths {
+			want, wantErr := help(path)
+			fromGh = false
+			got, err := keep.read(path)
+			if got != want || errorText(err) != errorText(wantErr) {
+				at := 0
+				for at < len(got) && at < len(want) && got[at] == want[at] {
+					at++
+				}
+				t.Errorf("%s answered gh's help of %q otherwise than %s: from byte %d, %q and the error %q, where that help holds %q and the error %q",
+					keeper, path, what, at, got[at:min(len(got), at+40)], errorText(err), want[at:min(len(want), at+40)], errorText(wantErr))
+			}
+			if wantFromGh := keeper == first || wantErr != nil; fromGh != wantFromGh {
+				t.Errorf("%s read gh's help of %q from gh = %v, want %v: nothing is kept before the first keep reads, a refusal is never kept, and every other help is", keeper, path, fromGh, wantFromGh)
+			}
+		}
+	}
+	return refused
 }
 
 // The guard's own visibility reads run one gh process, the read itself, and read no gh help: the

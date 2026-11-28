@@ -122,7 +122,7 @@ func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
 	if set := read("secret", "set"); set.flags["repos"].placeholder != "repositories" || !set.flags["org"].value || kind(set.slots[0]) != "" {
 		t.Errorf("gh secret set reads as %+v, want --repos repositories, --org taking a value and a secret's name", set)
 	}
-	drift, err := ghroutetest.EditedHelp(savedGhHelp, ghroutetest.SpellingItsURLOtherwise)([]string{"pr", "view"})
+	drift, err := ghroutetest.EditedHelp(savedGhHelp, ghroutetest.EditedHelps["pr view's URL spelled <URL>"])([]string{"pr", "view"})
 	if err != nil {
 		t.Fatal(err)
 	}

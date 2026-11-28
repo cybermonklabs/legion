@@ -14,11 +14,14 @@ import (
 )
 
 // The resolver tables ghroute's TargetOf tests read (route_test.go, printed_test.go): the rows of
-// those tests that read no git remote. `legion gh` reads gh's help through its keep (cmd/legion's
+// those tests that read no git remote, and the edited helps of gh's saved help some of them are
+// read under (EditedHelps). `legion gh` reads gh's help through its keep (cmd/legion's
 // ghHelpKeep), which cmd/legion's TestGhHelpKeepAnswersEveryPathAsGhsSavedHelp holds to answer
-// every path of gh's saved help as that help does. TargetOf reads gh's help only through its help
-// argument, so each row read under that help, one that reads git remotes included, is decided
-// through the keep as it is decided here, with no run through the keep of its own.
+// every path of gh's saved help as that help does, and cmd/legion's
+// TestGhHelpKeepAnswersEveryPathAsEachEditedHelp every path of each edited help as that help does.
+// TargetOf reads gh's help only through its help argument, so each row read under one of those
+// helps, one that reads git remotes included, is decided through the keep as it is decided here,
+// with no run through the keep of its own.
 
 // NoGitRepository is the git remotes of a working directory that is no git repository: none. R is
 // ghroute.Remote, which this package cannot name (it imports ghroute not at all), so a caller
@@ -41,41 +44,49 @@ func EditedHelp(saved func([]string) (string, error), edits map[string][2]string
 	}
 }
 
-// The edits of the help of a gh with an extension, `hello`, and an alias of its own under pr, `pr
-// pv2`, beside gh's default alias co; of a gh whose usage of pr view spells its URL <URL>, as no
-// gh this was read from does; and of a gh whose pr view lists an option a later gh might add,
-// naming a repository.
-var (
-	withAnExtensionAndANestedAlias = map[string][2]string{
+// EditedHelps are the edited helps a row of a resolver table may be read under, each the edits
+// of gh's saved help (EditedHelp) by the name a row gives it (TargetCall.EditedAs): the help of a
+// gh with an extension, `hello`, and an alias of its own under pr, `pr pv2`, beside gh's default
+// alias co; of a gh whose pr view lists an option a later gh might add, naming a repository; and
+// of a gh whose usage of pr view spells its URL <URL>, as no gh this was read from does.
+var EditedHelps = map[string]map[string][2]string{
+	"an extension and a nested alias": {
 		"":   {"ALIAS COMMANDS\n", "EXTENSION COMMANDS\n  hello:         Extension hello\n\nALIAS COMMANDS\n"},
 		"pr": {"\nFLAGS\n", "\nALIAS COMMANDS\n  pv2:           Alias for \"pr view -R sjawhar/legion\"\n\nFLAGS\n"},
-	}
-	SpellingItsURLOtherwise = map[string][2]string{
-		"pr view": {"<url>", "<URL>"},
-	}
-	withARepositoryOption = map[string][2]string{
+	},
+	"a repository option of pr view": {
 		"pr view": {"\nINHERITED FLAGS\n", "      --mirror string    Read the pull request from this repository instead\n\nINHERITED FLAGS\n"},
-	}
-)
-
-// TargetCall is one row of a resolver table: a call's argv and environment, the edits of gh's
-// saved help it is read under (nil for none), and what TargetOf answers for it: the owner, and the
-// repository where the table reads one, or a refusal containing Err.
-type TargetCall struct {
-	Argv  []string
-	Env   map[string]string
-	Edits map[string][2]string
-	Owner string // "" with no refusal: not named
-	Repo  string // "" where the selectors name no one repository
-	Err   string // a refusal containing this
+	},
+	"pr view's URL spelled <URL>": {
+		"pr view": {"<url>", "<URL>"},
+	},
 }
 
-// Help is the help the call is read under: saved, with the call's Edits where it names any.
+// TargetCall is one row of a resolver table: a call's argv and environment, the name of the
+// edited help it is read under (EditedHelps; "" for gh's saved help as it is), and what TargetOf
+// answers for it: the owner, and the repository where the table reads one, or a refusal
+// containing Err.
+type TargetCall struct {
+	Argv     []string
+	Env      map[string]string
+	EditedAs string
+	Owner    string // "" with no refusal: not named
+	Repo     string // "" where the selectors name no one repository
+	Err      string // a refusal containing this
+}
+
+// Help is the help the call is read under: saved as it is where EditedAs is "", else saved with
+// the edits EditedHelps holds under that name. A name EditedHelps does not hold panics, so no row
+// is read under an edited help EditedHelps does not hold.
 func (c TargetCall) Help(saved func([]string) (string, error)) func([]string) (string, error) {
-	if c.Edits == nil {
+	if c.EditedAs == "" {
 		return saved
 	}
-	return EditedHelp(saved, c.Edits)
+	edits, ok := EditedHelps[c.EditedAs]
+	if !ok {
+		panic(fmt.Sprintf("ghroutetest: a row is read under the edited help %q, which EditedHelps does not hold", c.EditedAs))
+	}
+	return EditedHelp(saved, edits)
 }
 
 // ghRepoAcme is the environment of a call whose GH_REPO names acme/widgets.
@@ -107,9 +118,9 @@ var FailsClosedCalls = []TargetCall{
 	// --version is gh's alone; before anything, gh reads the next word as a command, an
 	// alias's or an extension's among them.
 	{Argv: []string{"--version"}},
-	{Argv: []string{"--version", "hello"}, Edits: withAnExtensionAndANestedAlias, Err: `"--version" comes before the command's name`},
+	{Argv: []string{"--version", "hello"}, EditedAs: "an extension and a nested alias", Err: `"--version" comes before the command's name`},
 	{Argv: []string{"--version", "co"}, Err: `"--version" comes before the command's name`},
-	{Argv: []string{"-R", "sjawhar/legion", "--version", "hello"}, Edits: withAnExtensionAndANestedAlias, Err: `"--version" comes before the command's name`},
+	{Argv: []string{"-R", "sjawhar/legion", "--version", "hello"}, EditedAs: "an extension and a nested alias", Err: `"--version" comes before the command's name`},
 	{Argv: []string{"--help", "--version"}, Err: `"--version" comes before the command's name`},
 	// A first word gh's own help does not list, whose help gh may answer by installing an
 	// extension, and the commands that run another program on gh's token.
@@ -126,7 +137,7 @@ var FailsClosedCalls = []TargetCall{
 	{Argv: []string{"pr", "comment", "1", "--body", "https://github.com/sjawhar/legion/pull/2", "-R", "acme/widgets"}, Owner: "acme"},
 	{Argv: []string{"pr", "comment", "1", "--body", "https://example.com/sjawhar/legion", "-R", "acme/widgets"}, Owner: "acme"},
 	{Argv: []string{"repo", "edit", "acme/widgets", "--homepage", "https://github.com/sjawhar/legion"}, Owner: "acme"},
-	{Argv: []string{"pr", "view", "1", "--mirror", "sjawhar/legion", "-R", "acme/widgets"}, Edits: withARepositoryOption, Err: "names a repository, an owner, a team or a URL in a way this does not know"},
+	{Argv: []string{"pr", "view", "1", "--mirror", "sjawhar/legion", "-R", "acme/widgets"}, EditedAs: "a repository option of pr view", Err: "names a repository, an owner, a team or a URL in a way this does not know"},
 	// gh api's placeholders as gh reads them, the colon form too, in a typed field's value.
 	{Argv: []string{"api", "graphql", "-F", "o=:owner", "-F", "r=:repo", "-f", "query=q"}, Env: map[string]string{"GH_REPO": "sjawhar/legion"}, Owner: "sjawhar"},
 	{Argv: []string{"api", "repos/:owner/:repo/pulls"}, Env: map[string]string{"GH_REPO": "sjawhar/legion"}, Owner: "sjawhar"},
@@ -182,9 +193,9 @@ var FailsClosedCalls = []TargetCall{
 	// token itself, are refused before their help is read, at any depth, and so is the Copilot
 	// CLI gh runs.
 	{Argv: []string{"co", "https://github.com/sjawhar/legion/pull/1"}, Err: `"co" is a gh alias`},
-	{Argv: []string{"pr", "pv2", "1"}, Edits: withAnExtensionAndANestedAlias, Err: `"pv2" is a gh alias`},
-	{Argv: []string{"hello", "-R", "sjawhar/legion"}, Edits: withAnExtensionAndANestedAlias, Err: `"hello" is a gh extension`},
-	{Argv: []string{"pr", "view", "1", "-R", "sjawhar/legion"}, Edits: withAnExtensionAndANestedAlias, Owner: "sjawhar"},
+	{Argv: []string{"pr", "pv2", "1"}, EditedAs: "an extension and a nested alias", Err: `"pv2" is a gh alias`},
+	{Argv: []string{"hello", "-R", "sjawhar/legion"}, EditedAs: "an extension and a nested alias", Err: `"hello" is a gh extension`},
+	{Argv: []string{"pr", "view", "1", "-R", "sjawhar/legion"}, EditedAs: "an extension and a nested alias", Owner: "sjawhar"},
 	{Argv: []string{"pr", "ls", "-R", "sjawhar/legion"}, Owner: "sjawhar"},
 	{Argv: []string{"copilot"}, Err: "`gh copilot` runs another program"},
 	// A search query names its owner in plain qualifiers, one to an argument, or not at all.
@@ -207,8 +218,8 @@ var FailsClosedCalls = []TargetCall{
 	{Argv: []string{"pr", "list"}, Env: map[string]string{"GH_TOKEN": "ghp_x"}, Err: "GH_TOKEN is set"},
 	{Argv: []string{"pr", "list"}, Env: map[string]string{"GITHUB_TOKEN": "ghp_x"}, Err: "GITHUB_TOKEN is set"},
 	// An argument the leaf's usage names in a way this does not know, or has no place for.
-	{Argv: []string{"pr", "view", "https://github.com/sjawhar/legion/pull/1"}, Edits: SpellingItsURLOtherwise, Err: "<URL>"},
-	{Argv: []string{"pr", "view", "1"}, Edits: SpellingItsURLOtherwise, Err: "<URL>"},
+	{Argv: []string{"pr", "view", "https://github.com/sjawhar/legion/pull/1"}, EditedAs: "pr view's URL spelled <URL>", Err: "<URL>"},
+	{Argv: []string{"pr", "view", "1"}, EditedAs: "pr view's URL spelled <URL>", Err: "<URL>"},
 	{Argv: []string{"pr", "view", "1", "2"}, Err: "the 2nd argument has no place in `gh pr view`'s usage"},
 	{Argv: []string{"pr", "list", "sjawhar/legion"}, Err: "the 1st argument has no place in `gh pr list`'s usage"},
 	{Argv: []string{"api", "repos/acme/widgets", "repos/sjawhar/legion"}, Err: "the 2nd argument has no place in `gh api`'s usage"},
@@ -220,9 +231,9 @@ var FailsClosedCalls = []TargetCall{
 	{Argv: []string{"help", "pr", "view"}},
 	{Argv: []string{"help", "environment"}},
 	{Argv: []string{"help", "co"}, Err: `"co" is a gh alias`},
-	{Argv: []string{"help", "hello"}, Edits: withAnExtensionAndANestedAlias, Err: `"hello" is a gh extension`},
-	{Argv: []string{"help", "pr", "pv2"}, Edits: withAnExtensionAndANestedAlias, Err: `"pv2" is a gh alias`},
-	{Argv: []string{"-R", "acme/widgets", "help", "hello"}, Edits: withAnExtensionAndANestedAlias, Err: `"hello" is a gh extension`},
+	{Argv: []string{"help", "hello"}, EditedAs: "an extension and a nested alias", Err: `"hello" is a gh extension`},
+	{Argv: []string{"help", "pr", "pv2"}, EditedAs: "an extension and a nested alias", Err: `"pv2" is a gh alias`},
+	{Argv: []string{"-R", "acme/widgets", "help", "hello"}, EditedAs: "an extension and a nested alias", Err: `"hello" is a gh extension`},
 	{Argv: []string{"help", "--bogus", "hello"}, Err: "an option given to gh help is refused: `gh help` takes only the names of commands"},
 	{Argv: []string{"issue", "edit", "1", "2", "--title", "x", "-R", "sjawhar/legion"}, Owner: "sjawhar"},
 	{Argv: []string{"issue", "edit", "https://github.com/sjawhar/legion/issues/1", "https://github.com/sjawhar/legion/issues/2", "--title", "x"}, Owner: "sjawhar"},
@@ -312,7 +323,8 @@ var FailsClosedCalls = []TargetCall{
 // WalkedCalls is a resolver table whose rows read gh's help of every command as the gh release
 // Version prints it, saved whole (cmd/legion's testdata/gh-help-walk/<Version>, which each
 // package's savedGhHelpOf answers from), in place of the help SavedHelp answers from
-// testdata/gh-help. Each row is read under that help with its own Edits where it names any.
+// testdata/gh-help. Each row is read under that help, with the edits EditedHelps holds under its
+// EditedAs where it names one.
 type WalkedCalls struct {
 	Version string
 	Calls   []TargetCall
