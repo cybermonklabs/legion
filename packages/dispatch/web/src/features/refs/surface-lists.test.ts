@@ -2178,9 +2178,29 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "row.text",
   },
   {
+    file: `${FEATURES}/delivery/Sparkbars.tsx`,
+    holds: "a day's figure as the page writes it, or the page's own words for a day with no runs",
+    written: "text",
+  },
+  {
+    file: `${FEATURES}/delivery/SpreadBars.tsx`,
+    holds: "a day's median, its digits as the page writes them (`judgeFigure`)",
+    written: "median.text",
+  },
+  {
+    file: `${FEATURES}/delivery/SpreadBars.tsx`,
+    holds: "a day's 90th percentile, its digits as the page writes them (`judgeFigure`)",
+    written: "p90.text",
+  },
+  {
     file: `${FEATURES}/delivery/lib/freshness.ts`,
     holds: "the page's own line on how fresh a source is",
     written: "live.text",
+  },
+  {
+    file: `${FEATURES}/evals/EvalsHeader.tsx`,
+    holds: "the page's own line on the project's newest Legion daemon read",
+    written: "row.text",
   },
   {
     file: `${FEATURES}/ask-body/AskHandOn.tsx`,

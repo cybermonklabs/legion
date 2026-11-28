@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -79,6 +80,19 @@ const readTime = "the moment the read was answered, which each read takes from i
 // searchTook is why a search's took_ms is volatile: it is how long that search ran.
 const searchTook = "how long the search ran, which each read times on its own clock"
 
+// evalWindowNow is why an eval read's window is volatile: a read that names no `to` reads the
+// window ending at the moment it is answered (parseDeliveryWindow), on its own clock.
+const evalWindowNow = "the default window ends at the moment the read was answered, which each read takes from its own clock"
+
+// evalWindowVolatile is the window of an eval read's answer, which ends at the moment it was
+// answered; evalReadVolatile is that and the refresher's age the list and detail reads state,
+// counted to that moment (evals.RefresherAgeIn).
+var (
+	evalWindowVolatile = []volatileMember{{"window.from", evalWindowNow}, {"window.to", evalWindowNow}}
+	evalReadVolatile   = slices.Concat(evalWindowVolatile,
+		[]volatileMember{{"freshness.refresher_age_seconds", "the refresher's age, counted to the moment the read was answered"}})
+)
+
 // postHistoryStatement is the one read of a post's kept bodies (postHistory): the lateral page of
 // post_body_history, in SQL the statement writes itself, which both history rows run on the
 // post the seed corrected once.
@@ -99,6 +113,23 @@ var readRowDrives = map[string]rowDrive{
 		target:    "/api/v1/projects/$relatedProject/related?title=Drive+every+row&text=The+issue+page+lists+every+open+ask",
 		statement: statementOf(`\btext_lexemes\s+as\s*\(`),
 	},
+	// Every project the seed makes holds its evals (the project write seeds them, evals.Store's
+	// EnsureTx); each read counts the page of them, or the versions or the readings of one.
+	"GET /api/v1/projects/{key}/evals": {target: "/api/v1/projects/$project/evals",
+		statement: statementOf(`\bselect\s+count\(\*\)\s+from\s+evals_current\s+where\s+project_key\s*=\s*any\(\$1::text\[\]\)`),
+		volatile:  evalReadVolatile},
+	"GET /api/v1/projects/{key}/evals/{slug}": {target: "/api/v1/projects/$project/evals/" + evals.SlugDeployFrequency,
+		statement: statementOf(`\bfrom\s+eval_versions\s+where\s+eval_id\s*=\s*\$1\s+order\s+by\s+version\s+desc\b`),
+		volatile:  evalReadVolatile},
+	"GET /api/v1/projects/{key}/evals/{slug}/items": {target: "/api/v1/projects/$project/evals/" + evals.SlugDeployFrequency + "/items",
+		statement: statementOf(`\bselect\s+count\(\*\)\s+from\s+eval_readings\s+where\s+eval_id\s*=\s*\$1\s+and\s+superseded_at\s+is\s+null\b`),
+		volatile:  evalWindowVolatile},
+	"GET /api/v1/evals": {target: "/api/v1/evals?project=$project", statement: statementOf(`\bselect\s+key\s+from\s+projects\s+order\s+by\s+key\b`),
+		volatile: evalReadVolatile},
+	// The delivery reads read the project seedWrites configures (saveDeliveryRule): the list its
+	// page of the record, and the settings its row with each source's reconcile progress.
+	"GET /api/v1/projects/{key}/production-events": {target: "/api/v1/projects/$deliveryProject/production-events",
+		statement: statementOf(`\bwith\s+matched\s+as\s*\(\s*select\s+\*,\s*coalesce\(finished_at,\s*detected_at\)\s+as\s+at\b`)},
 	"GET /api/v1/settings/repo-projects": {target: "/api/v1/settings/repo-projects", statement: statementOf(`\bfrom\s+repo_projects\s+order\s+by\s+repo\b`)},
 	// The handler asks GitHub; its one statement is the GitHub client's read of the rate limit
 	// GitHub last answered, which it reads before it asks.
@@ -116,12 +147,22 @@ var readRowDrives = map[string]rowDrive{
 		statement: statementOf(`\bfrom\s+issues\s+i\s+left\s+join\s+\(\s*workflow_tuples\b`)},
 	"GET /api/v1/settings/project-default-assignees": {target: "/api/v1/settings/project-default-assignees",
 		statement: statementOf(`\bselect\s+key,\s*default_assignee\s+from\s+projects\b`)},
-	"GET /api/v1/settings/new-issue":           {target: "/api/v1/settings/new-issue", fromMemory: "the new-issue settings are the deployment's configuration, held in memory"},
+	"GET /api/v1/settings/new-issue": {target: "/api/v1/settings/new-issue", fromMemory: "the new-issue settings are the deployment's configuration, held in memory"},
+	"GET /api/v1/projects/{key}/settings/delivery": {target: "/api/v1/projects/$deliveryProject/settings/delivery",
+		statement: statementOf(`\bfrom\s+project_delivery_settings\s+s\s+join\s+projects\s+p\s+on\s+p\.key\s*=\s*s\.project_key\b`)},
 	"GET /api/v1/settings/delivery":            {target: "/api/v1/settings/delivery", statement: statementOf(`\bfrom\s+delivery_settings\b`)},
 	"GET /api/v1/projects/{key}/legion/daemon": {target: "/api/v1/projects/$project/legion/daemon", statement: statementOf(`\bfrom\s+legion_settings\s+where\s+project\b`)},
 	"GET /api/v1/projects/{key}/legion/board": {target: "/api/v1/projects/$project/legion/board", statement: statementOf(`\bfrom\s+legion_reads\b`),
 		volatile: []volatileMember{{"computed_at", readTime}}},
+	// The drive project names a daemon nothing samples here; the read runs the board header's one
+	// statement of the daemon's reads (readDaemonRead) whatever it finds.
+	"GET /api/v1/projects/{key}/legion/read": {target: "/api/v1/projects/$project/legion/read",
+		statement: statementOf(`\bwith\s+newest\s+as\s*\(\s*select\s+read_at,\s*ok,\s*error\s+from\s+legion_reads\b`)},
 	"GET /api/v1/delivery/runs/{id}": {target: "/api/v1/delivery/runs/$pipelineRun",
+		statement: statementOf(`\bfrom\s+delivery_run_jobs\s+where\s+repo\s*=\s*\$1\s+and\s+run_id\s*=\s*\$2\b`)},
+	// The project's one source reads the pipeline fixture's repository (seedWrites), whose oldest
+	// deploy run ships no pull request and so counts for that project (deployRunCountsFor).
+	"GET /api/v1/projects/{key}/deploy-runs/{id}": {target: "/api/v1/projects/$deliveryProject/deploy-runs/$pipelineRun?repo=acme/widgets",
 		statement: statementOf(`\bfrom\s+delivery_run_jobs\s+where\s+repo\s*=\s*\$1\s+and\s+run_id\s*=\s*\$2\b`)},
 	"GET /api/v1/ci-reconcile/passes": {target: "/api/v1/ci-reconcile/passes", statement: statementOf(`\bci_reconcile_passes\b`)},
 	"GET /api/v1/me/agent-tokens":     {target: "/api/v1/me/agent-tokens", statement: statementOf(`\bfrom\s+agent_read_tokens\s+where\s+owner\s*=\s*\$1\b`)},
@@ -269,30 +310,39 @@ var readRowDrives = map[string]rowDrive{
 // getWriteDrives is the drive of every GET row of the table that writes (readWritesState), keyed
 // as readRowDrives is: the request that makes the write the row's WriteNote names, on the seeded
 // store. Each delivery read is sent at a window holding a deploy run with no production job of
-// its own, the newest run the timeline's and the oldest the pipeline's, and firstToWarn writes
-// once per process for each run (delivery.go). The timeline reads only the window around its own
-// run; the measures' read reaches the timeline's run too, ten hours after its own, and the
-// pipeline reads seven days, which hold all three. So each is sent after the drives whose runs
-// it reaches (sendAfter): timeline, then measures, then pipeline. Sent in the order the routes
-// are declared, by pattern, the measures went first and its read wrote the timeline's warning
-// (envoy-go-race-api job 139500583275).
+// its own, the newest run the project timeline's, then the timeline's, and the oldest the
+// pipeline's, and firstToWarn writes once per process for each run (delivery.go). Each read also
+// reaches the runs after its window that can ship a pull request of it: the timeline's read wrote
+// the project timeline's warning as well as its own, and the measures' read reaches the
+// timeline's run, ten hours after its own; the pipeline reads seven days, which hold all four. The
+// project timeline, whose population is the timeline's (readDeliveryPopulation), holds the newest
+// run, which no later run follows. So each is sent after the drives whose runs it reaches
+// (sendAfter): the project timeline, then the timeline, then measures, then pipeline. Sent in the
+// order the routes are declared, by pattern, the measures went first and its read wrote the
+// timeline's warning (envoy-go-race-api job 139500583275).
 var getWriteDrives = map[string]rowDrive{
 	"GET /api/v1/delivery/timeline": {
 		target:    "/api/v1/delivery/timeline?from=$timelineFrom&to=$timelineTo",
 		statement: statementOf(`\binsert\s+into\s+delivery_run_warnings\b`),
 		stored:    "select count(*) from delivery_run_warnings where run_id = $timelineRun",
+		sendAfter: []string{"GET /api/v1/projects/{key}/timeline"},
+	},
+	"GET /api/v1/projects/{key}/timeline": {
+		target:    "/api/v1/projects/$deliveryProject/timeline?from=$projectTimelineFrom&to=$projectTimelineTo",
+		statement: statementOf(`\binsert\s+into\s+delivery_run_warnings\b`),
+		stored:    "select count(*) from delivery_run_warnings where run_id = $projectTimelineRun",
 	},
 	"GET /api/v1/delivery/measures": {
 		target:    "/api/v1/delivery/measures?from=$measuresFrom&to=$measuresTo",
 		statement: statementOf(`\binsert\s+into\s+delivery_run_warnings\b`),
 		stored:    "select count(*) from delivery_run_warnings where run_id = $measuresRun",
-		sendAfter: []string{"GET /api/v1/delivery/timeline"},
+		sendAfter: []string{"GET /api/v1/delivery/timeline", "GET /api/v1/projects/{key}/timeline"},
 	},
 	"GET /api/v1/delivery/pipeline": {
 		target:    "/api/v1/delivery/pipeline?at=$pipelineAt",
 		statement: statementOf(`\binsert\s+into\s+delivery_run_warnings\b`),
 		stored:    "select count(*) from delivery_run_warnings where run_id = $pipelineRun",
-		sendAfter: []string{"GET /api/v1/delivery/timeline", "GET /api/v1/delivery/measures"},
+		sendAfter: []string{"GET /api/v1/delivery/timeline", "GET /api/v1/projects/{key}/timeline", "GET /api/v1/delivery/measures"},
 	},
 	"GET /api/v1/going/requests/{id}/stream": {
 		target:    "/api/v1/going/requests/$going/stream",

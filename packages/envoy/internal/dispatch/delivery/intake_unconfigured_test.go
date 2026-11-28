@@ -44,21 +44,21 @@ func headRows(t *testing.T, ctx context.Context, pool *store.Pool, number int) i
 	return rows
 }
 
-// The reported case: a deployment with no delivery_settings row, and a pull request opened on a
-// repository Dispatch serves, its branch legion/<KEY> and its body `Dispatch: <KEY>`. The intake
-// binds its durable, writes the head row attributed to KEY, and the read `dispatch results` makes
-// (NewestPullRequestHead) finds that head, so a check CI proves is derived at it rather than read
-// as no_head. The branch names an issue held to the pull request's repository, so no commit
-// message is read and GitHub is asked nothing. A workflow run and a merge in the same deployment
-// are the delivery timeline's: the run is acknowledged and fetches nothing, and the merge writes
-// its head row and no delivery row.
+// The reported case: a deployment where no project's delivery settings are saved, and a pull
+// request opened on a repository Dispatch serves, its branch legion/<KEY> and its body `Dispatch:
+// <KEY>`. The intake binds its durable, writes the head row attributed to KEY, and the read
+// `dispatch results` makes (NewestPullRequestHead) finds that head, so a check CI proves is derived
+// at it rather than read as no_head. The branch names an issue held to the pull request's
+// repository, so no commit message is read and GitHub is asked nothing. A workflow run and a merge
+// in the same deployment are the delivery timeline's: the run is acknowledged and fetches nothing,
+// and the merge writes its head row and no delivery row.
 func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	key := seedHeadIssue(t, ctx, pool, 58)
 	settings := loadedSettingsCache(t, ctx, pool)
-	if held := settings.Load(); held != nil {
-		t.Fatalf("the settings cache holds %+v in a database with no delivery_settings row, want nothing", held)
+	if held := settings.Load(); held == nil || len(held.All()) != 0 {
+		t.Fatalf("the settings cache holds %+v in a database where no project's delivery settings are saved, want rules with no repository", held.All())
 	}
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)

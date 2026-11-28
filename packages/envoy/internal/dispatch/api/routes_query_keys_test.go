@@ -17,7 +17,8 @@ import (
 	"testing"
 )
 
-// The query-parameter structs of routes_shapes.go are declarations alone: no handler reads one,
+// The query-parameter structs of routes_shapes.go are declarations: no handler reads its values
+// through one (the eval routes read their struct's tags, the keys they refuse others by),
 // because r.URL.Query().Get and .Has differ on an absent key and moving forty handlers' reads
 // onto a struct is the one change that could alter what a request means. Nothing else ties the
 // two together — the mount guards hold routes to shapes, not query keys to structs — so a

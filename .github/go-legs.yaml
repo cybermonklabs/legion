@@ -261,8 +261,10 @@ packages/envoy:
       - internal/cipher/wire
       - internal/ciphertoken/ciphertokentest
       - internal/holdrecord/holdrecordtest
-    # Dispatch's commands and the lighter half of its packages.
+    # Dispatch's commands, the eval registry and the lighter Dispatch packages. The registry
+    # package is first because its tests took 625 s in job 139005257800, longer than cmd/dispatch.
     3:
+      - internal/dispatch/evals                 # 625 s
       - internal/dispatch/legion                # 617 s (run 46059758378, its read-rule seeds beside each other)
       - cmd/dispatch                            # 316 s
       - internal/dispatch/specform              # 84 s (a dev box's run, not CI's)
@@ -290,17 +292,24 @@ packages/envoy:
       - internal/dispatch/auth
       - internal/dispatch/specgraph/specgraphtest
       - dispatchblocks
-      - internal/dispatch/legion/legiontest
-      - internal/dispatch/legionfacts/independent
+      - internal/dispatch/evals/evalbench
+      - internal/dispatch/evals/evalbench/cmd
+      - internal/dispatch/evals/evalbench/measure
+      - internal/dispatch/evals/evalfixture
+      - internal/dispatch/evals/evalfixture/cmd
       - internal/dispatch/evals/independent
       - internal/dispatch/evals/independent/cmd
+      - internal/dispatch/prodevents
+      - internal/dispatch/prodevents/signals
       - internal/dispatch/specform/ste
-    # Dispatch's heavier packages.
+    # Dispatch's heavier packages and the Legion facts, which took about 109 s in the same CI as the
+    # eval registry in leg 3.
     4:
       - internal/dispatch/outbox                # 320 s
       - internal/dispatch/pmdoc                 # 242 s
       - internal/dispatch/refs                  # 186 s
       - internal/dispatch/cireconcile           # 171 s
+      - internal/dispatch/legionfacts           # 109 s
       - internal/dispatch/embedqueue            # 99 s
       - internal/dispatch/textversions          # 95 s
       - internal/dispatch/files                 # 40 s
@@ -336,6 +345,10 @@ packages/envoy:
       - internal/dispatch/files/filestest
       - internal/dispatch/graphcensus/censustest
       - internal/dispatch/graphstore/graphstoretest
+      - internal/dispatch/legion/legionseed
+      - internal/dispatch/legion/legiontest
+      - internal/dispatch/legionfacts/independent
+      - internal/dispatch/legionfacts/independent/cmd
       - internal/dispatch/pmdoc/pmdoctest
       - internal/dispatch/pmdoc/schemanodes/schemanodestest
       - internal/dispatch/refs/refstest

@@ -65,7 +65,6 @@ test("a human creates a project from Settings and it appears in the project pick
       { assignee: "alice", project: "CORE" },
       { assignee: "alice", project: "QA" },
     ]);
-  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects")
     .mockResolvedValueOnce([core])
     .mockResolvedValueOnce([core, listed]);
@@ -122,7 +121,6 @@ test("a human creates a project from Settings and it appears in the project pick
     listArchitectureSources.mockRestore();
     getLegionDaemon.mockRestore();
     listDefaults.mockRestore();
-    getDeliverySettings.mockRestore();
     listProjects.mockRestore();
     createProject.mockRestore();
   }
@@ -155,7 +153,6 @@ test("creating a project with a taken key shows the server's error inline", asyn
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
-  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
   const createProject = spyOn(api, "createProject").mockRejectedValue(
     new ApiError(409, { code: "PROJECT_EXISTS", error: "a project with this key already exists" })
@@ -194,7 +191,6 @@ test("creating a project with a taken key shows the server's error inline", asyn
     listArchitectureSources.mockRestore();
     getLegionDaemon.mockRestore();
     listDefaults.mockRestore();
-    getDeliverySettings.mockRestore();
     listProjects.mockRestore();
     createProject.mockRestore();
   }
@@ -255,7 +251,6 @@ function renderSettings(projects: string[]): {
     }),
     spyOn(api, "listArchitectureSources").mockResolvedValue([]),
     spyOn(api, "getLegionDaemon").mockResolvedValue(null),
-    spyOn(api, "getDeliverySettings").mockResolvedValue(null),
     spyOn(api, "listProjects").mockResolvedValue(
       projects.map((key) => ({
         created_at: "2026-09-01T00:00:00Z",

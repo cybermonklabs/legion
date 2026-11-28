@@ -1,0 +1,23 @@
+{
+  "type": "subscribe",
+  "sub": "items-1",
+  "view": {
+    "kind": "items",
+    "project": "ACME",
+    "slug": "pr-ci",
+    "window": {
+      "from": "2026-10-01T00:00:00Z",
+      "to": "2026-10-29T00:00:00Z"
+    },
+    "query": "compare_from=2026-09-03T00:00:00Z&compare_to=2026-10-01T00:00:00Z&limit=200&repo=acme/widgets&sort=failures"
+  },
+  "resume": {
+    "seq": "45",
+    "revs": {
+      "items": {},
+      "maps": {},
+      "counts": {},
+      "fields": {}
+    }
+  }
+}

@@ -714,19 +714,19 @@ export async function seedReviewRoutes({
   await setLiveSessions(reviewSessions);
   const issue = workspace.issues.workflow;
 
-  // `seedPipelineFixture()` is `seedDeliveryFixture()`'s settings row written a second time and
-  // then the Pipeline's own rows, and `delivery_settings` holds one row, so the two fixtures are
-  // seeded as their halves: the settings and the timeline's rows, then `seedPipelineRows()`,
-  // which only updates that one row's job names before writing the Pipeline's runs.
+  // `seedPipelineFixture()` is `seedDeliveryFixture()`'s settings written a second time and then
+  // the Pipeline's own rows, and a project holds one settings row, so the two fixtures are seeded
+  // as their halves: the settings and the timeline's rows, then `seedPipelineRows()`, which only
+  // updates that settings' one deploy source's job names before writing the Pipeline's runs.
   await seedDeliveryFixture();
   await seedPipelineRows();
 
   // The freshness rows of the Delivery and the Pipeline pages, pinned to the verdict a
   // reconcile pass reaches here. Nothing seeds a GitHub App for `acme/widgets`, so every pass
   // this server runs against the corpus fails with exactly the error written below, and a
-  // failed pass leaves `last_reconcile_at` null and overwrites `last_error` with it
-  // (`delivery/reconcile.go`, `store.go`'s `RecordReconcileError`). What is not fixed is
-  // WHETHER a pass has run: the first tick is jittered across the five-minute interval
+  // failed pass leaves `last_reconcile_at` null and overwrites `last_error` with it on the
+  // repository's deploy source (`delivery/reconcile.go`, `RecordReconcileError`). What is not
+  // fixed is WHETHER a pass has run: the first tick is jittered across the five-minute interval
   // (`delivery.ReconcileInterval`), so one run of these pages read "PRs never checked" and the
   // next, ninety seconds later, read "PRs never checked: the GitHub App is not installed on
   // acme/widgets" - eight lines of difference across the two pages, and two labels of
@@ -734,9 +734,8 @@ export async function seedReviewRoutes({
   // verdict here makes both reads the same whether a pass has run or not, as
   // `e2e/delivery.e2e.ts` writes it for the same reason.
   await sql(
-    `UPDATE delivery_settings
-       SET last_error = 'the GitHub App is not installed on acme/widgets'
-     WHERE singleton`
+    `UPDATE project_deploy_sources
+       SET last_error = 'the GitHub App is not installed on acme/widgets'`
   );
 
   const requirements = await createIssueArtifact(issue, {

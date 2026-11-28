@@ -49,7 +49,7 @@ func TestADayPastTheRunBoundIsRefusedByNameAndTheNextDayAnswered(t *testing.T) {
 		}
 	}
 
-	seedFirstDay(t, 0, maxRunsPerWindow)
+	seedFirstDay(t, 0, MaxRunsPerWindow)
 	second := days[1].Add(2 * time.Hour)
 	if _, err := pool.Exec(ctx, `
 		insert into delivery_runs (repo, run_id, kind, pr_number, head_sha, head_commit_at,
@@ -71,7 +71,7 @@ func TestADayPastTheRunBoundIsRefusedByNameAndTheNextDayAnswered(t *testing.T) {
 	analyze(t)
 
 	t.Run("at the bound", func(t *testing.T) {
-		// Only ReadCIDays and ReadDaysDeploys without applies count exactly maxRunsPerWindow
+		// Only ReadCIDays and ReadDaysDeploys without applies count exactly MaxRunsPerWindow
 		// in each first-day list. The apply part would also count the second day's shipping run.
 		ci, err := ReadCIDays(ctx, pool, settings.DeployRepo, days, names)
 		if err != nil {
@@ -87,9 +87,9 @@ func TestADayPastTheRunBoundIsRefusedByNameAndTheNextDayAnswered(t *testing.T) {
 		if ci[0].Refused != nil || ci[1].Refused != nil {
 			t.Errorf("ReadCIDays refused a day at or below the bound: %v, %v", ci[0].Refused, ci[1].Refused)
 		}
-		if len(ci[0].Checks.Runs) != maxRunsPerWindow || len(ci[0].Deploys.Runs) != maxRunsPerWindow || !reflect.DeepEqual(ci[0].CIRows, wantCI) {
+		if len(ci[0].Checks.Runs) != MaxRunsPerWindow || len(ci[0].Deploys.Runs) != MaxRunsPerWindow || !reflect.DeepEqual(ci[0].CIRows, wantCI) {
 			t.Errorf("first day's CI holds %d checks and %d pushes, want all %d of each in ReadCIRows' order and with its jobs",
-				len(ci[0].Checks.Runs), len(ci[0].Deploys.Runs), maxRunsPerWindow)
+				len(ci[0].Checks.Runs), len(ci[0].Deploys.Runs), MaxRunsPerWindow)
 		}
 
 		deploys, err := ReadDaysDeploys(ctx, pool, settings, days, false)
@@ -106,22 +106,22 @@ func TestADayPastTheRunBoundIsRefusedByNameAndTheNextDayAnswered(t *testing.T) {
 		if deploys.Refused[0] != nil || deploys.Refused[1] != nil {
 			t.Errorf("ReadDaysDeploys refused a day at or below the bound: %v, %v", deploys.Refused[0], deploys.Refused[1])
 		}
-		if len(deploys.Deploys[0].Started.Runs) != maxRunsPerWindow || !reflect.DeepEqual(deploys.Deploys[0], wantDeploys) {
-			t.Errorf("first day's deploys hold %d runs, want all %d in ReadDeploys' order and with its jobs", len(deploys.Deploys[0].Started.Runs), maxRunsPerWindow)
+		if len(deploys.Deploys[0].Started.Runs) != MaxRunsPerWindow || !reflect.DeepEqual(deploys.Deploys[0], wantDeploys) {
+			t.Errorf("first day's deploys hold %d runs, want all %d in ReadDeploys' order and with its jobs", len(deploys.Deploys[0].Started.Runs), MaxRunsPerWindow)
 		}
 	})
 
 	t.Run("one past the bound", func(t *testing.T) {
-		seedFirstDay(t, maxRunsPerWindow, maxRunsPerWindow+1)
+		seedFirstDay(t, MaxRunsPerWindow, MaxRunsPerWindow+1)
 		analyze(t)
 		firstWindow := fmt.Sprintf("[%s, %s)", days[0].Format(time.RFC3339Nano), days[1].Format(time.RFC3339Nano))
 		checkRefusal := func(t *testing.T, got *RefusedWindow, want RefusedRows) {
 			t.Helper()
-			if got == nil || !got.From.Equal(days[0]) || !got.To.Equal(days[1]) || got.Repo != settings.DeployRepo || got.Bound != maxRunsPerWindow || got.Rows != want {
-				t.Fatalf("first day's refusal is %#v, want %s of %s in %s, bound %d", got, want, settings.DeployRepo, firstWindow, maxRunsPerWindow)
+			if got == nil || !got.From.Equal(days[0]) || !got.To.Equal(days[1]) || got.Repo != settings.DeployRepo || got.Bound != MaxRunsPerWindow || got.Rows != want {
+				t.Fatalf("first day's refusal is %#v, want %s of %s in %s, bound %d", got, want, settings.DeployRepo, firstWindow, MaxRunsPerWindow)
 			}
 			text := got.String()
-			for _, part := range []string{firstWindow, strconv.Itoa(maxRunsPerWindow), settings.DeployRepo, string(want)} {
+			for _, part := range []string{firstWindow, strconv.Itoa(MaxRunsPerWindow), settings.DeployRepo, string(want)} {
 				if !strings.Contains(text, part) {
 					t.Errorf("refusal %q does not name %q", text, part)
 				}

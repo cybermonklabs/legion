@@ -89,6 +89,12 @@ export DISPATCH_E2E_PG_CONNECTIONS=$connections
 export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
 export DISPATCH_E2E_ISSUER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dev-oidc-issuer"
 export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+# No DISPATCH_E2E_NATS_BIN here, though the binaries job builds a nats-server beside them: a bus
+# is the run's and not a row's (e2e/harness-nats.ts starts one for every stack), and these legs'
+# rows run on a server with NATS disabled - agents.e2e.ts and delivery-queued.e2e.ts read the
+# queue its test hook keeps, which a server with a bus answers 404 QUEUED_ON_BUS. The rows that
+# need the bus (`natsSpecNames`, e2e/configurations.ts) are the `chromium-nats` project's, which
+# no lane below names and the alone job runs on a leg of its own.
 # The blob report this leg hands the merge job. Its name carries the leg, so the legs'
 # reports keep their own names when the merge job downloads them into one directory.
 export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
@@ -192,6 +198,8 @@ esac
 # `default: false` each `-alone` project carries (the three entries of
 # `packages/dispatch/e2e/playwright.config.ts#aloneProjects`) is what keeps them out of a run
 # that names no project, which this is not. The alone job names them, one machine each.
+# `chromium-nats` is in the default selection and stays off these legs the same way, by not
+# being named: its rows need the bus these legs do not start, and the alone job runs it too.
 #
 # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
 # read from the list reporter's `Running N tests using M workers` line, which the merge

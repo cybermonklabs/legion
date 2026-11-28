@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -280,8 +282,8 @@ const attributionCandidateBound = 25
 // link is the pull request's URL, or those whose link is the GitHub issue one citation names —
 // rank by key in byte order (`collate "C"`), and so do the statements that order the candidates
 // again, so two databases holding the same links rank them alike whatever order the links were
-// stored in: the first held candidate is the pull request's issue, and ResolvedCandidates
-// returns the whole ranked list. The union's arms are written in that
+// stored in: the first held one is the pull request's issue, and the evals' owner keys carry the
+// whole order (evals/delivery_days.go, attributionListOf). The union's arms are written in that
 // ranked order, so the text reads as the list at the top of this file reads. The two link sources
 // compare URLs lowercased on both sides: GitHub's owner and repository names are case-insensitive,
 // its answers spell them as their owners do (`Acme/Widgets`), and Dispatch stores an issue's
@@ -472,9 +474,10 @@ func resolvedCandidatesQuery(renames refs.Renames) string {
 // repository (canonical), and reads the heads an issue's results are compared with, its linked
 // pull requests' included (linked_pull_requests.go), by the same pairs. NewAttributor builds its
 // statements once from those pairs. cmd/dispatch's main builds one Attributor and gives it to
-// the delivery reconcile (NewReconcile) and the intakes (StartIntakes). The API builds its own
-// from the same pairs (api.NewDeps). No package variable holds the pairs, so a test builds an
-// Attributor from pairs of its own.
+// the delivery reconcile (NewReconcile), the intakes (StartIntakes) and the evals store
+// (evals.New), whose day rows read the candidates it resolves (ResolvedCandidates); the API builds
+// its own of the same pairs (api.NewDeps). No package variable holds the pairs, so a test builds
+// an Attributor from pairs of its own.
 type Attributor struct {
 	renames         refs.Renames
 	candidatesQuery string
@@ -566,7 +569,10 @@ func (a *Attributor) resolveStoredIssueKey(ctx context.Context, pool *store.Pool
 // over its `held` term, since resolving a batch row by row would pay for a repository walk per
 // row (AttributePullRequests). The two are one rule because they read one ranked list and one
 // holding: attributionCandidates ranks, attributionHeld holds, attributionSubjects names the
-// keys the walk resolves, and all three are spliced into both statements.
+// keys the walk resolves, and all three are spliced into both statements. The evals' day rows
+// read the same ranked list and the same walk (ResolvedCandidates) and make the pick at read
+// time instead, against the default repositories the evals refresher publishes rather than the
+// live ones (evals/delivery_days.go, attributionListOf).
 func firstHeldCandidate(candidates []attributionCandidate) int {
 	return slices.IndexFunc(candidates, func(candidate attributionCandidate) bool { return candidate.held })
 }
@@ -620,11 +626,21 @@ type ResolvedCandidate struct {
 // pulls whose attribution inputs are stored (resolvedCandidatesQuery), by pull request: every
 // candidate its five sources name, best first, with what its holding is made of
 // (ResolvedCandidate). A pull request whose inputs name nothing has no candidate, and one whose
-// inputs are not stored, or that no row holds, is not in the answer. AttributePullRequests picks
-// an issue using the project's current default repository. ResolvedCandidates returns the
-// information a caller needs to make the pick against a different set of project defaults,
-// without rewriting stored attribution. One statement, whatever the number of pull requests:
-// one walk resolves every candidate's issue together, as the batch's does.
+// inputs are not stored, or that no row holds, is not in the answer. It is the read the evals'
+// day rows attribute a pull request by (evals/delivery_days.go): the attribution AttributePullRequests
+// writes holds each candidate to its project's default repository as it stands now, where the day
+// rows hold it, at read time, to the default the evals refresher publishes, so a move of a default
+// moves the pull requests it holds without a day row rewritten. One statement, whatever the
+// number of pull requests: one walk resolves every candidate's issue together, as the batch's does.
+//
+// The statement is planned with its values each time it runs (pgx.QueryExecModeDescribeExec), as
+// refs' read of several blocks is: a connection's prepared statement takes a generic plan from its
+// sixth run where Postgres prices it no dearer, and that plan, which knows neither array's length,
+// takes the batch for 10 rows and loops each candidate over the repository walk's aggregate again.
+// The project timeline reads every pull request of its window here on each recompute: on INFRA's
+// stated-rate seed, 3,873 of them for 84 days, the generic plan took 2,093 ms where the plan made
+// for the arrays took 96 ms, and a live recompute of the timeline 1.5 to 1.6 s where it otherwise
+// takes 0.2 to 0.4 (dispatch://INFRA-2918, T33).
 func (a *Attributor) ResolvedCandidates(ctx context.Context, q Querier, pulls []PullRequestKey) (map[PullRequestKey][]ResolvedCandidate, error) {
 	resolved := map[PullRequestKey][]ResolvedCandidate{}
 	if len(pulls) == 0 {
@@ -638,7 +654,7 @@ func (a *Attributor) ResolvedCandidates(ctx context.Context, q Querier, pulls []
 			repos, numbers = append(repos, pull.Repo), append(numbers, int32(pull.Number))
 		}
 	}
-	rows, err := q.Query(ctx, a.resolvedQuery, repos, numbers)
+	rows, err := q.Query(ctx, a.resolvedQuery, pgx.QueryExecModeDescribeExec, repos, numbers)
 	if err != nil {
 		return nil, fmt.Errorf("read the candidates of %d stored pull requests: %w", len(repos), err)
 	}

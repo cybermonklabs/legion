@@ -27,8 +27,9 @@ package legion
 //
 // This file holds the intake's lifecycle and wiring: the durable and its policy, the intake's run,
 // its take-over and its starting points, each message's key and delivery and what an attempt at it
-// comes to (outcome), the retry of a database step, the log lines and the hourly prune of
-// legion_reads. Each message's apply path is in apply.go.
+// comes to (outcome), the retry of a database step, the log lines, the hourly prune of
+// legion_reads, and the operations of each project's admission eval the intake is given
+// (Admissions). Each message's apply path is in apply.go.
 
 import (
 	"context"
@@ -36,10 +37,12 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -203,8 +206,11 @@ const settingsKey = ""
 // daemon's state whole where the events cannot carry it (ReadReasonStart and the rest). It runs
 // whenever Dispatch has NATS, whether or not the GitHub App is configured.
 type Intake struct {
-	pool    *store.Pool
-	durable *delivery.HeldDurable
+	pool *store.Pool
+	// admissions is the admission eval's operations, which applyBatch and recordWhole run in
+	// their transactions.
+	admissions Admissions
+	durable    *delivery.HeldDurable
 	// settingsWake is signalled on each write of a Legion setting (SettingsChannel); nil reads the
 	// settings only at each take-over.
 	settingsWake <-chan struct{}
@@ -218,7 +224,8 @@ type Intake struct {
 	// time, and lastRetry how long at the most, the wait doubling after each failure between
 	// (untilDone): applyFirstRetry and applyLastRetry. A test shrinks both.
 	firstRetry, lastRetry time.Duration
-	// log is where the intake writes its lines (logger): nil writes each where slog.Default()
+	// log is where the intake writes its lines (logger), and the admission eval's operations it
+	// runs theirs (Admissions.Register, Admissions.Write): nil writes each where slog.Default()
 	// points as the line is written, as every line of the package went before the intake took a
 	// logger, and no program sets it. A test sets it over a handler of its own, so it reads the
 	// lines of its own intake alone: that is what lets the read rule's seeds run beside each other.
@@ -235,16 +242,71 @@ type Intake struct {
 	reported map[reportKey]time.Time
 	// pruned is when this process last pruned legion_reads.
 	pruned time.Time
-	// calling is each project for which a message of a store its cursor drops has queued a call for
-	// the owed read on the project's runner (callRead), until that call has run, so a burst of such
-	// messages queues one call. A take-over empties it (takenOver): the delivery before the
-	// take-over dropped each call that still waited when it stopped (delivery.HeldDurable.Queue).
-	calling map[string]bool
-	// waiting counts the messages that wait on each project's runner, for the subscription the
-	// durable delivers on now (waitingCounts). A take-over starts it again (takenOver).
-	waiting waitingCounts
+	// subscription is what the intake keeps for the subscription of the durable that delivered the
+	// latest message: the messages that wait on each project's runner, and each project whose call
+	// for the owed read waits on its runner (subscriptionState). That subscription's first message
+	// starts it again (messageKey).
+	subscription subscriptionState
 	// reading is the whole read in flight on each project's runner (readWhole, readInFlight).
 	reading map[string]readInFlight
+}
+
+// Admissions is the operations of each project's admission eval `<KEY>/admission` the intake runs
+// (dispatch://INFRA-2918, R22; root R39's Design part 'The admission eval'). dispatch/evals builds
+// them (evals.AdmissionWriter) and the intake is given them, since dispatch/evals imports this
+// package.
+//
+// The eval store's advisory locks come before any row lock of the transaction that takes them,
+// and the intake's transactions take the row locks of legion_settings and legion_event_cursors
+// (lockPosition, lockCursor) and no eval's lock otherwise. So a transaction of the intake that may
+// write the eval's readings takes the eval's lock (Lock) as its first statement: applyBatch for
+// every message that is not a held part, since whether the batch carries an admission event is
+// known only once the held parts are read, and recordWhole for a good read. A held part, a failed
+// read and every other transaction of the intake take none, and no eval write locks either table,
+// so the two orders never cross.
+//
+// The intake registers a project's eval (Register) once, before the transaction of the first state
+// it applies that serves either record of the daemon (AdmissionState.ServesRecord) where no row
+// holds the eval (Registered): applyBatch rolls its transaction back, registers it and applies the
+// message again from the start, once (applyBatch); recordWhole registers it for a good read, before
+// its transaction. A message that does not apply and a failed read register nothing.
+type Admissions struct {
+	// Lock takes the lock of project's admission eval for the rest of tx.
+	Lock func(ctx context.Context, tx pgx.Tx, project string) error
+	// Registered answers whether a row of project's admission eval exists.
+	Registered func(ctx context.Context, project string) (bool, error)
+	// Register registers project's admission eval through the register write, in a transaction of
+	// its own. A registration the register write refuses is logged on logger, the calling intake's
+	// (Intake.logger), and answered nil, the state's readings then skipped as readings of an eval
+	// no row holds (Write); an error is one a retry may fix, and fails the state as an error of
+	// Write does.
+	Register func(ctx context.Context, logger *slog.Logger, project string) error
+	// Write writes, inside tx and under the eval's lock tx holds (Lock), the readings state gives,
+	// and answers the move of their change rows into the delivery change log, which the caller
+	// runs once tx has committed and never after a rollback, nil where it wrote none. A reading it
+	// cannot write is logged on logger, the calling intake's (Intake.logger), and skipped; an error
+	// is one a retry may fix, and rolls tx back.
+	Write func(ctx context.Context, tx pgx.Tx, logger *slog.Logger, state AdmissionState) (drain func(context.Context), err error)
+}
+
+// AdmissionState is what one state the intake applies reports of admission (Admissions.Write): a
+// batch's, or a good whole read's. StateID is its store (stateId), Seq the message's seq, which is
+// its newest event's, or the read's daemon.stateSeq, and At the message's commit time, or the time
+// Dispatch read the state. Blocks is each admission block the state carries: every admission event
+// of the batch's transaction above the cursor, the held parts' among them, in sequence order, or
+// the read's one block.
+type AdmissionState struct {
+	Project string
+	StateID string
+	Seq     int64
+	At      time.Time
+	Blocks  []*Admission
+}
+
+// ServesRecord reports whether any block of the state serves either record of changes
+// (Admission.ServesRecord).
+func (s AdmissionState) ServesRecord() bool {
+	return slices.ContainsFunc(s.Blocks, (*Admission).ServesRecord)
 }
 
 // reportKey is one line of reportEvery for one project.
@@ -253,23 +315,23 @@ type reportKey struct {
 }
 
 // NewIntake builds the intake on natsClient, a client opened for it alone (a bus.Client holds one
-// JetStream subscription), holding its durable under a hold and a consumer lease it takes on leases
-// (ReserveLeases), and reading the settings again on each signal of settingsWake: in the server,
-// the shared listener's wake on SettingsChannel.
-func NewIntake(natsClient *bus.Client, pool *store.Pool, leases delivery.DurableLeases, settingsWake <-chan struct{}) *Intake {
-	in := newIntake(pool, settingsWake)
+// JetStream subscription), running admissions in its transactions, holding its durable under a
+// hold and a consumer lease it takes on leases (ReserveLeases), and reading the settings again on
+// each signal of settingsWake: in the server, the shared listener's wake on SettingsChannel.
+func NewIntake(natsClient *bus.Client, pool *store.Pool, admissions Admissions, leases delivery.DurableLeases, settingsWake <-chan struct{}) *Intake {
+	in := newIntake(pool, admissions, settingsWake)
 	in.durable = delivery.NewHeldDurable(natsClient, leases, consumerConfig, in.messageKey, in.deliver, in.takenOver)
 	return in
 }
 
-// newIntake is an intake on pool, reading the settings again on each signal of settingsWake, with
-// every field NewIntake makes but the durable: the wall clock, its deferred calls, the retry waits
-// and every map. NewIntake completes it with the durable, and ReadWhole uses it as it is: its read
-// runs on no runner of a durable.
-func newIntake(pool *store.Pool, settingsWake <-chan struct{}) *Intake {
-	return &Intake{pool: pool, settingsWake: settingsWake, now: time.Now, after: func(d time.Duration, f func()) { time.AfterFunc(d, f) },
+// newIntake is an intake on pool, running admissions in its transactions and reading the settings
+// again on each signal of settingsWake, with every field NewIntake makes but the durable: the wall
+// clock, its deferred calls, the retry waits and every map. NewIntake completes it with the
+// durable, and ReadWhole uses it as it is: its read runs on no runner of a durable.
+func newIntake(pool *store.Pool, admissions Admissions, settingsWake <-chan struct{}) *Intake {
+	return &Intake{pool: pool, admissions: admissions, settingsWake: settingsWake, now: time.Now, after: func(d time.Duration, f func()) { time.AfterFunc(d, f) },
 		firstRetry: applyFirstRetry, lastRetry: applyLastRetry,
-		reported: map[reportKey]time.Time{}, calling: map[string]bool{}, waiting: newWaitingCounts(), reading: map[string]readInFlight{}}
+		reported: map[reportKey]time.Time{}, subscription: newSubscriptionState(""), reading: map[string]readInFlight{}}
 }
 
 // ReserveLeases reserves the intake's callers of the lease pool: three, as every held durable's
@@ -283,20 +345,21 @@ func ReserveLeases(callers *store.LeaseCallers) (delivery.DurableLeases, error) 
 
 // StartIntake runs an Intake until ctx is cancelled, on a bus client of its own that connect opens
 // under intakeConnectionName, and returns the error of a connect that fails with nothing started.
-// leases is the intake's reservation of the lease pool (ReserveLeases), settingsWake the wake
-// NewIntake reads the settings again on.
+// admissions is the admission eval's operations the intake runs (evals.AdmissionWriter), leases
+// the intake's reservation of the lease pool (ReserveLeases), settingsWake the wake NewIntake reads
+// the settings again on.
 //
 // The returned stop, called once ctx is cancelled, waits for Run, which returns once the intake has
 // stopped delivering under the intakes' stop budget from ctx's end. Then it closes the client and
 // waits for each hand-back finalizer Run left behind to release the hold
 // (delivery.HeldDurable.Stop). A caller that closes the database pool after stop returns
 // closes it under none of the intake's writes. A second call returns once the first has.
-func StartIntake(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases delivery.DurableLeases, settingsWake <-chan struct{}) (stop func(), err error) {
+func StartIntake(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, admissions Admissions, leases delivery.DurableLeases, settingsWake <-chan struct{}) (stop func(), err error) {
 	client, err := connect(intakeConnectionName)
 	if err != nil {
 		return nil, fmt.Errorf("connect the Legion state intake: %w", err)
 	}
-	intake := NewIntake(client, pool, leases, settingsWake)
+	intake := NewIntake(client, pool, admissions, leases, settingsWake)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -354,17 +417,12 @@ func (in *Intake) SettingsChanged(ctx context.Context) {
 }
 
 // takenOver is the durable's take-over callback (delivery.NewHeldDurable): once a take-over has
-// bound the durable, its first creation included, it empties the projects whose call for the owed
-// read is queued (calling), since the delivery before the take-over dropped each call that still
-// waited when it stopped, starts the counts of the messages that wait on each runner again at 0
-// (waiting), since that delivery handed back each message that still waited, and queues
-// SettingsChanged on settingsKey's runner. The callback runs on the durable's run loop, which
-// waits for it, so it only queues the settings read and does not make it.
+// bound the durable, its first creation included, it queues SettingsChanged on settingsKey's
+// runner. The callback runs on the durable's run loop, which waits for it, so it only queues the
+// settings read and does not make it. It starts no state of the new subscription's
+// (subscription): the durable delivers to that subscription before the callback runs, and the
+// subscription's first message starts it (messageKey, subscriptionState).
 func (in *Intake) takenOver() {
-	in.mu.Lock()
-	clear(in.calling)
-	in.waiting = newWaitingCounts()
-	in.mu.Unlock()
 	in.durable.Queue(settingsKey, in.SettingsChanged)
 }
 
@@ -451,11 +509,13 @@ func (in *Intake) startBlocked(ctx context.Context, reason string) (bool, error)
 }
 
 // messageKey keys a state message by the project its payload names, so one runner applies a
-// project's messages one at a time, and counts it among the messages that wait on that runner
-// (waiting). A message that arrives while stateMaxWaiting of its project's messages wait is keyed
-// by the project's crowded key instead (crowdedKey), and is not counted: it waits on no read of the
-// project (judgeCrowded). A message whose envelope or payload does not decode, or that names no
-// project, is keyed by its subject, and deliver reports it.
+// project's messages one at a time, and counts it among the messages that wait on that runner, in
+// the state of the subscription that delivered it (subscription): the first message of another
+// subscription than the state's starts a new state (subscriptionState). A message that arrives
+// while stateMaxWaiting of its project's messages wait is keyed by the project's crowded key
+// instead (crowdedKey), and is not counted: it waits on no read of the project (judgeCrowded). A
+// message whose envelope or payload does not decode, or that names no project, is keyed by its
+// subject, and deliver reports it.
 func (in *Intake) messageKey(msg *natsgo.Msg) (string, *contracts.Envelope, bool) {
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &envelope); err != nil {
@@ -469,11 +529,14 @@ func (in *Intake) messageKey(msg *natsgo.Msg) (string, *contracts.Envelope, bool
 	}
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	if in.waiting.projects[head.Project] >= stateMaxWaiting {
+	if subject := deliverSubject(msg); subject != in.subscription.subject {
+		in.subscription = newSubscriptionState(subject)
+	}
+	if in.subscription.waiting[head.Project] >= stateMaxWaiting {
 		return crowdedKey(head.Project), &envelope, true
 	}
-	in.waiting.projects[head.Project]++
-	in.waiting.keyed[msg] = head.Project
+	in.subscription.waiting[head.Project]++
+	in.subscription.keyed[msg] = head.Project
 	return head.Project, &envelope, true
 }
 

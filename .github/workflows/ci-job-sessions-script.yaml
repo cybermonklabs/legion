@@ -52,7 +52,7 @@ jobs:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
         # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
-        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1010 -c max_prepared_transactions=10
         options: >-
           --shm-size=1g
           --health-cmd "pg_isready -h 127.0.0.1 -U postgres"

@@ -39,7 +39,10 @@ export function SourceFreshness({
       : `Not current: ${red.map((row) => row.detail).join("; ")}`;
 
   return (
-    <section aria-label="Source freshness">
+    // `min-w-0`, for the same reason as each row's below: the Evals header lays this section
+    // beside the daemon's read in a flex row, where its automatic minimum is its longest row's
+    // whole sentence, and at 360 px that stood past the column and widened the page.
+    <section aria-label="Source freshness" className="min-w-0">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
         {rows.map((row) => (
           // `min-w-0`: the row's text is one `truncate` line (`white-space: nowrap`), so its

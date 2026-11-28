@@ -54,7 +54,7 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 	if compared.live {
 		return liveResultStands(check, compared)
 	}
-	if check.When == checkWhenAfterMerge || check.When == checkWhenDefaultBranch {
+	if check.When == model.CheckWhenAfterMerge || check.When == checkWhenDefaultBranch {
 		return newestResultStands(check, compared)
 	}
 	if compared.reason == model.ReasonRepositoryUnreadable {

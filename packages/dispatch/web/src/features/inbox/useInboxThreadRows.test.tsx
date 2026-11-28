@@ -11,7 +11,7 @@
 
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useRef } from "react";
 
 import { correction, correctionFeed, DELETION } from "../../__tests__/correction-feed";
@@ -106,6 +106,51 @@ test("the Dismissed pages are flattened once, so a second render over them sets 
     expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
   } finally {
     view.unmount();
+  }
+});
+
+/** The Inbox view's thread rows, which the reader's unpaged read fills. */
+function InboxThreads(): ReactNode {
+  const listRef = useRef<HTMLUListElement>(null);
+  const threads = useInboxThreadRows({ asksOnly: false, listRef, show: "inbox" });
+  return (
+    <ul ref={listRef}>
+      {threads.rows.map((row) => (
+        <li data-inbox-row={rowId(row)} key={rowId(row)} />
+      ))}
+    </ul>
+  );
+}
+
+// The reader's threads are read under the `person` scope. A person's Inbox reads them; an agent
+// viewer's, whose bearer may hold none, asks for none and lists none.
+test("a person's Inbox reads their threads, and an agent viewer's asks for none", async () => {
+  const read = spyOn(api, "listMyReplies").mockResolvedValue(dismissedPage([replyRow("c1")]));
+  restores.push(read);
+  for (const viewer of [
+    { event_head: "0", kind: "user" as const, login: "alice" },
+    { event_head: "0", kind: "agent" as const, login: "agent", session: null },
+  ]) {
+    read.mockClear();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(whoAmIQuery().queryKey, viewer);
+    const view = render(
+      <QueryClientProvider client={client}>
+        <InboxThreads />
+      </QueryClientProvider>
+    );
+    try {
+      if (viewer.kind === "user") {
+        await waitFor(() => expect(rowIds()).toEqual(["reply:c1"]));
+        expect(read).toHaveBeenCalledTimes(1);
+      } else {
+        await act(async () => {});
+        expect(read).not.toHaveBeenCalled();
+        expect(rowIds()).toEqual([]);
+      }
+    } finally {
+      view.unmount();
+    }
   }
 });
 

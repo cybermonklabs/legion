@@ -49,9 +49,11 @@ jobs:
     # The step's --timeout 70m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
     # binaries, then the step's own 70 minutes and the connections report's own 1, which is 77,
-    # under the job's 90. 70 minutes is
-    # twice the longest measured run: the package took 32.6 minutes under the race detector on a
-    # dev box, and this job took 32 minutes 48 seconds, past the 30 minutes it had.
+    # under the job's 90. Without the eval registry the package took 32.6 minutes under the race
+    # detector on a dev box, and this job took 32 minutes 48 seconds, past the 30 minutes it had.
+    # With the eval registry (INFRA-2916) the package took 2,373 s, about 40 minutes, on one farm
+    # node, because every project a test creates is seeded with its evals and its evals-md
+    # document, so 70 minutes is about 1.77 times the longest measured run.
     timeout-minutes: 90
     services:
       postgres:
@@ -61,7 +63,7 @@ jobs:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
         # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
-        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1010 -c max_prepared_transactions=10
         options: >-
           --shm-size=1g
           --health-cmd "pg_isready -h 127.0.0.1 -U postgres"

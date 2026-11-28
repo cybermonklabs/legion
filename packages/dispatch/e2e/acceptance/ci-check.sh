@@ -281,8 +281,8 @@ fake_pull() {
 
 # stage_head SECTION ISSUE NUMBER SHA STATE: pull request NUMBER of ISSUE is STATE (open or
 # merged) at SHA, in the fake and in Dispatch's own head record, as a `pull_request` event would
-# have stored it. attribution_rule is delivery.AttributionRuleVersion, so the reconcile has no
-# merged row to judge again either; were it to, it reads the same pull request from the fake.
+# have stored it. attribution_rule 2 is below delivery.AttributionRuleVersion, so the reconcile
+# judges the merged row again, and it reads the same pull request from the fake.
 stage_head() {
   fake_pull "$@"
   sql "$1" "stage pull request $3 of $2" -v repo="$driven_repo" -v number="$3" -v sha="$4" \

@@ -1,9 +1,11 @@
 // The page's one live socket: one websocket to `GET /ws/live` per query client, over which every
-// live subscription of the page runs. The Delivery and Pipeline pages' live-owned queries
-// (`meta.live`, `api/queries.ts`'s three delivery reads) subscribe to their views (LEGION-690):
-// Dispatch answers each with a snapshot, the matching GET route's body, and from then on sends only
-// what changed, and this client writes both into the query cache with `setQueryData`, so the page
-// renders them as any read. The event feed (`subscribeEvents`) and each agent live view
+// live subscription of the page runs. The live-owned queries (`meta.live`: `api/queries.ts`'s
+// three delivery reads and the Evals tab's evals, items and timeline views) subscribe to their
+// views (LEGION-690): Dispatch answers each with a snapshot, the matching GET route's body, and
+// from then on sends only what changed, and this client writes both into the query cache with
+// `setQueryData`, so the page renders them as any read. A view that grows (the Evals tab's
+// timeline, by its limit) sends its subscription again with the view that holds more and a resume,
+// and Dispatch answers what it lacks. The event feed (`subscribeEvents`) and each agent live view
 // (`subscribeAgent`) ride the same socket with handlers of their own. Nothing here reads on a
 // timer: a lost socket reconnects and resumes every subscription, a delivery view from the last
 // change it applied with the revisions it holds and the event feed from the last event it applied,
@@ -146,6 +148,12 @@ export interface LiveSocket {
    *  Resolves with the snapshot's body, which is also written to the cache; every later change is
    *  written there. */
   subscribe(queryKey: QueryKey, view: DeliveryLiveView): Promise<DeliveryLiveBody>;
+  /** Grows `queryKey`'s subscription to `view`, a view that holds more of the same rows (a
+   *  project-timeline view's higher `limit`): the same `sub` is sent again with a resume of the
+   *  change it last applied and the revisions it holds, so Dispatch answers only what it lacks,
+   *  and every later resume names `view`. Returns false, and sends nothing, for a key with no
+   *  subscription or one whose snapshot has not landed. */
+  grow(queryKey: QueryKey, view: DeliveryLiveView): boolean;
   /** Subscribes the event feed; returns the unsubscribe. */
   subscribeEvents(handlers: EventsHandlers): () => void;
   /** Subscribes session `sessionId`'s agent stream; returns the unsubscribe. */
@@ -177,7 +185,8 @@ interface DeliverySubscription {
   readonly id: string;
   readonly hash: string;
   readonly queryKey: QueryKey;
-  readonly view: DeliveryLiveView;
+  /** The view it shows, which `grow` replaces with one that holds more. */
+  view: DeliveryLiveView;
   /** The last change applied, and what the page holds, once a snapshot arrived. */
   seq: string | null;
   revs: DeliveryLiveRevs | null;
@@ -217,6 +226,15 @@ type Subscription = DeliverySubscription | EventsSubscription | AgentSubscriptio
 function liveSocketUrl(): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/ws/live`;
+}
+
+/** The performance mark a delivery subscription's snapshot sets once its frame is parsed
+ *  (`onSnapshot`), which a browser measurement of the page reads (packages/envoy's
+ *  evalbench/tab/paint.ts observes every `dispatch:` mark); nothing else does. Each snapshot
+ *  replaces its subscription's mark, and the subscription's removal clears it, so the timeline
+ *  holds at most one for each subscription open. */
+function snapshotMark(sub: string): string {
+  return `dispatch:live-snapshot:${sub}`;
 }
 
 /** `fn` after `ms`, and the function that cancels it. */
@@ -338,6 +356,9 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
   const onSnapshot = (frame: DeliveryLiveSnapshot) => {
     const sub = held(frame.sub, "delivery");
     if (sub === undefined) return;
+    // The frame's parse has ended (`receive`): its mark says when.
+    performance.clearMarks(snapshotMark(sub.id));
+    performance.mark(snapshotMark(sub.id));
     sub.seq = frame.seq;
     sub.revs = frame.revs;
     queryClient.setQueryData(sub.queryKey, frame.body);
@@ -360,9 +381,17 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     sub.seq = frame.seq;
     sub.revs = applyRevs(sub.revs, frame.revs);
     noteChange(frame.seq, frame.changed_at);
-    // A run that changed may be one whose drill-down is open; only an open one reads again.
-    for (const run of frame.items.runs?.upsert ?? []) {
-      void queryClient.invalidateQueries({ exact: true, queryKey: ["delivery", "run", run.id] });
+    // A project-timeline run row that changed may be one whose drill-down is open
+    // (`projectDeployRunQuery`'s key, by the row's repository); only an open one reads again.
+    const { view } = sub;
+    if (view.kind !== "project-timeline") return;
+    for (const row of frame.items.items?.upsert ?? []) {
+      if ("kind" in row && (row.kind === "deploy" || row.kind === "failed_run")) {
+        void queryClient.invalidateQueries({
+          exact: true,
+          queryKey: ["project-deploy-run", view.project, row.repo, row.id],
+        });
+      }
     }
   };
 
@@ -694,7 +723,10 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     subs.delete(sub.id);
     if (sub.kind === "agent") reportAgentSubscriptions();
     if (sub.kind === "events") sub.cancelRetry?.();
-    if (sub.kind === "delivery" && byHash.get(sub.hash) === sub) byHash.delete(sub.hash);
+    if (sub.kind === "delivery") {
+      if (byHash.get(sub.hash) === sub) byHash.delete(sub.hash);
+      performance.clearMarks(snapshotMark(sub.id));
+    }
     // Told even for a feed waiting out a backoff: Dispatch holds a subscription whose events
     // ended against the socket's cap of them until it is unsubscribed, and a page that never
     // said so would spend a slot of every such feed for the socket's life. An unsubscribe for a
@@ -757,6 +789,13 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
       byHash.set(hash, sub);
       add(sub);
       return pending.promise;
+    },
+    grow(queryKey, view) {
+      const sub = byHash.get(hashKey(queryKey));
+      if (sub === undefined || sub.seq === null || sub.revs === null) return false;
+      sub.view = view;
+      sendSubscribe(sub);
+      return true;
     },
     subscribeEvents(handlers) {
       const sub: EventsSubscription = {

@@ -58,8 +58,10 @@ function parallelModeOf(suite: Suite): ParallelMode {
  *  which Playwright packs with other such rows of its file (:2421-2423 and :2443-2450) and which
  *  this places alone. Playwright's own split spreads those rows over the legs too, so placing
  *  them one by one cuts no group that must stay on one machine (e2e/shard-split.ts says why).
- *  Every project of this config is `fullyParallel` and no spec file sets a mode, so every row of
- *  it is its own unit today; e2e/__tests__/shard-split.test.ts lists a fixture config that holds
+ *  Every project of this config is `fullyParallel`, so a row of it is its own unit unless its
+ *  file or a `describe` around it sets a mode: e2e/reset-unnamed-table.e2e.ts runs its file in
+ *  `serial` mode, so its two rows are one unit of its file. e2e/__tests__/shard-split.test.ts
+ *  places the real config's units as `unitsOf` builds them, and lists a fixture config that holds
  *  the other shapes. */
 function groupOf(test: TestCase): { holder: TestCase | Suite; kind: UnitKind } {
   let insideParallel = false;
@@ -116,7 +118,7 @@ function projectOf(projectSuite: Suite): string {
  *  which together key its time in the table, and whether it runs. `preprocess` places every row
  *  as this builds it, and keys the row's unit by the same project and file.
  *  e2e/__tests__/shard-split.test.ts holds these keys against the listing's through
- *  `fixtures/row-keys.reporter.ts`, which writes each row as this builds it, so what that test
+ *  `fixtures/shard-units.reporter.ts`, which writes each row as this builds it, so what that test
  *  reads is what `preprocess` places by and no copy of it. */
 export function rowOf(projectSuite: Suite, fileSuite: Suite, test: TestCase): Row {
   return {
@@ -127,6 +129,52 @@ export function rowOf(projectSuite: Suite, fileSuite: Suite, test: TestCase): Ro
     runs: test.expectedStatus !== "skipped",
     title: titlesBelowFile(test).join(titleSeparator),
   };
+}
+
+/** The projects of the run whose root suite is `suite` that another project names as its setup
+ *  or teardown (`dependencyProjects`, e2e/shard-split.ts): Playwright runs each in full on every
+ *  leg, so the placement and the leg's lists leave them out. */
+function setupsOf(suite: Suite): Set<string> {
+  return dependencyProjects(suite.suites.map((projectSuite) => projectSuite.project() ?? {}));
+}
+
+/** Every unit the rows of `suite`, a run's root suite, are placed in, outside its setup projects
+ *  (`setupsOf`): one for each holder `groupOf` names, in the order Playwright collected them, each
+ *  carrying its own rows as `rowOf` builds them and the cases they are, so the rows a leg keeps are
+ *  read off the units placed on it and never looked up by a key two units can share.
+ *  `preprocess` places these. e2e/__tests__/shard-split.test.ts places the units of a whole
+ *  listing as `fixtures/shard-units.reporter.ts` writes them from this, so what that test places
+ *  is what `preprocess` places and no copy of it. */
+export function unitsOf(suite: Suite): (Unit & { rows: Row[]; tests: TestCase[] })[] {
+  const setups = setupsOf(suite);
+  const units = new Map<TestCase | Suite, Unit & { rows: Row[]; tests: TestCase[] }>();
+  for (const projectSuite of suite.suites) {
+    if (setups.has(projectOf(projectSuite))) continue;
+    for (const fileSuite of projectSuite.suites) {
+      for (const test of fileSuite.allTests()) {
+        const row = rowOf(projectSuite, fileSuite, test);
+        const { holder, kind } = groupOf(test);
+        let unit = units.get(holder);
+        if (unit === undefined) {
+          unit = {
+            key: unitKey(
+              kind,
+              row.project,
+              row.file,
+              test.repeatEachIndex,
+              titlesBelowFile(holder)
+            ),
+            rows: [],
+            tests: [],
+          };
+          units.set(holder, unit);
+        }
+        unit.rows.push(row);
+        unit.tests.push(test);
+      }
+    }
+  }
+  return [...units.values()];
 }
 
 /** Places a sharded run's rows on its legs by measured row time (`e2e/shard-split.ts` says why
@@ -190,46 +238,16 @@ export default class ShardReporter implements Reporter {
     if (!shard) return;
     testRun.skipSharding();
     const weights = JSON.parse(readFileSync(weightsFile, "utf8")) as ShardWeights;
-    const setups = dependencyProjects(
-      suite.suites.map((projectSuite) => projectSuite.project() ?? {})
-    );
+    const setups = setupsOf(suite);
     const dir = process.env.DISPATCH_E2E_LEG_ROWS_DIR;
     if (dir) {
       this.lists = { dir, leg: `shard-${shard.current}`, setups };
       this.writeList("selection", suite);
     }
-    // One unit for each holder `groupOf` names, each carrying its own rows, so the rows a leg
-    // keeps are read off the units placed on it and never looked up by a key two units can share.
-    const units = new Map<TestCase | Suite, Unit & { rows: Row[]; tests: TestCase[] }>();
-    const fileSuites: Suite[] = [];
-    for (const projectSuite of suite.suites) {
-      if (setups.has(projectOf(projectSuite))) continue;
-      for (const fileSuite of projectSuite.suites) {
-        fileSuites.push(fileSuite);
-        for (const test of fileSuite.allTests()) {
-          const row = rowOf(projectSuite, fileSuite, test);
-          const { holder, kind } = groupOf(test);
-          let unit = units.get(holder);
-          if (unit === undefined) {
-            unit = {
-              key: unitKey(
-                kind,
-                row.project,
-                row.file,
-                test.repeatEachIndex,
-                titlesBelowFile(holder)
-              ),
-              rows: [],
-              tests: [],
-            };
-            units.set(holder, unit);
-          }
-          unit.rows.push(row);
-          unit.tests.push(test);
-        }
-      }
-    }
-    const { loads, placed } = placeUnits([...units.values()], weights, shard.total);
+    const fileSuites = suite.suites
+      .filter((projectSuite) => !setups.has(projectOf(projectSuite)))
+      .flatMap((projectSuite) => projectSuite.suites);
+    const { loads, placed } = placeUnits(unitsOf(suite), weights, shard.total);
     const mine = placed.filter((unit) => unit.shard === shard.current);
     const kept = new Set(mine.flatMap((unit) => unit.tests));
     const isMine = (test: TestCase) => kept.has(test);

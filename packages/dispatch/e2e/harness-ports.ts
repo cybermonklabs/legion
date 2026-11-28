@@ -37,13 +37,13 @@
  * must see the ports those set. It opens no socket, so importing it is safe from any process.
  *
  * A run of more than one Playwright worker runs one stack per worker (`e2e/harness-pool.ts`): a
- * whole harness, with a Postgres, ports and a file-store bucket of its own. `globalSetup`
- * (`e2e/global-setup.ts`) starts the pool and writes the whole of it into `DISPATCH_E2E_STACKS`,
- * one JSON record per stack holding that stack's own variables, and it writes nothing else: the
- * plain names are left exactly as the caller had them, so a SECOND `globalSetup` in one process
- * - which is how Playwright's UI mode re-runs - reads the environment the first one found
- * rather than the stopped stacks' ports and databases, and the teardown takes the manifest back
- * out again (`e2e/global-teardown.ts`).
+ * whole harness, with a Postgres, ports, a file-store bucket and, where the run has a NATS, a NATS
+ * of its own. `globalSetup` (`e2e/global-setup.ts`) starts the pool and writes the whole of it
+ * into `DISPATCH_E2E_STACKS`, one JSON record per stack holding that stack's own variables, and
+ * it writes nothing else: the plain names are left exactly as the caller had them, so a SECOND
+ * `globalSetup` in one process - which is how Playwright's UI mode re-runs - reads the
+ * environment the first one found rather than the stopped stacks' ports and databases, and the
+ * teardown takes the manifest back out again (`e2e/global-teardown.ts`).
  * `stackValue` below is the one place a reader picks its own: the record `TEST_PARALLEL_INDEX`
  * selects, then the plain name. Playwright sets that variable in each worker process and a
  * restarted worker keeps it, and a process that is no worker has none and so reads the
@@ -61,9 +61,9 @@ import { usesRealBroker } from "./harness-real-broker";
 import { harnessSignIn } from "./harness-signin";
 
 /** This run's stacks, as JSON: an array with one record per stack, each record that stack's own
- *  variables by name — its ports, its `DATABASE_URL`, its `DISPATCH_E2E_FILE_STORE_BUCKET`.
- *  `e2e/global-setup.ts` writes it into `process.env` once the pool is up, and Playwright hands
- *  every worker process that environment. */
+ *  variables by name — its ports, its `DATABASE_URL`, its `DISPATCH_E2E_FILE_STORE_BUCKET`, its
+ *  `DISPATCH_E2E_NATS_URLS`. `e2e/global-setup.ts` writes it into `process.env` once the pool is
+ *  up, and Playwright hands every worker process that environment. */
 export const stacksVariable = "DISPATCH_E2E_STACKS";
 
 /** The last manifest parsed, and the text it was parsed from. `harnessPorts()` resolves eleven
@@ -263,6 +263,10 @@ export function harnessPorts(
 const stackConflictReasons: Record<string, string> = {
   DATABASE_URL:
     "each stack runs its own Postgres, whose URL the harness hands its servers and its psql",
+  DISPATCH_E2E_NATS_URLS:
+    "every stack's Dispatch server binds the same durables on the one NATS it names, so the " +
+    "first holds them and the others' intakes deliver nothing; each stack runs a NATS of its " +
+    "own from DISPATCH_E2E_NATS_BIN (e2e/harness-nats.ts)",
   DISPATCH_E2E_PROCESSES:
     "two-process mode is two servers on one stack's database, which one stack runs",
   DISPATCH_E2E_REUSE_SERVERS:

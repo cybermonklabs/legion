@@ -20,7 +20,8 @@ lane; the nightly workflow calls it with
 the full lane, under the job id dispatch-browser. Each caller passes its own id as `job`, which
 GitHub puts before every job name of this file (`dispatch-browser-pr / shard (1)`) and which
 starts every artifact name, so two callers of one run share no artifact. The rows are spread
-over the shard job's machines, the three `-alone` projects get a machine each, the two-process job,
+over the shard job's machines, the three `-alone` projects and `chromium-nats` get a machine each
+(the alone job), the two-process job,
 the fake-embedder job and the containerised visual review take one each, and one merge job
 joins what the shard and alone legs wrote into a single report and publishes the run's flake
 rate.
@@ -28,8 +29,8 @@ rate.
 Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
 `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
 fake-embedder job, which holds a check of the pull request it is on; `full` runs every
-parallel project, the three `-alone` ones, the two-process job, the visual review and that
-same embedder job, over every row. So a pull request pays for the rows that answer it, and the
+parallel project, the three `-alone` ones, `chromium-nats`, the two-process job, the visual
+review and that same embedder job, over every row. So a pull request pays for the rows that answer it, and the
 merge queue, a labelled pull request, a workflow_dispatch and the nightly run pay for the rest,
 each of which has the wall time for them. A third lane, `references`, is a preview of the
 reference rows on a pull request that gates nothing
@@ -111,9 +112,13 @@ check.
 
 ## Why the binaries job builds what the suite runs
 
-The Go binaries the browser suite's stacks run: the Dispatch server and the real broker's
-three commands, built once here and handed to the shard and alone jobs in one
-artifact.
+The Go binaries the browser suite's stacks run: the Dispatch server, the real broker's
+three commands and a nats-server, built once here and handed to the shard and alone jobs in one
+artifact. The nats-server is the one `chromium-nats`'s leg of the alone job starts its stack's
+NATS from (.github/scripts/dispatch-browser-alone-suite.sh's DISPATCH_E2E_NATS_BIN,
+packages/dispatch/e2e/harness-nats.ts): `go build github.com/nats-io/nats-server/v2` in
+packages/envoy, so it is the version that module's go.mod requires, the one its own code links. No
+other leg starts one, and the section on that leg says why.
 
 Why the build is a job of this file rather than of each caller: an artifact is visible only
 inside the run that uploaded it, and every caller runs this file - ci.yaml's dispatch-browser,
@@ -129,7 +134,8 @@ check-ci-filters.sh's reduction and be counted as reading every Go file of the r
 which is the opposite of what the `dispatch_browser` filter is for. So the builds live in
 this job, which takes no container, and the suite's own scripts execute what it built
 instead of building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVER_BIN,
-run-signin-issuer.sh's DISPATCH_E2E_ISSUER_BIN and run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
+run-signin-issuer.sh's DISPATCH_E2E_ISSUER_BIN, run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR and
+harness-nats.ts's DISPATCH_E2E_NATS_BIN).
 
 It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
 already decided the call. ci.yaml's three callers hold the `dispatch_browser`,
@@ -149,10 +155,21 @@ run that misses it builds four commands cold, which the planner measured at 3m37
 rather than the warm one, as the multiprocess job's Playwright install step, "Install Playwright Chromium", carries
 its own retry arithmetic rather than its measured maximum.
 
+The nats-server build came after that sample. Its closure is 257 packages, all but 25 of them in
+the closure of the four commands above; 17 of those 25 are nats-server's own, and the other
+eight are small packages of the standard library (archive/tar, io/ioutil, log/syslog) and of
+four modules (klauspost/compress's s2, minio/highwayhash, x/crypto's ocsp, antithesis's assert).
+On a 2-CPU pod, one package at a time (`-p=1`, which CI does not hold the build to), with every
+other package of the closure already built, which is what the cache this job restores holds
+before a fill on main has built nats-server, its 17 packages and the link took 22 s; with those
+built too, which every run after that fill restores, the link alone took 2.5 s. The eight others
+were not timed apart. The binary is 17,379,488 bytes stripped and 6,922,769 gzipped, about 13%
+of the artifact each leg downloads.
+
 ## Why the binaries job restores go-browser-binaries
 
 go-browser-binaries, restored only: .github/workflows/ci-caches.yaml fills it on every push to
-main with the texts of this job's two steps, the build step's two `CGO_ENABLED=0` builds (four
+main with the texts of this job's two steps, the build step's three `CGO_ENABLED=0` builds (five
 binaries) and the connections step's `go run`, each in this job's directory, and saves only what
 those builds used (.github/ci-notes/ci-caches.md#the-go-browser-binaries-family). No job here
 saves it.
@@ -171,7 +188,8 @@ go-envoy-test entry 427 of the 1,034 packages of this job's closure were stale
 
 One `go build -o <directory>/` writes one binary per package, each named after it:
 dispatch, dev-oidc-issuer and requestseed; a second build names the broker's, from
-./cmd/cipherd, broker. CGO_ENABLED=0 is pinned on the build
+./cmd/cipherd, broker, and a third the nats-server's, from github.com/nats-io/nats-server/v2,
+nats-server. CGO_ENABLED=0 is pinned on each build
 rather than left to the runner's default, so each binary is static by construction: the
 shard and alone jobs run them in a container of this repository's own image, and a
 binary with a PT_INTERP has a glibc there to disagree with. They are written under
@@ -211,12 +229,13 @@ packages/dispatch/e2e/shard-reporter.ts, which the browser step names beside the
 reporter, takes the split over: every leg places every row of every project the lane selects
 by the row times that main's full-lane runs, and each run that `--run <id>` named, measured
 (packages/dispatch/e2e/shard-weights.json), heaviest first onto the lightest leg, and keeps its
-own rows. A row is placed on its own unless Playwright must run it in order with others - a
-`serial` or `default`-mode `describe`, or a file of a project that is not fully parallel - and
-then with them; every project of this lane is fully parallel and no spec sets a mode, so every
-row is its own unit today. Until 2026-11-27 the unit was the file, and on 2026-11-26 that left
-the heaviest leg at 1.21 times the mean (1.06 to 1.38 over the 28 merge-group runs of 17:03Z to
-23:04Z): two files that had landed after the table was read, placed whole by their project's
+own rows. A row is placed on its own unless Playwright must run it in order with others - in a
+file or a `describe` that runs in `serial` or `default` mode, or in a file of a project that is
+not fully parallel - and then with them; every project of this lane is fully parallel, so every
+row is its own unit today but the two of packages/dispatch/e2e/reset-unnamed-table.e2e.ts, a
+file that runs in `serial` mode. Until 2026-11-27 the unit was the file, and on 2026-11-26 that
+left the heaviest leg at 1.21 times the mean (1.06 to 1.38 over the 28 merge-group runs of 17:03Z
+to 23:04Z): two files that had landed after the table was read, placed whole by their project's
 median row, held a median 853 s of the lane's 9,086 and sat on leg 4 and leg 2, the slowest two
 legs of every one of those runs. Placed row by row over those runs' own rows, the same table
 puts the heaviest leg at 1.03 times the mean at those runs' four legs, and at 1.10 at six.
@@ -462,7 +481,10 @@ The directory is the one run-broker.sh built the broker's three binaries in, whi
 the directory `packages/dispatch/e2e/real-broker.ts#requestseed` points into, so the suite runs requestseed from there; the server
 binary rides along in it and is named by path in DISPATCH_E2E_SERVER_BIN, and the dev-oidc-issuer
 of the broker's three is named by path in DISPATCH_E2E_ISSUER_BIN as well, for the sign-in issuer
-e2e/served-addresses.e2e.ts starts (.github/scripts/dispatch-browser-shard-suite.sh).
+e2e/served-addresses.e2e.ts starts (.github/scripts/dispatch-browser-shard-suite.sh). The
+nats-server rides along in it too, and no shard leg names it: a NATS is every stack's of a run or
+none, and these legs' rows run on servers with NATS disabled
+([the chromium-nats leg's section](#the-chromium-nats-leg-and-its-budgets)).
 
 A BOUND OF ITS OWN AND A SECOND ATTEMPT. A read of this artifact took 2 to 6 s on every
 leg but one, which took 428 s (the budget note above), so a slow read is answered by
@@ -520,12 +542,12 @@ size and digest from it.
 ## What the shard job places, and what its budget leaves for it
 
 The census the job's budget is read from counts this step, at its maximum of 1 s (the
-shard job's measured steps above); it copies the four binaries on the runner's disk (141 ms
+shard job's measured steps above); it copies the five binaries on the runner's disk (141 ms
 for the 106 MB artifact of the unstripped build on a pod).
 
 ## Why the shard job makes the downloaded binaries executable
 
-actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
+actions/upload-artifact keeps no executable bit, so all five arrive at mode 0644.
 `packages/dispatch/e2e/run-server.sh#server_bin` and run-broker.sh refuse a path that is not executable, and that
 refusal would otherwise surface in a stack's own log, far from this cause.
 
@@ -840,7 +862,11 @@ The three projects whose rows are read from the wall clock, one machine each. Ea
 one worker and names one project, and a wall-clock project takes nothing else with it - it
 names no `dependencies` since dispatch://INFRA-1280 - so nothing else is on the machine
 while it measures. The full lane alone: a pull request runs no clock row, since a shard
-job's machine cannot hold one still enough to measure.
+job's machine cannot hold one still enough to measure. A fourth leg runs `chromium-nats`, whose
+rows read no clock but need a NATS no shard leg starts
+([its section](#the-chromium-nats-leg-and-its-budgets)); it is a leg of this job because it is
+the same shape, one unsharded project on one stack, which the merge job's readings already read
+as an alone leg (`alone (chromium-nats)`, its blob `alone-chromium-nats`).
 
 Its steps are the shard job's, with three differences - one worker rather than four, the
 Playwright command of .github/scripts/dispatch-browser-alone-suite.sh, and no file store on the machine - and their commands are kept
@@ -853,12 +879,19 @@ too, and so do their reasons.
 ## The alone job's measured steps and its budget
 
 This job takes the container because its matrix holds webkit-alone and firefox-alone,
-which launch the two engines the image exists for; chromium-alone is a leg of a container
-job and rides in it, which is what keeps one job list and not two
+which launch the two engines the image exists for; chromium-alone and chromium-nats are legs of
+a container job and ride in it, which is what keeps one job list and not two
 (dispatch://INFRA-1443). The shard job's head says what each option is for and why the
 digest is a literal.
 
-The browser step's budget, its `timeout-minutes: 3`, is measured, on the full-lane run of the head that sharded
+Each leg's budgets are its own, in the matrix's `include`: the browser step's `step_minutes` and
+the job's `job_minutes`, each with its arithmetic beside it, as .github/workflows/dispatch-unit-repeat.yaml
+carries its legs' budgets. The job names itself `alone (${{ matrix.project }})`, which is the name
+GitHub gives a matrix job of one key, because those two keys would join the project in it, and
+.github/scripts/dispatch-browser-run-reads.sh reads the leg out of that name. What follows is the
+three wall-clock legs'; the chromium-nats leg's are in its own section.
+
+The browser step's budget, the wall-clock legs' `step_minutes: 3`, is measured, on the full-lane run of the head that sharded
 this suite, 42316487530. The pull-request lane runs no leg of this job, so there is one
 run and three legs behind each figure, in seconds:
 
@@ -925,10 +958,45 @@ image, and the 6-minute budget cancelled it 3 s into its checkout. The download 
 same budget and second attempt as there, and the pull is counted at that 355 s. The job's
 budget is the browser step's 180 s, the two download attempts' 120 s each, and the steps
 without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to the 15
-minutes of the alone job's `timeout-minutes`, whose 38 s left over hold the new step that places the binaries
+minutes of the wall-clock legs' `job_minutes`, whose 38 s left over hold the new step that places the binaries
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it).
 The browser step's own budget is unchanged, and it still
 fires first.
+
+## The chromium-nats leg and its budgets
+
+The rows that feed Dispatch's Legion intake over NATS - k25 and k28 of
+packages/dispatch/e2e/evals-admission.e2e.ts, the specs `natsSpecNames` lists
+(`packages/dispatch/e2e/configurations.ts#natsSpecNames`) - need the server's intake on, which
+only a server handed a NATS starts, and `requireNats` (packages/dispatch/e2e/legion-state-feed.ts)
+fails such a row where its stack has none. A NATS is a run's, not a row's: with
+DISPATCH_E2E_NATS_BIN the stack pool starts one for every stack (packages/dispatch/e2e/harness-nats.ts),
+and the rest of the suite runs on servers with NATS disabled - the queued rows of agents.e2e.ts
+and delivery-queued.e2e.ts read the queue the server's test hook keeps, which a server with a
+bus answers `404 QUEUED_ON_BUS`. So those specs are the `chromium-nats` project's alone, every
+other project that would see them ignores them, and this one leg of the alone job runs it, with
+.github/scripts/dispatch-browser-alone-suite.sh exporting DISPATCH_E2E_NATS_BIN, the nats-server
+the binaries job built, for this project and no other. No shard leg names the project. A
+wall-clock leg starts no NATS: its rows need none, and a server with its intakes on the bus would
+be in its reading. The full lane alone runs it, as it runs every leg of this job: neither row
+carries `@pr`.
+
+One worker, as every leg of this job: the rows are two, and both passed one at a time. The budget
+is a hang guard read from two runs of those two rows at one worker on the issue's Kubernetes Job,
+not yet from CI: Playwright's own totals, 4.4 and 5.9 minutes, stacks included. 354 s, the
+slower, times 1.75, the slowest runner the shard job's browser step was measured against (run
+44985914477 ran its rows 1.75 times slower than a runner of the same minute), times the rule's
+1.15 is 713 s, 12 minutes of `step_minutes`. The job's `job_minutes` is that 720 s, the two
+download attempts' 120 s each and the wall-clock legs' 442 s of steps without a budget: 1,402 s,
+23 min 22 s, rounded up to 24. Read the first full-lane runs' legs again and set both from them.
+
+What it costs: the leg's other steps summed 72 to 137 s on the wall-clock legs (the readings
+above), so with the rows' 4.4 to 5.9 minutes the leg runs about 6 to 8 minutes and bills 6 to 9,
+each job being rounded up to a whole minute, on a standard ubuntu-24.04 runner, in every run of
+the full lane - each merge group, the nightly, a dispatched run and a pull request labelled
+`full-ci` or `lane:dispatch_browser` - and in no run of the other two lanes. That is inside the
+shard legs' own time (their browser step's p90 is 529 s, before their other steps), so the lane
+should end no later for it.
 
 ## What the alone job downloads in place of a Go build
 
@@ -940,7 +1008,7 @@ directory and why there is a second; the four steps are the same here.
 
 ## Why the alone job makes the downloaded binaries executable
 
-actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
+actions/upload-artifact keeps no executable bit, so all five arrive at mode 0644.
 `packages/dispatch/e2e/run-server.sh#server_bin` and run-broker.sh refuse a path that is not executable, and that
 refusal would otherwise surface in a stack's own log, far from this cause.
 
@@ -984,7 +1052,7 @@ pgvector; the binaries directory is set on the command line, not in this step's
 `env:`, for the reason the job's head gives.
 
 No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
-legs run is a clock spec, and no clock spec uploads or downloads anything.
+legs run is a clock spec or a NATS spec, and none of them uploads or downloads anything.
 chromium-alone runs both wall-clock specs (`packages/dispatch/e2e/configurations.ts#clockSpecNames`:
 heavy-bodies and nested-directive, the list `clockSpecPattern` is built from, which is
 that project's `testMatch`), firefox-alone and webkit-alone run heavy-bodies alone.
@@ -1250,7 +1318,7 @@ the multiprocess job has a step that builds the same binary.
 
 The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
 set compared against a committed baseline, in light and in dark, at a desktop width and two
-of them again at a phone width. Eighteen pages and two, so forty comparisons, which is the
+of them again at a phone width. Twenty pages and two, so forty-four comparisons, which is the
 number of PNGs under `packages/dispatch/e2e/__screenshots__`.
 
 The full lane only. A snapshot difference holds the merge queue, which is the point: a palette

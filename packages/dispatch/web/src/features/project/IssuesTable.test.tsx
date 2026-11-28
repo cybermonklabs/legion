@@ -1759,6 +1759,50 @@ test("the List narrows Title and unpins from the right in a 700 px box", async (
   ]);
 });
 
+// The pins' share is of the room inside the box's borders, which is what a reader sees of it: a
+// box 912 px wide holds 910 inside its two borders, so Select, Priority, Key and Title stand
+// within 546 px, Title at 254. Fitted to 60% of the box's own width, they drew 547.2 px, over
+// the share the Evals tab's header inventory row reads (ledger item 5).
+test("the List keeps its pins within 60% of the room inside a 912 px box's borders", async () => {
+  expect(await headerLayout(912)).toEqual([
+    "- 44px 0px",
+    "Priority 140px 44px",
+    "Key 108px 184px",
+    "Title 254px 292px",
+    "Queue 124px -",
+    ...UNPINNED_REST,
+  ]);
+});
+
+// No column is drawn narrower than its header (`measureHeader`), and the layout reads each
+// header's width before it pins (ledger item 5): a Title header wider than the 254 px the pins'
+// share leaves Title in a 912 px box unpins Title rather than widen the pins past 546 px once
+// drawn, and one no wider leaves Title pinned at 254. The unit DOM draws no text, so the Title
+// header's words are drawn at the width each case names, and its sort mark's slot adds 10 px.
+test("a Title header wider than the pins' share leaves it unpins Title rather than cover more", async () => {
+  for (const [words, cells] of [
+    [200, ["Title 254px 292px", "Queue 124px -"]],
+    [250, ["Queue 124px -", "Title 260px -"]],
+    [400, ["Queue 124px -", "Title 410px -"]],
+  ] as const) {
+    const drawn = spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Range
+    ) {
+      return new DOMRect(0, 0, this.startContainer.textContent === "Title" ? words : 0, 16);
+    });
+    restores.push(() => drawn.mockRestore());
+    expect(await headerLayout(912), `Title's words ${words} px wide`).toEqual([
+      "- 44px 0px",
+      "Priority 140px 44px",
+      "Key 108px 184px",
+      ...cells,
+      ...UNPINNED_REST,
+    ]);
+    for (const restore of restores.splice(0)) restore();
+    localStorage.clear();
+  }
+});
+
 test("the List pins Select, Key and Title on a 390 px phone", async () => {
   expect(await headerLayout(390)).toEqual([
     "- 44px 0px",

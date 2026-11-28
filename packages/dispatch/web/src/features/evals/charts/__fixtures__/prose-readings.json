@@ -1,0 +1,75 @@
+{
+  "comment": "Synthetic items-view rows for prose.test.ts: readings of the eval's series tokens, in the window and in the compare range, which a prose section reads none of and draws nothing of.",
+  "window": {
+    "days": 3,
+    "from": "2026-11-01T00:00:00Z",
+    "to": "2026-11-04T00:00:00Z"
+  },
+  "compare": {
+    "days": 3,
+    "from": "2026-10-29T00:00:00Z",
+    "to": "2026-11-01T00:00:00Z"
+  },
+  "items": [
+    {
+      "row_key": "arm-a",
+      "row_kind": "row",
+      "cols": {
+        "id": "x1",
+        "series": "tokens",
+        "col": "",
+        "value": 120,
+        "value_absent_reason": "",
+        "unit": "tokens",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-02T00:00:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-11-02T00:00:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "arm-a",
+      "row_kind": "row",
+      "cols": {
+        "id": "x2",
+        "series": "tokens",
+        "col": "",
+        "value": 140,
+        "value_absent_reason": "",
+        "unit": "tokens",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-30T00:00:30Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "trainer"
+        }
+      },
+      "measured_at": "2026-10-30T00:00:00Z",
+      "source": "trainer",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    }
+  ]
+}

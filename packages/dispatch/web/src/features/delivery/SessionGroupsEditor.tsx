@@ -2,8 +2,9 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
 import { api, type WriteBounds, type WriteMethod } from "../../api/client";
+import { evalsProjectKey } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
-import type { DeliverySessionGroup, DeliveryTimelineWithMeasures } from "../../api/types";
+import type { DeliverySessionGroup, ProjectTimelineResponse } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
 import { QueryError } from "../../components/QueryError";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -49,9 +50,11 @@ interface RenameDraft {
 
 const NO_RENAME: RenameDraft = { draft: null, sent: null };
 
-/** The Delivery page's reads that hold the groups: its timeline, an entry per view
- *  (`deliveryTimelineQuery`). */
-const GROUP_READS = { queryKey: ["delivery", "timeline"] };
+/** The Evals tab's reads of `project` that hold the groups: its merge timeline, an entry per view
+ *  (`projectTimelineViewQuery`). */
+function groupReads(project: string) {
+  return { queryKey: [...evalsProjectKey(project), "timeline"] };
+}
 
 /** The later of two versions of a group, by when Dispatch wrote each (`updated_at`): `held`, as
  *  the editor was handed it or a read holds it, and `other`, which may be newer - a Rename's
@@ -73,10 +76,11 @@ function laterGroup(
     : held;
 }
 
-/** Writes `group`, a Rename's answer, into each groups read that holds an older version of it, as
- *  Dispatch's delta for the rename will (`applyDelta`): in that one's place, in Dispatch's order. */
-function writeGroup(queryClient: QueryClient, group: DeliverySessionGroup): void {
-  queryClient.setQueriesData<DeliveryTimelineWithMeasures>(GROUP_READS, (body) => {
+/** Writes `group`, a Rename's answer, into each of `project`'s groups reads that holds an older
+ *  version of it, as Dispatch's delta for the rename will (`applyDelta`): in that one's place, in
+ *  Dispatch's order. */
+function writeGroup(queryClient: QueryClient, project: string, group: DeliverySessionGroup): void {
+  queryClient.setQueriesData<ProjectTimelineResponse>(groupReads(project), (body) => {
     const held = body?.session_groups?.find((each) => each.id === group.id);
     if (body === undefined || held === undefined || laterGroup(held, group) === held) return body;
     // The delta as `applyDelta` reads it: the list's change alone. Its place in the change log
@@ -115,12 +119,15 @@ const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasse
  *  `inline-flex` (the 44 px touch rule in styles.css), and a cut line there would end in no
  *  ellipsis. */
 function GroupCard({
+  project,
   group,
   storedTitle,
   selected,
   pending,
   write,
 }: {
+  /** The project whose Evals tab opened the editor, whose reads hold the groups. */
+  project: string;
   group: DeliverySessionGroup;
   storedTitle: (session: string) => string | undefined;
   selected: readonly string[];
@@ -201,7 +208,7 @@ function GroupCard({
                   if (answer === null) {
                     // Dispatch took the Rename and had no answer to give for it. The group stands
                     // as the reads this landing starts answer it - the editor's own `onSuccess`
-                    // asks the delivery reads again, the write store reads every query again for
+                    // asks the tab's reads again, the write store reads every query again for
                     // a landing with no answer, and Dispatch sends its delta - so the draft stays
                     // as typed until a version other than the one in effect now arrives, and
                     // never takes that one back. A rename from another tab that arrived while
@@ -213,9 +220,9 @@ function GroupCard({
                     return;
                   }
                   // A rename's answer is the group as renamed (`updateDeliverySessionGroup`),
-                  // written into the page's groups reads as Dispatch's delta for it will be.
+                  // written into the tab's groups reads as Dispatch's delta for it will be.
                   const renamed = answer as DeliverySessionGroup;
-                  writeGroup(queryClient, renamed);
+                  writeGroup(queryClient, project, renamed);
                   land(press, renamed);
                 },
               }
@@ -294,13 +301,14 @@ function GroupCard({
   );
 }
 
-/** The Delivery page's session-groups editor, opened from the Parent agent facet: the window's
- *  sessions with their titles, pull request counts and groups, to select and name as a new group,
- *  and every group, to rename, add the selected sessions to, remove members from, or delete. Every
- *  session is an `AgentName`; a member no pull request of the window names has no stored title, so
- *  it reads by its registry title, else its short id. A save reaches the page's live views as
- *  Dispatch's own delta, so it refreshes only the `["delivery"]` reads that are not live (an open
- *  run's drill-down), and a refusal shows as the server wrote it, after the change it refused. A
+/** The Evals tab's session-groups editor, opened from its merge timeline's Parent agent facet: the
+ *  window's sessions with their titles, pull request counts and groups, to select and name as a
+ *  new group, and every group, to rename, add the selected sessions to, remove members from, or
+ *  delete. Every session is an `AgentName`; a member no pull request of the window names has no
+ *  stored title, so it reads by its registry title, else its short id. A save moves the parent
+ *  agents the tab draws: it reaches the tab's live views (its evals, items and timeline views) as
+ *  Dispatch's own delta, so it refreshes only the tab's reads of `project` that are not live
+ *  (`evalsProjectKey`), and a refusal shows as the server wrote it, after the change it refused. A
  *  dialog (`useDialog`), at the right edge as the drill-down is, open while it is mounted.
  *
  *  Its groups, in this order, each on a line of its own: Heading (the title, Close at the right),
@@ -313,11 +321,14 @@ function GroupCard({
  *  keeps the reader's rename draft, and the sessions it opened past their "+N" (`CappedGroup`'s
  *  own state). */
 export function SessionGroupsEditor({
+  project,
   onClose,
   groups,
   titles,
   counts,
 }: {
+  /** The project whose Evals tab opened the editor. */
+  project: string;
   onClose: () => void;
   groups: readonly DeliverySessionGroup[];
   titles: Readonly<Record<string, string>>;
@@ -336,7 +347,7 @@ export function SessionGroupsEditor({
     onSuccess: () => {
       setSelected([]);
       void queryClient.invalidateQueries({
-        queryKey: ["delivery"],
+        queryKey: evalsProjectKey(project),
         predicate: (query) => !isLiveQuery(query),
       });
     },
@@ -500,6 +511,7 @@ export function SessionGroupsEditor({
               group={group}
               key={group.id}
               pending={save.isPending}
+              project={project}
               selected={selected}
               storedTitle={storedTitle}
               write={(change, press) => save.mutate(change, press)}

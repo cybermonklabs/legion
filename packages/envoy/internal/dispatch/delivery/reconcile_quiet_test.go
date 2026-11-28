@@ -52,9 +52,9 @@ func quietReconcilePass(t *testing.T, prs int) []string {
 	seedDeliverySettings(t, ctx, pool)
 	finished := time.Now().UTC()
 	for _, backfill := range []struct{ step, path string }{
-		{backfillStep(DeliveryRunKindDeploy), ".github/workflows/deploy.yml"},
-		{backfillStep(DeliveryRunKindPRChecks), ".github/workflows/pr-checks.yml"},
-		{createdAtBackfillStep, ".github/workflows/deploy.yml"},
+		{backfillStep(DeliveryRunKindDeploy, "acme/widgets"), ".github/workflows/deploy.yml"},
+		{backfillStep(DeliveryRunKindPRChecks, "acme/widgets"), ".github/workflows/pr-checks.yml"},
+		{createdAtBackfillStep("acme/widgets"), ".github/workflows/deploy.yml"},
 	} {
 		if err := StartBackfillProgress(ctx, pool, backfill.step, runsProgressScope("acme/widgets", backfill.path), finished, finished); err != nil {
 			t.Fatalf("finish the %s backfill: %v", backfill.step, err)
@@ -95,9 +95,9 @@ func quietReconcilePass(t *testing.T, prs int) []string {
 	recorder := &storetest.StatementRecorder{}
 	NewReconcile(storetest.Traced(t, pool, recorder, nil), github, events.NewBroker(), unrenamed()).runOnce(ctx)
 
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings: %v", err)
+		t.Fatalf("getTestRule: %v", err)
 	}
 	if settings.LastError != nil || settings.LastReconcileAt == nil {
 		t.Fatalf("the pass recorded last_error %v and last_reconcile_at %v; want a successful pass", settings.LastError, settings.LastReconcileAt)

@@ -316,6 +316,29 @@ export const clockSpecNames: readonly string[] = [
  *  modules those specs import and no project may select them as test files. */
 export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\\.ts`);
 
+/** The project whose rows feed Dispatch's Legion intake over NATS (`e2e/legion-state-feed.ts`).
+ *  A run's bus is every stack's or none (`e2e/harness-nats.ts` starts one for each stack where
+ *  `DISPATCH_E2E_NATS_BIN` names a nats-server), and the rest of the suite runs on a server with
+ *  NATS disabled - rows of `agents.e2e.ts` and `delivery-queued.e2e.ts` read the queue its test
+ *  hook keeps, which a server with a bus answers `404 QUEUED_ON_BUS` - so these rows are a project
+ *  of their own, which CI runs on a machine of its own with the bus (the alone job of
+ *  `.github/workflows/dispatch-browser.yaml`, through `.github/scripts/dispatch-browser-alone-suite.sh`)
+ *  and no shard leg names. */
+export const natsProjectName = "chromium-nats";
+
+/** The specs that project runs, each by the part of its file name that is its own: every spec
+ *  whose rows call `requireNats` (`e2e/legion-state-feed.ts`), and no other, which
+ *  `e2e/__tests__/nats-specs.test.ts` holds. Spelled once here and read by the pattern below, as
+ *  `clockSpecNames` is, so a spec that starts to call `requireNats` is one edit of this list. */
+export const natsSpecNames: readonly string[] = ["evals-admission"];
+
+/** The files the NATS project selects, which is its `testMatch` in `e2e/playwright.config.ts` and
+ *  the `testIgnore` of the four parallel projects that would otherwise see them - `chromium`,
+ *  `iphone`, `webkit` and `firefox` - built from `natsSpecNames` as `clockSpecPattern` is built
+ *  from its list. Anchored at a path separator, so a file whose name only ends in one of these is
+ *  not selected with it. */
+export const natsSpecPattern = new RegExp(`(^|/)(${natsSpecNames.join("|")})\\.e2e\\.ts$`);
+
 /** The wall-clock spec file a Playwright command names as a positional filter while naming no
  *  project, or `undefined` for every other command line. The configuration throws on an answer:
  *  the three wall-clock projects are out of the default selection, so no run that names no

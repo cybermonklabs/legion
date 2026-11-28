@@ -36,6 +36,7 @@ import { AgentName, useAgentText } from "../refs/AgentName";
 import {
   buildIssuePath,
   buildProjectPath,
+  EVALS_PATH,
   liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
@@ -173,8 +174,8 @@ function RailRow({
  * The navigation, in the sidebar or the phone's drawer. Its groups, top to bottom, each a section
  * of its own: the hide control; Inbox (the Inbox link with its count, then Peek, on one line);
  * Agents (the Agents link with its new replies, then the fold beside it, on one line, and the
- * pinned agents under them while the fold is open); Pages (Priorities, Delivery and Pipeline, each
- * a `RailRow` with its description under its name); Pinned (one `RailRow` per pinned issue, while
+ * pinned agents under them while the fold is open); Pages (Priorities and Evals, each a
+ * `RailRow` with its description under its name); Pinned (one `RailRow` per pinned issue, while
  * any is pinned); Projects (one `RailRow` per project); and Settings. Each line keeps its count
  * and its control at its right; its name shrinks and wraps inside it, so nothing scrolls sideways
  * at the sidebar's width.
@@ -191,10 +192,16 @@ export function Sidebar({
   user: AuthenticatedUser;
 }): ReactNode {
   const location = useLocation();
-  const inbox = useQuery(inboxQuery());
+  // The person's own reads - the asks waiting on them, the issues they pinned, their pinned
+  // agents and their conversations' unread replies - each need the `person` scope, which an agent
+  // viewer's bearer may not hold: for one the rail reads none of them and waits on none, so it is
+  // drawn with its projects and pages and none of the person's lists (`AuthenticatedUser.kind`).
+  const person = user.kind === "user";
+  const inbox = useQuery({ ...inboxQuery(), enabled: person });
   const pinned = useQuery({
     queryKey: ["issues", "pinned"],
     queryFn: () => api.listIssues({ pinned: true }),
+    enabled: person,
   });
   const projects = useQuery(projectsQuery());
   // The number beside Priorities (INFRA-2947, R8): the two faults added - the work in flight
@@ -211,13 +218,13 @@ export function Sidebar({
   // One number on Inbox, composed in one place (`useInboxCount.ts`): the work waiting on
   // the reader plus the threads they have not read, which the Inbox lists beside those asks now.
   const inboxCount = useInboxCount();
-  const agentState = useQuery(userAgentStateQuery()).data;
+  const agentState = useQuery({ ...userAgentStateQuery(), enabled: person }).data;
   const unreadReplies = totalUnreadReplies(agentState);
   // The rail's own list: the person's pinned agents, oldest pin first, and the control that
   // unpins one from here. The registry is told the whole set in the shell (`app.tsx`), not
   // here, because this rail is a sheet behind the Menu control below 1280 pixels and is not on
   // the page at all while the sidebar is collapsed.
-  const pinnedAgents = usePinnedAgents();
+  const pinnedAgents = usePinnedAgents(person);
   const writePin = useAgentPinWrite();
   const [agentsOpen, setAgentsOpen] = useState(true);
   // The live view the reader is in, which its row marks as the page and which makes a move to
@@ -243,7 +250,7 @@ export function Sidebar({
       </button>
     );
 
-  if (inbox.isPending || pinned.isPending || projects.isPending) {
+  if ((person && (inbox.isPending || pinned.isPending)) || projects.isPending) {
     return (
       <>
         {hideControl}
@@ -259,6 +266,8 @@ export function Sidebar({
       </>
     );
   }
+  // An agent viewer pins no issue: its rail draws no Pinned section.
+  const pinnedIssues = pinned.data ?? [];
 
   return (
     <>
@@ -363,33 +372,26 @@ export function Sidebar({
               }
               to={PRIORITIES_PATH}
             />
+            {/* Every project's numbers on one page (`EVALS_PATH`); a project's own are its Evals
+                tab. The Delivery and Pipeline pages it replaces are each project's tab now. */}
             <RailRow
               badge={undefined}
-              detail="Deploys, merges, and pipeline failures"
+              detail="Every project's numbers"
               detailUnder
-              label="Delivery"
+              label="Evals"
               onNavigate={onNavigate}
-              selected={location.pathname === "/delivery"}
-              to="/delivery"
-            />
-            <RailRow
-              badge={undefined}
-              detail="CI and deploy step timings"
-              detailUnder
-              label="Pipeline"
-              onNavigate={onNavigate}
-              selected={location.pathname === "/pipeline"}
-              to="/pipeline"
+              selected={location.pathname === EVALS_PATH}
+              to={EVALS_PATH}
             />
           </ul>
         </section>
-        {pinned.data.length === 0 ? null : (
+        {pinnedIssues.length === 0 ? null : (
           <section>
             <h2 className={`px-2 text-xs font-semibold tracking-wide uppercase ${railMutedText}`}>
               Pinned
             </h2>
             <ul className="mt-1 space-y-0.5">
-              {pinned.data.map((issue) => (
+              {pinnedIssues.map((issue) => (
                 <RailRow
                   badge={issue.open_asks === 0 ? undefined : issue.open_asks}
                   detail={issue.title}

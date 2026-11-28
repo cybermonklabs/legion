@@ -130,7 +130,11 @@ export type DispatchReadingSurface =
   | "write-label"
   | "delivery-production-jobs"
   | "delivery-population-authors"
-  | "delivery-excluded-repos";
+  | "delivery-excluded-repos"
+  | "eval-chart-heading"
+  | "eval-reading-reason"
+  | "eval-reading-note"
+  | "eval-chart-cell-text";
 
 /**
  * The seven ways a stored text names a node, each of which a rendered surface reads as R8 says
@@ -298,6 +302,11 @@ const ONE_LINE_FIELD_REASON =
  *  the live document and a past version of one both say. */
 const EDITOR_REASON =
   "The Proof editor paints a document's body itself, from the document it edits, and draws each reference the body holds as a decoration over the stored text (`doc/document-references.tsx`, `@legion/proof-editor`'s `src/reference-decorations.ts`) - the renderer draws a read-only copy and the editor cannot be one. The references are read by the one reader every rendered body is read by (`refs/text-references.ts`), so a bare key, a `#id`, an address and a mention resolve by the same rules there.";
+
+/** Why a declared chart's words are drawn as plain text, which is what the four surfaces of an
+ *  eval's chart on the Evals tab say. */
+const EVAL_CHART_REASON =
+  "A declared chart draws the words its definition and its readings give - a chart's heading, a reading's reason and note, a cell's line - as plain text inside the chart's own layout (an SVG `<text>`, a cell of its table, a lane's end), where a block of markdown has no place, so each goes in as the characters it is. They are no record of the reference graph: an eval's definition and its readings are none of the four kinds a `TextSource` names (an artifact, an ask, a comment, a message), so a `#id` in them declares nothing and names nothing.";
 
 export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // An issue's Activity tab: one event's body, which is an ask's question, its answer, its
@@ -1458,30 +1467,74 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "write-label",
   },
-  // Settings' delivery form. The same three lists `DISPATCH_WRITING_BOXES` excludes from the
-  // picker are excluded from the renderer, for the same reason.
+  // A project's Settings tab, its delivery section. The same three lists
+  // `DISPATCH_WRITING_BOXES` excludes from the picker are excluded from the renderer, for the
+  // same reason.
   {
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
-    reach: "/settings, the Production jobs box",
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
+    reach: "/projects/<PROJECT>/settings, the Production jobs box",
     reason: SETTINGS_REASON,
     record: false,
     rendered: false,
     surface: "delivery-production-jobs",
   },
   {
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
-    reach: "/settings, the Population authors box",
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
+    reach: "/projects/<PROJECT>/settings, the Population authors box",
     reason: SETTINGS_REASON,
     record: false,
     rendered: false,
     surface: "delivery-population-authors",
   },
   {
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
-    reach: "/settings, the Excluded repositories box",
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
+    reach: "/projects/<PROJECT>/settings, the Excluded repositories box",
     reason: SETTINGS_REASON,
     record: false,
     rendered: false,
     surface: "delivery-excluded-repos",
+  },
+  // A project's Evals tab, a declared eval's charts: the words a chart's definition and its
+  // readings give, drawn inside the chart's own layout.
+  {
+    files: [
+      "packages/dispatch/web/src/features/evals/DeclaredEval.tsx",
+      "packages/dispatch/web/src/features/evals/charts/BarsRenderer.tsx",
+    ],
+    reach:
+      "/projects/<PROJECT>/evals, a declared eval's chart: its heading, and a bars chart's heading over a group of its rows",
+    reason: EVAL_CHART_REASON,
+    record: false,
+    rendered: false,
+    surface: "eval-chart-heading",
+  },
+  {
+    files: [
+      "packages/dispatch/web/src/features/evals/charts/BarsRenderer.tsx",
+      "packages/dispatch/web/src/features/evals/charts/bars.ts",
+    ],
+    reach:
+      "/projects/<PROJECT>/evals, a declared bars chart, a reading with no value: the reason at its place, in its value's words and in the chart's table",
+    reason: EVAL_CHART_REASON,
+    record: false,
+    rendered: false,
+    surface: "eval-reading-reason",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/evals/charts/LanesRenderer.tsx"],
+    reach:
+      "/projects/<PROJECT>/evals, a declared lanes chart, the words at a lane's end: its newest reading's note, else its span's label",
+    reason: EVAL_CHART_REASON,
+    record: false,
+    rendered: false,
+    surface: "eval-reading-note",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/evals/charts/GridRenderer.tsx"],
+    reach: "/projects/<PROJECT>/evals, a declared grid chart, the lines a cell prints",
+    reason: EVAL_CHART_REASON,
+    record: false,
+    rendered: false,
+    surface: "eval-chart-cell-text",
   },
 ];

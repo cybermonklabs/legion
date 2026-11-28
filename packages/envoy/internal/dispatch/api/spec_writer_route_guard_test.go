@@ -30,12 +30,22 @@ const specWriterCheck = "api.refuseSpecWriter"
 // so every call of it is made in this package.
 const specWriterGuardPkg = "api"
 
-// specWriterSinkPkg is the document service's package. An upload writes its document's text
-// through docs.WriteDocumentText (new_document.go), which seeds a new document (SeedText) or
-// replaces the text of an existing one (ReplaceText). The walk enters every plain function of
-// docs and every function literal outside a method when the path calls or passes one. It never
-// enters a method (specWriterSinkMethods). It counts a sink where an entered function calls it.
+// specWriterSinkPkg is the document service's package, whose sinks are methods of its types
+// (specWriterSinkTypes). A route's path also calls the package's plain functions, and one of them
+// writes a document through a sink: an upload writes its document's text through
+// docs.WriteDocumentText (new_document.go), which seeds a new document (SeedText) or replaces the
+// text of one that exists (ReplaceText). So the walk reads every function of this package that is
+// no method, and every function literal outside a method, wherever the path calls or hands one. It
+// enters no method of the package (specWriterSinkMethods): a sink is one, counted where a function
+// the walk reads calls it.
 const specWriterSinkPkg = "docs"
+
+// specWriterRegistryPkg is the eval registry's package, which writes each project's evals-md
+// through the document service's sinks from methods of its own store (evals' createDocument,
+// through docs.CreateDocument, and editDocument, through ApplyOps and SnapshotVersion): a project's
+// create, a register write and a readings write reach them there. So the walk reads every
+// function of this package, its methods included.
+const specWriterRegistryPkg = "evals"
 
 // specWriterSinks are the writes of the document service that make or change a version of a
 // document, by method name: the nine the spec's Design names, and the accept and the reject of a
@@ -65,11 +75,24 @@ const anchoredWriteExemption = "an anchored comment, ask or suggestion writes a 
 // write today: a hook that does goes in with the reason "a test hook, mounted only with
 // TestHooksEnabled".
 var specWriterExempt = map[string]string{
-	"POST /api/v1/issues/{key}/comments":   anchoredWriteExemption,
-	"POST /api/v1/artifacts/{id}/comments": anchoredWriteExemption,
-	"POST /api/v1/issues/{key}/asks":       anchoredWriteExemption,
-	"POST /api/v1/artifacts/{id}/asks":     anchoredWriteExemption,
+	"POST /api/v1/issues/{key}/comments":                anchoredWriteExemption,
+	"POST /api/v1/artifacts/{id}/comments":              anchoredWriteExemption,
+	"POST /api/v1/issues/{key}/asks":                    anchoredWriteExemption,
+	"POST /api/v1/artifacts/{id}/asks":                  anchoredWriteExemption,
+	"POST /api/v1/projects":                             evalsDocumentExemption,
+	"POST /api/v1/projects/{key}/evals":                 evalsDocumentExemption,
+	"POST /api/v1/projects/{key}/evals/{slug}/readings": evalsDocumentExemption,
+	"PUT /api/v1/projects/{key}/settings/delivery":      evalsDocumentExemption,
 }
+
+// evalsDocumentExemption is why specWriterExempt leaves unchecked the four routes that write a
+// document only through the eval registry (specWriterRegistryPkg): a project's create, which seeds
+// its evals-md, the register and readings writes, which write an eval's section into it, and a
+// project's delivery settings save (dispatch://INFRA-978, R3), which writes each target it holds as
+// a new version of that eval's row.
+const evalsDocumentExemption = "it writes only the project's evals-md (dispatch://INFRA-2916, R5), a document of the project " +
+	"that the eval registry creates and edits (evals' createDocument and editDocument), never an issue's spec or " +
+	"Verification document, the two documents the check judges the writer of (spec_writer.go)"
 
 // TestEveryRouteThatWritesADocumentChecksItsWriter holds R1 of INFRA-4764 - on a Legion-run
 // issue, a version of the spec or the Verification document from a writer who is no person and no
@@ -83,11 +106,13 @@ var specWriterExempt = map[string]string{
 // no worker's credential holds, or when specWriterExempt names it with its reason. Its failure
 // names each route and each sink it reaches, with the calls that reach it.
 //
-// Like decisionBlockChecked, the walk follows calls and function arguments as the copy-lock
-// graph resolves them. It enters every function in api and the plain functions and function
-// literals of docs outside methods (specWriterSinkPkg). It reads each body whole, branches
-// included. A handler that calls the check under a condition passes here as in the other static
-// guards of this package. The behavior tests (spec_writer_test.go) check the branches.
+// The walk is decisionBlockChecked's, over package api, package evals (specWriterRegistryPkg) and
+// the plain functions of package docs (specWriterSinkPkg): every call of every function on the
+// path, followed as the copy-lock graph resolves it, plus every function handed to it as an
+// argument. It reads each body whole, branches included, so a route reaches every sink of every
+// function on its path, and a handler that calls the check under a condition passes here as it
+// does in the other static guards of this package; the behavior tests (spec_writer_test.go) hold
+// the branches.
 func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
 	t.Parallel()
 	graph := copyLockGraph(t)
@@ -149,11 +174,13 @@ func TestTheSpecWriterExemptionsStillHold(t *testing.T) {
 
 // TestTheSpecWriterGuardSeesAPlantedWriter is the two negative controls of check 9d3e6a10, each on a
 // call graph planted from the source below and read by the same helpers the two tests above call:
-// the guard names both planted routes that reach ApplyOps without a check, including the one that
-// writes through a plain docs function (as an upload reaches ReplaceText through
-// docs.WriteDocumentText). The exemption test names a planted exempt route whose path calls the
-// check. Neither helper reports the routes that check their writer without an exemption, require
-// the person scope, or write nothing.
+// the guard names each planted route that reaches ApplyOps with no check, from its own path in
+// package api, through a plain function of package docs (as an upload reaches ReplaceText through
+// docs.WriteDocumentText) or through a method of package evals (as a register write reaches
+// ApplyOps through the registry's editDocument), and the exemption test names a planted exempt
+// route whose path calls the check. The planted table also holds a route that checks its writer,
+// one that needs the person scope, and one that writes nothing, and neither helper names any of
+// them.
 func TestTheSpecWriterGuardSeesAPlantedWriter(t *testing.T) {
 	t.Parallel()
 	graph := plantedSpecWriterGraph(t)
@@ -164,11 +191,13 @@ func TestTheSpecWriterGuardSeesAPlantedWriter(t *testing.T) {
 	unchecked := uncheckedSpecWriters(routes, scopes, exempt)
 	want := []string{
 		"POST /planted/through-docs: reaches ApplyOps (planted/docs/planted.go:",
+		"POST /planted/through-evals: reaches ApplyOps (planted/evals/planted.go:",
 		"POST /planted/unchecked: reaches ApplyOps (planted/api/planted.go:",
 	}
 	if !slices.EqualFunc(unchecked, want, strings.HasPrefix) {
-		t.Errorf("the guard names %q over the planted table, want POST /planted/through-docs and "+
-			"POST /planted/unchecked, each naming the call of ApplyOps with no check", unchecked)
+		t.Errorf("the guard names %q over the planted table, want the three routes that reach ApplyOps with no check, "+
+			"POST /planted/through-docs through a function of package docs, POST /planted/through-evals through a method "+
+			"of package evals and POST /planted/unchecked from package api, each naming the call of ApplyOps", unchecked)
 	}
 	stale := staleSpecWriterExemptions(routes, exempt)
 	if len(stale) != 1 || !strings.HasPrefix(stale[0], "POST /planted/exempt: its path calls "+specWriterCheck) {
@@ -285,24 +314,27 @@ func specWriterReaches(graph *lockGraph, routes map[string][]*lockFunction) map[
 	return reaches
 }
 
-// specWriterWalk reads a route's path as decisionBlockChecked does. It follows every call and
-// every function passed as an argument, whether or not the callee runs it (lockGraph.calleesAndPassed).
-// It enters every function of api and every function of docs except those in methods
-// (specWriterSinkMethods). It caches each function's calls because routes share much of their path.
+// specWriterWalk reads the path of a route, as decisionBlockChecked follows it: every call each
+// function makes, resolved as the copy-lock graph resolves it, and every function handed to a call
+// as an argument, whatever the callee does with it (lockGraph.calleesAndPassed). It enters every
+// function of packages api and evals, and every function of package docs but the ones methods holds
+// (specWriterSinkMethods). What one function's own body calls is read once and kept, since most
+// routes share most of their path.
 type specWriterWalk struct {
 	graph   *lockGraph
 	methods map[*lockFunction]bool
 	steps   map[*lockFunction]*specWriterStep
 }
 
-// enters reports whether the walk reads fn: any function of api, or a function of docs that is
-// neither a method nor a function literal inside a method.
+// enters says whether the walk reads fn: a function of package api or of package evals, or a
+// function of package docs that is no method of the package and no function literal inside one.
 func (w *specWriterWalk) enters(fn *lockFunction) bool {
-	return fn != nil && (fn.pkg == specWriterGuardPkg || (fn.pkg == specWriterSinkPkg && !w.methods[fn]))
+	return fn != nil && (fn.pkg == specWriterGuardPkg || fn.pkg == specWriterRegistryPkg ||
+		(fn.pkg == specWriterSinkPkg && !w.methods[fn]))
 }
 
-// specWriterSinkMethods marks every method of docs and every function literal inside one.
-// The walk does not enter these functions (specWriterSinkPkg).
+// specWriterSinkMethods is every method of package docs, with every function literal inside one:
+// the document service's own code, which the walk does not enter (specWriterSinkPkg).
 func specWriterSinkMethods(graph *lockGraph) map[*lockFunction]bool {
 	methods := map[*lockFunction]bool{}
 	for object, fn := range graph.declared {
@@ -320,8 +352,8 @@ func specWriterSinkMethods(graph *lockGraph) map[*lockFunction]bool {
 	return methods
 }
 
-// specWriterStep records the sinks one function's body calls and where it calls them. It also
-// records whether the body calls the check and which functions the walk enters from that body.
+// specWriterStep is what one function's own body runs: the sinks it calls, by method name, with
+// where; whether it calls the check; and the functions its calls run that the walk enters.
 type specWriterStep struct {
 	sinks  map[string][]string
 	checks bool
@@ -397,13 +429,17 @@ func specWriterSinkOf(name string) (string, bool) {
 }
 
 // plantedSpecWriterSources is the planted module TestTheSpecWriterGuardSeesAPlantedWriter reads, by
-// import path. The document service exposes ApplyOps through an interface, as docs.API does. A
-// plain function calls it through a function literal, to model a write through
-// docs.WriteDocumentText. The http package supplies the method names in the route declarations.
-// The server declares unchecked routes that write through an api function literal or through the
-// docs function. It also declares routes that check the writer, require the person scope, have a
-// stale exemption, or write nothing. The package names (docs, http, api) match the server's so
-// the graph names the functions the same way.
+// import path: a document service with ApplyOps behind an interface, as docs.API holds it, and a
+// plain function of the same package that calls it through a function literal, as
+// docs.WriteDocumentText calls ReplaceText; a registry whose method writes through that interface,
+// as evals.Store's editDocument does; the stand-ins for net/http's method names the declarations
+// spell; and a server whose route declarations, each a routeDecl as the server's route files write
+// one, hold a route that writes through a function literal with no check, a route that writes
+// through the document package's function with no check, one that writes through the registry
+// with no check, a route whose path calls the check through a helper before the same write, a
+// route that needs the person scope and writes the same way, an exempt route that checks its
+// writer all the same, and a route that writes nothing. Each package's name is the one the guard
+// reads (docs, evals, http, api), so the graph names its functions as it names the server's.
 var plantedSpecWriterSources = map[string]string{
 	"planted/docs": `package docs
 
@@ -421,6 +457,16 @@ func WriteText(documents API, artifactID string) error {
 
 func inLedger(write func() error) error { return write() }
 `,
+	"planted/evals": `package evals
+
+import "planted/docs"
+
+type Store struct{ documents docs.API }
+
+func (s *Store) Register(artifactID string) error { return s.editDocument(artifactID) }
+
+func (s *Store) editDocument(artifactID string) error { return s.documents.ApplyOps(artifactID) }
+`,
 	"planted/http": `package http
 
 const (
@@ -432,6 +478,7 @@ const (
 
 import (
 	"planted/docs"
+	"planted/evals"
 	"planted/http"
 )
 
@@ -447,12 +494,16 @@ func declareRoute(route routeDecl) routeDecl {
 	return route
 }
 
-type server struct{ documents docs.API }
+type server struct {
+	documents docs.API
+	registry  *evals.Store
+}
 
 func refuseSpecWriter() error { return nil }
 
 var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/planted/unchecked", Description: "Writes a document and checks no writer.", Handler: (*server).writeUnchecked})
 var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/planted/through-docs", Description: "Writes a document through the document package and checks no writer.", Handler: (*server).writeThroughDocs})
+var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/planted/through-evals", Description: "Writes a document through the registry and checks no writer.", Handler: (*server).writeThroughEvals})
 var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/planted/checked", Description: "Checks its writer, then writes a document.", Handler: (*server).writeChecked})
 var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/planted/person", Description: "Needs the person scope, then writes a document.", Handler: (*server).writeUnchecked})
 var _ = declareRoute(routeDecl{Method: http.MethodPost, Pattern: "/planted/exempt", Description: "Is exempt, and checks its writer all the same.", Handler: (*server).writeChecked})
@@ -464,6 +515,8 @@ func (s *server) writeUnchecked() {
 }
 
 func (s *server) writeThroughDocs() { _ = docs.WriteText(s.documents, "spec") }
+
+func (s *server) writeThroughEvals() { _ = s.registry.Register("evals-md") }
 
 func (s *server) writeChecked() {
 	if s.checkWriter() != nil {

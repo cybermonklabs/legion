@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { lazy, type ReactNode, Suspense } from "react";
 
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
@@ -18,7 +18,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { ArchitecturePage } from "../architecture/ArchitecturePage";
+import { EvalsTab } from "../evals/EvalsTab";
 import { BlockedOnYou } from "../inbox/BlockedOnYou";
 import { buildProjectPath, parseProjectPath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
@@ -26,16 +26,35 @@ import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
 import { DocumentList } from "./DocumentList";
-import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
 
-type ProjectTab = "architecture" | "issues" | "documents";
+// The tabs' code that the Evals tab's first paint draws none of, each loaded as its tab draws it,
+// so the route's chunk holds none of them (dispatch://INFRA-2918, T33): the architecture page, the
+// issue board with its drag and drop, and the delivery settings with their editors.
+const ArchitecturePage = lazy(() =>
+  import("../architecture/ArchitecturePage").then((module) => ({
+    default: module.ArchitecturePage,
+  }))
+);
+const IssueBoard = lazy(() =>
+  import("./IssueBoard").then((module) => ({ default: module.IssueBoard }))
+);
+const DeliverySettingsSection = lazy(() =>
+  import("./DeliverySettingsSection").then((module) => ({
+    default: module.DeliverySettingsSection,
+  }))
+);
+
+type ProjectTab = "architecture" | "issues" | "documents" | "evals" | "settings";
 
 const architectureTab: TabDefinition<ProjectTab> = { id: "architecture", label: "Architecture" };
+// Evals is every project's: its numbers need no source to have a page (dispatch://INFRA-2918 R1).
 const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "issues", label: "Issues" },
   { id: "documents", label: "Documents" },
+  { id: "evals", label: "Evals" },
+  { id: "settings", label: "Settings" },
 ];
 
 type IssueView = "list" | "board";
@@ -69,14 +88,17 @@ export function ProjectPage(): ReactNode {
   );
   const route = parseProjectPath(location.pathname, location.search);
   const projectKey = route?.project;
+  // Whose questions the pill counts, read as every other surface that counts work waiting on
+  // the reader reads it.
+  const whoAmI = useQuery(whoAmIQuery()).data;
+  const viewer = whoAmI?.login;
+  // The asks waiting on the reader, read under the `person` scope, which an agent viewer's bearer
+  // may not hold: for one the pill counts none and nothing is asked.
   const inbox = useQuery({
     queryKey: ["inbox", projectKey],
     queryFn: () => api.getInbox(projectKey),
-    enabled: projectKey !== undefined,
+    enabled: projectKey !== undefined && whoAmI?.kind !== "agent",
   });
-  // Whose questions the pill counts, read as every other surface that counts work waiting on
-  // the reader reads it.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
   const projects = useQuery(projectsQuery());
   const project = projects.data?.find((candidate) => candidate.key === route?.project);
   // Whether the project has an architecture source decides where the bare project path opens
@@ -193,6 +215,9 @@ export function ProjectPage(): ReactNode {
           viewer={viewer}
         />
         <div aria-hidden className="basis-full md:hidden" />
+        {/* No wider than the header: five tabs (Architecture, Issues, Documents, Evals,
+            Settings) are wider than a 360 px phone, and a box that kept their one row would
+            push the page sideways. Capped, the tab list wraps its tabs onto a second row. */}
         <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-1">
           <Tabs
             activeTab={activeTab}
@@ -279,7 +304,11 @@ export function ProjectPage(): ReactNode {
           id="project-architecture-panel"
           role="tabpanel"
         >
-          {activeTab === "architecture" ? <ArchitecturePage project={route.project} /> : null}
+          {activeTab === "architecture" ? (
+            <Suspense fallback={null}>
+              <ArchitecturePage project={route.project} />
+            </Suspense>
+          ) : null}
         </div>
       ) : null}
       <div
@@ -301,12 +330,14 @@ export function ProjectPage(): ReactNode {
                   project's issue, so another project's board is drawn with none of it. The key
                   names the board too: the filters beside it are keyed by the same project, and
                   siblings are told apart by their keys. */}
-              <IssueBoard
-                key={`board:${route.project}`}
-                lanes={lanes}
-                project={route.project}
-                showEdges={showEdges}
-              />
+              <Suspense fallback={null}>
+                <IssueBoard
+                  key={`board:${route.project}`}
+                  lanes={lanes}
+                  project={route.project}
+                  showEdges={showEdges}
+                />
+              </Suspense>
             </>
           )
         ) : null}
@@ -319,6 +350,36 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "documents" ? <DocumentList project={route.project} /> : null}
+      </div>
+      <div
+        aria-hidden={activeTab !== "evals"}
+        aria-labelledby="project-evals-tab"
+        className="mt-3"
+        hidden={activeTab !== "evals"}
+        id="project-evals-panel"
+        role="tabpanel"
+      >
+        {activeTab === "evals" ? <EvalsTab key={route.project} project={route.project} /> : null}
+      </div>
+      <div
+        aria-hidden={activeTab !== "settings"}
+        aria-labelledby="project-settings-tab"
+        className="mt-3"
+        hidden={activeTab !== "settings"}
+        id="project-settings-panel"
+        role="tabpanel"
+      >
+        {activeTab === "settings" ? (
+          // A project with no default repository carries no `default_repo`. Keyed by the project,
+          // so another project's tab starts with none of this one's draft, save or refusal.
+          <Suspense fallback={null}>
+            <DeliverySettingsSection
+              defaultRepo={project.default_repo ?? null}
+              key={route.project}
+              project={route.project}
+            />
+          </Suspense>
+        ) : null}
       </div>
     </section>
   );

@@ -28,7 +28,7 @@ type timelineJobsRun struct {
 }
 
 // TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers: the timeline reads each deploy run's
-// production jobs and the jobs of it that failed (delivery.ReadWindowRows with failedJobs), never
+// production jobs and the jobs of it that failed (delivery.ReadWindowRuns with failedJobs), never
 // every job the run holds, and answers what it answers from every job, byte for byte. Over a
 // deliverytest history, beside which deploy runs are added whose failed jobs are two with a guard
 // among them, the production job and another, guards alone, and one in a run that succeeded, the
@@ -96,6 +96,7 @@ func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 	}
 
 	s := directServer(deps)
+	rules := seededDeliveryRules(t, pool)
 	allByRun := map[int64][]delivery.DeliveryRunJob{}
 	loadJobs := func(run delivery.DeliveryRun) []delivery.DeliveryRunJob {
 		if jobs, ok := allByRun[run.RunID]; ok {
@@ -110,7 +111,7 @@ func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 	}
 	for _, days := range []int{84, 28, 7} {
 		from, to := fixture.To.AddDate(0, 0, -days), fixture.To
-		pop, err := s.readDeliveryPopulation(ctx, fixture.Settings, from, to, url.Values{}, true)
+		pop, err := s.readDeliveryPopulation(ctx, rules, from, to, url.Values{}, true)
 		if err != nil {
 			t.Fatalf("%d days: read the timeline's population: %v", days, err)
 		}
@@ -136,8 +137,8 @@ func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 			t.Errorf("%d days: the timeline's measures read %d jobs of its %d window deploy runs, which hold %d: want the judged production jobs alone, fewer than every job", days, windowRead, len(pop.windowRuns), windowHeld)
 		}
 
-		got := deliveryTimelineCompute(fixture.Settings, pop, from, to, to)
-		want := deliveryTimelineCompute(fixture.Settings, every, from, to, to)
+		got := deliveryTimelineCompute(rules, pop, from, to, to)
+		want := deliveryTimelineCompute(rules, every, from, to, to)
 		gotBody, err := json.Marshal(got)
 		if err != nil {
 			t.Fatalf("encode: %v", err)

@@ -17,20 +17,28 @@ import (
 
 // The rows the delivery and CI measures count, read by one function for every reader that counts
 // them: the delivery routes (api's readDeliveryRows and readPipelinePopulation) read their
-// window's rows (ReadWindowRows). A caller that reads several UTC days at once uses
-// ListPullRequestsOnDays, and ReadDaysDeploys and ReadCIDays for each deploy repository.
-// An answered day matches its own ListPullRequestsInWindow, ReadDeploys or ReadCIRows read.
-// Each day has its own pull request and run bounds; a day past a bound is refused alone and by
-// name. Earlier apply runs still take the oldest maxRunsPerWindow, as in ReadDeploys.
-// Both callers count a deploy's shipped pull requests by the same rule (Deploys.ShippedBy).
+// window's (ListPullRequestsInWindow, and ReadWindowRuns of each source repository), and the eval
+// registry's day rows (the refresher's read of the days a page names, evals' readDeliveryDays) each
+// UTC day's, every day of a page at once (ListPullRequestsOnDays, and ReadDaysDeploys and
+// ReadCIDays of each repository the rows are kept for as the deploy repository), each day's part
+// what ListPullRequestsInWindow, ReadDeploys and ReadCIRows read of the day, so a route and a day
+// row count the same rows by the same rules, and a deploy's shipped pull requests by the same rule
+// (Deploys.ShippedBy). Each day has its own pull request and run bounds; a day past a bound is
+// refused alone and by name. Earlier apply runs still take the oldest MaxRunsPerWindow, as in
+// ReadDeploys. Every read of runs takes one source repository's rule (a DeliverySettings of
+// DeployRules, dispatch://INFRA-978) and reads that repository's runs by it alone, so a reader of
+// several repositories reads each under its own rule.
 //
-// Reads that take q can use either the pool or a read-only transaction with a fixed snapshot.
-// readAll runs statements side by side on the pool and sequentially in a transaction.
+// The reads an answer makes from the evals' day rows (api's evals items) take q, the pool or a
+// read-only transaction whose one snapshot the answer reads (evals.Store.BeginSnapshot). A read of
+// several statements runs them side by side on the pool and one after the other in a transaction
+// (ReadAll).
 
-// readAll runs reads, the reads of one answer in q: on the pool side by side, each on a connection
+// ReadAll runs reads, the reads of one answer in q: on the pool side by side, each on a connection
 // of its own (store.ReadSideBySide), and in a transaction one after the other, since its one
-// connection runs one statement at a time and every read then reads its one snapshot.
-func readAll(ctx context.Context, q Querier, reads ...func(ctx context.Context) error) error {
+// connection runs one statement at a time and every read then reads its one snapshot. The eval
+// registry's reads of a day's rows take it too (evals' readAttribution, ComputeAtRead).
+func ReadAll(ctx context.Context, q Querier, reads ...func(ctx context.Context) error) error {
 	if _, pooled := q.(*store.Pool); pooled {
 		return store.ReadSideBySide(ctx, reads...)
 	}
@@ -51,7 +59,7 @@ type MergedRows struct {
 	// ApplyRuns is the deploy runs on main of the deploy repository that GitHub created at or
 	// after from, oldest creation first, not cut at to: a pull request merged just before to may
 	// first ship after it, so bounding the read to [from, to) would read it as waiting.
-	// ReadMergedRows reads every such run (listRuns); ReadWindowRows every one created up to the
+	// ReadMergedRows reads every such run (listRuns); ReadWindowRuns every one created up to the
 	// bound past which no run ships a pull request merged before to first, with no bound for a
 	// window ending at the present (windowApplyRunsCreated). A production job on another branch
 	// ships no pull request. ApplyJobs is their jobs: the jobs a deploy is judged by
@@ -62,7 +70,7 @@ type MergedRows struct {
 }
 
 // ReadMergedRows reads MergedRows for [from, to) in q: the pull requests, and every apply run
-// followed by their production jobs, side by side on the pool (readAll).
+// followed by their production jobs, side by side on the pool (ReadAll).
 func ReadMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time) (MergedRows, error) {
 	return readMergedRows(ctx, q, settings, from, to, "", nil)
 }
@@ -71,7 +79,7 @@ func ReadMergedRows(ctx context.Context, q Querier, settings DeliverySettings, f
 // with createdBefore set, to only the apply runs GitHub created before it.
 func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time, repo string, createdBefore *time.Time) (MergedRows, error) {
 	var rows MergedRows
-	err := readAll(ctx, q,
+	err := ReadAll(ctx, q,
 		func(ctx context.Context) (err error) {
 			if repo != "" {
 				rows.PullRequests, err = listRepoPullRequestsInWindow(ctx, q, repo, from, to)
@@ -93,9 +101,11 @@ func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, f
 
 // ApplyRows is MergedRows' apply runs and their jobs read once from a moment on (ReadApplyRows),
 // for a reader of many windows that start at or after it, each of which takes its own part
-// (Since). This avoids rereading the deploy runs from each day onward. ReadDaysDeploys instead
-// uses the same upper bound for each day that the routes use for a window (windowApplyRunsCreated).
-// It reads the apply runs in one statement. Only answered days can take their part (windows).
+// (Since): the refresher's walk over the days, whose every day's read would otherwise read every
+// deploy run created from that day to now again. The apply runs of a page's days (ReadDaysDeploys)
+// are read the bounded way the routes read a window's (windowApplyRunsCreated) instead, every
+// day's window in one statement, and only the days that read answered take a part of them
+// (windows).
 type ApplyRows struct {
 	from time.Time
 	// windows is each answered day of a read of several days (DaysDeploys.Applies), whose part
@@ -129,42 +139,33 @@ func readApplyRows(ctx context.Context, q Querier, settings DeliverySettings, fr
 	return ApplyRows{from: from, Runs: runs, Jobs: jobs}, nil
 }
 
-// ReadWindowRows is a delivery route's read of [from, to): MergedRows, with failedJobs each apply
-// run's failed jobs beside its production jobs, which the timeline lists each deploy run with (its
-// failed jobs and the job that failed first, FailedJobs and RootFailingJob, can be any job, and
-// keep the failed ones alone), and with deploys the window's Deploys, as ReadDeploys reads them.
-// The two lists of runs are nearly one, the runs of the window, so they are read in one statement
-// (listWindowRuns) and the production jobs of both in one more, where reading each list and its
-// jobs apart read the window's production jobs twice, three times the window's for the measures
-// of a compare range, whose apply runs reached to the present (dispatch://INFRA-2916, R8). The apply
-// runs stop at the bound past which no run ships first a pull request of the window or of
-// Deploys.Earlier (windowApplyRunsCreated), so every pull request's deploy is the one
-// ReadMergedRows' runs give it. The pull requests are read side by side with the runs and their
-// jobs.
-func ReadWindowRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, failedJobs, deploys bool) (MergedRows, Deploys, error) {
-	var rows MergedRows
-	var window Deploys
-	err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) (err error) {
-			rows.PullRequests, err = ListPullRequestsInWindow(ctx, pool, from, to)
-			return err
-		},
-		func(ctx context.Context) error {
-			applies, started, err := readWindowRuns(ctx, pool, settings, from, to, failedJobs, deploys)
-			rows.ApplyRuns, rows.ApplyJobs = applies.Runs, applies.Jobs
-			if err != nil || !deploys {
-				return err
-			}
-			window, err = deploysOf(ctx, pool, settings, from, started)
-			return err
-		})
-	if err != nil {
-		return MergedRows{}, Deploys{}, err
+// ReadWindowRuns is a delivery route's read of one source repository's runs for [from, to), under
+// that repository's rule (settings): MergedRows' apply runs and their jobs, with failedJobs each
+// apply run's failed jobs beside its production jobs, which the timeline lists each deploy run with
+// (its failed jobs and the job that failed first, FailedJobs and RootFailingJob, can be any job,
+// and keep the failed ones alone), and with deploys the window's Deploys, as ReadDeploys reads
+// them. The window's pull requests are every repository's (ListPullRequestsInWindow), which a route
+// reading several source repositories reads once beside each repository's runs, so this reads
+// none. The two lists of runs are nearly one, the runs of the window, so they are read in one
+// statement (listWindowRuns) and the production jobs of both in one more, where reading each list
+// and its jobs apart read the window's production jobs twice, three times the window's for the
+// measures of a compare range, whose apply runs reached to the present (dispatch://INFRA-2916, R8).
+// The apply runs stop at the bound past which no run ships first a pull request of the window or
+// of Deploys.Earlier (windowApplyRunsCreated), so every pull request's deploy is the one
+// ReadMergedRows' runs give it.
+func ReadWindowRuns(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, failedJobs, deploys bool) (RunsWithJobs, Deploys, error) {
+	applies, started, err := readWindowRuns(ctx, pool, settings, from, to, failedJobs, deploys)
+	if err != nil || !deploys {
+		return applies, Deploys{}, err
 	}
-	return rows, window, nil
+	window, err := deploysOf(ctx, pool, settings, from, started)
+	if err != nil {
+		return RunsWithJobs{}, Deploys{}, err
+	}
+	return applies, window, nil
 }
 
-// readWindowRuns reads ReadWindowRows' runs with their jobs: the apply runs, and with deploys the
+// readWindowRuns reads ReadWindowRuns' runs with their jobs: the apply runs, and with deploys the
 // deploys of the window, each with its production jobs, read for both lists in one statement, and
 // with failedJobs the apply runs' failed jobs too, in another beside it.
 func readWindowRuns(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, failedJobs, deploys bool) (applies, started RunsWithJobs, err error) {
@@ -200,6 +201,13 @@ func readWindowRuns(ctx context.Context, pool *store.Pool, settings DeliverySett
 // answers read, and those of the later answered days' windows created after it.
 // The part keeps only the answered days at or after from, so a later Since still requires an
 // answered day. A part of ReadApplyRows has nil windows and answers any window at or after from.
+//
+// a's runs come oldest creation first (runCreatedAt, as every read of them orders them), so those
+// created from from on are a's last ones, found by a binary search, and the answer's runs are that
+// end of a's, which it shares rather than copies; its jobs are those of its runs alone. A reader of
+// many days (the read-time path of the delivery evals, evals.ComputeAtRead, and the refresher's
+// read of a page's days) takes a part of one read for each day, so a copy of every run created from
+// each day on, grown run by run, made its reads of many days grow with the days times the runs.
 func (a ApplyRows) Since(from time.Time) (ApplyRows, error) {
 	if from.Before(a.from) {
 		return ApplyRows{}, fmt.Errorf("apply rows read from %s hold no run of a window from %s", a.from.Format(time.RFC3339), from.Format(time.RFC3339))
@@ -217,12 +225,17 @@ func (a ApplyRows) Since(from time.Time) (ApplyRows, error) {
 			}
 		}
 	}
-	rows := ApplyRows{from: from, windows: windows, Runs: []DeliveryRun{}, Jobs: map[int64][]DeliveryRunJob{}}
-	for _, run := range a.Runs {
+	first, _ := slices.BinarySearchFunc(a.Runs, from, func(run DeliveryRun, from time.Time) int {
 		if run.Created().Before(from) {
-			continue
+			return -1
 		}
-		rows.Runs = append(rows.Runs, run)
+		return 1
+	})
+	rows := ApplyRows{from: from, windows: windows, Runs: a.Runs[first:len(a.Runs):len(a.Runs)], Jobs: make(map[int64][]DeliveryRunJob, len(a.Runs)-first)}
+	if rows.Runs == nil {
+		rows.Runs = []DeliveryRun{}
+	}
+	for _, run := range rows.Runs {
 		if jobs, held := a.Jobs[run.RunID]; held {
 			rows.Jobs[run.RunID] = jobs
 		}
@@ -230,14 +243,17 @@ func (a ApplyRows) Since(from time.Time) (ApplyRows, error) {
 	return rows, nil
 }
 
-// HistoryRows holds every population pull request merged before a moment, in
-// ListPullRequestsInWindow's order. For each requested deploy repository it holds every deploy
-// run on main, regardless of event, oldest start first and ties by run ID (listRunsStartedIn).
-// It includes each run's jobs of the requested names in ListRunJobs' order.
-// A caller can take each day's deploys, apply runs and push runs from this one read, without
-// rereading the deploy runs from each day onward. It does not include PR-checks runs.
-// Unlike a window read (maxPullRequestsPerWindow, maxRunsPerWindow), this read has no limit:
-// a limit would silently omit part of the history.
+// HistoryRows is what every day of the eval registry's delivery and CI day rows reads but its CI
+// runs, read once over the whole history: every population pull request merged before a moment,
+// in ListPullRequestsInWindow's order, and, for each repository asked for as the deploy
+// repository, every deploy run on main of it, whatever its event, oldest start first and those
+// started in one instant by run id (listRunsStartedIn's order), with its jobs of the names asked
+// for, each run's in ListRunJobs' order. A day's deploys, its apply runs and its deploy cards'
+// push runs are all among those runs, so a reader that builds every day at once (the day-row
+// refresher's rewrite of a settings change, evals' rewriteSettings) gives each day its part, where
+// a read of each day would read every deploy run created from that day on again. No limit bounds
+// it, as one bounds a window's reads (MaxPullRequestsPerWindow, MaxRunsPerWindow): the whole
+// history is what such a reader builds, and a limit would cut it short without a word.
 type HistoryRows struct {
 	PullRequests []DeliveryPullRequest
 	// Deploys is each repository's deploy runs and their jobs, by the repository.
@@ -457,11 +473,12 @@ func deploysOf(ctx context.Context, q Querier, settings DeliverySettings, from t
 
 // ShippedBy is, for each of d.Applies that ships a pull request, the pull requests it ships first
 // (ContainingRun over the apply runs of window and of d.Earlier), whenever they merged: those of
-// window (ReadMergedRows or ReadWindowRows of d's window) and those merged before it, of
+// window (ReadMergedRows, or ListPullRequestsInWindow and ReadWindowRuns, of d's window) and those
+// merged before it, of
 // d.Earlier, each list in that order. A deploy is one with pull requests when it ships one,
 // whenever the pull request merged (dispatch://INFRA-2916): the deploy-frequency measure's
-// with_prs (measures.Run.ShippedPRs) uses this rule on the delivery routes.
-// The pointers are into window's and d.Earlier's lists.
+// with_prs (measures.Run.ShippedPRs) is this rule on the delivery routes and on the eval day rows
+// alike. The pointers are into window's and d.Earlier's lists.
 func (d Deploys) ShippedBy(window MergedRows, settings DeliverySettings) map[int64][]*DeliveryPullRequest {
 	production := settings.Production()
 	// The two listings hold no run in common (Earlier's were created before the window, window's
@@ -493,10 +510,10 @@ type CIRows struct {
 }
 
 // ReadCIRows reads CIRows for [from, to) of the deploy repository in q, the two reads side by side
-// on the pool (readAll); deployJobNames is every job name the deploy cards follow.
+// on the pool (ReadAll); deployJobNames is every job name the deploy cards follow.
 func ReadCIRows(ctx context.Context, q Querier, deployRepo string, from, to time.Time, deployJobNames []string) (CIRows, error) {
 	var rows CIRows
-	err := readAll(ctx, q,
+	err := ReadAll(ctx, q,
 		func(ctx context.Context) (err error) {
 			rows.Checks, err = listRunsWithEveryJobStartedIn(ctx, q, deployRepo, DeliveryRunKindPRChecks, "", "pull_request", from, to)
 			return err
@@ -511,18 +528,73 @@ func ReadCIRows(ctx context.Context, q Querier, deployRepo string, from, to time
 	return rows, nil
 }
 
-// These functions batch reads across UTC days. They run each batched statement once for the whole
-// request instead of once per day. ReadCIDays reads PR-checks jobs separately for each day.
-// ListPullRequestsOnDays answers what ListPullRequestsInWindow answers for each day.
-// ReadDaysDeploys answers what ReadDeploys answers, with optional apply runs (DaysDeploys.Applies).
-// ReadCIDays answers what ReadCIRows answers. Each day's window [day, day+1) must start at or
-// after the end of the previous day's window. Each answer is index-aligned with the days.
-// Each day is bounded on its own by maxPullRequestsPerWindow for merged pull requests and
-// maxRunsPerWindow for each list of its own runs. A day past either bound is refused alone and
-// by name (RefusedWindow), with none of the rows the refused window decides. Every other day is
-// answered whole. A day's earlier pull request window can also cause a refusal (Deploys.Earlier).
-// Its earlier apply runs instead answer the oldest maxRunsPerWindow, as listRuns does for one
-// window.
+// prChecksCompletedInQuery is ReadPRChecksCompletedIn's read of the runs: the PR-checks runs of a
+// window as listRunsStartedIn lists them (kind $2, event $3, started in [$4, $5)), of those the
+// ones completed in [$6, $7], oldest start first and those started in one instant by run id. The
+// runs are read by their completion alone, one range of delivery_runs_kind_completed_at (migration
+// 20261123042253), (repo, kind, completed_at), in a materialized CTE that names no start, so the
+// read reads the runs of those hours alone; the start is checked on the runs it answers, which are
+// then ordered and bounded. Named beside the completion, the start's range and the order by it let
+// the planner read delivery_runs_kind_started_at's range of every run started in the window
+// instead, in the order asked for, and test each run's completion on the way: the plan it takes
+// where it holds no statistics of the two ranges, as under a generic plan, which reads every run
+// of 84 days to answer a day's (dispatch://INFRA-2918, R12; api's
+// TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues).
+const prChecksCompletedInQuery = `
+		with completed as materialized (
+			select ` + RunColumns + `
+			from delivery_runs
+			where repo = $1 and kind = $2 and event = $3 and completed_at >= $6 and completed_at <= $7
+		)
+		select ` + RunColumns + `
+		from completed
+		where started_at >= $4 and started_at < $5
+		order by started_at, run_id
+		limit $8`
+
+// ReadPRChecksCompletedIn reads the PR-checks workflow's pull_request runs of the deploy repository
+// in q that started in [from, to), the runs ReadCIRows reads of that window, and completed in
+// [completedFrom, completedTo], both ends counted as measures.FailingJobs counts a completion, each
+// with every job it ran: the runs of a window whose jobs the failing-jobs tally reads, read by their
+// completion rather than as every run of the window (dispatch://INFRA-2918, D9), so the read of
+// their jobs reads the jobs of a day's runs, never those of every run of an 84-day window.
+// Bounded by MaxRunsPerWindow, as listRunsStartedIn is.
+func ReadPRChecksCompletedIn(ctx context.Context, q Querier, deployRepo string, from, to, completedFrom, completedTo time.Time) (RunsWithJobs, error) {
+	rows, err := q.Query(ctx, prChecksCompletedInQuery, deployRepo, string(DeliveryRunKindPRChecks), "pull_request",
+		from, to, completedFrom, completedTo, MaxRunsPerWindow)
+	if err != nil {
+		return RunsWithJobs{}, err
+	}
+	runs, err := collectRuns(rows)
+	if err != nil {
+		return RunsWithJobs{}, err
+	}
+	runIDs := make([]int64, len(runs))
+	for i, run := range runs {
+		runIDs[i] = run.RunID
+	}
+	jobs, err := listEveryRunJobForRuns(ctx, q, deployRepo, runIDs)
+	if err != nil {
+		return RunsWithJobs{}, err
+	}
+	return RunsWithJobs{Runs: runs, Jobs: jobs}, nil
+}
+
+// The reads of several UTC days at once, the day-row refresher's read of the days a page names
+// (evals' readDeliveryDays): each read one day of the page needs is made once for every day of
+// the page rather than once a day, so a page naming N days makes as many statements of each as a
+// page naming one, and each answers, for each day, what the read of that day alone answers:
+// ListPullRequestsOnDays what ListPullRequestsInWindow answers, ReadDaysDeploys what ReadDeploys
+// answers and the apply runs each day takes its part of (DaysDeploys.Applies), and ReadCIDays what
+// ReadCIRows answers. A day is the window [day, day+1) of a UTC midnight, and each day's window
+// starts at or after the end of the one before it; each answer is index-aligned with the days.
+// Each day is bounded on its own, by MaxPullRequestsPerWindow for its merged pull requests and by
+// MaxRunsPerWindow for each list of its own runs. A day past either bound, or whose window of the
+// earlier rows of its deploys (Deploys.Earlier) holds more than MaxPullRequestsPerWindow of the
+// deploy repository's pull requests, is refused alone and by name (RefusedWindow), with none of
+// the rows the refused window decides, and every other day of the read is answered whole. A day's
+// earlier apply runs refuse nothing: they answer the oldest MaxRunsPerWindow, as listRuns does for
+// one window.
 
 // RefusedRows identifies the rows that exceeded a window's bound. Its zero value denotes pull
 // requests merged in the window.
@@ -534,9 +606,11 @@ const (
 	RefusedApplyRuns    RefusedRows = "apply runs"
 )
 
-// RefusedWindow holds more than Bound rows of the kind named by Rows for [From, To).
-// Repo is the deploy repository, or empty for pull requests across repositories
-// (ListPullRequestsOnDays). The read answers no rows for the refused window.
+// RefusedWindow is a window a read of several windows refused: it holds more than Bound rows of
+// the kind Rows names for [From, To). Repo is empty for a day's own window of pull requests across
+// repositories (ListPullRequestsOnDays), and the deploy repository for the window of the earlier
+// rows of a day's deploys (ReadDaysDeploys, Deploys.Earlier) and for a day's own runs
+// (ReadDaysDeploys, ReadCIDays). The read answers no row of the window.
 type RefusedWindow struct {
 	From, To time.Time
 	Repo     string
@@ -567,8 +641,9 @@ func (w RefusedWindow) String() string {
 
 // daysSideBySide is how many days' reads of their own the reads of several days run at once, each
 // on a connection of its own: ReadCIDays' read of every job of each day's PR-checks runs, the one
-// read that returns rows in proportion to the runs on each day (24,000 jobs a day at ten times
-// the stated run rate). One statement for every day would read all those jobs on one connection.
+// read of a day whose rows grow with the day's runs rather than with the page's days (24,000 jobs a
+// day at ten times the stated run rate), which one statement for every day would read on one
+// connection.
 const daysSideBySide = 4
 
 // dayWindows returns the starts and ends a statement unnests for the windows [day, day+1).
@@ -616,7 +691,7 @@ func readEachDay(ctx context.Context, days int, read func(ctx context.Context, d
 
 // ListPullRequestsOnDays lists, for each of days, what ListPullRequestsInWindow lists of its
 // window, in one statement, and answers, index-aligned with days too, the refusal of each day whose
-// window holds more than maxPullRequestsPerWindow pull requests, whose list is empty, and nil for
+// window holds more than MaxPullRequestsPerWindow pull requests, whose list is empty, and nil for
 // every other day (listPullRequestsInWindows).
 func ListPullRequestsOnDays(ctx context.Context, q Querier, days []time.Time) ([][]DeliveryPullRequest, []*RefusedWindow, error) {
 	from, to, err := dayWindows(days)
@@ -630,16 +705,17 @@ func ListPullRequestsOnDays(ctx context.Context, q Querier, days []time.Time) ([
 // lists of it, in its order, in one statement, a pull request of two windows in each; narrowed to
 // repo's pull requests when repo is non-empty, as readMergedRows narrows a window's earlier rows
 // (Deploys.Earlier). Each window is bounded on its own: the statement reads at most
-// maxPullRequestsPerWindow+1 pull requests of each window, whatever the others hold, and a window
-// that holds more than maxPullRequestsPerWindow is refused alone, where ListPullRequestsInWindow
-// answers the oldest maxPullRequestsPerWindow: its list is empty, and the second answer, aligned
+// MaxPullRequestsPerWindow+1 pull requests of each window, whatever the others hold, and a window
+// that holds more than MaxPullRequestsPerWindow is refused alone, where ListPullRequestsInWindow
+// answers the oldest MaxPullRequestsPerWindow: its list is empty, and the second answer, aligned
 // with the windows, holds its refusal, naming the window and the bound, and nil for every window
 // answered. No window answers part of its rows, so which of a window's rows the statement takes
-// does not matter: it answers them only where they are every one of the window's. A refusal
-// affects only its window, so every other day is answered whatever one day holds; a refusal
-// of the whole read would fail every day, those under the bound included, on every attempt
+// does not matter: it answers them only where they are every one of the window's. A refusal costs
+// its own window alone, so the other windows, each another day's, are answered whatever one day
+// holds: a refusal of the whole read failed every day of the refresher's page with the one day
+// that held more, in every pass, so a day under the bound was never written either
 // (dispatch://INFRA-2916/comment/0d936c90-6b07-4049-bca2-7b08ea901db3). A limit the windows shared
-// (maxPullRequestsPerWindow times their number) let a window take the share another left unused,
+// (MaxPullRequestsPerWindow times their number) let a window take the share another left unused,
 // and past it kept the oldest of every window's together without a word, leaving out a window's
 // newest, which its deploys ship (dispatch://INFRA-2916).
 func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.Time, repo string) ([][]DeliveryPullRequest, []*RefusedWindow, error) {
@@ -660,7 +736,7 @@ func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.T
 			limit $3
 		) p
 		order by d.i, p.merged_at, (p.repo || '#' || p.number) collate "C"
-	`, from, to, maxPullRequestsPerWindow+1, repo)
+	`, from, to, MaxPullRequestsPerWindow+1, repo)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -672,8 +748,8 @@ func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.T
 			return nil, nil, err
 		}
 		// The row past the bound is its window's last: the statement reads one past it at most.
-		if w := window - 1; len(listed[w]) == maxPullRequestsPerWindow {
-			refused[w], listed[w] = &RefusedWindow{From: from[w], To: to[w], Repo: repo, Bound: maxPullRequestsPerWindow}, []DeliveryPullRequest{}
+		if w := window - 1; len(listed[w]) == MaxPullRequestsPerWindow {
+			refused[w], listed[w] = &RefusedWindow{From: from[w], To: to[w], Repo: repo, Bound: MaxPullRequestsPerWindow}, []DeliveryPullRequest{}
 		} else {
 			listed[w] = append(listed[w], pr)
 		}
@@ -685,7 +761,7 @@ func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.T
 }
 
 // listRunsStartedOnDays lists what listRunsStartedIn lists for each day window, in its order,
-// in one statement. Each window reads at most maxRunsPerWindow+1 runs on its own; a window past
+// in one statement. Each window reads at most MaxRunsPerWindow+1 runs on its own; a window past
 // the bound has an empty list and an aligned refusal, and every other window is answered whole.
 func listRunsStartedOnDays(ctx context.Context, q Querier, repo string, kind DeliveryRunKind, branch, event string, from, to []time.Time) ([][]DeliveryRun, []*RefusedWindow, error) {
 	listed, refused := make([][]DeliveryRun, len(from)), make([]*RefusedWindow, len(from))
@@ -706,7 +782,7 @@ func listRunsStartedOnDays(ctx context.Context, q Querier, repo string, kind Del
 			limit $7
 		) r
 		order by d.i, r.started_at, r.run_id
-	`, repo, string(kind), from, to, branch, event, maxRunsPerWindow+1)
+	`, repo, string(kind), from, to, branch, event, MaxRunsPerWindow+1)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -722,9 +798,9 @@ func listRunsStartedOnDays(ctx context.Context, q Querier, repo string, kind Del
 			return nil, nil, err
 		}
 		// The statement reads at most one row past the bound of each window.
-		if w := window - 1; len(listed[w]) == maxRunsPerWindow {
+		if w := window - 1; len(listed[w]) == MaxRunsPerWindow {
 			listed[w] = []DeliveryRun{}
-			refused[w] = &RefusedWindow{From: from[w], To: to[w], Repo: repo, Bound: maxRunsPerWindow, Rows: what}
+			refused[w] = &RefusedWindow{From: from[w], To: to[w], Repo: repo, Bound: MaxRunsPerWindow, Rows: what}
 		} else {
 			listed[w] = append(listed[w], run)
 		}
@@ -736,7 +812,7 @@ func listRunsStartedOnDays(ctx context.Context, q Querier, repo string, kind Del
 }
 
 // listDeployRunsCreatedInWindows lists the earlier apply runs (Deploys.Earlier) in one statement.
-// Each window takes its oldest maxRunsPerWindow deploy runs on main by creation time and run ID,
+// Each window takes its oldest MaxRunsPerWindow deploy runs on main by creation time and run ID,
 // as listRuns does for one window. No window is refused, and a run of two windows is in each.
 func listDeployRunsCreatedInWindows(ctx context.Context, q Querier, repo string, from, to []time.Time) ([][]DeliveryRun, error) {
 	listed := make([][]DeliveryRun, len(from))
@@ -758,7 +834,7 @@ func listDeployRunsCreatedInWindows(ctx context.Context, q Querier, repo string,
 			limit $4
 		) r
 		order by d.i, `+runCreatedAt+`, r.run_id
-	`, repo, from, to, maxRunsPerWindow)
+	`, repo, from, to, MaxRunsPerWindow)
 	if err != nil {
 		return nil, err
 	}
@@ -777,7 +853,7 @@ func listDeployRunsCreatedInWindows(ctx context.Context, q Querier, repo string,
 // daysRunsQuery reads deploy runs on main of $1 that are apply runs of a day's window
 // (applyRunsCreated) or started on a day. It answers each run once, oldest creation first,
 // with the day ordinals that listed it in each part. $2 and $3 are the days' starts and ends,
-// $4 and $5 are Production.JobNames and Production.ApplyStep, and $6 is maxRunsPerWindow+1
+// $4 and $5 are Production.JobNames and Production.ApplyStep, and $6 is MaxRunsPerWindow+1
 // for each part of each day. The parts use ranges of delivery_runs_kind_created and
 // delivery_runs_kind_started_at. collectDaysRuns refuses days past either bound.
 //
@@ -788,8 +864,8 @@ func listDeployRunsCreatedInWindows(ctx context.Context, q Querier, repo string,
 // for each run. A bound that finds no production job succeeded after its day walks every later run
 // and probes its jobs, so with the jobs not yet committed in the read's snapshot and their probe
 // planned while delivery_run_jobs was nearly empty (the repository's jobs read for each probe) the
-// read of 278 runs over 17 days probed the jobs 77,284 times and took 29 s
-// (dispatch://INFRA-2916).
+// read of 278 runs over 17 days probed the jobs 77,284 times and took 29 s, the eval day-row
+// refresher's pass waiting on it (dispatch://INFRA-2916).
 var daysRunsQuery = `
 		with listed_runs as materialized (` + daysRunsListed + `
 		)
@@ -852,14 +928,14 @@ func collectDaysRuns(rows pgx.Rows, repo string, from, to []time.Time) ([]Delive
 	for i := range from {
 		var what RefusedRows
 		switch {
-		case startedCounts[i] > maxRunsPerWindow:
+		case startedCounts[i] > MaxRunsPerWindow:
 			what = RefusedDeployRuns
-		case applyCounts[i] > maxRunsPerWindow:
+		case applyCounts[i] > MaxRunsPerWindow:
 			what = RefusedApplyRuns
 		default:
 			continue
 		}
-		refused[i] = &RefusedWindow{From: from[i], To: to[i], Repo: repo, Bound: maxRunsPerWindow, Rows: what}
+		refused[i] = &RefusedWindow{From: from[i], To: to[i], Repo: repo, Bound: MaxRunsPerWindow, Rows: what}
 		anyRefused = true
 	}
 	if !anyRefused {
@@ -894,14 +970,14 @@ type DaysDeploys struct {
 
 // ReadDaysDeploys reads what ReadDeploys reads for each day of settings.DeployRepo, and with
 // applies also the answered days' apply runs (DaysDeploys.Applies). It bounds each day's own
-// started and apply runs separately. If either exceeds maxRunsPerWindow, the day alone is refused
+// started and apply runs separately. If either exceeds MaxRunsPerWindow, the day alone is refused
 // by name, started runs taking precedence: it gets no Deploys, no earlier read for it, and no
 // job read for runs listed only for refused days.
 //
 // For days that can ship earlier pull requests, it reads their earlier windows (Deploys.Earlier).
-// A day whose earlier pull requests exceed maxPullRequestsPerWindow is refused as well, with no
+// A day whose earlier pull requests exceed MaxPullRequestsPerWindow is refused as well, with no
 // Deploys and a refusal naming that earlier window. Earlier apply runs do not cause a refusal:
-// each earlier window takes its oldest maxRunsPerWindow as ReadDeploys does. All other days are
+// each earlier window takes its oldest MaxRunsPerWindow as ReadDeploys does. All other days are
 // answered whole.
 func ReadDaysDeploys(ctx context.Context, pool *store.Pool, settings DeliverySettings, days []time.Time, applies bool) (DaysDeploys, error) {
 	from, to, err := dayWindows(days)
@@ -917,7 +993,7 @@ func ReadDaysDeploys(ctx context.Context, pool *store.Pool, settings DeliverySet
 	names := production.JudgedJobNames()
 	var runs []DeliveryRun
 	if applies {
-		rows, err := pool.Query(ctx, daysRunsQuery, repo, from, to, production.JobNames, production.ApplyStep, maxRunsPerWindow+1)
+		rows, err := pool.Query(ctx, daysRunsQuery, repo, from, to, production.JobNames, production.ApplyStep, MaxRunsPerWindow+1)
 		if err != nil {
 			return DaysDeploys{}, fmt.Errorf("read the deploy runs of %d days: %w", len(days), err)
 		}

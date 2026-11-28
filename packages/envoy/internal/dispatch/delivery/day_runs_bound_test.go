@@ -9,11 +9,11 @@ import (
 
 // TestOneDaysRunsPastTheBoundLeaveEveryOtherDayAnswered: a read of several days answers each day
 // what its own window's read answers (ReadCIDays what ReadCIRows answers, ReadDaysDeploys what
-// ReadDeploys answers), and one day's runs past the bound of a window's runs (maxRunsPerWindow)
+// ReadDeploys answers), and one day's runs past the bound of a window's runs (MaxRunsPerWindow)
 // leave every other day's runs answered, as listPullRequestsInWindows leaves every other day's
-// pull requests answered past maxPullRequestsPerWindow. The first day holds 2*maxRunsPerWindow
+// pull requests answered past MaxPullRequestsPerWindow. The first day holds 2*MaxRunsPerWindow
 // PR-checks runs and as many deploy pushes on main; the second day holds one PR-checks run with its
-// job and one deploy that ships. A limit the days share (maxRunsPerWindow times their number,
+// job and one deploy that ships. A limit the days share (MaxRunsPerWindow times their number,
 // oldest run first) spends itself on the first day and answers the second day none of its runs,
 // with no error and no refusal (dispatch://INFRA-6225, the tester's round at 238703c7).
 func TestOneDaysRunsPastTheBoundLeaveEveryOtherDayAnswered(t *testing.T) {
@@ -22,7 +22,7 @@ func TestOneDaysRunsPastTheBoundLeaveEveryOtherDayAnswered(t *testing.T) {
 	settings := DeliverySettings{DeployRepo: waitingRepo, ProductionJobNames: []string{waitingJob}, ProductionApplyStepName: new(waitingStep)}
 	names := settings.Production().JudgedJobNames()
 	days := []time.Time{time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 6, 2, 0, 0, 0, 0, time.UTC)}
-	full := 2 * maxRunsPerWindow
+	full := 2 * MaxRunsPerWindow
 	// The change log's trigger is off for the seed, as seedPullRequestsASecondApart turns it off.
 	if _, err := pool.Exec(ctx, `alter table delivery_runs disable trigger delivery_runs_changed`); err != nil {
 		t.Fatalf("stop logging the runs' changes: %v", err)

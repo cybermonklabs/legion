@@ -1,0 +1,269 @@
+package legionfacts
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+// items.go turns the stored rows into the rows an eval's issue list serves (dispatch://INFRA-2915,
+// R5). dispatch://INFRA-2916 mounts `GET /api/v1/projects/{key}/evals/{slug}/items`; this file
+// holds the row that route answers for an issue and the function that shapes it, so the route
+// reads stored rows and computes no fact, as every other reader of the facts does. The one column
+// it does not take from the stored row is the issue's repository, which it resolves when it reads
+// (ItemRows).
+
+// ItemRowKind is the row kind an issue's row carries. A row kind is a registered name rather
+// than a fixed list (dispatch://INFRA-979/spec#b-r18), and `issue` is the name of this one.
+const ItemRowKind = "issue"
+
+// ItemSource names where a row's columns came from: this package, which computes each row
+// (computeKeys and ComputeProject) and writes it to issue_facts. One name stands for every row,
+// because a row written for one issue and a row of a whole read are the one computation.
+const ItemSource = "legionfacts"
+
+// The columns of an issue's row that every row carries, whatever the issue. Each is the
+// issue_facts column of the same name, so a reader of a column and a reader of the table read one
+// word for one number, but for ColumnRepo: the repository the issue resolves to when the row is
+// read (ItemRows), not the one the stored row's pass resolved.
+const (
+	ColumnOpenedAt                     = "opened_at"
+	ColumnClosedAt                     = "closed_at"
+	ColumnWorkHours                    = "work_hours"
+	ColumnReviewRounds                 = "review_rounds"
+	ColumnRootKey                      = "root_key"
+	ColumnTreeDepth                    = "tree_depth"
+	ColumnSlotHours                    = "slot_hours"
+	ColumnWaitingReason                = "waiting_reason"
+	ColumnWorkFirstAt                  = "work_first_at"
+	ColumnWorkLastAt                   = "work_last_at"
+	ColumnParkedHours                  = "parked_hours"
+	ColumnQueuedHours                  = "queued_hours"
+	ColumnStartedAt                    = "started_at"
+	ColumnMergedAt                     = "merged_at"
+	ColumnSlotWaitHours                = "slot_wait_hours"
+	ColumnSentBack                     = "sent_back"
+	ColumnImplementingAfterFirstReview = "implementing_after_first_review"
+	ColumnTestingAfterFirstReview      = "testing_after_first_review"
+	ColumnChildren                     = "children"
+	ColumnRepo                         = "repo"
+	// ColumnHoursPrefix starts the column of one phase's hours: `hours_implementing`,
+	// `hours_awaiting_person`. The stored row holds the hours as a map of the board's column
+	// ids, and an eval names one column and reads one number, so each phase's hours is a column
+	// of its own rather than a map under one name. A phase with no hours has no column, as the
+	// stored row holds no entry for it.
+	ColumnHoursPrefix = "hours_"
+	// ColumnBarPrefix starts the columns of one bar of phase time, for the same reason:
+	// `bar_implementer` is the bar's hours and `bar_implementer_in_a_turn` one segment of them,
+	// one of each for every bar the stored row holds, which is all seven.
+	ColumnBarPrefix = "bar_"
+	// ColumnIdlePrefix starts the column of one role's idle hours, `idle_reviewer`, one for each
+	// of the six roles the stored row holds.
+	ColumnIdlePrefix = "idle_"
+)
+
+// ItemRow is one row of an eval's items answer: the issue, its stored Legion facts as columns,
+// when they were measured, what computed them and where a reader of the row goes to see the
+// issue. The field set is dispatch://INFRA-979/spec#b-r18's, which every row kind of that route
+// carries: a row key, a row kind, the columns, the measured time, the source and a link.
+//
+// Project is the issue's own project, which is the project the row counts for: the stored row
+// names it, and no caller passes one of its own.
+type ItemRow struct {
+	Project string `json:"project"`
+	RowKey  string `json:"row_key"`
+	RowKind string `json:"row_kind"`
+	// Columns is the facts, by column name. A later eval names the columns it wants, so the
+	// values are the row's as its reader closed it (Row.At) and this adds nothing to any of
+	// them: a count is a count, an hour figure is the row's float, a moment is the row's moment
+	// and an open issue's `closed_at` is null.
+	Columns    map[string]any `json:"columns"`
+	MeasuredAt time.Time      `json:"measured_at"`
+	Source     string         `json:"source"`
+	// Href is the issue's own address, `/issues/<key>`, which opens the issue: the one spelling
+	// of it this repository writes (api/search.go's searchHref, api/duplicates.go).
+	Href string `json:"href"`
+}
+
+// ItemRows turns stored facts rows into the items rows an eval's issue list serves: one row per
+// issue, in the order the rows were given. Its one caller, the eval items route
+// (api/evals_items.go's legionItemSource), gives it the rows of the issues closed in a range as
+// ReadClosedIn answers them, newest close first, each closed at the request (Row.At).
+//
+// The measured time is when the facts were measured: a closed issue's close, the moment its
+// values stopped moving and the moment its Legion evals count it on, whenever its row was last
+// recomputed. An eval that charts it reads it at the moment it was true. A row of an open issue,
+// which ReadClosedIn never answers, would be measured at its AsOf, the moment its still-moving
+// facts stand at.
+//
+// The repo column is repos' entry for the issue, "" for none: the repository the issue resolves
+// to now (ReadRepos), which the items route filters by and the Legion day rows cut by
+// (evals.ReadLegionDay). The stored row's repo is the one its facts pass resolved, DefaultRepo
+// where the issue's chain names none, so a move of a project's default repository rewrites no
+// stored row and leaves none stale. It goes stale only when the issue's own repository, or an
+// ancestor's, moves, until the pass that rewrites it, so a row showing it could stand in one
+// repository's list while naming another.
+//
+// filings is the filing of each issue of rows that the same range filed, by issue, nil for none:
+// such an issue's row carries its filing's columns beside its facts (addFilingColumns), its
+// root_key the facts' own, so an issue a range both filed and closed answers one row (R24) that
+// states what its filing's row (FilingItemRows) would, and is measured at its close.
+func ItemRows(rows []Row, repos map[string]string, filings map[string]Filing) []ItemRow {
+	items := make([]ItemRow, 0, len(rows))
+	for _, row := range rows {
+		measured := row.AsOf
+		if row.ClosedAt != nil {
+			measured = *row.ClosedAt
+		}
+		columns := itemColumns(row, repos[row.Issue])
+		if filing, filed := filings[row.Issue]; filed {
+			addFilingColumns(columns, filing)
+		}
+		items = append(items, ItemRow{
+			Project:    row.Project,
+			RowKey:     row.Issue,
+			RowKind:    ItemRowKind,
+			Columns:    columns,
+			MeasuredAt: measured,
+			Source:     ItemSource,
+			Href:       "/issues/" + row.Issue,
+		})
+	}
+	return items
+}
+
+// itemColumns is one row's facts by column name: the twenty columns every issue's row carries,
+// repo among them, one column for each phase the issue has hours in, six for each of the seven
+// bars (its hours and its five segments) and one for each role's idle hours. A bar's holds_hours
+// is no column: it is what a fold counts a bar's issues by, and no issue list shows it.
+func itemColumns(row Row, repo string) map[string]any {
+	columns := map[string]any{
+		ColumnOpenedAt:                     row.OpenedAt,
+		ColumnClosedAt:                     row.ClosedAt,
+		ColumnWorkHours:                    row.WorkHours,
+		ColumnReviewRounds:                 row.ReviewRounds,
+		ColumnRootKey:                      row.Tree,
+		ColumnTreeDepth:                    row.TreeDepth,
+		ColumnSlotHours:                    row.SlotHours,
+		ColumnWaitingReason:                row.WaitingReason,
+		ColumnWorkFirstAt:                  row.WorkFirstAt,
+		ColumnWorkLastAt:                   row.WorkLastAt,
+		ColumnParkedHours:                  row.ParkedHours,
+		ColumnQueuedHours:                  row.QueuedHours,
+		ColumnStartedAt:                    row.StartedAt,
+		ColumnMergedAt:                     row.MergedAt,
+		ColumnSlotWaitHours:                row.SlotWaitHours,
+		ColumnSentBack:                     row.SentBack,
+		ColumnImplementingAfterFirstReview: row.ImplementingHoursAfterFirstReview,
+		ColumnTestingAfterFirstReview:      row.TestingHoursAfterFirstReview,
+		ColumnChildren:                     row.Children,
+		ColumnRepo:                         repo,
+	}
+	for phase, hours := range row.PhaseHours {
+		columns[ColumnHoursPrefix+phase] = hours
+	}
+	// A bar's columns: its hours under the bar's own, and each of its five segments under
+	// `_<segment>`, by the segment's own name (metrics.Segment).
+	for role, bar := range row.Bars {
+		columns[ColumnBarPrefix+role] = bar.Hours
+		for segment, hours := range bar.Segments.ByName() {
+			columns[ColumnBarPrefix+role+"_"+string(segment)] = hours
+		}
+	}
+	for role, hours := range row.IdleByRole {
+		columns[ColumnIdlePrefix+role] = hours
+	}
+	return columns
+}
+
+// The columns an items row reads of the issue itself, which no stored row holds: its title and
+// its priority (null for an issue with none). WithIssues adds them.
+const (
+	ColumnTitle    = "title"
+	ColumnPriority = "priority"
+)
+
+// The columns of a filing's row (FilingItemRows): the issue_filings column of each name.
+const (
+	ColumnFiledAt    = "filed_at"
+	ColumnFilerRole  = "filer_role"
+	ColumnFilerIssue = "filer_issue"
+	ColumnFilerPhase = "filer_phase"
+	ColumnClass      = "class"
+)
+
+// ItemIssue is what an items row reads of its issue in issues: the title, and the priority, nil
+// where the issue has none.
+type ItemIssue struct {
+	Title    string
+	Priority *int
+}
+
+// ReadItemIssues reads the title and priority of each of keys that an issue holds, by key: the
+// join of an items page's rows with issues, one read of the primary key per page.
+func ReadItemIssues(ctx context.Context, q Querier, keys []string) (map[string]ItemIssue, error) {
+	issues := make(map[string]ItemIssue, len(keys))
+	if len(keys) == 0 {
+		return issues, nil
+	}
+	rows, err := q.Query(ctx, `select key, title, priority from issues where key = any($1)`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of the items rows: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var issue ItemIssue
+		if err := rows.Scan(&key, &issue.Title, &issue.Priority); err != nil {
+			return nil, fmt.Errorf("read the issues of the items rows: %w", err)
+		}
+		issues[key] = issue
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the issues of the items rows: %w", err)
+	}
+	return issues, nil
+}
+
+// WithIssues is items with each row's issue's title and priority among its columns, as issues
+// (ReadItemIssues) holds them: an issue it does not hold reads an empty title and no priority, so
+// every row carries the same columns.
+func WithIssues(items []ItemRow, issues map[string]ItemIssue) []ItemRow {
+	for _, item := range items {
+		issue := issues[item.RowKey]
+		item.Columns[ColumnTitle], item.Columns[ColumnPriority] = issue.Title, issue.Priority
+	}
+	return items
+}
+
+// FilingItemRows turns stored filings into the items rows legion-splitting's filings serve: one
+// `issue` row per filed issue, in the order the filings were given, whose columns are the
+// filing's (addFilingColumns) and the filed issue's tree root, measured when it was filed.
+func FilingItemRows(filings []Filing) []ItemRow {
+	items := make([]ItemRow, 0, len(filings))
+	for _, filing := range filings {
+		columns := make(map[string]any, 6)
+		columns[ColumnRootKey] = filing.Root
+		addFilingColumns(columns, filing)
+		items = append(items, ItemRow{
+			Project:    filing.Project,
+			RowKey:     filing.Key,
+			RowKind:    ItemRowKind,
+			Columns:    columns,
+			MeasuredAt: filing.At,
+			Source:     ItemSource,
+			Href:       "/issues/" + filing.Key,
+		})
+	}
+	return items
+}
+
+// addFilingColumns sets a filing's own columns among columns: when it was filed, by which role,
+// issue and phase, and its class.
+func addFilingColumns(columns map[string]any, filing Filing) {
+	columns[ColumnFiledAt] = filing.At
+	columns[ColumnFilerRole] = filing.Filer
+	columns[ColumnFilerIssue] = filing.FilerIssue
+	columns[ColumnFilerPhase] = filing.FilerPhase
+	columns[ColumnClass] = filing.Class
+}

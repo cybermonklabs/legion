@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -69,7 +70,7 @@ func TestTheReadingReadsEachOfMainsTablesItNames(t *testing.T) {
 			ctx := t.Context()
 			pool := storetest.Open(t).Pool
 			now := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
-			fixture := legiontest.Seed(t, pool, legiontest.Spec{Trees: 1, Now: now})
+			fixture := legiontest.Seed(t, pool, legionseed.Spec{Trees: 1, Now: now})
 			window := Window{From: now.AddDate(0, 0, -3), To: now}
 			read := func() Reading {
 				t.Helper()
@@ -80,8 +81,8 @@ func TestTheReadingReadsEachOfMainsTablesItNames(t *testing.T) {
 				return got
 			}
 			whole := read()
-			if whole.Issues != legiontest.FinishedPerTree {
-				t.Errorf("the whole history has %d finished issues, want %d including the child with only a handoff", whole.Issues, legiontest.FinishedPerTree)
+			if whole.Issues != legionseed.FinishedPerTree {
+				t.Errorf("the whole history has %d finished issues, want %d including the child with only a handoff", whole.Issues, legionseed.FinishedPerTree)
 			}
 			if len(whole.Measures) != len(Slugs) {
 				t.Errorf("the whole history gives %d measures, want len(Slugs) = %d", len(whole.Measures), len(Slugs))

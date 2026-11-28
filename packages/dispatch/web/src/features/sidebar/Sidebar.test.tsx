@@ -205,6 +205,19 @@ test("the rail says where the pin is when nothing is pinned", async () => {
   expect(document.getElementById("rail-pinned-agents")?.tagName).toBe("P");
 });
 
+// The Delivery and Pipeline pages are each project's Evals tab now (dispatch://INFRA-2918, R1):
+// the rail has one entry for every project's numbers in their place, lit on that page.
+test("the rail has one Evals entry, to every project's numbers, and no Delivery or Pipeline entry", async () => {
+  renderRail({ entries: ["/evals"] });
+
+  const evals = await screen.findByRole("link", { name: /^Evals/ });
+  expect(evals).toHaveAttribute("href", "/evals");
+  expect(evals).toHaveAttribute("aria-current", "page");
+  expect(screen.queryByRole("link", { name: /^Delivery/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /^Pipeline/ })).not.toBeInTheDocument();
+  expect(document.querySelector('a[href="/delivery"], a[href="/pipeline"]')).toBeNull();
+});
+
 // The heading is still the link to the Agents page; the chevron beside it folds the rows.
 test("the Agents heading folds its rows and still opens the Agents page", async () => {
   const user = userEvent.setup();

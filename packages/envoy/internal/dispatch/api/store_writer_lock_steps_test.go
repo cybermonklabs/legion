@@ -13,6 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -28,7 +30,8 @@ const storeStepWait = 20 * time.Second
 // TestEveryApiStoreWriterTakesTheStoreLockOrder is this package's half of the check
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
 // and tuple store's writers, beside the test that drives each site's lock steps. Twelve of them
-// live here, and this test drives them all:
+// live here, and two outside it that this package's routes reach, docs' QueueNewArtifact and
+// evals' queueDocumentEvent, and this test drives them all:
 //
 //   - the comment path (createCommentFor, through queueCommentRow, which queues the node through
 //     graphstore.QueueNodes before the row, and queueCommentCreated, which queues the tuples
@@ -48,13 +51,20 @@ const storeStepWait = 20 * time.Second
 //     for the session before it appends ask.follower_added and moves the follow's node onto that
 //     event (graphstore.QueueCaused), and once handing the request back, which follows after its
 //     event and states the node under it in the follow's own statement;
-//   - three writes of a document version, each of which runs the block index (refs'
+//   - five writes of a document version, each of which runs the block index (refs'
 //     BlockIndexing.Queue) under the revision fence and appends what it stated under the event
 //     that recorded the version: an upload creating an issue's document (storeArtifact), an edit
-//     of a project document (editArtifact, through commitArtifactVersionEvent), and an issue's
-//     create with its spec (createIssue). The upload and the create also write the node of what
-//     they create - the document's, and the issue's and its spec's - before the row that names
-//     it, and so before the version whose insert writes the fence row, which names that row.
+//     of a project document (editArtifact, through commitArtifactVersionEvent), an issue's
+//     create with its spec (createIssue), and two register writes of a new eval, whose method the
+//     registry writes into the project's evals-md (evals' queueDocumentEvent): one edits the
+//     document the project's create seeded, which has its node already, and one, in a project
+//     made by SQL, which holds no evals-md, creates the document holding the eval's section
+//     (evals' createDocument, through docs.QueueNewArtifact), as a project's create does. The
+//     upload, the issue's create and the registry's create also write the node of what they
+//     create - the document's, and the issue's and its spec's - before the row that names it, and
+//     so before the version whose insert writes the fence row, which names that row; the
+//     registry's create states the document's node under its artifact.created event in
+//     queueDocumentEvent.
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner's lock comes first; a node's
@@ -90,7 +100,8 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 			ownerLockStep(store.ArtifactOwner(rig.document))),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
 		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalHandBack(),
-		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(),
+		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(), rig.evalRegister(),
+		rig.evalRegisterCreatingTheDocument(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)
@@ -191,6 +202,10 @@ type storeWriterRun struct {
 	made graphstore.Node
 	// answered is the comment a reply answers, and empty for every other path.
 	answered string
+	// project is the project whose documents' lock is the run's first step
+	// (projectDocumentsLockStep), a project of the run's own that the path creates a document of,
+	// and empty for every other path.
+	project string
 	// write runs the path on the rig's one connection, to its commit, and answers how it ended.
 	write func() error
 }
@@ -620,6 +635,90 @@ func (r *storeWriterRig) documentEdit() storeWriter {
 	}
 }
 
+// evalRegister is a register write of a new eval of the project through the register route
+// (evals.Store.Register), whose method the registry adds to the project's evals-md as a section:
+// one batch of edits (writeMethod, editDocument), then the version it reached and that version's
+// artifact.version event, and right after the event what the version's block index stated under
+// it (evals' queueDocumentEvent, graphstore.QueueCaused). It takes the eval's own lock first, which
+// no store writer takes, then the document's owner lock (lockDocument), and then writes as an edit
+// of the document does. The project's create seeded the document, so its fence row is there and
+// is held as a row; the new section's nodes and rows are held as their tables. The eval's own rows
+// name the project, so the write holds that project's row `for key share` (projectKeyShare).
+func (r *storeWriterRig) evalRegister() storeWriter {
+	return storeWriter{
+		name: "queueDocumentEvent after an eval's register write", projectKeyShare: true,
+		steps: []storeStep{
+			ownerLockStep(store.ArtifactOwner(r.evals)),
+			{
+				name: "the revision fence", order: fenceStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from document_block_versions where artifact_id = $1::uuid for no key update`, r.evals)
+				},
+				at:    versionStatement,
+				takes: []tableLock{{"document_block_versions", rowExclusiveMode}},
+			},
+			blockNodesStep(),
+			blockRowsStep(),
+			eventAppendStep(),
+			blockTuplesStep(),
+		},
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			slug := r.fresh("lock-steps-eval")
+			return storeWriterRun{write: func() error {
+				return statusOrError(evalRequest(t, r.call, http.MethodPost, "/api/v1/projects/"+r.project+"/evals", map[string]any{
+					"slug": slug, "doc_text": "What the lock steps' register write " + slug + " counts.",
+				}, slug), http.StatusCreated)
+			}}
+		},
+	}
+}
+
+// evalRegisterCreatingTheDocument is a register write of a new eval of a project that holds no
+// evals-md, as a project made by SQL holds none: the registry creates the document holding the
+// eval's section (evals' createDocument, through docs.CreateDocument and QueueNewArtifact), the
+// branch every project's create runs (evals.Store.EnsureTx), then appends its artifact.created
+// and, under it, what the document's node write and its block index stated (queueDocumentEvent,
+// graphstore.QueueCaused). It takes the eval's own lock first, which no store writer takes, then
+// the project's documents' lock, under which it finds no document (lockDocument); the document
+// does not exist yet, so the write takes no owner lock of it before its event's append. From there
+// it writes as an upload creating a document does (documentUpload): the document's node, then its
+// row, its version with the fence row, the block nodes, held by the run's held block, a callout
+// the method holds, and the block rows, then the event and the tuples. Each run makes a project
+// of its own by SQL, so each run's write creates the document. The eval's rows and the document's
+// row name that project, so the write holds its row `for key share` (projectKeyShare).
+func (r *storeWriterRig) evalRegisterCreatingTheDocument() storeWriter {
+	return storeWriter{
+		name: "queueDocumentEvent after an eval's register write creating the evals-md", projectKeyShare: true,
+		steps: append(append([]storeStep{projectDocumentsLockStep()},
+			objectNodeSteps("the document", "artifacts", "insert into artifacts (")[:2]...),
+			newFenceStep(),
+			heldBlockNodesStep(),
+			blockRowsStep(),
+			eventAppendStep(),
+			blockTuplesStep(),
+		),
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			r.named++
+			project := fmt.Sprintf("LOCKEV%d", r.named)
+			if _, err := r.database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ($1, $2, 'alice')`,
+				project, "Made by SQL "+project); err != nil {
+				t.Fatalf("make project %s by SQL: %v", project, err)
+			}
+			slug := r.fresh("lock-steps-eval")
+			made := r.heldBlockNode(graphstore.ArtifactRefKey("", project, "", evals.DocumentSlug))
+			made.Project = project
+			return storeWriterRun{
+				made: made, project: project,
+				write: func() error {
+					return statusOrError(evalRequest(t, r.call, http.MethodPost, "/api/v1/projects/"+project+"/evals", map[string]any{
+						"slug": slug, "doc_text": "What the lock steps' register write " + slug + " counts.\n\n" + heldBlockMarkdown("Why it counts it."),
+					}, slug), http.StatusCreated)
+				},
+			}
+		},
+	}
+}
+
 // issueCreate is an issue's create with a spec (createIssue). The issue does not exist before it,
 // so the owner it takes first is its project, whose row numbers the issue. It then writes the
 // issue's node and its spec's in one write, then the issue's row and the spec's row, which name
@@ -708,6 +807,24 @@ func ownerLockStep(owner store.Owner) storeStep {
 			}
 		},
 		at: store.OwnerLockStatement,
+	}
+}
+
+// projectDocumentsLockStep is the run's project's documents' lock, the transaction advisory lock
+// every creation of a project's own document takes before the read that decides it creates one
+// (docs.LockProjectArtifacts), and the first lock of a path that creates one, where no owner of
+// the document exists yet to lock. It is held here as those writers take it, and locks no table
+// and no row.
+func projectDocumentsLockStep() storeStep {
+	return storeStep{
+		name: "the project's documents' lock", order: ownerStep,
+		hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
+			t.Helper()
+			if err := docs.LockProjectArtifacts(ctx, holder, run.project); err != nil {
+				t.Fatalf("hold the documents' lock of project %s: %v", run.project, err)
+			}
+		},
+		at: "select pg_advisory_xact_lock(hashtext('project-artifacts:'",
 	}
 }
 
@@ -1012,8 +1129,9 @@ func firstTakers(steps []storeStep) map[tableLock]int {
 
 // --- the rig ------------------------------------------------------------------------------
 
-// storeWriterRig is the database the paths write: an issue with its spec and a project document
-// on one project, a comment on the issue mentioning the session s1 and a message to s1, each
+// storeWriterRig is the database the paths write: an issue with its spec, a project document and
+// the evals-md the project's create seeded, on one project, a comment on the issue mentioning the
+// session s1 and a message to s1, each
 // delivered, an ask alice opened on the issue, and an approval request of the spec, waiting on
 // the person. Every write under test runs on a second server over the same dependencies whose
 // store is one connection of its own, so the backend a write runs on is known before it starts
@@ -1029,6 +1147,8 @@ type storeWriterRig struct {
 	issue     string
 	spec      string
 	document  string
+	// evals is the project's evals-md, which the project's create seeded (evals.Store.EnsureTx).
+	evals string
 	// mentioned is the comment whose mention attempt the comment delivery's settle settles, and
 	// message the message whose attempt the message delivery's settle settles.
 	mentioned string
@@ -1064,6 +1184,11 @@ func newStoreWriterRig(t *testing.T) *storeWriterRig {
 	rig := &storeWriterRig{
 		handler: handler, database: database,
 		project: "LOCK", issue: issue.Key, spec: issue.PrimaryArtifactID, document: document.ID,
+	}
+	if err := database.Pool.QueryRow(context.Background(), `
+		select id::text from artifacts where project_key = $1 and issue_key is null and slug = $2
+	`, rig.project, evals.DocumentSlug).Scan(&rig.evals); err != nil {
+		t.Fatalf("read the %s the create of project %s seeded: %v", evals.DocumentSlug, rig.project, err)
 	}
 
 	rig.callStore = storetest.SingleConnection(t, database)

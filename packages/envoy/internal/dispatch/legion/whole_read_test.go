@@ -240,7 +240,7 @@ func announcements(t *testing.T, database *store.Store, project string) func(wha
 // any error ReadWhole answers.
 func readDaemon(t *testing.T, database *store.Store, setting Settings) {
 	t.Helper()
-	if err := ReadWhole(t.Context(), database.Pool, setting, ReadReasonStart); err != nil {
+	if err := ReadWhole(t.Context(), database.Pool, noAdmissions, setting, ReadReasonStart); err != nil {
 		t.Fatalf("read the daemon of %s whole: %v", setting.Project, err)
 	}
 }
@@ -669,6 +669,46 @@ func TestReportedNamesAnIssuesTreeWhateverOrderItsRowsComeBackIn(t *testing.T) {
 			t.Errorf("with the rows ordered by %s, the reported issues are %v, want %v: the tree INFRA-1's own row names",
 				order, current.Reported, want)
 		}
+	}
+}
+
+// The reject of a production event proves a project's controller by the session its daemon names
+// (dispatch://INFRA-978, R8), so ControllerSession answers the newest good whole read's: the
+// session a read names, another session once a later read names it, and none once a read names
+// none, since the daemon's controller left (a `null` row) and an older session would let it reject
+// again.
+func TestControllerSessionIsTheOneTheNewestReadNames(t *testing.T) {
+	state := func(locator string) string {
+		return fmt.Sprintf(`{"daemon":{"project":"INFRA","stateSeq":1,"stateId":%q},
+			"settings":{"dispatch_url":"http://dispatch.internal.example"}%s,"issues":{}}`, rigStateID, locator)
+	}
+	controlledBy := func(session string) string {
+		return state(fmt.Sprintf(`,"controllerLocator":{"sessionId":%q}`, session))
+	}
+	daemon := newFakeDaemon(t, controlledBy("ses_a"))
+	database, setting := configured(t, daemon.URL)
+	want := func(step, session string, ok bool) {
+		t.Helper()
+		got, found, err := ControllerSession(t.Context(), database.Pool, "INFRA")
+		if err != nil {
+			t.Fatalf("%s: read the controller session: %v", step, err)
+		}
+		if got != session || found != ok {
+			t.Errorf("%s: controller session = %q (found %v), want %q (found %v)", step, got, found, session, ok)
+		}
+	}
+
+	want("before any read", "", false)
+	readDaemon(t, database, setting)
+	want("after a read naming ses_a", "ses_a", true)
+	daemon.serves(controlledBy("ses_b"))
+	readDaemon(t, database, setting)
+	want("after a read naming ses_b", "ses_b", true)
+	daemon.serves(state(""))
+	readDaemon(t, database, setting)
+	want("after a read naming no controller", "", false)
+	if _, found, err := ControllerSession(t.Context(), database.Pool, "LINUX"); err != nil || found {
+		t.Errorf("a project Dispatch read no state of answered found %v (err %v), want none", found, err)
 	}
 }
 

@@ -59,9 +59,12 @@ export interface CredentialRequests {
 
 /** The one reading of the credential-request list. The section that lists the requests, the
  *  Inbox's empty state and every `Needs you` count read it here, so none of them can count a
- *  request another does not show. */
-export function useCredentialRequests(): CredentialRequests {
-  const pending = useQuery(credentialPendingQuery());
+ *  request another does not show. A reader drawn for a viewer that has no requests of its own to
+ *  decide - an agent, whose bearer may hold no `person` scope - passes `enabled` false, asks
+ *  nothing, and reads the list as loading. */
+export function useCredentialRequests(enabled = true): CredentialRequests {
+  const options = credentialPendingQuery();
+  const pending = useQuery(enabled ? options : { ...options, enabled: false });
   if (pending.isPending) return { requests: [], status: "loading" };
   if (pending.isLoadingError) return { requests: [], status: "failed" };
   return { requests: pending.data?.pending ?? [], status: "listed" };

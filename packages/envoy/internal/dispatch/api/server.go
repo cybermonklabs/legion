@@ -143,8 +143,9 @@ type Deps struct {
 	// a link stored under either name of a pair. The zero value holds no pairs.
 	Renames refs.Renames
 	// Attributor attributes the pull requests a results read or a recorded result reads through
-	// for (delivery.Attributor.ReadThroughCommitPulls). NewDeps builds it of Renames, so it
-	// attributes by the same pairs renamedRepo and resolveIssueRef read.
+	// for (delivery.Attributor.ReadThroughCommitPulls), and those the eval registry's delivery day
+	// rows count (evals.New). NewDeps builds it of Renames, so it attributes by the same pairs
+	// renamedRepo and resolveIssueRef read.
 	Attributor *delivery.Attributor
 	// OIDC verifies a JWT-shaped bearer as a Kubernetes pod's projected
 	// service-account token; nil is the unconfigured deployment, where a
@@ -248,6 +249,15 @@ type Deps struct {
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
+	// Build is the build this process runs as, which the eval day rows a readings write keeps
+	// record as the build that wrote them (eval_days.built_by): the string the eval day-row
+	// refresher records against every row it writes (cmd/dispatch's processBuild), so the
+	// refresher never reads a row this process wrote as another build's. It differs from
+	// BuildCommit where nothing stamped the binary: BuildCommit is then empty, and Build is a
+	// string of this one process (buildversion's answer and a suffix drawn at its start). Empty in
+	// a process that names none, whose readings write then fails rather than write a row no build
+	// owns.
+	Build string
 	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
 	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
 	// is hashed into every list validator (listETag), so two builds never answer one ETag for
@@ -391,6 +401,8 @@ type DepsInput struct {
 	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
+	// Build is the build this process runs as; see Deps.Build.
+	Build string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
 	// Clock is the clock the API's timers and the listener client's window run on; see
@@ -502,6 +514,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Metrics:                input.Metrics,
 		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
+		Build:                  input.Build,
 		BuildCommit:            input.BuildCommit,
 		Clock:                  input.Clock,
 		ParentStatusRule:       input.ParentStatusRule,
@@ -838,8 +851,14 @@ type RouteMux interface {
 // started the relay, or at once under the test hooks.
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
-		PostSystemMessage: s.postSystemMessage}
+	return Background{
+		Wait:              s.waitBackground,
+		ResumeDeliveries:  s.resumeOwedDeliveries,
+		EventHead:         s.eventFeedHead,
+		EventHorizon:      s.horizon,
+		Agent:             s.dashboardAgent,
+		PostSystemMessage: s.postSystemMessage,
+	}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -861,6 +880,12 @@ type Background struct {
 	// its own: one per process is what lets its readers share an observation. Only a server
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
+	// Agent answers the agent a request's Authorization header proves, resolved by the code every
+	// route of the table resolves its caller by and answered as GET /api/v1/whoami answers it,
+	// and false where that route would answer no agent or the credential is a read-only token,
+	// which saves nothing (dashboardAgent). GET /auth/whoami draws the dashboard for it when the
+	// request carries no browser credential.
+	Agent func(*http.Request) (AgentCaller, bool)
 	// PostSystemMessage posts message on its issue under its own id (model.SystemMessage), written
 	// by actor, a system actor of Dispatch's own, through the one writer every issue message goes
 	// through (postSystemMessage, createStoredMessage), and answers the message's id; a post made
@@ -2412,11 +2437,21 @@ func readJSONBodyAllowingNUL(r *http.Request, value any, limit int64, tooLarge *
 	return read.Bytes(), nil
 }
 
-// WriteJSON writes body as the JSON response with the given status.
+// WriteJSON writes body as the JSON response with the given status. The body is encoded whole
+// before the status is written, as json.Encoder.Encode builds it, with the newline Encode ends it
+// with, so a body that cannot be encoded (a +Inf, a time past year 9999) answers the server's 500
+// INTERNAL, and is logged, rather than the status with an empty body: an empty 2xx is a success
+// that carries nothing, and a keyed write would answer its retry the same nothing.
 func WriteJSON(w http.ResponseWriter, status int, body any) {
+	var encoded bytes.Buffer
+	if err := json.NewEncoder(&encoded).Encode(body); err != nil {
+		slog.Error("dispatch: a JSON answer cannot be encoded", "status", status, "error", err)
+		writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(body); err != nil {
+	if _, err := w.Write(encoded.Bytes()); err != nil {
 		slog.Warn("dispatch: write json failed", "error", err)
 	}
 }

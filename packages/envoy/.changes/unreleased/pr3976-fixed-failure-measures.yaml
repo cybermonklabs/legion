@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The Delivery page no longer shows a change failure rate of 0.00 percent, judged as meeting its
+  target, while no failure source exists. That zero was a false reading, not a measurement: with
+  `flags_source: none` there is nothing to count. `GET /api/v1/delivery/measures` (and the
+  timeline's and the live hub's measures) now answers `change_failure_rate` with every count 0
+  and every rate null, null verdicts for it, and no median for the time to restore, until a
+  failure source exists, and the card shows no number and no verdict. The object itself is never
+  null, so a Delivery page of an earlier build that is still open can read the answer.

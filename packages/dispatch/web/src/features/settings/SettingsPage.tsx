@@ -6,7 +6,6 @@ import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes"
 import { GrantsSection } from "../credentials/GrantsSection";
 import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";
-import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
 import { IssuePagePreference } from "../issue-page/IssuePagePreference";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { AgentTokensSection } from "./AgentTokensSection";
@@ -36,9 +35,8 @@ function fragmentId(hash: string): string | undefined {
  * 4. Live grants and Sign-ins (`GrantsSection`, `SignInsSection`), drawn only on a Dispatch with
  *    a secrets broker; a Dispatch without one has nothing for them to list.
  * 5. Architecture sources (`ArchitectureSourcesSection`).
- * 6. Delivery timeline: its heading, its line, and its form (`DeliverySettingsForm`).
- * 7. The issue page (`IssuePagePreference`).
- * 8. Legion daemons (`LegionDaemonsSection`).
+ * 6. The issue page (`IssuePagePreference`).
+ * 7. Legion daemons (`LegionDaemonsSection`).
  *
  * Each section lays out its own rows; none sits beside another. An address that names a section
  * by its `#` part (`/settings#architecture-sources-heading`, which an issue's Components line
@@ -107,19 +105,6 @@ export function SettingsPage(): ReactNode {
           </>
         )}
         <ArchitectureSourcesSection />
-        <section aria-labelledby="delivery-timeline-heading">
-          <h2
-            className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
-            id="delivery-timeline-heading"
-          >
-            Delivery timeline
-          </h2>
-          <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-            Which repository deploys, and whose merged pull requests the Delivery page counts.
-            Saving verifies the Dispatch GitHub App can read the deploy repository.
-          </p>
-          <DeliverySettingsForm />
-        </section>
         <IssuePagePreference />
         <LegionDaemonsSection />
       </div>

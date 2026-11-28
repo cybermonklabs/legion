@@ -10,7 +10,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { myRepliesOwnerQuery, whoAmIQuery } from "../../api/queries";
-import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
+import type { AuthenticatedUser, MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { replyRow as row } from "./replies-fixture";
 import { useMarkThreadRead } from "./useMarkThreadRead";
 
@@ -36,8 +36,13 @@ function Thread({ at, threadId }: { at: string | undefined; threadId: string }):
   );
 }
 
-/** The unread set and the viewer are already cached, so the hook decides at once. */
-function renderThread(set: MyRepliesResponse, props: { at: string | undefined; threadId: string }) {
+/** The unread set and the viewer (a person, alice, unless `viewer` names another) are already
+ *  cached, so the hook decides at once. */
+function renderThread(
+  set: MyRepliesResponse,
+  props: { at: string | undefined; threadId: string },
+  viewer: AuthenticatedUser = { event_head: "0", kind: "user", login: "alice" }
+) {
   // A mark that lands invalidates the owner's unread set, so the hook reads it again over HTTP;
   // the shell's answer is an empty page, which would retire a thread this test still holds
   // unread. The set under test is what that read answers, as the server's would.
@@ -48,11 +53,7 @@ function renderThread(set: MyRepliesResponse, props: { at: string | undefined; t
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
   });
-  queryClient.setQueryData(whoAmIQuery().queryKey, {
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
+  queryClient.setQueryData(whoAmIQuery().queryKey, viewer);
   queryClient.setQueryData(myRepliesOwnerQuery({ issue: "CORE-1" }).queryKey, set);
   const wrap = (node: ReactNode) => (
     <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
@@ -73,6 +74,30 @@ test("a thread outside the viewer's unread set is never watched or marked", asyn
     at: "2026-10-12T00:00:00Z",
     threadId: "thread-1",
   });
+  try {
+    const newest = view.getByTestId("newest");
+    expect(screen.observed()).not.toContain(newest);
+    await dwellOn(screen, newest);
+    expect(mark).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    mark.mockRestore();
+    screen.restore();
+  }
+});
+
+// The unread set and the mark are the person's own, under the `person` scope. An agent viewer of
+// the dashboard - whose login may even be the person's own, a personal token's owner - watches no
+// thread and marks none.
+test("an agent viewer never watches or marks a thread, even one in the unread set", async () => {
+  jest.useFakeTimers();
+  const screen = installIntersectionObserver();
+  const mark = answerThreadReads().mockResolvedValue(undefined);
+  const { view } = renderThread(
+    unreadSet([row("thread-1")]),
+    { at: "2026-10-12T00:00:00Z", threadId: "thread-1" },
+    { event_head: "0", kind: "agent", login: "alice", session: null }
+  );
   try {
     const newest = view.getByTestId("newest");
     expect(screen.observed()).not.toContain(newest);

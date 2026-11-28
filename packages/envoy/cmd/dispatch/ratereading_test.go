@@ -1269,14 +1269,14 @@ func (h heldInstallation) Strike(context.Context, string, time.Duration) (rateli
 // an installation token makes with its counters, and its core reset is 70 s after the first token
 // it mints, so the reading before that reset comes about 25 seconds in. By then the architecture
 // import, the delivery reconcile and the CI reconcile have each read GitHub with a token, at start
-// or on a one-second interval, and the test has made two calls through the API, a delivery
-// settings save, whose access check reads the deploy repository, and a read through the GitHub
-// proxy, and driven both delivery intakes: a merged pull request, which the GitHub intake fetches,
-// and a job event of a deploy run Dispatch tracks, whose jobs the job intake lists. The reading at
-// start counts no call of the intakes, and the reading before the reset counts every one of their
-// reads as webhook_intake, the API's as two calls, the reading's own among the rest, and no call as
-// other. The webhook redelivery sweep reads with the App's JWT alone, which no installation pays
-// for, so it is in no count.
+// or on a one-second interval, and the test has made two calls through the API, a save of
+// deliveryProject's delivery settings, whose access check reads its source's repository, and a
+// read through the GitHub proxy, and driven both delivery intakes: a merged pull request, which
+// the GitHub intake fetches, and a job event of a deploy run Dispatch tracks, whose jobs the job
+// intake lists. The reading at start counts no call of the intakes, and the reading before the
+// reset counts every one of their reads as webhook_intake, the API's as two calls, the reading's
+// own among the rest, and no call as other. The webhook redelivery sweep reads with the App's JWT
+// alone, which no installation pays for, so it is in no count.
 func TestTheServersRateReadingCountsEachCallerUnderItsKind(t *testing.T) {
 	database := storetest.Open(t)
 	seedCIReconcileDefault(t, database)
@@ -1306,9 +1306,9 @@ func TestTheServersRateReadingCountsEachCallerUnderItsKind(t *testing.T) {
 	env["DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START"] = "1"
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{NATSURL: natsURL, Env: env})
 	process.waitHealthy(t)
-	process.call(t, http.MethodPut, "/api/v1/settings/delivery", `{"deploy_repo":"acme/deploy",
-		"deploy_workflow_path":".github/workflows/deploy.yaml","pr_checks_workflow_path":".github/workflows/pr.yaml",
-		"production_job_names":["production"],"population_authors":["octocat"]}`, http.StatusOK)
+	process.call(t, http.MethodPut, "/api/v1/projects/"+deliveryProject+"/settings/delivery", `{"delivery":true,
+		"sources":[{"kind":"github_workflow","repo":"acme/deploy","deploy_workflow_path":".github/workflows/deploy.yaml",
+		"pr_checks_workflow_path":".github/workflows/pr.yaml","production_job_names":["production"]}]}`, http.StatusOK)
 	process.call(t, http.MethodGet, "/api/github/rest/repos/acme/widgets/pulls/1", "", http.StatusOK)
 
 	first := serverReading(t, process, "the reading at start", func(map[string]any) bool { return true })

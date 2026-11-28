@@ -22,10 +22,10 @@ const brokerEventInsert = "internal/dispatch/events/broker.go"
 // that an insert moving out of this scan's reach reds rather than passing unseen.
 const brokerEventInserts = 1
 
-// legionTestEventInsert is the one non-_test.go fixture seeder allowed to bulk-insert events into
-// a test database: legiontest is an ordinary package rather than a _test.go file only because Go
-// cannot share test-only code across packages, and its one insert seeds a synthetic Legion history.
-const legionTestEventInsert = "internal/dispatch/legion/legiontest/legiontest.go"
+// legionTestEventInsert is the one non-_test.go fixture seeder allowed to bulk-insert events:
+// legionseed writes a synthetic Legion history into the database of a test (legiontest.Seed) or of
+// an eval loader's command (evals/evalfixture), and its one insert seeds that history.
+const legionTestEventInsert = "internal/dispatch/legion/legionseed/legionseed.go"
 
 // legionTestEventInserts is how many event inserts legionTestEventInsert holds, checked for the
 // same reason as brokerEventInserts.

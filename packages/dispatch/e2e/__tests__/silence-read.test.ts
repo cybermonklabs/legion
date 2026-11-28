@@ -6,7 +6,7 @@ import { readUntilSilent, type SilenceRead } from "../silence-read";
 // so each row moves the deadline with `jest.advanceTimersByTime` and reads where it starts over
 // without spending real time on it.
 
-const route = "/api/v1/delivery/timeline?from=a&to=b";
+const route = "/api/v1/projects/ACME/timeline?from=a&to=b";
 const withinMs = 3_000;
 const silent = `the read of ${route} received nothing for 3 s (--read-within)`;
 
@@ -131,7 +131,7 @@ async function failsAtDeadline(read: Reading): Promise<void> {
 test("the deadline starts over on the headers and on each piece, so a long read is read whole", async () => {
   const get = handGet();
   const read = startRead(get);
-  const pieces = ['{"prs":', "[1,", "2,", "3]}"];
+  const pieces = ['{"items":', "[1,", "2,", "3]}"];
 
   // Each wait stops one millisecond short of the deadline, and the read's whole length passes it.
   jest.advanceTimersByTime(withinMs - 1);
@@ -157,7 +157,7 @@ test("a read whose body falls silent for the deadline fails, naming its route", 
 
   get.answer();
   const give = await read.asked();
-  give('{"prs":');
+  give('{"items":');
   await read.asked();
   await failsAtDeadline(read);
   expect(jest.getTimerCount()).toBe(0);

@@ -16,17 +16,17 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// TestAWindowsReadAnswersWhatItsTwoReadsAnswer: a delivery route's one read of a window
-// (ReadWindowRows) answers what the two reads it stands for answer (ReadMergedRows and
+// TestAWindowsReadAnswersWhatItsTwoReadsAnswer: a delivery route's read of a window's runs
+// (ReadWindowRuns) answers what the two reads it stands for answer (ReadMergedRows and
 // ReadDeploys, which read every apply run to the present and the window's deploys apart), over
 // generated histories of deploy runs on main and off it, re-runs, rows stored before created_at,
 // production jobs that succeeded, failed, were cancelled or stood down, failed guards beside them,
 // and pull requests merged anywhere among them, for windows that end inside the history and one
-// that ends past it: the same pull requests and the same Deploys, earlier rows included; apply
-// runs that are the first of every apply run, the rest created after the window ends; each apply
-// run's production jobs, with failedJobs its failed jobs too, as every job it holds says; and every
-// pull request of the window and of the earlier rows shipping first with the run it ships first
-// with over every apply run, and each deploy shipping the same pull requests.
+// that ends past it: the same Deploys, earlier rows included; apply runs that are the first of
+// every apply run, the rest created after the window ends; each apply run's production jobs, with
+// failedJobs its failed jobs too, as every job it holds says; and every pull request of the window
+// and of the earlier rows shipping first with the run it ships first with over every apply run,
+// and each deploy shipping the same pull requests.
 //
 // The two reads share code with the read they are compared to, so each window is also held to the
 // seeded history read whole and judged apart from every window read (windowTruth.check): the
@@ -34,7 +34,7 @@ import (
 // job they hold; the pull requests are those stored as merged in the window; and every pull request
 // that a deploy of the window ships first, whenever it merged, is among the window's or the
 // earlier rows and is shipped by that deploy alone. The read with deploys false (the Pipeline's
-// lead times) answers the same rows and no Deploys.
+// lead times) answers the same apply runs and no Deploys.
 //
 // The comparison fails where no window's apply runs stopped short of every apply run, and where no
 // pull request of any window or of its earlier rows is first shipped by a run created after the
@@ -69,14 +69,12 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 			wantApplies := ProductionApplies(wantMerged.ApplyRuns, wantMerged.ApplyJobs, production).Applies
 			for _, failedJobs := range []bool{false, true} {
 				label := label + ", failed jobs " + strconv.FormatBool(failedJobs)
-				merged, deploys, err := ReadWindowRows(ctx, pool, settings, from, to, failedJobs, true)
+				applyRows, deploys, err := ReadWindowRuns(ctx, pool, settings, from, to, failedJobs, true)
 				if err != nil {
-					t.Fatalf("%s: ReadWindowRows: %v", label, err)
+					t.Fatalf("%s: ReadWindowRuns: %v", label, err)
 				}
+				merged := MergedRows{PullRequests: wantMerged.PullRequests, ApplyRuns: applyRows.Runs, ApplyJobs: applyRows.Jobs}
 				windows++
-				if !reflect.DeepEqual(merged.PullRequests, wantMerged.PullRequests) {
-					t.Fatalf("%s: the pull requests differ from ReadMergedRows'", label)
-				}
 				if !reflect.DeepEqual(deploys, wantDeploys) {
 					t.Fatalf("%s: the deploys differ from ReadDeploys':\n got:  %+v\n want: %+v", label, deploys, wantDeploys)
 				}
@@ -114,16 +112,16 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 				}
 				shippedAfterEnd += truth.check(t, label, settings, from, to, merged, deploys)
 
-				bare, none, err := ReadWindowRows(ctx, pool, settings, from, to, failedJobs, false)
+				bare, none, err := ReadWindowRuns(ctx, pool, settings, from, to, failedJobs, false)
 				if err != nil {
-					t.Fatalf("%s: ReadWindowRows without deploys: %v", label, err)
+					t.Fatalf("%s: ReadWindowRuns without deploys: %v", label, err)
 				}
 				if !reflect.DeepEqual(none, Deploys{}) {
 					t.Fatalf("%s: the read without deploys answers the deploys %+v, want none", label, none)
 				}
-				if !reflect.DeepEqual(bare, merged) {
-					t.Fatalf("%s: the read without deploys answers %d pull requests and the apply runs %v, want the read with them's %d and %v",
-						label, len(bare.PullRequests), runIDsOf(bare.ApplyRuns), len(merged.PullRequests), runIDsOf(merged.ApplyRuns))
+				if !reflect.DeepEqual(bare, applyRows) {
+					t.Fatalf("%s: the read without deploys answers the apply runs %v, want the read with them's %v",
+						label, runIDsOf(bare.Runs), runIDsOf(applyRows.Runs))
 				}
 			}
 		}
@@ -167,9 +165,10 @@ func readWindowTruth(t *testing.T, ctx context.Context, pool *store.Pool, produc
 	return windowTruth{runs: runs, jobs: jobs, applies: ProductionApplies(runs, jobs, production).Applies, prs: prs}
 }
 
-// check holds one window's ReadWindowRows answer with deploys (merged and deploys) to the history
-// read whole, and answers how many pull requests of the window or of its earlier rows are first
-// shipped by a run created after to, each of which it also holds to be among the apply runs read.
+// check holds one window's ReadWindowRuns answer with deploys (merged, its apply runs beside the
+// window's pull requests, and deploys) to the history read whole, and answers how many pull
+// requests of the window or of its earlier rows are first shipped by a run created after to, each
+// of which it also holds to be among the apply runs read.
 func (h windowTruth) check(t *testing.T, label string, settings DeliverySettings, from, to time.Time, merged MergedRows, deploys Deploys) int {
 	t.Helper()
 	id := func(pr DeliveryPullRequest) string { return pr.Repo + "#" + strconv.Itoa(pr.Number) }
@@ -336,7 +335,7 @@ func TestTheWindowsRunsReadIsBoundedThroughItsIndexes(t *testing.T) {
 // planner took over a fresh database's tables no ANALYZE had read. The deploy runs here all failed
 // their production job, so no day's bound finds a deploy that shipped after the day, and each walks
 // every later run and probes its jobs, as the bounds did while a fixture's jobs were not yet
-// committed in the read's snapshot (dispatch://INFRA-2916). The read answers the
+// committed in the eval day-row refresher's snapshot (dispatch://INFRA-2916). The read answers the
 // runs its control answers: the statement as it stood, the days' lists inside the IN of the read of
 // the runs, which must break the rule under the custom plan, since it built every day's lists again
 // for each deploy run.
@@ -366,7 +365,7 @@ func TestTheDaysRunsReadBuildsEachDaysListOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []any{"acme/deploy", from, to, []string{"production"}, (*string)(nil), maxRunsPerWindow + 1}
+	args := []any{"acme/deploy", from, to, []string{"production"}, (*string)(nil), MaxRunsPerWindow + 1}
 	control := `
 		select ` + RunColumns + `, null::integer[], null::integer[]
 		from delivery_runs r
@@ -474,25 +473,32 @@ func TestTheEarlierPullRequestsAreTheDeployRepositorysAloneBeforeTheRowCap(t *te
 	shipped := waitingPR{waitingRepo, 1, from.Add(-time.Hour)}
 	elsewhere := waitingPR{"acme/other", 2, from.Add(time.Hour)}
 	seedWaitingHistory(t, ctx, pool, runs, []waitingPR{shipped, elsewhere})
-	seedPullRequestsASecondApart(t, ctx, pool, "acme/other", 1000, maxPullRequestsPerWindow+1, from.Add(-40*time.Hour))
+	seedPullRequestsASecondApart(t, ctx, pool, "acme/other", 1000, MaxPullRequestsPerWindow+1, from.Add(-40*time.Hour))
 
 	control, err := ListPullRequestsInWindow(ctx, pool, time.Time{}, from)
 	if err != nil {
 		t.Fatalf("ListPullRequestsInWindow: %v", err)
 	}
-	if len(control) != maxPullRequestsPerWindow {
-		t.Fatalf("the control read answers %d pull requests, want the cap's %d: the fixture does not reach the cap", len(control), maxPullRequestsPerWindow)
+	if len(control) != MaxPullRequestsPerWindow {
+		t.Fatalf("the control read answers %d pull requests, want the cap's %d: the fixture does not reach the cap", len(control), MaxPullRequestsPerWindow)
 	}
 	for _, pr := range control {
 		if pr.Repo == waitingRepo {
-			t.Fatalf("the control read holds %s#%d, which the cap should have left out behind %d older pull requests of another repository", pr.Repo, pr.Number, maxPullRequestsPerWindow)
+			t.Fatalf("the control read holds %s#%d, which the cap should have left out behind %d older pull requests of another repository", pr.Repo, pr.Number, MaxPullRequestsPerWindow)
 		}
 	}
 
-	merged, deploys, err := ReadWindowRows(ctx, pool, settings, from, to, false, true)
+	applyRows, deploys, err := ReadWindowRuns(ctx, pool, settings, from, to, false, true)
 	if err != nil {
-		t.Fatalf("ReadWindowRows: %v", err)
+		t.Fatalf("ReadWindowRuns: %v", err)
 	}
+	// A route reads the window's own pull requests beside each source repository's runs
+	// (ReadWindowRuns reads none).
+	prs, err := ListPullRequestsInWindow(ctx, pool, from, to)
+	if err != nil {
+		t.Fatalf("ListPullRequestsInWindow of the window: %v", err)
+	}
+	merged := MergedRows{PullRequests: prs, ApplyRuns: applyRows.Runs, ApplyJobs: applyRows.Jobs}
 	if len(deploys.Applies) != 1 || deploys.Applies[0].RunID != 1 {
 		t.Fatalf("the window's deploys = %+v, want run 1 alone", deploys.Applies)
 	}
@@ -510,7 +516,7 @@ func TestTheEarlierPullRequestsAreTheDeployRepositorysAloneBeforeTheRowCap(t *te
 // TestEachDaysEarlierPullRequestsAreBoundedByTheirOwnWindow: the read of several days' deploys
 // (ReadDaysDeploys) reads the deploy repository's pull requests merged before each day that the
 // day's deploys can ship (Deploys.Earlier), every day's in one statement, and bounds each day's at
-// maxPullRequestsPerWindow, the bound of one window's read, whatever the other days hold. Each of
+// MaxPullRequestsPerWindow, the bound of one window's read, whatever the other days hold. Each of
 // two days holds a deploy. The first day's is the repository's first to succeed, so its earlier
 // window runs from the beginning of time; the second day's runs from the first deploy's creation
 // and holds one pull request, merged after that deploy. A pull request of another repository
@@ -536,16 +542,16 @@ func TestEachDaysEarlierPullRequestsAreBoundedByTheirOwnWindow(t *testing.T) {
 		})
 	}
 	seedWaitingHistory(t, ctx, pool, runs, []waitingPR{{waitingRepo, 1, days[0].Add(3 * time.Hour)}, {"acme/other", 1, days[0].Add(-time.Hour)}})
-	seedPullRequestsASecondApart(t, ctx, pool, waitingRepo, 1000, maxPullRequestsPerWindow, days[0].Add(-40*time.Hour))
+	seedPullRequestsASecondApart(t, ctx, pool, waitingRepo, 1000, MaxPullRequestsPerWindow, days[0].Add(-40*time.Hour))
 	firstWindow := fmt.Sprintf("[%s, %s)", time.Time{}.Format(time.RFC3339Nano), days[0].Format(time.RFC3339Nano))
 
 	read, err := ReadDaysDeploys(ctx, pool, settings, days, true)
 	if err != nil {
-		t.Fatalf("ReadDaysDeploys with %d pull requests, the bound, in the first day's earlier window %s: %v", maxPullRequestsPerWindow, firstWindow, err)
+		t.Fatalf("ReadDaysDeploys with %d pull requests, the bound, in the first day's earlier window %s: %v", MaxPullRequestsPerWindow, firstWindow, err)
 	}
 	first, second := read.Deploys[0].Earlier.PullRequests, read.Deploys[1].Earlier.PullRequests
-	if len(first) != maxPullRequestsPerWindow || first[0].Number != 1001 || first[len(first)-1].Number != 1000+maxPullRequestsPerWindow {
-		t.Fatalf("the first day's earlier pull requests number %d, want %s#1001 to #%d, every one of its window's, oldest merge first", len(first), waitingRepo, 1000+maxPullRequestsPerWindow)
+	if len(first) != MaxPullRequestsPerWindow || first[0].Number != 1001 || first[len(first)-1].Number != 1000+MaxPullRequestsPerWindow {
+		t.Fatalf("the first day's earlier pull requests number %d, want %s#1001 to #%d, every one of its window's, oldest merge first", len(first), waitingRepo, 1000+MaxPullRequestsPerWindow)
 	}
 	if len(second) != 1 || second[0].Repo != waitingRepo || second[0].Number != 1 {
 		t.Fatalf("the second day's earlier pull requests number %d, want %s#1 alone", len(second), waitingRepo)
@@ -557,28 +563,28 @@ func TestEachDaysEarlierPullRequestsAreBoundedByTheirOwnWindow(t *testing.T) {
 		}
 		return shippedIDs(read.Deploys[day].ShippedBy(MergedRows{ApplyRuns: window.Runs, ApplyJobs: window.Jobs}, settings))
 	}
-	newest := fmt.Sprintf("%s#%d", waitingRepo, 1000+maxPullRequestsPerWindow)
-	if got := shipped(0); len(got) != 1 || len(got[1]) != maxPullRequestsPerWindow || got[1][len(got[1])-1] != newest {
-		t.Fatalf("the first day's deploy ships %d of its earlier pull requests, want run 1 to ship all %d, %s the last", len(got[1]), maxPullRequestsPerWindow, newest)
+	newest := fmt.Sprintf("%s#%d", waitingRepo, 1000+MaxPullRequestsPerWindow)
+	if got := shipped(0); len(got) != 1 || len(got[1]) != MaxPullRequestsPerWindow || got[1][len(got[1])-1] != newest {
+		t.Fatalf("the first day's deploy ships %d of its earlier pull requests, want run 1 to ship all %d, %s the last", len(got[1]), MaxPullRequestsPerWindow, newest)
 	}
 	if got, want := shipped(1), map[int64][]string{2: {waitingRepo + "#1"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the second day's deploys ship %v, want %v", got, want)
 	}
 
-	seedPullRequestsASecondApart(t, ctx, pool, waitingRepo, 1000+maxPullRequestsPerWindow, 1, days[0].Add(-2*time.Second))
+	seedPullRequestsASecondApart(t, ctx, pool, waitingRepo, 1000+MaxPullRequestsPerWindow, 1, days[0].Add(-2*time.Second))
 	read, err = ReadDaysDeploys(ctx, pool, settings, days, true)
 	if err != nil {
 		t.Fatalf("ReadDaysDeploys with %d pull requests in the first day's earlier window %s, past the bound of %d: %v, want the first day refused and the second answered",
-			maxPullRequestsPerWindow+1, firstWindow, maxPullRequestsPerWindow, err)
+			MaxPullRequestsPerWindow+1, firstWindow, MaxPullRequestsPerWindow, err)
 	}
 	refused := read.Refused[0]
 	if refused == nil {
 		t.Fatalf("ReadDaysDeploys answered %d earlier pull requests of the first day and refused none: its window %s holds %d, past the bound of %d, and the share the second day's window leaves unused is not the first's",
-			len(read.Deploys[0].Earlier.PullRequests), firstWindow, maxPullRequestsPerWindow+1, maxPullRequestsPerWindow)
+			len(read.Deploys[0].Earlier.PullRequests), firstWindow, MaxPullRequestsPerWindow+1, MaxPullRequestsPerWindow)
 	}
-	if !refused.From.Equal(time.Time{}) || !refused.To.Equal(days[0]) || refused.Repo != waitingRepo || refused.Bound != maxPullRequestsPerWindow ||
-		!strings.Contains(refused.String(), firstWindow) || !strings.Contains(refused.String(), strconv.Itoa(maxPullRequestsPerWindow)) {
-		t.Fatalf("ReadDaysDeploys refused the first day as %q, want the window of its earlier rows %s of %s and the bound %d", refused, firstWindow, waitingRepo, maxPullRequestsPerWindow)
+	if !refused.From.Equal(time.Time{}) || !refused.To.Equal(days[0]) || refused.Repo != waitingRepo || refused.Bound != MaxPullRequestsPerWindow ||
+		!strings.Contains(refused.String(), firstWindow) || !strings.Contains(refused.String(), strconv.Itoa(MaxPullRequestsPerWindow)) {
+		t.Fatalf("ReadDaysDeploys refused the first day as %q, want the window of its earlier rows %s of %s and the bound %d", refused, firstWindow, waitingRepo, MaxPullRequestsPerWindow)
 	}
 	if !reflect.DeepEqual(read.Deploys[0], Deploys{}) {
 		t.Fatalf("ReadDaysDeploys answered %d deploy runs and %d earlier pull requests of the refused first day, want none", len(read.Deploys[0].Started.Runs), len(read.Deploys[0].Earlier.PullRequests))

@@ -228,7 +228,9 @@ func claimWorking(value string) bool {
 // waitingOnChildrenSpans is segment 4: "the issue is a root with a child in a phase from planning
 // to awaiting merge", each child counted "only during its own work time, as work time to merge
 // defines it: not while it is parked, back in the queue, or before its first worker event" (the
-// spec's "Rule details — When a child makes its root wait on children"). The work time is the
+// spec's "Rule details — When a child makes its root wait on children"). Those phases are
+// childWorkingPhases, which hold `awaiting_children` too since dispatch://INFRA-3320 added it: a
+// child waiting there on children of its own keeps its root waiting on it. The work time is the
 // child's own bar spans, so a root waits on children through exactly the hours its children's
 // bars hold and this package keeps one definition of an issue's work time.
 func waitingOnChildrenSpans(view *issueView) []Span {

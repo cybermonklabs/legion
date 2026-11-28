@@ -51,7 +51,9 @@ export type DispatchWritingBox =
   | "issue-title"
   | "delivery-production-jobs"
   | "delivery-population-authors"
-  | "delivery-excluded-repos";
+  | "delivery-excluded-repos"
+  | "delivery-flag-note"
+  | "delivery-reject-reason";
 
 /**
  * What a box's write makes:
@@ -82,6 +84,10 @@ export type DispatchWritingBox =
  * - `priority-title`: a priority's title.
  * - `issue-title`: an issue's title.
  * - `delivery-settings`: the delivery settings of this Dispatch.
+ * - `production-failure`: a failure a person flags on a deploy, a production event of its
+ *   project (`POST /api/v1/projects/{key}/production-events`), with its note.
+ * - `failure-rejection`: why a person rejects a failure counted against a deploy, stored on the
+ *   failure's production event (`PUT /api/v1/projects/{key}/production-events/{id}/state`).
  */
 export type DispatchWriting =
   | "comment"
@@ -102,7 +108,9 @@ export type DispatchWriting =
   | "priority-description"
   | "priority-title"
   | "issue-title"
-  | "delivery-settings";
+  | "delivery-settings"
+  | "production-failure"
+  | "failure-rejection";
 
 /** One row of DISPATCH_WRITING_BOXES: one write of one box. */
 export interface DispatchWritingBoxRow {
@@ -140,6 +148,10 @@ export interface DispatchWritingBoxRow {
 /** Why the delivery settings boxes have no picker. */
 const SETTINGS_REASON =
   "One setting per line rather than prose: a job name, a login or an owner/repo, which a reference would not name.";
+
+/** Why the drill-down's two boxes have no picker. */
+const PRODUCTION_EVENT_REASON =
+  "A production event is none of the four records the reference graph reads (an artifact, an ask, a comment, a message), so a reference written in a failure's note or in a rejection's reason names nothing and tells nobody. The words are stored on the event as the characters they are.";
 
 export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
   // The issue's Conversation tab, above the list, and the same composer as a phone's thread
@@ -596,12 +608,13 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     reason: "A title is one line of text that holds no markup, so the box takes no picker.",
     write: "issue-title",
   },
-  // Settings' delivery form. These three take no picker, and the spec's exclusion is why.
+  // A project's Settings tab, its delivery section (`DeliverySettingsSection.tsx`). These three
+  // take no picker, and the spec's exclusion is why.
   {
     box: "delivery-production-jobs",
     covered: false,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
     issueRows: false,
     reach: "Production jobs",
     reason: SETTINGS_REASON,
@@ -611,7 +624,7 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "delivery-population-authors",
     covered: false,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
     issueRows: false,
     reach: "Population authors",
     reason: SETTINGS_REASON,
@@ -621,11 +634,33 @@ export const DISPATCH_WRITING_BOXES: readonly DispatchWritingBoxRow[] = [
     box: "delivery-excluded-repos",
     covered: false,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
     issueRows: false,
     reach: "Excluded repositories",
     reason: SETTINGS_REASON,
     write: "delivery-settings",
+  },
+  // A deploy's drill-down on a project's Evals tab (`DrillDown.tsx`): the note a person's Flag
+  // writes with the failure it records, and the reason Reject writes on a counted failure.
+  {
+    box: "delivery-flag-note",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/delivery/DrillDown.tsx"],
+    issueRows: false,
+    reach: "/projects/<PROJECT>/evals, a deploy's drill-down, Flag, the Note box",
+    reason: PRODUCTION_EVENT_REASON,
+    write: "production-failure",
+  },
+  {
+    box: "delivery-reject-reason",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/delivery/DrillDown.tsx"],
+    issueRows: false,
+    reach: "/projects/<PROJECT>/evals, a deploy's drill-down, a failure's Reject, the Reason box",
+    reason: PRODUCTION_EVENT_REASON,
+    write: "failure-rejection",
   },
 ];
 

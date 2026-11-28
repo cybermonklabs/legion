@@ -304,6 +304,10 @@ const testTakeoverWindow = 750 * time.Millisecond
 // writes names, and what a DPoP proof's 'htu' is checked against (broker_token_test.go).
 const testServerURL = "https://dispatch.example"
 
+// testServerBuild is the build every test server runs as: what the day rows its eval readings
+// writes keep record as their writer (eval_days.built_by).
+const testServerBuild = "api-test-build"
+
 // testOrigins is testServerURL as the one origin dashboard links are read at: what a server built
 // with that ServerURL and neither list reads them with (Deps.Origins), for a test that builds a
 // reader of links without a server.
@@ -469,6 +473,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
 		BuildCommit:            options.buildCommit,
+		Build:                  testServerBuild,
 		OutboxPublishes:        options.outboxPublishes,
 		Metrics:                options.metrics,
 		LegionStatusScope:      options.legionStatusScope,

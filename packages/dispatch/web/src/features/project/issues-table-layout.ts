@@ -17,14 +17,17 @@ import { readLayout, type StoredColumns, writeLayout } from "./issues-table-stor
  *  box it is drawn in. */
 export interface LayoutPins {
   /** In a desktop's box (`PHONE_BOX_BELOW`): these columns, left to right, within `share` of the
-   *  box. Where they would cover more, `flexible` narrows first, down to its minimum, and then
-   *  the rightmost unpin one at a time. Their visibility is not the reader's, so none is stored. */
+   *  room inside its borders and beside its scrollbar, which is what a reader sees of it. Where
+   *  they would cover more, `flexible` narrows first, down to its minimum and its header's width
+   *  (`TableLayoutModel.measureHeader`), and then the rightmost unpin one at a time. Their
+   *  visibility is not the reader's, so none is stored. */
   readonly wide: { readonly columns: readonly string[]; readonly share: number };
   /** In a phone's box: these columns, left to right, within `share` of it and never past the
    *  room inside its borders and beside its scrollbar, so a share of 1 ends them at its inner
-   *  edge. Each column of `widths` is drawn at that width whatever the reader dragged, and
-   *  `flexible` takes what the others leave, from `flexibleMin` up to its own width, or the whole
-   *  of it in a table that fills its box (`fills`) but where the reader dragged it. */
+   *  edge. Each column of `widths` is drawn at that width whatever the reader dragged, or at its
+   *  header's where that is wider, and `flexible` takes what the others leave, from `flexibleMin`
+   *  and its header's width up to its own width, or the whole of it in a table that fills its box
+   *  (`fills`) but where the reader dragged it. */
   readonly phone: {
     readonly columns: readonly string[];
     readonly share: number;
@@ -107,6 +110,14 @@ export interface TableLayoutModel {
   readonly attachBox: (node: HTMLDivElement | null) => void;
   readonly boxHeight: number;
   readonly boxWidth: number;
+  /** The width each column's header draws at with nothing cut, by column id, as `measureHeader`
+   *  last took it. */
+  readonly headerWidths: Readonly<Record<string, number>>;
+  /** Takes the width column `columnId`'s header draws at with nothing cut, which `DataTable`'s
+   *  header cells measure once per layout. A column the layout gives a width is never narrower
+   *  than it, and the layout reads it before it pins, so a header wider than the width the pins
+   *  would leave its column unpins that column rather than cover more than the pins' share. */
+  readonly measureHeader: (columnId: string, width: number) => void;
   readonly order: ColumnOrderState;
   readonly pagerRef: RefObject<HTMLDivElement | null>;
   /** The widths the window allows, the columns pinned at its left, and whether the box is a
@@ -164,6 +175,9 @@ interface Measured {
 }
 
 const NOTHING_MEASURED: Measured = { fitted: {}, headerFloors: {} };
+
+/** No header measured yet (`TableLayoutModel.measureHeader`). */
+const NO_HEADER_WIDTHS: Readonly<Record<string, number>> = {};
 
 /** What each cell of `cells` needs (`CellNeed`), its min-content width read only where
  *  `narrowest` asks for it. Each is read off a copy of what the cell holds, put inside the cell at
@@ -243,6 +257,15 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
   const [above, setAbove] = useState<HTMLDivElement | null>(null);
   /** What the table's cells and headers were measured to need (`Measured`). */
   const [measured, setMeasured] = useState<Measured>(NOTHING_MEASURED);
+  /** What each column's header draws at with nothing cut (`measureHeader`). */
+  const [headerWidths, setHeaderWidths] = useState(NO_HEADER_WIDTHS);
+  const measureHeader = useCallback(
+    (columnId: string, width: number) =>
+      setHeaderWidths((widths) =>
+        widths[columnId] === width ? widths : { ...widths, [columnId]: width }
+      ),
+    []
+  );
   /** What each column of `fits` needs, as read off its header and off each row's cell, by
    *  column and by row, and what each header of `wrappedHeaders` needs. */
   const needs = useRef({
@@ -291,23 +314,31 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
         trailing
       );
     // A desktop's box: one 640 px wide or wider, or a narrower one the table fits with the
-    // column that fills it at its minimum (`PHONE_BOX_BELOW`).
+    // column that fills it at its minimum (`PHONE_BOX_BELOW`). Read before the headers' widths
+    // below are folded in: a header is measured as the box draws it, a phone's on one line, so
+    // widths read off one kind of box would decide for the other and could flip it back.
     const desktop =
       boxWidth >= PHONE_BOX_BELOW ||
       (fills !== undefined && others() + (minimums[fills] ?? 0) + EDGE_ROOM <= boxWidth);
-    // On a desktop, where a header's words wrap, a column whose header does so is never narrower
-    // than it needs as the table draws it now (`wrappedHeaders`), sorted or not.
-    if (desktop)
-      for (const [id, floor] of Object.entries(headerFloors)) {
+    // No column is narrower than its header needs with nothing cut as the box draws it now
+    // (`measureHeader`); and on a desktop, where a header's words wrap, none whose header does so
+    // is narrower than it needs as the table draws it now (`wrappedHeaders`), sorted or not. Both
+    // are folded in before the pins are fitted, so a header wider than the width the pins would
+    // leave its column counts in their share rather than widening them past it once drawn.
+    const raise = (floors: Readonly<Record<string, number>>) => {
+      for (const [id, floor] of Object.entries(floors)) {
         const width = widths[id];
         if (width !== undefined && width < floor) widths[id] = floor;
       }
+    };
+    raise(headerWidths);
+    if (desktop) raise(headerFloors);
     // On a desktop, the column that fills the box takes what the others leave of the room inside
     // the box's borders and beside its scrollbar (`fills`), to the whole pixel, so the table's
     // lines reach the border and no fraction of a pixel scrolls sideways. A column that yields
     // to it (`yields`) first gives it room where the others would leave it less than that column
-    // leaves it, and stops at its minimum, at the narrowest its content needs for a column of
-    // `fits`, and at what its header needs for one of `wrappedHeaders`.
+    // leaves it, and stops at its minimum, at its header's width, at the narrowest its content
+    // needs for a column of `fits`, and at what its header needs for one of `wrappedHeaders`.
     const fill = () => {
       if (fills === undefined || sizing[fills] !== undefined) return;
       const room = () => Math.floor(boxWidth - boxEdge) - others();
@@ -323,12 +354,13 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
           continue;
         widths[id] = Math.max(
           minimums[id] ?? 0,
+          headerWidths[id] ?? 0,
           fitted[id]?.narrowest ?? 0,
           headerFloors[id] ?? 0,
           width - short
         );
       }
-      widths[fills] = Math.max(minimums[fills] ?? 0, room());
+      widths[fills] = Math.max(minimums[fills] ?? 0, headerWidths[fills] ?? 0, room());
     };
     if (pins === undefined) {
       if (desktop) fill();
@@ -339,7 +371,8 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
       pinned.reduce((sum, id) => sum + (widths[id] ?? 0), 0);
     const flexibleWidth = widths[flexible];
     if (!desktop) {
-      Object.assign(widths, phone.widths);
+      for (const [id, width] of Object.entries(phone.widths))
+        widths[id] = Math.max(width, headerWidths[id] ?? 0);
       const room = Math.min(boxWidth * phone.share, Math.floor(boxWidth - boxEdge));
       // Where the layout fills the box, the flexible column takes the room the other pinned
       // columns leave, whatever its own width, so a box of a share of 1 - a phone held
@@ -349,24 +382,29 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
       if (flexibleWidth !== undefined)
         widths[flexible] = Math.max(
           phone.flexibleMin,
+          headerWidths[flexible] ?? 0,
           fills === undefined || sizing[flexible] !== undefined
             ? Math.min(flexibleWidth, spare)
             : spare
         );
       return { sizing: widths, pinned: [...phone.columns], compact: true };
     }
-    const budget = boxWidth * wide.share;
+    // The share is of the room inside the box's borders and beside its scrollbar, to the whole
+    // pixel, as `fill` reads it: the box's own width counts its borders, which no column is drawn
+    // in, and pins fitted to 60% of that drew 547.2 px in a box of 910 px inside its borders.
+    const budget = Math.floor(boxWidth - boxEdge) * wide.share;
     const pinned = [...wide.columns];
     if (flexibleWidth !== undefined)
       widths[flexible] = Math.max(
         minimums[flexible] ?? 0,
+        headerWidths[flexible] ?? 0,
         flexibleWidth - Math.max(0, covered(pinned) - budget)
       );
     // At readable minimums, unpin from the right rather than cover the viewport.
     while (pinned.length > 1 && covered(pinned) > budget) pinned.pop();
     fill();
     return { sizing: widths, pinned, compact: false };
-  }, [boxEdge, boxWidth, columns, measured, sizing, visibility]);
+  }, [boxEdge, boxWidth, columns, headerWidths, measured, sizing, visibility]);
 
   const measure = useCallback(() => {
     const box = scrollRef.current;
@@ -572,6 +610,8 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     attachBox,
     boxHeight,
     boxWidth,
+    headerWidths,
+    measureHeader,
     order,
     pagerRef,
     responsive,

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
 // deliveryOracleTolerance is how far apart, relative to the larger, two floats may be and still
@@ -53,8 +54,7 @@ type deliveryOracleFixture struct {
 // /api/v1/delivery/measures with no facet and with repo= each repository, and GET
 // /api/v1/delivery/pipeline) answers, value for value, what the base head answered when it was
 // recorded, the recorder's stripped fields left out. Integers and strings must be equal; floats
-// within deliveryOracleTolerance of each other, relative to the larger. The change failure rate
-// and the targets are compared like every other field.
+// within deliveryOracleTolerance of each other, relative to the larger.
 //
 // The Pipeline is compared on the days the two answers share alone. The base head answered
 // ?from=&to= with the window's own days; INFRA-1077's cut (0a919c56) made the route read `at`
@@ -63,10 +63,9 @@ type deliveryOracleFixture struct {
 // either. So each recorded Pipeline request is sent as ?at= the window's last instant, whose last
 // shown day is the window's, and the two answers are compared on what both state of the days both
 // show (sharedPipelineDays): each per-day cell of the PR-checks runs, the three deploy cards and
-// the two lead times, each card's job, the failing jobs, which both read over the 24 hours before
-// the window's end, and the targets. The totals and the slowest jobs span every shown day, which
-// differ, and are left out. The test fails where it compared no Pipeline cell, read no Pipeline
-// answer, or compared no change-failure value.
+// the two lead times, each card's job, and the failing jobs, which both read over the 24 hours
+// before the window's end. The totals, the slowest jobs and the status span every shown day, which
+// differ, and are left out. The test fails where it compared no Pipeline cell.
 //
 // The files were recorded once, on a checkout of the base head 02a7b3c6 that a recorder test and
 // the delivery/deliverytest package it seeds through were copied into (that head holds neither),
@@ -77,14 +76,26 @@ type deliveryOracleFixture struct {
 // or more). The recorder is gone: run at any later head it would record that head's own answers,
 // and the oracle would compare the code with itself.
 //
-// The one named exception is a rule INFRA-2916 changed, a deploy's with_prs: a deploy is one with
-// pull requests when it ships any pull request, whenever that pull request merged, where the base
-// head counted only those merged inside the window. So each measures answer's deploys_with_prs
-// must be the base head's plus exactly the deploys of the window whose every shipped pull request
-// merged before it, counted from the fixture's own containment (deploysShippingOnlyEarlier), and
-// with_prs_per_day the base head's plus that count over the window's days (takeWithPRs). Those two
-// fields are then left out of the value-for-value comparison, and every other field it reads must
-// be the base head's.
+// The three named exceptions are rules INFRA-2916 changed. A deploy's with_prs: a deploy is one
+// with pull requests when it ships any pull request, whenever that pull request merged, where the
+// base head counted only those merged inside the window. So each measures answer's
+// deploys_with_prs must be the base head's plus exactly the deploys of the window whose every
+// shipped pull request merged before it, counted from the fixture's own containment
+// (deploysShippingOnlyEarlier), and with_prs_per_day the base head's plus that count over the
+// window's days. The failure measures (root R11: 0 is a value, never a stand-in; and
+// dispatch://INFRA-978, R8 and R11): the base head computed the change failure rate from
+// failed-change flags it never stored, and answered flags_source none, an object of zero flag
+// counts and rates over the window's totals, time to restore with no median, and verdicts of the
+// rate and of its upper bound; this head folds the three failure measures from their evals' day
+// rows, which no builder writes here, so each is null with a null verdict, the flag counts and the
+// time_to_restore a page of the base head's build reads stay with every leaf null, flags_source and
+// the upper bound are gone (takeFailureMeasures). And the Pipeline's slowest-jobs threshold (R5: a
+// series' min_n is a person's to set, and every reader uses it): the base head ranked by the
+// constant 50 and stated nothing, this head ranks by the min_n of pr-ci's job series in the
+// project the deploy repository is mapped to, 50 where none holds one, and states it in
+// pr_checks.slowest_min_results, which must be 50 here, where no pr-ci eval is seeded, and which
+// the base head's answer must not hold (takeSlowestMinResults). Those fields are then left out of
+// the value-for-value comparison, and every other field it reads must be the base head's.
 func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join("testdata", "golden_delivery")
@@ -102,7 +113,7 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 			fixture.Summary(), fixture.Repos, recorded.Fixture.Summary, recorded.Fixture.Repos)
 	}
 
-	requests, values, differing, moved, movedWindows, failureValues, pipelines, pipelineCells := 0, 0, 0, 0, 0, 0, 0, 0
+	requests, values, differing, moved, movedWindows, failureValues, thresholds, pipelineCells := 0, 0, 0, 0, 0, 0, 0, 0
 	for _, window := range recorded.Windows {
 		var file struct {
 			Head    string                     `json:"head"`
@@ -140,21 +151,31 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 					differing++
 					t.Errorf("%s: GET %s: %s", window.File, target, difference)
 				}
-				// The change failure rate is compared with every other field below; this counts
-				// the values of it that comparison reads, where the recorded answer holds one.
-				failure := func(tree any) any {
-					return tree.(map[string]any)["measures"].(map[string]any)["change_failure_rate"]
-				}
-				if rate, held := failure(want).(map[string]any); held && len(rate) > 0 {
-					read, _ := compareDeliveryOracleTrees(".measures.change_failure_rate", failure(got), rate)
-					failureValues += read
+				named, difference := takeFailureMeasures(t, got, want)
+				values += named
+				failureValues += named
+				if difference != "" {
+					differing++
+					t.Errorf("%s: GET %s: %s", window.File, target, difference)
 				}
 			}
 			if pipeline {
+				if difference := takeSlowestMinResults(got, want); difference != "" {
+					differing++
+					t.Errorf("%s: GET %s: %s", window.File, request, difference)
+				}
+				values, thresholds = values+1, thresholds+1
+			}
+			named, difference := takeTargets(got, want)
+			values += named
+			if difference != "" {
+				differing++
+				t.Errorf("%s: GET %s: %s", window.File, request, difference)
+			}
+			if pipeline {
 				var cells int
-				var difference string
 				got, want, cells, difference = sharedPipelineDays(got, want)
-				pipelines, pipelineCells = pipelines+1, pipelineCells+cells
+				pipelineCells += cells
 				if difference != "" {
 					differing++
 					t.Errorf("%s: GET %s for %s: %s", window.File, request, target, difference)
@@ -175,16 +196,16 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 			window.From.Format(time.DateOnly), window.To.Format(time.DateOnly), window.Days, earlier, strings.Join(slices.Compact(withPRsMoved), ", "))
 	}
 	t.Logf("history %s (seed %d, %d days to %s), recorded at %s: %d windows, %d requests, %d values compared, %d requests differing; "+
-		"deploys_with_prs moved in %d of the %d windows, by %d deploys in all; %d change-failure values compared; "+
-		"%d Pipeline answers read, %d Pipeline day cells compared on the days both answers show",
+		"deploys_with_prs moved in %d of the %d windows, by %d deploys in all; %d failure-measure values the base head answered are null or 0 here; "+
+		"%d Pipeline answers state the slowest-jobs threshold %d the base head ranked by; %d Pipeline day cells compared on the days both answers show",
 		recorded.Fixture.Spec.Project, recorded.Fixture.Spec.Seed, recorded.Fixture.Spec.Days, recorded.Fixture.Spec.Now.Format(time.DateOnly),
 		recorded.Head, len(recorded.Windows), requests, values, differing, movedWindows, len(recorded.Windows), moved, failureValues,
-		pipelines, pipelineCells)
+		thresholds, measures.SlowestMinResults, pipelineCells)
 	if failureValues == 0 {
-		t.Error("no measures answer held a change-failure value to compare, so the comparison never read the change failure rate")
+		t.Error("no measures answer held a failure measure to compare, so the named difference was never read")
 	}
-	if pipelines == 0 {
-		t.Error("no Pipeline answer was read, so the Pipeline's oracle compared nothing")
+	if thresholds == 0 {
+		t.Error("no Pipeline answer was read, so its named difference was never read")
 	}
 	if pipelineCells == 0 {
 		t.Error("no Pipeline day cell was compared, so the Pipeline's oracle compared nothing")
@@ -263,6 +284,113 @@ func takeWithPRs(t *testing.T, got, want any, earlier, days int) (string, string
 	return change, ""
 }
 
+// takeFailureMeasures checks got's failure measures and their verdict against want's, a measures
+// answer's and the base head's, and takes them out of both. Since no day row of the three evals is
+// written here, each of got's failure members (modernFailureMembers) and status.change_failure_rate
+// must be null; each container a page of the base head's build reads (legacyMeasureReads) an
+// object of exactly the leaves that page reads, each null; and got must hold no flags_source and
+// no status.change_failure_rate_upper_bound. want's must be the base head's stand-ins: flags_source
+// none, each change_failure_rate count and rate 0 over a total that is a count, time_to_restore
+// with no median, no deployment_rework_rate or failed_deployment_recovery, and each of its two
+// verdicts a boolean or null. It answers how many of the base head's values the check named and,
+// where any is off, what is.
+func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
+	t.Helper()
+	field := func(tree any, path ...string) (map[string]any, string) {
+		parent := tree.(map[string]any)
+		for _, key := range path[:len(path)-1] {
+			parent = parent[key].(map[string]any)
+		}
+		return parent, path[len(path)-1]
+	}
+	written := got.(map[string]any)["measures"].(map[string]any)
+	if problems := append(nullMemberProblems(written, modernFailureMembers...), legacyReadProblems(written)...); len(problems) > 0 {
+		return 0, problems[0] + ", with no day row of the failure measures"
+	}
+	if value, held := got.(map[string]any)["status"].(map[string]any)["change_failure_rate"]; !held || value != nil {
+		return 0, fmt.Sprintf("status.change_failure_rate is %v (held %t) with no day row of the failure measures, want null", value, held)
+	}
+	for _, path := range [][]string{
+		{"measures", "change_failure_rate"}, {"measures", "time_to_restore"}, {"measures", "failed_deployment_recovery"},
+		{"measures", "deployment_rework_rate"}, {"status", "change_failure_rate"},
+	} {
+		parent, key := field(got, path...)
+		delete(parent, key)
+	}
+	for _, path := range [][]string{{"flags_source"}, {"status", "change_failure_rate_upper_bound"}} {
+		parent, key := field(got, path...)
+		if value, held := parent[key]; held {
+			return 0, fmt.Sprintf("this answer holds %s %v, which went with the pending state", strings.Join(path, "."), value)
+		}
+	}
+	for _, name := range []string{"deployment_rework_rate", "failed_deployment_recovery"} {
+		if value, held := want.(map[string]any)["measures"].(map[string]any)[name]; held {
+			return 0, fmt.Sprintf("the base head's answer holds measures.%s %v, which it never measured", name, value)
+		}
+	}
+	named := 0
+	if source := want.(map[string]any)["flags_source"]; source != "none" {
+		return named, fmt.Sprintf("the base head's flags_source is %v, want none", source)
+	}
+	delete(want.(map[string]any), "flags_source")
+	named++
+	for _, path := range [][]string{{"status", "change_failure_rate"}, {"status", "change_failure_rate_upper_bound"}} {
+		parent, key := field(want, path...)
+		value, held := parent[key]
+		if _, verdict := value.(bool); !held || (value != nil && !verdict) {
+			return named, fmt.Sprintf("the base head's %s is %v (held %t), want a verdict or null", strings.Join(path, "."), value, held)
+		}
+		delete(parent, key)
+		named++
+	}
+	restore, key := field(want, "measures", "time_to_restore")
+	if median, ok := restore[key].(map[string]any); !ok || len(median) != 1 || median["median_minutes"] != nil {
+		return named, fmt.Sprintf("the base head's time_to_restore is %v, want no median", restore[key])
+	}
+	delete(restore, key)
+	named++
+	rates, key := field(want, "measures", "change_failure_rate")
+	cuts, ok := rates[key].(map[string]any)
+	if !ok || len(cuts) != 2 {
+		return named, fmt.Sprintf("the base head's change_failure_rate is %v, want its object of two cuts of flag counts", rates[key])
+	}
+	for cut, held := range cuts {
+		counts, ok := held.(map[string]any)
+		if !ok {
+			return named, fmt.Sprintf("the base head's change_failure_rate.%s is %v, want an object", cut, held)
+		}
+		for name, value := range counts {
+			number, isNumber := value.(json.Number)
+			if !isNumber {
+				return named, fmt.Sprintf("the base head's change_failure_rate.%s.%s is %v, want a number", cut, name, value)
+			}
+			if name != "total" && number.String() != "0" {
+				return named, fmt.Sprintf("the base head's change_failure_rate.%s.%s is %s with no flag stored, want its stand-in 0", cut, name, number)
+			}
+			named++
+		}
+	}
+	delete(rates, key)
+	return named, ""
+}
+
+// takeSlowestMinResults checks got's pr_checks.slowest_min_results, a Pipeline answer's, against
+// want, the base head's, which ranked by the constant measures.SlowestMinResults and stated no
+// threshold: got's must be that 50, where no project holds a pr-ci eval to read another from, and
+// want must hold none. It takes the field out of got and answers, where either is off, what is.
+func takeSlowestMinResults(got, want any) string {
+	gotChecks := got.(map[string]any)["pr_checks"].(map[string]any)
+	if _, held := want.(map[string]any)["pr_checks"].(map[string]any)["slowest_min_results"]; held {
+		return "the base head's pr_checks holds slowest_min_results, which it never stated"
+	}
+	value, held := gotChecks["slowest_min_results"]
+	if number, isNumber := value.(json.Number); !held || !isNumber || number.String() != strconv.Itoa(measures.SlowestMinResults) {
+		return fmt.Sprintf("pr_checks.slowest_min_results is %v (held %t), want %d, the threshold the base head ranked by", value, held, measures.SlowestMinResults)
+	}
+	delete(gotChecks, "slowest_min_results")
+	return ""
+}
+
 // pipelineDaySeries are the per-day series of a Pipeline answer, each by its path: the PR-checks
 // runs, the staging end-to-end, staging deploy and production deploy cards, and the two lead
 // times. Each holds days, cells naming their day; a card also holds its job, and a staging card is
@@ -274,10 +402,10 @@ var pipelineDaySeries = [][]string{
 
 // sharedPipelineDays is what got, a Pipeline answer read at the window's last instant, and want,
 // the base head's answer of the window, both state of the days both show: of each series of
-// pipelineDaySeries its cells of those days and a card's job, the failing jobs, and the targets,
-// which are no day's and every day's alike. Both answers' last shown day must be the window's, so
-// the shared days are want's last days, as many as both show. It answers the two parts, how many
-// day cells want's part holds, and, where the shown days do not end together, what is off.
+// pipelineDaySeries its cells of those days and a card's job, and the failing jobs. Both answers'
+// last shown day must be the window's, so the shared days are want's last days, as many as both
+// show. It answers the two parts, how many day cells want's part holds, and, where the shown days
+// do not end together, what is off.
 func sharedPipelineDays(got, want any) (any, any, int, string) {
 	daysOf := func(tree any) []string {
 		var days []string
@@ -298,10 +426,7 @@ func sharedPipelineDays(got, want any) (any, any, int, string) {
 	}
 	part := func(tree any) (map[string]any, int) {
 		answer := tree.(map[string]any)
-		kept := map[string]any{
-			"pr_checks.failing_jobs": answer["pr_checks"].(map[string]any)["failing_jobs"],
-			"targets":                answer["targets"],
-		}
+		kept := map[string]any{"pr_checks.failing_jobs": answer["pr_checks"].(map[string]any)["failing_jobs"]}
 		cells := 0
 		for _, path := range pipelineDaySeries {
 			series, _ := answer[path[0]].(map[string]any)
@@ -331,6 +456,37 @@ func sharedPipelineDays(got, want any) (any, any, int, string) {
 	gotPart, _ := part(got)
 	wantPart, cells := part(want)
 	return gotPart, wantPart, cells, ""
+}
+
+// takeTargets checks got's targets, a measures or Pipeline answer's, against want's, the base
+// head's, and takes them out of both: the base head stated each target as its value alone, and
+// this answer states it as its eval holds it, so each must be want's value with the catalogue's
+// inclusiveness (measures.DefaultTargets), the targets of the history's evals, which no person
+// set. It answers how many of the base head's values the check named and, where any is off, what
+// is.
+func takeTargets(got, want any) (int, string) {
+	gotTargets, _ := got.(map[string]any)["targets"].(map[string]any)
+	wantTargets, _ := want.(map[string]any)["targets"].(map[string]any)
+	catalogue := map[string]*measures.Target{
+		"deploys_per_day": measures.DefaultTargets.DeploysPerDay, "change_failure_rate": measures.DefaultTargets.ChangeFailureRate,
+		"merge_to_production_minutes":    measures.DefaultTargets.MergeToProductionMinutes,
+		"opened_to_merge_median_minutes": measures.DefaultTargets.OpenedToMergeMedianMinutes,
+		"deploy_run_success_rate":        measures.DefaultTargets.DeployRunSuccessRate, "unowned_p0": measures.DefaultTargets.UnownedP0,
+	}
+	if len(gotTargets) != len(catalogue) || len(wantTargets) != len(catalogue) {
+		return 0, fmt.Sprintf("targets hold %d and the base head's %d, want the %d delivery targets", len(gotTargets), len(wantTargets), len(catalogue))
+	}
+	named := 0
+	for key, inclusive := range catalogue {
+		gotTarget, _ := gotTargets[key].(map[string]any)
+		if gotTarget == nil || fmt.Sprint(gotTarget["value"]) != fmt.Sprint(wantTargets[key]) || gotTarget["inclusive"] != inclusive.Inclusive {
+			return named, fmt.Sprintf("targets.%s is %v, want the base head's %v, inclusive %t", key, gotTargets[key], wantTargets[key], inclusive.Inclusive)
+		}
+		named++
+	}
+	delete(got.(map[string]any), "targets")
+	delete(want.(map[string]any), "targets")
+	return named, ""
 }
 
 func readDeliveryOracleFile(t *testing.T, path string, into any) {

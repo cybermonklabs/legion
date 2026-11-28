@@ -1115,3 +1115,91 @@ test("a live socket refused once the person is signed out takes the page to sign
     sockets.restore();
   }
 });
+
+test("an agent's whoami draws the shell for its label, with no sign-out, and asks nothing that is a person's own", async () => {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = (() =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: false,
+      media: "",
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  const project = {
+    created_at: "2026-09-10T00:00:00Z",
+    gated_steps: [],
+    key: "ACME",
+    name: "Acme",
+    open_asks: 0,
+    proven_sessions: false,
+  };
+  const spies = {
+    whoAmI: spyOn(api, "whoAmI").mockResolvedValue({
+      event_head: "0",
+      kind: "agent",
+      login: "agent",
+      session: null,
+    }),
+    listProjects: spyOn(api, "listProjects").mockResolvedValue([project]),
+    listProjectArchitectureSources: spyOn(api, "listProjectArchitectureSources").mockResolvedValue(
+      []
+    ),
+    getProjectDeliverySettings: spyOn(api, "getProjectDeliverySettings").mockResolvedValue(null),
+    // The person's own reads and the sign-out: answered, so a call is counted rather than refused.
+    getInbox: spyOn(api, "getInbox").mockResolvedValue([]),
+    listIssues: spyOn(api, "listIssues").mockResolvedValue([]),
+    getMyState: spyOn(api, "getMyState").mockResolvedValue({}),
+    getMyAgentState: spyOn(api, "getMyAgentState").mockResolvedValue({}),
+    listMyReplies: spyOn(api, "listMyReplies").mockResolvedValue({
+      as_of: "2026-09-10T00:00:00Z",
+      limit: 1,
+      offset: 0,
+      rows: [],
+      total: 0,
+    }),
+    getCredentialPending: spyOn(api, "getCredentialPending").mockResolvedValue({ pending: [] }),
+    logout: spyOn(api, "logout").mockResolvedValue({ ok: true }),
+  };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={["/projects/ACME/settings"]}>
+      <QueryClientProvider client={queryClient}>
+        <AuthGate />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    // The shell is drawn for the label, not the sign-in page, with the settings tab it opened on.
+    await screen.findByText("Signed in as agent");
+    expect(await screen.findByRole("switch", { name: "Delivery" })).not.toBeChecked();
+    expect(
+      within(await screen.findByRole("navigation", { name: "Navigation" })).getByText("ACME")
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Sign in with Google" })).not.toBeInTheDocument();
+    // No sign-out, which has no session of this browser's to end, and no Settings page, whose
+    // sections are a person's.
+    expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Could not load navigation.")).not.toBeInTheDocument();
+    // Nothing that is a person's own is asked: the Inbox's asks and threads, the credential
+    // requests waiting on them, the pinned issues, the per-issue and per-agent state, and the
+    // project's asks waiting on the reader.
+    expect(spies.getInbox).not.toHaveBeenCalled();
+    expect(spies.listIssues).not.toHaveBeenCalled();
+    expect(spies.getMyState).not.toHaveBeenCalled();
+    expect(spies.getMyAgentState).not.toHaveBeenCalled();
+    expect(spies.listMyReplies).not.toHaveBeenCalled();
+    expect(spies.getCredentialPending).not.toHaveBeenCalled();
+    expect(spies.logout).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    liveSocketFor(queryClient).close();
+    for (const spy of Object.values(spies)) spy.mockRestore();
+    window.matchMedia = originalMatchMedia;
+  }
+});

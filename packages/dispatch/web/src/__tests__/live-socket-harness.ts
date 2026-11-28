@@ -2,13 +2,17 @@ import { spyOn } from "bun:test";
 import type { QueryClient } from "@tanstack/react-query";
 
 import { RECONNECT_SPREAD_MS } from "../api/live-socket";
-import { deliveryRunQuery, deliveryTimelineQuery } from "../api/queries";
+import {
+  evalDetailQuery,
+  evalsAcrossProjectsQuery,
+  evalsViewQuery,
+  itemsViewQuery,
+  projectTimelineViewQuery,
+} from "../api/queries";
 import type {
   DeliveryLiveBody,
   DeliveryLiveRevs,
   DeliveryLiveSnapshot,
-  DeliveryRunDetail,
-  DeliveryTimelineWithMeasures,
   LiveClientFrame,
   LiveError,
   LiveServerFrame,
@@ -177,24 +181,42 @@ export function errorFrame(sub: string, code: string, message: string): LiveErro
   return { type: "error", sub, code, message };
 }
 
-/** A live-owned timeline query and an ordinary run read, both held in `queryClient`'s cache with
- *  data and no observer, keyed and marked (`meta`) by the page's own query options, so a test reads
- *  which of them a write invalidates. The live one is kept past its `gcTime` of 0. */
-export function seedDeliveryReads(queryClient: QueryClient): {
-  live: readonly unknown[];
-  run: readonly unknown[];
+/** The Evals tab's reads of `project`, keyed and marked (`meta`) by the tab's own query options:
+ *  its live evals, items and timeline views, an eval's detail read, which is not live, and a page
+ *  of the cross-project read, each held in `queryClient`'s cache with data and no observer, so a
+ *  test reads which of them a write invalidates. The live views are kept past their `gcTime` of
+ *  0. */
+export function seedEvalsReads(
+  queryClient: QueryClient,
+  project: string
+): {
+  across: readonly unknown[];
+  detail: readonly unknown[];
+  live: readonly (readonly unknown[])[];
 } {
-  const timeline = deliveryTimelineQuery({ kind: "timeline", window: { preset: 28 }, query: "" });
-  const live: readonly unknown[] = timeline.queryKey;
-  const run: readonly unknown[] = deliveryRunQuery(42).queryKey;
+  const window = { preset: 28 } as const;
+  const views = [
+    evalsViewQuery({ compare: null, kind: "delivery", offset: 0, project, repos: [], window }),
+    itemsViewQuery({ compare: null, limit: 200, project, repos: [], slug: "pr-ci", window }),
+    projectTimelineViewQuery({ project, query: "", window }),
+  ];
+  const across: readonly unknown[] = evalsAcrossProjectsQuery({
+    compare: null,
+    offset: 0,
+    repos: [],
+    window: { from: "2026-10-26T00:00:00Z", to: "2026-11-24T00:00:00Z" },
+  }).queryKey;
+  const detail: readonly unknown[] = evalDetailQuery(project, "deploy-frequency", 1).queryKey;
   const cache = queryClient.getQueryCache();
-  cache.build(queryClient, {
-    queryKey: live,
-    meta: timeline.meta,
-    gcTime: Number.POSITIVE_INFINITY,
+  const live = views.map((view) => {
+    const key: readonly unknown[] = view.queryKey;
+    cache.build(queryClient, { queryKey: key, meta: view.meta, gcTime: Number.POSITIVE_INFINITY });
+    queryClient.setQueryData(key, {});
+    return key;
   });
-  cache.build(queryClient, { queryKey: run });
-  queryClient.setQueryData(live, {} as DeliveryTimelineWithMeasures);
-  queryClient.setQueryData(run, { id: 42, jobs: [] } as unknown as DeliveryRunDetail);
-  return { live, run };
+  for (const key of [across, detail]) {
+    cache.build(queryClient, { queryKey: key });
+    queryClient.setQueryData(key, {});
+  }
+  return { across, detail, live };
 }

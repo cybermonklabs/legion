@@ -1,0 +1,27 @@
+-- pgmigrate:non-transactional
+-- 20261117100020_delivery_runs_pull_request.up.sql
+--
+-- The index behind the eval day-row refresher's read of a changed pull request's PR-checks runs
+-- (dispatch://INFRA-2916, R15 and D1). A PR-checks run counts for the project its pull request
+-- counts for, the project of the issue the pull request names (evals' attribution), so a change of
+-- the pull request (its first row, a new issue_key, an issue deleted under it) moves which project
+-- counts each of its runs, on whatever day the run started. The refresher reads those runs by the
+-- pull request's repository and number (evals' deliveryItemDays), one descent of this index for
+-- each pull request a page of changes names. Without it the read was every PR-checks run the
+-- repository holds, through delivery_runs_kind_started_at.
+--
+-- The predicate keeps the runs that name a pull request, the PR-checks runs alone, so a deploy run
+-- writes nothing to the index. At ten times INFRA's run rate, 160,000 runs of which about three in
+-- four are PR-checks runs, it holds about 120,000 entries of a repository name, a number and a row
+-- pointer: 1,168 kB, measured on Postgres 18 with one repository and 9,000 pull requests.
+--
+-- It is built `concurrently`, outside the runner's transaction, because delivery_runs is the table
+-- every run the intake and the reconcile store writes. A plain build holds SHARE on it for one read
+-- of the table, which blocks every one of those writes until it ends. A concurrent build takes
+-- SHARE UPDATE EXCLUSIVE, which no ordinary read or write waits on, at the cost of two passes over
+-- the table and a wait for the transactions already open, each wait bounded at five seconds and
+-- tried again as the runner tries every lock wait (pgmigrate.ExecNonTransactional). A failed build
+-- leaves an INVALID index of this name on delivery_runs, which the runner drops with DROP INDEX
+-- CONCURRENTLY and builds again on its next attempt or boot.
+create index concurrently if not exists delivery_runs_pull_request on delivery_runs (repo, pr_number)
+    where pr_number is not null;

@@ -5,7 +5,7 @@ package legion
 // and the read the batch calls for (applyMessage, applyBatch, answerRead); what the message comes
 // to on its project's position (judge, ownRead); the read a message of a store the cursor drops
 // calls for (callRead); and the read a message the database refused for good calls for
-// (readRefused, refusedForGood). The intake's lifecycle, its wiring and each message's delivery
+// (readRefused, RefusedForGood). The intake's lifecycle, its wiring and each message's delivery
 // are in intake.go, the cursor and the read rule in cursor.go, a message past stateMaxWaiting in
 // crowded.go, and the whole read in whole_read.go.
 
@@ -36,24 +36,27 @@ import (
 // at most once a minute, so an old daemon that still publishes adds no read the project does not
 // owe. The message does not wait for it, never holds it, and is acknowledged unapplied at once;
 // the read rule starts the project's whole reads ReadRetryAfter apart. At most one such call waits
-// per project (calling), until it has run, so the messages of such a store that the runner judges
-// meanwhile join it and queue none: a read the daemon never answers lasts RequestTimeout, which is
+// per project in the state of the subscription that delivered the message (subscriptionState's
+// calling), until it has run, so the messages of such a store that the runner judges meanwhile join
+// it and queue none: a read the daemon never answers lasts RequestTimeout, which is
 // ReadRetryAfter, so each call queued behind it would find the read due again and make one more,
-// back to back on the project's runner.
+// back to back on the project's runner. The call clears its mark from the state it was set in, so
+// a call that runs once another subscription's state has started clears nothing of that state.
 func (in *Intake) callRead(project string, current cursor) {
 	if !current.readFor("", in.now(), 0, false, nil).read {
 		return
 	}
 	in.mu.Lock()
-	if in.calling[project] {
+	calling := in.subscription.calling
+	if calling[project] {
 		in.mu.Unlock()
 		return
 	}
-	in.calling[project] = true
+	calling[project] = true
 	in.mu.Unlock()
 	called := func() {
 		in.mu.Lock()
-		delete(in.calling, project)
+		delete(calling, project)
 		in.mu.Unlock()
 	}
 	if !in.durable.Queue(project, func(ctx context.Context) {
@@ -136,7 +139,7 @@ func (in *Intake) applyMessage(ctx context.Context, attempt *messageAttempt) (ou
 		return in.readRefused(ctx, attempt)
 	}
 	result, read, err := in.applyBatch(ctx, attempt)
-	if refusal := refusedForGood(err); refusal != nil {
+	if refusal := RefusedForGood(err); refusal != nil {
 		attempt.refusal = refusal
 		return in.readRefused(ctx, attempt)
 	}
@@ -171,7 +174,7 @@ func (in *Intake) readRefused(ctx context.Context, attempt *messageAttempt) (out
 	setting, current, found, err := in.position(ctx, attempt.message.Project)
 	finishes, dropped := current.finishesUnapplied(attempt.message, setting.StateURL, attempt.seq)
 	if err != nil || !found || !current.follows(setting.StateURL) || finishes {
-		if refusedForGood(err) != nil {
+		if RefusedForGood(err) != nil {
 			err = nil
 		}
 		return outcomeDone, err
@@ -182,7 +185,7 @@ func (in *Intake) readRefused(ctx context.Context, attempt *messageAttempt) (out
 	}
 	answer, err := in.answerRead(ctx, in.pool, attempt, current, attempt.reason)
 	if err != nil {
-		if refusedForGood(err) != nil {
+		if RefusedForGood(err) != nil {
 			err = nil
 		}
 		return outcomeDone, err
@@ -192,17 +195,18 @@ func (in *Intake) readRefused(ctx context.Context, attempt *messageAttempt) (out
 		return outcomeDone, nil
 	}
 	result, err := in.makeRead(ctx, attempt, answer.of(setting))
-	if refusedForGood(err) != nil {
+	if RefusedForGood(err) != nil {
 		return outcomeDone, nil
 	}
 	return result, err
 }
 
-// refusedForGood is the Postgres error err carries where it is one no retry can write: SQLSTATE
+// RefusedForGood is the Postgres error err carries where it is one no retry can write: SQLSTATE
 // class 22, a data exception (a value its column's type does not take), or class 23, an
 // integrity constraint violation. nil for every other error, a lost connection, a lock timeout
-// or a statement a trigger raised among them, which a retry may write.
-func refusedForGood(err error) *pgconn.PgError {
+// or a statement a trigger raised among them, which a retry may write. The admission eval's
+// writer reads a reading's refusal by it too (evals.WriteReadingsIn).
+func RefusedForGood(err error) *pgconn.PgError {
 	var refusal *pgconn.PgError
 	if errors.As(err, &refusal) && (strings.HasPrefix(refusal.Code, "22") || strings.HasPrefix(refusal.Code, "23")) {
 		return refusal
@@ -314,11 +318,13 @@ func ownRead(reason string, readMade bool) string {
 }
 
 // applyBatch takes the attempt's message in one transaction that holds the project's position
-// (lockPosition, and the parts held for it, heldParts). A message whose hold of the owed read a
-// write of the setting that named another URL, or a delete of the setting, ended (cursor.releases)
-// is finished unapplied at this delivery and holds no read, and its store is marked as no daemon of
-// the project (endHold). Any other message is judged (judge), and applyBatch hands the read it
-// calls for to the read rule (answerRead).
+// (lockPosition, and the parts held for it, heldParts). A message that is not a held part takes
+// the lock of its project's admission eval first (Admissions.Lock), before the position, since
+// whether the batch carries an admission event is known only once the held parts are read. A
+// message whose hold of the owed read a write of the setting that named another URL, or a delete
+// of the setting, ended (cursor.releases) is finished unapplied at this delivery and holds no
+// read, and its store is marked as no daemon of the project (endHold). Any other message is judged
+// (judge), and applyBatch hands the read it calls for to the read rule (answerRead).
 // A message the cursor finishes unapplied (cursor.finishesUnapplied) writes nothing, hands no
 // read to the rule, and queues on the project's runner behind it the call for the owed read that
 // callRead decides. A holder of a store the cursor drops goes on to the rule with no reason of its
@@ -334,11 +340,43 @@ func ownRead(reason string, readMade bool) string {
 //
 // The last message of a transaction applies every event of it above the cursor, the held parts'
 // and its own, each field at its last value in sequence order, written where it differs from
-// legion_current's (recordEvents); one legion_reads row of kind `events` at the message's `at`
+// legion_current's (recordEvents); the readings of the admission eval its admission events give
+// (Admissions.Write, admissionOf); one legion_reads row of kind `events` at the message's `at`
 // with the bytes of every message of the transaction; the cursor moved to the message's sequence
 // and run, and to the schema version of a boot among the events; the parts deleted; and the
-// batch's announcement on StateChannel, which Postgres sends at the commit.
+// batch's announcement on StateChannel, which Postgres sends at the commit. The readings' change
+// rows move into the delivery change log once the commit succeeds, and never after a rollback.
+// A readings write that fails for a reason a retry may fix fails the batch, which rolls back and
+// is tried again in place (untilDone).
+//
+// The gate of the eval's registration (Admissions): where the message applies, its admission
+// events and its held parts' serve either record of the daemon (AdmissionState.ServesRecord), and
+// no row holds the project's admission eval (Admissions.Registered), the transaction is rolled back
+// before it writes anything (errUnregistered), the eval is registered in a transaction of its own
+// (Admissions.Register), and the message is applied again from the start, once: the second pass
+// writes the readings of the eval the registration left, or, where the register write refused it,
+// skips them as readings of an eval no row holds. A message that does not apply registers nothing.
+// A registration that fails for a reason a retry may fix fails the batch, as a readings write does.
 func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outcome, *owedRead, error) {
+	result, read, err := in.applyBatchOnce(ctx, attempt, true)
+	if !errors.Is(err, errUnregistered) {
+		return result, read, err
+	}
+	if err := in.admissions.Register(ctx, in.logger(), attempt.message.Project); err != nil {
+		return outcomeDone, nil, err
+	}
+	return in.applyBatchOnce(ctx, attempt, false)
+}
+
+// errUnregistered is applyBatchOnce's answer, its transaction rolled back, for a message that
+// applies and whose admission events serve either record of the daemon while no row holds the
+// project's admission eval: applyBatch registers the eval and applies the message again.
+var errUnregistered = errors.New("legion intake: no row holds the project's admission eval")
+
+// applyBatchOnce is one pass of applyBatch over the attempt's message, in a transaction of its
+// own. gate is whether the pass answers errUnregistered where the eval is to be registered first;
+// the pass that follows a registration runs without it.
+func (in *Intake) applyBatchOnce(ctx context.Context, attempt *messageAttempt, gate bool) (outcome, *owedRead, error) {
 	message := attempt.message
 	project := message.Project
 	tx, err := in.pool.Begin(ctx)
@@ -346,6 +384,11 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 		return outcomeDone, nil, fmt.Errorf("open the transaction of the Legion state events of %s: %w", project, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if !message.More {
+		if err := in.admissions.Lock(ctx, tx, project); err != nil {
+			return outcomeDone, nil, fmt.Errorf("lock the admission eval of %s: %w", project, err)
+		}
+	}
 	stateURL, current, found, err := lockPosition(ctx, tx, project)
 	if err != nil {
 		return outcomeDone, nil, err
@@ -377,12 +420,17 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 		return outcomeDone, &read, nil
 	}
 	// Every return from here commits: a read this batch recorded owed is part of it, and so is the
-	// holder it recorded or released, so the message's answer is set once the commit succeeds.
+	// holder it recorded or released, so the message's answer is set once the commit succeeds, and
+	// the admission readings' change rows are moved once it has (drain).
+	var drain func(context.Context)
 	finish := func(result outcome) (outcome, *owedRead, error) {
 		if err := tx.Commit(ctx); err != nil {
 			return outcomeDone, nil, fmt.Errorf("commit the Legion state events of %s: %w", project, err)
 		}
 		attempt.answered(answer)
+		if drain != nil {
+			drain(ctx)
+		}
 		return result, nil, nil
 	}
 	if result != outcomeDone {
@@ -411,8 +459,23 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 		}
 		return finish(outcomeDone)
 	}
+	admission := admissionOf(message, events)
+	if gate && admission.ServesRecord() {
+		registered, err := in.admissions.Registered(ctx, project)
+		if err != nil {
+			return outcomeDone, nil, err
+		}
+		if !registered {
+			return outcomeDone, nil, errUnregistered
+		}
+	}
 	if _, err := recordEvents(ctx, tx, project, message.At, lastValues(events)); err != nil {
 		return outcomeDone, nil, err
+	}
+	if len(admission.Blocks) > 0 {
+		if drain, err = in.admissions.Write(ctx, tx, in.logger(), admission); err != nil {
+			return outcomeDone, nil, fmt.Errorf("write the admission readings of %s: %w", project, err)
+		}
 	}
 	if _, err := tx.Exec(ctx, insertRead, project, message.At, true, nil, bytes, readKindEvents, nil); err != nil {
 		return outcomeDone, nil, fmt.Errorf("store the Legion state events of %s: %w", project, err)
@@ -449,4 +512,17 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 		return outcomeDone, nil, err
 	}
 	return finish(outcomeDone)
+}
+
+// admissionOf is what the batch of message, whose events above the cursor are events, reports of
+// admission (Admissions.Write): each admission event's block, in sequence order, under the
+// message's store, seq and commit time.
+func admissionOf(message stateMessage, events []stateEvent) AdmissionState {
+	state := AdmissionState{Project: message.Project, StateID: message.StateID, Seq: message.Seq, At: message.At}
+	for _, event := range events {
+		if event.Kind == eventAdmission && event.Admission != nil {
+			state.Blocks = append(state.Blocks, event.Admission)
+		}
+	}
+	return state
 }

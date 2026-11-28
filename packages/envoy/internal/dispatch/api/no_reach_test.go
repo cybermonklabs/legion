@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -489,6 +490,28 @@ func threeBadRequests(t *testing.T) {
 			}
 			continue
 		}
+		// A reading is append-only: its PUT and DELETE refuse 405 READING_APPEND_ONLY whatever the
+		// id names (routes_table.go), and read nothing, so under another project's key each answers
+		// that and nothing else. A row that took any refusal would pass a route that read the
+		// reading by its id first and refused it as another project's, or as missing: the answer of
+		// a route that reads readings, which these do not.
+		if strings.HasSuffix(route.Pattern, "/readings/{id}") {
+			if code := responseCode(t, response); response.Code != http.StatusMethodNotAllowed || code != "READING_APPEND_ONLY" {
+				t.Errorf("%s answers %d %s for another project's reading, want 405 READING_APPEND_ONLY: %s",
+					route.Method+" "+target, response.Code, code, firstLine(response.Body.String()))
+			}
+			continue
+		}
+		// A production event's state route holds the row to the path's project itself
+		// (prodevents.SetState), so under another project's key it answers 404
+		// PRODUCTION_EVENT_NOT_FOUND and leaves this project's row counted.
+		if route.Pattern == "/api/v1/projects/{key}/production-events/{id}/state" {
+			if code := responseCode(t, response); response.Code != http.StatusNotFound || code != codeProductionEventNotFound {
+				t.Errorf("%s answers %d %s for another project's production event, want 404 %s: %s",
+					route.Method+" "+target, response.Code, code, codeProductionEventNotFound, firstLine(response.Body.String()))
+			}
+			continue
+		}
 		if response.Code < 400 {
 			t.Errorf("%s answers %d for an identifier of another project: %s",
 				route.Method+" "+target, response.Code, firstLine(response.Body.String()))
@@ -543,10 +566,12 @@ func threeBadRequests(t *testing.T) {
 	// and proves nothing; so every route reads a row here, but the few listed in
 	// routesNoSeedAnswers, each of which needs something no seed of this test holds.
 	//
-	// Each route is sent the traversal words it does not declare. No route refuses an
-	// undeclared query parameter, and the base build answered each of them as it answers the
-	// plain read, so the walked read must answer exactly that: a refusal is an answer
-	// production never gave, and fails as any other. A word a route does declare - `kind` on
+	// Each route is sent the traversal words it does not declare. No route but the eval reads
+	// (strictQueryReads) refuses an undeclared query parameter, and the base build answered each
+	// of them as it answers the plain read, so the walked read must answer exactly that: a refusal
+	// is an answer production never gave, and fails as any other. An eval read refuses every key it
+	// does not declare, so its walked read must be that refusal, 400 INVALID_QUERY, which answers
+	// no row at all. A word a route does declare - `kind` on
 	// GET /api/v1/me/replies - is that route's own parameter, which it answers by its own
 	// rule, and is no traversal the caller handed it. A read whose rows can grow between the
 	// two reads (growingReads) is walked under a parameter it declares that holds it to the
@@ -563,6 +588,7 @@ func threeBadRequests(t *testing.T) {
 	}
 	queries := routeProbeQueries(owned)
 	answered := 0
+	strict := map[string]bool{}
 	for _, route := range rows {
 		if route.Method != http.MethodGet {
 			continue
@@ -599,6 +625,14 @@ func threeBadRequests(t *testing.T) {
 		} else {
 			answered++
 		}
+		if reason, refuses := strictQueryReads[name]; refuses {
+			strict[name] = true
+			if code := responseCode(t, walked); walked.Code != http.StatusBadRequest || code != "INVALID_QUERY" {
+				t.Errorf("%s refuses every query key it does not declare (%s), and answers %d %s at %s with a traversal parameter, want 400 INVALID_QUERY: %s",
+					name, reason, walked.Code, code, target, firstLine(walked.Body.String()))
+			}
+			continue
+		}
 		if plain.Code != walked.Code {
 			t.Errorf("%s answers %d at %s on its own and %d with a traversal parameter: %s",
 				name, plain.Code, target, walked.Code, firstLine(walked.Body.String()))
@@ -609,10 +643,27 @@ func threeBadRequests(t *testing.T) {
 				name, before, target, after)
 		}
 	}
+	for _, name := range slices.Sorted(maps.Keys(strictQueryReads)) {
+		if !strict[name] {
+			t.Errorf("strictQueryReads holds %s, which is no read of the table: take it off that list", name)
+		}
+	}
 	if answered < 60 {
 		t.Fatalf("only %d read answered a row for the traversal probe, which is too few to prove anything", answered)
 	}
 	t.Logf("%d reads answered a row with and without a traversal parameter alike", answered)
+}
+
+// strictQueryReads are the reads that refuse 400 INVALID_QUERY every query key they do not declare
+// (api/evals.go's undeclaredQueryKey), each with why: a read that passed over such a key would
+// answer a question other than the one asked. The traversal probe holds each to refusing its
+// traversal words, which reads no row; its plain read still has to answer one.
+var strictQueryReads = map[string]string{
+	"GET /api/v1/evals":                             "the eval list across projects",
+	"GET /api/v1/projects/{key}/evals":              "the project's eval list",
+	"GET /api/v1/projects/{key}/evals/{slug}":       "one eval's versions",
+	"GET /api/v1/projects/{key}/evals/{slug}/items": "one eval's rows",
+	"GET /api/v1/projects/{key}/production-events":  "the project's production events",
 }
 
 // routesNoSeedAnswers are the reads no object seedTwoProjects writes lets answer a row, each
@@ -624,6 +675,8 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/delivery/measures":                                      "delivery settings",
 	"GET /api/v1/delivery/pipeline":                                      "delivery settings",
 	"GET /api/v1/delivery/runs/{id}":                                     "a delivery run",
+	"GET /api/v1/projects/{key}/timeline":                                "delivery settings",
+	"GET /api/v1/projects/{key}/deploy-runs/{id}":                        "delivery settings and a delivery run",
 	"GET /api/v1/issues/{key}/subscribers":                               "an Envoy listener (ENVOY_URL)",
 	"GET /api/v1/artifacts/{id}/subscribers":                             "an Envoy listener (ENVOY_URL)",
 	"GET /api/v1/agents":                                                 "an Envoy listener (ENVOY_URL)",
@@ -657,6 +710,8 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/deploys":              url.Values{"repo": {owned.deployRepo}}.Encode(),
+		// The repository the run is in, which the read requires: the seeded run's.
+		"GET /api/v1/projects/{key}/deploy-runs/{id}": url.Values{"repo": {owned.deployRepo}}.Encode(),
 		// The session that opened the seeded ask (createIssueAsk writes it as sessionActor): its
 		// ask.opened event and its follow of the ask are records knownSessionsStatement counts.
 		"GET /api/v1/agents/known": url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
@@ -724,6 +779,7 @@ func seededProbePath(pattern string, owned crossProject) string {
 	for _, replacement := range []struct{ from, to string }{
 		{"/issues/{key}/artifacts/{slug}", "/issues/" + owned.issue + "/artifacts/" + owned.slug},
 		{"/projects/{key}/artifacts/{slug}", "/projects/TEST/artifacts/" + owned.documentSlug},
+		{"/projects/{key}/evals/{slug}", "/projects/TEST/evals/" + owned.eval},
 		{"/projects/{key}", "/projects/TEST"},
 		{"/issues/{key}", "/issues/" + owned.issue},
 		{"/comments/{id}", "/comments/" + owned.comment},
@@ -808,9 +864,19 @@ type crossProject struct {
 	architectureSource string
 	// nearCopyCheck is the id of the near-copy gate's record of one of the project's creates.
 	nearCopyCheck string
+	// eval is the slug of an eval this project alone holds, which a reading registered (R3), and
+	// reading the id of that reading: the {slug} and the {id} the cross-project probe sends a
+	// route of a project's eval and of one of its readings, and the slug the traversal probe
+	// reads the eval's routes at.
+	eval, reading string
+	// productionEvent is the id of a failure row this project alone holds, which the cross-project
+	// probe sends PUT /api/v1/projects/{key}/production-events/{id}/state under OTH's key.
+	productionEvent string
 	// deployRepo is the repository, owner/repo, of the one deploy seedTwoProjects records: the
-	// repository the read of deploys is sent, so that read answers a row.
-	deployRepo string
+	// repository the read of deploys is sent, so that read answers a row. deployRun is the id of
+	// the one deploy run it records of that repository: the {id} the cross-project probe sends
+	// GET /api/v1/projects/{key}/deploy-runs/{id} under OTH's key, with that repository as its repo.
+	deployRepo, deployRun string
 }
 
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
@@ -896,6 +962,14 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	// traversal probe would read nothing.
 	owned.deployRepo = "acme/widgets"
 	postDeploy(t, handler, map[string]any{"repo": owned.deployRepo, "program": "worker", "commit": headCommit}, http.StatusCreated)
+	// A deploy run of that repository on main, written into its table as the delivery tests seed
+	// one (seedPipelineRun): the run the cross-project probe sends the project's run read.
+	started := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	seedPipelineRun(t, database.Pool, delivery.DeliveryRun{
+		RunID: 7001, Kind: delivery.DeliveryRunKindDeploy, StartedAt: started, CompletedAt: new(started.Add(10 * time.Minute)),
+		Conclusion: new(delivery.DeliveryRunConclusionSuccess), HeadBranch: new("main"), Event: new("push"),
+	}, nil)
+	owned.deployRun = "7001"
 	// Every create records the near-copy gate's answer (issue_create.go, recordNearCopyCheck), so
 	// the project's own creates above left records; one of them is the row the read of a record
 	// by its id answers, which at a placeholder id answers 404 and reads nothing.
@@ -913,6 +987,52 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	sampled := time.Now().UTC()
 	seedLegionObservation(t, database, "TEST", issue.Key, legion.FieldPhase, `"implementing"`, sampled)
 	seedLegionRead(t, database, "TEST", sampled, "")
+	// An eval only this project holds: a reading under a slug no eval holds registers its eval in
+	// the key's project (logEvalReadings), and every project holds the seeded catalogue's slugs,
+	// so a catalogue slug sent under another project's key would read that project's own eval.
+	owned.eval = "reach-probe"
+	logged := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/TEST/evals/"+owned.eval+"/readings",
+		map[string]any{"readings": []any{reading("lines", 1, time.Now().UTC().Add(-time.Hour))}}, "reach-probe-reading")
+	if logged.Code != http.StatusCreated {
+		t.Fatalf("seed an eval reading: status=%d body=%s", logged.Code, logged.Body.String())
+	}
+	readings := decodeBody[struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}](t, logged).Items
+	if len(readings) != 1 || readings[0].ID == "" {
+		t.Fatalf("the seeded reading answers %v, want one reading with its id", readings)
+	}
+	owned.reading = readings[0].ID
+	// A production deploy and failure of TEST alone: the cross-project probe addresses the failure
+	// under OTH's key, and the traversal probe reads the project's collection.
+	postedDeploy := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects/TEST/production-events", map[string]any{
+		"actor":       map[string]any{"kind": "session", "id": "reach-probe"},
+		"kind":        "deploy",
+		"source_ref":  "reach-probe-deploy",
+		"repo":        "acme/reach",
+		"finished_at": time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+	})
+	if postedDeploy.Code != http.StatusCreated {
+		t.Fatalf("seed a production deploy: status=%d body=%s", postedDeploy.Code, postedDeploy.Body.String())
+	}
+	deployID := decodeBody[struct {
+		ID string `json:"id"`
+	}](t, postedDeploy).ID
+	postedFailure := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects/TEST/production-events", map[string]any{
+		"actor":      map[string]any{"kind": "session", "id": "reach-probe"},
+		"kind":       "failure",
+		"source_ref": "reach-probe-failure",
+		"deploy_id":  deployID,
+		"note":       "A failure of this project.",
+	})
+	if postedFailure.Code != http.StatusCreated {
+		t.Fatalf("seed a production failure: status=%d body=%s", postedFailure.Code, postedFailure.Body.String())
+	}
+	owned.productionEvent = decodeBody[struct {
+		ID string `json:"id"`
+	}](t, postedFailure).ID
 	return owned
 }
 
@@ -950,7 +1070,17 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 //     the project's architecture source, which the source's removal and its sync address by the
 //     key and the repository together. The source write (PUT) takes none and answers false: its
 //     {owner}/{repo} names the repository it adds as a source of the key's own project, an
-//     upsert on the key and the repository, and no object of another project.
+//     upsert on the key and the repository, and no object of another project;
+//   - {slug} of /projects/{key}/evals/{slug}: the eval only this project holds, which no other
+//     project's eval list carries, where a slug of the seeded catalogue is every project's own;
+//   - {id} of /evals/{slug}/readings/{id}: that eval's reading, which its PUT and DELETE refuse
+//     405 READING_APPEND_ONLY as every id (threeBadRequests holds them to that answer). The
+//     readings write (POST) takes none and answers false: its {slug} names an eval of the key's
+//     own project, which a slug no eval of that project holds registers there (R3), and no object
+//     of another project;
+//   - {id} of /projects/{key}/deploy-runs/{id}: the deploy run of the repository of the seeded
+//     deploy, sent with that repository as its repo (crossProjectRequest), so what refuses it is
+//     the run's project and not a missing repo.
 //
 // A route under a key whose {slug}, {id} or {owner}/{repo} is of a kind no line above names fails
 // the test: an identifier of another kind is refused under every key alike, and would prove
@@ -976,6 +1106,9 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 	if route.Method+" "+route.Pattern == "PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}" {
 		return "", false
 	}
+	if route.Method+" "+route.Pattern == "POST /api/v1/projects/{key}/evals/{slug}/readings" {
+		return "", false
+	}
 	for _, place := range []struct{ named, wildcard, object string }{
 		{"/issues/{key}/artifacts/{slug}", "{slug}", owned.slug},
 		{"/projects/{key}/artifacts/{slug}", "{slug}", owned.documentSlug},
@@ -988,6 +1121,10 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 		{"/issues/{key}/plans/{id}", "{id}", owned.plan},
 		// The source's removal and its sync, whose path holds the removal's.
 		{"/projects/{key}/architecture-sources/{owner}/{repo}", "{owner}/{repo}", owned.architectureSource},
+		{"/projects/{key}/evals/{slug}", "{slug}", owned.eval},
+		{"/evals/{slug}/readings/{id}", "{id}", owned.reading},
+		{"/projects/{key}/production-events/{id}/state", "{id}", owned.productionEvent},
+		{"/projects/{key}/deploy-runs/{id}", "{id}", owned.deployRun},
 	} {
 		if strings.Contains(route.Pattern, place.named) {
 			pattern = strings.ReplaceAll(pattern, place.wildcard, place.object)
@@ -1041,6 +1178,10 @@ func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, tar
 		return sessionRequest(t, handler, route.Method, target, defaultPlanBody(daemonSessionOf(owned.otherKey), 1))
 	case "POST /api/v1/issues/{key}/artifacts/{slug}/versions", "POST /api/v1/projects/{key}/artifacts/{slug}/versions":
 		return dispatchRequest(t, handler, route.Method, target, map[string]any{"summary": "A version under another project's key."}, "alice")
+	case "PUT /api/v1/projects/{key}/production-events/{id}/state":
+		return dispatchRequest(t, handler, route.Method, target, map[string]any{"state": "rejected", "reason": "A reject under another project's key."}, "alice")
+	case "GET /api/v1/projects/{key}/deploy-runs/{id}":
+		return dispatchRequest(t, handler, route.Method, target+"?"+url.Values{"repo": {owned.deployRepo}}.Encode(), nil, "alice")
 	}
 	return dispatchRequest(t, handler, route.Method, target, routeProbeBodyValue(route), "alice")
 }

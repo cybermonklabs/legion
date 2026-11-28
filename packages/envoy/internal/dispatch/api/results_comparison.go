@@ -409,7 +409,7 @@ func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlo
 		return noBases(model.ReasonReadFailed)
 	}
 	merged := len(own.pulls) > 0 || len(linked.repos) > 0
-	if !merged && check.When == checkWhenAfterMerge {
+	if !merged && check.When == model.CheckWhenAfterMerge {
 		return noBases(model.ReasonNotMerged)
 	}
 	compared := c.branchesIn(ctx, check, *repo, false, merged)
@@ -452,20 +452,20 @@ func (c *comparisonReader) branchesIn(ctx context.Context, check model.CheckBloc
 	case len(set.pulls) == 0:
 		add(defaultBranch, mergeAnswer{state: mergeAbsent})
 	case !set.ordered:
-		if check.When == checkWhenAfterMerge {
+		if check.When == model.CheckWhenAfterMerge {
 			for _, pull := range set.pulls {
 				add(pull.BaseRef, mergeAnswer{state: mergeUnknown})
 			}
 		}
 		add(defaultBranch, mergeAnswer{state: mergeUnknown})
 	default:
-		if check.When == checkWhenAfterMerge {
+		if check.When == model.CheckWhenAfterMerge {
 			branch := set.pulls[0].BaseRef
 			add(branch, c.mergeOn(ctx, check.IssueKey, repo, branch, linked))
 		}
 		if defaultBranch != "" {
 			merge := c.mergeOn(ctx, check.IssueKey, repo, defaultBranch, linked)
-			if check.When != checkWhenAfterMerge || merge.state != mergeAbsent {
+			if check.When != model.CheckWhenAfterMerge || merge.state != mergeAbsent {
 				add(defaultBranch, merge)
 			}
 		}

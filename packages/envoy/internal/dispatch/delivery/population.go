@@ -28,7 +28,7 @@ type RawPullRequest struct {
 	Number   int
 	Title    string
 	Author   string
-	Labels   []string // from the GitHub pulls API response; only meaningful for the configured deploy repo
+	Labels   []string // from the GitHub pulls API response; only meaningful for a source repository (IsTaskPR)
 	MergedAt time.Time
 }
 
@@ -39,53 +39,41 @@ var fixTitle = regexp.MustCompile(`(?i)^(fix|revert|hotfix)\b`)
 // revertTitle matches a revert title: starts with revert, case-insensitive, word boundary.
 var revertTitle = regexp.MustCompile(`(?i)^revert\b`)
 
-// IsPopulationPR reports whether pr belongs to LEGION-294's population: pr.Repo is not one of
-// settings.ExcludedRepos, pr.Author is one of settings.PopulationAuthors (exact string match --
-// the caller is responsible for passing author strings in GitHub's own form, [bot] suffix
-// included where GitHub adds one, matching settings.PopulationAuthors entries exactly), pr.MergedAt
-// is inside window, and pr is not a task PR per IsTaskPR for the configured deploy repo.
-func IsPopulationPR(pr RawPullRequest, settings DeliverySettings, window TimeWindow) (bool, error) {
-	for _, excluded := range settings.ExcludedRepos {
-		if pr.Repo == excluded {
-			return false, nil
-		}
-	}
-
-	authorInPopulation := false
-	for _, author := range settings.PopulationAuthors {
-		if pr.Author == author {
-			authorInPopulation = true
-			break
-		}
-	}
-	if !authorInPopulation {
+// IsPopulationPR reports whether pr belongs to LEGION-294's population under rules: the population
+// admits it (Population.Admits: pr.Repo is none of the excluded repositories, and pr.Author one of
+// the authors, exactly -- the caller passes author strings in GitHub's own form, [bot] suffix
+// included where GitHub adds one), pr.MergedAt is inside window, and pr is not a task PR by the
+// rule of its own repository (IsTaskPR), where a source reads that repository. A pull request of a
+// repository no source reads is never a task PR.
+func IsPopulationPR(pr RawPullRequest, rules *SourceRules, window TimeWindow) (bool, error) {
+	if !rules.Population().Admits(pr.Repo, pr.Author) || !window.Contains(pr.MergedAt) {
 		return false, nil
 	}
-
-	if !window.Contains(pr.MergedAt) {
-		return false, nil
+	rule, ok := rules.For(pr.Repo)
+	if !ok {
+		return true, nil
 	}
-
-	isTask, err := IsTaskPR(pr.Repo, pr.Number, pr.Labels, settings)
+	isTask, err := IsTaskPR(pr.Repo, pr.Number, pr.Labels, rule)
 	if err != nil {
 		return false, err
 	}
 	return !isTask, nil
 }
 
-// IsTaskPR reports LEGION-294's task-PR rule, scoped to the configured deploy repository: true
-// when "task" is among pr's labels, false when "non-task" is, and an error naming the PR when it
-// is a deploy-repo PR with NEITHER label (an unclassified PR -- surfacing this loudly is the
-// point: the Python reference's is_task_pr raises for exactly this case rather than guessing). A
-// PR outside the deploy repository is never a task PR and never errors.
+// IsTaskPR reports LEGION-294's task-PR rule, scoped to rule's source repository: true when
+// "task" is among pr's labels, false when "non-task" is, and an error naming the PR when it is a
+// pull request of that repository with NEITHER label (an unclassified PR -- surfacing this loudly
+// is the point: the Python reference's is_task_pr raises for exactly this case rather than
+// guessing). A PR outside rule's repository (compared in any case) is never a task PR and never
+// errors: each pull request is judged against its own repository's rule (dispatch://INFRA-978, D1).
 //
 // The Python reference this is ported from (the weekly-review skill's common.is_task_pr) has a
 // second branch for a different, file-path-based task rule on a second repository; LEGION-294's
-// own population rule defines "task PR" only for the configured deploy repository, so that second
-// branch is not ported here -- naming the gap rather than silently porting an unrequested second
-// repository's rule or silently dropping it without a trace.
-func IsTaskPR(repo string, number int, labels []string, settings DeliverySettings) (bool, error) {
-	if repo != settings.DeployRepo {
+// own population rule defines "task PR" only for a deploy repository, so that second branch is not
+// ported here -- naming the gap rather than silently porting an unrequested second repository's
+// rule or silently dropping it without a trace.
+func IsTaskPR(repo string, number int, labels []string, rule DeliverySettings) (bool, error) {
+	if !strings.EqualFold(repo, rule.DeployRepo) {
 		return false, nil
 	}
 

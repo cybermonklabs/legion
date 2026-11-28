@@ -36,6 +36,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/me/asks/{id}/snooze",
 	"DELETE /api/v1/priorities/{id}",
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
+	"DELETE /api/v1/projects/{key}/evals/{slug}/readings/{id}",
 	"DELETE /api/v1/projects/{key}/legion/daemon",
 	// The proven-sessions setting's two routes, which dispatch_project_update performs.
 	// goingToolRoutes gives neither a row on purpose: each turns a check of a project on or off,
@@ -86,6 +87,9 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/projects/{key}/architecture-source/sync",
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions",
+	"POST /api/v1/projects/{key}/evals",
+	"POST /api/v1/projects/{key}/evals/{slug}/readings",
+	"POST /api/v1/projects/{key}/production-events",
 	"POST /api/v1/projects/{key}/related",
 	// Only a CI job's results token writes this row, and the going loop acts as an agent session,
 	// so no tool of the catalogue performs it.
@@ -106,10 +110,13 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"PUT /api/v1/projects/{key}/default-assignee",
 	"PUT /api/v1/projects/{key}/default-repository",
+	"PUT /api/v1/projects/{key}/evals/{slug}/readings/{id}",
 	"PUT /api/v1/projects/{key}/gated-steps",
 	"PUT /api/v1/projects/{key}/legion/daemon",
+	"PUT /api/v1/projects/{key}/production-events/{id}/state",
 	// The proven-sessions setting's other route, kept here for the reason its DELETE above is.
 	"PUT /api/v1/projects/{key}/proven-sessions",
+	"PUT /api/v1/projects/{key}/settings/delivery",
 	"PUT /api/v1/settings/delivery",
 }
 

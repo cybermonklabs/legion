@@ -520,23 +520,23 @@ func (w *driveWorld) seed(t *testing.T) {
 	w.as(t, alice, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
 }
 
-// seedWrites writes the state the GETs that write read (getWriteDrives): the delivery settings and
-// three deploy runs on main with no job the settings name as production's, each the unmatched run
-// of one delivery read, the newest the timeline's, the middle the measures', the oldest the
-// pipeline's; and a going run past its deadline with no ending stored, asked by the writer's
-// credential.
+// seedWrites writes the state the GETs that write read (getWriteDrives): a delivery-on project
+// whose one source reads the pipeline fixture's repository under its rule (saveDeliveryRule), and
+// four deploy runs on main with no job that rule names as production's, each the unmatched run
+// of one delivery read, the newest the project timeline's, then the timeline's, then the
+// measures', the oldest the pipeline's; and a going run past its deadline with no ending stored,
+// asked by the writer's credential.
 func (w *driveWorld) seedWrites(t *testing.T) {
 	t.Helper()
-	settings := pipelineSettings()
-	if _, err := delivery.PutSettings(t.Context(), w.raw.Pool, settings, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed the delivery settings: %v", err)
-	}
+	saveDeliveryRule(t, w.raw.Pool, pipelineSettings())
+	w.values["deliveryProject"] = deliveryRuleProject
 	now := time.Now().UTC().Truncate(time.Second)
 	runs := []struct {
 		name string
 		id   int64
 		at   time.Time
-	}{{"pipelineRun", 9001, now.Add(-30 * time.Hour)}, {"measuresRun", 9002, now.Add(-20 * time.Hour)}, {"timelineRun", 9003, now.Add(-10 * time.Hour)}}
+	}{{"pipelineRun", 9001, now.Add(-30 * time.Hour)}, {"measuresRun", 9002, now.Add(-20 * time.Hour)}, {"timelineRun", 9003, now.Add(-10 * time.Hour)},
+		{"projectTimelineRun", 9004, now.Add(-5 * time.Hour)}}
 	for _, unmatched := range runs {
 		seedPipelineRun(t, w.raw.Pool, delivery.DeliveryRun{
 			RunID: unmatched.id, Kind: delivery.DeliveryRunKindDeploy, StartedAt: unmatched.at,
@@ -550,6 +550,7 @@ func (w *driveWorld) seedWrites(t *testing.T) {
 	}
 	w.values["timelineFrom"], w.values["timelineTo"] = window(runs[2].at)
 	w.values["measuresFrom"], w.values["measuresTo"] = window(runs[1].at)
+	w.values["projectTimelineFrom"], w.values["projectTimelineTo"] = window(runs[3].at)
 	w.values["pipelineAt"] = url.QueryEscape(now.Format(time.RFC3339))
 
 	writerActor, _, err := w.rig.served.brokerTokenActor(w.caller.presenting(t, http.MethodGet, "/api/v1/whoami", w.writer, nil))

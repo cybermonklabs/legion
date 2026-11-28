@@ -103,7 +103,7 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, error) {
 		encoded.revs.Items[list] = revs
 	}
 
-	for _, name := range classes.maps {
+	for name, excluded := range classes.maps {
 		value, err := field(name)
 		if err != nil {
 			return deliveryLiveEncoded{}, err
@@ -115,7 +115,10 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, error) {
 		values := make(map[string]deliveryLiveValue, len(entries))
 		revs := make(map[string]string, len(entries))
 		for key, entry := range entries {
-			rev := deliveryLiveRevision(entry)
+			rev, err := deliveryLiveRevisionWithout(entry, excluded)
+			if err != nil {
+				return deliveryLiveEncoded{}, fmt.Errorf("delivery live: %s.%s[%q]: %w", kind, name, key, err)
+			}
 			values[key] = deliveryLiveValue{raw: entry, rev: rev}
 			revs[key] = rev
 		}
@@ -149,7 +152,7 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, error) {
 		if err != nil {
 			return deliveryLiveEncoded{}, err
 		}
-		rev, err := deliveryLiveWholeRevision(value, excluded)
+		rev, err := deliveryLiveRevisionWithout(value, excluded)
 		if err != nil {
 			return deliveryLiveEncoded{}, fmt.Errorf("delivery live: %s.%s: %w", kind, name, err)
 		}
@@ -195,10 +198,12 @@ func deliveryLiveCountRevision(count int) string {
 	return deliveryLiveRevision(strconv.AppendInt(nil, int64(count), 10))
 }
 
-// deliveryLiveWholeRevision is a whole field's revision, over its encoding without the subfields
-// excluded leaves out (the timeline's measures move their computed_at, window and freshness on
-// every compute, and a page is sent the measures only when a number in them moved).
-func deliveryLiveWholeRevision(value json.RawMessage, excluded []string) (string, error) {
+// deliveryLiveRevisionWithout is a whole field's or a map entry's revision, over its encoding
+// without the subfields excluded leaves out: the timeline's measures move their computed_at,
+// window and freshness on every compute, and a Legion board's open issue its grown values and
+// their as_of, and a page is sent the measures only when a number in them moved, and the entry
+// only when its stored row did.
+func deliveryLiveRevisionWithout(value json.RawMessage, excluded []string) (string, error) {
 	if len(excluded) == 0 {
 		return deliveryLiveRevision(value), nil
 	}
@@ -277,7 +282,7 @@ func diffDeliveryBody(next deliveryLiveEncoded, held DeliveryLiveRevs) (Delivery
 		changed = true
 	}
 
-	for _, name := range classes.maps {
+	for name := range classes.maps {
 		heldRevs := held.Maps[name]
 		nextValues := next.maps[name]
 		values := map[string]json.RawMessage{}

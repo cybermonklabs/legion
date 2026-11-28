@@ -2,6 +2,14 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { PIPELINE_AT, seedDeliveryFixture, seedPipelineFixture } from "./delivery-seed";
+import {
+  DELIVERY_PROJECT,
+  evalsSection,
+  evalsTabPath,
+  expectEvalsTab,
+  openEvalsTimeline,
+  paintedSection,
+} from "./evals-tab";
 import { seedDeliveryReconcileGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
 import { expect, type Page, type TestInfo, test, type WebSocketRoute } from "./test";
@@ -18,8 +26,12 @@ interface LiveFrame extends LiveRecord {
 interface LiveSocket {
   readonly frames: LiveFrame[];
   readonly opened: Promise<void>;
+  /** The subscriptions the page sent for a `project-timeline` view: the merge timeline's. */
+  readonly timelineSubs: Set<string>;
 }
 
+/** A GET of the routes the Delivery and Pipeline pages read, which no page of this build reads:
+ *  the Evals tab reads its project's routes, over the live socket. */
 const deliveryGet = /\/api\/v1\/delivery\/(timeline|measures|pipeline)(?:\?|$)/;
 
 /** Stores review screenshots outside Playwright's success-cleaned output when a caller requests it. */
@@ -46,13 +58,14 @@ function parseLiveFrame(payload: string): LiveFrame {
   return frame;
 }
 
-/** Whether one observed delta contains the named pull-request upsert. */
+/** Whether one observed delta contains the named pull-request upsert: a merge row of the
+ *  project-timeline view's one list, `items`, keyed by the pull request's id. */
 function deltaIncludesPR(frame: LiveFrame, id: string): boolean {
-  if (frame.type !== "delta" || !isLiveRecord(frame.items) || !isLiveRecord(frame.items.prs)) {
+  if (frame.type !== "delta" || !isLiveRecord(frame.items) || !isLiveRecord(frame.items.items)) {
     return false;
   }
-  const upsert = frame.items.prs.upsert;
-  return Array.isArray(upsert) && upsert.some((pr) => isLiveRecord(pr) && pr.id === id);
+  const upsert = frame.items.items.upsert;
+  return Array.isArray(upsert) && upsert.some((row) => isLiveRecord(row) && row.id === id);
 }
 
 /** The count entries a delta changed, preserving the family and facet that own every value. */
@@ -81,16 +94,17 @@ function snapshotCount(frame: LiveFrame, family: string, facet: string, value: s
   return facets[facet][value];
 }
 
-/** The complete Delivery GET set, in its server order, for comparison with the resumed page. */
-function deliveryPRIDs(body: unknown): string[] {
-  if (!isLiveRecord(body) || !Array.isArray(body.prs)) {
-    throw new Error("Delivery GET answered without a pull-request array");
+/** The merged pull requests of a project-timeline GET answer, by id, for comparison with the
+ *  resumed page's list. */
+function timelineMergeIDs(body: unknown): string[] {
+  if (!isLiveRecord(body) || !Array.isArray(body.items)) {
+    throw new Error("the project timeline GET answered without its items");
   }
-  return body.prs.map((pr) => {
-    if (!isLiveRecord(pr) || typeof pr.id !== "string") {
-      throw new Error("Delivery GET answered a pull request without an id");
+  return body.items.flatMap((row) => {
+    if (!isLiveRecord(row) || typeof row.id !== "string") {
+      throw new Error("the project timeline GET answered a row without an id");
     }
-    return pr.id;
+    return row.kind === "merge" ? [row.id] : [];
   });
 }
 
@@ -99,6 +113,7 @@ function deliveryPRIDs(body: unknown): string[] {
 function watchDeliverySocket(page: Page): LiveSocket {
   const opened = Promise.withResolvers<void>();
   const frames: LiveFrame[] = [];
+  const timelineSubs = new Set<string>();
   let connected = false;
   page.on("websocket", (socket) => {
     if (new URL(socket.url()).pathname !== "/ws/live") return;
@@ -106,12 +121,25 @@ function watchDeliverySocket(page: Page): LiveSocket {
       connected = true;
       opened.resolve();
     }
+    socket.on("framesent", (event) => {
+      const payload = typeof event.payload === "string" ? event.payload : event.payload.toString();
+      const frame: unknown = JSON.parse(payload);
+      if (
+        isLiveRecord(frame) &&
+        frame.type === "subscribe" &&
+        typeof frame.sub === "string" &&
+        isLiveRecord(frame.view) &&
+        frame.view.kind === "project-timeline"
+      ) {
+        timelineSubs.add(frame.sub);
+      }
+    });
     socket.on("framereceived", (event) => {
       const payload = typeof event.payload === "string" ? event.payload : event.payload.toString();
       frames.push(parseLiveFrame(payload));
     });
   });
-  return { frames, opened: opened.promise };
+  return { frames, opened: opened.promise, timelineSubs };
 }
 
 /** Proxies the live route until a test cuts its connection, then rejects every reconnect so the
@@ -147,19 +175,30 @@ async function waitForFrame(
   return frame;
 }
 
+/** The merge timeline's first snapshot: the project-timeline view's, of the subscription the page
+ *  sent for it, not one of the tab's evals views'. */
+function timelineSnapshot(live: LiveSocket): Promise<LiveFrame> {
+  return waitForFrame(
+    live.frames,
+    (frame) =>
+      frame.type === "snapshot" && typeof frame.sub === "string" && live.timelineSubs.has(frame.sub)
+  );
+}
+
+/** Opens ACME's Evals tab on its merge timeline's list, as the Delivery page opened on its list,
+ *  watching its live socket from before the navigation. */
 async function openLiveDelivery(page: Page): Promise<LiveSocket> {
   const live = watchDeliverySocket(page);
-  await page.goto("/delivery?mode=list");
-  await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
+  await openEvalsTimeline(page, "mode=list");
   await live.opened;
-  await waitForFrame(live.frames, (frame) => frame.type === "snapshot");
+  await timelineSnapshot(live);
   return live;
 }
 
-/** Opens the page without relying on Playwright's Chromium-only socket-inspection events. */
+/** Opens the tab on its merge timeline's list without relying on Playwright's Chromium-only
+ *  socket-inspection events. */
 async function openDeliveryPage(page: Page): Promise<void> {
-  await page.goto("/delivery?mode=list");
-  await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
+  await openEvalsTimeline(page, "mode=list");
 }
 
 /** Whether one observed delta changes a named map key to the expected value. */
@@ -219,9 +258,7 @@ test("a merge appears without a reload, and the page issues no delivery GET @pr"
   browser,
 }, testInfo) => {
   await seedDeliveryFixture();
-  await sql(
-    `UPDATE delivery_settings SET last_event_at = now(), last_reconcile_at = now() WHERE singleton`
-  );
+  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const deliveryRequests: string[] = [];
@@ -290,7 +327,7 @@ test("a reconcile-style re-write sends no frame", async ({ browser }) => {
 
   try {
     const live = await openLiveDelivery(page);
-    const snapshot = await waitForFrame(live.frames, (frame) => frame.type === "snapshot");
+    const snapshot = await timelineSnapshot(live);
     const sub = snapshotSubscription(snapshot);
     // The snapshot's own trailing frames land first; a short margin of real time keeps them out
     // of the window this row reads.
@@ -321,16 +358,20 @@ test("each delta carries only what changed", async ({ browser }) => {
 
   try {
     const live = await openLiveDelivery(page);
-    const snapshot = await waitForFrame(live.frames, (frame) => frame.type === "snapshot");
+    const snapshot = await timelineSnapshot(live);
     await insertMergedPR(692, "feat: one narrow delta");
     const delta = await waitForFrame(live.frames, (frame) =>
       deltaIncludesPR(frame, "acme/widgets#692")
     );
-    if (!isLiveRecord(delta.items) || !isLiveRecord(delta.items.prs) || !isLiveRecord(delta.maps)) {
+    if (
+      !isLiveRecord(delta.items) ||
+      !isLiveRecord(delta.items.items) ||
+      !isLiveRecord(delta.maps)
+    ) {
       throw new Error("Delivery delta omitted its item or map sections");
     }
-    const upsert = delta.items.prs.upsert;
-    const remove = delta.items.prs.remove;
+    const upsert = delta.items.items.upsert;
+    const remove = delta.items.items.remove;
 
     expect(upsert).toEqual([expect.objectContaining({ id: "acme/widgets#692" })]);
     expect(remove ?? []).toEqual([]);
@@ -377,15 +418,15 @@ test("after every socket is dropped, the page resumes and equals the GET answer 
 
     const body = await deliveryRequest(
       page,
-      "/api/v1/delivery/timeline?from=" +
+      `/api/v1/projects/${DELIVERY_PROJECT}/timeline?limit=500&from=` +
         encodeURIComponent(new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString()) +
         "&to=" +
         encodeURIComponent(new Date().toISOString())
     );
-    const rendered = await page
+    const rendered = await evalsSection(page, "timeline")
       .locator("tbody tr a[title]")
       .evaluateAll((links) => links.map((link) => link.getAttribute("title")));
-    expect([...rendered].sort()).toEqual(deliveryPRIDs(body).sort());
+    expect([...rendered].sort()).toEqual(timelineMergeIDs(body).sort());
   } finally {
     await context.close();
   }
@@ -394,8 +435,6 @@ test("after every socket is dropped, the page resumes and equals the GET answer 
 test("an issue title change reaches the page", async ({ browser }) => {
   await seedDeliveryFixture();
   await sql(
-    // Every project names a default assignee; alice is the person this fixture is read as.
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-690', 'ACME', 690, 'Initial live issue title', 'todo', 1, '{"kind":"system","id":"e2e"}', 'U690')`,
     `INSERT INTO delivery_pull_requests (
@@ -431,12 +470,24 @@ test("the Pipeline page updates live", async ({ browser }) => {
 
   try {
     const live = watchDeliverySocket(page);
-    await page.goto(`/pipeline?at=${PIPELINE_AT}`);
-    await expect(page.getByRole("heading", { name: "Pipeline" })).toBeVisible();
+    // The Pipeline fixture's pinned day alone, as the tab's custom window: every deploy of the
+    // fixture runs that day, the first day of production-deploy's input, and a window that
+    // starts before it reads "no data" and names that day (spec R18), as the fixture's seven
+    // days do.
+    const from = new Date(`${PIPELINE_AT.slice(0, 10)}T00:00:00Z`);
+    const to = new Date(from.getTime() + 24 * 60 * 60 * 1000);
+    await page.goto(
+      evalsTabPath(
+        `from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`
+      )
+    );
+    await expectEvalsTab(page);
     await live.opened;
-    await waitForFrame(live.frames, (frame) => frame.type === "snapshot");
-    const production = page.locator('[data-metric="production_apply"]');
-    await expect(production).toContainText("1 run");
+    const ci = await paintedSection(page, "ci");
+    const production = ci.locator(
+      '[data-eval="production-deploy"] [data-window-series="minutes"] [data-window-statistic="n"]'
+    );
+    await expect(production).toHaveText("1");
     await sql(
       `INSERT INTO delivery_runs (
          repo, run_id, kind, head_sha, head_commit_at, started_at, completed_at, conclusion, url, head_branch, event
@@ -447,7 +498,7 @@ test("the Pipeline page updates live", async ({ browser }) => {
       `INSERT INTO delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion)
        VALUES ('acme/widgets', 6907, 'widgets-release / widgets-release', '2026-10-02T08:00:00Z', '2026-10-02T09:00:00Z', 'success')`
     );
-    await expect(production).toContainText("2 runs");
+    await expect(production).toHaveText("2");
   } finally {
     await context.close();
   }
@@ -459,9 +510,7 @@ test("the freshness row says Live with the last change, and Reconnecting while d
 }) => {
   await seedDeliveryFixture();
   await seedDeliveryReconcileGithub();
-  await sql(
-    `UPDATE delivery_settings SET last_event_at = now(), last_reconcile_at = now() WHERE singleton`
-  );
+  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -486,9 +535,7 @@ test("on a phone the delivery page shows a merge without a reload", async ({
 }, testInfo) => {
   await seedDeliveryFixture();
   await seedDeliveryReconcileGithub();
-  await sql(
-    `UPDATE delivery_settings SET last_event_at = now(), last_reconcile_at = now() WHERE singleton`
-  );
+  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 

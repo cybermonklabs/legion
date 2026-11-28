@@ -241,7 +241,7 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 // all-visible in the visibility map, which an index-only scan reads in place of the heap. One
 // vacuum can leave a page unmarked while another test's transaction on the same server is still
 // open (it then cannot judge the page's rows visible to every transaction), so the vacuum runs
-// again until pg_class counts every page all-visible.
+// again until pg_class counts every page all-visible, as evals' reads_test does for eval_days.
 //
 // A vacuum marks a page all-visible only where each row's committed hint is set, and the hint of a
 // row whose transaction committed asynchronously waits for that commit to be flushed, as the test

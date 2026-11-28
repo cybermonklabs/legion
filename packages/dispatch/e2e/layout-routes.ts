@@ -1,10 +1,11 @@
 /** The pages the layout layer reads against the layout rule: every reviewed page of
  *  `e2e/review-routes.ts`, the pages that list excludes only because a pixel comparison or a scan
- *  would not read them the same twice, two pages a reader's choice in this browser draws another
- *  way - the new issue page and the project's board - and the project page and its Architecture
- *  tab, which draw from the architecture source the stress layer syncs on the server. A route may
- *  also carry states - what the page draws once the reader has acted on it - each read at every
- *  width after the plain load.
+ *  would not read them the same twice, or because a baseline of them would only be thrown away -
+ *  the project's Evals tab and the Evals page - two pages a reader's choice in this browser draws
+ *  another way - the new issue page and the project's board - and the project page and its
+ *  Architecture tab, which draw from the architecture source the stress layer syncs on the
+ *  server. A route may also carry states - what the page draws once the reader has acted on it -
+ *  each read at every width after the plain load.
  *
  *  `e2e/layout-rule.stub.e2e.ts` reads them all, against a recording of their HTTP answers and of
  *  the document and live sockets they draw from (`e2e/layout-sockets.ts`), on every pull request.
@@ -221,11 +222,27 @@ const priorityLabelsShown: LayoutState = {
   requiredGroups: ["labels"],
 };
 
-/** The Delivery page's session-groups editor, which the Parent agent facet's "Edit groups"
- *  opens: each group lists its sessions as chips, a list of R3, and the stress layer's group
- *  holds eleven, past the cap. */
+/** The project the delivery fixtures seed (`e2e/delivery-seed.ts`; `DELIVERY_PROJECT` of
+ *  `e2e/evals-tab.ts`, which this data-only list does not import), whose Evals tab draws their
+ *  numbers and their merge timeline. */
+const DELIVERY_PROJECT = "ACME";
+
+/** Opens the Evals tab's merge timeline, which the tab keeps closed on its first paint, and
+ *  waits for its project-timeline view's first snapshot to paint it (`TimelineSection.tsx`). */
+async function openMergeTimeline(page: Page): Promise<void> {
+  await page
+    .locator('[data-section="timeline"]')
+    .getByRole("button", { exact: true, name: "Show the merge timeline" })
+    .click();
+  await page.locator('[data-section="timeline"][data-state="painted"]').waitFor();
+}
+
+/** The Evals tab's session-groups editor, which the merge timeline's Parent agent facet's "Edit
+ *  groups" opens: each group lists its sessions as chips, a list of R3, and the stress layer's
+ *  group holds eleven, past the cap. */
 const sessionGroupsEdited: LayoutState = {
   act: async (page) => {
+    await openMergeTimeline(page);
     await page.getByRole("button", { exact: true, name: "Edit groups" }).click();
     await page
       .getByRole("dialog", { name: "Session groups" })
@@ -408,9 +425,6 @@ const additions: Readonly<
   broadcast: { minElements: shortPage(48) },
   broadcasts: { minElements: shortPage(14) },
   "credentials-machine": { minElements: shortPage(24) },
-  // The editor that holds the session-group chips draws only once "Edit groups" opens it, so
-  // the group is required of those states and not of the plain page.
-  delivery: { states: [sessionGroupsEdited, sessionGroupsOpened] },
   // Each child's links are a capped group of their own, in every state: a state's groups replace
   // the route's.
   "issue-children": {
@@ -434,6 +448,7 @@ const additions: Readonly<
   "project-documents": { minElements: shortPage(40) },
   // The Labels cell of the stress issue's row, which the searched table draws.
   "project-issues": { states: [twoRowsSelected, stressRowSearched] },
+  "project-settings": { minElements: shortPage(32) },
 };
 
 const reviewed: readonly LayoutRoute[] = reviewRoutes
@@ -457,6 +472,10 @@ const reviewed: readonly LayoutRoute[] = reviewRoutes
 export const layoutUnread: Readonly<Record<string, string>> = {
   credentials:
     "It draws InboxPage, the same component as / (web/src/app.tsx), which the inbox route reads.",
+  delivery:
+    "It redirects to the default project's Evals tab (web/src/features/evals/DefaultProjectRedirect.tsx), the page the project-evals route reads.",
+  pipeline:
+    "It redirects to the default project's Evals tab (web/src/features/evals/DefaultProjectRedirect.tsx), the page the project-evals route reads.",
 };
 
 export const layoutRoutes: readonly LayoutRoute[] = [
@@ -528,6 +547,33 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ready: (page) => [
       page.getByTestId("architecture-source").filter({ hasText: `${ARCHITECTURE_REPO}/main` }),
     ],
+  },
+  {
+    name: "project-evals",
+    // Excluded from the review table because a baseline of its sections would only be thrown
+    // away, which argues against a shot alone. The delivery fixtures' project, on their
+    // timeline's window: the tab draws its sections as their views answer (`EvalsSection.tsx`'s
+    // `data-state`), and its merge timeline, with the session-groups editor, once opened.
+    path: (seed) => `/projects/${DELIVERY_PROJECT}/evals?${seed.deliveryQuery}`,
+    pattern: "/projects/:key/evals",
+    ready: (page) => [
+      page.getByRole("tab", { name: "Evals", selected: true }),
+      page.locator('[data-section="cards"][data-state="painted"]'),
+      page.locator('[data-section="deploys"][data-state="painted"]'),
+    ],
+    // The editor that holds the session-group chips draws only once "Edit groups" opens it, so
+    // the group is required of those states and not of the plain page.
+    states: [sessionGroupsEdited, sessionGroupsOpened],
+  },
+  {
+    name: "evals",
+    // Excluded from the review table because a baseline taken before its own seed would only be
+    // thrown away, which argues against a shot alone. On the delivery fixtures' window, so the
+    // read it sends is the recorded one whatever day the row replays on; its numbers are drawn
+    // once the read of every project's evals has answered (`EvalsAcrossProjects.tsx`).
+    path: (seed) => `/evals?${seed.deliveryQuery}`,
+    pattern: "/evals",
+    ready: (page) => [page.locator("[data-project] [data-eval]").first()],
   },
   {
     minElements: shortPage(45),

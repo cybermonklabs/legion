@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `LegionBoardResponse` gains `issues`, a map keyed by issue key of each issue's stored Legion
+  facts (`LegionBoardFacts`), and its header gains `facts_updated_at` and
+  `facts_cursor_age_seconds`. An entry with a value that grows carries `as_of`, the moment its
+  values are of, and `growth` (`LegionBoardGrowth`), how fast `work_hours`, `slot_hours`, each
+  `hours_by_phase` column and `work_last_at` grow after it, so a holder gives each value at its
+  own clock; an entry none of whose values grows carries null for both. The `legion` live view
+  sends an entry only when its stored row moves. `LegionBoardCard` gains `slot_use`, `waiting`,
+  `waiting_place`, `slot_since` and `tree_slot`.

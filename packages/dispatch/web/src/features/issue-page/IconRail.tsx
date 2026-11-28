@@ -11,7 +11,7 @@ import {
   iconRailText,
 } from "../../theme/classes";
 import { PRIORITIES_PATH } from "../priorities/priority-routes";
-import { buildProjectPath } from "../refs/routes";
+import { buildProjectPath, EVALS_PATH } from "../refs/routes";
 
 /**
  * The shell's navigation on the issue page, from the phone's width up: a 56 px column of icons
@@ -58,8 +58,7 @@ export function IconRail({
       />
       <RailLink icon={AGENTS_ICON} label="Agents" to="/agents" />
       <RailLink icon={PRIORITIES_ICON} label="Priorities" to={PRIORITIES_PATH} />
-      <RailLink icon={DELIVERY_ICON} label="Delivery" to="/delivery" />
-      <RailLink icon={PIPELINE_ICON} label="Pipeline" to="/pipeline" />
+      <RailLink icon={EVALS_ICON} label="Evals" to={EVALS_PATH} />
       {/* The issue's own project, marked as where the reader is by the accent rule at its edge
           as well as its colour. */}
       {project === undefined ? null : (
@@ -148,17 +147,10 @@ const PRIORITIES_ICON = icon(
     <path d="M5 4h10l-2.5 3.5L15 11H5" />
   </>
 );
-const DELIVERY_ICON = icon(
+const EVALS_ICON = icon(
   <>
     <path d="M3 15l4-5 3 3 4-6 3 4" />
     <path d="M3 17h14" />
-  </>
-);
-const PIPELINE_ICON = icon(
-  <>
-    <rect height="12" rx="1" width="4" x="3" y="4" />
-    <rect height="8" rx="1" width="4" x="8" y="4" />
-    <rect height="5" rx="1" width="4" x="13" y="4" />
   </>
 );
 const PROJECT_ICON = icon(<path d="M3 6h5l1.5 2H17v8H3z" />);

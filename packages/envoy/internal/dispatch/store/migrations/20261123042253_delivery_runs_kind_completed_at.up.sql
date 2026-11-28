@@ -1,0 +1,22 @@
+-- pgmigrate:non-transactional
+-- 20261123042253_delivery_runs_kind_completed_at.up.sql
+--
+-- The index behind the eval items route's read of pr-ci's failing jobs (dispatch://INFRA-2918,
+-- D9; delivery.ReadPRChecksCompletedIn). The failing-jobs tally counts the jobs of the PR-checks
+-- runs that completed in the 24 hours before a range's end (measures.FailingJobs), so the read
+-- takes those runs by their completion: `repo = $1 and kind = $2 and completed_at >= $6 and
+-- completed_at <= $7` is one range of this index for the repository and the kind, and the start of
+-- the range and the event are checked on the day's runs it answers. Without it the read is
+-- delivery_runs_kind_started_at's range of every run started in the range, up to 84 days of them,
+-- each read from the heap to test its completion.
+--
+-- A run still going has no completion and is left out of every range a read asks for; the index
+-- holds an entry for every run, as delivery_runs_kind_started_at does.
+--
+-- It is built `concurrently`, outside the runner's transaction, because delivery_runs is the table
+-- every run the intake and the reconcile store writes, as delivery_runs_pull_request is
+-- (20261117100020): a concurrent build takes SHARE UPDATE EXCLUSIVE, which no ordinary read or
+-- write waits on, where a plain build's SHARE blocks every one of those writes until it ends. A
+-- failed build leaves an INVALID index of this name on delivery_runs, which the runner drops with
+-- DROP INDEX CONCURRENTLY and builds again on its next attempt or boot.
+create index concurrently if not exists delivery_runs_kind_completed_at on delivery_runs (repo, kind, completed_at);

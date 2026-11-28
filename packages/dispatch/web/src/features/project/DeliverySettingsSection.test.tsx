@@ -1,0 +1,1689 @@
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { DISPATCH_LOGIN_HEADER } from "@legion/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
+import { http } from "msw";
+import { MemoryRouter } from "react-router-dom";
+
+import { type HeldNotifications, holdNotifications, recordCommits } from "../../__tests__/commits";
+import { realClock } from "../../__tests__/fake-clock";
+import { seedEvalsReads } from "../../__tests__/live-socket-harness";
+import { answerRequests } from "../../__tests__/network";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { keepPageSession } from "../../api/agent-session";
+import { ApiError, api, NetworkError } from "../../api/client";
+import type {
+  AuthenticatedUser,
+  ProjectDeliverySettings,
+  ProjectDeploySource,
+} from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { DeliverySettingsSection } from "./DeliverySettingsSection";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+// The editor's states (dispatch://INFRA-978): one test per state and event, each driving the
+// event on the state and reading what then shows.
+
+const PROJECT = "ACME";
+const DEFAULT_REPO = "acme/widgets";
+const SAVE = "Save delivery settings";
+
+/** The seven target boxes, in the order the section lists them. */
+const TARGET_FIELDS = [
+  "Deploy frequency (deploys a day)",
+  "Change failure rate (a share from 0 to 1)",
+  "Merge to production (minutes)",
+  "PR open to merge (minutes)",
+  "Deploy runs reaching production (a share from 0 to 1)",
+  "Failed deployment recovery time (minutes)",
+  "P0 issues with no owner",
+];
+
+/** The four failure sources' boxes. */
+const FAILURE_FIELDS = [
+  "A check that fails after its merge",
+  "A merged revert",
+  "An issue labelled incident",
+  "A failure posted to the project's production events",
+];
+
+function githubSource(overrides: Partial<ProjectDeploySource> = {}): ProjectDeploySource {
+  return {
+    deploy_workflow_path: ".github/workflows/deploy.yml",
+    id: "source-1",
+    kind: "github_workflow",
+    last_error: null,
+    last_event_at: null,
+    last_reconcile_at: null,
+    pr_checks_rollup_job_name: null,
+    pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
+    production_apply_step_name: null,
+    production_job_names: ["widgets-release / widgets-release", "release / release"],
+    reconciled_through: null,
+    repo: null,
+    resolved_repo: DEFAULT_REPO,
+    staging_apply_job_name: null,
+    staging_e2e_job_name: null,
+    ...overrides,
+  };
+}
+
+const eventsSource: ProjectDeploySource = {
+  deploy_workflow_path: null,
+  id: "source-events",
+  kind: "events",
+  last_error: null,
+  last_event_at: null,
+  last_reconcile_at: null,
+  pr_checks_rollup_job_name: null,
+  pr_checks_workflow_path: null,
+  production_apply_step_name: null,
+  production_job_names: null,
+  reconciled_through: null,
+  repo: null,
+  resolved_repo: null,
+  staging_apply_job_name: null,
+  staging_e2e_job_name: null,
+};
+
+/** A project with delivery on: one source reading the default repository, two failure sources,
+ *  and the targets INFRA-2916 seeds. */
+const record: ProjectDeliverySettings = {
+  default_repo: DEFAULT_REPO,
+  delivery: true,
+  excluded_repos: ["acme/dojo", "acme/widgets-smoke"],
+  failure_sources: ["check_results", "reverts"],
+  failures_measured_since: "2026-11-01",
+  population_authors: ["octocat", "octocat-agent[bot]"],
+  project: PROJECT,
+  sources: [githubSource()],
+  targets: {
+    "change-fail-rate": 0.05,
+    "deploy-frequency": 20,
+    "deploy-run-success": 0.9,
+    "failed-deploy-recovery": "off",
+    "merge-to-production": 45,
+    "pr-open-to-merge": 60,
+    "unowned-p0": 0,
+  },
+  updated_at: "2026-11-20T12:00:00Z",
+  updated_by: { id: "alice@example.com", kind: "user" },
+};
+
+/** `record` as a later save stored it. */
+function savedLater(overrides: Partial<ProjectDeliverySettings> = {}): ProjectDeliverySettings {
+  return { ...record, updated_at: "2026-11-21T09:00:00Z", ...overrides };
+}
+
+/** The section of PROJECT, drawn for `viewer` (`/auth/whoami`'s answer) where one is given, which
+ *  is in the cache before the first render. */
+function renderSection(
+  defaultRepo: string | null = DEFAULT_REPO,
+  viewer?: AuthenticatedUser
+): QueryClient {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (viewer !== undefined) queryClient.setQueryData<AuthenticatedUser>(["whoami"], viewer);
+  render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <DeliverySettingsSection defaultRepo={defaultRepo} project={PROJECT} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return queryClient;
+}
+
+function field(label: string): HTMLInputElement | HTMLTextAreaElement {
+  return screen.getByLabelText(label) as HTMLInputElement | HTMLTextAreaElement;
+}
+
+/** Deploy source `n` (from 1), as its legend names it. */
+function source(n: number): HTMLElement {
+  return screen.getByRole("group", { name: `Deploy source ${n}` });
+}
+
+function sourceField(n: number, label: string): HTMLInputElement | HTMLTextAreaElement {
+  return within(source(n)).getByLabelText(label) as HTMLInputElement | HTMLTextAreaElement;
+}
+
+function deliverySwitch(): HTMLInputElement {
+  return screen.getByRole("switch", { name: "Delivery" }) as HTMLInputElement;
+}
+
+/** Fills the empty `input` with `value`, pasted in one edit as a person pastes a draft. */
+async function fill(user: UserEvent, input: HTMLElement, value: string): Promise<void> {
+  await user.click(input);
+  await user.paste(value);
+}
+
+/** Replaces what `input` holds with `value`. */
+async function replace(user: UserEvent, input: HTMLElement, value: string): Promise<void> {
+  await user.clear(input);
+  await user.click(input);
+  await user.paste(value);
+}
+
+/** The required fields of deploy source `n`, filled. */
+async function fillRule(user: UserEvent, n: number): Promise<void> {
+  await fill(user, sourceField(n, "Deploy workflow"), ".github/workflows/deploy.yml");
+  await fill(user, sourceField(n, "Production jobs"), "widgets-release / widgets-release");
+  await fill(user, sourceField(n, "PR checks workflow"), ".github/workflows/pr-checks.yml");
+}
+
+/** The body of the `call`th save (from 0). */
+function sentBody(put: { readonly mock: { readonly calls: readonly unknown[][] } }, call = 0) {
+  return put.mock.calls[call]?.[1];
+}
+
+/** Another writer's save of `next` reaching the section's read of the record. */
+async function anotherWriterSaves(
+  queryClient: QueryClient,
+  next: ProjectDeliverySettings
+): Promise<void> {
+  await act(async () => {
+    queryClient.setQueryData(["project-delivery-settings", PROJECT], next);
+  });
+}
+
+/** Waits for the section's read of the record to have answered. */
+async function readSettled(queryClient: QueryClient): Promise<void> {
+  await waitFor(() =>
+    expect(queryClient.getQueryState(["project-delivery-settings", PROJECT])?.fetchStatus).toBe(
+      "idle"
+    )
+  );
+}
+test("the section says it is loading until the record arrives", async () => {
+  const answer = Promise.withResolvers<ProjectDeliverySettings | null>();
+  const get = spyOn(api, "getProjectDeliverySettings").mockImplementation(() => answer.promise);
+
+  try {
+    renderSection();
+
+    expect(await screen.findByText("Loading delivery settings…")).toBeDefined();
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: SAVE })).not.toBeInTheDocument();
+    expect(get).toHaveBeenCalledWith(PROJECT);
+
+    answer.resolve(null);
+    expect(await screen.findByRole("switch", { name: "Delivery" })).not.toBeChecked();
+    expect(screen.queryByText("Loading delivery settings…")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    get.mockRestore();
+  }
+});
+
+test("a failed load offers a retry, and the retry loads", async () => {
+  const user = userEvent.setup();
+  const retried = Promise.withResolvers<ProjectDeliverySettings | null>();
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "database unavailable" }))
+    .mockImplementationOnce(() => retried.promise);
+
+  try {
+    renderSection();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Couldn't load the delivery settings.");
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Loading delivery settings…")).toBeDefined();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(get).toHaveBeenCalledTimes(2);
+
+    retried.resolve(record);
+    expect(await screen.findByRole("switch", { name: "Delivery" })).toBeChecked();
+  } finally {
+    cleanup();
+    get.mockRestore();
+  }
+});
+
+test("with no record the switch is off and no field or target shows", async () => {
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(null);
+
+  try {
+    renderSection();
+
+    expect(await screen.findByRole("switch", { name: "Delivery" })).not.toBeChecked();
+    const defaultRepo = field("Default repository") as HTMLInputElement;
+    expect(defaultRepo.value).toBe(DEFAULT_REPO);
+    expect(defaultRepo.readOnly).toBe(true);
+    expect(screen.queryByRole("group", { name: "Deploy sources" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Repository")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Deploy workflow")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Failure sources" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Targets" })).not.toBeInTheDocument();
+    for (const label of TARGET_FIELDS) {
+      expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
+    }
+    expect(screen.getByRole("button", { name: SAVE })).toBeEnabled();
+  } finally {
+    cleanup();
+    get.mockRestore();
+  }
+});
+
+test("with delivery off Save keeps the stored fields", async () => {
+  const user = userEvent.setup();
+  const stored: ProjectDeliverySettings = {
+    ...record,
+    delivery: false,
+    sources: [
+      githubSource({
+        production_apply_step_name: "Apply",
+        repo: "acme/deploys",
+        resolved_repo: "acme/deploys",
+      }),
+      eventsSource,
+    ],
+  };
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(stored);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(stored);
+  const { targets: _eachEvalsOwn, ...storedFields } = stored;
+
+  try {
+    renderSection();
+
+    expect(await screen.findByRole("switch", { name: "Delivery" })).not.toBeChecked();
+    expect(screen.queryByRole("group", { name: "Deploy sources" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Targets" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(put.mock.calls[0]?.[0]).toBe(PROJECT);
+    // The stored fields, including those hidden while delivery is off, go back unchanged; the
+    // targets, each its eval's own, are not sent, so each eval keeps the target it holds.
+    expect(sentBody(put)).toEqual({
+      ...storedFields,
+      delivery: false,
+      excluded_repos: ["acme/dojo", "acme/widgets-smoke"],
+      failure_sources: ["check_results", "reverts"],
+      failures_measured_since: "2026-11-01",
+      population_authors: ["octocat", "octocat-agent[bot]"],
+      sources: [
+        {
+          deploy_workflow_path: ".github/workflows/deploy.yml",
+          kind: "github_workflow",
+          pr_checks_rollup_job_name: null,
+          pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
+          production_apply_step_name: "Apply",
+          production_job_names: ["widgets-release / widgets-release", "release / release"],
+          repo: "acme/deploys",
+          staging_apply_job_name: null,
+          staging_e2e_job_name: null,
+        },
+        { kind: "events" },
+      ],
+    });
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("turning delivery on shows the source, failure and target fields", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(null);
+
+  try {
+    renderSection();
+    await user.click(await screen.findByRole("switch", { name: "Delivery" }));
+
+    expect(deliverySwitch()).toBeChecked();
+    // One source, a GitHub workflow, every field empty with a placeholder saying what it holds.
+    expect(screen.queryByRole("group", { name: "Deploy source 2" })).not.toBeInTheDocument();
+    expect((within(source(1)).getByLabelText("Kind") as HTMLSelectElement).value).toBe(
+      "github_workflow"
+    );
+    const placeholders: [string, string][] = [
+      ["Repository", DEFAULT_REPO],
+      ["Deploy workflow", ".github/workflows/<deploy>.yml"],
+      ["Production jobs", "One job name per line, as a deploy run lists it"],
+      ["Production apply step", "The step whose success means the job applied (optional)"],
+      ["Staging end-to-end job", "The staging end-to-end job, as a deploy run lists it (optional)"],
+      ["Staging deploy job", "The staging deploy job (optional)"],
+      ["PR checks workflow", ".github/workflows/<checks>.yml"],
+      [
+        "PR checks roll-up job",
+        "The PR-checks roll-up job the failing-jobs table leaves out (optional)",
+      ],
+    ];
+    for (const [label, placeholder] of placeholders) {
+      const input = sourceField(1, label);
+      expect(input.value).toBe("");
+      expect(input.placeholder).toBe(placeholder);
+    }
+    expect(sourceField(1, "Staging end-to-end job").required).toBe(false);
+    expect(field("Population authors").placeholder).toBe("One GitHub login per line");
+    expect(field("Excluded repositories").placeholder).toBe("One owner/repo per line");
+
+    const failures = screen.getByRole("group", { name: "Failure sources" });
+    for (const label of FAILURE_FIELDS) {
+      expect(within(failures).getByLabelText(label)).not.toBeChecked();
+    }
+    expect(within(failures).getByLabelText("Failures counted from")).toHaveValue("");
+
+    const targets = screen.getByRole("group", { name: "Targets" });
+    expect(within(targets).getAllByRole("textbox")).toHaveLength(TARGET_FIELDS.length);
+    for (const label of TARGET_FIELDS) {
+      const input = within(targets).getByLabelText(label) as HTMLInputElement;
+      expect(input.value).toBe("");
+      expect(input.placeholder).toBe("A number, or off");
+    }
+  } finally {
+    cleanup();
+    get.mockRestore();
+  }
+});
+
+test("the events source shows no workflow field", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(null);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(record);
+
+  try {
+    renderSection();
+    await user.click(await screen.findByRole("switch", { name: "Delivery" }));
+    await user.selectOptions(within(source(1)).getByLabelText("Kind"), "events");
+
+    for (const label of [
+      "Repository",
+      "Deploy workflow",
+      "Production jobs",
+      "PR checks workflow",
+    ]) {
+      expect(within(source(1)).queryByLabelText(label)).not.toBeInTheDocument();
+    }
+    expect(source(1).textContent).toContain(
+      "Counts the deploys posted to POST /api/v1/projects/ACME/production-events"
+    );
+    expect(screen.getByRole("group", { name: "Failure sources" })).toBeDefined();
+    expect(screen.getByRole("group", { name: "Targets" })).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toMatchObject({ delivery: true, sources: [{ kind: "events" }] });
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a target that is neither a number nor off is refused before any request", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(record);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    const target = field("Deploy frequency (deploys a day)");
+    expect(target.value).toBe("20");
+
+    await replace(user, target, "fast");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Deploy frequency (deploys a day): a target is a number, or off."
+    );
+    expect(target).toHaveAttribute("aria-invalid", "true");
+    expect(put).not.toHaveBeenCalled();
+
+    // `off` is a target too, and the same button then saves it, and no target left as read.
+    await replace(user, target, " off ");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toHaveProperty("targets", { "deploy-frequency": "off" });
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("the fields are disabled while the save is in flight", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<ProjectDeliverySettings>();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+  const put = spyOn(api, "putProjectDeliverySettings").mockImplementation(() => answer.promise);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const controls = [
+      deliverySwitch(),
+      sourceField(1, "Repository"),
+      sourceField(1, "Deploy workflow"),
+      within(source(1)).getByLabelText("Kind"),
+      within(source(1)).getByRole("button", { name: "Remove deploy source 1" }),
+      screen.getByRole("button", { name: "Add a GitHub workflow source" }),
+      field("Population authors"),
+      screen.getByLabelText(FAILURE_FIELDS[0] ?? ""),
+      field("Failures counted from"),
+      field("Deploy frequency (deploys a day)"),
+      screen.getByRole("button", { name: SAVE }),
+    ];
+    for (const control of controls) {
+      expect(control).toBeDisabled();
+    }
+
+    answer.resolve(record);
+    await waitFor(() => expect(screen.getByRole("button", { name: SAVE })).toBeEnabled());
+    expect(deliverySwitch()).toBeEnabled();
+    expect(sourceField(1, "Repository")).toBeEnabled();
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a save restarts the fields from the stored record and refreshes the evals", async () => {
+  const user = userEvent.setup();
+  const stored = savedLater({ sources: [githubSource({ id: "source-stored" })] });
+  // The record's read after the save answers what the save stored.
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(null)
+    .mockResolvedValue(stored);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(stored);
+
+  try {
+    const queryClient = renderSection();
+    const evals = seedEvalsReads(queryClient, PROJECT);
+    await user.click(await screen.findByRole("switch", { name: "Delivery" }));
+    const invalidate = spyOn(queryClient, "invalidateQueries");
+
+    await fill(user, sourceField(1, "Deploy workflow"), ".github/workflows/deploy.yml ");
+    await fill(
+      user,
+      sourceField(1, "Production jobs"),
+      " widgets-release / widgets-release \n\nrelease / release\n"
+    );
+    await fill(user, sourceField(1, "PR checks workflow"), ".github/workflows/pr-checks.yml");
+    await fill(user, field("Population authors"), " octocat\n\noctocat-agent[bot],  hubot \n");
+    await fill(user, field("Excluded repositories"), "acme/dojo\r\n acme/widgets-smoke\n");
+    await user.click(screen.getByLabelText("A check that fails after its merge"));
+    await user.type(field("Failures counted from"), "2026-11-01");
+    await fill(user, field("Deploy frequency (deploys a day)"), " 12 ");
+    await fill(user, field("Failed deployment recovery time (minutes)"), "off");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    // Each field trimmed, each list split into its entries, an empty source repository the
+    // default's (null), and only the targets that hold text.
+    expect(sentBody(put)).toEqual({
+      delivery: true,
+      excluded_repos: ["acme/dojo", "acme/widgets-smoke"],
+      failure_sources: ["check_results"],
+      failures_measured_since: "2026-11-01",
+      population_authors: ["octocat", "octocat-agent[bot]", "hubot"],
+      sources: [
+        {
+          deploy_workflow_path: ".github/workflows/deploy.yml",
+          kind: "github_workflow",
+          pr_checks_rollup_job_name: null,
+          pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
+          production_apply_step_name: null,
+          production_job_names: ["widgets-release / widgets-release", "release / release"],
+          repo: null,
+          staging_apply_job_name: null,
+          staging_e2e_job_name: null,
+        },
+      ],
+      targets: { "deploy-frequency": 12, "failed-deploy-recovery": "off" },
+    });
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+    // The fields start over from what the server stored: its population and its targets.
+    expect(field("Population authors").value).toBe("octocat\noctocat-agent[bot]");
+    expect(field("Deploy frequency (deploys a day)").value).toBe("20");
+    expect(field("Change failure rate (a share from 0 to 1)").value).toBe("0.05");
+    // The save refreshes the project's settings, the Evals tab's reads of the project that are not
+    // live (an eval's detail; its evals, items and timeline views learn of it as a delta), and the
+    // cross-project read, which lists the evals whose targets it wrote.
+    await waitFor(() =>
+      expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+        ["project-delivery-settings", PROJECT],
+        ["evals", PROJECT],
+        ["evals", "across"],
+      ])
+    );
+    expect(queryClient.getQueryState(evals.detail)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(evals.across)?.isInvalidated).toBe(true);
+    for (const view of evals.live) {
+      expect(queryClient.getQueryState(view)?.isInvalidated).toBe(false);
+    }
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a failed re-read of a loaded record keeps the editor and the draft", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockRejectedValue(new ApiError(500, { code: "INTERNAL", error: "database unavailable" }));
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Population authors"), "hubot");
+
+    // A re-read that fails - a window regaining focus, another save's refresh - leaves the record
+    // the section already holds, and the fields drawn from it, as they were.
+    await act(() =>
+      queryClient.refetchQueries({ queryKey: ["project-delivery-settings", PROJECT] })
+    );
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryState(["project-delivery-settings", PROJECT])?.status).toBe("error");
+    expect(screen.queryByText("Couldn't load the delivery settings.")).not.toBeInTheDocument();
+    expect(deliverySwitch()).toBeChecked();
+    expect(field("Population authors").value).toBe("hubot");
+  } finally {
+    cleanup();
+    get.mockRestore();
+  }
+});
+
+test("each refusal shows the server's message and keeps the draft", async () => {
+  const user = userEvent.setup();
+  const refusals: [number, string, string][] = [
+    [
+      400,
+      "DELIVERY_SETTINGS_INPUT",
+      "deploy_workflow_path: a github_workflow source names its deploy workflow",
+    ],
+    [
+      409,
+      "DELIVERY_REPOSITORY_SHARED",
+      "acme/elsewhere is already a deploy source of project CORE, which has delivery on; a repository is the deploy source of one project at most",
+    ],
+    [
+      409,
+      "DELIVERY_NO_DEFAULT_REPOSITORY",
+      "source 0 of project ACME names no repository and the project has no default repository: name the source's repository, or set the project's default repository in Settings -> Projects",
+    ],
+    [
+      409,
+      "DELIVERY_SETTINGS_ACCESS",
+      "source 0 reads acme/elsewhere, which Dispatch's GitHub App cannot read: the GitHub App is not installed on acme/elsewhere",
+    ],
+    [
+      409,
+      "DELIVERY_SETTINGS_CHANGED",
+      "another write moved project ACME's delivery settings, or a target this save names, under each of its 2 attempts: read them again and save again",
+    ],
+    [
+      403,
+      "PROJECT_SCOPE_DEPLOYMENT",
+      "this request's credential may write project ACME and nothing else; PUT /api/v1/projects/{key}/settings/delivery belongs to the deployment rather than to a project",
+    ],
+  ];
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+  const put = spyOn(api, "putProjectDeliverySettings");
+  for (const [status, code, error] of refusals) {
+    put.mockRejectedValueOnce(new ApiError(status, { code, error }));
+  }
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await fill(user, sourceField(1, "Repository"), "acme/elsewhere");
+
+    for (const [index, [, code, message]] of refusals.entries()) {
+      await user.click(screen.getByRole("button", { name: SAVE }));
+      await waitFor(() => expect(put).toHaveBeenCalledTimes(index + 1));
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(message), {
+        timeout: 2_000,
+      });
+      expect(sourceField(1, "Repository").value, code).toBe("acme/elsewhere");
+      expect(deliverySwitch()).toBeChecked();
+    }
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// A save the reader stopped may have been made: the section says so, and that its button sends
+// what the fields hold then, rather than a failure it cannot know of.
+test("a save the reader stopped says it may have been made, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+  const put = spyOn(api, "putProjectDeliverySettings").mockRejectedValue(
+    new NetworkError("/api/v1/projects/ACME/settings/delivery", new TypeError("Failed to fetch"))
+  );
+  const queryClient = renderSection();
+  try {
+    await screen.findByRole("switch", { name: "Delivery" });
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await stopTheLateWrite(queryClient);
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the delivery settings", "saved", {
+        anew: "Save delivery settings sends what the form holds now.",
+      })
+    );
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 6: another writer's save changes the record under
+// the form. The field the reader changed keeps what they typed, and the fields they did not touch
+// take the new record.
+test("another writer's save keeps the fields the reader changed and refreshes the rest", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    // The fields start from the stored record, one list entry per line.
+    expect(deliverySwitch()).toBeChecked();
+    expect(sourceField(1, "Repository").value).toBe("");
+    expect(sourceField(1, "Deploy workflow").value).toBe(".github/workflows/deploy.yml");
+    expect(sourceField(1, "Production jobs").value).toBe(
+      "widgets-release / widgets-release\nrelease / release"
+    );
+    expect(sourceField(1, "PR checks workflow").value).toBe(".github/workflows/pr-checks.yml");
+    expect(field("Population authors").value).toBe("octocat\noctocat-agent[bot]");
+    expect(field("Excluded repositories").value).toBe("acme/dojo\nacme/widgets-smoke");
+    expect(screen.getByLabelText("A check that fails after its merge")).toBeChecked();
+    expect(screen.getByLabelText("A merged revert")).toBeChecked();
+    expect(screen.getByLabelText("An issue labelled incident")).not.toBeChecked();
+    expect(field("Failures counted from").value).toBe("2026-11-01");
+    expect(TARGET_FIELDS.map((label) => field(label).value)).toEqual([
+      "20",
+      "0.05",
+      "45",
+      "60",
+      "0.9",
+      "off",
+      "0",
+    ]);
+
+    await replace(user, field("Population authors"), "mallory");
+
+    // Someone else saves: the record's read answers their record, with its own write time.
+    get.mockResolvedValue(
+      savedLater({
+        population_authors: ["hubot"],
+        sources: [githubSource({ repo: "acme/deploys", resolved_repo: "acme/deploys" })],
+      })
+    );
+    await act(() => queryClient.refetchQueries({ queryKey: ["project-delivery-settings"] }));
+
+    await waitFor(() => expect(sourceField(1, "Repository").value).toBe("acme/deploys"));
+    expect(field("Population authors").value).toBe("mallory");
+  } finally {
+    cleanup();
+    get.mockRestore();
+  }
+});
+
+// A list typed with a line break after its last entry is saved without it, so the record this
+// tab's save lands holds the list in another form than the reader typed. The field then follows
+// the record, and a later writer's change to that list shows, rather than the reader's old text
+// staying over it and going back to the server with the next save.
+test("a list saved with a trailing line break follows the record, and shows a later writer's change", async () => {
+  const user = userEvent.setup();
+  const saved = savedLater({ population_authors: ["alice", "bob"] });
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockResolvedValue(saved);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Population authors"), "alice\nbob\n");
+    // The reader saves, and their save lands: the record holds the list as Save sent it.
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    await readSettled(queryClient);
+    expect(field("Population authors").value).toBe("alice\nbob");
+    // Another writer adds carol.
+    await anotherWriterSaves(
+      queryClient,
+      savedLater({
+        population_authors: ["alice", "bob", "carol"],
+        updated_at: "2026-11-22T09:00:00Z",
+      })
+    );
+    await waitFor(() => expect(field("Population authors").value).toBe("alice\nbob\ncarol"));
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// A reader adding a third author types a line break after the second, and the field then holds
+// the list the record holds in another form, with no save of this tab out. Another writer's save
+// of another field landing keeps the line break as the reader typed it, and the caret after it,
+// so the name they type next is an entry of its own and Save sends three entries, not a second
+// entry run into the third.
+test("another writer's save keeps the line break a reader typed after a list's last entry", async () => {
+  const user = userEvent.setup();
+  const stored = { ...record, population_authors: ["alice", "bob"] };
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(stored);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(stored);
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await user.type(field("Population authors"), "{Enter}");
+    expect(field("Population authors").value).toBe("alice\nbob\n");
+    await anotherWriterSaves(
+      queryClient,
+      savedLater({ excluded_repos: ["acme/gadgets"], population_authors: ["alice", "bob"] })
+    );
+    await waitFor(() => expect(field("Excluded repositories").value).toBe("acme/gadgets"));
+    expect(field("Population authors").value).toBe("alice\nbob\n");
+    await user.keyboard("carol");
+    expect(field("Population authors").value).toBe("alice\nbob\ncarol");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toMatchObject({
+      excluded_repos: ["acme/gadgets"],
+      population_authors: ["alice", "bob", "carol"],
+    });
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// The fields this tab's save sent follow its answer from its landing on, and the reader types once
+// it has landed - the fields are disabled while it is out. A line break typed then after the
+// list's last entry stays as typed when the read the landing started answers the same record,
+// with the caret where the reader left it, so the next name is an entry of its own.
+test("text a reader types after their save landed stays as typed when the read that landing started answers", async () => {
+  const user = userEvent.setup();
+  const saved = savedLater({ population_authors: ["alice", "bob"] });
+  const reread = Promise.withResolvers<ProjectDeliverySettings | null>();
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockReturnValue(reread.promise);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Population authors"), "alice, bob\n");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await waitFor(() => expect(field("Population authors").value).toBe("alice\nbob"));
+    await user.type(field("Population authors"), "\n");
+    reread.resolve(saved);
+    await readSettled(queryClient);
+    expect(field("Population authors").value).toBe("alice\nbob\n");
+    await user.keyboard("carol");
+    expect(field("Population authors").value).toBe("alice\nbob\ncarol");
+  } finally {
+    reread.resolve(saved);
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// This tab's save lands, and the read its landing starts answers another writer's newer record,
+// which holds a deploy workflow of their own and never the one this tab sent. Dispatch's answer to
+// the save is the record the fields follow from the landing on, so the field shows the other
+// writer's value once their record arrives, and the next Save sends it, rather than this tab's old
+// text, which would undo their save.
+test("a landed save whose own record never arrives follows another writer's newer record, and the next Save sends it", async () => {
+  const user = userEvent.setup();
+  const saved = savedLater({
+    sources: [githubSource({ deploy_workflow_path: ".github/workflows/ship.yml" })],
+  });
+  const theirs = savedLater({
+    sources: [githubSource({ deploy_workflow_path: ".github/workflows/theirs.yml" })],
+    updated_at: "2026-11-21T09:00:05Z",
+  });
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockResolvedValue(theirs);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, sourceField(1, "Deploy workflow"), ".github/workflows/ship.yml");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() =>
+      expect(sourceField(1, "Deploy workflow").value).toBe(".github/workflows/theirs.yml")
+    );
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(sentBody(put, 1)).toMatchObject({
+      sources: [{ deploy_workflow_path: ".github/workflows/theirs.yml" }],
+    });
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// This tab's save lands, and the read its landing starts has not answered: the record read before
+// the save still stands as the section's read. Dispatch's answer is the record from the landing
+// on. The row holds the display - the list as the save stored it, one entry per line, where fields
+// kept as typed until that read answered would still show `alice, bob\n` - and the payload,
+// against fields that retire at the landing without the answer written, whose second Save sends
+// the record from before the save (`octocat`) and so undoes the reader's own save.
+test("a second Save before the read a landed save started answers sends the first save's value", async () => {
+  const user = userEvent.setup();
+  const saved = savedLater({ population_authors: ["alice", "bob"] });
+  const reread = Promise.withResolvers<ProjectDeliverySettings | null>();
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockReturnValue(reread.promise);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Population authors"), "alice, bob\n");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(sentBody(put, 1)).toMatchObject({ population_authors: ["alice", "bob"] });
+    expect(field("Population authors").value).toBe("alice\nbob");
+  } finally {
+    reread.resolve(saved);
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// The save's answer reaches the cache in the section's own callback, and the section only when
+// TanStack Query tells the cache's observers, in a browser a timer later, which the row holds
+// back. The fields the save sent are retired in the callback that follows and take the answer in
+// the very commit that retires them, so no commit draws the record from before the save in their
+// place (INFRA-3904).
+test("every commit from a save's landing draws the saved value, while the section's own read still holds the record before it", async () => {
+  const user = userEvent.setup();
+  // The list as each commit drew it; none while the section still reads the record.
+  const commits = recordCommits<null>(
+    () => (screen.queryByLabelText("Population authors") as HTMLTextAreaElement | null)?.value ?? ""
+  );
+  const saved = savedLater({ population_authors: ["alice", "bob"] });
+  const answer = Promise.withResolvers<ProjectDeliverySettings>();
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockReturnValue(new Promise<ProjectDeliverySettings | null>(() => {}));
+  const put = spyOn(api, "putProjectDeliverySettings").mockReturnValue(answer.promise);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <commits.Recorded host={null}>
+          <DeliverySettingsSection defaultRepo={DEFAULT_REPO} project={PROJECT} />
+        </commits.Recorded>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  let notifications: HeldNotifications | undefined;
+  try {
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Population authors"), "alice, bob\n");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const fromLanding = commits.markAt(document, "landing");
+    notifications = holdNotifications();
+    document.dispatchEvent(new Event("landing"));
+    await act(async () => {
+      answer.resolve(saved);
+      await answer.promise;
+    });
+    await waitFor(() => expect(field("Population authors").value).toBe("alice\nbob"));
+    // The cache holds the answer, and the section has not been told.
+    expect(notifications.held()).toBeGreaterThan(0);
+    const drawn = fromLanding()
+      .map((commit) => commit.drawn)
+      .filter((value) => value !== "alice, bob\n");
+    expect(drawn.length).toBeGreaterThan(0);
+    expect(drawn).toEqual(drawn.map(() => "alice\nbob"));
+  } finally {
+    notifications?.tell();
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// The save lands with its answer while the read its landing started is still out: the fields it
+// sent show that answer from the landing on - neither as typed nor as the record from before the
+// save - and still show it once that read answers the same record.
+test("a landed save's fields show its answer before the read its landing started answers, and after", async () => {
+  const user = userEvent.setup();
+  const saved = savedLater({ population_authors: ["alice", "bob"] });
+  const reread = Promise.withResolvers<ProjectDeliverySettings | null>();
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockReturnValue(reread.promise);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Population authors"), "alice, bob\n");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(queryClient.getQueryState(["project-delivery-settings", PROJECT])?.fetchStatus).toBe(
+      "fetching"
+    );
+    expect(field("Population authors").value).toBe("alice\nbob");
+    reread.resolve(saved);
+    await readSettled(queryClient);
+    expect(field("Population authors").value).toBe("alice\nbob");
+  } finally {
+    reread.resolve(saved);
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// A save Dispatch refused landed nothing of this tab's: a list the reader typed with a line break
+// after its last entry stays as typed when another writer's save then lands a record that holds
+// the same entries - and contradicts the refused save's deploy workflow - so the name they type
+// next is an entry of its own and the next Save sends three entries.
+test("a refused save keeps a list's trailing line break over another writer's record of that list", async () => {
+  const user = userEvent.setup();
+  const stored = { ...record, population_authors: ["alice", "bob"] };
+  const message =
+    "source 0 reads acme/widgets, which Dispatch's GitHub App cannot read: the GitHub App is not installed on acme/widgets";
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(stored);
+  const put = spyOn(api, "putProjectDeliverySettings")
+    .mockRejectedValueOnce(new ApiError(409, { code: "DELIVERY_SETTINGS_ACCESS", error: message }))
+    .mockResolvedValue(stored);
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await user.type(field("Population authors"), "{Enter}");
+    await replace(user, sourceField(1, "Deploy workflow"), ".github/workflows/ship.yml");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+    // Another writer changes only the excluded repositories.
+    await anotherWriterSaves(
+      queryClient,
+      savedLater({ excluded_repos: ["acme/gadgets"], population_authors: ["alice", "bob"] })
+    );
+    await waitFor(() => expect(field("Excluded repositories").value).toBe("acme/gadgets"));
+    expect(field("Population authors").value).toBe("alice\nbob\n");
+    expect(sourceField(1, "Deploy workflow").value).toBe(".github/workflows/ship.yml");
+    await user.type(field("Population authors"), "carol");
+    expect(field("Population authors").value).toBe("alice\nbob\ncarol");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(sentBody(put, 1)).toMatchObject({ population_authors: ["alice", "bob", "carol"] });
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// A record that arrives while this tab's save is still out is no answer to it: a list typed with
+// a line break after its last entry stays as typed under another writer's record of the same
+// entries, and follows the record once the save lands.
+test("a record that arrives while the save is out keeps a list's trailing line break until the save lands", async () => {
+  const user = userEvent.setup();
+  const stored = { ...record, population_authors: ["alice", "bob"] };
+  const other = savedLater({
+    excluded_repos: ["acme/gadgets"],
+    population_authors: ["alice", "bob"],
+  });
+  const landed = { ...other, updated_at: "2026-11-21T09:00:01Z" };
+  const answer = Promise.withResolvers<ProjectDeliverySettings>();
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(stored)
+    .mockResolvedValue(landed);
+  const put = spyOn(api, "putProjectDeliverySettings").mockReturnValue(answer.promise);
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await user.type(field("Population authors"), "{Enter}");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    // Another writer changes only the excluded repositories while the save is out.
+    await anotherWriterSaves(queryClient, other);
+    await waitFor(() => expect(field("Excluded repositories").value).toBe("acme/gadgets"));
+    expect(field("Population authors").value).toBe("alice\nbob\n");
+    answer.resolve(landed);
+    await waitFor(() => expect(field("Population authors").value).toBe("alice\nbob"));
+  } finally {
+    answer.resolve(landed);
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a required field holding only whitespace is empty, so Save is refused before any request", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(null);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(record);
+  const filled: [string, string][] = [
+    ["Deploy workflow", ".github/workflows/deploy.yml"],
+    ["Production jobs", "widgets-release"],
+    ["PR checks workflow", ".github/workflows/pr-checks.yml"],
+  ];
+  const blank: [string, string][] = [
+    ["Deploy workflow", "   "],
+    ["Production jobs", " \n\t \n"],
+    ["PR checks workflow", " "],
+  ];
+
+  try {
+    renderSection();
+    await user.click(await screen.findByRole("switch", { name: "Delivery" }));
+    for (const [label, value] of filled) {
+      await fill(user, sourceField(1, label), value);
+    }
+
+    for (const [label, whitespace] of blank) {
+      await replace(user, sourceField(1, label), whitespace);
+      expect(sourceField(1, label).value).toBe("");
+      // A save TanStack started would call the API only after its own await, and user-event's
+      // click flushes that: it waits through its own act.
+      await user.click(screen.getByRole("button", { name: SAVE }));
+      expect(put).not.toHaveBeenCalled();
+      await replace(
+        user,
+        sourceField(1, label),
+        filled.find(([name]) => name === label)?.[1] ?? ""
+      );
+    }
+
+    // With every field holding text again the same button saves, so the refusals above were the
+    // whitespace's and nothing else's.
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("Add makes a source that reads the default repository until it names one", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(record);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await user.click(screen.getByRole("button", { name: "Add a GitHub workflow source" }));
+
+    expect((within(source(2)).getByLabelText("Kind") as HTMLSelectElement).value).toBe(
+      "github_workflow"
+    );
+    const repository = sourceField(2, "Repository");
+    expect(repository.value).toBe("");
+    expect(repository.placeholder).toBe(DEFAULT_REPO);
+    for (const label of ["Deploy workflow", "Production jobs", "PR checks workflow"]) {
+      expect(sourceField(2, label).value).toBe("");
+    }
+    // The first source stays as stored.
+    expect(sourceField(1, "Deploy workflow").value).toBe(".github/workflows/deploy.yml");
+
+    await fill(user, repository, "acme/deploys");
+    await fillRule(user, 2);
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toMatchObject({
+      sources: [
+        { kind: "github_workflow", repo: null },
+        {
+          deploy_workflow_path: ".github/workflows/deploy.yml",
+          kind: "github_workflow",
+          production_job_names: ["widgets-release / widgets-release"],
+          pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
+          repo: "acme/deploys",
+        },
+      ],
+    });
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("Remove drops that source alone", async () => {
+  const user = userEvent.setup();
+  const twoSources: ProjectDeliverySettings = {
+    ...record,
+    sources: [
+      githubSource(),
+      githubSource({
+        deploy_workflow_path: ".github/workflows/release.yml",
+        id: "source-2",
+        repo: "acme/deploys",
+        resolved_repo: "acme/deploys",
+      }),
+    ],
+  };
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(twoSources);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(twoSources);
+
+  try {
+    renderSection();
+    await screen.findByRole("group", { name: "Deploy source 2" });
+
+    await user.click(screen.getByRole("button", { name: "Remove deploy source 1" }));
+    expect(screen.queryByRole("group", { name: "Deploy source 2" })).not.toBeInTheDocument();
+    expect(sourceField(1, "Repository").value).toBe("acme/deploys");
+    expect(sourceField(1, "Deploy workflow").value).toBe(".github/workflows/release.yml");
+
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const body = sentBody(put) as { sources: unknown[] };
+    expect(body.sources).toHaveLength(1);
+    expect(body.sources[0]).toMatchObject({
+      deploy_workflow_path: ".github/workflows/release.yml",
+      repo: "acme/deploys",
+    });
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a named repository is saved and read back on its source", async () => {
+  const user = userEvent.setup();
+  const stored = savedLater({
+    sources: [githubSource({ repo: "acme/deploys", resolved_repo: "acme/deploys" })],
+  });
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockResolvedValue(stored);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(stored);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+
+    await fill(user, sourceField(1, "Repository"), " acme/deploys ");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toMatchObject({
+      sources: [{ kind: "github_workflow", repo: "acme/deploys" }],
+    });
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+    expect(sourceField(1, "Repository").value).toBe("acme/deploys");
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("an emptied repository saves null and reads the default", async () => {
+  const user = userEvent.setup();
+  const named: ProjectDeliverySettings = {
+    ...record,
+    sources: [
+      githubSource({
+        pr_checks_rollup_job_name: "checks-complete",
+        production_apply_step_name: "Run ./.github/actions/apply",
+        repo: "acme/deploys",
+        resolved_repo: "acme/deploys",
+        staging_apply_job_name: "staging-release / apply",
+        staging_e2e_job_name: "staging-e2e / run",
+      }),
+    ],
+  };
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(named);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(named);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    // The optional names start from the stored record.
+    expect(sourceField(1, "Production apply step").value).toBe("Run ./.github/actions/apply");
+    expect(sourceField(1, "Staging end-to-end job").value).toBe("staging-e2e / run");
+    expect(sourceField(1, "Staging deploy job").value).toBe("staging-release / apply");
+    expect(sourceField(1, "PR checks roll-up job").value).toBe("checks-complete");
+
+    const repository = sourceField(1, "Repository");
+    await user.clear(repository);
+    expect(repository.placeholder).toBe(DEFAULT_REPO);
+    expect(source(1).textContent).toContain(
+      "Empty, the source reads the project's default repository, and moves with it."
+    );
+    // An optional name is sent trimmed, and one emptied saves null as the repository does.
+    await replace(user, sourceField(1, "Production apply step"), " Run ./.github/actions/apply ");
+    await replace(user, sourceField(1, "Staging deploy job"), " staging-release / go ");
+    await replace(user, sourceField(1, "PR checks roll-up job"), "   ");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toMatchObject({
+      sources: [
+        {
+          kind: "github_workflow",
+          pr_checks_rollup_job_name: null,
+          production_apply_step_name: "Run ./.github/actions/apply",
+          repo: null,
+          staging_apply_job_name: "staging-release / go",
+          staging_e2e_job_name: "staging-e2e / run",
+        },
+      ],
+    });
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a source naming no repository needs a default repository", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(null);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(record);
+
+  try {
+    renderSection(null);
+    await user.click(await screen.findByRole("switch", { name: "Delivery" }));
+    expect((field("Default repository") as HTMLInputElement).value).toBe("");
+
+    // The line under the box names both settings a source can read.
+    const repository = sourceField(1, "Repository");
+    expect(repository.placeholder).toBe("owner/name");
+    expect(source(1).textContent).toContain(
+      "This project has no default repository: name this source's repository, or set the project's default repository in Settings → Projects."
+    );
+    for (const link of screen.getAllByRole("link", { name: "Settings → Projects" })) {
+      expect(link).toHaveAttribute("href", "/settings");
+    }
+
+    await fillRule(user, 1);
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Deploy source 1 names no repository, and this project has no default repository: name the source's repository, or set the project's default repository in Settings → Projects."
+    );
+    expect(repository).toHaveAttribute("aria-invalid", "true");
+    expect(put).not.toHaveBeenCalled();
+
+    await fill(user, repository, "acme/widgets");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a repository that is not owner/name is refused before any request", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(record);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    const repository = sourceField(1, "Repository");
+
+    for (const typed of ["acme", "acme/widgets/extra", "acme/ widgets"]) {
+      await replace(user, repository, typed);
+      await user.click(screen.getByRole("button", { name: SAVE }));
+      expect(screen.getByRole("alert").textContent, typed).toBe(
+        "Deploy source 1: write its repository as owner/name."
+      );
+      expect(repository).toHaveAttribute("aria-invalid", "true");
+    }
+    expect(put).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("two sources naming one repository are refused before any request", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(record);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await fill(user, sourceField(1, "Repository"), "acme/deploys");
+    await user.click(screen.getByRole("button", { name: "Add a GitHub workflow source" }));
+    await fill(user, sourceField(2, "Repository"), "Acme/Deploys");
+    await fillRule(user, 2);
+
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Deploy sources 1 and 2 both read Acme/Deploys: a repository is read by one deploy source at most."
+    );
+    expect(sourceField(1, "Repository")).toHaveAttribute("aria-invalid", "true");
+    expect(sourceField(2, "Repository")).toHaveAttribute("aria-invalid", "true");
+
+    // A source naming none reads the default repository, so it and one naming that repository
+    // read one repository too.
+    await user.clear(sourceField(1, "Repository"));
+    await replace(user, sourceField(2, "Repository"), DEFAULT_REPO);
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    expect(screen.getByRole("alert").textContent).toBe(
+      `Deploy sources 1 and 2 both read ${DEFAULT_REPO}: a repository is read by one deploy source at most.`
+    );
+    expect(put).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a project holds one events source at most", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+  const options = (n: number) =>
+    [...(within(source(n)).getByLabelText("Kind") as HTMLSelectElement).options].map(
+      (option) => option.value
+    );
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    expect(options(1)).toEqual(["github_workflow", "events"]);
+
+    await user.click(screen.getByRole("button", { name: "Add the posted deploys source" }));
+    expect((within(source(2)).getByLabelText("Kind") as HTMLSelectElement).value).toBe("events");
+    // With one events source, Add offers no second, and no other source can become one.
+    expect(
+      screen.queryByRole("button", { name: "Add the posted deploys source" })
+    ).not.toBeInTheDocument();
+    expect(options(1)).toEqual(["github_workflow"]);
+    expect(options(2)).toEqual(["github_workflow", "events"]);
+
+    await user.click(screen.getByRole("button", { name: "Remove deploy source 2" }));
+    expect(screen.getByRole("button", { name: "Add the posted deploys source" })).toBeDefined();
+    expect(options(1)).toEqual(["github_workflow", "events"]);
+  } finally {
+    cleanup();
+    get.mockRestore();
+  }
+});
+
+/** What Dispatch received of one save: the body, and the login its `Dispatch-Login` named. */
+interface ReceivedSave {
+  readonly body: Record<string, unknown>;
+  readonly login: string | null;
+}
+
+/** Saves a project whose delivery is off as `viewer` (`/auth/whoami`'s answer), through the page's
+ *  own write path and client, and answers what Dispatch received. */
+async function saveAs(viewer: AuthenticatedUser): Promise<ReceivedSave> {
+  const user = userEvent.setup();
+  const stored: ProjectDeliverySettings = { ...record, delivery: false };
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(stored);
+  const received = Promise.withResolvers<ReceivedSave>();
+  answerRequests(
+    http.put(`/api/v1/projects/${PROJECT}/settings/delivery`, async ({ request }) => {
+      const body = (await request.json()) as Record<string, unknown>;
+      received.resolve({ body, login: request.headers.get(DISPATCH_LOGIN_HEADER) });
+      return Response.json(stored);
+    })
+  );
+
+  try {
+    renderSection(DEFAULT_REPO, viewer);
+    await user.click(await screen.findByRole("button", { name: SAVE }));
+    const save = await received.promise;
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+    return save;
+  } finally {
+    cleanup();
+    get.mockRestore();
+  }
+}
+
+test("an agent viewer's save names the session its credential proved as its writer, and no person", async () => {
+  // The session whoami answers is the one the save names, whatever the page's address named.
+  keepPageSession("?session=ses_from_the_address");
+  try {
+    const save = await saveAs({
+      event_head: "0",
+      kind: "agent",
+      login: "agent:ses_from_whoami",
+      session: "ses_from_whoami",
+    });
+    expect(save.body.actor).toEqual({ id: "ses_from_whoami", kind: "session" });
+    expect(save.body.delivery).toBe(false);
+    expect(save.login).toBeNull();
+  } finally {
+    keepPageSession("");
+  }
+});
+
+test("an agent viewer whose credential proves no session names the one the page's first address named", async () => {
+  keepPageSession("?session=ses_from_the_address");
+  try {
+    const save = await saveAs({ event_head: "0", kind: "agent", login: "agent", session: null });
+    expect(save.body.actor).toEqual({ id: "ses_from_the_address", kind: "session" });
+    expect(save.login).toBeNull();
+  } finally {
+    keepPageSession("");
+  }
+});
+
+test("a person's save names no writer in its body, and names the person in Dispatch-Login", async () => {
+  keepPageSession("?session=ses_from_the_address");
+  try {
+    const save = await saveAs({ event_head: "0", kind: "user", login: "alice" });
+    expect(save.body).not.toHaveProperty("actor");
+    expect(save.login).toBe("alice");
+  } finally {
+    keepPageSession("");
+  }
+});
+
+test("an agent viewer that names no session is told to open the page with one, and its save is not sent", async () => {
+  const user = userEvent.setup();
+  const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(record);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(record);
+  // Neither the credential (`session: null`) nor the page's first address names a session.
+  keepPageSession("");
+
+  try {
+    renderSection(DEFAULT_REPO, {
+      event_head: "0",
+      kind: "agent",
+      login: "agent",
+      session: null,
+    });
+    await user.click(await screen.findByRole("button", { name: SAVE }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      `An agent saves these settings as one of its sessions, and this page names none: open it at /projects/${PROJECT}/settings?session=<your session>.`
+    );
+    expect(put).not.toHaveBeenCalled();
+    // The draft stays, as for every refusal made before a request.
+    expect(deliverySwitch()).toBeChecked();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a save sends back each field of the record it read that the form does not edit, one it does not know included", async () => {
+  const user = userEvent.setup();
+  // A newer build adds `code_groups` to the record: this build's editor does not know it, so a
+  // save — delivery on or delivery off — sends it back unchanged rather than dropping it.
+  const withUnknown = { ...record, code_groups: ["x"] };
+  const later = { ...withUnknown, updated_at: "2026-11-21T09:00:00Z" };
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(withUnknown)
+    .mockResolvedValue(later);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(later);
+
+  try {
+    renderSection();
+    expect(await screen.findByRole("switch", { name: "Delivery" })).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const unedited = {
+      code_groups: ["x"],
+      default_repo: withUnknown.default_repo,
+      project: withUnknown.project,
+      updated_by: withUnknown.updated_by,
+    };
+    expect(sentBody(put, 0)).toMatchObject({ ...unedited, updated_at: withUnknown.updated_at });
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+
+    await user.click(deliverySwitch());
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(sentBody(put, 1)).toMatchObject({ ...unedited, delivery: false });
+    expect(sentBody(put, 1)).not.toHaveProperty("targets");
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a save with delivery on sends no target the reader left, so one another write moved while the form was open stands", async () => {
+  const user = userEvent.setup();
+  // Another write moves deploy-frequency's target while the form is open. The record's re-read
+  // answers it under the settings' own write time, which a target's write leaves as it was: the
+  // box the reader did not touch shows the moved target, and the one they emptied stays empty.
+  const moved = { ...record, targets: { ...record.targets, "deploy-frequency": 30 } };
+  const saved = savedLater({ population_authors: ["hubot"], targets: moved.targets });
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockResolvedValueOnce(moved)
+    .mockResolvedValue(saved);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    const queryClient = renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Population authors"), "hubot");
+    // A box the reader empties keeps its eval's target as well.
+    await user.clear(field("Change failure rate (a share from 0 to 1)"));
+    await act(() =>
+      queryClient.refetchQueries({ queryKey: ["project-delivery-settings", PROJECT] })
+    );
+    expect(get).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(field("Deploy frequency (deploys a day)").value).toBe("30"));
+    expect(field("Change failure rate (a share from 0 to 1)").value).toBe("");
+
+    await user.click(screen.getByRole("button", { name: SAVE }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toMatchObject({ delivery: true, population_authors: ["hubot"] });
+    expect(sentBody(put)).toHaveProperty("targets", {});
+    // The fields start over from what the server stored: the target the other write set.
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+    expect(field("Deploy frequency (deploys a day)").value).toBe("30");
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("a changed target box sends that target alone", async () => {
+  const user = userEvent.setup();
+  const saved = savedLater({ targets: { ...record.targets, "merge-to-production": 30 } });
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockResolvedValue(saved);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    await replace(user, field("Merge to production (minutes)"), "30");
+    // A box retyped to the number it was drawn with holds no change.
+    await replace(user, field("Deploy frequency (deploys a day)"), " 20.0 ");
+    await user.click(screen.getByRole("button", { name: SAVE }));
+
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toHaveProperty("targets", { "merge-to-production": 30 });
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});
+
+test("turning delivery off sends no target, so one another write moved while the form was open stands", async () => {
+  const user = userEvent.setup();
+  const saved = savedLater({ delivery: false });
+  const get = spyOn(api, "getProjectDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockResolvedValue(saved);
+  const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    renderSection();
+    await screen.findByRole("switch", { name: "Delivery" });
+    // The record was read before another write moved a target, and the page has not read it
+    // again. An edit of a target box goes with the other hidden fields once delivery is off.
+    await replace(user, field("Deploy frequency (deploys a day)"), "12");
+    await user.click(deliverySwitch());
+    await user.click(screen.getByRole("button", { name: SAVE }));
+
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(sentBody(put)).toMatchObject({
+      delivery: false,
+      population_authors: record.population_authors,
+    });
+    expect(sentBody(put)).not.toHaveProperty("targets");
+    expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
+  } finally {
+    cleanup();
+    get.mockRestore();
+    put.mockRestore();
+  }
+});

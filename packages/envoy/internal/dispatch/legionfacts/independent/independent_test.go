@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts/independent"
@@ -34,7 +35,7 @@ const issueFloor = 200
 func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Now: now, AwaitingChildren: true})
+	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{Project: "LEGION", Now: now, AwaitingChildren: true})
 
 	population, err := metrics.ReadProject(t.Context(), database.Pool, fixture.Project, now)
 	if err != nil {

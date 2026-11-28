@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  `pr-ci`'s stored range figures hold each job's cell over the range (its timed results, their
+  median and p90, each outcome's count and the success rate), so `pr-ci`'s items with
+  `sort=median`, and listed by name, read a range the Evals tab offers by the stored row's key
+  where they read every job row of the range with its samples: the CI section's slowest-jobs list
+  of the tab's first paint. The answer is the same to the last byte; a custom range, two
+  repositories, a series filter, and a range row a build without this change folded still read the
+  day rows. Two concurrent indexes come with it: `eval_days_job_rows`, which the folds of those
+  figures read `pr-ci`'s job rows through, and `eval_day_figures_cut_eval_day`, which the eval
+  list's read of its stored day figures reads one cut's rows through, where it read every cut's
+  and threw the others away.
+time: 2026-11-28T17:56:20.000000000Z
+custom:
+    Issue: INFRA-2918

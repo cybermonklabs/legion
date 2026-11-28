@@ -6,7 +6,7 @@
 // merge commit before GitHub records the merge, so the run that shipped a pull request can have a
 // head commit timed before its merged_at, while a push run is created only once its push has landed.
 // Unlike the prototype, which matches alternate spellings of one job (APPLY_JOBS), this schema
-// configures a list of exact production job names (delivery_settings.production_job_names).
+// configures a list of exact production job names (project_deploy_sources.production_job_names).
 package delivery
 
 import (
@@ -172,10 +172,12 @@ func FirstShippingApply(mergedAt time.Time, applies []Apply) *Apply {
 	return best
 }
 
-// ContainingRun is FirstShippingApply, but only for PRs in the configured deploy repository --
-// a PR elsewhere has no deploy pipeline tracked at all and is always nil.
+// ContainingRun is FirstShippingApply, but only for PRs in the configured deploy repository,
+// compared in any case as IsTaskPR compares it (a pull request keeps GitHub's spelling, a rule's
+// repository is stored lower case) -- a PR elsewhere has no deploy pipeline tracked at all and is
+// always nil.
 func ContainingRun(pr DeliveryPullRequest, deployRepo string, applies []Apply) *Apply {
-	if pr.Repo != deployRepo {
+	if !strings.EqualFold(pr.Repo, deployRepo) {
 		return nil
 	}
 	if pr.MergedAt == nil {
@@ -188,7 +190,8 @@ func ContainingRun(pr DeliveryPullRequest, deployRepo string, applies []Apply) *
 // time of a binary search where FirstShippingApply reads every apply: the applies by creation, and
 // for each the earliest-completing (compareApplies) of it and every apply created after it, which
 // is FirstShippingApply's answer for a merge before that apply's creation and at or after the
-// creation of the one before it.
+// creation of the one before it. The day-row refresher's rewrite of a settings change (evals'
+// rewriteSettings) ships every pull request of the history with one.
 type ShippingIndex struct {
 	byCreated []Apply
 	first     []int
@@ -210,7 +213,7 @@ func NewShippingIndex(applies []Apply) ShippingIndex {
 
 // Containing is ContainingRun(pr, deployRepo, applies) of the applies the index was made of.
 func (x ShippingIndex) Containing(pr DeliveryPullRequest, deployRepo string) *Apply {
-	if pr.Repo != deployRepo || pr.MergedAt == nil {
+	if !strings.EqualFold(pr.Repo, deployRepo) || pr.MergedAt == nil {
 		return nil
 	}
 	at := sort.Search(len(x.byCreated), func(k int) bool { return x.byCreated[k].CreatedAt.After(*pr.MergedAt) })
@@ -221,12 +224,13 @@ func (x ShippingIndex) Containing(pr DeliveryPullRequest, deployRepo string) *Ap
 }
 
 // ComputeDeployedStatus is the PR's deploy state: DeployedStatusNotTracked for any PR outside the
-// deploy repository (there is nothing watching it -- never "waiting", which would inflate a count
-// that should only ever shrink to zero as deploys catch up); DeployedStatusDeployed when apply is
-// non-nil; DeployedStatusWaiting otherwise. Named distinctly from the DeployedStatus type (model.go)
-// it returns, since Go does not allow a function and a type to share one identifier.
+// deploy repository, compared in any case as ContainingRun compares it (there is nothing watching
+// it -- never "waiting", which would inflate a count that should only ever shrink to zero as
+// deploys catch up); DeployedStatusDeployed when apply is non-nil; DeployedStatusWaiting
+// otherwise. Named distinctly from the DeployedStatus type (model.go) it returns, since Go does not
+// allow a function and a type to share one identifier.
 func ComputeDeployedStatus(pr DeliveryPullRequest, deployRepo string, apply *Apply) DeployedStatus {
-	if pr.Repo != deployRepo {
+	if !strings.EqualFold(pr.Repo, deployRepo) {
 		return DeployedStatusNotTracked
 	}
 	if apply != nil {

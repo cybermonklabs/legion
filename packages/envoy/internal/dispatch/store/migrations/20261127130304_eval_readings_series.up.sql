@@ -1,0 +1,27 @@
+-- pgmigrate:non-transactional
+-- 20261127130304_eval_readings_series.up.sql
+--
+-- The index behind the step reads of an eval's readings (dispatch://INFRA-2918, D20): a series a
+-- `curve: "step"` chart draws starts each line at its range's start at the newest standing reading
+-- of each col before it (evals.BeforeWindowIn), and a `last` series so drawn states as its value
+-- over a range the newest standing reading of any col at the range's end (evals.StepLastIn). Each
+-- read names an eval and a series and no row kind, which eval_readings_row (eval_id, row_kind,
+-- row_key, measured_at desc) cannot serve: without this index each read is every standing reading
+-- of the eval, of every series and every day it holds. With it, the cols of a series are one
+-- descent of the index each (a loose index scan over `col`), and the newest reading of a col before
+-- a moment one more, whatever the count of readings before it.
+--
+-- The predicate is the reads' own `superseded_at is null`, written into each statement, so the
+-- planner proves the index from the statement under a generic plan too, and a superseded reading,
+-- which no read answers, holds no entry.
+--
+-- It is built `concurrently`, outside the runner's transaction, because eval_readings is the table
+-- every readings write appends to and a correction updates: a plain build holds SHARE on it for
+-- one read of the table, which blocks every one of those writes until it ends. A concurrent build
+-- takes SHARE UPDATE EXCLUSIVE, which no ordinary read or write waits on, at the cost of two passes
+-- over the table and a wait for the transactions already open, each wait bounded at five seconds
+-- and tried again as the runner tries every lock wait (pgmigrate.ExecNonTransactional). A failed
+-- build leaves an INVALID index of this name on eval_readings, which the runner drops with DROP
+-- INDEX CONCURRENTLY and builds again on its next attempt or boot.
+create index concurrently if not exists eval_readings_series on eval_readings (eval_id, series, col, measured_at desc, id)
+    where superseded_at is null;

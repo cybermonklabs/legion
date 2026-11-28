@@ -33,19 +33,21 @@ import (
 
 // intakeRig is one test's intake: its database, the NATS client that publishes as the daemon's
 // listener does, the lease pool reservation the intake takes its durable's hold on, the settings
-// wake, the intake's clock and the log every intake of the test writes, through a logger of the
-// rig's own (Intake.log), so the test reads the lines of its own intakes alone. That is what lets
-// the read rule's seeds, the package's only parallel tests, hold a rig each and run at once; the
-// package's other tests have a rig each too and still run alone.
+// wake, the intake's clock, the log every intake of the test writes, through a logger of the rig's
+// own (Intake.log), so the test reads the lines of its own intakes alone, and the admission eval's
+// operations its intakes run. The logger is what lets the read rule's seeds, the package's only
+// parallel tests, hold a rig each and run at once; the package's other tests have a rig each too
+// and still run alone.
 type intakeRig struct {
-	t         *testing.T
-	database  *store.Store
-	publisher *bus.Client
-	leases    delivery.DurableLeases
-	wake      chan struct{}
-	clock     *intakeClock
-	logs      *logtest.Buffer
-	logger    *slog.Logger
+	t          *testing.T
+	database   *store.Store
+	publisher  *bus.Client
+	leases     delivery.DurableLeases
+	wake       chan struct{}
+	clock      *intakeClock
+	logs       *logtest.Buffer
+	logger     *slog.Logger
+	admissions Admissions
 	// stateOptions are the options each intake the rig starts calls its daemons with
 	// (Intake.stateOptions): none, or the window a test gives its daemons' answers (windowed).
 	stateOptions []Option
@@ -63,6 +65,19 @@ type intakeRig struct {
 	intake  *Intake
 	stop    func()
 	subject string
+}
+
+// noAdmissions is the admission eval's operations of every intake this package's own tests run
+// (intakeRig, ReadWhole): each takes no lock and writes nothing, and every project holds its eval,
+// so the intake registers none. dispatch/evals builds the real ones (evals.AdmissionWriter) and
+// imports this package, so the tests that run them are admission_test.go's and
+// admission_registration_test.go's, outside the package (export_test.go).
+var noAdmissions = Admissions{
+	Lock:       func(context.Context, pgx.Tx, string) error { return nil },
+	Registered: func(context.Context, string) (bool, error) { return true, nil },
+	Write: func(context.Context, pgx.Tx, *slog.Logger, AdmissionState) (func(context.Context), error) {
+		return nil, nil
+	},
 }
 
 // intakeClock is the intake's clock (Intake.now): the wall clock, moved forward by what the test
@@ -151,7 +166,7 @@ func (c *intakeClock) peek() time.Time {
 }
 
 // newIntakeRig opens the test's database and NATS account, and sends the lines of every intake it
-// starts to a buffer the test reads. It starts no intake (start).
+// starts to a buffer the test reads. It starts no intake (start), and its intakes run noAdmissions.
 func newIntakeRig(t *testing.T) *intakeRig {
 	t.Helper()
 	logs := &logtest.Buffer{}
@@ -172,7 +187,7 @@ func newIntakeRig(t *testing.T) *intakeRig {
 	}
 	return &intakeRig{
 		t: t, database: database, publisher: publisher, leases: leases, wake: make(chan struct{}, 1),
-		clock: &intakeClock{done: t.Context().Done()}, logs: logs, logger: logger, run: rigRun,
+		clock: &intakeClock{done: t.Context().Done()}, logs: logs, logger: logger, admissions: noAdmissions, run: rigRun,
 	}
 }
 
@@ -193,7 +208,7 @@ func (r *intakeRig) startOn(now func() time.Time) {
 		r.t.Fatalf("connect the intake: %v", err)
 	}
 	r.t.Cleanup(client.Close)
-	intake := NewIntake(client, r.database.Pool, r.leases, r.wake)
+	intake := NewIntake(client, r.database.Pool, r.admissions, r.leases, r.wake)
 	intake.now, intake.after = now, r.clock.after
 	intake.log, intake.stateOptions = r.logger, r.stateOptions
 	if r.firstRetry != 0 {
@@ -3028,7 +3043,7 @@ func TestOnlyAGoodWholeReadClearsTheHolderOfTheOwedRead(t *testing.T) {
 		}
 	}
 
-	if err := ReadWhole(t.Context(), database.Pool, setting, ReadReasonRetry); err != nil {
+	if err := ReadWhole(t.Context(), database.Pool, noAdmissions, setting, ReadReasonRetry); err != nil {
 		t.Fatalf("read INFRA's daemon whole: %v", err)
 	}
 	if url := stateURL(); url != daemon.URL {
@@ -3036,13 +3051,13 @@ func TestOnlyAGoodWholeReadClearsTheHolderOfTheOwedRead(t *testing.T) {
 	}
 	requireHolder("a failed read while it followed another daemon")
 
-	if err := ReadWhole(t.Context(), database.Pool, setting, ReadReasonRetry); err != nil {
+	if err := ReadWhole(t.Context(), database.Pool, noAdmissions, setting, ReadReasonRetry); err != nil {
 		t.Fatalf("read INFRA's daemon whole again: %v", err)
 	}
 	requireHolder("a failed read while it followed the setting's daemon")
 
 	daemon.serves(daemonState("INFRA", 10, planning("INFRA")))
-	if err := ReadWhole(t.Context(), database.Pool, setting, ReadReasonRetry); err != nil {
+	if err := ReadWhole(t.Context(), database.Pool, noAdmissions, setting, ReadReasonRetry); err != nil {
 		t.Fatalf("read INFRA's daemon whole a third time: %v", err)
 	}
 	if c := cursorOf(t, database, "INFRA"); c.readOwed || c.readHolder != nil || c.readHolds != 0 || c.lastSeq == nil || *c.lastSeq != 10 {

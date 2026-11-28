@@ -182,9 +182,9 @@ Each run starts from an empty database, so no run reads what the run before it l
 `;
 
 /** The e2e suite's realistic workspace (`seedWorkspace`), plus what the docs show that it leaves
- *  out: the requirements its spec marks, a comment thread anchored on that spec, the delivery
- *  measures' fixture and the Pipeline page's rows beside it (`e2e/delivery-seed.ts`). Call
- *  `reset()` first. */
+ *  out: the requirements its spec marks, a comment thread anchored on that spec, and project ACME's
+ *  delivery fixture and pull-request checks rows (`e2e/delivery-seed.ts`), which its Evals tab's
+ *  shots read. Call `reset()` first. */
 export async function seedDispatchWorkspace(): Promise<DispatchWorkspace> {
   const { seedWorkspace } = await import("../../../packages/dispatch/e2e/workspace");
   const { seedMeasuresFixture, seedPipelineRows } = await import(

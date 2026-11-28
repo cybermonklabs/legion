@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"maps"
 	"slices"
+	"time"
 )
 
 // The Go mirror of the part of a Legion daemon's `GET /legion/v1/state` Dispatch records. The
@@ -25,8 +26,8 @@ import (
 //     issues' parent chain instead.
 
 // State is a daemon's state as Dispatch records it: its issues, its admission block, the settings
-// it reports, the members of its daemon block a whole read checks (Daemon), and nothing else of the
-// document.
+// it reports, the session it names as its registered controller, the members of its daemon block a
+// whole read checks (Daemon), and nothing else of the document.
 type State struct {
 	Issues map[string]Issue `json:"issues"`
 	// Admission is the daemon's admission block, absent from a document that carries none: the
@@ -39,9 +40,19 @@ type State struct {
 	// bytes the daemon sent: the board carries them and Dispatch models none of them, so a key
 	// added to legion.yaml is recorded the day a daemon sends it.
 	Settings map[string]json.RawMessage `json:"settings,omitempty"`
+	// ControllerLocator is the daemon's record of the session registered as the project's
+	// controller (packages/contracts/src/legion-api.ts, legionControllerLocator), absent until a
+	// session registers. Dispatch keeps its session alone: the reject of a production event
+	// (dispatch://INFRA-978, R8) proves the project's controller by that session.
+	ControllerLocator *ControllerLocator `json:"controllerLocator,omitempty"`
 	// Daemon is the daemon block, which no observation records: a whole read (fetchWhole) checks
 	// the state is the setting's project's and takes the starting point it reflects from it.
 	Daemon *Daemon `json:"daemon,omitempty"`
+}
+
+// ControllerLocator is the members of the daemon's controllerLocator that Dispatch records.
+type ControllerLocator struct {
+	SessionID string `json:"sessionId,omitempty"`
 }
 
 // Daemon is the state's daemon block in the members a whole read checks.
@@ -90,6 +101,43 @@ type Admission struct {
 	Trees []string `json:"trees,omitempty"`
 	// Blocked is each issue a blocker link holds, with the issues it waits on.
 	Blocked []BlockedIssue `json:"blocked,omitempty"`
+	// CapChanges is the daemon's record of the changes of its admission cap, newest first
+	// (`capChanges`, dispatch://INFRA-5616), and SignalChanges its record of the changes of
+	// admission by signals, newest first (`signalChanges`, dispatch://INFRA-5899): the records the
+	// project's admission eval is read from (dispatch://INFRA-2918). A daemon that keeps a record
+	// serves its list, `[]` before the first change, so each is served where the block carries its
+	// list and not where the block leaves it out or sends `null` (served). UnmarshalJSON reads
+	// both, and no marshal of the block writes either (`json:"-"`): the `admission` observation
+	// (admissionValue) records the block's other members alone, in the shape it had before a
+	// daemon kept either record, which the Legion board reads.
+	CapChanges    served[CapChange]    `json:"-"`
+	SignalChanges served[SignalChange] `json:"-"`
+}
+
+// UnmarshalJSON decodes the block's members as encoding/json decodes them, and its two records of
+// changes beside them in the same pass: their `json:"-"`, which keeps them out of every marshal of
+// the block, keeps them out of encoding/json's decode of it too.
+func (a *Admission) UnmarshalJSON(data []byte) error {
+	// members is Admission without its methods, so decoding into it is encoding/json's own decode
+	// of the block's members rather than this method again.
+	type members Admission
+	block := struct {
+		*members
+		CapChanges    served[CapChange]    `json:"capChanges"`
+		SignalChanges served[SignalChange] `json:"signalChanges"`
+	}{members: (*members)(a)}
+	if err := json.Unmarshal(data, &block); err != nil {
+		return err
+	}
+	a.CapChanges, a.SignalChanges = block.CapChanges, block.SignalChanges
+	return nil
+}
+
+// ServesRecord reports whether the block carries either record of changes, empty or not: a daemon
+// that keeps the record serves it, and a project whose daemon does has its admission eval
+// registered (dispatch://INFRA-2918, D18; Admissions.Register).
+func (a *Admission) ServesRecord() bool {
+	return a.CapChanges.Served || a.SignalChanges.Served
 }
 
 // BlockedIssue is one entry of `admission.blocked`: the issue, and the issues nobody has finished
@@ -97,6 +145,74 @@ type Admission struct {
 type BlockedIssue struct {
 	Issue     string   `json:"issue"`
 	BlockedBy []string `json:"blockedBy,omitempty"`
+}
+
+// served is a list the daemon serves in some documents and leaves out of others: Served is
+// whether the document carries it, empty or not, and Entries what it holds. A member the document
+// leaves out or sends as `null` is not served, so a daemon that keeps a record with nothing in it
+// yet, which serves `[]`, stands apart from one that keeps none.
+type served[T any] struct {
+	Served  bool
+	Entries []T
+}
+
+// UnmarshalJSON reads a list, empty or not, as served, and `null` as not served. A member the
+// document leaves out never reaches it, and stays not served.
+func (s *served[T]) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*s = served[T]{}
+		return nil
+	}
+	var entries []T
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return err
+	}
+	*s = served[T]{Served: true, Entries: entries}
+	return nil
+}
+
+// CapChange is one entry of `admission.capChanges`, a change of the admission cap the controller
+// or the operator made while the daemon runs (the daemon's api.AdmissionCapChangeView): its own id,
+// rising; the cap it set, nil for a clear, whose entry carries no `cap`; the caps the daemon
+// admitted under before it and from it on; the deployment's ceiling then; who made it, when, and
+// why. A member of the entry not named here is ignored.
+type CapChange struct {
+	ID        int64     `json:"id"`
+	Cap       *int      `json:"cap,omitempty"`
+	CapBefore int       `json:"capBefore"`
+	CapAfter  int       `json:"capAfter"`
+	Ceiling   int       `json:"ceiling"`
+	SetBy     Actor     `json:"setBy"`
+	SetAt     time.Time `json:"setAt"`
+	Reason    string    `json:"reason"`
+}
+
+// SignalChange is one entry of `admission.signalChanges`, a change of admission by signals (the
+// daemon's store.SignalChange, dispatch://INFRA-5899's S6): its own id, rising, and when it was
+// made; the signal it is of (`idle`, `queue`, `provider`, `kills` or `approvals`), nil for the
+// switch, and the signal's part (`headroom` of `provider`), nil for every other; what changed
+// (`value`, `limit`, `holds` or `switch`) and its new value, nil for a cleared limit and for a
+// value the daemon cannot compute, where Absent says why; and who changed a limit or the switch,
+// and why, nil in every other entry. A hold and the switch are 1 or 0. Each member the daemon
+// sends as `null` is a pointer here, so a null stays apart from a 0 or an empty string. A member of
+// the entry not named here is ignored.
+type SignalChange struct {
+	ID     int64     `json:"id"`
+	At     time.Time `json:"at"`
+	Signal *string   `json:"signal"`
+	Part   *string   `json:"part"`
+	What   string    `json:"what"`
+	Value  *float64  `json:"value"`
+	Absent *string   `json:"absent"`
+	SetBy  *Actor    `json:"setBy"`
+	Reason *string   `json:"reason"`
+}
+
+// Actor is who made a change the daemon records: the controller, with its session, or the
+// operator, with none (the daemon's PauseActor).
+type Actor struct {
+	Kind    string `json:"kind"`
+	Session string `json:"session,omitempty"`
 }
 
 // Issue is one issue of the daemon's record, in the fields Dispatch observes.
@@ -149,6 +265,9 @@ const (
 	// admission block: they belong to the project's daemon, not to an issue, and the board
 	// carries them (api/legion_board.go).
 	FieldSettings = "settings"
+	// FieldController is the session the daemon names as the project's registered controller,
+	// observed under AdmissionKey: `null` while no session is registered (ControllerSession).
+	FieldController = "controller"
 	// ClaimFieldPrefix starts the field of one role's claim state: `claim.architect`,
 	// `claim.implementer`.
 	ClaimFieldPrefix = "claim."
@@ -189,7 +308,7 @@ func JSONString(raw []byte) string {
 }
 
 // AdmissionKey is the issue key every project-level observation is written under — the admission
-// block and the settings: the empty string, which no issue key can be
+// block, the settings and the controller session: the empty string, which no issue key can be
 // (legion_observations.issue_key is free text with no foreign key, so the rows cost no issue).
 const AdmissionKey = ""
 
@@ -202,9 +321,9 @@ type Observation struct {
 }
 
 // Observations is every observed field of every issue the read carries, by issue key and then by
-// field, so two reads of one state produce one list. The project's own two come first, under
-// AdmissionKey: the admission block and the settings the daemon reports, neither of which belongs
-// to an issue.
+// field, so two reads of one state produce one list. The project's own three come first, under
+// AdmissionKey: the admission block, the settings the daemon reports and the session it names as
+// its registered controller, none of which belongs to an issue.
 //
 // Phase, slot and the wait are observed on every issue, `null` where the issue carries none, so a
 // slot released or a wait answered is a change like any other; a first `null` writes no row
@@ -221,11 +340,12 @@ type Observation struct {
 // passes through too (state_message.go), so a read and an event never encode one value differently.
 func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
-	// The three fields every issue carries and one claim each, and the project's two.
-	observations := make([]Observation, 0, len(keys)*4+2)
+	// The three fields every issue carries and one claim each, and the project's three.
+	observations := make([]Observation, 0, len(keys)*4+3)
 	observations = append(observations,
 		Observation{IssueKey: AdmissionKey, Field: FieldAdmission, Value: admissionValue(s.Admission)},
 		Observation{IssueKey: AdmissionKey, Field: FieldSettings, Value: settingsValue(s.Settings)},
+		Observation{IssueKey: AdmissionKey, Field: FieldController, Value: controllerValue(s.ControllerLocator)},
 	)
 	for _, key := range keys {
 		issue := s.Issues[key]
@@ -282,13 +402,22 @@ func waitingOnValue(waitingOn json.RawMessage) json.RawMessage {
 // claimValue is one role's claim state, `null` for a claim that names none.
 func claimValue(state string) json.RawMessage { return encodeValue(optional(state)) }
 
-// admissionValue is the admission block in the members Dispatch records (Admission), `null` for
-// none.
+// admissionValue is the admission block in the members Dispatch records (Admission) but its two
+// records of changes, which no marshal of the block writes, `null` for none.
 func admissionValue(admission *Admission) json.RawMessage { return encodeValue(admission) }
 
 // settingsValue is the settings the daemon reports, `null` for none.
 func settingsValue(settings map[string]json.RawMessage) json.RawMessage {
 	return encodeValue(settings)
+}
+
+// controllerValue is the session the daemon names as its registered controller, `null` for none.
+// A whole read alone observes it: no state event carries the controller locator.
+func controllerValue(locator *ControllerLocator) json.RawMessage {
+	if locator == nil || locator.SessionID == "" {
+		return encodeValue(nil)
+	}
+	return encodeValue(locator.SessionID)
 }
 
 // encodeValue is value as the jsonb column holds it: its JSON, or `null` for a value that does not

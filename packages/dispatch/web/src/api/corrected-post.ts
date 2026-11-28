@@ -274,14 +274,11 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "credential-grants": "the credentials the reader granted",
   "credential-pending": "the credential requests waiting on the reader",
   decisions: "the issue's decisions, read from its decisions document (census 1.16)",
-  delivery: "the delivery dashboard's prefix: runs, jobs and measures",
-  "delivery measures": "the delivery dashboard's measures",
-  "delivery pipeline": "the delivery pipeline's runs and jobs",
-  "delivery run": "one deploy run with its jobs",
-  "delivery timeline": "the delivery timeline's pull requests and runs",
-  "delivery-settings": "the delivery timeline's configuration",
   "doc-summary": "a document's name and owner for a link's card (census C.15)",
   "document-read": "the version of a document the reader last read",
+  evals:
+    "a project's Evals tab: its evals with their numbers and declared charts, the rows behind each number, and its merge timeline's pull requests and runs; no post",
+  "evals across": "every project's evals, as a project's evals view answers them; no post",
   github: "GitHub's own answer for an unfurl",
   "github-link": "a linked pull request as GitHub answers it",
   "github-link-checks": "a linked pull request's checks as GitHub answers them",
@@ -297,6 +294,8 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "legion-daemon": "a project's Legion daemon setting",
   "legion-issue":
     "an issue's Legion state: its phase, its roles' claims and the daemon's last read",
+  "legion-read":
+    "the newest read of a project's Legion daemon: its time, whether it succeeded and why not",
   "machine-logins": "the reader's machine logins",
   "new-issue-settings": "the label and session a new issue from the bar takes",
   priorities: "the priorities and the work under them",
@@ -305,6 +304,9 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "priorities summary": "the two counts of work under no priority and parked under one",
   project: "a project's documents by name, as `artifacts` lists an issue's",
   "project-default-assignees": "each project's default assignee",
+  "project-delivery-settings":
+    "a project's delivery settings: its switch, deploy and failure sources and targets, no post",
+  "project-deploy-run": "one deploy run of a project with its jobs, its deploy and its failures",
   projects: "the projects",
   "references questions": "which asks a source cites, by id (census C.15)",
   related: "issues related by their words, printed by owner label alone (census C.15)",

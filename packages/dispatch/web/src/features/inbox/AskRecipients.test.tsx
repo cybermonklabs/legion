@@ -363,6 +363,52 @@ test("AskRecipients never asks for subscribers unless the signed-in principal is
   }
 });
 
+// An agent viewer of the dashboard is answered `kind: "agent"`, and its bearer may hold no
+// `person` scope: the card lists the ask's own followers for it and asks for no subscribers.
+test("AskRecipients asks an agent viewer's card for no subscribers", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  queryClient.setQueryData(["whoami"], {
+    event_head: "0",
+    kind: "agent",
+    login: "agent",
+    session: null,
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <AskRecipients
+          askId="ask-1"
+          claimant={null}
+          followers={followers}
+          owner={{ artifact_id: null, issue_key: "CORE-1" }}
+          route={null}
+          routeHolder={null}
+          routeStatus={null}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const toggle = within(screen.getByRole("region", { name: "Recipients" })).getByRole("button", {
+      name: /^Reaches/,
+    });
+    expect(toggle.textContent).toBe("Reaches 2");
+    await user.click(toggle);
+    await waitFor(() => expect(listAgents).toHaveBeenCalled());
+    expect(getIssueSubscribers).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+    getIssueSubscribers.mockRestore();
+  }
+});
+
 const claimant = "c1c1c1c1c1c1c1c1";
 const routed = "e2e2e2e2e2e2e2e2";
 const holder = "d3d3d3d3d3d3d3d3";

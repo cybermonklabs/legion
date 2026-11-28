@@ -818,6 +818,19 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_PPROF_PORT": "65536"}, "DISPATCH_PPROF_PORT")
 		},
+		"DISPATCH_LOG_LEVEL": func(t *testing.T) {
+			for value, want := range map[string]slog.Level{"": slog.LevelInfo, "info": slog.LevelInfo, " debug ": slog.LevelDebug, "warn": slog.LevelWarn, "error": slog.LevelError} {
+				if got, err := logLevel(envGetter(map[string]string{"DISPATCH_LOG_LEVEL": value})); err != nil || got != want {
+					t.Errorf("DISPATCH_LOG_LEVEL=%q: level %v, err %v; want %v", value, got, err, want)
+				}
+			}
+			if got, err := logLevel(envGetter(nil)); err != nil || got != slog.LevelInfo {
+				t.Errorf("unset: level %v, err %v; want info", got, err)
+			}
+			if _, err := logLevel(envGetter(map[string]string{"DISPATCH_LOG_LEVEL": "loud"})); err == nil || !strings.Contains(err.Error(), "DISPATCH_LOG_LEVEL") {
+				t.Errorf("DISPATCH_LOG_LEVEL=loud: err %v, want a refusal naming the setting", err)
+			}
+		},
 		"DISPATCH_MAX_LIVE_ROOMS": func(t *testing.T) {
 			documentCapReachesTheService(t, "DISPATCH_MAX_LIVE_ROOMS", func(rooms, _ int) int { return rooms })
 		},

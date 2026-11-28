@@ -19,7 +19,8 @@ export type WindowChoice =
   | { kind: "preset"; preset: WindowPreset }
   | { kind: "custom"; from: string; to: string };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+/** A whole day in milliseconds, as every window of whole UTC days is measured in. */
+export const DAY_MS = 24 * 60 * 60 * 1000;
 
 const PRESET_DAYS = { "7d": 7, "14d": 14, "28d": 28, "84d": 84 } as const satisfies Record<
   WindowPreset,
@@ -112,4 +113,56 @@ export function utcDate(iso: string): string {
 /** The last day a custom range's exclusive `to` includes, as a date input's value. */
 export function lastUtcDate(toIso: string): string {
   return new Date(Date.parse(toIso) - DAY_MS).toISOString().slice(0, 10);
+}
+
+/** What the Evals tab compares its window with: by default the range just before the window, as
+ *  long as it (`previous`, which the URL names by naming nothing), nothing (`compare=off`), or a
+ *  custom range (`compare_from` and `compare_to`, read as a custom window is). */
+export type CompareChoice =
+  | { kind: "previous" }
+  | { kind: "off" }
+  | { kind: "custom"; from: string; to: string };
+
+/** The compare range the URL names: a valid `compare_from` and `compare_to` together are a custom
+ *  range, else `compare=off` names none, else (absent or malformed) the previous range. */
+export function readCompare(params: URLSearchParams): CompareChoice {
+  const from = params.get("compare_from");
+  const to = params.get("compare_to");
+  if (from !== null && to !== null && isCustomWindow(from, to)) {
+    return { kind: "custom", from, to };
+  }
+  return params.get("compare") === "off" ? { kind: "off" } : { kind: "previous" };
+}
+
+/** The whole UTC days a window covers at `nowMs`, as Dispatch counts an eval read's window
+ *  (`evalDaysOf`, api/evals.go): from the midnight of its first instant's day to the midnight
+ *  after its last instant's day. A preset's instants are its days ending at `nowMs`, so a preset
+ *  that ends inside a day covers one day more than it names. */
+export function windowDays(choice: WindowChoice, nowMs: number): { from: string; to: string } {
+  const fromMs =
+    choice.kind === "custom"
+      ? Date.parse(choice.from)
+      : nowMs - PRESET_DAYS[choice.preset] * DAY_MS;
+  const toMs = choice.kind === "custom" ? Date.parse(choice.to) : nowMs;
+  const first = Math.floor(fromMs / DAY_MS) * DAY_MS;
+  const end = (Math.floor((toMs - 1) / DAY_MS) + 1) * DAY_MS;
+  return { from: new Date(first).toISOString(), to: new Date(end).toISOString() };
+}
+
+/** The range `compare` names for `window` at `nowMs`, as an eval read's `compare_from` and
+ *  `compare_to`, or null for none. A custom range is its own; the previous range is the whole UTC
+ *  days just before the window's first, as many as the window covers (`windowDays`), and at most
+ *  MAX_WINDOW_DAYS, the longest range Dispatch reads: the 84-day preset that ends inside a day
+ *  covers 85, and is compared with the 84 before it. */
+export function compareRange(
+  compare: CompareChoice,
+  window: WindowChoice,
+  nowMs: number
+): { from: string; to: string } | null {
+  if (compare.kind === "off") return null;
+  if (compare.kind === "custom") return { from: compare.from, to: compare.to };
+  const days = windowDays(window, nowMs);
+  const first = Date.parse(days.from);
+  const length = Math.min(Date.parse(days.to) - first, MAX_WINDOW_DAYS * DAY_MS);
+  return { from: new Date(first - length).toISOString(), to: days.from };
 }

@@ -2586,12 +2586,18 @@ DISPATCH_SERVER_BUILD = "flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e .
 # binaries job of dispatch-browser.yaml builds all four, since the shard and alone jobs run
 # them in a container and so run no go command of their own (that file says why).
 BROKER_PKGS = ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./internal/cipher/ciphertest/requestseed"]
+# The nats-server the alone job's chromium-nats leg starts its stack's NATS from
+# (packages/dispatch/e2e/harness-nats.ts, DISPATCH_E2E_NATS_BIN): the binaries job builds it beside
+# the four above, at the version packages/envoy's go.mod requires, since that job's container has
+# no Go. It is third-party code alone, so its closure adds no first-party read beyond the module files.
+NATS_SERVER_PKG = "github.com/nats-io/nats-server/v2"
 # The steps of .github/workflows/dispatch-browser.yaml this table cites by name.
 BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
-BROWSER_BINARIES_SCRIPT = """\
+BROWSER_BINARIES_SCRIPT = f"""\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
 CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
-CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd"""
+CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
+CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/nats-server" {NATS_SERVER_PKG}"""
 # The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
 # shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder and
@@ -2819,13 +2825,17 @@ def browser_gate(filter, job):
     gate_ = gate(filter, job, exact=[
         # The four commands the shard and alone jobs' scripts built before those jobs moved
         # into a container, built once in the binaries job and downloaded by both: this is the
-        # closure that build compiles and no other. The step names an output (-o) and pins
-        # CGO_ENABLED on the line, neither of which the simple form reduces, so the step is
-        # pinned whole; the Run carries that CGO_ENABLED, since the closure go lists without
-        # cgo is the one this build compiles.
+        # closure that build compiles and no other, beside the nats-server the alone job's
+        # chromium-nats leg runs (NATS_SERVER_PKG). The step names an output (-o) and pins CGO_ENABLED on the
+        # line, neither of which the simple form reduces, so the step is pinned whole; each Run
+        # carries that CGO_ENABLED, since the closure go lists without cgo is the one this build
+        # compiles.
         pinned_step(BROWSER_BINARIES, BROWSER_BINARIES_STEP, ENVOY, BROWSER_BINARIES_SCRIPT, [
             (ENVOY, ["./cmd/dispatch"] + BROKER_PKGS,
              "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer and the seeding step",
+             {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
+            (ENVOY, [NATS_SERVER_PKG],
+             "CGO_ENABLED=0 go build of the nats-server, at the version packages/envoy's go.mod requires",
              {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
         ], workflow=BROWSER_SITE),
         # The stacks' connection limit, read on the host for the shard and alone jobs, whose

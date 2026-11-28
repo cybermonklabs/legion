@@ -86,12 +86,16 @@ function needsYou(
   return { count: since.length, oldest };
 }
 
-/** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox. */
+/** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox. An
+ *  agent viewer has none of a person's work, and its bearer may hold no `person` scope, which both
+ *  reads need, so nothing is asked for one and the number is 0. */
 export function useNeedsYouCount(): number {
-  const inbox = useQuery(inboxQuery());
+  const whoAmI = useQuery(whoAmIQuery()).data;
+  const person = whoAmI?.kind !== "agent";
+  const inbox = useQuery({ ...inboxQuery(), enabled: person });
   // Until `/auth/whoami` answers, the rail shows no number rather than one that is not theirs.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
-  const { requests } = useCredentialRequests();
+  const viewer = whoAmI?.login;
+  const { requests } = useCredentialRequests(person);
   return needsYou(inbox.data ?? [], requests, viewer).count;
 }
 

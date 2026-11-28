@@ -52,9 +52,9 @@ func TestEachDaysReadAnswersWhatItsWindowsReadAnswers(t *testing.T) {
 				r := refused[i]
 				window := "[" + day.Format(time.RFC3339Nano) + ", " + to.Format(time.RFC3339Nano) + ")"
 				if len(got[i]) != 0 || r == nil || !r.From.Equal(day) || !r.To.Equal(to) || r.Repo != "" ||
-					r.Bound != maxPullRequestsPerWindow || r.Window() != window {
+					r.Bound != MaxPullRequestsPerWindow || r.Window() != window {
 					t.Errorf("%s: got %d pull requests and refusal %+v, want no rows and a refusal of %s at bound %d",
-						day, len(got[i]), r, window, maxPullRequestsPerWindow)
+						day, len(got[i]), r, window, MaxPullRequestsPerWindow)
 				}
 				continue
 			}
@@ -229,7 +229,7 @@ func TestEachDaysReadAnswersWhatItsWindowsReadAnswers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read the day before adding pull requests: %v", err)
 			}
-			seedPullRequestsASecondApart(t, ctx, pool, "acme/overflow", 1000, maxPullRequestsPerWindow+1-len(prs), day)
+			seedPullRequestsASecondApart(t, ctx, pool, "acme/overflow", 1000, MaxPullRequestsPerWindow+1-len(prs), day)
 			checkPullRequests(t, overfull)
 		}},
 	} {

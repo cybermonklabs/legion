@@ -585,6 +585,10 @@ var indexPasses = map[string]string{
 	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated, the issue the request creates and the issue's own event",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated and the seed's own plan",
 	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
+	// The eval registry's write of a project's evals-md (its creation, by the seed or a first
+	// registration, and each edit of a method) appends what the version's index pass stated under
+	// the artifact.created or artifact.version event it appends, as an upload and an edit do.
+	"evals/document.go#queueDocumentEvent": "the facts the evals-md version's index pass stated and the event that recorded the version",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",

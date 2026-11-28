@@ -1,23 +1,87 @@
-import { mintAgentToken } from "./api";
+// The Pipeline page's rows, moved to the CI health section of the Evals tab, which replaced the
+// page (dispatch://INFRA-2918, R1, R15): the four CI evals' timing charts and pr-ci's two job
+// lists (`web/src/features/evals/CiHealth.tsx`), over the tab's window, here the seven UTC days
+// ending on the fixture's pinned day (`PIPELINE_AT`), and the two lead-time cards the page showed
+// beside them, now target cards (`TargetCards.tsx`).
+import { createProject, mintAgentToken, registerEval } from "./api";
 import { PIPELINE_AT, seedPipelineFixture } from "./delivery-seed";
+import {
+  DELIVERY_PROJECT,
+  evalsSection,
+  evalsTabPath,
+  expectEvalsTab,
+  paintedSection,
+} from "./evals-tab";
 import { sql } from "./psql";
-import { expect, test } from "./test";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
-test("the Pipeline rail entry opens the page", async ({ browser }) => {
+/** The tab's custom window of the seven UTC days ending on `PIPELINE_AT`'s day: 2026-09-26 to
+ *  2026-10-02, the days the Pipeline page showed at `?at=PIPELINE_AT`. */
+function pipelineWindow(): string {
+  const day = new Date(PIPELINE_AT);
+  const to = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1));
+  const from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+  return `from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`;
+}
+
+/** The first UTC day of the fixture's deploys and merges, `PIPELINE_AT`'s, as YYYY-MM-DD. */
+const DEPLOYS_DAY = PIPELINE_AT.slice(0, 10);
+
+/** The tab's custom window of `DEPLOYS_DAY` alone. Every deploy run and merge of the fixture is of
+ *  that day, so it is the first day of the deploy stages' and the lead times' input: a window that
+ *  starts before it reads "no data" and names that day (spec R18), as the seven days do, and this
+ *  one reads what the seven days hold of them. */
+function deploysWindow(): string {
+  const from = new Date(`${DEPLOYS_DAY}T00:00:00Z`);
+  const to = new Date(from.getTime() + 24 * 60 * 60 * 1000);
+  return `from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`;
+}
+
+/** Opens `project`'s Evals tab on `window` (the Pipeline fixture's seven days unless named), once
+ *  its CI health section has painted. */
+async function openCiHealth(
+  page: Page,
+  project = DELIVERY_PROJECT,
+  window = pipelineWindow()
+): Promise<Locator> {
+  await page.goto(evalsTabPath(window, project));
+  await expectEvalsTab(page);
+  return paintedSection(page, "ci");
+}
+
+/** One CI eval's figure over the window (`EvalChart.tsx`'s `data-window-statistic`) on its
+ *  timing chart (`data-eval`, the eval's slug). */
+function ciFigure(ci: Locator, slug: string, statistic: string): Locator {
+  return ci.locator(
+    `[data-eval="${slug}"] [data-window-series="minutes"] [data-window-statistic="${statistic}"]`
+  );
+}
+
+/** One of pr-ci's two job lists (`data-job-list`: `slowest-jobs` or `failing-jobs`), once its
+ *  items view has answered. */
+async function jobList(ci: Locator, id: string): Promise<Locator> {
+  const list = ci.locator(`[data-job-list="${id}"]`);
+  await expect(list).toBeVisible();
+  await expect(list.getByRole("status")).toHaveCount(0);
+  return list;
+}
+
+/** The row of a job list's table that names `job`. */
+function jobRow(list: Locator, job: string): Locator {
+  return list.locator("tbody tr").filter({ hasText: job });
+}
+
+test("the Pipeline address opens the default project's Evals tab", async ({ browser }) => {
   await seedPipelineFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
-  // From another page, so the sidebar's own Pipeline link is what opens it.
-  await page.goto("/");
-  const pipelineLink = page.getByRole("link", { name: /^Pipeline/ });
-  await expect(pipelineLink).toBeVisible();
-  await pipelineLink.click();
-
-  await expect(page).toHaveURL(/\/pipeline$/);
-  await expect(page.getByRole("heading", { level: 1, name: "Pipeline" })).toBeVisible();
-  await expect(page).toHaveTitle("Pipeline · Dispatch");
+  // The old page's address keeps working: it opens the tab of the one project with delivery on.
+  await page.goto("/pipeline");
+  await expect(page).toHaveURL(new RegExp(`/projects/${DELIVERY_PROJECT}/evals$`));
+  await expectEvalsTab(page);
+  await expect(evalsSection(page, "ci")).toBeVisible();
 
   await context.close();
 });
@@ -29,65 +93,76 @@ test("the Pipeline page shows each stage's timing and the failing jobs @pr", asy
   await seedPipelineFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/pipeline?at=${PIPELINE_AT}`);
+  const ci = await openCiHealth(page);
 
-  await expect(page.getByText("Last 7 days, Sep 26 to Oct 2 (UTC)")).toBeVisible();
-  // Today's two timed PR-checks runs; the merge_group run is not one of them.
-  await expect(page.locator('[data-metric="pr_ci"]')).toContainText("p90 30m · 2 runs");
-  const e2e = page.locator('[data-metric="staging_e2e"]');
-  await expect(e2e).toContainText("staging-e2e / run");
-  await expect(e2e).toContainText("55m"); // today's median of 40 and 70
-  await expect(e2e).toContainText("50%");
-  await expect(page.locator('[data-metric="staging_apply"]')).toContainText("p90 8.8m · 3 runs");
-  // The feature/x run's successful production job is not counted, so the week has one result.
-  const production = page.locator('[data-metric="production_apply"]');
-  await expect(production).toContainText("100%");
-  await expect(production).toContainText("p90 9.0m · 1 run");
+  // Over the seven days, which start before the deploys' day, a deploy stage reads "no data" and
+  // names the day its input begins (spec R18).
+  await expect(ciFigure(ci, "staging-e2e", "n")).toHaveText("no data");
   await expect(
-    page.locator('[data-metric="merge_to_production"] [data-target-met]')
-  ).toHaveAttribute("data-target-met", "false");
-  await expect(page.locator('[data-metric="opened_to_merge"] [data-target-met]')).toHaveAttribute(
-    "data-target-met",
-    "true"
-  );
+    ci.locator('[data-eval="staging-e2e"] [data-window-series="minutes"] [data-note="data"]')
+  ).toHaveText(`no data before ${DEPLOYS_DAY}`);
 
-  const slowest = page.locator('[data-section="slowest-jobs"]');
-  await expect(slowest.locator('[data-job="build / unit"]')).toBeVisible();
-  const failing = page.locator('[data-section="failing-jobs"]');
-  const unit = failing.locator('[data-failing-job="build / unit"]');
-  await expect(unit.locator("td").nth(1)).toHaveText("2");
-  await expect(unit.locator("td").nth(2)).toHaveText("3");
+  const slowest = await jobList(ci, "slowest-jobs");
+  await expect(jobRow(slowest, "build / unit")).toHaveCount(1);
+  // The 24 hours before the window ends are 2026-10-02 (UTC): build / unit failed in its two
+  // runs there, and the cancelled run's job is not counted.
+  const failing = await jobList(ci, "failing-jobs");
+  const unit = jobRow(failing, "build / unit");
+  await expect(unit.getByRole("cell", { exact: true, name: "2" })).toHaveCount(2);
   await expect(unit.getByRole("link")).toHaveAttribute(
     "href",
     "https://github.com/acme/widgets/actions/runs/2"
   );
   // The roll-up job is left out; a job that only failed before the 24 hours is not listed.
-  await expect(failing.locator('[data-failing-job="checks-complete"]')).toHaveCount(0);
-  await expect(failing.locator('[data-failing-job="typecheck"]')).toHaveCount(0);
+  await expect(jobRow(failing, "checks-complete")).toHaveCount(0);
+  await expect(jobRow(failing, "typecheck")).toHaveCount(0);
+
+  // The deploys' day: each stage's timing and the two lead-time cards.
+  const deploys = await openCiHealth(page, DELIVERY_PROJECT, deploysWindow());
+  // The window's two timed staging end-to-end results, 40 and 70 minutes, one of them a failure;
+  // the cancelled one and the workflow_dispatch run's are not timed.
+  await expect(ciFigure(deploys, "staging-e2e", "n")).toHaveText(/^2(?!\d)/);
+  await expect(ciFigure(deploys, "staging-e2e", "median")).toContainText("55");
+  await expect(ciFigure(deploys, "staging-e2e", "success_rate")).toContainText("50");
+  // The three staging deploys that finished; the one still running is not timed.
+  await expect(ciFigure(deploys, "staging-deploy", "n")).toHaveText(/^3(?!\d)/);
+  // The feature/x run's successful production job is not counted, so the day has one result.
+  await expect(ciFigure(deploys, "production-deploy", "n")).toHaveText(/^1(?!\d)/);
+  await expect(ciFigure(deploys, "production-deploy", "success_rate")).toContainText("100");
+
+  // The two lead-time cards: merge to production misses its 45 minutes, open to merge meets 60.
+  const cards = await paintedSection(page, "cards");
+  await expect(
+    cards.locator('[data-card="merge-to-production"] [data-target-met]')
+  ).toHaveAttribute("data-target-met", "false");
+  await expect(cards.locator('[data-card="pr-open-to-merge"] [data-target-met]')).toHaveAttribute(
+    "data-target-met",
+    "true"
+  );
 
   await page.screenshot({ path: testInfo.outputPath("pipeline.png"), fullPage: true });
   await context.close();
 });
 
-// The narrow-screen half of the row above: the six cards stack in one column on a phone, where
-// the page is narrower than the 46rem the second column needs.
+// The narrow-screen half of the row above: the timing charts stack in one column on a phone,
+// where the section is narrower than the 42rem the second column needs.
 test("the Pipeline page stacks its cards in one column on a phone @phone @phone-only", async ({
   browser,
 }, testInfo) => {
   await seedPipelineFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/pipeline?at=${PIPELINE_AT}`);
+  const ci = await openCiHealth(page);
 
-  const first = page.locator('[data-metric="pr_ci"]');
+  const first = ci.locator('[data-eval="pr-ci"]');
   await expect(first).toBeVisible();
-  const second = page.locator('[data-metric="staging_e2e"]');
+  const second = ci.locator('[data-eval="staging-e2e"]');
   await expect(second).toBeVisible();
-  // The waits above drew both cards, and a drawn element has a box, so each has one.
+  // The waits above drew both charts, and a drawn element has a box, so each has one.
   const firstBox = await first.boundingBox();
-  // The second card was waited for above too, so its box is there as the first one's is.
+  // The second chart was waited for above too, so its box is there as the first one's is.
   const secondBox = await second.boundingBox();
-  if (firstBox === null || secondBox === null) throw new Error("the metric cards are hidden");
+  if (firstBox === null || secondBox === null) throw new Error("the timing charts are hidden");
   expect(secondBox.y).toBeGreaterThanOrEqual(firstBox.y + firstBox.height);
   expect(Math.abs(secondBox.x - firstBox.x)).toBeLessThan(2);
 
@@ -95,16 +170,40 @@ test("the Pipeline page stacks its cards in one column on a phone @phone @phone-
   await context.close();
 });
 
-test("a pipeline with no staging end-to-end gate omits its card", async ({ browser }) => {
-  await seedPipelineFixture();
-  await sql("UPDATE delivery_settings SET staging_e2e_job_name = null WHERE singleton");
+// The slowest-jobs list ranks a job once it holds the min_n a person set on the project's pr-ci
+// eval, and its sentence names that number (INFRA-2916, spec R5; dispatch://INFRA-978, D9).
+// With no min_n set the threshold is 50 and build / unit, the fixture's one job with 50 timed
+// results or more, is ranked alone; at min_n 1, lint, with three timed results, is ranked too.
+test("the Pipeline's slowest jobs follow the min_n a person set on pr-ci", async ({ browser }) => {
+  // Made through the API, so its evals are seeded, before the fixture's settings name it.
+  await createProject({ key: "PIPE", name: "Pipeline" });
+  await seedPipelineFixture("PIPE");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/pipeline?at=${PIPELINE_AT}`);
 
-  await expect(page.locator('[data-metric="pr_ci"]')).toBeVisible();
-  await expect(page.locator('[data-metric="staging_e2e"]')).toHaveCount(0);
-  await expect(page.locator('[data-metric="staging_apply"]')).toBeVisible();
+  let slowest = await jobList(await openCiHealth(page, "PIPE"), "slowest-jobs");
+  await expect(slowest).toContainText("a job needs 50 timed results in the window to be ranked");
+  await expect(jobRow(slowest, "build / unit")).toHaveCount(1);
+  await expect(jobRow(slowest, "lint")).toHaveCount(0);
+
+  await registerEval("PIPE", { series: [{ min_n: 1, series: "job:*" }], slug: "pr-ci" });
+  slowest = await jobList(await openCiHealth(page, "PIPE"), "slowest-jobs");
+  await expect(slowest).toContainText("a job needs 1 timed result in the window to be ranked");
+  await expect(jobRow(slowest, "build / unit")).toHaveCount(1);
+  await expect(jobRow(slowest, "lint")).toHaveCount(1);
+  await context.close();
+});
+
+test("a pipeline with no staging end-to-end gate draws no timing for it", async ({ browser }) => {
+  await seedPipelineFixture();
+  await sql("UPDATE project_deploy_sources SET staging_e2e_job_name = null");
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const ci = await openCiHealth(page);
+
+  await expect(ciFigure(ci, "pr-ci", "n")).toBeVisible();
+  await expect(ci.locator('[data-eval="staging-e2e"] [data-window-statistic]')).toHaveCount(0);
+  await expect(ciFigure(ci, "staging-deploy", "n")).toBeVisible();
   await context.close();
 });
 

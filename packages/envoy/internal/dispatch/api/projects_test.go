@@ -6,13 +6,17 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type projectResponse struct {
@@ -42,6 +46,92 @@ func TestCreateProjectRejectsDuplicateKeyWithProjectExists(t *testing.T) {
 	}, "alice")
 	if duplicate.Code != http.StatusConflict || !strings.Contains(duplicate.Body.String(), `"code":"PROJECT_EXISTS"`) {
 		t.Fatalf("duplicate project: status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+}
+
+// seededSlugs is every eval of the seeded catalogue (dispatch://INFRA-2916/artifact/plan-md, "The
+// seeded catalogue").
+var seededSlugs = []string{
+	evals.SlugDeployFrequency, evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery, evals.SlugDeploymentReworkRate,
+	evals.SlugMergeToProduction, evals.SlugFirstCommitToProduction, evals.SlugOpenToProduction, evals.SlugPROpenToMerge,
+	evals.SlugDeployRunSuccess, evals.SlugUnownedP0, evals.SlugReworkShare, evals.SlugPRCI, evals.SlugStagingE2E,
+	evals.SlugStagingDeploy, evals.SlugProductionDeploy, evals.SlugLegionWorkTime, evals.SlugLegionPhaseTime,
+	evals.SlugLegionIdleTime, evals.SlugLegionSlotWait, evals.SlugLegionRework, evals.SlugLegionSplitting,
+}
+
+// A project created through the API holds the seeded catalogue as it is created (R5): its
+// evals-md, read through the project's artifact route, holds one section per seeded eval, and the
+// registry holds version 1 of each, written by the seed, computed with no number rule, whose
+// doc_block is a block of that document, with its series. A second create of the same key is
+// refused and writes no eval or section.
+func TestCreatingAProjectSeedsItsEvalsAndItsEvalsDocument(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "SEED", "name": "Seeded",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	read := func() (string, []model.ArtifactBlock, []evals.Entry) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/SEED/artifacts/"+evals.DocumentSlug+"/text?blocks=true", nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read the project's %s: status=%d body=%s", evals.DocumentSlug, response.Code, response.Body.String())
+		}
+		document := decodeBody[struct {
+			Markdown string                `json:"markdown"`
+			Blocks   []model.ArtifactBlock `json:"blocks"`
+		}](t, response)
+		page, err := evals.New(database, nil, nil, nil).Current(t.Context(), []string{"SEED"}, "", 100, 0)
+		if err != nil {
+			t.Fatalf("read the project's evals: %v", err)
+		}
+		return document.Markdown, document.Blocks, page.Items
+	}
+	markdown, blocks, entries := read()
+	if len(entries) != len(seededSlugs) {
+		t.Fatalf("the new project holds %d evals, want the %d seeded ones", len(entries), len(seededSlugs))
+	}
+	held := func(id string) bool {
+		for _, block := range blocks {
+			if block.ID == id || slices.Contains(block.DescendantIDs, id) {
+				return true
+			}
+		}
+		return false
+	}
+	series := 0
+	for _, entry := range entries {
+		definition := entry.Definition
+		if !slices.Contains(seededSlugs, definition.Slug) || definition.Version != 1 || definition.WrittenVia != evals.ViaSeed ||
+			!definition.Computed() || definition.NumberRule != "" || len(entry.Series) == 0 {
+			t.Errorf("the new project holds %+v with %d series, want version 1 of a seeded computed eval with no number rule", definition, len(entry.Series))
+		}
+		if !held(definition.DocBlock) {
+			t.Errorf("%s: doc_block %q is no block of the project's %s", definition.EvalID, definition.DocBlock, evals.DocumentSlug)
+		}
+		if sections := strings.Count(markdown, "\n## "+definition.Slug+"\n"); sections != 1 {
+			t.Errorf("the project's %s holds %d sections of %s, want one", evals.DocumentSlug, sections, definition.Slug)
+		}
+		series += len(entry.Series)
+	}
+	var created int
+	if err := database.Pool.QueryRow(t.Context(), `
+		select count(*) from events e join artifacts a on a.id = e.artifact_id
+		where e.type = 'artifact.created' and a.project_key = 'SEED' and a.slug = $1
+	`, evals.DocumentSlug).Scan(&created); err != nil || created != 1 {
+		t.Fatalf("the %s document's artifact.created events: %d, %v, want one", evals.DocumentSlug, created, err)
+	}
+	t.Logf("project SEED created with %d evals, %d series and %d blocks in its %s", len(entries), series, len(blocks), evals.DocumentSlug)
+
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "SEED", "name": "Seeded again",
+	}, "alice"); response.Code != http.StatusConflict {
+		t.Fatalf("create the project again: status=%d body=%s, want 409", response.Code, response.Body.String())
+	}
+	again, _, entriesAgain := read()
+	if again != markdown || len(entriesAgain) != len(entries) {
+		t.Fatalf("a refused create changed the project's evals (%d) or its %s", len(entriesAgain), evals.DocumentSlug)
 	}
 }
 
@@ -234,6 +324,123 @@ func TestCreatingATakenProjectKeyIsRefusedForABearerAndACookie(t *testing.T) {
 	if len(projects) != 1 || projects[0].Name != "First" {
 		t.Fatalf("listed projects = %#v, want TAKEN still named First", projects)
 	}
+}
+
+// A create of a key a project holds is refused 409 PROJECT_EXISTS whatever its `evals-md` is,
+// here a file, a state the registry expects of a project and whose seed it refuses
+// (EVALS_DOCUMENT_NOT_A_DOCUMENT). The create reads that the key is taken before it seeds
+// anything: a seed run on the existing project first answered the create with that refusal, as
+// 500 INTERNAL. The project keeps the name it was created with.
+func TestCreatingATakenProjectKeyWhoseEvalsDocumentIsAFileIsRefusedProjectExists(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "FILED", "name": "Filed",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create FILED: status=%d body=%s", response.Code, response.Body.String())
+	}
+	tag, err := database.Pool.Exec(t.Context(), `
+		update artifacts set kind = 'file'
+		where project_key = 'FILED' and issue_key is null and session_id is null and slug = $1
+	`, evals.DocumentSlug)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("make FILED's %s a file: %v, %d rows", evals.DocumentSlug, err, tag.RowsAffected())
+	}
+	again := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "FILED", "name": "Filed again",
+	}, "alice")
+	if again.Code != http.StatusConflict || !strings.Contains(again.Body.String(), `"code":"PROJECT_EXISTS"`) {
+		t.Fatalf("a create of FILED while its %s is a file: status=%d body=%s, want 409 PROJECT_EXISTS",
+			evals.DocumentSlug, again.Code, again.Body.String())
+	}
+	var name string
+	if err := database.Pool.QueryRow(t.Context(), `select name from projects where key = 'FILED'`).Scan(&name); err != nil || name != "Filed" {
+		t.Fatalf("FILED is named %q (%v) after the refused create, want Filed", name, err)
+	}
+}
+
+// Two creates of one key that both read the key free are told apart by the insert's unique
+// violation, which comes after each has run its seed: the first commits the project, its evals-md
+// and that document's one artifact.created, and the second, which waits on the first's evals'
+// locks and then finds that document, answers 409 PROJECT_EXISTS and leaves no second document or
+// event. The test holds the project's documents' lock (docs.LockProjectArtifacts), which the seed
+// takes once it finds no evals-md, until one create waits on it and the other waits on that one,
+// so both have read the key free before either commits.
+func TestTwoCreatesOfOneKeyAtOnceMakeOneProjectAndOneEvalsDocument(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	ctx := t.Context()
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = holder.Rollback(context.Background())
+		}
+	}
+	t.Cleanup(release)
+	var held uint32
+	if err := holder.QueryRow(ctx, `select pg_backend_pid()`).Scan(&held); err != nil {
+		t.Fatalf("read the holder's backend: %v", err)
+	}
+	if err := docs.LockProjectArtifacts(ctx, holder, "TWICE"); err != nil {
+		t.Fatalf("hold TWICE's documents' lock: %v", err)
+	}
+	answers := make(chan *httptest.ResponseRecorder, 2)
+	for _, name := range []string{"Twice", "Twice again"} {
+		go func() {
+			answers <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "TWICE", "name": name}, "alice")
+		}()
+	}
+	testwait.Until(t, "one create of TWICE waiting on the held documents' lock and the other on that create", func() ([2]int, bool) {
+		var waiting [2]int
+		if err := database.Pool.QueryRow(ctx, `
+			with first as (
+				select pid from pg_stat_activity
+				where datname = current_database() and $1::int = any(pg_blocking_pids(pid))
+			)
+			select (select count(*) from first),
+				(select count(*) from pg_stat_activity a
+				 where a.datname = current_database() and exists (select 1 from first f where f.pid = any(pg_blocking_pids(a.pid))))
+		`, int32(held)).Scan(&waiting[0], &waiting[1]); err != nil {
+			t.Fatalf("read the creates' waits: %v", err)
+		}
+		return waiting, waiting[0] == 1 && waiting[1] == 1
+	})
+	release()
+	codes := map[int]int{}
+	for range 2 {
+		response := testwait.Receive(t, "a create of TWICE", answers)
+		codes[response.Code]++
+		if response.Code == http.StatusConflict && !strings.Contains(response.Body.String(), `"code":"PROJECT_EXISTS"`) {
+			t.Errorf("the refused create of TWICE answered %s, want PROJECT_EXISTS", response.Body.String())
+		}
+		if response.Code != http.StatusCreated && response.Code != http.StatusConflict {
+			t.Errorf("a create of TWICE answered %d: %s", response.Code, response.Body.String())
+		}
+	}
+	if codes[http.StatusCreated] != 1 || codes[http.StatusConflict] != 1 {
+		t.Fatalf("the two creates of TWICE answered %v, want one 201 and one 409", codes)
+	}
+	var documents, created int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from artifacts where project_key = 'TWICE' and issue_key is null and slug = $1
+	`, evals.DocumentSlug).Scan(&documents); err != nil {
+		t.Fatalf("count TWICE's %s documents: %v", evals.DocumentSlug, err)
+	}
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from events e join artifacts a on a.id = e.artifact_id
+		where e.type = 'artifact.created' and a.project_key = 'TWICE' and a.slug = $1
+	`, evals.DocumentSlug).Scan(&created); err != nil {
+		t.Fatalf("count the artifact.created events of TWICE's %s: %v", evals.DocumentSlug, err)
+	}
+	if documents != 1 || created != 1 {
+		t.Fatalf("TWICE holds %d %s documents and %d artifact.created events of them, want one of each", documents, evals.DocumentSlug, created)
+	}
+	t.Logf("two creates of TWICE released together answered %v; TWICE holds one %s and one artifact.created", codes, evals.DocumentSlug)
 }
 
 // Every route that takes a project key refuses a bad one with the same description of the rule,

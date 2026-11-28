@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -21,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -29,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/githubrate"
+	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -47,16 +50,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -98,6 +104,39 @@ const (
 // and refuses anything but a full commit sha); every other build leaves it empty, and /healthz
 // then reports the commit as null rather than naming one it cannot vouch for.
 var buildCommit string
+
+// processBuild names the build this process is, for the Legion facts consumer's record of the
+// build that last read each project whole (legionfacts.Deps.Build) and for the eval day-row
+// refresher's record of the build that serves the day rows (evals.RefresherDeps.Build).
+// legionfacts/scope.go's legionProjects says why a pass under a build that record does not name
+// reads the project whole again; a process whose first pass finds the day rows served by another
+// build rebuilds them aside and flips what its rules move, and nothing where they move nothing
+// (evals/rebuild.go).
+//
+// It is buildCommit where the image build stamped one. Every process of one release then
+// answers that one commit, so the fleet reads each project whole once per release and after that
+// computes only the issues its feeds name.
+//
+// Every other build leaves buildCommit empty, and the string is then what buildversion answers
+// with a suffix this process drew at its start. buildversion answers the release tag where a
+// release stamped one, `devel (<commit>)` where go build read a checkout, and `devel` where it
+// read none, which is every image a local compose file builds. Each of those names a binary
+// rather than a run of it, so two runs of one unstamped binary would be one build without the
+// suffix. The suffix makes them two builds: a developer who edits the phase-work rule
+// (legion/session_title.go, legion.PhaseWorkKeys) and restarts has every project read whole
+// under the edited rule, where the record the run before it left would say each was read whole
+// already. What that read costs is in legionfacts/scope.go's legionProjects. The same suffix has
+// the eval day-row refresher rebuild every served family aside at each start of an unstamped
+// binary, since the rows it finds are served by another build.
+//
+// It answers one string for as long as the process runs: the loop compares the string it
+// recorded, and a process that answered two would read every project whole on every pass.
+var processBuild = sync.OnceValue(func() string {
+	if buildCommit != "" {
+		return buildCommit
+	}
+	return buildversion.String() + " " + rand.Text()
+})
 
 type bootConfig struct {
 	DatabaseURL string
@@ -364,8 +403,13 @@ type bootConfig struct {
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	env := processSettings()
+	level, err := logLevel(env)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	if err != nil {
+		slog.Error("dispatch: read the log level", "error", err)
+		os.Exit(1)
+	}
 	if len(os.Args) > 1 {
 		os.Exit(runSubcommand(context.Background(), os.Args[1:], env, os.Stdout, os.Stderr))
 	}
@@ -530,10 +574,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The change rows an eval or Legion write recorded in the change log's outbox and never moved
+	// into delivery_changes, its process killed between its commit and its drain, are moved before
+	// this process serves (delivery.DrainPending, migration 20261117100001). While any process is
+	// alive, the next drain of any process moves them (delivery.DrainPending states the bound); this
+	// boot is what moves them when none was alive, and its drain's notification wakes every hub
+	// listening by then, this process's refresher reading the moved rows on its first pass. A drain
+	// that fails is logged and the boot goes on: the hub drains before each read, the refresher at
+	// each pass, and each eval write and Legion facts pass after its commit.
+	if moved, err := delivery.DrainPending(ctx, database.Pool); err != nil {
+		slog.Warn("dispatch: move the delivery changes left pending into the change log; the hub's and the refresher's drains move them", "error", err)
+	} else if moved > 0 {
+		slog.Info("dispatch: moved the delivery changes left pending into the change log", "moved", moved)
+	}
+
 	// The rename pairs are read once, here, before any part that reads them is built: the API,
 	// the delivery reconcile and intakes and the CI reconcile are each given this one value
-	// (refs.Renames). The delivery reconcile and the intakes share the one Attributor built of it
-	// here (delivery.NewAttributor), and the API builds its own of the same pairs (api.NewDeps).
+	// (refs.Renames). The delivery reconcile, the intakes and the evals refresher share the one
+	// Attributor built of it here (delivery.NewAttributor), and the API builds its own of the same
+	// pairs (api.NewDeps).
 	// A read that fails does not stop the boot: it is logged, it is one failure in the rename
 	// pass's summary below (renameRepositories), and the process serves with no pairs, so an old
 	// name reads as a repository of its own until a later boot reads the pairs.
@@ -733,6 +792,9 @@ func main() {
 		AgentPublisher: agentPublisher,
 		Files:          fileStore,
 		Lifetime:       ctx,
+		// The build the eval readings write records against the day rows it keeps, the one the
+		// eval day-row refresher records (evals.RefresherDeps.Build).
+		Build:          processBuild(),
 		AnswersLatency: answersLatency,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
@@ -775,17 +837,30 @@ func main() {
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
 	//     suggestion outcomes (api.EventsChannel), the delivery settings both delivery intakes
-	//     route by (delivery.SettingsChannel) and the Legion settings, on whose every write the
-	//     Legion state intake checks each project's starting point (legion.SettingsChannel). The
-	//     two leased ones, reference-excerpts and edit-notices, take their lease with no period
-	//     (duty.RunWoken): a process that finds it held retries until a pass of its own runs,
-	//     since the other process's pass may have read before the change that woke this one. The
-	//     suggestion-outcome loop takes none: each of its pages runs in a transaction holding the
-	//     suggestion_outcome_cursor row for update, which serialises two processes woken by one
-	//     commit, the first pass on a database included (api/suggestion_outcomes.go). The keyed
-	//     writes' own sweep - the Idempotency-Keys past their window, and the deliveries a process
-	//     that died left owed - keeps a timer of its own below, because no wake announces either:
-	//     a death commits nothing.
+	//     route by (delivery.SettingsChannel, and api.EventsChannel for a moved default
+	//     repository), the Legion settings, on whose every write the Legion state intake checks
+	//     each project's starting point (legion.SettingsChannel), the Legion facts
+	//     (legionfacts.Run, whose due times are a pass legionfacts.PassRetry after one that failed
+	//     and one soon after one whose safe horizon held an event back), the eval day rows
+	//     (evals.Store.RunRefresher, woken by api.EventsChannel and delivery.ChangesChannel, whose
+	//     due time is evals.RefresherGap after the last pass that began a batch of the walks while a
+	//     walk has days left, else the earlier of the next UTC midnight and the next prune of the
+	//     change log, and one soon after a pass whose safe horizon held an event back,
+	//     evals.RefresherGap after one that failed) and the production signals (signals.Run, woken
+	//     by api.EventsChannel, delivery.ChangesChannel, delivery.SettingsChannel and
+	//     signals.RevertsChannel, whose due times are a pass signals.PassRetry after one that
+	//     failed and one soon after one whose safe horizon held an event back).
+	//     None of those three holds a pass a change woke: it starts as soon as the pass running
+	//     when the change came ends.
+	//     The five leased ones, reference-excerpts, edit-notices, legion-facts, eval-days and
+	//     production-signals, take their lease with no period (duty.RunWoken): a process that finds
+	//     it held retries until a pass of its own runs, since the other process's pass may have read
+	//     before the change that woke this one. The suggestion-outcome loop takes none: each of its
+	//     pages runs in a transaction holding the suggestion_outcome_cursor row for update, which
+	//     serialises two processes woken by one commit, the first pass on a database included
+	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
+	//     their window, and the deliveries a process that died left owed - keeps a timer of its
+	//     own below, because no wake announces either: a death commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
 	//     it, and repeats its identity steps and its record of issues' inputs every 10 minutes for
 	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
@@ -859,9 +934,10 @@ func main() {
 	//     (runRateReading: the own calls it reports are this process's, and its lines name the
 	//     process).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
-	//     retirePlainRefreshTokens, restoreDecidedWordings and renameRepositories above,
-	//     repairIssueAsks after the parent status fix below, and the embedding coverage pass (two
-	//     processes' passes at once leave what one leaves).
+	//     the drain of the delivery change log's outbox (two drains take turns on the change
+	//     log's lock and move each row once), retirePlainRefreshTokens, restoreDecidedWordings
+	//     and renameRepositories above, repairIssueAsks after the parent status fix below, and
+	//     the embedding coverage pass (two processes' passes at once leave what one leaves).
 	leaseCallers, err := database.Pool.Leases()
 	if err != nil {
 		slog.Error("dispatch: open the lease pool for the maintenance loops", "error", err)
@@ -922,10 +998,22 @@ func main() {
 	// The display tree fill (texttreefill.Run): a leased loop like the rest, reserved here so
 	// that this process's count is the same whether or not it has work to do.
 	textTreeFillLeases := reserve("text tree fill")
+	// The production signals (signals.Run): a leased loop like the rest, reserved here so that this
+	// process's count is the same whatever work it finds.
+	productionSignalsLeases := reserve("production signals")
 	// R25's one-time fix of parents' statuses at boot (api.RunParentStatusFixAtBoot, below): it
 	// takes its lease only with DISPATCH_PARENT_STATUS_RULE on, and is reserved here so that this
 	// process's count is the same with the setting off.
 	parentStatusFixLeases := reserve("parent status fix")
+	// The per-issue Legion facts (legionfacts.Run): a leased loop like the rest, reserved here so
+	// that this process's count is the same whatever work it finds.
+	legionFactsLeases := reserve("Legion facts")
+	// The eval day rows (evals.Store.RunRefresher): a leased loop like the rest, reserved here so
+	// that this process's count is the same whatever work it finds. The boot's fold of the stale
+	// cuts' first paints (foldFirstPaints, below) takes the refresher's lease on the eval days'
+	// connection and gives it back before the refresher's loop starts, so the two never hold it
+	// together.
+	evalDaysLeases := reserve("eval days")
 	// The delivery intakes' six callers - a consumer lease, a hold and the hold's renewal per
 	// durable - whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -1077,18 +1165,45 @@ func main() {
 			return database.Pool.Dedicated(ctx, docs.ListenerApplicationPrefix+documentService.ProcessID())
 		},
 	}
-	var embeddingsWake, settingsWake, legionSettingsWake, gitHubReadsWake <-chan struct{}
+	var embeddingsWake, settingsWake, settingsProjectsWake, legionSettingsWake, gitHubReadsWake <-chan struct{}
 	if embedder != nil {
 		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
 	editNoticesWake := listenerHub.Wake(docs.EditNoticesChannel)
 	eventsWake := listenerHub.Wake(api.EventsChannel)
+	// The Legion facts consumer reads three feeds, so it registers a wake of its own on each:
+	// the events it recomputes an issue from, the Legion state intake's records of a daemon's
+	// state (each batch of state events it applied and each whole read, legion.StateChannel), and
+	// the delivery changes that carry a pull request's merge time (legionfacts.Run).
+	factsEventsWake := listenerHub.Wake(api.EventsChannel)
+	factsStateWake := listenerHub.Wake(legion.StateChannel)
+	factsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
+	// The eval day-row refresher reads two feeds, each with a wake of its own: the delivery
+	// changes, which name the days a pull request, a run, a stored Legion fact or a filing moves,
+	// and the events, which name the issues whose P0 count or repository moved
+	// (evals.Store.RunRefresher).
+	daysEventsWake := listenerHub.Wake(api.EventsChannel)
+	daysChangesWake := listenerHub.Wake(delivery.ChangesChannel)
+	// The production signals' loop reads three feeds and a revert's record, each with a wake of its
+	// own (signals.Run): the events (a check result, a retraction, an incident's labels and links,
+	// and a project.updated whose default repository moved a deploy source), the delivery changes (a
+	// run, a job or a pull request write that can make a deploy), a save of a project's delivery
+	// settings, and a recorded revert.
+	signalsEventsWake := listenerHub.Wake(api.EventsChannel)
+	signalsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
+	signalsSettingsWake := listenerHub.Wake(delivery.SettingsChannel)
+	signalsRevertsWake := listenerHub.Wake(signals.RevertsChannel)
 	// The block schema's own wake. It is a Wake and not a Handle because the reinstall reads
 	// the store, which a handler on Run's goroutine must not do (schemanodes.Installer).
 	schemaWake := schemanodes.RegisterWake(listenerHub)
+	// The delivery settings cache both intakes route by reads two feeds, each with a wake of its
+	// own: a save of a project's delivery settings (delivery.SettingsChannel), and the events, among
+	// which a project.updated whose default repository moved moves the repository of each deploy
+	// source that names none (delivery.StartIntakes).
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
+		settingsProjectsWake = listenerHub.Wake(api.EventsChannel)
 	}
 	if natsClient != nil {
 		legionSettingsWake = listenerHub.Wake(legion.SettingsChannel)
@@ -1335,6 +1450,10 @@ func main() {
 		reconcile.TickEvery(boot.DeliveryReconcileInterval)
 	}
 	go reconcile.Run(ctx, deliveryReconcileLeases)
+	// The eval registry over the server's database, its document service, its broker and the boot's
+	// one Attributor: the Legion state intake writes each project's admission eval through it
+	// (evals.AdmissionWriter), and the eval day-row refresher keeps its day rows (below).
+	evalStore := evals.New(database, documentService, broker, attributor)
 	// waitIntakes waits for the three intakes to stop once ctx is cancelled: the two delivery
 	// intakes and the Legion state intake. StartIntakes and legion.StartIntake each return their
 	// stop as a function a second call of which returns once the first has, so a second call of
@@ -1369,7 +1488,8 @@ func main() {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name),
 				bus.WithWriteDeadline(delivery.IntakeWriteDeadline))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture(), attributor)
+		wakes := delivery.SettingsWakes{Settings: settingsWake, Projects: settingsProjectsWake}
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, wakes, appCtx.Architecture(), attributor)
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -1379,9 +1499,11 @@ func main() {
 		// state intake takes from its held durable, with or without the GitHub App; it reads a
 		// daemon's `GET /legion/v1/state` whole only for the reasons legion's ReadReason constants
 		// name, a project's reads at least legion.ReadRetryAfter apart, and no recurring timer
-		// reads one. A connect that fails stops the delivery intakes before the exit, since they
-		// may hold their durables already.
-		stopLegionIntake, err := legion.StartIntake(ctx, connectIntake, database.Pool, legionIntakeLeases, legionSettingsWake)
+		// reads one. Each state it applies writes the readings of its project's admission eval in
+		// the same transaction (dispatch://INFRA-2918, evals.AdmissionWriter), recording this
+		// process's build on their day rows. A connect that fails stops the delivery intakes before
+		// the exit, since they may hold their durables already.
+		stopLegionIntake, err := legion.StartIntake(ctx, connectIntake, database.Pool, evals.AdmissionWriter(evalStore, processBuild()), legionIntakeLeases, legionSettingsWake)
 		if err != nil {
 			slog.Error("dispatch: connect the Legion state intake to NATS", "error", err)
 			cancel()
@@ -1508,6 +1630,70 @@ func main() {
 	// suggestion_outcome_cursor row for update, which is what keeps two processes from judging one
 	// page twice.
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
+	// dispatch://INFRA-2915: the per-issue Legion facts, computed once and stored as rows of
+	// issue_facts, so the board reads rows and computes nothing but the close of each open part
+	// at its own clock. The issue table and the evals read them under dispatch://INFRA-2916. The
+	// consumer recomputes an issue when one of its three feeds moves - the issue's events, the
+	// daemon's observations and a pull request's merge time - and at no other time: a row holds
+	// its facts closed at the newest input they read and how fast each grows after it, so no
+	// timer rewrites a row (legionfacts.Run). It takes the legion-facts lease: a pass reads its
+	// cursors, computes the rows and writes both in one transaction, so two processes woken by one
+	// commit must not run a pass at once. It reads the event log up to the safe horizon of the
+	// same events.Horizon the suggestion sweep above reads, for the same reason.
+	go legionfacts.Run(ctx, legionfacts.Deps{
+		Pool:         database.Pool,
+		Build:        processBuild(),
+		Horizon:      background.EventHorizon(),
+		Leases:       legionFactsLeases,
+		Events:       factsEventsWake,
+		Observations: factsStateWake,
+		Deliveries:   factsChangesWake,
+	})
+	// dispatch://INFRA-2916: every project holds the computed evals of the catalogue, each with
+	// its section of the project's evals-md. A project created through the API is seeded in its
+	// own transaction (api's createProject). The eval day-row refresher keeps every project's
+	// stored day rows (eval_days) true to their inputs: it rewrites the days each delivery change
+	// and issue event names, walks every day of each family from its first input day once per
+	// build and each new UTC day as it comes, which writes the explicit zero rows, and prunes the
+	// delivery change log, which no reconcile prunes where no GitHub App runs one. Its first pass
+	// in this process seeds every project, which covers one made by SQL and writes what this
+	// build's catalogue changed, and each later pass seeds a project made by SQL since. It takes
+	// the eval-days lease, so two processes woken by one commit build each day once, and reads the
+	// event log up to the safe horizon of the same events.Horizon the facts consumer reads. It
+	// records the build it runs as against every row and walk, as the facts consumer does, and
+	// attributes each pull request its day rows count by the boot's one Attributor (evalStore,
+	// above).
+	//
+	// The first paint of every cut of the stored eval figures a move of a default repository or the
+	// rename pass above marked stale, folded before the server serves, so the first read of one
+	// after a restart or a deploy reads its stored figures inside R8's 150 ms rather than the fold
+	// of its day rows (evals.FoldFirstPaintsAtBoot): under the refresher's lease, which this process
+	// takes where no process holds it, and otherwise waiting for the process whose refresher pass
+	// holds it to fold them, bounded by firstPaintBootTimeout.
+	foldFirstPaints(ctx, database.Pool, evalDaysLeases, processBuild(), firstPaintBootTimeout)
+	go evalStore.RunRefresher(ctx, evals.RefresherDeps{
+		Horizon:    background.EventHorizon(),
+		Build:      processBuild(),
+		Leases:     evalDaysLeases,
+		Events:     daysEventsWake,
+		Deliveries: daysChangesWake,
+	})
+	// dispatch://INFRA-978: the record's GitHub deploy rows and its three automatic failure signals
+	// (check_fail, revert, incident_issue). The loop writes the deploy row of each run of a deploy
+	// repository its owner's rule calls a deploy after the run write that made it one has committed,
+	// derives a repository's rows again when its rule moves, and writes each failure from the event
+	// log and the recorded reverts, each feed from a cursor of its own. It takes the
+	// production-signals lease, so two processes woken by one commit write each row once, and reads
+	// the event log up to the safe horizon of the same events.Horizon the facts consumer reads.
+	go signals.Run(ctx, signals.Deps{
+		Pool:       database.Pool,
+		Horizon:    background.EventHorizon(),
+		Leases:     productionSignalsLeases,
+		Events:     signalsEventsWake,
+		Deliveries: signalsChangesWake,
+		Settings:   signalsSettingsWake,
+		Reverts:    signalsRevertsWake,
+	})
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because
@@ -1607,6 +1793,24 @@ func main() {
 		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
+	}
+}
+
+// logLevel is the least severe line the server and its subcommands log (DISPATCH_LOG_LEVEL): info
+// where the setting is unset or empty, and an error naming the setting for a value that names no
+// level.
+func logLevel(env settingValues) (slog.Level, error) {
+	switch value := strings.TrimSpace(env.get("DISPATCH_LOG_LEVEL")); value {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("DISPATCH_LOG_LEVEL is debug, info, warn or error, not %q", value)
 	}
 }
 
@@ -2384,6 +2588,31 @@ func renameRepositories(ctx context.Context, pool *store.Pool, pairs []store.Rep
 		}
 		return pass.LogArgs(), pass.Err()
 	})
+}
+
+// firstPaintBootTimeout bounds the boot's fold of the stale cuts' first paints (foldFirstPaints),
+// as the boot's other passes are bounded, so the boot still answers within the 90 s a deployer's
+// health check waits for it (deploy/README.md): the first paint of a cut is a batch of 19 end days
+// of its refold, of the evals its mark names, every eval of the cut for a mark of the rename pass,
+// and the bench's k16 fallback times one at INFRA's size (its first-paint line, transaction_ms). A
+// fold the bound cuts short leaves the cuts it had not folded to the refresher's next pass, which
+// folds them first, and a read of one folds its day rows until then.
+const firstPaintBootTimeout = 30 * time.Second
+
+// foldFirstPaints is the boot's fold of the first paint of every stale cut of the stored eval
+// figures that owes one (evals.FoldFirstPaintsAtBoot), bounded by timeout, as build, under the
+// refresher's lease taken on leases, the lease pool's connection the refresher's loop takes its
+// lease on once this has returned. It logs how long it took, how many marks and evals it folded
+// and whether it waited for another process: at INFO, or at ERROR where it failed or ran out of
+// time. Either way the start goes on.
+func foldFirstPaints(ctx context.Context, pool *store.Pool, leases duty.Leases, build string, timeout time.Duration) {
+	began := time.Now()
+	bootTask(ctx, clock.Real(), timeout, "dispatch: fold the first paints of the stale cuts of the stored eval figures",
+		"dispatch: folded the first paints of the stale cuts of the stored eval figures",
+		func(ctx context.Context) ([]any, error) {
+			folded, err := evals.FoldFirstPaintsAtBoot(ctx, pool, leases, build)
+			return append(folded.LogArgs(), "took_ms", time.Since(began).Milliseconds()), err
+		})
 }
 
 // issueAskRepairBootTimeout bounds the boot's repair of the asks of closed and reopened issues.

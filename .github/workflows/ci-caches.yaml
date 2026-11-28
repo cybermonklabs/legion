@@ -583,6 +583,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
           CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
           CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
+          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/nats-server" github.com/nats-io/nats-server/v2
         working-directory: packages/envoy
 
       - name: Read the connections each stack's Postgres must allow, as the binaries job does

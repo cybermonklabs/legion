@@ -1,0 +1,31 @@
+-- pgmigrate:non-transactional
+-- 20261128172606_eval_day_figures_cut_eval_day.up.sql
+--
+-- The index behind the eval list's read of its stored day figures (dispatch://INFRA-2918, T33):
+-- the per-day arrays of an offered range (evals.ReadStoredFiguresIn), which the Evals tab's first
+-- paint reads for each kind of eval it shows, each read the window's days and the compare range's
+-- of the evals it serves, in one cut (`repo`: '' for the project's own rows, or the one repository
+-- the read names). eval_day_figures_eval_day (project_key, eval_id, day, 20261120072042) holds no
+-- cut, so the read fetched each served eval's day rows of every cut and threw away by filter those
+-- of the others, more than half the rows it fetched on a seed at a tenth of INFRA's size (403 and
+-- 425 of 621 kept, 6.1 to 8.0 ms), and the primary key (project_key, repo, day, eval_id,
+-- deploy_repo) bounds the cut and the days but walks every eval's rows of them. With this index
+-- the read is one range of the cut's rows of each served eval and its days, whose every row it
+-- keeps but those of another deploy repository of an eval keyed by one, which its condition
+-- (evals.deployRepoCase) names by a case no index range takes.
+--
+-- eval_day_figures_eval_day stays: the moved-day test (evals.movedFigureDays) and the figures
+-- walk's read of the day rows it deletes (evals.buildFigureEnds) read an eval's day rows of every
+-- cut, which this index, whose key leads with the cut, does not bound.
+--
+-- It is built `concurrently`, outside the runner's transaction, because eval_day_figures is the
+-- table every fold of the stored figures writes, the refresher's and every readings write's: a
+-- plain build holds SHARE on it for one read of the table, which blocks every one of those writes
+-- until it ends. A concurrent build takes SHARE UPDATE EXCLUSIVE, which no ordinary read or write
+-- waits on, at the cost of two passes over the table and a wait for the transactions already open,
+-- each wait bounded at five seconds and tried again as the runner tries every lock wait
+-- (pgmigrate.ExecNonTransactional). A failed build leaves an INVALID index of this name on
+-- eval_day_figures, which the runner drops with DROP INDEX CONCURRENTLY and builds again on its
+-- next attempt or boot; until then the read reads the rows it read before. The release before this
+-- one reads and writes eval_day_figures as it did.
+create index concurrently if not exists eval_day_figures_cut_eval_day on eval_day_figures (project_key, repo, eval_id, day);

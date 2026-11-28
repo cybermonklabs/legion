@@ -135,6 +135,9 @@ type liveSocket struct {
 	// test holds the writer there to put a frame on each queue while it waits
 	// (server.liveWriterBeforePick).
 	beforePick func(socket *liveSocket, takesStream bool)
+	// traced is whether the server logs at slog's debug level as the socket opens: the writer then
+	// times each snapshot and delta it writes and logs it (writeFrame), and otherwise times nothing.
+	traced bool
 }
 
 func newLiveSocket(ctx context.Context, conn *gws.Conn, credential *model.Credential, deadlines clock.Clock) *liveSocket {
@@ -151,6 +154,7 @@ func newLiveSocket(ctx context.Context, conn *gws.Conn, credential *model.Creden
 		closed:     make(chan struct{}),
 		subs:       map[string]*liveSub{},
 		clock:      cmp.Or[clock.Clock](deadlines, clock.Real()),
+		traced:     slog.Default().Enabled(ctx, slog.LevelDebug),
 	}
 }
 
@@ -402,20 +406,47 @@ func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, h
 }
 
 // writeFrame writes frame to the page, and answers false once the socket is done: a frame that did
-// not encode closes it, and a failed write ends its reads.
+// not encode closes it, and a failed write ends its reads. A traced socket logs each snapshot and
+// delta it wrote (logFrameWrite).
 func (socket *liveSocket) writeFrame(frame any) bool {
+	var began time.Time
+	if socket.traced {
+		began = time.Now()
+	}
 	data, err := json.Marshal(frame)
 	if err != nil {
 		slog.Error("dispatch: live socket closed: a frame did not encode", "frame", fmt.Sprintf("%T", frame), "error", err)
 		socket.close(gws.CloseInternalServerErr, "")
 		return false
 	}
-	_ = socket.conn.SetWriteDeadline(time.Now().Add(liveSocketWriteWait))
+	encoded := time.Now()
+	_ = socket.conn.SetWriteDeadline(encoded.Add(liveSocketWriteWait))
 	if err := socket.conn.WriteMessage(gws.TextMessage, data); err != nil {
 		socket.endReads(0)
 		return false
 	}
+	if socket.traced {
+		logFrameWrite(frame, len(data), began, encoded, time.Now())
+	}
 	return true
+}
+
+// logFrameWrite logs at slog's debug level a snapshot or a delta a socket wrote: its type, sub and
+// change position, its size encoded, how long its encode took and its write (gorilla's, which
+// compresses the frame where the page took permessage-deflate and hands it to the connection),
+// and when the write ended, in Unix microseconds. Any other frame logs nothing.
+func logFrameWrite(frame any, size int, began, encoded, wrote time.Time) {
+	var kind, sub, seq string
+	switch one := frame.(type) {
+	case DeliveryLiveSnapshot:
+		kind, sub, seq = one.Type, one.Sub, one.Seq
+	case DeliveryLiveDelta:
+		kind, sub, seq = one.Type, one.Sub, one.Seq
+	default:
+		return
+	}
+	slog.Debug("dispatch: live socket wrote a frame", "type", kind, "sub", sub, "seq", seq, "bytes", size,
+		"encode_ms", logMillis(encoded.Sub(began)), "write_ms", logMillis(wrote.Sub(encoded)), "wrote_unix_us", wrote.UnixMicro())
 }
 
 // serveLiveSocket serves GET /ws/live to a signed-in person or an agent's bearer, keeping what

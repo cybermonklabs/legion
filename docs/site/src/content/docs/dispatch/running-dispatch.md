@@ -398,21 +398,16 @@ Sign in, then open **Settings**:
 - **Architecture sources**: add each repository branch holding part of a project's architecture
   model. A project can have several, one per repository, and its model is all of their components
   together. Saving checks that the GitHub App can read the repository.
-- **Delivery timeline**: name the repository that deploys, its deploy and pull-request-check
-  workflows, the job whose success is a production deploy, and whose merged pull requests count.
-  Three job names are optional and feed the [Pipeline](/legion/dispatch/delivery/#pipeline) page:
-  the deploy workflow's staging end-to-end job and staging deploy job (each left empty when the
-  pipeline has no such step, and the page then omits its card), and the PR-checks workflow's
-  roll-up job, which only reports the other jobs' result and which the failing-jobs table leaves
-  out. Saving checks that the GitHub App can read the repository. Until it is set, the
-  [Delivery](/legion/dispatch/delivery/) page shows the same form. Every save, of any field,
-  starts the delivery import over: what is already stored stays on both pages, the freshness line
-  reads "never checked" until the next five-minute pass, that pass lists the last 28 days from
-  GitHub again, and two re-listings walk those 28 days a day per pass, about 28 passes in all:
-  one of each run's branch and event, and one of each deploy run's creation time, which decides
-  the deploy a pull request is credited to.
 - **Agent tokens**: make a token for each agent you run.
   [Dispatch for agents](/legion/dispatch/for-agents/#connecting-an-agent) covers the rest.
+
+Delivery is set on each project's own **Settings** tab (`/projects/<KEY>/settings`), not on this page.
+There a project turns delivery on and names its deploy sources: each the deploy workflow of one repository, with the jobs whose success is a production deploy, the pull-request checks workflow, and the optional staging and roll-up jobs that feed the [CI health](/legion/dispatch/delivery/#ci-health) section of its Evals tab, or the deploys a system posts to Dispatch.
+It also names whose merged pull requests count, the failure sources its failure measures count, and the targets of its delivery evals; [Delivery settings](/legion/dispatch/delivery/#delivery-settings) says what each field does.
+With delivery on, saving checks that the GitHub App can read each source's repository.
+A save that changes a source's repository or rule starts that repository's import over, and the next five-minute pass lists its last 28 days from GitHub again.
+Until a project has delivery on, its [Evals tab](/legion/dispatch/delivery/) shows no delivery or CI section, and a project that has never saved its delivery settings says **Delivery: not set up** there.
+The old Delivery and Pipeline pages are gone: `/delivery` and `/pipeline` open the Evals tab of the first project that has a Legion daemon or delivery on.
 
 ## Health check
 
@@ -463,8 +458,8 @@ period. `github` holds one entry for each loop, in this order:
 - `webhook_redelivery`: the sweep that asks GitHub to redeliver the webhook deliveries that
   failed, every 2 minutes.
 - `architecture_import`: the import of every enabled architecture source, every 5 minutes.
-- `delivery_reconcile`: the read of the pull requests and workflow runs that the
-  [Delivery](/legion/dispatch/delivery/) page shows, and of the pull request heads that results
+- `delivery_reconcile`: the read of the pull requests and workflow runs that each project's
+  [Evals tab](/legion/dispatch/delivery/) counts, and of the pull request heads that results
   are compared with, every 5 minutes.
 - `ci_reconcile`: the read of each open pull request's checks, and of its head's commit statuses
   where the App's token for the repository holds Commit statuses, every 5 minutes.
@@ -729,7 +724,7 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 29 for the work it runs once across the servers, the
+to 64 connections for requests, up to 32 for the work it runs once across the servers, the
 intakes' holds and the keyword fill's hold, up to 8 for saving what people type in documents,
 up to 4 for loading
 documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
@@ -743,7 +738,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 120
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 123
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs

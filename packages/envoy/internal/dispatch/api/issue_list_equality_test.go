@@ -338,7 +338,7 @@ func TestTheOtherResolvedReadsAnswerWhatMainsLateralsDid(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read main's delivery facts: %v", err)
 	}
-	facts, err := fixture.server.deliveryIssueFacts(ctx, fixture.keys)
+	facts, err := deliveryIssueFacts(ctx, fixture.server.deps.Store.Pool, fixture.keys)
 	if err != nil {
 		t.Fatalf("read the delivery facts: %v", err)
 	}
