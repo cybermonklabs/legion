@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/dispatch/answerswindow"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -405,6 +406,15 @@ func assertSameRowCounts(t *testing.T, first, second *store.Store) {
 	}
 }
 
+// readsAtOnce bounds the queries rowCountsOf and checksumsOf run at once on one database, each on
+// a connection of its pool, so a read waits on its slowest few queries and not on the sum of them
+// all. Eight is well under the 64 connections store.Open gives a pool, and keeps the pair a
+// comparison reads at once (readBothAtOnce) to 16 connections of the server's limit, which the
+// package's parallel tests share.
+const readsAtOnce = 8
+
+// rowCountsOf is the count of rows of each table of database's public schema, by table. The
+// tables are counted at once, readsAtOnce at a time, and the first count to fail cancels the rest.
 func rowCountsOf(database *store.Store) (map[string]int, error) {
 	ctx := context.Background()
 	rows, err := database.Pool.Query(ctx, `
@@ -418,13 +428,25 @@ func rowCountsOf(database *store.Store) (map[string]int, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list the tables: %w", err)
 	}
+	// Each count is written at its table's index, so the goroutines share no map and need no lock.
+	counted := make([]int, len(tables))
+	counting, ctx := errgroup.WithContext(ctx)
+	counting.SetLimit(readsAtOnce)
+	for index, table := range tables {
+		counting.Go(func() error {
+			query := `select count(*) from ` + pgx.Identifier{table}.Sanitize()
+			if err := database.Pool.QueryRow(ctx, query).Scan(&counted[index]); err != nil {
+				return fmt.Errorf("count %s: %w", table, err)
+			}
+			return nil
+		})
+	}
+	if err := counting.Wait(); err != nil {
+		return nil, err
+	}
 	counts := make(map[string]int, len(tables))
-	for _, table := range tables {
-		var count int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from `+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
-			return nil, fmt.Errorf("count %s: %w", table, err)
-		}
-		counts[table] = count
+	for index, table := range tables {
+		counts[table] = counted[index]
 	}
 	return counts, nil
 }
@@ -502,17 +524,27 @@ func assertSameChecksums(t *testing.T, first, second *store.Store) {
 }
 
 // checksumsOf is the checksum of each sample of checksums in database, in the order checksums
-// lists them.
+// lists them. The samples are read at once, readsAtOnce at a time, each written at its own index
+// so the order is the list's whatever order the queries end in, and the first checksum to fail
+// cancels the rest.
 func checksumsOf(database *store.Store) ([]string, error) {
 	sums := make([]string, len(checksums))
+	summing, ctx := errgroup.WithContext(context.Background())
+	summing.SetLimit(readsAtOnce)
 	for index, item := range checksums {
-		query := fmt.Sprintf(
-			`select coalesce(md5(string_agg(row_text, '|' order by row_text)), 'empty')
-			 from (select concat_ws(':', %s) as row_text from %s) sample`,
-			item.columns, pgx.Identifier{item.table}.Sanitize())
-		if err := database.Pool.QueryRow(context.Background(), query).Scan(&sums[index]); err != nil {
-			return nil, fmt.Errorf("checksum %s: %w", item.table, err)
-		}
+		summing.Go(func() error {
+			query := fmt.Sprintf(
+				`select coalesce(md5(string_agg(row_text, '|' order by row_text)), 'empty')
+				 from (select concat_ws(':', %s) as row_text from %s) sample`,
+				item.columns, pgx.Identifier{item.table}.Sanitize())
+			if err := database.Pool.QueryRow(ctx, query).Scan(&sums[index]); err != nil {
+				return fmt.Errorf("checksum %s: %w", item.table, err)
+			}
+			return nil
+		})
+	}
+	if err := summing.Wait(); err != nil {
+		return nil, err
 	}
 	return sums, nil
 }
