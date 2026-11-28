@@ -552,7 +552,7 @@ func (d *scratchDispatch) start() {
 	}
 	command.Stderr = command.Stdout
 	// The test keeps its copy of the socket, so the port stays its own once Dispatch exits; stop
-	// takes it out of listening then, so a dial is refused while no Dispatch serves.
+	// takes it out of listening then, so every dial is refused from each stop to the next start.
 	err := command.Start()
 	if err != nil {
 		t.Fatalf("start scratch Dispatch: %v", err)
