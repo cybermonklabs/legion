@@ -19,7 +19,8 @@ import type { DispatchEvent, IssueTreeParent } from "./types";
  * (`["issue-tree", key, view]`) are reached too. An event of another issue reaches a tree or a
  * view where its answer holds a node of that issue, or a node standing under one, of a kind the
  * event can move - for an ask's event, one the ask is on - and an issue write that may have moved
- * its issue's parent each ancestor's tree it names; an event of no issue reaches none.
+ * its issue's parent each ancestor's tree it names, every tree where the issue is not new; an
+ * event of no issue reaches none, but a change of who may see a project reaches every tree.
  */
 
 /** An event of `type`, with the payload its reader reads; the feed's union is wider than this
@@ -370,6 +371,76 @@ test("an issue write marks stale each ancestor's tree it names only where it may
       name
     ).toEqual({ spec: marks, tree: marks });
   }
+});
+
+// A parent move takes every issue under the moved one out from under its old ancestors, and no
+// event names those issues: a grandchild's Spec view carries the statement of an issue above it
+// that its check serves (the route's `viewContext`), which leaves the view once that issue is no
+// longer above it. The old parent's `child.removed` moves only that parent's issue node, which the
+// view does not hold. A create puts no issue under the new one, so it reads no other tree.
+test("a parent move marks stale a view of an issue under the moved one that carries a statement of an issue the move takes from above it, and a create under a parent marks none", () => {
+  const cases: Record<string, readonly DispatchEvent[]> = {
+    "a create": [
+      eventOf(
+        "issue.created",
+        { ancestors: ["CORE-2", "CORE-1"], changed: ["title", "status", "parent"] },
+        "CORE-9"
+      ),
+    ],
+    "a parent move": [
+      eventOf("issue.updated", { ancestors: [], changed: ["parent"] }, "CORE-3"),
+      eventOf("child.removed", { child_key: "CORE-3" }, "CORE-2"),
+    ],
+  };
+  const seen: Record<string, boolean | undefined> = {};
+  for (const [name, events] of Object.entries(cases)) {
+    const client = new QueryClient();
+    const view = viewKey("CORE-4", "spec");
+    client.setQueryData(
+      view,
+      treeAnswer(
+        [
+          treeNode("CORE-4", "issue", null),
+          treeNode("r1", "requirement", null, {
+            in: "spec",
+            issue: "CORE-1",
+            read_only: true,
+            role: "context",
+            text: "The outline draws every child.",
+          }),
+        ],
+        [],
+        { issue: "CORE-4", view: "spec" }
+      )
+    );
+    for (const event of events) refreshQueries(client, eventRefreshTargets(event, "alice"));
+    seen[name] = client.getQueryState(view)?.isInvalidated;
+  }
+  expect(seen).toEqual({ "a create": false, "a parent move": true });
+});
+
+// A tree read answers only the nodes its reader may see - an issue of another project under the
+// issue among them (`refs.IssueDescendants`) - so a change of who may see a project tells every
+// held tree and view; a change of the project's Slack channels moves no one's sight.
+test("a change of who may see a project marks every held tree and view stale, and a change of its Slack channels marks none", () => {
+  const seen: Record<string, unknown> = {};
+  for (const change of ["person_added", "slack_channels"]) {
+    const client = new QueryClient();
+    const tree = issueTreeKey("CORE-1");
+    const view = viewKey("CORE-1", "verification");
+    client.setQueryData(tree, OUTLINE_WITH_CHILD);
+    client.setQueryData(view, VERIFICATION_WITH_REQUIREMENT);
+    const changed = eventOf("project.access_changed", { change, project: "PRIV" }, null);
+    refreshQueries(client, eventRefreshTargets(changed, "alice"));
+    seen[change] = {
+      tree: client.getQueryState(tree)?.isInvalidated,
+      view: client.getQueryState(view)?.isInvalidated,
+    };
+  }
+  expect(seen).toEqual({
+    person_added: { tree: true, view: true },
+    slack_channels: { tree: false, view: false },
+  });
 });
 
 // A child's title is a member of the node its parent's outline holds of it, so the outline reads
@@ -1052,6 +1123,21 @@ test("a grandchild's document version marks its grandparent's outline and view w
   }).toEqual({ outline: true, verification: true });
 });
 
+// A version whose write left even its typed blocks to the block index - its two renders of the
+// tree disagreed - makes its checks nodes only in the index's pass, whose one event is
+// `artifact.indexed` on the grandchild alone, with no ancestors: the page places the grandchild
+// from what it holds, as for a version.
+test("a grandchild's block index catching up marks its grandparent's outline and view where the grandchild's detail names its parent", () => {
+  const client = new QueryClient();
+  const { outline, verification } = grandparentHolding(client, "detail");
+  const indexed = eventOf("artifact.indexed", { artifact_ids: ["artifact-3"] }, "CORE-3");
+  refreshQueries(client, eventRefreshTargets(indexed, "alice"));
+  expect({
+    outline: client.getQueryState(outline)?.isInvalidated,
+    verification: client.getQueryState(verification)?.isInvalidated,
+  }).toEqual({ outline: true, verification: true });
+});
+
 // The feed refreshes every event of one window in one refresh, so an earlier event of the
 // grandchild - a comment, a claim - names its detail before its version's checks run. No mark of
 // a refresh decides a check of the same refresh: the grandchild's fresh detail places it under
@@ -1168,6 +1254,31 @@ test("a grandchild's document version marks its grandparent's outline and view w
       { issue: "CORE-0", view: "plan" }
     )
   );
+  refreshQueries(client, eventRefreshTargets(GRANDCHILD_VERSION, "alice"));
+  expect({
+    outline: client.getQueryState(outline)?.isInvalidated,
+    verification: client.getQueryState(verification)?.isInvalidated,
+  }).toEqual({ outline: true, verification: true });
+});
+
+// The Plan view answers every issue under its issue, and stands one whose `part_of` names no node
+// it holds under the view's own issue node (the route's `keep`). Read first, it would place the
+// grandchild under the great-grandparent, though the parent's held outline places it under the
+// parent, and the grandparent's outline, which holds the parent's node, would miss the
+// grandchild's new check.
+test("a grandchild's document version marks its grandparent's outline and view where a held Plan view answers it under that view's own issue and its parent's outline holds it", () => {
+  const client = new QueryClient();
+  const underIt = (key: string) =>
+    treeNode(key, "issue", "CORE-0", { issue: key, read_only: true, role: "query" });
+  client.setQueryData(
+    viewKey("CORE-0", "plan"),
+    treeAnswer(
+      [treeNode("CORE-0", "issue", null), underIt("CORE-1"), underIt("CORE-2"), underIt("CORE-3")],
+      [],
+      { issue: "CORE-0", view: "plan" }
+    )
+  );
+  const { outline, verification } = grandparentHolding(client, "parent's outline");
   refreshQueries(client, eventRefreshTargets(GRANDCHILD_VERSION, "alice"));
   expect({
     outline: client.getQueryState(outline)?.isInvalidated,

@@ -1357,13 +1357,15 @@ function markedTreeNode(node: MarkedTreeNode, post: CorrectedPost): MarkedTreeNo
   return { ...kept, ...deletionMarks(post.mark.deletion), text: "" };
 }
 
-/** Whether `end`, a node named by its store kind and id, is `post` or a block of it, whose id
- *  starts with the post's (`CorrectedPost.blockNodes`). */
+/** Whether `end`, a node named by its store kind and id, is `post` or a block of it: a block's
+ *  kind is the post's block kind (`comment_block`, `message_block`), as the tree read names a node
+ *  by its store kind (`refs.ItemKind.BlockKind`), and its id starts with the post's
+ *  (`CorrectedPost.blockNodes`). */
 function isPostOrBlock(
   end: { readonly kind: string; readonly id: string },
   post: CorrectedPost
 ): boolean {
-  return end.kind === "block"
+  return end.kind === `${post.kind}_block`
     ? end.id.startsWith(post.blockNodes)
     : end.kind === post.kind && end.id === post.id;
 }

@@ -1101,6 +1101,7 @@ const ROWS: readonly WriteRow[] = [
       {
         ...treeNode("b1", "block", POST, { text: OLD_WORDS, text_tree: WORDS_TREE }),
         id: `message/${POST}#b1`,
+        kind: "message_block",
       },
     ]),
     copies: (answer) => [marksAt(answer, "nodes", 1), marksAt(answer, "nodes", 2)],
@@ -1220,6 +1221,46 @@ test("an edit and a delete of a comment held as a node of a tree answer each cha
         : { ...post, ...DELETION, text: "", text_tree: undefined }
     );
   }
+});
+
+// The tree read names a block of a post by the post's own block kind (`comment_block`), never
+// `block`, its id naming the post (`comment/<id>#<block id>`). A delete takes every block out of
+// the post, so the block's node loses its words with the post's, and the post's first line it
+// carries as its parent's, and a node standing under the block its parent's first line.
+test("a delete of a comment held in a tree answer with a block of it empties that block, as the route names it, and the first line of the node under the block", () => {
+  const key = ["issue-tree", "CORE-1"];
+  const blockId = `comment/${POST}#d1`;
+  const answer = () =>
+    treeAnswer([
+      treeNode("CORE-1", "issue", null),
+      treeNode(POST, "comment", "CORE-1", { text: OLD_WORDS, text_tree: WORDS_TREE }),
+      {
+        ...treeNode("d1", "decision", POST, { text: OLD_WORDS, text_tree: WORDS_TREE }),
+        id: blockId,
+        kind: "comment_block",
+      },
+      treeNode(
+        "rd1",
+        "reading",
+        { first_line: OLD_WORDS, id: blockId, kind: "comment_block", supertag: "decision" },
+        { text: "The agent's reading." }
+      ),
+    ]);
+  const client = new QueryClient();
+  client.setQueryData(key, answer());
+  markCorrectedPost(client, correction("comment", POST, false));
+  const nodes = client.getQueryData<TreeAnswer>(key)?.nodes ?? [];
+  const block = answer().nodes?.[2];
+  expect<unknown>({ block: nodes[2], under: nodes[3]?.parent?.first_line }).toEqual({
+    block: {
+      ...block,
+      ...DELETION,
+      parent: { ...block?.parent, first_line: "" },
+      text: "",
+      text_tree: undefined,
+    },
+    under: "",
+  });
 });
 
 // The architect's ruling of 2026-11-21 03:47Z on census rows 7.13 and 8.54: Dispatch refuses the
