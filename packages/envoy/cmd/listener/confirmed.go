@@ -833,7 +833,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
 	// reads the same stamp this send's own 202 names.
-	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
+	send.item.Sender = senderStamp(ctx, d.clk(), d.registry, d.sessions, item.SourceSession)
 	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
 	resolvedAt := d.delivery.now()
 	first, err := send.resolve(firstCtx)

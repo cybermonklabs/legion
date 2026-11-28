@@ -9,6 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -94,13 +95,13 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 	t.Run("control: a session registered through listener A, then B", func(t *testing.T) {
 		register(t, moved, current)
 		recordThrough(t, moved, first, current)
-		requireStamp(t, moved, senderStamp(context.Background(), registry, sessions, moved), current, "the current registration")
+		requireStamp(t, moved, senderStamp(context.Background(), clock.Real(), registry, sessions, moved), current, "the current registration")
 	})
 
 	t.Run("control: the interest record answers and the session entry names another registration", func(t *testing.T) {
 		register(t, disagrees, current)
 		recordThrough(t, disagrees, first)
-		requireStamp(t, disagrees, senderStamp(context.Background(), registry, sessions, disagrees), first, "the interest record's, which decides wherever its read answers")
+		requireStamp(t, disagrees, senderStamp(context.Background(), clock.Real(), registry, sessions, disagrees), first, "the interest record's, which decides wherever its read answers")
 	})
 
 	t.Run("case: the interest read finds no record for a registered session", func(t *testing.T) {
@@ -108,13 +109,13 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 		if _, err := registry.Get(context.Background(), noRow); !errors.Is(err, nats.ErrKeyNotFound) {
 			t.Fatalf("the interest read of %s answers %v, want %v: this row is a read that finds no record", noRow, err, nats.ErrKeyNotFound)
 		}
-		requireStamp(t, noRow, senderStamp(context.Background(), registry, sessions, noRow), current, "the session entry's, the current registration")
+		requireStamp(t, noRow, senderStamp(context.Background(), clock.Real(), registry, sessions, noRow), current, "the session entry's, the current registration")
 	})
 
 	t.Run("case: the interest read answers a record this build cannot decode", func(t *testing.T) {
 		register(t, malformed, current)
 		rig.undecodable(t, malformed)
-		requireStamp(t, malformed, senderStamp(context.Background(), registry, sessions, malformed), current, "the session entry's, the current registration")
+		requireStamp(t, malformed, senderStamp(context.Background(), clock.Real(), registry, sessions, malformed), current, "the session entry's, the current registration")
 	})
 
 	t.Run("case: the bus does not answer the interest read", func(t *testing.T) {
@@ -126,7 +127,7 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 		// discarded and the connection stays open.
 		relay.arm("\r\n", 1)
 		started := time.Now()
-		stamp := senderStamp(context.Background(), registry, sessions, frozen)
+		stamp := senderStamp(context.Background(), clock.Real(), registry, sessions, frozen)
 		elapsed := time.Since(started)
 		t.Logf("stamp of %s returned after %s", frozen, elapsed.Round(time.Millisecond))
 		if elapsed < senderStampReadTimeout {
@@ -175,7 +176,7 @@ func TestTheSenderStampReadsTheInterestRecordBeforeTheSessionEntry(t *testing.T)
 	stallSessionReads(t, sessions)
 
 	started := time.Now()
-	stamp := senderStamp(context.Background(), registry, sessions, sender)
+	stamp := senderStamp(context.Background(), clock.Real(), registry, sessions, sender)
 	elapsed := time.Since(started)
 	if stamp == nil {
 		t.Fatalf("stamp of %s is nil, want the sender itself", sender)
@@ -272,7 +273,7 @@ func TestASenderStampLogsAtWarnTheReadThroughThatDidNotAnswer(t *testing.T) {
 	t.Run("control: both caches hold the sender, and the window has ended", func(t *testing.T) {
 		register(t, cached)
 		record(t, cached)
-		stamp := senderStamp(ended, registry, sessions, cached)
+		stamp := senderStamp(ended, clock.Real(), registry, sessions, cached)
 		if stamp == nil || stamp.Machine != "interest-machine" || stamp.Title != title {
 			t.Fatalf("stamp of %s is %+v, want the cached record's machine and the cached entry's title", cached, stamp)
 		}
@@ -282,7 +283,7 @@ func TestASenderStampLogsAtWarnTheReadThroughThatDidNotAnswer(t *testing.T) {
 	t.Run("control: neither bucket holds a row of the sender", func(t *testing.T) {
 		uncachedInterest(t, unknown)
 		uncachedEntry(t, unknown)
-		stamp := senderStamp(context.Background(), registry, sessions, unknown)
+		stamp := senderStamp(context.Background(), clock.Real(), registry, sessions, unknown)
 		if stamp == nil || stamp.SessionID != unknown || stamp.Machine != "" || stamp.Title != "" {
 			t.Fatalf("stamp of %s is %+v, want the session alone", unknown, stamp)
 		}
@@ -292,7 +293,7 @@ func TestASenderStampLogsAtWarnTheReadThroughThatDidNotAnswer(t *testing.T) {
 	t.Run("control: the interest record does not decode", func(t *testing.T) {
 		register(t, malformed)
 		rig.undecodable(t, malformed)
-		stamp := senderStamp(context.Background(), registry, sessions, malformed)
+		stamp := senderStamp(context.Background(), clock.Real(), registry, sessions, malformed)
 		if stamp == nil || stamp.Machine != entry.MachineID {
 			t.Fatalf("stamp of %s is %+v, want the entry's machine %s", malformed, stamp, entry.MachineID)
 		}
@@ -302,7 +303,7 @@ func TestASenderStampLogsAtWarnTheReadThroughThatDidNotAnswer(t *testing.T) {
 	t.Run("case: the interest read does not answer within the window", func(t *testing.T) {
 		register(t, interestUnanswered)
 		uncachedInterest(t, interestUnanswered)
-		stamp := senderStamp(ended, registry, sessions, interestUnanswered)
+		stamp := senderStamp(ended, clock.Real(), registry, sessions, interestUnanswered)
 		if stamp == nil || stamp.Machine != entry.MachineID || stamp.Title != title {
 			t.Fatalf("stamp of %s is %+v, want the cached entry's machine and title", interestUnanswered, stamp)
 		}
@@ -312,7 +313,7 @@ func TestASenderStampLogsAtWarnTheReadThroughThatDidNotAnswer(t *testing.T) {
 	t.Run("case: the title read does not answer within the window", func(t *testing.T) {
 		record(t, titleUnanswered)
 		uncachedEntry(t, titleUnanswered)
-		stamp := senderStamp(ended, registry, sessions, titleUnanswered)
+		stamp := senderStamp(ended, clock.Real(), registry, sessions, titleUnanswered)
 		if stamp == nil || stamp.Machine != "interest-machine" || stamp.Title != "" {
 			t.Fatalf("stamp of %s is %+v, want the cached record's machine and no title", titleUnanswered, stamp)
 		}
@@ -327,7 +328,7 @@ func TestASenderStampLogsAtWarnTheReadThroughThatDidNotAnswer(t *testing.T) {
 		swapSessionBucket(t, sessions, func(kv nats.KeyValue) nats.KeyValue {
 			return bucketThatFails{KeyValue: kv, err: failure}
 		})
-		stamp := senderStamp(context.Background(), registry, sessions, titleFailed)
+		stamp := senderStamp(context.Background(), clock.Real(), registry, sessions, titleFailed)
 		if stamp == nil || stamp.Machine != "interest-machine" || stamp.Title != "" {
 			t.Fatalf("stamp of %s is %+v, want the cached record's machine and no title", titleFailed, stamp)
 		}

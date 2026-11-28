@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -425,7 +426,7 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 		{sender: nothing, within: 1500 * time.Millisecond, reads: "its interest record and its title share the one window the stamp spends"},
 	} {
 		started := time.Now()
-		stamp := senderStamp(context.Background(), registry, sessions, want.sender)
+		stamp := senderStamp(context.Background(), clock.Real(), registry, sessions, want.sender)
 		elapsed := time.Since(started)
 		if stamp == nil || stamp.SessionID != want.sender {
 			t.Fatalf("stamp of %s = %+v, want the sender itself", want.sender, stamp)

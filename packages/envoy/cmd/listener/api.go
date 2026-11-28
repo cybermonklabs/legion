@@ -15,6 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -618,14 +619,14 @@ func expectsReplyAnswer(requested json.RawMessage, answered contracts.ExpectsRep
 // from, so the fallback adds no read and spends no more of the window.
 //
 // The title is read the same way and within that same one window, so the two read-throughs of one
-// stamp cannot cost the message more than the window the budget allots it (senderStampReadTimeout)
-// and a silent bus still leaves the publish its 1.5 s. session.SessionRegistry.Get answers this
-// listener's in-process cache alone, with one error for every row it does not hold
-// (nats.ErrKeyNotFound), and exactly that error is read through to the bucket with
-// session.SessionRegistry.Refresh: so a sender that registered a moment ago through another
-// listener, and any sender while the session cache refills after a reconnect, carries the title
-// the bucket holds. The read is made for a sender this cache misses, once per request, and nothing
-// remembers the miss - neither a negative cache nor a rate limit
+// stamp cannot cost the message more than the window the budget allots it (senderStampReadTimeout,
+// armed on clk, the route's clock) and a silent bus still leaves the publish its 1.5 s.
+// session.SessionRegistry.Get answers this listener's in-process cache alone, with one error for
+// every row it does not hold (nats.ErrKeyNotFound), and exactly that error is read through to the
+// bucket with session.SessionRegistry.Refresh: so a sender that registered a moment ago through
+// another listener, and any sender while the session cache refills after a reconnect, carries the
+// title the bucket holds. The read is made for a sender this cache misses, once per request, and
+// nothing remembers the miss - neither a negative cache nor a rate limit
 // (dispatch://INFRA-1368/artifact/decisions-md).
 //
 // Two senders still give a message with no title, and no read answers either. A row the bucket
@@ -641,12 +642,12 @@ func expectsReplyAnswer(requested json.RawMessage, answered contracts.ExpectsRep
 // read's answer about the record (interestReadAnswered) is no failed read either, so the line is
 // never one a healthy bus writes per message; a record that does not decode is left to the
 // registry's own line.
-func senderStamp(ctx context.Context, registry *store.Registry, sessions *session.SessionRegistry, sourceSession string) *contracts.EnvelopeSender {
+func senderStamp(ctx context.Context, clk clock.Clock, registry *store.Registry, sessions *session.SessionRegistry, sourceSession string) *contracts.EnvelopeSender {
 	if sourceSession == "" {
 		return nil
 	}
 	sender := &contracts.EnvelopeSender{SessionID: sourceSession}
-	readCtx, cancel := context.WithTimeout(ctx, senderStampReadTimeout)
+	readCtx, cancel := clock.WithShownTimeout(clk, ctx, senderStampReadTimeout)
 	defer cancel()
 	var unansweredInterest, titleErr error
 	interest, interestErr := registry.Get(readCtx, sourceSession)
@@ -813,7 +814,7 @@ const sendRequestBudget = contracts.ListenerCallTimeout * 7 / 10
 const sendSessionReadTimeout = 1 * time.Second
 
 // senderStampReadTimeout bounds senderStamp's reads of the sender's interest record and session
-// entry from their buckets, the two together.
+// entry from their buckets, the two together, on the clock senderStamp is given.
 // nats.go's KV read takes no context and waits out the JetStream MaxWait (10 s), and the stamp is
 // only enrichment, so on a bus that does not answer it gets no more of sendRequestBudget than the
 // send route's own read of its target (sendSessionReadTimeout): a send whose two reads both go
@@ -1072,7 +1073,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		} else {
 			connected <- hasEntry
 		}
-		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
+		item.Sender = senderStamp(ctx, d.clk(), d.registry, d.sessions, item.SourceSession)
 		state, lastSeen := sessionStateConnected, target.UpdatedAt
 		if !hasEntry {
 			lastSeen = known.LastSeen
@@ -1585,7 +1586,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// spending the caller's attempt.
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
-		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
+		item.Sender = senderStamp(ctx, d.clk(), d.registry, d.sessions, item.SourceSession)
 		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, record, senderOf(r, item), &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)

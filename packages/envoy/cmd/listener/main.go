@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1003,6 +1004,55 @@ func listenerStreamOptions(cfg config.Service) []bus.ConnectOption {
 	}
 }
 
+// promptReconnectBuild and jetStreamWaitBuild are a test build's switches for the listener's
+// own NATS clients, which a test that runs the listener's binary sets with -ldflags (-X
+// main.promptReconnectBuild=1, -X main.jetStreamWaitBuild=650ms; test_build_test.go builds those
+// binaries), as relaySocketCheckBuild is set. They are empty in every other build, whose clients
+// keep the bus's own waits. promptReconnectBuild=1 gives every client the listener dials
+// bus.WithPromptReconnect (listenerDialOptions), so a test that restarts its NATS server finds the
+// listener back within milliseconds rather than on nats.go's next 1 s ReconnectWait;
+// jetStreamWaitBuild is the main client's JetStream MaxWait (bus.WithJetStreamWait), so a request
+// a test holds unanswered ends within it rather than 10 s.
+var (
+	promptReconnectBuild string
+	jetStreamWaitBuild   string
+)
+
+// listenerDialOptions is options with bus.WithPromptReconnect added where promptReconnectBuild is
+// 1. A build that set it to anything else is a broken build, and stops.
+func listenerDialOptions(options ...bus.ConnectOption) []bus.ConnectOption {
+	switch promptReconnectBuild {
+	case "":
+		return options
+	case "1":
+		return append(options, bus.WithPromptReconnect())
+	default:
+		panic("main.promptReconnectBuild is " + strconv.Quote(promptReconnectBuild) + ", want 1")
+	}
+}
+
+// listenerJetStreamWait is the main client's options with bus.WithJetStreamWait added where
+// jetStreamWaitBuild is set; a build that set it to no positive duration stops.
+func listenerJetStreamWait(options []bus.ConnectOption) []bus.ConnectOption {
+	if wait := listenerBuildDuration("jetStreamWaitBuild", jetStreamWaitBuild, 0); wait > 0 {
+		return append(options, bus.WithJetStreamWait(wait))
+	}
+	return options
+}
+
+// listenerBuildDuration is value, a build variable named name, as time.ParseDuration reads it, or
+// fallback when the build left it empty. A value that is no positive duration stops the binary.
+func listenerBuildDuration(name, value string, fallback time.Duration) time.Duration {
+	if value == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		panic("main." + name + " is " + strconv.Quote(value) + ", which is no positive duration")
+	}
+	return d
+}
+
 // registerListGauges registers the two gauges that count a list /v1 answers: envoy_active_sessions
 // counts listedSessions, the listing GET /v1/sessions answers, and envoy_active_interests the
 // interest copy GET /v1/interests/ answers. served is the pointer openV1Routes publishes. Before
@@ -1104,6 +1154,12 @@ func main() { runListener(listenerCredentialWait) }
 // (TestTheListenerStartEndsAtTheCredentialBound). Every end of the run ends the process, as main's
 // did.
 func runListener(credentialWait time.Duration) {
+	// A test build's switches (promptReconnectBuild, durableBindIntervalBuild, jetStreamWaitBuild)
+	// are read before anything starts, so a build that set one wrongly stops at once.
+	dialOptions := listenerDialOptions()
+	bindInterval := listenerDurableBindInterval()
+	_ = listenerJetStreamWait(nil)
+
 	// Phase 1: Load config (synchronous, fast). With ENVOY_LISTEN_FD, Load inspects the inherited
 	// socket and takes its address as cfg's, so the API auth fence below judges the address that
 	// serves; Phase 2 adopts it.
@@ -1296,6 +1352,8 @@ func runListener(credentialWait time.Duration) {
 	// listener's start on NATS (Phase 5): /healthz answers 503 naming the last refusal of the
 	// credential while the start waits it out, and /livez answers 204 throughout.
 	start := newNATSStart(credentialWait)
+	// The main client, role lane and session consumers all take these options through start.
+	start.extra = dialOptions
 	registerProbeRoutes(mux, &deps, start, func() map[string]any { return issuerHealthFields(apiAuthConfig) })
 
 	// GaugeFunc for consumer pending — queries NATS at scrape time
@@ -1789,7 +1847,8 @@ func runListener(credentialWait time.Duration) {
 	// connection's last error (confirmPublished reads it); every other listener serves none.
 	var sockets *relaySockets
 	if edge != nil {
-		socketsClient, err := bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection())...)
+		options := append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection())
+		socketsClient, err := bus.Connect(cfg.NATSURLs, listenerDialOptions(options...)...)
 		if err != nil {
 			logger.Error("relay socket connection failed: an edge listener serves its sessions' sockets on it", slog.String("error", err.Error()))
 			relays.stop(context.Background())
@@ -1874,7 +1933,7 @@ func runListener(credentialWait time.Duration) {
 	// A durable refused here is not retried either. The bind is the only refusal when the check
 	// after the connect could not read the durable (logged at WARN above), and it also catches a
 	// durable made refusable since that check.
-	bind, err := bindListenerDurable(stopping, client, consumer, jetStreamDeliveryHandler(deliveryConfig), logger, durableBindInterval, durableBindDeadline)
+	bind, err := bindListenerDurable(stopping, client, consumer, jetStreamDeliveryHandler(deliveryConfig), logger, bindInterval, durableBindDeadline)
 	// A start the bind ends shuts down in order: /v1 and the role lane already serve, and no
 	// background loop has started yet. shutdownListener exits, so nothing below runs on an error.
 	if err != nil {

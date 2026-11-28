@@ -28,7 +28,8 @@ type ConnectOption interface{ apply(*connectOpts) }
 // DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
 // WithPromptReconnect, WithWriteDeadline, WithInboxPrefix and WithReconnectErrClock. Dial's name
 // and environment are its parameters, so WithName and WithEnvironment are not DialOptions, and
-// neither are the options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
+// neither are the options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock,
+// WithJetStreamWait).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -58,6 +59,7 @@ type connectOpts struct {
 	background                  bool
 	silentCutDetection          bool
 	promptReconnect             bool
+	jetStreamWait               time.Duration
 	writeDeadline               time.Duration
 	inboxPrefix                 string
 	streamMessageReads          bool
@@ -313,6 +315,15 @@ func WithPromptReconnect() DialOption {
 	return func(o *connectOpts) { o.promptReconnect = true }
 }
 
+// WithJetStreamWait is the MaxWait of every JetStream context the client takes from its
+// connections (install, ensureStreamOn, ensureConnWithContext): how long a JetStream request that
+// carries no deadline of its own waits for its answer. Without it, or with d of zero or less, the
+// wait is 10 s. Only a listener binary that a test links with -X main.jetStreamWaitBuild sets it
+// (cmd/listener), so a request the test holds unanswered ends well before 10 s.
+func WithJetStreamWait(d time.Duration) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.jetStreamWait = d })
+}
+
 // WithWriteDeadline has every connection the client makes, the first and each one it dials to
 // replace a closed one, give each write to its socket at most d (nats.go's FlusherTimeout, which
 // sets the socket's write deadline before each write: timeoutWriter, nats.go v1.55.0). A write
@@ -503,6 +514,7 @@ type Client struct {
 	connectionSettings          nats.Option
 	dialer                      *socks5Dialer
 	publishAcknowledgementClock AcknowledgementClock
+	jetStreamWait               time.Duration
 	reconnectErrClock           func() time.Time
 	// windowClock is the clock a publish window reads its deadline against, times its first send's
 	// wait for a connection on and times its probe on (WithWindowClock); nil is the real clock.
@@ -892,6 +904,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		connectionSettings:          settings,
 		dialer:                      dialer,
 		publishAcknowledgementClock: opts.publishAcknowledgementClock,
+		jetStreamWait:               opts.jetStreamWait,
 		reconnectErrClock:           opts.reconnectErrClock,
 		windowClock:                 opts.windowClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
@@ -976,6 +989,14 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 	return c, stepInstall, nil
 }
 
+// jetStreamMaxWait keeps the same per-request wait across all connections of the client.
+func (c *Client) jetStreamMaxWait() nats.JSOpt {
+	if c.jetStreamWait > 0 {
+		return nats.MaxWait(c.jetStreamWait)
+	}
+	return nats.MaxWait(10 * time.Second)
+}
+
 // install makes nc the client's connection, with the JetStream context taken from it, once it has
 // ensured the client's stream on nc (ensureStream) when ensure is true. The ensure is told
 // whether nc's server caps a stream that sets no consumer cap at a default of its own, read from
@@ -988,7 +1009,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 // only a client it returns gets this far, so a caller holding a connection can find the client
 // that owns it (clientOwning) for as long as that client is a caller's to use.
 func (c *Client) install(nc *nats.Conn, ensure bool) error {
-	js, err := JetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
+	js, err := JetStreamOn(nc, c.jetStreamMaxWait(), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 	if err != nil {
 		return err
 	}
@@ -1064,7 +1085,7 @@ func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, def
 // elect one, so the hooks after it run, unless the stream must be reconciled, an update that fails
 // at once while the cluster has no quorum, as at main; a create or a raise it makes is waited out.
 func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
-	js, err := JetStreamOn(conn, nats.MaxWait(10*time.Second))
+	js, err := JetStreamOn(conn, c.jetStreamMaxWait())
 	if err == nil {
 		err = c.ensureStreamReported(lookOnce(), ctx, conn, requestsUnder(ctx, js), atReconnect)
 	}
@@ -2338,7 +2359,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		js, err := JetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
+		js, err := JetStreamOn(nc, c.jetStreamMaxWait(), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 		if err != nil {
 			nc.Close()
 			return err

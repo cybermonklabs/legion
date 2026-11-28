@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -174,7 +175,7 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 		Envelope:      target.envelope,
 	}}
 	if target.stampSender {
-		handoff.Envelope.Sender = senderStamp(ctx, h.registry, h.sessions, handoff.Envelope.SourceSession)
+		handoff.Envelope.Sender = senderStamp(ctx, clock.Real(), h.registry, h.sessions, handoff.Envelope.SourceSession)
 	}
 	data, err := json.Marshal(handoff.LegionHandoff)
 	if err != nil {
