@@ -258,8 +258,26 @@ func (j *footnoteJudge) held(text Text) footnotesHeld {
 	if text.Kind != KindStatement {
 		return noted
 	}
+	counted := j.sentences(text.Notes)
+	noted.adds, noted.count, noted.atLeast = counted.adds, counted.count, counted.atLeast
+	return noted
+}
+
+// sentences is what notes, the footnotes that a text refers to, add to the count of its sentences:
+// the footnotes with sentences that each of them holds (carry), each once, with how many sentences
+// each adds, their sum (count), and whether that sum is only the least that they hold (atLeast),
+// since the count stops once it passes maxSentences. A statement counts them (held), and so does
+// the definition of a term, whose footnote is part of it (R50).
+func (j *footnoteJudge) sentences(notes []*Footnote) footnotesHeld {
+	var noted footnotesHeld
+	if len(notes) == 0 {
+		return noted
+	}
+	if j.counted == nil {
+		j.carry()
+	}
 	var held []*Footnote
-	for _, note := range text.Notes {
+	for _, note := range notes {
 		count := j.counted[note]
 		noted.atLeast = noted.atLeast || count.full()
 		for _, each := range count.notes {

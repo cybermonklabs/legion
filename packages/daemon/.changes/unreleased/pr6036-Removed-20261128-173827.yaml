@@ -1,0 +1,8 @@
+kind: Removed
+body: |-
+    The architect's and the workers' role prompts give the credential shape check as the command a
+    run of `agent-secrets` runs, and point at `agent-secrets --help` for the run, rather than copy an
+    `agent-secrets` command line.
+time: 2026-11-28T17:38:27Z
+custom:
+    Issue: pr6036

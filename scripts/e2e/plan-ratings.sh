@@ -23,6 +23,9 @@
 #     400 PLAN_RATING_REQUIRED, with the issue still in retro; control: the same completion with
 #     planRating 4 and a reason moves the issue to merging. The fourth issue goes no further, so
 #     the read by project lists the three alone.
+# Each issue's line also ends in `on set model <n> off 0 unknown 1`: `<n>` counts its records that
+# name an agent, less the merge. The merge counts as unknown, since its agent never registers and
+# no read of its calls is answered.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), bun (after `bun install` at the checkout's root), awk and python3, as
