@@ -305,7 +305,7 @@ runs:
     # PATH and names `cache` as the source. The run that wrote it fails; no run that reads it
     # passes.
     - id: bun-cache-save
-      if: inputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun-cache.outputs.cache-hit != 'true'
+      if: steps.bun-cache.outcome == 'success' && steps.bun-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.bun/bin
