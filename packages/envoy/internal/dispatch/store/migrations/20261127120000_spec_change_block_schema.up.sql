@@ -1,4 +1,4 @@
--- 20261127232000_spec_change_block_schema.up.sql
+-- 20261127120000_spec_change_block_schema.up.sql
 --
 -- The block schema moves from version 9 to version 10, so an issue's blocks hold a change request of
 -- The Spec (D2 of the work-units plan; R22), after 20261126050010_issue_tree_block_schema moved
@@ -47,7 +47,16 @@
 -- It is a type migration written after the store's backfill: it is numbered above backfillVersion
 -- (cmd/dispatch/supertag_nodes_test.go) and above every type migration before it, so it runs after
 -- them on every store and finds what 20261126050010 left: version 9 on every block type, and the
--- `creatable_since` 10 of `check`'s `subject` and `program`.
+-- `creatable_since` 10 of `check`'s `subject` and `program`. It is numbered below
+-- 20261127120803_issue_tree_head, which creates the head-mark triggers on graph_nodes and
+-- graph_tuples: the pre-deploy census reads a table's triggers as they stand before any pending
+-- migration applies, so it admits a type migration's bounded writes only where no earlier pending
+-- migration changes that table with more than bounded writes. Numbered after it, a deployment that
+-- meets both pending at once over a backfilled store refuses this file
+-- (TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema). A store that already
+-- applied 20261127120803 runs this file after it, where the census reads those triggers as they
+-- stand; they drop no issue's head mark for a type node or its tuples, which name no issue
+-- (issue_head_marks_drop).
 --
 -- The change is stated here as rows rather than read from the file, for the reason the seed
 -- copies its text in: a migration states what the database held at one version and must not

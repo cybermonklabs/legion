@@ -150,7 +150,7 @@ const blockSchemaFile = "../../internal/dispatch/pmdoc/schema/blocks.json"
 // that moves lenses and lens kinds adds `lens_kind` (20261123174710_lens_catalogue), the change
 // that moves issues and their documents adds `query` and `query version`
 // (20261123174750_issue_tree_query_supertags), the change whose approvals write the approved spec
-// adds `conclusion`, `spec_node` and `spec_import_hold` (20261127232000_spec_change_block_schema),
+// adds `conclusion`, `spec_node` and `spec_import_hold` (20261127120000_spec_change_block_schema),
 // the change that moves handoffs adds `handoff`, and the root adds `priority`, `step` and `plan`.
 // The list is written here as the test's own copy, so a seed that adds or drops a name has to be
 // read by a person before this test agrees with it.

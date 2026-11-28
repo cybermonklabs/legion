@@ -40,5 +40,5 @@ var TypeMigrations = []string{
 	// Version 10: the change request's attributes, the component and conclusion block types, and
 	// the supertags of the approved spec (internal/dispatch/specstore), as literal rows written
 	// after the store's backfill.
-	"20261127232000_spec_change_block_schema.up.sql",
+	"20261127120000_spec_change_block_schema.up.sql",
 }
