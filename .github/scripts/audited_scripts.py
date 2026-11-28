@@ -133,7 +133,7 @@ AUDITED_SCRIPTS = {
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="8e442c96fba32500a71d682487e22b34020d43e4b5c9c564302c0750fc0b85f9",
+        sha256="72220ae1442d203bab6959f374fb5f0b55dfd6a34ead0e6a6222d7d82d0bb9e7",
     ),
     # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
     # `go test -json -count=1 -race` through gotestsum, which writes a separate test2json file.
@@ -167,7 +167,7 @@ AUDITED_SCRIPTS = {
                                    "  go test -count=1 -timeout 25m -tags natslive -run \"$pattern\" \"$pkg\"\n"
                                    "done",
         },
-        sha256="2c7ea882110cc6215af6e7c2918f33390429330bdb5f86eec912bcba83e423d0",
+        sha256="df97eb8affaed1e18bf1f94b9be30917d479c27f92f6f4566d759f1274fc2781",
     ),
 }
 

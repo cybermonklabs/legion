@@ -10,7 +10,10 @@
 # is read before any run starts, so an empty or refused list ends the script with no test
 # running. Each run's output goes to a file in a directory of the script's own, removed on exit,
 # and is printed whole under its own heading as that run ends. It waits by process id, one run at
-# a time, and exits 1 naming each package whose run failed, 2 with no argument, and 0 otherwise.
+# a time, and exits 1 naming each package whose run failed, 2 with no argument, 127 with no
+# gotestsum on PATH (which it reports before testing), and 0 otherwise. Each package heading's
+# (exit N) shows gotestsum's status: go test's own, 128+N if gotestsum forwarded signal N to go
+# test, 127 if a signal gotestsum did not forward ended go test, or 3 for gotestsum's own fault.
 # Its -timeout fires before envoy-infra-go's job limit, so a hung test prints its dump.
 # gotestsum keeps one test2json file per package run in $RUNNER_TEMP/go-test-events/ for the
 # job's artifact. Locally the events go in the same temporary directory as the text logs.

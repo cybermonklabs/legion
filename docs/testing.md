@@ -1513,12 +1513,12 @@ jq -c 'select(.Test == "<TestName>" and (.Action == "pass" or .Action == "fail" 
 ```
 
 A test passed only where its own `pass` event is in the files: an event with `"Action": "pass"` and that test's `Package` and `Test`.
-A `run` event with no `pass`, `fail` or `skip` after it is a test that the end of the job cut short, and it reads as unknown, never as a pass.
+A `run` event with no later `pass`, `fail` or `skip` for that test means the test did not finish (`go test`'s `-timeout`, a panic, or the end of the job can stop it), and it reads as unknown, never as a pass.
 A package's own result is the event with its `Package` and no `Test`.
 `gotestsum tool slowest --jsonfile <file> --threshold 1s` lists the tests of one file that took more than one second.
 
 A step runs its go test as `gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/<name>.jsonl" --format standard-quiet --raw-command -- go test -json <its arguments>`, with `--format standard-verbose` where its arguments hold `-v`.
-gotestsum (gotest.tools/gotestsum) runs that command as written, writes each event to the file as it reads it, prints go test's own log from the events, then a summary that repeats each failed test's output, and exits with go test's status, `128+N` if gotestsum forwarded signal N to go test, `127` if a signal gotestsum did not forward ended go test, or `3` for gotestsum's own fault.
+gotestsum (gotest.tools/gotestsum) runs that command as written, writes each event to the file as it reads it, prints a log and summary (with `standard-quiet`, used by most steps, the log has only package-level lines such as each package's `ok` or `FAIL` line and package output, and each failed test's `=== FAIL:` line and output appear only in the `=== Failed` summary section; with `standard-verbose`, the log has `go test -v` lines from the events, and the summary repeats each failed test's output), and exits with go test's status, `128+N` if gotestsum forwarded signal N to go test, `127` if a signal gotestsum did not forward ended go test, or `3` for gotestsum's own fault.
 gotestsum makes the file new, so `<name>` is a name that no other go test run of the job uses.
 `.github/scripts/ci_filter_coverage.py`'s `as_go_test` is the one reading of that form for every CI tool that reads a step's go test: it reads it as `go test <its arguments>`.
 The scripts that run go test themselves (`packages/envoy/scripts/database-skips.sh`, `backend-count.sh` and `forced-order.sh`, `packages/envoy/infra/scripts/race-unit.sh` and `natslive.sh`, and `.github/scripts/race_memory.py`) write each run's events to a file of their own in the same directory when `RUNNER_TEMP` is set, and to a temporary file that they delete when it is not.

@@ -53,7 +53,8 @@ jobs:
       - name: Install gotestsum
         uses: ./.github/actions/install-gotestsum
       # No Go test cache family: the proxyrules package imports only the standard library and
-      # internal/fold, which imports nothing. The gotestsum install uses no Actions cache.
+      # internal/fold, which imports only the standard library. The job downloads no Go module.
+      # The gotestsum install uses no Actions cache.
       # It fetches the release tarball its .github/ci-tools.yaml row pins.
       #
       # elan and the Lean toolchain it installs, under the ELAN_HOME

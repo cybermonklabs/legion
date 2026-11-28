@@ -19,7 +19,8 @@
 #
 # It exits 1 when no package or no test is named, when a package is not a ./ path, when a name is
 # not a Go test name, when a named test has no passing run on either backend, or when go test
-# failed; 0 otherwise. GO_TEST_SKIP is go test's -skip pattern, which a negative control sets to
+# failed or tee could not write the test events; 0 otherwise.
+# GO_TEST_SKIP is go test's -skip pattern, which a negative control sets to
 # take the `aws` subtests away ('^(TestA|TestB)$/^aws$'). GO_TEST_TIMEOUT is go test's -timeout,
 # 5m unless set: the named tests take seconds, and CI's job budget counts this step at that bound.
 set -euo pipefail
