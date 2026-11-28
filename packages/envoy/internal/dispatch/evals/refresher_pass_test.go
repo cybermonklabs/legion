@@ -3,7 +3,6 @@ package evals
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -261,8 +260,8 @@ func TestARefresherCatchUpThatAPruneCrossesReadsItsCursorAsLost(t *testing.T) {
 func TestTheUnownedP0RowOfEachDayIsWrittenWithNoDeliverySettings(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
-	if _, err := delivery.GetSettings(t.Context(), r.database.Pool); !errors.Is(err, delivery.ErrNoSettings) {
-		t.Fatalf("the store holds delivery settings (%v), want none", err)
+	if held, err := delivery.ListProjectSettings(t.Context(), r.database.Pool); err != nil || len(held) != 0 {
+		t.Fatalf("the store holds the delivery settings of %d projects (%v), want none", len(held), err)
 	}
 	r.exec(t, "open a P0 issue", `
 		insert into issues (key, project_key, number, title, status, rank, priority, created_by)

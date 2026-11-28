@@ -6,7 +6,7 @@
 // merge commit before GitHub records the merge, so the run that shipped a pull request can have a
 // head commit timed before its merged_at, while a push run is created only once its push has landed.
 // Unlike the prototype, which matches alternate spellings of one job (APPLY_JOBS), this schema
-// configures a list of exact production job names (delivery_settings.production_job_names).
+// configures a list of exact production job names (project_deploy_sources.production_job_names).
 package delivery
 
 import (

@@ -84,7 +84,8 @@ var checkStages = func() []checkStage {
 	return stages
 }()
 
-// Settings is the one delivery_settings row the history is read by.
+// Settings is the rule a delivery history is read by: the project's delivery settings at this
+// head, the one delivery_settings row at a base head (putDeliverySettings).
 func Settings() delivery.DeliverySettings {
 	return delivery.DeliverySettings{
 		DeployRepo: Repos[0], DeployWorkflowPath: ".github/workflows/deploy.yml",

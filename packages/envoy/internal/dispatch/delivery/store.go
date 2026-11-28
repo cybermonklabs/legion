@@ -63,25 +63,16 @@ func GetSettings(ctx context.Context, q Querier) (DeliverySettings, error) {
 	return settings, nil
 }
 
-// singletonRunSteps is the run steps' progress names without a repository, which the release
-// before this one reads and writes for the one delivery_settings row's deploy repository. This
-// release names each source repository's own (repoStep), and a save of the singleton clears these
-// alone.
-var singletonRunSteps = []string{"runs/deploy", "runs/pr_checks", "backfill/runs/deploy", "backfill/runs/pr_checks", "backfill/created_at/deploy"}
-
-// PutSettings upserts the one delivery_settings row, clearing the freshness columns and the
-// progress of the run steps named without a repository (singletonRunSteps): a settings change (a
-// different repository, a different population) makes the previous freshness and the singleton's
-// recorded progress meaningless, and the next reconcile of the release before this one sets both
-// again from scratch. The progress this release keeps per source repository (repoStep) and per
-// installation's search is the project settings' (PutProjectSettings), and a singleton save leaves
-// it. The delete rides the same statement as the upsert (a data-modifying CTE, which Postgres runs
-// exactly once whether or not the outer query reads its output) so no pass can ever see the new
-// settings beside the old settings' progress. Takes the pool directly, not a
-// transaction: putDeliverySettings (api/settings_delivery.go) deliberately does not wrap this in
-// a transaction+event+publish the way sibling settings routes do, since delivery_settings is a
-// true singleton with no project/issue/artifact to own an event against (see that handler's own
-// doc comment and events/broker.go's eventOwnerKey).
+// PutSettings upserts the one delivery_settings row, which the release before this one reads,
+// clearing its freshness columns: a settings change (a different repository, a different
+// population) makes the previous freshness meaningless, and the next reconcile of that release
+// sets it again. It writes that row alone: the reconcile progress this release keeps per source
+// repository (repoStep) and per installation's search is the project settings'
+// (PutProjectSettings), and the release before's own save clears the progress it reads. Takes the
+// pool directly, not a transaction: putDeliverySettings (api/settings_delivery.go) deliberately
+// does not wrap this in a transaction+event+publish the way sibling settings routes do, since
+// delivery_settings is a true singleton with no project/issue/artifact to own an event against
+// (see that handler's own doc comment and events/broker.go's eventOwnerKey).
 func PutSettings(ctx context.Context, pool *store.Pool, settings DeliverySettings, actor model.Actor) (DeliverySettings, error) {
 	actorJSON, err := json.Marshal(actor)
 	if err != nil {
@@ -98,7 +89,6 @@ func PutSettings(ctx context.Context, pool *store.Pool, settings DeliverySetting
 		excludedRepos = []string{}
 	}
 	return ScanSettings(pool.QueryRow(ctx, `
-		with cleared as (delete from delivery_reconcile_progress where step = any($12))
 		insert into delivery_settings (
 			singleton, deploy_repo, deploy_workflow_path, production_job_names, production_apply_step_name,
 			pr_checks_workflow_path, population_authors, excluded_repos,
@@ -124,7 +114,7 @@ func PutSettings(ctx context.Context, pool *store.Pool, settings DeliverySetting
 		returning `+SettingsColumns,
 		settings.DeployRepo, settings.DeployWorkflowPath, settings.ProductionJobNames, settings.ProductionApplyStepName,
 		settings.PRChecksWorkflowPath, populationAuthors, excludedRepos,
-		settings.StagingE2EJobName, settings.StagingApplyJobName, settings.PRChecksRollupJobName, actorJSON, singletonRunSteps,
+		settings.StagingE2EJobName, settings.StagingApplyJobName, settings.PRChecksRollupJobName, actorJSON,
 	))
 }
 

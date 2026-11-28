@@ -47,14 +47,16 @@ import (
 // repository. A row of spec_check_results is the record of one CI run, with its repository as the
 // run's results token named it, which the row's in-toto statement holds too: nothing updates or
 // deletes such a row, and no read selects or compares by its repository column. Nor does it write
-// the eval registry's rows built from the fields it writes: the repositories of the day rows and
-// their members (eval_days and eval_day_members, repo), the stored figures (eval_range_figures and
-// eval_day_figures, repo and deploy_repo), the settings the release before records the rows built
-// under (eval_days_settings) and a rebuild's staged rows, which the refresher builds again from the
-// renamed fields once their changes wake it; nor the eval readings' attributes (eval_readings),
-// which hold what their writers sent, and the logged evals' day rows kept from them. The deploy
-// repository of the day rows and their members (deploy_repo) and the repository of the rule they
-// stand built under (eval_days_rules.repo) it writes, with the owner keys (repoRenameLines).
+// the one delivery_settings row, which only the release before this one reads and that release's
+// own pass writes at its boot; nor the eval registry's rows built from the fields it writes: the
+// repositories of the day rows and their members (eval_days and eval_day_members, repo), the
+// stored figures (eval_range_figures and eval_day_figures, repo and deploy_repo), the settings the
+// release before records the rows built under (eval_days_settings) and a rebuild's staged rows,
+// which the refresher builds again from the renamed fields once their changes wake it; nor the
+// eval readings' attributes (eval_readings), which hold what their writers sent, and the logged
+// evals' day rows kept from them. The deploy repository of the day rows and their members
+// (deploy_repo) and the repository of the rule they stand built under (eval_days_rules.repo) it
+// writes, with the owner keys (repoRenameLines).
 //
 // A line whose table has a key with the repository in it can meet a collision: the new name gives
 // a row the key of another row. Two keys are equal when their repository is equal in lower case.
@@ -725,16 +727,9 @@ func excludedRewritten(r repoRename) string {
 			from unnest(excluded_repos) with ordinality e(repo, n) order by e.n)`
 }
 
-// settingsExcludedWrite rewrites delivery_settings' excluded repositories (excludedRewritten). The
-// statement spells its table, so the writers census (api's item_writer_census_test.go) reads that
-// it writes no item row.
-func settingsExcludedWrite(r repoRename) repoRenameStep {
-	return repoRenameStep{table: "delivery_settings", where: excludedNamed(r), write: "excluded_repos", sql: `
-		update delivery_settings set excluded_repos = ` + excludedRewritten(r) + `
-		where ` + excludedNamed(r)}
-}
-
-// projectSettingsExcludedWrite is settingsExcludedWrite for project_delivery_settings.
+// projectSettingsExcludedWrite rewrites project_delivery_settings' excluded repositories
+// (excludedRewritten). The statement spells its table, so the writers census (api's
+// item_writer_census_test.go) reads that it writes no item row.
 func projectSettingsExcludedWrite(r repoRename) repoRenameStep {
 	return repoRenameStep{table: "project_delivery_settings", where: excludedNamed(r), write: "excluded_repos", sql: `
 		update project_delivery_settings set excluded_repos = ` + excludedRewritten(r) + `
@@ -1041,15 +1036,6 @@ var repoRenameLines = []repoRenameLine{
 		},
 	},
 	nameLine("delivery_changes", "repo"),
-	{
-		fields: "delivery_settings.deploy_repo, .excluded_repos",
-		steps: func(r repoRename) []repoRenameStep {
-			return []repoRenameStep{
-				nameWrite(r, "delivery_settings", "deploy_repo"),
-				settingsExcludedWrite(r),
-			}
-		},
-	},
 	{
 		// A project's github_workflow sources read one repository each
 		// (project_deploy_sources_one_per_repo), so a source under the old name whose project has

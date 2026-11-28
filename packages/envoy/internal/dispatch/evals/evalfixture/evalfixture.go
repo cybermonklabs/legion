@@ -100,7 +100,7 @@ var LegionTables = []string{"projects", "issues", "events", "handoffs", "legion_
 var DerivedTables = []string{
 	"issue_filings", "session_titles", "session_titles_backfill", "eval_versions", "eval_series",
 	"eval_readings", "eval_days", "eval_day_members", "eval_days_owed", "eval_day_owners", "eval_days_defaults",
-	"eval_days_cursor", "eval_days_walks", "eval_days_serving", "eval_days_settings", "eval_days_rules",
+	"eval_days_cursor", "eval_days_walks", "eval_days_serving", "eval_days_rules",
 	"eval_rebuilds", "eval_rebuild_walks", "eval_rebuild_firsts", "eval_rebuild_days", "eval_rebuild_members",
 	"eval_rebuild_range_figures", "eval_rebuild_day_figures", "eval_rebuild_reverify",
 	"eval_range_figures", "eval_day_figures", "eval_figures_built", "eval_figure_cuts_stale",

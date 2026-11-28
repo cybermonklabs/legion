@@ -10,33 +10,29 @@ import (
 )
 
 // A save of the one delivery_settings row, which the release before this one and the kept GET and
-// PUT /api/v1/settings/delivery still make, clears the progress of the run steps named without a
-// repository alone, the names that release reads and writes: each source repository's progress
-// under its own step names (repoStep) stays, and so does every installation's merged-pull-request
-// search (dispatch://INFRA-978, D10).
+// PUT /api/v1/settings/delivery still make, writes that row alone: every reconcile progress row
+// stays, each source repository's under its own step names (repoStep), every installation's
+// merged-pull-request search (dispatch://INFRA-978, D10), and the step names without a repository,
+// which only the release before reads and its own save clears.
 func TestASingletonSaveLeavesEachSourcesProgress(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	through := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
-	kept := map[string]string{
+	recorded := map[string]string{
 		runsStep(DeliveryRunKindDeploy, "acme/widgets"):       "acme/widgets .github/workflows/deploy.yml",
 		runsStep(DeliveryRunKindPRChecks, "acme/widgets"):     "acme/widgets .github/workflows/pr-checks.yml",
 		backfillStep(DeliveryRunKindDeploy, "acme/widgets"):   "acme/widgets .github/workflows/deploy.yml",
 		backfillStep(DeliveryRunKindPRChecks, "acme/widgets"): "acme/widgets .github/workflows/pr-checks.yml",
 		createdAtBackfillStep("acme/widgets"):                 "acme/widgets .github/workflows/deploy.yml",
 		mergedPullRequestsStep(1):                             "authors=octocat excluded= deploy=acme/widgets",
+		"runs/deploy":                                         "acme/widgets .github/workflows/deploy.yml",
+		"runs/pr_checks":                                      "acme/widgets .github/workflows/pr-checks.yml",
+		"backfill/runs/deploy":                                "acme/widgets .github/workflows/deploy.yml",
+		"backfill/runs/pr_checks":                             "acme/widgets .github/workflows/pr-checks.yml",
+		"backfill/created_at/deploy":                          "acme/widgets .github/workflows/deploy.yml",
 	}
-	cleared := map[string]string{
-		"runs/deploy":                "acme/widgets .github/workflows/deploy.yml",
-		"runs/pr_checks":             "acme/widgets .github/workflows/pr-checks.yml",
-		"backfill/runs/deploy":       "acme/widgets .github/workflows/deploy.yml",
-		"backfill/runs/pr_checks":    "acme/widgets .github/workflows/pr-checks.yml",
-		"backfill/created_at/deploy": "acme/widgets .github/workflows/deploy.yml",
-	}
-	for _, group := range []map[string]string{kept, cleared} {
-		for step, scope := range group {
-			if err := RecordReconcileProgress(ctx, pool, step, scope, through); err != nil {
-				t.Fatalf("record the progress of %s: %v", step, err)
-			}
+	for step, scope := range recorded {
+		if err := RecordReconcileProgress(ctx, pool, step, scope, through); err != nil {
+			t.Fatalf("record the progress of %s: %v", step, err)
 		}
 	}
 	if _, err := PutSettings(ctx, pool, DeliverySettings{
@@ -62,8 +58,8 @@ func TestASingletonSaveLeavesEachSourcesProgress(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the progress rows: %v", err)
 	}
-	if want := slices.Sorted(maps.Keys(kept)); !slices.Equal(steps, want) {
-		t.Fatalf("the progress rows after a singleton save = %v, want each source's and the search's kept and the names without a repository gone, %v", steps, want)
+	if want := slices.Sorted(maps.Keys(recorded)); !slices.Equal(steps, want) {
+		t.Fatalf("the progress rows after a singleton save = %v, want every one kept, %v", steps, want)
 	}
 }
 

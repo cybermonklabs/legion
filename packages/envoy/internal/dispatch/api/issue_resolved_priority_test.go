@@ -778,13 +778,11 @@ func TestEveryPriorityReaderOrdersFiltersAndCountsByTheResolvedPriority(t *testi
 	t.Run("the delivery facet counts M0c's pull request under P0", func(t *testing.T) {
 		handler, database, seed := seeded(t)
 		ctx := t.Context()
-		if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
+		saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 			DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 			ProductionJobNames: []string{"release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 			PopulationAuthors: []string{"octocat"},
-		}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-			t.Fatalf("seed the delivery settings: %v", err)
-		}
+		})
 		merged := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 		for number, key := range map[int]string{1: seed.m0c, 2: seed.nc} {
 			at := merged.Add(time.Duration(number) * time.Minute)

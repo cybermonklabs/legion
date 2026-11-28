@@ -91,10 +91,6 @@ const renamedRepositoriesSeed = `
 	insert into delivery_changes (kind, run_kind, repo, ref) values
 		('run', 'deploy', 'SJawhar/Legion', '100'),
 		('run', 'deploy', 'sjawhar/legion-smoke', '101');
-	insert into delivery_settings (deploy_repo, deploy_workflow_path, pr_checks_workflow_path, population_authors,
-			excluded_repos, updated_by, updated_at, production_job_names) values
-		('sjawhar/legion', '.github/workflows/deploy.yml', '.github/workflows/pr.yml', '{octocat}',
-			'{SJawhar/Legion,sjawhar/legion-smoke}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z', '{release}');
 	insert into delivery_reconcile_progress (step, scope, through, updated_at) values
 		('search', 'authors=octocat excluded=SJawhar/Legion,sjawhar/legion-smoke deploy=sjawhar/legion', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
 		('runs:deploy', 'sjawhar/legion .github/workflows/deploy.yml', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
@@ -142,7 +138,6 @@ var renamedRepositoriesAfter = map[string]string{
 	`select string_agg(repo || '#' || run_id || ' ' || name, ' ' order by run_id, name) from delivery_run_jobs`: "cybermonklabs/legion#100 build cybermonklabs/legion#100 deploy sjawhar/legion-smoke#101 build",
 	`select string_agg(repo || '#' || run_id, ' ' order by run_id) from delivery_run_warnings`:                  "cybermonklabs/legion#100 sjawhar/legion-smoke#101",
 	`select count(*)::text from delivery_changes where lower(repo) = 'sjawhar/legion'`:                          "0",
-	`select deploy_repo || ' ' || excluded_repos::text from delivery_settings`:                                  "cybermonklabs/legion {cybermonklabs/legion,sjawhar/legion-smoke}",
 	`select string_agg(step || '=' || scope, ' | ' order by step) from delivery_reconcile_progress`: "runs:deploy=cybermonklabs/legion .github/workflows/deploy.yml | " +
 		"runs:smoke=sjawhar/legion-smoke .github/workflows/deploy.yml | " +
 		"search=authors=octocat excluded=cybermonklabs/legion,sjawhar/legion-smoke deploy=cybermonklabs/legion",
@@ -170,7 +165,6 @@ const untouchedByThePass = `
 		'updated_at', jsonb_build_array(
 			(select array_agg(updated_at order by key) from issues),
 			(select array_agg(updated_at order by number) from delivery_pull_requests),
-			(select array_agg(updated_at) from delivery_settings),
 			(select array_agg(updated_at order by step) from delivery_reconcile_progress)))::text`
 
 // passLog is one record the pass or its test logged, decoded from slog's JSON handler.
@@ -292,8 +286,7 @@ func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
 		"pull_request_heads.repo": 1, "pull_request_heads.url": 1, "branch_commits.repo": 1, "commit_holds.repo": 1, "deploys.repo": 1,
 		"delivery_pull_requests.repo": 1, "delivery_pull_requests.url": 1, "delivery_pull_requests.attribution_cited_issues": 1,
 		"delivery_runs.repo": 1, "delivery_run_jobs.repo": 2, "delivery_runs.url": 1, "delivery_run_warnings.repo": 1,
-		"delivery_settings.deploy_repo": 1, "delivery_settings.excluded_repos": 1, "delivery_reconcile_progress.scope": 2,
-		"architecture_sources.repo": 1, "ci_reconcile_passes.cursor_repository": 1, "eval_days_defaults.repo": 1,
+		"delivery_reconcile_progress.scope": 2, "architecture_sources.repo": 1, "ci_reconcile_passes.cursor_repository": 1, "eval_days_defaults.repo": 1,
 	} {
 		if written[field] != want {
 			t.Errorf("logged %v rows of %s, want %v (every line: %v)", written[field], field, want, written)

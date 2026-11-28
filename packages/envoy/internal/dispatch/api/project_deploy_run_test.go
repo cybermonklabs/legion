@@ -100,14 +100,15 @@ func deployRunIn(t *testing.T, database *store.Store, repo string, id int64, cre
 // two repositories, OTHR from a third, and IDLE, with delivery off, names a fourth. A run id is one
 // repository's: run 100 of each of SHIP's repositories ships a SHIP pull request, and each answers
 // its own jobs and address on SHIP's route with its repository, the first's id, address and jobs
-// byte for byte what GET /api/v1/delivery/runs/{id} answers of a deployment deploying from it,
-// beside a record holding no deploy row. A deploy in OTHR's repository that shipped a SHIP pull
-// request answers its jobs on SHIP's route, as its timeline row is SHIP's; one there that ships
-// only OTHR's pull request answers 404 on SHIP's route and its jobs on OTHR's; and one there that
-// ships no pull request answers its jobs on OTHR's route, whose deploy source found it, and 404 on
-// SHIP's (INFRA-978 R12). A deploy of IDLE's repository shipping a SHIP pull request answers 404,
-// as no delivery-on project's source reads it, and so does a run id the named repository holds no
-// run of. A query naming no repo, or naming it twice, answers 400 INVALID_QUERY naming repo.
+// byte for byte what GET /api/v1/delivery/runs/{id} answers, which reads the run of the first
+// source repository by name that holds one, beside a record holding no deploy row. A deploy in
+// OTHR's repository that shipped a SHIP pull request answers its jobs on SHIP's route, as its
+// timeline row is SHIP's; one there that ships only OTHR's pull request answers 404 on SHIP's
+// route and its jobs on OTHR's; and one there that ships no pull request answers its jobs on
+// OTHR's route, whose deploy source found it, and 404 on SHIP's (INFRA-978 R12). A deploy of IDLE's
+// repository shipping a SHIP pull request answers 404, as no delivery-on project's source reads
+// it, and so does a run id the named repository holds no run of. A query naming no repo, or naming
+// it twice, answers 400 INVALID_QUERY naming repo.
 func TestADeployRunAnswersItsJobsFromTheNamedSourceRepository(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createTestProject(t, handler, "SHIP", "OTHR", "IDLE")
@@ -163,12 +164,6 @@ func TestADeployRunAnswersItsJobsFromTheNamedSourceRepository(t *testing.T) {
 		}
 	}
 
-	if _, err := delivery.PutSettings(t.Context(), database.Pool, delivery.DeliverySettings{
-		DeployRepo: "acme/alpha", DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{"release"},
-		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml", PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed the deployment's delivery settings: %v", err)
-	}
 	fields := func(body json.RawMessage) map[string]json.RawMessage {
 		t.Helper()
 		var decoded map[string]json.RawMessage
