@@ -1,0 +1,16 @@
+diff --git a/packages/daemon/internal/workflow/next_change.go b/packages/daemon/internal/workflow/next_change.go
+index d1ec65ce..a1d5fe3f 100644
+--- a/packages/daemon/internal/workflow/next_change.go
++++ b/packages/daemon/internal/workflow/next_change.go
+@@ -61,11 +61,6 @@ func ChangeInPlace(issue record.Issue) ChangePlace {
+ // The one hard guard, which is no count: a next change never starts while another one of the same
+ // issue is open (Issue.NextChange).
+ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Issue, reasons []record.Defect, place ChangePlace) error {
+-	if record.OnNextChange(issue) {
+-		e.logOnCommit(ctx, "workflow: no next change starts while one of the issue is open", "issue", issue.Key,
+-			"generation", issue.Generation, "open", issue.NextChange)
+-		return nil
+-	}
+ 	now := e.now()
+ 	next := issue.Generation + 1
+ 	check, err := e.store.ProductionCheck(ctx, tx, issue.Key)

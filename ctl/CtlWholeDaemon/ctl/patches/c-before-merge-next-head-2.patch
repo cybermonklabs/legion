@@ -1,0 +1,19 @@
+diff --git a/packages/daemon/internal/record/close_wait.go b/packages/daemon/internal/record/close_wait.go
+index 6ee212cc..b9e10b03 100644
+--- a/packages/daemon/internal/record/close_wait.go
++++ b/packages/daemon/internal/record/close_wait.go
+@@ -350,11 +350,9 @@ func (f CloseFacts) checkAtMergeHead(check dispatch.CheckBlock, atMergeHead *dis
+ 		return CheckWait{}, false
+ 	}
+ 	for _, subject := range check.PassStands.Subjects {
+-		if sameCommit(subject.Basis.Commit, f.Merge.Head) {
+-			atHead := check
+-			atHead.PassStands = dispatch.PassStands{Answer: subject.Answer, Reason: subject.Reason, Results: subject.Results, Commit: subject.Basis.Commit}
+-			return CloseCheckOf(atHead), true
+-		}
++		atHead := check
++		atHead.PassStands = dispatch.PassStands{Answer: subject.Answer, Reason: subject.Reason, Results: subject.Results, Commit: subject.Basis.Commit}
++		return CloseCheckOf(atHead), true
+ 	}
+ 	if atMergeHead == nil {
+ 		return CheckWait{}, false

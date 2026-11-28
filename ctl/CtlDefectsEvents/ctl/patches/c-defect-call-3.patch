@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/engine.go b/packages/daemon/internal/workflow/engine.go
+index 1304c2635c6..6f82d821353 100644
+--- a/packages/daemon/internal/workflow/engine.go
++++ b/packages/daemon/internal/workflow/engine.go
+@@ -1092,9 +1092,6 @@ func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue
+ 	if record.HeldForChildren(issue) || record.HeldFor(issue, record.HoldTaskStopped) {
+ 		at = record.StandsAt(issue)
+ 	}
+-	if role == claim.RoleMerger && at == phase.Verifying && issue.MergerCompletionOwed {
+-		return e.ranUnreported(ctx, tx, issue, role, token)
+-	}
+ 	if works := RoleFor(at); at == phase.Admitted || works == "" || works == role || phase.LeftBy(role, at) == "" {
+ 		return false, nil
+ 	}

@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/record/close_wait.go b/packages/daemon/internal/record/close_wait.go
+index 6ee212cc..66ae98d5 100644
+--- a/packages/daemon/internal/record/close_wait.go
++++ b/packages/daemon/internal/record/close_wait.go
+@@ -192,8 +192,6 @@ func CloseWaitOf(f CloseFacts) CloseWait {
+ 		case !defect.Open() || defect.Kind == DefectKindCheck || defect.Kind == DefectKindProduction:
+ 		case defect.Kind == DefectKindRequest:
+ 			wait.Requests = append(wait.Requests, strconv.FormatInt(defect.ID, 10))
+-		default:
+-			wait.Defects = append(wait.Defects, strconv.FormatInt(defect.ID, 10))
+ 		}
+ 	}
+ 	answer, counts := f.freshAnswer()

@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/next_change.go b/packages/daemon/internal/workflow/next_change.go
+index d1ec65ce..98371dba 100644
+--- a/packages/daemon/internal/workflow/next_change.go
++++ b/packages/daemon/internal/workflow/next_change.go
+@@ -124,7 +124,7 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
+ 	if err := e.store.MarkIssueMoved(ctx, tx, started.Key, now); err != nil {
+ 		return err
+ 	}
+-	if err := e.store.ClearChangeGeneration(ctx, tx, started.Key); err != nil {
++	if err := e.ClearTreeGeneration(ctx, tx, started.Tree, now); err != nil {
+ 		return err
+ 	}
+ 	if err := e.publishWait(ctx, tx, started); err != nil {

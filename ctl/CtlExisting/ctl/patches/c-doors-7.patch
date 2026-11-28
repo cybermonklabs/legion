@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index e98e7cc5..aae82018 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -1087,9 +1087,6 @@ func (e *Engine) personClosedPast(ctx context.Context, tx pgx.Tx, issue *record.
+ 		}
+ 	}
+ 	body := fmt.Sprintf("A person closed %s before the checks of its goal closed it.", issue.Key)
+-	if len(items) > 0 {
+-		body += " Its close waited for:" + bulleted(items)
+-	}
+ 	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: body}); err != nil {
+ 		return err
+ 	}

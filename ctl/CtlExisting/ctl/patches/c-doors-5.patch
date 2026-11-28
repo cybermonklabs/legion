@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/pullrequest.go b/packages/daemon/internal/workflow/pullrequest.go
+index c71b148e..d9101aaa 100644
+--- a/packages/daemon/internal/workflow/pullrequest.go
++++ b/packages/daemon/internal/workflow/pullrequest.go
+@@ -527,7 +527,7 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
+ 	if err != nil {
+ 		return err
+ 	}
+-	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase, CloseWaits: !view.wait.Done()})
++	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
+ 	if !ok {
+ 		return nil
+ 	}

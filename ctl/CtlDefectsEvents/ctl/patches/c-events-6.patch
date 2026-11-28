@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/check.go b/packages/daemon/internal/workflow/check.go
+index 2768a0c8c1c..65fb46d860a 100644
+--- a/packages/daemon/internal/workflow/check.go
++++ b/packages/daemon/internal/workflow/check.go
+@@ -638,9 +638,6 @@ func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.Produc
+ 		if err := e.closeWaitNoResult(ctx, tx, issue, *check); err != nil {
+ 			return err
+ 		}
+-		if err := e.askCloseRead(ctx, tx, issue); err != nil {
+-			return err
+-		}
+ 	} else if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun()}); err != nil {
+ 		return err
+ 	}

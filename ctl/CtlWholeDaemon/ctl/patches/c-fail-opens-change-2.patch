@@ -1,0 +1,17 @@
+diff --git a/packages/daemon/internal/workflow/check.go b/packages/daemon/internal/workflow/check.go
+index 2768a0c8..45b06205 100644
+--- a/packages/daemon/internal/workflow/check.go
++++ b/packages/daemon/internal/workflow/check.go
+@@ -369,11 +369,7 @@ func (e *Engine) productionFail(ctx context.Context, tx pgx.Tx, check *record.Pr
+ 	if err != nil || issue == nil || issue.Phase != phase.Verifying {
+ 		return err
+ 	}
+-	id, err := e.store.PutDefect(ctx, tx, record.Defect{Issue: issue.Key, Generation: issue.Generation, Kind: record.DefectKindProduction,
+-		Text: summary, Role: check.Role, Head: check.MergeSHA, ReportedAt: e.now()})
+-	if err != nil {
+-		return err
+-	}
++	var id int64
+ 	e.logOnCommit(ctx, "workflow: a production check's fail is a reason of the next change", "issue", issue.Key,
+ 		"generation", issue.Generation, "mergeCommit", check.MergeSHA, "defect", id)
+ 	_, err = e.startChangeIfDue(ctx, tx, issue.Key)

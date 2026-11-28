@@ -1,0 +1,32 @@
+diff --git a/packages/daemon/internal/record/close_wait.go b/packages/daemon/internal/record/close_wait.go
+index 6ee212cc..cbe2363e 100644
+--- a/packages/daemon/internal/record/close_wait.go
++++ b/packages/daemon/internal/record/close_wait.go
+@@ -272,7 +272,7 @@ func liveWaitsForResult(reason string) bool {
+ // fresh, and its answer decodes. It answers false for every other read and for none.
+ func (f CloseFacts) freshAnswer() (CheckReadAnswer, bool) {
+ 	read := f.Read
+-	if read == nil || read.Failure != "" || len(read.Answer) == 0 || !read.ReadAt.After(f.Entered) {
++	if read == nil || read.Failure != "" || len(read.Answer) == 0 {
+ 		return CheckReadAnswer{}, false
+ 	}
+ 	var answer CheckReadAnswer
+@@ -301,15 +301,15 @@ func (f CloseFacts) freshAnswer() (CheckReadAnswer, bool) {
+ func (f CloseFacts) checkAtNewestMerge(check dispatch.CheckBlock, atMergeHead *dispatch.IssueResults) (CheckWait, bool) {
+ 	switch check.When {
+ 	case dispatch.CheckAfterMerge:
+-		basis, named := f.mergeBranchBasis(check, true)
+-		return CloseCheckOf(check), named && sameCommit(basis.MergeCommit, f.Merge.SHA)
++		_, named := f.mergeBranchBasis(check, true)
++		return CloseCheckOf(check), named
+ 	case dispatch.CheckDefaultBranch:
+ 		basis, named := f.mergeBranchBasis(check, false)
+ 		if !named {
+ 			return CheckWait{}, false
+ 		}
+ 		if basis.Branch == f.Merge.Base {
+-			return CloseCheckOf(check), sameCommit(basis.MergeCommit, f.Merge.SHA)
++			return CloseCheckOf(check), true
+ 		}
+ 		return CloseCheckOf(check), true
+ 	case dispatch.CheckBeforeMerge:

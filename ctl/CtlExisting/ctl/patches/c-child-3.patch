@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/record/project.go b/packages/daemon/internal/record/project.go
+index e56d8959..125d0a93 100644
+--- a/packages/daemon/internal/record/project.go
++++ b/packages/daemon/internal/record/project.go
+@@ -251,7 +251,7 @@ func AcceptedPhase(p phase.Phase) bool {
+ // (OpenBeneath, which leaves out what that hold stopped) — so none of them can count a root as
+ // accepted that another counts as still at work.
+ func Accepted(issue Issue) bool {
+-	return AcceptedPhase(StandsAt(issue)) && !HeldForChildren(issue)
++	return (AcceptedPhase(StandsAt(issue)) || StandsAt(issue) == phase.Verifying) && !HeldForChildren(issue)
+ }
+ 
+ // BasisAcceptance says why ancestor no longer meets the daemon's half of R1's first condition for

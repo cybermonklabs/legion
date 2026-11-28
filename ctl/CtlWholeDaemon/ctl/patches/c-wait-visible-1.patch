@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index e98e7cc5..a6cc31f8 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -323,6 +323,9 @@ func (e *Engine) askCloseReadAt(ctx context.Context, tx pgx.Tx, issue record.Iss
+ // it does not count, and the waiting row is held until tx ends, so no lane claims it before this
+ // change commits (record.Store.OutboxWaiting).
+ func (e *Engine) publishWait(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
++	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: "What the close of " + issue.Key + " waits for changed."}); err != nil {
++		return err
++	}
+ 	waiting, found, err := e.store.OutboxWaiting(ctx, tx, issue.Key, record.OutboxKindCloseWaitPublish)
+ 	if err != nil {
+ 		return err

@@ -1,0 +1,19 @@
+diff --git a/packages/pi-legion/src/tools.ts b/packages/pi-legion/src/tools.ts
+index 4bed75dc..33541043 100644
+--- a/packages/pi-legion/src/tools.ts
++++ b/packages/pi-legion/src/tools.ts
+@@ -1201,6 +1201,14 @@ export function createLegionTool(deps: {
+             { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
+             parameters
+           );
++          if (operation === "report_defect") {
++            const client = daemon();
++            await client.phaseBackward({
++              grantId: await mintClaimGrant(client, active),
++              to: "implementing",
++              reason: "the defect sends the issue back",
++            });
++          }
+           // `ready_for_update` answers the pod's update message, and the worker then waits for its
+           // process to be replaced rather than working, so the turn it ends after answering earns
+           // no reminder (the `update-answered` input of `@legion/pi-shared/phase-stall`).

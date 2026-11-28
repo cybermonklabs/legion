@@ -1,0 +1,11 @@
+diff --git a/packages/daemon/internal/api/contract_20261127060758_defect-calls.go b/packages/daemon/internal/api/contract_20261127060758_defect-calls.go
+index 2533eed1..596f3863 100644
+--- a/packages/daemon/internal/api/contract_20261127060758_defect-calls.go
++++ b/packages/daemon/internal/api/contract_20261127060758_defect-calls.go
+@@ -113,6 +113,5 @@ var verifyingPhase = []EnumeratedValue{{Value: "verifying", Since: defectCallsCo
+ // so the state the source answered is left as it was.
+ func withoutCloseWait(issue Issue) (Issue, bool) {
+ 	moved := issue.CloseWait != nil
+-	issue.CloseWait = nil
+ 	return issue, moved
+ }

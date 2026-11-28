@@ -1,0 +1,11 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index d58468b9243..b00ecd2dc2f 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -1175,5 +1175,5 @@ func (e *Engine) verificationChanged(ctx context.Context, tx pgx.Tx, fact intake
+ 	if err := json.Unmarshal(read.Answer, &answer); err != nil || answer.Results.VerificationArtifactID != fact.ArtifactID {
+ 		return nil
+ 	}
+-	return e.askCloseRead(ctx, tx, *issue)
++	return nil
+ }

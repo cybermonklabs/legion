@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index e98e7cc5..198ae299 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -854,9 +854,6 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
+ 	}
+ 	closedAt := now
+ 	issue.ClosedOnChecksAt = &closedAt
+-	if err := e.publishWait(ctx, tx, issue); err != nil {
+-		return err
+-	}
+ 	w, err := e.walk(ctx, tx, issue)
+ 	if err != nil {
+ 		return err

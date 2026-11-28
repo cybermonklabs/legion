@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/architect_sweep.go b/packages/daemon/internal/workflow/architect_sweep.go
+index 02a1301d..2ff027a2 100644
+--- a/packages/daemon/internal/workflow/architect_sweep.go
++++ b/packages/daemon/internal/workflow/architect_sweep.go
+@@ -161,7 +161,7 @@ func ArchitectStartPending(root record.Issue, entry int64, run record.RoleRun) (
+ 		}
+ 		return "", false
+ 	}
+-	if p := run.Claim.Pending; p != nil && p.SupersededBy(root.TreeRun(), entry) {
++	if p := run.Claim.Pending; p != nil && p.SupersededBy(root.Generation, entry) {
+ 		held := *run.Claim
+ 		held.Pending = nil
+ 		run.Claim = &held

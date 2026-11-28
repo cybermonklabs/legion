@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/admit/admit.go b/packages/daemon/internal/admit/admit.go
+index ba32bbd8..73977d07 100644
+--- a/packages/daemon/internal/admit/admit.go
++++ b/packages/daemon/internal/admit/admit.go
+@@ -3233,7 +3233,7 @@ func (a *Admission) unslotted(issue record.Issue, live map[string]struct{}, wait
+ 	// the daemon itself started that wait and that change, and only its own checks or a person
+ 	// close it (D16, row 9). A release would take it out of the workflow, where nothing closes it
+ 	// at all.
+-	if issue.Phase == phase.Verifying || record.OnNextChange(issue) {
++	if record.OnNextChange(issue) {
+ 		return false
+ 	}
+ 	switch issue.Status {

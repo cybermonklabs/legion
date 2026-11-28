@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/record/close_wait.go b/packages/daemon/internal/record/close_wait.go
+index 6ee212cc..1316c116 100644
+--- a/packages/daemon/internal/record/close_wait.go
++++ b/packages/daemon/internal/record/close_wait.go
+@@ -438,7 +438,7 @@ func UnapprovedChecks(approval *CheckApproval) []string {
+ 			unapproved = append(unapproved, approved.ID)
+ 		}
+ 	}
+-	return unapproved
++	return nil
+ }
+ 
+ // sameCheckBlock says whether now is the check approved approved: the same text and attributes,

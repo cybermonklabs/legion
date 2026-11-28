@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/record/close_wait.go b/packages/daemon/internal/record/close_wait.go
+index 6ee212cc..04409301 100644
+--- a/packages/daemon/internal/record/close_wait.go
++++ b/packages/daemon/internal/record/close_wait.go
+@@ -392,6 +392,9 @@ func productionTerm(f CloseFacts) string {
+ 		return ProductionOpening
+ 	}
+ 	if !sameCommit(check.MergeSHA, f.Merge.SHA) {
++		if check.Outcome == CheckRecorded {
++			return ""
++		}
+ 		return ProductionEarlierMerge
+ 	}
+ 	switch {

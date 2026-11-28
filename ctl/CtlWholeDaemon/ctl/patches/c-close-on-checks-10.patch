@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index e98e7cc5..b42943c7 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -694,7 +694,7 @@ func (e *Engine) judgeCloseNoting(ctx context.Context, tx pgx.Tx, issue record.I
+ 		return err
+ 	}
+ 	if view.wait.Done() {
+-		return e.closeOnChecks(ctx, tx, issue, view, withdrawn)
++		return nil
+ 	}
+ 	if err := e.storeWait(ctx, tx, issue, view, withdrawn); err != nil {
+ 		return err
