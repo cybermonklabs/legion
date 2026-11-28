@@ -867,9 +867,31 @@ for list in comments reviews threads; do
   echo 3 > "$work/miscount.$list"
   run_pr_text
   check "$name counted one short at all three reads fail" "$(is "$status" 1)"
-  check "$name: the refusal names the list and the last read's counts" \
+  check "$name: the refusal names the list and both counts" \
     "$(contains "$out" "^::error::GitHub's GraphQL API reports 1 $name of #7 but listed 2, so not every one can be checked")"
   check "$name: three reads asked for them" "$(is "$(grep -c "^graphql PrText .*\"$list\":true" "$work/calls")" 3)"
+  # 201 over three pages, the first page saying no more follow (cut.<list>): the first read counts
+  # 200 and lists 100, and the second and third count all 201 and still list 100, so a refusal that
+  # named the first read's counts would fail here, where the cases above give every read the same.
+  clean_pr
+  jq -nc --argjson author "$app" '[range(1; 101) | {id: (9300 + .), body: "fine"} + $author]' \
+    > "$work/$pages.1"
+  jq -nc --argjson author "$app" '[range(101; 201) | {id: (9300 + .), body: "fine"} + $author]' \
+    > "$work/$pages.2"
+  items 9501 "fine" > "$work/$pages.3"
+  echo 1 > "$work/cut.$list"
+  echo 1 > "$work/miscount.$list"
+  run_pr_text
+  check "$name counted short at their first read and listed short at all three fail" \
+    "$(is "$status" 1)"
+  check "$name: says the first read's counts" \
+    "$(contains "$out" "^check-pr-text: GitHub's GraphQL API reports 200 $name of #7 but listed 100, so they are read again in 0 s\$")"
+  check "$name: and the second read's, which differ" \
+    "$(contains "$out" "^check-pr-text: GitHub's GraphQL API reports 201 $name of #7 but listed 100, so they are read again in 0 s\$")"
+  check "$name: the refusal names the last read's counts, which differ from the first read's" \
+    "$(contains "$out" "^::error::GitHub's GraphQL API reports 201 $name of #7 but listed 100, so not every one can be checked")"
+  check "$name: and no refusal names the first read's" \
+    "$(is "$(contains "$out" '^::error::.*[^0-9]200[^0-9]')" false)"
 done
 # One review thread of three comments, counted one short in the first N answers that carry them:
 # PrText's first page of the thread, then each ThreadComments read.
@@ -886,10 +908,29 @@ check "reads them again once, by the thread's id from their first page" \
 echo 3 > "$work/miscount.thread"
 run_pr_text
 check "a review thread's comments counted one short at all three reads fail" "$(is "$status" 1)"
-check "the refusal names the thread and the last read's counts" \
+check "the refusal names the thread and both counts" \
   "$(contains "$out" "^::error::GitHub's GraphQL API reports 2 comments in review thread 1 of #7 but listed 3,")"
 check "after two reads again by the thread's id from their first page" \
   "$(is "$(grep -c '^graphql ThreadComments {"thread":"thread-1-0","after":null}$' "$work/calls")" 2)"
+# One review thread of 22 comments, its first page saying no more follow after 20 (cut.thread):
+# PrText's first page counts 21, and each read again by the thread's id counts all 22 and still
+# lists 20, so the refusal must name the last read's counts.
+clean_pr
+jq -nc --argjson author "$app" '[[range(1; 23) | {id: (9600 + .), body: "fine"} + $author]]' \
+  > "$work/review-comments.1"
+echo 1 > "$work/cut.thread"
+echo 1 > "$work/miscount.thread"
+run_pr_text
+check "a review thread's comments counted short at their first read and listed short at all three fail" \
+  "$(is "$status" 1)"
+check "says the thread's first read's counts" \
+  "$(contains "$out" "^check-pr-text: GitHub's GraphQL API reports 21 comments in review thread 1 of #7 but listed 20, so they are read again in 0 s\$")"
+check "and the second read's, which differ" \
+  "$(contains "$out" "^check-pr-text: GitHub's GraphQL API reports 22 comments in review thread 1 of #7 but listed 20, so they are read again in 0 s\$")"
+check "the refusal names the thread and the last read's counts, which differ from the first read's" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API reports 22 comments in review thread 1 of #7 but listed 20,")"
+check "and no refusal names the first read's" \
+  "$(is "$(contains "$out" '^::error::.*[^0-9]21[^0-9]')" false)"
 # The waits are gh-read.sh's ladder: GH_RETRY_SECONDS seconds before the second read and twice as
 # many before the third. The library sets it to 0 for every case; this run sets 1, with a stand-in
 # sleep first on PATH that records each wait it is asked for in $work/sleepbin/slept, so the case

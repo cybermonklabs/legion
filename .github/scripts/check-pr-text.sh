@@ -45,12 +45,12 @@
 # base branch to the event's head, and the issue comments, reviews and review comments every one
 # the pull request holds. GitHub reports a total for each list, and its count and its items can
 # disagree for a moment while an item lands, or when the list changes between two pages of one
-# read: such a list is read again, whole, up to twice (READ AGAIN below), and one whose last read
-# still disagrees is refused loudly here, naming the list, instead of silently scanning part of
-# it; the next push or edit run and `.github/workflows/ci.yaml#pr-title` job's next run (ci.yaml
-# says when it runs) read it again, and those runs' checks are the ones the merge reads. A NUL
-# byte in any of them, which would make `grep -I` treat the file as binary and skip it, is
-# stripped first.
+# read: such a list (the commits aside: THE READ below) is read again, whole, up to twice
+# (READ AGAIN below), and one whose last read still disagrees is refused loudly here, naming the
+# list, instead of silently scanning part of it; the next push or edit run and
+# `.github/workflows/ci.yaml#pr-title` job's next run (ci.yaml says when it runs) read it again,
+# and those runs' checks are the ones the merge reads. A NUL byte in any of them, which would make
+# `grep -I` treat the file as binary and skip it, is stripped first.
 #
 # Usage: GITHUB_EVENT_PATH=<payload> GITHUB_REPOSITORY=<owner>/<repo> .github/scripts/check-pr-text.sh
 # CI runs it in `.github/workflows/ci.yaml#pr-title` job at every push to a pull request that is not a draft, when
@@ -237,12 +237,11 @@ def fold($list; $page):
 live="$work/live.json"
 reads="$work/reads.json"
 echo '{}' > "$reads"
-round=0
 # read_lists <list>...: reads the named lists (full, PrText's flag for the pull request's own
 # fields, among them) in rounds of PrText, folding each answer into $reads, each list from its first
 # page: what $reads held of it is dropped first. While a page says more follow, the next round asks
-# again for those lists alone, each from its own cursor. The run's first round, the one that asks
-# for full, is the pull request as it is now ($live).
+# again for those lists alone, each from its own cursor. The answer of the round that asks for full,
+# which only the run's first call does, is the pull request as it is now ($live).
 read_lists() {
   local asked variables
   asked=$(jq -nc '{full: false, commits: false, history: false, comments: false, reviews: false,
@@ -250,7 +249,6 @@ read_lists() {
   jq --argjson asked "$asked" 'with_entries(select($asked[.key] | not))' "$reads" > "$reads.next"
   mv "$reads.next" "$reads"
   while :; do
-    round=$((round + 1))
     variables=$(jq -c --arg owner "${repository%%/*}" --arg repo "${repository#*/}" \
       --argjson number "$number" --arg head "$head" --arg marker "$cutoff_file" \
       --argjson asked "$asked" \
@@ -258,7 +256,9 @@ read_lists() {
         + (to_entries | map({key: (.key + "After"), value: .value.cursor}) | from_entries)' \
       "$reads")
     graphql "$work/answer" PrText "$variables"
-    if [ "$round" -eq 1 ]; then jq '.data.repository.pullRequest // {}' "$work/answer" > "$live"; fi
+    if jq -e '.full' <<< "$asked" > /dev/null; then
+      jq '.data.repository.pullRequest // {}' "$work/answer" > "$live"
+    fi
     jq --slurpfile answer "$work/answer" --argjson asked "$asked" "$fold_round" "$reads" \
       > "$reads.next"
     mv "$reads.next" "$reads"

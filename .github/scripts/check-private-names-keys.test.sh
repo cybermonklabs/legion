@@ -387,7 +387,7 @@ check "the rule is active since the release that holds the marker, as with no mi
 echo 3 > "$work/miscount.history"
 key_run
 check "a history counted one short at all three reads exits 1" "$(is "$status" 1)"
-check "the refusal names the history and the last read's counts" \
+check "the refusal names the history and both counts" \
   "$(contains "$out" "^::error::GitHub's GraphQL API reports 0 commits on main that touch .github/issue-key-cutoff but listed 1, so not every one can be checked")"
 check "after three reads of the history" "$(is "$(grep -c '^graphql PrText .*"history":true' "$work/calls")" 3)"
 # A history of two pages is read again whole: here both pages of its first read are counted short.
@@ -401,6 +401,23 @@ check "its second read asks for the history from the first page again" \
   "$(is "$(contains "$(sed -n 3p <<< "$history_reads")" '"historyAfter"')" false)"
 check "and then for the second page by its cursor" \
   "$(contains "$(sed -n 4p <<< "$history_reads")" '"historyAfter":"1"')"
+# A history of three pages, the marker last, whose first page says no more follow (cut.history):
+# its first read counts 200 of its 201 commits and its later reads all 201, each listing 100, so a
+# refusal that named the first read's counts would fail here, where the case above gives every
+# read the same.
+jq -nc --arg sha "$marker_sha" '[range(200) | {sha: "later-\(.)"}] + [{sha: $sha}]
+  | map(. + {commit: {committer: {date: "2026-11-18T00:00:00Z"}}})' > "$work/cutoff-commits"
+echo 1 > "$work/cut.history"
+echo 1 > "$work/miscount.history"
+key_run
+check "a three-page history counted short at its first read and listed short at all three exits 1" \
+  "$(is "$status" 1)"
+check "says the history's first read's counts" \
+  "$(contains "$out" "^check-pr-text: GitHub's GraphQL API reports 200 commits on main that touch .github/issue-key-cutoff but listed 100, so they are read again in 0 s\$")"
+check "the refusal names the history and the last read's counts, which differ from the first read's" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API reports 201 commits on main that touch .github/issue-key-cutoff but listed 100, so not every one can be checked")"
+check "and no refusal names the first read's" \
+  "$(is "$(contains "$out" '^::error::.*[^0-9]200[^0-9]')" false)"
 
 echo "case: a path a new commit adds is new text, and a path it only changes is not"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
