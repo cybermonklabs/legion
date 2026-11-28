@@ -21,11 +21,10 @@ func stringValue(value any) string {
 	return text
 }
 
-// slackAnswerBudget bounds a Slack event's publishes, counted from the handler's start. Slack takes
-// an event it has no answer to within 3 s as failed and retries it, so a publish the bus does not
-// answer is answered 503 inside that window, with half a second left for the answer's way back,
-// rather than at the bus's own 5 s bound.
-const slackAnswerBudget = 2500 * time.Millisecond
+// SlackAnswerBudget bounds a Slack event's publishes by default, from the handler's start.
+// Slack retries an event it has no answer to within 3 s. This budget leaves half a second to
+// return a 503 when the bus does not answer, rather than waiting for the bus's own 5 s bound.
+const SlackAnswerBudget = 2500 * time.Millisecond
 
 // slackMaxBody is the largest Slack event body the handler reads: 1 MiB. Slack documents no cap on
 // the size of an event. It cuts a message's text at 40,000 characters
@@ -34,10 +33,10 @@ const slackAnswerBudget = 2500 * time.Millisecond
 // \uXXXX escape, the two come to 480,000 bytes, under half the limit.
 const slackMaxBody = 1 << 20
 
-// slackRoomWait is the most a Slack event waits, in all, for room in the listener's body budget
-// (BodyBudget) before it is answered 503, which Slack retries: inside slackAnswerBudget, with
-// 1.5 s of it left for the publish. It is a variable so a test can shorten it.
-var slackRoomWait = time.Second
+// SlackRoomWait is the default wait for room in the listener's body budget (BodyBudget).
+// After it, the handler answers 503, which Slack retries. It leaves 1.5 s of SlackAnswerBudget
+// for the publish.
+const SlackRoomWait = time.Second
 
 // SlackHandler returns the HTTP handler for Slack webhook events, which reads its bodies against
 // bodies, the listener's one body budget. It checks every event's signature with secret before it
@@ -46,15 +45,16 @@ var slackRoomWait = time.Second
 // (https://docs.slack.dev/reference/events/url_verification). So an event that does not check is
 // a 401, whatever its body holds, and a handler built with an empty secret refuses every event
 // (verify.Slack).
-func SlackHandler(secret string, publisher Publisher, bodies *BodyBudget) http.HandlerFunc {
+func SlackHandler(secret string, publisher Publisher, bodies *BodyBudget, opts ...HandlerOption) http.HandlerFunc {
+	waits := webhookWaits(opts)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), slackAnswerBudget)
+		ctx, cancel := context.WithTimeout(r.Context(), waits.slackAnswer)
 		defer cancel()
-		body, release, err := bodies.readBody(ctx, w, r, r.Body, slackMaxBody, slackRoomWait)
+		body, release, err := bodies.readBody(ctx, w, r, r.Body, slackMaxBody, waits.slackRoom)
 		defer release()
 		if err != nil {
 			return

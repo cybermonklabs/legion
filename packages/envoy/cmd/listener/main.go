@@ -921,7 +921,7 @@ const webhookBodyRefusedMetric = "envoy_webhook_body_refused_total"
 // Every route publishes through the rename publisher, which costs the Slack and the Ghost Wispr
 // routes nothing: a pair names a GitHub repository, and a subject that is not
 // `notifications.github.<owner>.<name>.…` names none, so those two publish exactly as they did.
-func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter) []webhookRoute {
+func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter, opts ...webhook.HandlerOption) []webhookRoute {
 	bodies := webhook.NewBodyBudget(cfg.BodyBudget, refused)
 	var routes []webhookRoute
 	if github := cfg.GitHub; github != nil {
@@ -931,12 +931,12 @@ func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter) []webho
 	}
 	if slack := cfg.Slack; slack != nil {
 		routes = append(routes, webhookRoute{"/webhook/slack", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
-			return webhook.SlackHandler(slack.Secret, publisher, bodies)
+			return webhook.SlackHandler(slack.Secret, publisher, bodies, opts...)
 		}})
 	}
 	if ghostWispr := cfg.GhostWispr; ghostWispr != nil {
 		routes = append(routes, webhookRoute{"/webhook/ghostwispr", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
-			return webhook.GhostWisprHandler(ghostWispr.Secret, publisher, bodies)
+			return webhook.GhostWisprHandler(ghostWispr.Secret, publisher, bodies, opts...)
 		}})
 	}
 	return routes

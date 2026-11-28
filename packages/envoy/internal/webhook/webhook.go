@@ -6,10 +6,41 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
+
+// HandlerOption sets a wait for one provider for the lifetime of a handler.
+type HandlerOption func(*handlerWaits)
+
+type handlerWaits struct {
+	slackAnswer, slackRoom, ghostWisprRoom time.Duration
+}
+
+func webhookWaits(opts []HandlerOption) handlerWaits {
+	waits := handlerWaits{slackAnswer: SlackAnswerBudget, slackRoom: SlackRoomWait, ghostWisprRoom: GhostWisprRoomWait}
+	for _, opt := range opts {
+		opt(&waits)
+	}
+	return waits
+}
+
+// WithSlackAnswerBudget sets the time a Slack handler has to answer a delivery.
+func WithSlackAnswerBudget(wait time.Duration) HandlerOption {
+	return func(w *handlerWaits) { w.slackAnswer = wait }
+}
+
+// WithSlackRoomWait sets how long a Slack handler waits for room in the shared body budget.
+func WithSlackRoomWait(wait time.Duration) HandlerOption {
+	return func(w *handlerWaits) { w.slackRoom = wait }
+}
+
+// WithGhostWisprRoomWait sets how long a Ghost Wispr handler waits for room in the shared body budget.
+func WithGhostWisprRoomWait(wait time.Duration) HandlerOption {
+	return func(w *handlerWaits) { w.ghostWisprRoom = wait }
+}
 
 // Publisher publishes a webhook's envelopes, each within the context its handler gives it, which
 // carries the request's own end and the route's budget for its caller

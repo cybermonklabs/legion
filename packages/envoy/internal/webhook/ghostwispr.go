@@ -18,10 +18,10 @@ import (
 // short fields. Only an older unit adds one meeting's summary.
 const ghostWisprMaxBody = 1 << 20
 
-// ghostWisprRoomWait is the most a Ghost Wispr event waits, in all, for room in the listener's
-// body budget (BodyBudget) before it is answered 503: the server's 10 s to answer, less the bus's
-// 5 s publish bound and a second for the rest. It is a variable so a test can shorten it.
-var ghostWisprRoomWait = 4 * time.Second
+// GhostWisprRoomWait is the default wait for room in the listener's body budget (BodyBudget).
+// After it, the handler answers 503. It is the server's 10 s to answer less the bus's 5 s
+// publish bound and a second for the rest.
+const GhostWisprRoomWait = 4 * time.Second
 
 // ghostWisprSkip returns true for event types that should be accepted but not published.
 func ghostWisprSkip(event string) bool {
@@ -39,13 +39,14 @@ func ghostWisprSkip(event string) bool {
 // answer: Ghost Wispr sets no answer deadline of its own. It checks the signature of every event
 // with secret before it parses a byte of the body, and answers 401 to one that does not check, so
 // a handler built with an empty secret refuses every event (verify.GhostWispr).
-func GhostWisprHandler(secret string, publisher Publisher, bodies *BodyBudget) http.HandlerFunc {
+func GhostWisprHandler(secret string, publisher Publisher, bodies *BodyBudget, opts ...HandlerOption) http.HandlerFunc {
+	waits := webhookWaits(opts)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		body, release, err := bodies.readBody(r.Context(), w, r, r.Body, ghostWisprMaxBody, ghostWisprRoomWait)
+		body, release, err := bodies.readBody(r.Context(), w, r, r.Body, ghostWisprMaxBody, waits.ghostWisprRoom)
 		defer release()
 		if err != nil {
 			return
