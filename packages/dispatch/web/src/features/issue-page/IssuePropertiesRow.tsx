@@ -371,12 +371,14 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
  * its first line only, so a chip that no longer fits goes onto a line the box clips away rather
  * than past its edge, and each frame draws a chip whole or not at all.
  *
- * Each full reading and each check that reads the count's place has its own
+ * Each full reading and each check that reads layout has its own
  * `issue-header-labels` measure. The row of `c-header-labels` sums these over a load.
  * After each reading draws its fit, observe the box afresh, even if its width is unchanged.
  * In that frame, check that the drawn chips fit the reported width and the count stays where
- * `fitOf` put it. If either check fails, hide the box and count before paint and take one full
- * reading at the next notification. The check draws no fit of its own.
+ * `fitOf` put it. Only the first break in a chain hides the box and count and takes a re-reading.
+ * A break in that reading's frame removes chips until all remaining chips fit.
+ * The count includes every chip removed, and no reading follows. This ends the chain when only
+ * the drawn fit narrows the box, as when it brings in a classic scrollbar.
  */
 function HeaderLabels({
   labels,
@@ -410,9 +412,17 @@ function HeaderLabels({
     // change the width before the next frame begins.
     let width = Number.NaN;
     let fitting = 0;
+    let rereadingOwed = false;
+    let frameRereading = false;
     let frameFit: KeyedLabelsFit | null = null;
     let frameEnds: readonly number[] = [];
     let frameCountPlace: CountPlace | undefined;
+    const clearFrameFit = () => {
+      frameFit = null;
+      frameEnds = [];
+      frameCountPlace = undefined;
+      frameRereading = false;
+    };
     const drawFit = (next: KeyedLabelsFit) => {
       frameFit = next;
       flushSync(() => setFit(next));
@@ -433,7 +443,16 @@ function HeaderLabels({
         if (entry === undefined) return;
         const now = entry.borderBoxSize[0]?.inlineSize ?? entry.contentRect.width;
         width = now;
-        const chipsFit = within(frameEnds, now) >= frameFit.shown;
+        let shown = within(frameEnds, now);
+        if (frameRereading) {
+          // The count can return or grow after a trim and narrow the box again.
+          while (shown < frameFit.shown) {
+            drawFit({ ...frameFit, shown });
+            width = measured("check", () => element.getBoundingClientRect().width);
+            shown = within(frameEnds, width);
+          }
+          return;
+        }
         const countStays =
           frameCountPlace === undefined ||
           measured("check", () => {
@@ -443,24 +462,23 @@ function HeaderLabels({
               countPlaceOf(element.getBoundingClientRect(), counter) === frameCountPlace
             );
           });
-        if (chipsFit && countStays) return;
-        // Hide the chips and count before paint. The next notification reads the full layout.
+        if (shown >= frameFit.shown && countStays) return;
+        // Only the first break hides the line and asks for a re-reading.
+        rereadingOwed = true;
         frameFit = null;
         flushSync(() => setFit(null));
         return;
       }
       owed.current = null;
+      frameRereading = rereadingOwed;
+      rereadingOwed = false;
       observer.unobserve(root);
       const read = measured("reading", () => fitOf(element, count.current));
       width = read.width;
       frameEnds = read.ends;
       frameCountPlace = read.countPlace;
       cancelAnimationFrame(fitting);
-      fitting = requestAnimationFrame(() => {
-        frameFit = null;
-        frameEnds = [];
-        frameCountPlace = undefined;
-      });
+      fitting = requestAnimationFrame(clearFrameFit);
       // Drawn before this frame is painted, so no frame draws the chips as they were read.
       drawFit({ ...read.fit, key: reading });
       // Check the box after the draw, even if its width did not change.
@@ -482,8 +500,8 @@ function HeaderLabels({
   }, [hasLabels]);
   // Observe the root afresh when a commit lays out the chips for a reading. The browser notifies
   // the root after layout and before paint. The root is shallowest, so the browser can report
-  // the box's size after the reading's draw in the same frame. If that check hides the labels,
-  // the next notification takes the reading owed for the hidden layout.
+  // the box's size after the reading's draw in the same frame. Only the first break hides the
+  // line so the next notification can read the hidden layout.
   useLayoutEffect(() => {
     const observer = sizes.current;
     if (drawn !== null || observer === null) return;
@@ -648,6 +666,7 @@ function fitOf(
   const wrapped = chips.findIndex((chip) => missesFirstLine(chip, outer));
   let shown = wrapped === -1 ? chips.length : wrapped;
   let boxMinWidth: string | undefined;
+  let countPlace: CountPlace = beside ? "beside" : "under";
   if (shown === 0 && !beside && line !== null) {
     const least = Math.ceil(ends[0] ?? 0);
     const style = getComputedStyle(line);
@@ -658,13 +677,18 @@ function fitOf(
       pixels(style.borderLeftWidth) -
       pixels(style.borderRightWidth);
     const after = pixels(style.columnGap) + counter.width;
-    const room = Math.min(least, across) + after <= across + FIT_SLACK ? across - after : across;
+    const movedBeside = Math.min(least, across) + after <= across + FIT_SLACK;
+    const room = movedBeside ? across - after : across;
+    countPlace = movedBeside ? "beside" : "under";
     shown = within(ends, room);
     boxMinWidth = `min(${least}px, 100%)`;
   }
-  const countPlace =
-    shown === chips.length ? undefined : beside || boxMinWidth !== undefined ? "beside" : "under";
-  return { fit: { boxMinWidth, countWidth: counter.width, shown }, width, ends, countPlace };
+  return {
+    fit: { boxMinWidth, countWidth: counter.width, shown },
+    width,
+    ends,
+    countPlace: shown === chips.length ? undefined : countPlace,
+  };
 }
 
 /** A computed length in px, and 0 where it is none. */

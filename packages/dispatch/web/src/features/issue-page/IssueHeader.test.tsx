@@ -3585,7 +3585,7 @@ const LINE = {
  * chip of the box's first line wrapping too, after the empty item that begins it. Answers the
  * box of the line, of the labels' box, of the count and of each chip.
  */
-function labelsLaidOut(room: number): Map<Element, DOMRect> {
+function labelsLaidOut(room: number, narrowWhenDrawn = 0): Map<Element, DOMRect> {
   const laid = new Map<Element, DOMRect>();
   const line = document.querySelector('[data-testid="issue-state-actions"]');
   const box = document.querySelector<HTMLElement>('[data-testid="issue-header-labels"]');
@@ -3606,7 +3606,8 @@ function labelsLaidOut(room: number): Map<Element, DOMRect> {
   const space = moved ? across : room;
   const countWidth = count === null ? 0 : Math.max(words(count), least(count));
   const beside = count !== null && boxLeast + itemGap + countWidth <= space;
-  const width = beside ? space - itemGap - countWidth : space;
+  const narrowing = box.classList.contains("invisible") ? 0 : narrowWhenDrawn;
+  const width = Math.max(0, (beside ? space - itemGap - countWidth : space) - narrowing);
   laid.set(line, new DOMRect(-padding, 0, across + 2 * padding, 3 * row));
   laid.set(box, new DOMRect(left, top, width, 20));
   if (count !== null) {
@@ -3635,7 +3636,7 @@ function labelsLaidOut(room: number): Map<Element, DOMRect> {
  *  `room.width`, read at each call, and every other element with the empty box the DOM gives it,
  *  and `getComputedStyle` answer the gaps and the padding `LINE` gives the labels' box and the
  *  line. Counts the reads of a chip's box. */
-function layOutLabels(room: { width: number }): {
+function layOutLabels(room: { width: number; narrowWhenDrawn?: number }): {
   readonly chipReads: () => number;
   readonly restore: () => void;
 } {
@@ -3646,7 +3647,7 @@ function layOutLabels(room: { width: number }): {
     this: Element
   ) {
     if (this.matches("[data-header-label]")) chipReads += 1;
-    return labelsLaidOut(room.width).get(this) ?? new DOMRect();
+    return labelsLaidOut(room.width, room.narrowWhenDrawn).get(this) ?? new DOMRect();
   });
   const computed = window.getComputedStyle;
   const styles = spyOn(window, "getComputedStyle").mockImplementation((element, pseudo) => {
@@ -3682,8 +3683,8 @@ interface DrawnLabels {
 /** The header's labels as drawn at `room` px of room (`labelsLaidOut`): the chips, by their
  *  words; those of them not wholly on the box's first line and inside its end; and the count's
  *  words, null where no count is drawn. */
-function labelsDrawn(room: number): DrawnLabels {
-  const laid = labelsLaidOut(room);
+function labelsDrawn(room: number, narrowWhenDrawn = 0): DrawnLabels {
+  const laid = labelsLaidOut(room, narrowWhenDrawn);
   const box = screen.getByTestId("issue-header-labels");
   const outer = laid.get(box) ?? new DOMRect();
   const chips = [...box.querySelectorAll("[data-header-label]")];
@@ -3847,6 +3848,12 @@ function labelMeasureDetails(): unknown[] {
     .map((entry) => (entry as PerformanceMeasure).detail);
 }
 
+const WIDE_FIRST_LABELS = ["w".repeat(75), "needs-design-review", "api"];
+
+function fullLabelReadings(): number {
+  return labelMeasureDetails().filter((detail) => detail === "reading").length;
+}
+
 interface LabelGridLine extends DrawnLabels {
   readonly place: "none" | "below" | "beside";
   readonly boxRow: number;
@@ -3854,9 +3861,9 @@ interface LabelGridLine extends DrawnLabels {
   readonly countInvisible: boolean;
 }
 
-function labelGridLine(room: number, box: HTMLElement): LabelGridLine {
-  const drawn = labelsDrawn(room);
-  const laid = labelsLaidOut(room);
+function labelGridLine(room: number, box: HTMLElement, narrowWhenDrawn: number): LabelGridLine {
+  const drawn = labelsDrawn(room, narrowWhenDrawn);
+  const laid = labelsLaidOut(room, narrowWhenDrawn);
   const count = screen.queryByTestId("issue-labels-left");
   const outer = laid.get(box) ?? new DOMRect();
   const counter = count === null ? undefined : laid.get(count);
@@ -3875,11 +3882,11 @@ async function driveLabelGrid(
   before: number,
   after: number,
   ownMove: boolean,
-  measureCount: () => number
+  narrowWhenDrawn = 0
 ) {
   performance.clearMeasures(LABELS_MEASURE);
   const sizes = installLabelResizeObserver(true);
-  const room = { width: before };
+  const room = { width: before, narrowWhenDrawn: before === after ? narrowWhenDrawn : 0 };
   const layout = layOutLabels(room);
   const nextIssue = { ...issue, labels: [...labels] };
   const restore = stubHeader(nextIssue);
@@ -3888,17 +3895,18 @@ async function driveLabelGrid(
   const view = renderHeader("/issues/CORE-1", client);
   try {
     const box = view.getByTestId("issue-header-labels");
-    const line = () => labelGridLine(room.width, box);
+    const line = () => labelGridLine(room.width, box, room.narrowWhenDrawn);
     const frame = async () => {
       await act(nextFrame);
       sizes.resize(box);
     };
     sizes.resize(box);
     const read = line();
-    const afterReading = measureCount();
+    const afterReading = fullLabelReadings();
     if (ownMove) sizes.resize(box);
 
     room.width = after;
+    room.narrowWhenDrawn = narrowWhenDrawn;
     // Inspect the old fit in the new room before the observer can hide or replace it.
     const atNewWidth = line();
     const breaksRule = atNewWidth.hidden.length > 0 || atNewWidth.place !== read.place;
@@ -3908,7 +3916,7 @@ async function driveLabelGrid(
     const between = line();
     await frame();
     const settled = line();
-    const settledAt = measureCount();
+    const settledAt = fullLabelReadings();
     await frame();
     await frame();
     return {
@@ -3919,7 +3927,7 @@ async function driveLabelGrid(
       breaksRule,
       afterReading,
       settledAt,
-      final: measureCount(),
+      final: fullLabelReadings(),
     };
   } finally {
     view.unmount();
@@ -3938,8 +3946,7 @@ function labelGridBrief(line: LabelGridLine): string {
   return `${line.shown.length} shown${cut}, count ${line.count ?? "none"} ${line.place}, box row ${line.boxRow}${visibility}`;
 }
 
-async function expectLabelGrid(measureCount: () => number) {
-  const sets = { one: ["api"], three: ["api", "web", "docs"], twenty: TWENTY_LABELS };
+async function labelGrid(sets: Record<string, readonly string[]>, narrowWhenDrawn = 0) {
   const rooms = [30, 45, 60, 75, 90, 115, 150, 200, 260, 330, 430, 480, 600];
   const countWords = (left: number) =>
     left === 0 ? null : `+${left} label${left === 1 ? "" : "s"}`;
@@ -3952,7 +3959,10 @@ async function expectLabelGrid(measureCount: () => number) {
   for (const [name, labels] of Object.entries(sets)) {
     const freshFits = new Map<number, LabelGridLine>();
     for (const room of rooms) {
-      freshFits.set(room, (await driveLabelGrid(labels, room, room, true, measureCount)).settled);
+      freshFits.set(
+        room,
+        (await driveLabelGrid(labels, room, room, true, narrowWhenDrawn)).settled
+      );
     }
     for (const before of rooms) {
       for (const [after, fresh] of freshFits) {
@@ -3960,12 +3970,12 @@ async function expectLabelGrid(measureCount: () => number) {
         for (const ownMove of [true, false]) {
           states += 1;
           const { read, changed, between, settled, breaksRule, afterReading, settledAt, final } =
-            await driveLabelGrid(labels, before, after, ownMove, measureCount);
+            await driveLabelGrid(labels, before, after, ownMove, narrowWhenDrawn);
           const fail = (kind: string) => {
             kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
             const variant = ownMove ? "" : " (no own-move notification)";
             failures.push(
-              `${kind} | ${name} ${before}->${after}${variant} | read ${labelGridBrief(read)}; changed ${labelGridBrief(changed)}; settled ${labelGridBrief(settled)}; fresh ${labelGridBrief(fresh)}`
+              `${kind} | ${name} ${before}->${after}${variant}, ${narrowWhenDrawn} px drawn-only narrowing | read ${labelGridBrief(read)}; changed ${labelGridBrief(changed)}; between ${labelGridBrief(between)}; settled ${labelGridBrief(settled)}; fresh ${labelGridBrief(fresh)}; readings ${afterReading}/${settledAt}/${final}`
             );
           };
           for (const [line, phase] of [
@@ -3984,7 +3994,8 @@ async function expectLabelGrid(measureCount: () => number) {
           }
           if (breaksRule && !changed.boxInvisible) fail("visible while a reading is owed");
           if (settled.boxInvisible) fail("still hidden once settled");
-          if (emptyBelow(settled) && !emptyBelow(fresh)) {
+          const trimmedEmptyBelow = narrowWhenDrawn > 0 && settledAt === afterReading + 1;
+          if (emptyBelow(settled) && !trimmedEmptyBelow) {
             fail(
               changed.shown.length < read.shown.length
                 ? "empty box, count below"
@@ -3999,8 +4010,22 @@ async function expectLabelGrid(measureCount: () => number) {
       }
     }
   }
+  return { states, failures, kinds };
+}
+
+async function expectLabelGrid() {
+  const sets = { one: ["api"], three: ["api", "web", "docs"], twenty: TWENTY_LABELS };
+  const base = await labelGrid(sets);
   console.log(
-    `GRID ${states} states, ${failures.length} failures: ${JSON.stringify(Object.fromEntries(kinds))}`
+    `GRID ${base.states} states, ${base.failures.length} failures: ${JSON.stringify(Object.fromEntries(base.kinds))}`
+  );
+  expect(base.failures.length, base.failures.slice(0, 20).join("\n")).toBe(0);
+
+  const wide = await labelGrid({ wide: WIDE_FIRST_LABELS });
+  const narrowed = await labelGrid({ ...sets, wide: WIDE_FIRST_LABELS }, 40);
+  const failures = [...base.failures, ...wide.failures, ...narrowed.failures];
+  console.log(
+    `GRID ${base.states + wide.states + narrowed.states} states, ${failures.length} failures`
   );
   expect(
     failures.length,
@@ -4008,12 +4033,38 @@ async function expectLabelGrid(measureCount: () => number) {
   ).toBe(0);
 }
 
+async function expectWideMovedBox() {
+  for (const width of [30, 45, 60]) {
+    const { read, settled, afterReading, final } = await driveLabelGrid(
+      WIDE_FIRST_LABELS,
+      width,
+      width,
+      true
+    );
+    const expected: LabelGridLine = {
+      boxRow: 1,
+      boxInvisible: false,
+      count: "+2 labels",
+      countInvisible: false,
+      hidden: [],
+      place: "below",
+      shown: [WIDE_FIRST_LABELS[0]],
+    };
+    expect(read, `the count should be under the moved box at ${width} px`).toEqual(expected);
+    expect(final, `the count below the moved box at ${width} px should take only one reading`).toBe(
+      1
+    );
+    expect(afterReading, `the first fit at ${width} px takes one reading`).toBe(1);
+    expect(settled, `the moved box should stay drawn at ${width} px`).toEqual(expected);
+  }
+}
+
 async function expectLabelsFitAfterInFrameChange() {
   // The older code used by the controls did not tag its measures. Those were all readings.
   const measureCount = () => labelMeasureDetails().filter((detail) => detail !== "check").length;
   performance.clearMeasures(LABELS_MEASURE);
   const sizes = installLabelResizeObserver();
-  const room = { width: 150 };
+  const room = { width: 150, narrowWhenDrawn: 0 };
   const layout = layOutLabels(room);
   const shortLabels = ["api", "web", "docs"];
   const restore = stubHeader({ ...issue, labels: shortLabels });
@@ -4028,17 +4079,19 @@ async function expectLabelsFitAfterInFrameChange() {
     const labelsHidden = () =>
       box.classList.contains("invisible") &&
       screen.queryByTestId("issue-labels-left")?.classList.contains("invisible") === true;
-    const readFrame = () => {
+    const readFrame = (boxChanged = false) => {
       const before = box.getBoundingClientRect().width;
-      // The root notifies first. The box then reports if its width changed or it was reobserved.
+      // The root notifies first. The box reports a width change or a fresh observation.
       sizes.resize(document.documentElement);
       const reobserved = sizes.newlyObserved(box);
-      if (reobserved || box.getBoundingClientRect().width !== before) sizes.resize(box);
+      if (boxChanged || reobserved || box.getBoundingClientRect().width !== before) {
+        sizes.resize(box);
+      }
       return reobserved;
     };
-    const nextReadingFrame = async () => {
+    const nextReadingFrame = async (boxChanged = false) => {
       await act(nextFrame);
-      return readFrame();
+      return readFrame(boxChanged);
     };
     const expectAfterTwoFrames = async (readings: number, fit: DrawnLabels) => {
       await nextReadingFrame();
@@ -4197,6 +4250,32 @@ async function expectLabelsFitAfterInFrameChange() {
     expect(labelsDrawn(room.width), "widening in the reading's frame should keep the fit").toEqual(
       fourChips
     );
+
+    // Both readings find room for all three chips. Only drawing the box narrows it.
+    performance.clearMeasures(LABELS_MEASURE);
+    room.width = 150;
+    room.narrowWhenDrawn = 45;
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...issue,
+        labels: shortLabels,
+      });
+    });
+    await nextReadingFrame();
+    expect(fullLabelReadings(), "the first fit takes one reading").toBe(1);
+    expect(labelsHidden(), "the first break hides the box for another reading").toBe(true);
+    await nextReadingFrame();
+    expect(fullLabelReadings(), "the first break takes one more reading").toBe(2);
+    const afterRereading = labelsDrawn(room.width, room.narrowWhenDrawn);
+
+    // The trim changes the box's width. Its notification must not start another reading.
+    await nextReadingFrame(true);
+    await nextReadingFrame();
+    expect(fullLabelReadings(), "a break after the second reading must not start another").toBe(2);
+    expect(box.classList.contains("invisible"), "the labels' box is drawn").toBe(false);
+    const settled = { count: "+3 labels", hidden: [], shown: [] };
+    expect(afterRereading, "the trim and count are right before paint").toEqual(settled);
+    expect(labelsDrawn(room.width, room.narrowWhenDrawn)).toEqual(settled);
   } finally {
     view.unmount();
     restore();
@@ -4204,13 +4283,14 @@ async function expectLabelsFitAfterInFrameChange() {
     sizes.restore();
     performance.clearMeasures(LABELS_MEASURE);
   }
-  await expectLabelGrid(measureCount);
+  await expectWideMovedBox();
+  await expectLabelGrid();
 }
 
 test(
   "a box that narrows in the frame of a reading draws no chip it hides, and its count names every chip left out",
   expectLabelsFitAfterInFrameChange,
-  180_000
+  300_000
 );
 
 // Each full reading has one measure and reads each chip once. A notification in that frame can

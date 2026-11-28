@@ -306,6 +306,64 @@ test("a box the fit moves on to the count's line draws no chip it hides when it 
     await page.setViewportSize(viewportAt(1000));
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectHeaderDrawn(page);
+    const countReadings = () =>
+      page.evaluate(
+        (name) =>
+          performance
+            .getEntriesByName(name, "measure")
+            .filter((entry) => (entry as PerformanceMeasure).detail === "reading").length,
+        HEADER_LABELS_MEASURE
+      );
+    await page.waitForTimeout(1_000);
+    const readings = await countReadings();
+    const samples = await page.evaluate(() => {
+      const line: {
+        chips: string[];
+        count: string | null;
+        place: "beside" | "under" | null;
+        width: number;
+      }[] = [];
+      const { promise, resolve, reject } = Promise.withResolvers<typeof line>();
+      let start: number | undefined;
+      const sample = (now: number) => {
+        const box = document.querySelector('[data-testid="issue-header-labels"]');
+        if (box === null) {
+          reject(new Error("the labels' box disappeared while sampling the line"));
+          return;
+        }
+        const count = document.querySelector('[data-testid="issue-labels-left"]');
+        const rect = box.getBoundingClientRect();
+        const countRect = count?.getBoundingClientRect();
+        line.push({
+          chips: Array.from(
+            box.querySelectorAll("[data-header-label]"),
+            (chip) => chip.textContent ?? ""
+          ),
+          count: count?.textContent ?? null,
+          place: countRect === undefined ? null : countRect.top < rect.bottom ? "beside" : "under",
+          width: rect.width,
+        });
+        start ??= now;
+        if (now - start >= 1_000) resolve(line);
+        else requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+      return promise;
+    });
+    expect(
+      await countReadings(),
+      "the labels should take no more readings after the first second"
+    ).toBe(readings);
+    const first = JSON.stringify(samples[0]);
+    const changed = samples.find((sample) => JSON.stringify(sample) !== first);
+    expect(
+      changed,
+      `the drawn line changed in the second after it settled: ${JSON.stringify(changed)}`
+    ).toBeUndefined();
+    await expect(
+      page.getByTestId("issue-header-labels"),
+      "the labels' box is drawn"
+    ).not.toHaveClass(/\binvisible\b/);
     const where = "at 1000 px, the box narrowed in the frame of the reading that drew its fit";
     const drawn = await settledValue(`the header's labels ${where}`, async () => ({
       ...(await labelsAgainstTheCount(page)),
