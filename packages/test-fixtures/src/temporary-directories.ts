@@ -7,12 +7,11 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  type Stats,
   statfsSync,
 } from "node:fs";
-import { chmod, lstat, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeTree } from "./remove-tree";
 
 /** What {@link temporaryDirectories} takes. */
 export type TemporaryDirectoriesOptions = {
@@ -34,6 +33,15 @@ export type TemporaryDirectoryOptions = {
   real?: boolean;
   /** The directory the one directory is made in, `tmpdir()` by default; see {@link memoryRoot}. */
   root?: string;
+  /**
+   * Removes the directory in a process of its own that the `afterAll` starts and does not wait
+   * for, in place of removing it inside the `afterAll`. It is for a directory whose removal can
+   * outlast Bun's default hook limit of 5 s on a slow disk, such as a stack's working directory,
+   * which holds the binaries the stack built: Bun reports such an `afterAll` as a hook that timed
+   * out and fails the file, for a time that depends on the disk and not on the code under test.
+   * The directory can outlive its scope by the time its removal takes.
+   */
+  removeInBackground?: boolean;
 };
 
 /** What {@link memoryRoot} takes. */
@@ -172,6 +180,9 @@ export function temporaryDirectories(
  * The name is the prefix, a dash and eight random hexadecimal characters, two more than
  * `mkdtemp` adds. The directory is made exclusively, so `mode` applies to it and a path that
  * somehow exists already fails the file rather than handing two suites one directory.
+ *
+ * With `removeInBackground` the `afterAll` starts the removal in a process of its own instead of
+ * removing the directory itself (see {@link TemporaryDirectoryOptions}).
  */
 export function temporaryDirectory(
   prefix: string,
@@ -187,9 +198,26 @@ export function temporaryDirectory(
     mkdirSync(directory, { mode: 0o700 });
   });
   afterAll(async () => {
-    await removeTree(directory);
+    if (options.removeInBackground === true) removeInBackground(directory);
+    else await removeTree(directory);
   });
   return directory;
+}
+
+/**
+ * Starts the removal of `directory` in a process of its own (`remove-tree.ts`) and returns at
+ * once, so the `afterAll` that calls it takes no time the disk decides. The process is not waited
+ * for: it may outlive the `bun test` process, and Bun's hook limits do not judge it. A directory a
+ * `-t` filter or a skipped `describe` never made is nothing to remove. A directory it cannot remove
+ * is named on the run's stderr; unlike a hook that throws, it fails no file, since by then the file
+ * may be over.
+ */
+function removeInBackground(directory: string): void {
+  Bun.spawn([process.execPath, join(import.meta.dir, "remove-tree.ts"), directory], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "inherit",
+  }).unref();
 }
 
 /** `-`, the one character the name template trims from a caller's prefix. */
@@ -231,58 +259,4 @@ async function removeEvery(directories: readonly string[]): Promise<void> {
   if (failures.length > 0) {
     throw new Error(`temporary directories left behind:\n  ${failures.join("\n  ")}`);
   }
-}
-
-/**
- * Removes one tree, making every directory in it writable, searchable and readable first.
- * `rm` alone fails on a tree a test made read-only on purpose, and a test can make one without
- * meaning to: Go's module cache writes 0555 directories and 0444 files, so a suite that runs `go`
- * under its temporary directory leaves a tree nothing can unlink.
- */
-async function removeTree(directory: string): Promise<void> {
-  await makeWritable(directory);
-  await rm(directory, { recursive: true, force: true });
-}
-
-/** `chmod -R u+rwx` on a tree's directories, following no symlink. A path already gone is
- * nothing to do. */
-async function makeWritable(path: string): Promise<void> {
-  const entry = await makeSelfWritable(path);
-  if (entry === undefined || !entry.isDirectory()) return;
-  let entries: string[];
-  try {
-    entries = await readdir(path);
-  } catch {
-    return;
-  }
-  for (const name of entries) await makeWritable(join(path, name));
-}
-
-/**
- * `chmod u+rwx` on one path when it is a directory, following no symlink. Answers what it found
- * there, or nothing for a path that is gone or a symlink.
- *
- * A file's own mode is left alone: unlinking a file needs write permission on the directory
- * holding it, never on the file, and a file in a temporary tree can be a hard link to one
- * outside it, whose mode is the same inode's.
- */
-async function makeSelfWritable(path: string): Promise<Stats | undefined> {
-  let entry: Stats;
-  try {
-    entry = await lstat(path);
-  } catch {
-    return undefined;
-  }
-  if (entry.isSymbolicLink()) return undefined;
-  if (!entry.isDirectory()) return entry;
-  const mode = entry.mode & 0o7777;
-  const wanted = mode | 0o700;
-  if (wanted !== mode) {
-    try {
-      await chmod(path, wanted);
-    } catch {
-      // A mode this user cannot set is left to rm to report.
-    }
-  }
-  return entry;
 }

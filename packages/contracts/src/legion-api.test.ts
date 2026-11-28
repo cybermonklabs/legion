@@ -1839,17 +1839,45 @@ test("a failed step's completion names the step its task returns to", () => {
 // Contract 219: register_plan answers the plan it took, its version and each task with the steps
 // its block names as the plan writes them (`role` or `role:key`). A task whose block names none
 // runs the project's default steps and is answered with no step, an empty list and never null.
+// The contract entry 20261125174555 (running-step): a task that runs carries `running`, a list of one entry, the act it stands at once
+// the version is taken, with the role whose agent works it; a task that does not run carries none.
 // No plugin code reads a field of the answer, so the reader takes each as optional and refuses
-// only a value of the wrong type.
-test("register_plan answers each task of the plan it took with its steps", () => {
+// only a value of the wrong type; the `legion` tool hands the agent what this schema keeps, so
+// `running` must be kept whole.
+test("register_plan answers each task of the plan it took with its steps and the act it runs", () => {
   expect(LegionPlanRegisterResponse.parse(fixture("plan-register.json"))).toEqual({
-    plan: { version: 4, tasks: [{ id: "a", steps: ["implementer", "reviewer"] }] },
+    plan: {
+      version: 4,
+      tasks: [
+        {
+          id: "a",
+          steps: ["implementer", "reviewer"],
+          running: [{ kind: "step", place: 1, role: "implementer" }],
+        },
+      ],
+    },
   });
   const none = { plan: { version: 1, tasks: [{ id: "a", steps: [] }] } };
   expect(LegionPlanRegisterResponse.parse(none)).toEqual(none);
+  const atRetro = {
+    plan: {
+      version: 2,
+      tasks: [
+        {
+          id: "a",
+          steps: ["implementer", "reviewer"],
+          running: [{ kind: "retro", place: 0, role: "implementer" }],
+        },
+      ],
+    },
+  };
+  expect(LegionPlanRegisterResponse.parse(atRetro)).toEqual(atRetro);
   for (const task of [
     { id: "a", steps: null },
     { id: "", steps: [] },
+    { id: "a", steps: [], running: [{ kind: "step", place: -1, role: "implementer" }] },
+    { id: "a", steps: [], running: [{ kind: "", place: 1, role: "implementer" }] },
+    { id: "a", steps: [], running: { kind: "step", place: 1, role: "implementer" } },
   ]) {
     expect(
       LegionPlanRegisterResponse.safeParse({ plan: { version: 1, tasks: [task] } }).success
@@ -3447,14 +3475,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
   // claim view; and contract 275's, which takes `dispatchCredential` off the state. Above them
-  // stand four entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
+  // stand five entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
   // the `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`);
   // the state-seq entry's, entry 20261125174131's (dispatch://INFRA-3931), which takes `stateSeq`,
   // `stateId` and `stateRun` off the daemon block; the P0 start's, entry 20261125181047's, which
   // serves each issue without its `resolvedPriority` and `priorityFrom` and the admission without
-  // its `p0Holders` and `p0Bound`; and the repository correction's (dispatch://INFRA-3136), entry
+  // its `p0Holders` and `p0Bound`; the repository correction's (dispatch://INFRA-3136), entry
   // 20261125181104's, which serves each issue without its `repoBefore`, `repoCorrectedAt`,
-  // `repoChangePending` and `repoChangeReason`.
+  // `repoChangePending` and `repoChangeReason`; and the claim-left entry's (dispatch://INFRA-3144),
+  // entry 20261127202231's, which serves each issue without its `claimLeft` (`withoutClaimLeft`).
   // So the golden's issues, rows, claim views and daemon block are compared without them. One
   // value strip stands above 199 as well: `caches`, the source of the repository-cache-room row,
   // arrived at contract 213, so that row is served here without its `source`, every other field of
@@ -3506,8 +3535,9 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   const narrowedIssues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
       // A caller below the P0 start's contract entry is served each issue without the two keys it
-      // added (the daemon's `withoutResolvedPriority`), and a caller below the repository
-      // correction's entry without the four it added.
+      // added (the daemon's `withoutResolvedPriority`), a caller below the repository correction's
+      // entry without the four it added, and a caller below the claim-left entry without its
+      // `claimLeft` (the daemon's `withoutClaimLeft`).
       const {
         podHold: _podHold,
         priority: _priority,
@@ -3517,6 +3547,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
         repoCorrectedAt: _repoCorrectedAt,
         repoChangePending: _repoChangePending,
         repoChangeReason: _repoChangeReason,
+        claimLeft: _claimLeft,
         ...kept
       } = issue;
       const narrowed: Record<string, unknown> = { ...kept };
