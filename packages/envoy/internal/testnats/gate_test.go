@@ -12,8 +12,6 @@ import (
 	"testing"
 
 	natsgo "github.com/nats-io/nats.go"
-
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A gate's port must lie below the machine's ephemeral range, where no :0 bind can take it while
@@ -103,7 +101,7 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 	}
 	gate.Close()
 
-	conn, err := (&net.Dialer{}).DialContext(testwait.Context(t), "tcp", gate.address)
+	conn, err := (&net.Dialer{}).DialContext(Context(t), "tcp", gate.address)
 	if err == nil {
 		_ = conn.Close()
 	}
@@ -133,7 +131,7 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 	}
 
 	gate.Open()
-	testwait.Until(t, fmt.Sprintf("a connection through the reopened gate at %s", gate.URL()), func() (dialAttempt, bool) {
+	until(t, boundOf(t), fmt.Sprintf("a connection through the reopened gate at %s", gate.URL()), func() (dialAttempt, bool) {
 		nc, err := natsgo.Connect(gate.URL(), natsgo.NoReconnect())
 		if err == nil {
 			nc.Close()

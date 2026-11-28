@@ -88,12 +88,16 @@ type storedConsumer struct {
 func AwaitConsumerStored(t testing.TB, conn *natsgo.Conn, stream, consumer string) {
 	t.Helper()
 	path := consumerStatePath(t, conn, stream, consumer)
-	js, err := conn.JetStream(MaxWait(t))
+	js, err := conn.JetStream()
 	if err != nil {
 		t.Fatalf("testnats: open JetStream to read consumer %s on stream %s: %v", consumer, stream, err)
 	}
-	until(t, boundOf(t), fmt.Sprintf("%s to hold the position the server reports for consumer %s", path, consumer), func() (string, bool) {
-		info, err := js.ConsumerInfo(stream, consumer)
+	end := boundOf(t)
+	until(t, end, fmt.Sprintf("%s to hold the position the server reports for consumer %s", path, consumer), func() (string, bool) {
+		// Each read waits for what is left of the wait (end.left), measured again as it is sent,
+		// as main's measured MaxWait for each read: a MaxWait set once on the JetStream context
+		// would let a read sent late in the wait wait past end by as long as the wait had run.
+		info, err := js.ConsumerInfo(stream, consumer, natsgo.MaxWait(end.left()))
 		if errors.Is(err, natsgo.ErrConsumerNotFound) || errors.Is(err, natsgo.ErrStreamNotFound) {
 			return "the server holds no such consumer", true
 		}

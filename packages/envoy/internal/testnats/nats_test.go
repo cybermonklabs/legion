@@ -49,10 +49,14 @@ const shortDeadline = 4 * time.Second
 // The waits on a server's own fact keep main's end (testDeadline): with less than a minute of the
 // test binary's deadline left they wait halfway to it, where the shared wait has given up 30 s
 // before it (testwait.GiveUpAt) and asks once. The row gives each wait a deadline of its own,
-// shortDeadline away. until returns a fact that holds 100 ms in, receive takes a value sent 100 ms
-// in, and the span a request of MaxWait or RequestTimeout waits (left) is about half of what is
-// left, where the shared give-up would leave a millisecond. A fact that never holds fails until at
-// its end, halfway to the deadline and not before, naming what it waited for and testDeadline.
+// shortDeadline away. until returns a fact that holds 100 ms in. receive takes a value that a
+// sender armed just before it sends 100 ms later, so the value comes while receive waits (unless
+// the machine holds the goroutine 100 ms between the two), and a receive whose end had passed, as
+// the shared give-up has, would find none and fail. The span a request of MaxWait or
+// RequestTimeout waits (left) is about half of what is left, where the shared give-up would leave
+// a millisecond, and Context's deadline lies between halfway to the deadline and the deadline,
+// where testwait.Context's has passed. A fact that never holds fails until at its end, halfway to
+// the deadline and not before, naming what it waited for and testDeadline.
 func TestTheWaitsOnAServersOwnFactEndHalfwayToAShortDeadline(t *testing.T) {
 	began := time.Now()
 	short := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: began.Add(shortDeadline)}
@@ -62,9 +66,12 @@ func TestTheWaitsOnAServersOwnFactEndHalfwayToAShortDeadline(t *testing.T) {
 	if span := left(short); span < shortDeadline/4 {
 		t.Errorf("left gives a request %s with less than %s of the deadline left, want about half of it", span, shortDeadline)
 	}
+	halfway := began.Add(shortDeadline / 2)
+	if deadline, ok := Context(short).Deadline(); !ok || deadline.Before(halfway) || !deadline.Before(short.deadline) {
+		t.Errorf("Context with %s of its deadline left has deadline %s (reported %t), want one from halfway to it, %s, to it, %s",
+			shortDeadline, deadline.Format(time.RFC3339Nano), ok, halfway.Format(time.RFC3339Nano), short.deadline.Format(time.RFC3339Nano))
+	}
 	const comes = 100 * time.Millisecond
-	sent := make(chan struct{})
-	time.AfterFunc(comes, func() { close(sent) })
 	waited := make(chan struct{})
 	go func() {
 		defer close(waited)
@@ -72,11 +79,13 @@ func TestTheWaitsOnAServersOwnFactEndHalfwayToAShortDeadline(t *testing.T) {
 			since := time.Since(began)
 			return since, since >= comes
 		})
-		receive(short, boundOf(short), "a value sent 100 ms in", sent)
+		sent := make(chan struct{})
+		time.AfterFunc(comes, func() { close(sent) })
+		receive(short, boundOf(short), "a value sent 100 ms into the receive", sent)
 	}()
-	testwait.Receive(t, "the waits on a fact that comes 100 ms in to end", waited)
+	testwait.Receive(t, "the waits on a fact that comes 100 ms in and a value sent 100 ms into the receive to end", waited)
 	if short.message != "" {
-		t.Fatalf("a wait with %s of its deadline left failed on a fact that comes 100 ms in: %s", shortDeadline, short.message)
+		t.Fatalf("a wait with %s of its deadline left failed on a fact that comes 100 ms in or a value sent 100 ms into its wait: %s", shortDeadline, short.message)
 	}
 
 	set := time.Now()
@@ -360,7 +369,7 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 		t.Fatalf("watch: %v", err)
 	}
 	defer func() { _ = watcher.Stop() }()
-	if entry := testwait.Receive(t, "the empty bucket's scan to deliver its marker", watcher.Updates()); entry != nil {
+	if entry := receive(t, boundOf(t), "the empty bucket's scan to deliver its marker", watcher.Updates()); entry != nil {
 		t.Fatalf("the empty bucket's scan delivered %v before its marker", entry)
 	}
 
@@ -375,7 +384,7 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 	if _, err := kv.Put("after-the-reload", []byte("1")); err != nil {
 		t.Fatalf("put after the reload: %v", err)
 	}
-	if entry := testwait.Receive(t, "the watcher of an account in use to deliver the put made after the reload", watcher.Updates()); entry == nil || entry.Key() != "after-the-reload" {
+	if entry := receive(t, boundOf(t), "the watcher of an account in use to deliver the put made after the reload", watcher.Updates()); entry == nil || entry.Key() != "after-the-reload" {
 		t.Fatalf("the watcher delivered %v after the reload, want the put", entry)
 	}
 	if status := live.Status(); status != natsgo.CONNECTED {
@@ -395,7 +404,7 @@ func TestTheNkeyReadinessWaitRefusesAServerThatAdmitsAnyone(t *testing.T) {
 		defer close(done)
 		awaitAuth(wait, uri, false)
 	}()
-	testwait.Receive(t, "the readiness wait on a server that admits anyone to end", done)
+	receive(t, boundOf(t), "the readiness wait on a server that admits anyone to end", done)
 	if want := "admitted a client with no credential"; !strings.Contains(wait.message, want) {
 		t.Errorf("the readiness wait ended with %q, want it to say %q", wait.message, want)
 	}
@@ -473,7 +482,7 @@ func TestASecondGrantWaitsForItsOwnReload(t *testing.T) {
 		defer close(done)
 		grant.Grant(refused, "not..a.subject")
 	}()
-	testwait.Receive(t, "the second Grant to return or refuse", done)
+	receive(t, boundOf(t), "the second Grant to return or refuse", done)
 	if !strings.Contains(refused.message, "NATS refused the new grant") ||
 		!strings.Contains(refused.message, `subject "not..a.subject" is not a valid subject`) {
 		t.Fatalf("a second Grant the server refused ended with %q, want the server's refusal", refused.message)
@@ -541,7 +550,7 @@ const reloadRequestStep = time.Minute
 // log says so.
 //
 // Each request waits reloadRequestStep for its answer, cut to what is left of the row's end,
-// testDeadline read once as the requesters start (boundOf, left). A request that draws none in its
+// testDeadline read once before the connects (boundOf, left). A request that draws none in its
 // step fails the test by name at once, and its requester sends another, so the reloads still run
 // under requests; one whose step that end cut fails the test naming the end. No request and no
 // reload starts past it, and each Reload's hold and barrier wait until testDeadline as that Reload
@@ -552,7 +561,8 @@ const reloadRequestStep = time.Minute
 // package's last tests failed for want of time).
 //
 // Before the requesters start, one request is sent until it is answered, each send bounded by
-// readWait and retried through the shared wait. That works around a race in nats-server, not a
+// readWait, cut to what is left of the same end, and sent again until that end (until), as main
+// sent it on the bound it read before the connects. That works around a race in nats-server, not a
 // defect of this test: v2.15.1 (and 2.15.3) makes an exporting account's prefix for the replies of
 // its service imports on the first request through one, releases the account's lock, and only then
 // subscribes to the prefix (newServiceReply, server/accounts.go 2504-2522 in 2.15.1, the lock
@@ -571,6 +581,7 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 		return publishGrantConfig(public, []string{"$JS.API.>", "_INBOX.>", fmt.Sprintf("reload%d.>", n)})
 	}
 	server, uri := StartConfig(t, grant(0), []string{"-js"}, false)
+	end := boundOf(t)
 	conns := make([]*natsgo.Conn, reloadConnections)
 	for c := range conns {
 		conn, err := AwaitConnectSeed(t, uri, seed)
@@ -580,14 +591,13 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 		t.Cleanup(conn.Close)
 		conns[c] = conn
 	}
-	testwait.Until(t, "the first request, whose answer shows nats-server subscribed to the replies of its JetStream API", func() (error, bool) {
-		_, err := conns[0].Request("$JS.API.INFO", nil, readWait)
+	until(t, end, "the first request, whose answer shows nats-server subscribed to the replies of its JetStream API", func() (error, bool) {
+		_, err := conns[0].Request("$JS.API.INFO", nil, min(readWait, end.left()))
 		if err != nil && !errors.Is(err, natsgo.ErrTimeout) {
 			t.Fatalf("the first request, whose answer shows nats-server subscribed to the replies of its JetStream API: %v", err)
 		}
 		return err, err == nil
 	})
-	end := boundOf(t)
 	pastEnd := func() bool { return end.bounded && !time.Now().Before(end.end) }
 	stop := make(chan struct{})
 	var answered atomic.Int64
@@ -690,7 +700,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 	if reloads := strings.Count(server.Log(), "Reloaded: authorization nkey users"); reloads != 1 {
 		t.Fatalf("the server reloaded its nkey users %d times, want 1", reloads)
 	}
-	if _, err := conn.RequestWithContext(testwait.Context(t), "more.echo", nil); !errors.Is(err, natsgo.ErrNoResponders) {
+	if _, err := conn.RequestWithContext(Context(t), "more.echo", nil); !errors.Is(err, natsgo.ErrNoResponders) {
 		t.Fatalf("a request on the subject the reload granted: %v, want %v from the server that took the grant", err, natsgo.ErrNoResponders)
 	}
 }
@@ -759,8 +769,8 @@ func TestStartConfigRunsTheArgumentsItWasGivenAndNoOther(t *testing.T) {
 // frozenRequest is how long a request to a frozen server waits before it counts as unanswered:
 // nats.go's own request timer is the span that proves the freeze held the bytes, since an answer
 // the server never sent leaves no state to read and nothing the test does later orders against
-// it. A request the server answers waits on testwait.Context, so no bound of the test's own
-// decides a slow round trip.
+// it. A request the server answers waits on Context, until the end of a wait on a server's own fact
+// (testDeadline), so no bound of the test's own decides a slow round trip.
 const frozenRequest = time.Second
 
 // A frozen server stops the bytes in either direction without dropping anything: the request times
@@ -775,7 +785,7 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 		t.Fatalf("subscribe: %v", err)
 	}
 	defer func() { _ = sub.Unsubscribe() }()
-	if _, err := conn.RequestWithContext(testwait.Context(t), "echo", nil); err != nil {
+	if _, err := conn.RequestWithContext(Context(t), "echo", nil); err != nil {
 		t.Fatalf("request before the freeze: %v", err)
 	}
 
@@ -788,7 +798,7 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 	}
 
 	thaw()
-	answer, err := conn.RequestWithContext(testwait.Context(t), "echo", nil)
+	answer, err := conn.RequestWithContext(Context(t), "echo", nil)
 	if err != nil {
 		t.Fatalf("request after the thaw: %v", err)
 	}
@@ -876,7 +886,7 @@ func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
 			second()
 			first()
 			second()
-			if _, err := conn.RequestWithContext(testwait.Context(t), "echo", nil); err != nil {
+			if _, err := conn.RequestWithContext(Context(t), "echo", nil); err != nil {
 				t.Fatalf("request after every thaw: %v", err)
 			}
 
@@ -886,7 +896,7 @@ func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
 				t.Fatalf("a request after a stale thaw of an earlier freeze: %v, want %v", err, natsgo.ErrTimeout)
 			}
 			later()
-			if _, err := conn.RequestWithContext(testwait.Context(t), "echo", nil); err != nil {
+			if _, err := conn.RequestWithContext(Context(t), "echo", nil); err != nil {
 				t.Fatalf("request after the later thaw: %v", err)
 			}
 		})
@@ -950,7 +960,7 @@ func TestTheAnonymousWaitRefusesAServerThatRefusesAnyone(t *testing.T) {
 		defer close(done)
 		awaitAuth(wait, uri, true)
 	}()
-	testwait.Receive(t, "the anonymous wait on a server that refuses anyone to end", done)
+	receive(t, boundOf(t), "the anonymous wait on a server that refuses anyone to end", done)
 	if want := "refused a client with no credential"; !strings.Contains(wait.message, want) {
 		t.Errorf("the anonymous wait ended with %q, want it to say %q", wait.message, want)
 	}

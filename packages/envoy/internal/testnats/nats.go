@@ -767,7 +767,9 @@ func left(t testing.TB) time.Duration { return boundOf(t).left() }
 // (testwait.GiveUpAt), which comes earlier when less than a minute is left: it asks read at the
 // shared wait's pace (testwait.Poll) on the wall clock (testwait.Holds), once more after end, and
 // then fails t naming what and printing the last value read (gaveUp). With no end it asks until
-// read reports true.
+// read reports true. end is a moment on the wall clock (testDeadline), so the wait reads the wall
+// clock in a child that took testwait.SetUpDone too, as receive does, and not the child's step
+// clock, which the shared waits read there.
 func until[T any](t testing.TB, end waitEnd, what string, read func() (T, bool)) T {
 	t.Helper()
 	var value T
@@ -783,16 +785,35 @@ func until[T any](t testing.TB, end waitEnd, what string, read func() (T, bool))
 
 // receive waits for one receive from ch (a value, or the close of ch, which gives the zero value)
 // and returns it. It is testwait.Receive with end (boundOf) in place of the shared wait's give-up,
-// as until is testwait.Until: the span to end passes on the clock the waits read (testwait.Within),
-// which is the wall clock outside a child that took testwait.SetUpDone. A value that came beside the
-// end is taken; with none it fails t naming what (gaveUp).
+// as until is testwait.Until, and like until it waits on the wall clock, in a child that took
+// testwait.SetUpDone too: end is a wall-clock moment (testDeadline), and the span to it armed on
+// that child's step clock (testwait.Within), which stands at the shared give-up 30 s before the
+// binary's deadline, would land past that deadline whenever more than a minute of it was left, and
+// the step clock would then end the binary with a panic, as go test's alarm does, where this wait
+// fails t by name. A value that came beside the end is taken; with none it fails t naming what
+// (gaveUp). With no end it waits until ch yields.
 func receive[T any](t testing.TB, end waitEnd, what string, ch <-chan T) T {
 	t.Helper()
-	value, received := testwait.Within(ch, end.left())
-	if !received {
-		end.gaveUp(t, what, "")
+	var expired <-chan time.Time
+	if end.bounded {
+		timer := time.NewTimer(time.Until(end.end))
+		defer timer.Stop()
+		expired = timer.C
 	}
-	return value
+	select {
+	case value := <-ch:
+		return value
+	case <-expired:
+	}
+	// The end has passed: take a value that came beside the timer.
+	select {
+	case value := <-ch:
+		return value
+	default:
+	}
+	end.gaveUp(t, what, "")
+	var zero T
+	return zero
 }
 
 // gaveUp fails t for a wait whose end, b, has come: "testnats: <test>: gave up waiting for <what>

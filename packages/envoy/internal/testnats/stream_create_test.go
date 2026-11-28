@@ -177,7 +177,7 @@ func TestACreateWhoseAnswerADropLostIsSentAgainAndAnswered(t *testing.T) {
 	// The watcher hears the answered send as it reaches the member, before the answer, but on a
 	// goroutine of its own, so the count is waited for: a create that ended after one send never
 	// reaches two, and the wait fails naming the sends it saw.
-	testwait.Until(t, "the create to have been sent twice: the send whose answer was lost, and at least one more", func() (int, bool) {
+	until(t, boundOf(t), "the create to have been sent twice: the send whose answer was lost, and at least one more", func() (int, bool) {
 		sends := creates()
 		return sends, sends >= 2
 	})
@@ -205,7 +205,7 @@ func TestACreateOfANameTheClusterHoldsOtherwiseFailsNamingTheDifference(t *testi
 		defer close(done)
 		cluster.CreateStream(recorder, asked)
 	}()
-	testwait.Receive(t, "the create of a name the cluster holds otherwise to fail", done)
+	receive(t, boundOf(t), "the create of a name the cluster holds otherwise to fail", done)
 	for _, want := range []string{
 		"create stream HELD: the cluster holds a stream of that name with another configuration: ",
 		fmt.Sprintf("max_age holds %d, asked %d", time.Hour, time.Minute),
@@ -240,7 +240,7 @@ func TestACreateOfANameHeldOtherwiseOnlyInAFieldItLeavesUnsetNamesTheWholeStream
 		defer close(done)
 		cluster.CreateStream(recorder, asked)
 	}()
-	testwait.Receive(t, "the create of a name held otherwise only in a field it leaves unset to fail", done)
+	receive(t, boundOf(t), "the create of a name held otherwise only in a field it leaves unset to fail", done)
 	for _, want := range []string{
 		"create stream WINDOW: the cluster holds a stream of that name with another configuration: every field the create sets matches the stream held, which is ",
 		fmt.Sprintf(`"duplicate_window":%d`, 30*time.Minute),
@@ -292,7 +292,7 @@ func TestACreateWhoseFirstDialsDrawNoHandshakeWaitsForTheConnection(t *testing.T
 	default:
 	}
 	thaw()
-	testwait.Receive(t, "the create to end once the member answers its dials", done)
+	receive(t, boundOf(t), "the create to end once the member answers its dials", done)
 	if recorder.message != "" {
 		t.Fatalf("the create failed once the server answered: %s", recorder.message)
 	}
@@ -447,7 +447,7 @@ func TestARefusedBucketCreateFailsNamingTheRefusalAfterItsOneSend(t *testing.T) 
 	}()
 	// A refusal read as no answer is sent again until the shared wait gives up, and the create then
 	// fails naming that give-up; the refusal read as the answer ends the create after its one send.
-	testwait.Receive(t, "the refused create to fail", done)
+	receive(t, boundOf(t), "the refused create to fail", done)
 	for _, want := range []string{"create KV bucket DENIED: ", `Permissions Violation for Publish to "$JS.API.STREAM.CREATE.KV_DENIED"`} {
 		if !strings.Contains(recorder.message, want) {
 			t.Errorf("the refused create failed with %q, want it to name %q", recorder.message, want)

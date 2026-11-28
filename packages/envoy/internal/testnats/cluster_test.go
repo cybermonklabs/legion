@@ -8,8 +8,6 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // StartClusterConfig gives every member the configuration it is passed: each admits a user its
@@ -84,12 +82,12 @@ func connectCluster(t *testing.T, cluster *Cluster) *natsgo.Conn {
 
 // dialCluster dials cluster's server list with options until a dial connects and connected holds
 // of its connection, closing each other connection, and returns that one, closed at the test's
-// end. A dial that fails or lands elsewhere is made again by the shared wait, as Connect's own wait
-// makes its dial again, so a dial that nats.go's own two seconds ran out on costs the test time and
-// not its result.
+// end. A dial that fails or lands elsewhere is made again until the end of a wait on a server's
+// own fact (until, testDeadline), as Connect's own wait makes its dial again, so a dial that
+// nats.go's own two seconds ran out on costs the test time and not its result.
 func dialCluster(t *testing.T, cluster *Cluster, what string, connected func(*natsgo.Conn) bool, options ...natsgo.Option) *natsgo.Conn {
 	t.Helper()
-	dial := testwait.Until(t, what, func() (dialAttempt, bool) {
+	dial := until(t, boundOf(t), what, func() (dialAttempt, bool) {
 		conn, err := natsgo.Connect(cluster.URL(), options...)
 		if err != nil {
 			return dialAttempt{err: err}, false
@@ -141,11 +139,11 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 		defer close(down)
 		cluster.Servers[0].LameDuck()
 	}()
-	testwait.Until(t, fmt.Sprintf("the client to move off %s to another member of the cluster", cluster.Name(0)), func() (clientPlace, bool) {
+	until(t, boundOf(t), fmt.Sprintf("the client to move off %s to another member of the cluster", cluster.Name(0)), func() (clientPlace, bool) {
 		place := clientPlace{Status: conn.Status(), Server: conn.ConnectedServerName()}
 		return place, place.Status == natsgo.CONNECTED && cluster.Member(place.Server) > 0
 	})
-	testwait.Receive(t, "the lame duck of the member the client was on to finish", down)
+	receive(t, boundOf(t), "the lame duck of the member the client was on to finish", down)
 	cluster.Servers[0].Start(t)
 	cluster.AwaitReady(t)
 }

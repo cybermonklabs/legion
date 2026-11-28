@@ -110,7 +110,7 @@ func TestHoldStalledWriteHoldsTheLockWithAWriteTheSocketsCloseEnds(t *testing.T)
 				close(read)
 			}()
 			if stalled {
-				testwait.Receive(t, "a read of the status once the socket under HoldStalledWrite's write closed", read)
+				receive(t, boundOf(t), "a read of the status once the socket under HoldStalledWrite's write closed", read)
 				return
 			}
 			// The control's absence: a read that waits on a lock the row holds says so by nothing,

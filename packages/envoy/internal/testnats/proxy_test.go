@@ -17,11 +17,12 @@ import (
 
 // proxiedClient connects to the proxy's URL as a deployed client does, reconnecting for as long as
 // the test runs, and reports each disconnect and reconnect on the returned channels. A dial that
-// fails is made again by the shared wait, as Connect's own wait makes its dial again.
+// fails is made again until the end of a wait on a server's own fact (until, testDeadline), as
+// Connect's own wait makes its dial again.
 func proxiedClient(t *testing.T, proxy *Proxy) (conn *natsgo.Conn, disconnected, reconnected <-chan struct{}) {
 	t.Helper()
 	down, up := make(chan struct{}, 8), make(chan struct{}, 8)
-	dial := testwait.Until(t, fmt.Sprintf("a connection through the proxy at %s", proxy.URL()), func() (dialAttempt, bool) {
+	dial := until(t, boundOf(t), fmt.Sprintf("a connection through the proxy at %s", proxy.URL()), func() (dialAttempt, bool) {
 		conn, err := natsgo.Connect(proxy.URL(),
 			natsgo.MaxReconnects(-1),
 			// nats.go's own wait between reconnect attempts, shortened from its two seconds so a test
@@ -117,7 +118,7 @@ func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T
 	if err := direct.Publish("proxy.frozen", []byte("marker")); err != nil {
 		t.Fatalf("publish the marker through the unfrozen connection: %v", err)
 	}
-	if msg := testwait.Receive(t, "the marker published after the frozen publish", received); string(msg.Data) != "marker" {
+	if msg := receive(t, boundOf(t), "the marker published after the frozen publish", received); string(msg.Data) != "marker" {
 		t.Fatalf("the subscriber received %q before the marker: a frozen proxy moved it", msg.Data)
 	}
 	// A freeze that dropped the client would leave it RECONNECTING, which this reads.
@@ -129,7 +130,7 @@ func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T
 	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush after the restore: %v", err)
 	}
-	if msg := testwait.Receive(t, "the publish the freeze held, after the restore", received); string(msg.Data) != "held" {
+	if msg := receive(t, boundOf(t), "the publish the freeze held, after the restore", received); string(msg.Data) != "held" {
 		t.Fatalf("the subscriber received %q after the restore, want the held publish", msg.Data)
 	}
 }
@@ -196,7 +197,7 @@ func TestAProxyWithLatencyHoldsEachLegHalfTheRoundTrip(t *testing.T) {
 		t.Fatalf("the proxy holds the leg back until %s, want %s, half the %s round trip after the echo answered", armed[0], want, rtt)
 	}
 	fake.Advance(rtt / 2)
-	if answer := testwait.Receive(t, "the bytes echoed back through the proxy", echoed); answer != "ping" {
+	if answer := receive(t, boundOf(t), "the bytes echoed back through the proxy", echoed); answer != "ping" {
 		t.Fatalf("the client read %q through the proxy, want the bytes it wrote", answer)
 	}
 }
@@ -257,8 +258,9 @@ func TestAProxyWithARateMovesNoFasterThanIt(t *testing.T) {
 	go func() { _, _ = client.Write(make([]byte, total)) }()
 
 	var charged time.Duration
+	end := boundOf(t)
 	for {
-		crossed := testwait.Until(t, "the proxy's next wait on its rate, or the whole payload across it", func() (string, bool) {
+		crossed := until(t, end, "the proxy's next wait on its rate, or the whole payload across it", func() (string, bool) {
 			if got := received.Load(); got >= total {
 				return "all", true
 			} else if len(fake.Armed()) == 0 {
