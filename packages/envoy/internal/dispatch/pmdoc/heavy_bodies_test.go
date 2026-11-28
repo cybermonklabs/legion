@@ -295,8 +295,31 @@ var heavyWriteReadings = map[string]countedReading{
 	"bangs-before-carets":                  {past: 304.65628571428573, most: 307.91525, scanMost: 2},
 }
 
-// heavyReadReadings holds the readings from the build-cluster run of the rendering reads.
-var heavyReadReadings = map[string]countedReading{}
+// heavyReadReadings records each rendering read past the cap by fixture ID, from build-cluster Job
+// infra6314-pf-t6-heavy-readings3-g2z7h at b888adcd (2026-11-28, Go 1.27.3, 4 CPUs): the body's
+// length and cpuCheckLengthOf times it.
+var heavyReadReadings = map[string]countedReading{
+	"plain-list":                           {past: 641.0039107142857, most: 641.0895, scanMost: 1},
+	"lazy-quote":                           {past: 419, most: 419.08, scanMost: 1},
+	"lazy-list-item":                       {past: 457, most: 457.1093125, scanMost: 1},
+	"bracket-run":                          {past: 1237, most: 1233.0943958333332, scanMost: 1},
+	"nested-49-items-then-blank-lines":     {past: 9484, most: 9387.8738684268, scanMost: 1},
+	"markers-49-then-blank-lines":          {past: 9484, most: 9480.877837837837, scanMost: 1},
+	"nested-100-items-then-blank-lines":    {past: 8123, most: 7700.650592713431, scanMost: 1},
+	"marker-chain":                         {past: 664.0029643783511, most: 664.7817119284978, scanMost: 1},
+	"callout-bracket-run":                  {past: 1, most: 1.0906333333333333, scanMost: 1},
+	"footnote-references-then-definitions": {past: 252.0799838296345, most: 245.43933093637642, scanMost: 1},
+	"bangs-before-carets":                  {past: 135.66727232142858, most: 135.81946310822212, scanMost: 1},
+}
 
-// heavyWholeWriteReadings holds the readings from the build-cluster run of the whole writes.
-var heavyWholeWriteReadings = map[string]countedReading{}
+// heavyWholeWriteReadings records each whole write past the cap by fixture ID, from the same Job.
+var heavyWholeWriteReadings = map[string]countedReading{
+	"plain-list":                           {past: 2054.7578392857145, most: 2054.64865234375, scanMost: 2},
+	"lazy-quote":                           {past: 548, most: 548.23140625, scanMost: 2},
+	"lazy-list-item":                       {past: 586, most: 586.345125, scanMost: 2},
+	"bracket-run":                          {past: 2507, most: 2499.1898333333334, searchedMost: 0.5, scanMost: 2.0000333333333336},
+	"nested-49-items-then-blank-lines":     {past: 9484, most: 9394.034056364522, scanMost: 1.079625},
+	"markers-49-then-blank-lines":          {past: 9484, most: 9482.049596553075, scanMost: 1.003125},
+	"footnote-references-then-definitions": {past: 739.9136437962857, most: 722.7794591214632, searchedMost: 0.11501621519543577, scanMost: 2.0475535407222134},
+	"bangs-before-carets":                  {past: 298.3346651785714, most: 298.73408544017, scanMost: 2},
+}
