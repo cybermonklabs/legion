@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -11,22 +13,20 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// silentCutBound is how long after the cut the listener's client has to report it.
-// bus.WithSilentCutDetection pings once a second and declares the connection stale on the interval
-// that would put a third ping out, which is two to three seconds, and the rest of the bound is
-// room for a loaded machine.
+// silentCutBound is the upper limit on the listener's own record of the cut.
+// bus.WithSilentCutDetection declares the connection stale after two to three seconds of silence.
 const silentCutBound = 5 * time.Second
 
-// disconnectedUnderName reports whether output holds internal/bus's dropped-connection line for
-// the client named name. The listener leaves internal/bus on the default logger, which writes the
-// name as a `name=envoy` field, so the field is matched whole rather than by prefix.
-func disconnectedUnderName(output, name string) bool {
+// disconnectLine finds the bus lifecycle record for exactly the named client. A close without
+// an error is not evidence that the listener detected the loss of a connection.
+func disconnectLine(output, name string) string {
 	for line := range strings.SplitSeq(output, "\n") {
-		if strings.Contains(line, "envoy nats disconnected") && slices.Contains(strings.Fields(line), "name="+name) {
-			return true
+		if _, fields, ok := strings.Cut(line, " INFO envoy nats disconnected "); ok &&
+			slices.Contains(strings.Fields(fields), "name="+name) && strings.Contains(fields, " error=") {
+			return line
 		}
 	}
-	return false
+	return ""
 }
 
 // The listener's stream client declares a connection lost within seconds of a hub that stops
@@ -38,22 +38,54 @@ func disconnectedUnderName(output, name string) bool {
 // the cut within seconds whether or not that call site carries the option, and would prove
 // nothing.
 func TestTheListenersNATSClientReportsASilentCutWithinSeconds(t *testing.T) {
-	// Not parallel: it requires the cut reported within silentCutBound (5 s), and the client's
-	// pings declare the connection stale only at two to three seconds.
+	t.Parallel()
 	server, uri := testnats.Start(t)
-	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "silent-cut")
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "silent-cut", "TZ=UTC")
 	listener.waitHealthy(t)
 
-	freezeUntilTheClientReportsTheCut(t, server, listener)
+	// Sample the child's clock immediately before closing the relay gate. Its HTTP Date and the
+	// default slog text timestamp both have second precision. Reject the boundary second too:
+	// rounding must not make a disconnect at or after five seconds pass.
+	beforeCut := silentCutProbeDate(t, listener)
+	_, _, line := freezeUntilTheClientReportsTheCut(t, server, listener)
+	stamp, _, _ := strings.Cut(line, " INFO ")
+	disconnectedAt, err := time.Parse("2006/01/02 15:04:05", stamp)
+	if err != nil {
+		t.Fatalf("read the listener's disconnect timestamp: %v (%q)", err, line)
+	}
+	if elapsed := disconnectedAt.Sub(beforeCut); elapsed < 0 || elapsed >= silentCutBound {
+		t.Fatalf("the listener's clock reports the NATS disconnect %s after its pre-cut probe, want [0, %s): %s",
+			elapsed, silentCutBound, line)
+	}
 }
 
-// freezeUntilTheClientReportsTheCut freezes the hub under a healthy listener and returns once the
-// listener's stream client has logged the dropped connection, within silentCutBound. It fails the
-// test with what the listener logged. It returns the thaw, which the caller runs itself when it
-// needs the traffic back, and a reader of everything the listener logged from the freeze on: a
-// line from the listener's start, or from before the cut, could otherwise stand in for one the
-// cut caused.
-func freezeUntilTheClientReportsTheCut(t *testing.T, server *testnats.Server, listener *listenerProcess) (thaw func(), output func() string) {
+// silentCutProbeDate reads the child's clock, not the test runner's. /livez does not query NATS.
+func silentCutProbeDate(t *testing.T, listener *listenerProcess) time.Time {
+	t.Helper()
+	req, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d/livez", listener.port), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("read the listener's pre-cut /livez response: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("pre-cut /livez status = %d, want 204", resp.StatusCode)
+	}
+	date, err := http.ParseTime(resp.Header.Get("Date"))
+	if err != nil {
+		t.Fatalf("read the listener's pre-cut /livez Date: %v", err)
+	}
+	return date
+}
+
+// freezeUntilTheClientReportsTheCut freezes the hub under a healthy listener and waits for
+// its main client's disconnect record. It returns that record, the thaw, and a reader that
+// excludes lines already logged before the freeze.
+func freezeUntilTheClientReportsTheCut(t *testing.T, server *testnats.Server, listener *listenerProcess) (thaw func(), output func() string, disconnect string) {
 	t.Helper()
 	logged := len(listener.Output.String())
 	output = func() string { return listener.Output.String()[logged:] }
@@ -61,12 +93,20 @@ func freezeUntilTheClientReportsTheCut(t *testing.T, server *testnats.Server, li
 	// Cleanups run last-in first-out, so this thaw precedes the server's shutdown. Thawing twice
 	// is harmless, so a caller may run it itself.
 	t.Cleanup(thaw)
-	cut := time.Now()
-
-	if !testwait.Holds(silentCutBound, 50*time.Millisecond, func() bool { return disconnectedUnderName(output(), "envoy") }) {
-		t.Fatalf("no disconnect line for the listener's client %s into a silent cut:\n%s",
-			time.Since(cut).Round(time.Millisecond), output())
-	}
-	t.Logf("the listener's client reported the cut %s after it began", time.Since(cut).Round(time.Millisecond))
-	return thaw, output
+	const fact = "the listener's main NATS client (name=envoy) to log its disconnect during the silent cut"
+	testwait.Until(t, fact, func() (string, bool) {
+		logged := output()
+		disconnect = disconnectLine(logged, "envoy")
+		if disconnect != "" {
+			return "", true
+		}
+		select {
+		case <-listener.Exited:
+			t.Fatalf("the listener exited without reporting its main NATS client's disconnect during the silent cut:\n%s",
+				listener.Output.String())
+		default:
+		}
+		return logged, false
+	})
+	return thaw, output, disconnect
 }

@@ -1,13 +1,18 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // cutRewatchCaches are the warm-up lines of the three caches the listener keeps. The reconnect
@@ -28,10 +33,10 @@ var cutRewatchCaches = []string{
 //
 // The test asserts four things over the real binary, each read from the output the freeze and the
 // thaw wrote:
-//   - both of the listener's clients report the cut, so the run is in the rewatch path;
+//   - the listener's main NATS client reports the cut before the hub thaws;
 //   - each of the three caches logs a warm-up line after the thaw, so a rewatch replaced each
 //     watcher;
-//   - an interest another listener writes after the thaw reaches this listener's cache;
+//   - an interest written through another NATS connection after the thaw reaches this listener's cache;
 //   - the listener logs no ERROR line, so no watcher a rewatch replaced reports its end as a
 //     failure of the cache (kvwatch.Watcher.Start).
 //
@@ -41,49 +46,78 @@ var cutRewatchCaches = []string{
 // branch a rewatch replaced is pinned by the unit test of internal/kvwatch. What this test holds
 // is the whole cut path, every cache's replacement included, to no ERROR at all.
 func TestASilentCutRewatchesTheCachesWithNoErrorLine(t *testing.T) {
-	// Not parallel: it requires the listener's client to report the cut within silentCutBound
-	// (5 s) of a freeze it detects in two to three seconds (freezeUntilTheClientReportsTheCut).
+	t.Parallel()
 	server, uri := testnats.Start(t)
-	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "cut-rewatch")
+	listener := startListenerProcess(t, promptListenerBinary(t), uri, "cut-rewatch")
 	listener.waitHealthy(t)
 
-	thaw, output := freezeUntilTheClientReportsTheCut(t, server, listener)
+	thaw, output, _ := freezeUntilTheClientReportsTheCut(t, server, listener)
+	beforeThaw := len(output())
 	thaw()
 
 	// Every cache is rewatched on the reconnect, and each replacement's warm-up line says so.
-	thawed := time.Now()
 	for _, warmUp := range cutRewatchCaches {
-		for !strings.Contains(output(), warmUp) {
-			if time.Since(thawed) > 30*time.Second {
-				t.Fatalf("no %q line %s after the thaw, so the cache did not come back:\n%s",
-					warmUp, time.Since(thawed).Round(time.Millisecond), output())
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
+		testwait.Until(t, fmt.Sprintf("the listener to log %q after the thaw", warmUp), func() (string, bool) {
+			logged := output()[beforeThaw:]
+			return logged, strings.Contains(logged, `"msg":"`+warmUp+`"`)
+		})
 	}
 
-	// The cache follows the bucket again: an interest another listener writes after the thaw is
-	// listed by this listener, which answers /v1/interests/ from its cache alone.
+	// The listener's cache follows the bucket again. Write a marker through a separate NATS
+	// connection so only its watcher, not a local write-through, can make it visible to /v1.
+	ctx := testwait.Context(t)
 	writer := testnats.Connect(t, uri)
 	t.Cleanup(writer.Close)
-	registry, err := store.Open(t.Context(), writer)
+	js, err := jetstream.New(writer, testnats.RequestTimeout(t))
 	if err != nil {
-		t.Fatalf("open the interest registry as another listener: %v", err)
+		t.Fatalf("open JetStream for the independent writer: %v", err)
 	}
-	t.Cleanup(registry.StopWatch)
-	sessionID := "ses_cut_rewatch_writer"
-	if _, err := registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "other-listener"}, []string{"notifications.agent." + sessionID}); err != nil {
-		t.Fatalf("subscribe through another listener: %v", err)
+	interests, err := js.KeyValue(ctx, bus.InterestBucket)
+	if err != nil {
+		t.Fatalf("open the interest bucket for the independent writer: %v", err)
 	}
-	written := time.Now()
-	for !listsInterest(t, listener.port, sessionID) {
-		if time.Since(written) > 10*time.Second {
-			t.Fatalf("%s after the thaw, the listener's cache still missed an interest another listener wrote:\n%s",
-				time.Since(written).Round(time.Millisecond), output())
+	const sessionID = "ses_cut_rewatch_writer"
+	interest, err := json.Marshal(store.Interest{
+		SessionID: sessionID,
+		MachineID: "other-listener",
+		Topics:    []string{contracts.LegacyAgentSubject(sessionID)},
+		UpdatedAt: contracts.NowMillis(),
+	})
+	if err != nil {
+		t.Fatalf("encode the interest marker: %v", err)
+	}
+	if _, err := interests.Put(ctx, sessionID, interest); err != nil {
+		t.Fatalf("write the interest marker after the thaw: %v", err)
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/interests/", listener.port)
+	testwait.Until(t, "the listener's cache to list the interest written after the thaw", func() (string, bool) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		req.Header.Set("Authorization", "Bearer "+listenerTestToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err.Error(), false
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return resp.Status, false
+		}
+		var listed []store.Interest
+		if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+			return err.Error(), false
+		}
+		for _, item := range listed {
+			if item.SessionID == sessionID {
+				return "", true
+			}
+		}
+		return fmt.Sprintf("%+v", listed), false
+	})
 
+	// The marker was written after all three warm-up records. Check the log through its read,
+	// not through a quiet window.
 	for line := range strings.SplitSeq(output(), "\n") {
 		if errorLine.MatchString(line) {
 			t.Fatalf("a silent cut and its rewatch logged an error: %s", line)
