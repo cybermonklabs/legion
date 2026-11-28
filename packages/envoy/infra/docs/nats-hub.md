@@ -320,7 +320,7 @@ broker's `BROKER_NATS_SERVICES` entry
 `listener/<machine id>`, with the listener grant of that machine id (the same file,
 `TestAClusteredHubsTokenListenerIsAdmittedThroughTheCallout`, against a stand-in auth service).
 [The session listener](../README.md#the-session-listener) says what that mode needs: the entry,
-the audience, the image and the order of the switch.
+the audience, the broker's issuer, the image and the order of the switch.
 
 **What the callout alone does not change.** While the hub has a `sessionUser`, a client presenting
 no credential still becomes it without reaching the auth service, with the session user's grant:

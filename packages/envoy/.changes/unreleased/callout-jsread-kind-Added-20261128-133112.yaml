@@ -8,8 +8,12 @@ body: |-
   `$JS.API.STREAM.NAMES`, `$JS.API.STREAM.LIST`, `$JS.API.STREAM.INFO.*`,
   `$JS.API.CONSUMER.NAMES.*`, `$JS.API.CONSUMER.LIST.*` and `$JS.API.CONSUMER.INFO.*.*`, and
   subscribe its own inbox prefix alone, `_INBOX_legion_jsread.>` (`natsgrant.JSReadInbox`), which
-  the reader connects with. The grant reads stream and consumer names and infos and no message,
-  and changes nothing. The broker refuses to start on a `jsread` entry with a machine id or with
+  the reader connects with. The grant reads stream and consumer names and infos and no message.
+  It holds no create, update, delete or purge of a stream or consumer and publishes nothing
+  outside the JetStream API; like every grant with a JetStream API request, it can have the server
+  publish a JetStream answer on a reply subject of its choosing, which a stream that captures that
+  subject stores, as the deployed `legion-jsread` user can. The broker refuses to start on a
+  `jsread` entry with a machine id or with
   `-`, since a stream's info lists every project's subjects and cannot be held to projects; two
   entries with distinct accounts are taken. A broker older than this release refuses to start on
   any `jsread` entry, as an entry of an unknown kind, so upgrade the broker before adding one. No

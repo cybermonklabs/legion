@@ -9,13 +9,20 @@ body: |-
   connect as Dispatch of machine id `<hostname>`, so the broker's `BROKER_NATS_SERVICES` lists
   `dispatch/<hostname>/*=system:serviceaccount:<namespace>:<hostname>` and
   `dispatch/<hostname>/*=system:serviceaccount:<namespace>:<hostname>-listener`, `natsAudience`
-  equals the broker's `BROKER_NATS_K8S_AUDIENCE`, and `envoyImage` is `legion-envoy-v32.9.0` or
-  later. An older image ignores `NATS_SERVICE_TOKEN_FILE` and connects with no credential, which a
-  hub with a session user admits as that user. Add both entries, and let the broker roll out with
-  them, before the update that sets `natsAudience` and unsets `natsSeedSecret`. `natsAudience` is
-  refused beside `natsSeedSecret`, with `clusterOnly`, holding whitespace or a control character,
-  and equal to another audience the component renders: `agentSecretsAudience`, the listener's own
-  audience, `oidcAudience`, or the keyless Azure form's. With neither of the two set, the refusal
+  equals the broker's `BROKER_NATS_K8S_AUDIENCE`, the broker's `BROKER_K8S_OIDC_ISSUER` is the
+  issuer of the cluster Dispatch runs in (the `serviceAccountIssuer` output), and `envoyImage` is
+  `legion-envoy-v32.9.0` or later. The auth service picks a token's verifier by the token's own
+  `iss`, so on a broker of another issuer it refuses both pods' tokens. An older image ignores
+  `NATS_SERVICE_TOKEN_FILE` and connects with no credential, which a hub with a session user admits
+  as that user. Add both entries, and let the broker roll out with them, before the update that
+  sets `natsAudience` and unsets `natsSeedSecret`. `natsAudience` is refused beside
+  `natsSeedSecret`, with `clusterOnly`, holding whitespace or a control character anywhere, as a
+  clustered hub listener's `oidcAudience` may not (the broker trims its own
+  `BROKER_NATS_K8S_AUDIENCE`, so a token for an audience with leading or trailing whitespace would
+  never verify), and equal to another audience the component renders or to `oidcIssuer`, whose URL
+  the API server of its cluster takes as an audience on GKE: `agentSecretsAudience`, the
+  listener's own audience, `oidcAudience`, `oidcIssuer`, or the keyless Azure form's. With neither
+  of the two set, the refusal
   names `natsSeedSecret`: `natsSeedSecret is required unless natsAudience is set`. With
   `natsAudience` and `existingCluster`, the lookup refuses a cluster with no Workload Identity pool
   for the pods' principal alone, and refuses one with the Secret Manager add-on off only where the

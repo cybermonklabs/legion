@@ -11,15 +11,23 @@ body: |-
   `listener/<machine id>` only where the broker's `BROKER_NATS_SERVICES` lists
   `listener/<machine id>/*=system:serviceaccount:<namespace>:<name>-listener` (with `*`: the
   listener's grant is not held to projects), `natsAudience` equals the broker's
-  `BROKER_NATS_K8S_AUDIENCE`, and the listener image is `legion-envoy-v32.9.0` or later. An older
+  `BROKER_NATS_K8S_AUDIENCE`, the broker's `BROKER_K8S_OIDC_ISSUER` is the issuer of the hub's
+  cluster, and the listener image is `legion-envoy-v32.9.0` or later. The auth service picks a
+  token's verifier by the token's own `iss`, and refuses a token of any other issuer. An older
   listener ignores `NATS_SERVICE_TOKEN_FILE` and connects with no credential, which a hub with a
   session user admits as that user. Add the broker entry, and let the broker roll out with it,
   before the update that sets `natsAudience` and unsets the seed's three inputs; that update also
   restarts the hub pods, since the listener's key leaves `auth_users` and so changes the callout
-  annotation. `natsAudience` is refused, naming `<path>.natsAudience`, without `authCallout`,
-  beside `nkey`, `seedSecretName` or `seedSecretKey`, holding whitespace or a control character,
-  and equal to the listener's own `oidcAudience`. In this mode a dotted `machineId` is taken, since
-  it names no NATS user, and one holding a space, `*` or `>` is refused, naming `<path>.machineId`.
+  annotation. On a broker of another issuer that update leaves the listener off NATS until it is
+  rolled back: the new pod's token is refused, and the seed's key has already left `auth_users`.
+  `natsAudience` is refused, naming `<path>.natsAudience`, without `authCallout`, beside `nkey`,
+  `seedSecretName` or `seedSecretKey`, holding whitespace or a control character anywhere, as
+  `oidcAudience` may not (the broker trims its own `BROKER_NATS_K8S_AUDIENCE`, so a token for an
+  audience with leading or trailing whitespace would never verify), and equal to the listener's
+  own `oidcAudience` or `oidcIssuer` (on GKE the cluster's API server takes its issuer's URL as an
+  audience). In this mode a dotted `machineId` is taken, since it names no NATS user, and one
+  holding a space, `*`, `>`, `/`, `=` or a control character, or the id `-`, which no
+  `BROKER_NATS_SERVICES` entry can name, is refused, naming `<path>.machineId`.
   With `privateProjects` a listener with `natsAudience` is taken only where it requires a
   credential on `/v1`, the hub's own `listener` or a `tailnet.listener` with `clientNamespaces`; a
   `tailnet.listener` with no `clientNamespaces` is refused, naming `tailnet.listener`. A listener
