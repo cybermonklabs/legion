@@ -16,6 +16,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -50,9 +52,7 @@ func readKeptRoleMessage(t *testing.T, client *bus.Client, role string) (contrac
 // the stream stored it, and reports false when it holds none.
 func readKeptRoleCopy(t *testing.T, client *bus.Client, role string) (contracts.Envelope, time.Time, bool) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	stored, err := client.LastStoredMessage(ctx, bus.KeptRoleSubject(role))
+	stored, err := client.LastStoredMessage(testwait.Context(t), bus.KeptRoleSubject(role))
 	if errors.Is(err, natsgo.ErrMsgNotFound) {
 		return contracts.Envelope{}, time.Time{}, false
 	}
@@ -70,15 +70,20 @@ func readKeptRoleCopy(t *testing.T, client *bus.Client, role string) (contracts.
 // which the role lane writes after its own handler has answered, and returns it.
 func waitForKeptRoleMessage(t *testing.T, client *bus.Client, role, eventID string) contracts.Envelope {
 	t.Helper()
-	for deadline := time.Now().Add(listenerWaitBound(t)); ; time.Sleep(10 * time.Millisecond) {
+	return testwait.Until(t, fmt.Sprintf("role %s's kept lane to hold event %s", role, eventID), func() (contracts.Envelope, bool) {
 		item, ok := readKeptRoleMessage(t, client, role)
-		if ok && item.EventID == eventID {
-			return item
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("role %s's kept lane does not hold event %s in the time it was given (last read: %+v, held: %t)", role, eventID, item, ok)
-		}
-	}
+		return item, ok && item.EventID == eventID
+	})
+}
+
+// awaitKeptHandoversIdle waits until no handover of role is under way on the listener whose
+// configuration cfg is (roleKeepGuards.idle): a claim's handover, or a keep's, has then made every
+// forward it makes, each one stored by the stream before the handover went on.
+func awaitKeptHandoversIdle(t *testing.T, cfg *listenerDeliveryHandlerConfig, role string) {
+	t.Helper()
+	testwait.Eventually(t, "no handover of role "+role+" under way on the listener", func() bool {
+		return cfg.roleKeepDrains.idle(role)
+	})
 }
 
 // assertNothingKept fails when the stream holds any copy on role's kept subject.
@@ -214,6 +219,7 @@ func TestAPublishToALapsedClaimIsKeptAndTheClaimStands(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			d, client := keptRoleDeps(t)
 			lastSeen := tc.register(t, d, client, tc.holder)
 			if _, err := d.registry.SetRole(tc.holder, "test-machine", role, false); err != nil {
@@ -284,7 +290,7 @@ func TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing(t *testing.
 	if refusal.Reason != roles.Lapsed || refusal.Holder != holder || refusal.ClaimReleased == nil || *refusal.ClaimReleased {
 		t.Fatalf("the refusal is %s, want reason holder_lapsed naming %s with its claim retained", recorder.Body.String(), holder)
 	}
-	message, err := probe.NextMsg(5 * time.Second)
+	message, err := probe.NextMsgWithContext(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("the refusal raised no exception: %v", err)
 	}
@@ -335,6 +341,7 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 		&natsgo.APIError{Code: 409, ErrorCode: 10158, Description: "duplicate message id is in process"})
 
 	t.Run("refused twice, then stored", func(t *testing.T) {
+		t.Parallel()
 		harness := newListenerDeliveryHarness(t)
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-in-process-stored")
 		var ids []string
@@ -345,10 +352,8 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 			}
 			return harness.client.PublishStoredAck(ctx, subject, envelope, msgID)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), roleKeepPublishWindow)
-		defer cancel()
 		started := time.Now()
-		kept, err := storeKeptRoleCopy(ctx, harness.config, role, item, publish)
+		kept, err := storeKeptRoleCopy(testwait.Context(t), harness.config, role, item, publish)
 		elapsed := time.Since(started)
 		if err != nil {
 			t.Fatalf("a keep whose first two publishes were refused as in process: %v; want it kept by the third", err)
@@ -370,12 +375,15 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 	})
 
 	t.Run("refused until the window ends", func(t *testing.T) {
+		t.Parallel()
 		harness := newListenerDeliveryHarness(t)
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-in-process-refused")
 		publish := func(context.Context, string, contracts.Envelope, string) (bus.StoredAck, error) {
 			return bus.StoredAck{}, inProcess
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 4*inProcessPause)
+		// The keep's window has ended by the time its first publish is refused, so it publishes no
+		// more and fails naming both.
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now())
 		defer cancel()
 		if _, err := storeKeptRoleCopy(ctx, harness.config, role, item, publish); !errors.Is(err, bus.ErrDuplicateInProcess) || !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("a keep refused as in process until its window ended = %v, want a failed keep naming the refusal and the window", err)
@@ -389,6 +397,7 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 	// keep's own copy, inside its hour, which is no repeat (publishPastInProcess answers it
 	// Resent), so a role send that kept it is charged as a copy it stored (roleSend.kept).
 	t.Run("its own unanswered send stored the copy", func(t *testing.T) {
+		t.Parallel()
 		harness := newListenerDeliveryHarness(t)
 		const ownRole = role + "-own-send"
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+ownRole, "kept-in-process-own-send")
@@ -401,9 +410,7 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 			}
 			return ack, err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), roleKeepPublishWindow)
-		defer cancel()
-		kept, err := storeKeptRoleCopy(ctx, harness.config, ownRole, item, publish)
+		kept, err := storeKeptRoleCopy(testwait.Context(t), harness.config, ownRole, item, publish)
 		if err != nil {
 			t.Fatalf("a keep whose first send stored the copy unanswered: %v; want the copy", err)
 		}
@@ -468,9 +475,7 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	}
 	assertNoKeepKey(t, "the route's 202 kept answer", recorder.Body.Bytes())
 	waitForKeptRoleMessage(t, client, role, answer.EventID)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	stored, err := client.LastStoredMessage(ctx, bus.KeptRoleSubject(role))
+	stored, err := client.LastStoredMessage(testwait.Context(t), bus.KeptRoleSubject(role))
 	if err != nil {
 		t.Fatalf("read role %s's kept lane: %v", role, err)
 	}
@@ -486,12 +491,8 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	if claimRecorder.Code != http.StatusOK {
 		t.Fatalf("claim of %s: status %d, body %s", role, claimRecorder.Code, claimRecorder.Body.String())
 	}
-	select {
-	case frame := <-frames:
-		assertNoKeepKey(t, "the copy handed to the role's next holder", frame)
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("the claimant of %s was handed no kept copy in time", role)
-	}
+	assertNoKeepKey(t, "the copy handed to the role's next holder",
+		testwait.Receive(t, "the kept copy handed to "+role+"'s claimant "+holder, frames))
 
 	// The live send's own forward and its 200, which carry the envelope the same way.
 	liveRecorder, _ := publishToRole(t, d, role,
@@ -500,12 +501,8 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 		t.Fatalf("publish to the live holder of %s: status %d, body %s; want 200", role, liveRecorder.Code, liveRecorder.Body.String())
 	}
 	assertNoKeepKey(t, "the route's 200 answer", liveRecorder.Body.Bytes())
-	select {
-	case frame := <-frames:
-		assertNoKeepKey(t, "the copy forwarded to the live holder", frame)
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("the live holder of %s was forwarded nothing in time", role)
-	}
+	assertNoKeepKey(t, "the copy forwarded to the live holder",
+		testwait.Receive(t, "the live send's forward to "+role+"'s holder "+holder, frames))
 }
 
 // The claim is where a kept message is handed over: the session that takes the role is forwarded
@@ -526,6 +523,11 @@ func TestAClaimForwardsEachKeptRoleMessageToItsNewHolderExactlyOnce(t *testing.T
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202 kept", recorder.Code, recorder.Body.String())
 	}
 	waitForKeptRoleMessage(t, client, role, answer.EventID)
+	ctx := testwait.Context(t)
+	keptCopy, err := client.LastStoredMessage(ctx, bus.KeptRoleSubject(role))
+	if err != nil {
+		t.Fatalf("read role %s's kept copy: %v", role, err)
+	}
 
 	frames := startStandIn(t, uri, holder)
 	if err := d.sessions.Put(holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -542,7 +544,7 @@ func TestAClaimForwardsEachKeptRoleMessageToItsNewHolderExactlyOnce(t *testing.T
 	}
 
 	claim("first")
-	forwarded := expectFrames(t, frames, 1, 500*time.Millisecond)[0]
+	forwarded := expectFrames(t, frames, 1, 0)[0]
 	if forwarded.EventID != answer.EventID {
 		t.Fatalf("the claimant received event %s, want the kept %s", forwarded.EventID, answer.EventID)
 	}
@@ -556,12 +558,28 @@ func TestAClaimForwardsEachKeptRoleMessageToItsNewHolderExactlyOnce(t *testing.T
 		t.Fatalf("the forwarded copy carries kept_at %v, want the time the stream stored it", forwarded.KeptAt)
 	}
 
-	claim("second")
-	select {
-	case again := <-frames:
-		t.Fatalf("a second claim of %s forwarded event %s again", role, again.EventID)
-	case <-time.After(time.Second):
+	// What keeps a second claim from forwarding the copy again is the cursor the first claim's
+	// handover leaves: past the copy, with no claim of it outstanding. It is read once that
+	// handover is over.
+	awaitKeptHandoversIdle(t, d.delivery, role)
+	cursor, err := client.ReadKeptRoleCursor(ctx, role)
+	if err != nil {
+		t.Fatalf("read role %s's drain cursor: %v", role, err)
 	}
+	if cursor.Cursor.Kept < keptCopy.Sequence || cursor.Cursor.Claiming != 0 {
+		t.Fatalf("role %s's drain cursor after the first claim's handover is %+v, want it past the kept copy at %d with no claim outstanding",
+			role, cursor.Cursor, keptCopy.Sequence)
+	}
+
+	claim("second")
+	// Once the second claim's handover is over too, the holder's agent subject holds every forward
+	// either handover stored, and a marker published after them on the client they forward on
+	// reaches the stand-in before any frame they did not send.
+	awaitKeptHandoversIdle(t, d.delivery, role)
+	if count := storedForwards(t, client, contracts.LegacyAgentSubject(holder)); count != 1 {
+		t.Fatalf("the stream holds %d messages on %s's agent subject after two claims of %s, want the one forward of the kept copy", count, holder, role)
+	}
+	noFurtherFrame(t, client.Conn, holder, frames)
 }
 
 // A kept copy the stream has held longer than roleKeepWindow is not handed to a later holder: a
@@ -598,9 +616,7 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
 	drain := func(now func() time.Time) {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := drainKeptRole(ctx, cfg, role, now); err != nil {
+		if err := drainKeptRole(testwait.Context(t), cfg, role, now); err != nil {
 			t.Fatalf("drain role %s's kept lane: %v", role, err)
 		}
 	}
@@ -662,6 +678,7 @@ func TestTheRoleLaneKeepsAMessageNoLiveHolderTakesWithNoException(t *testing.T) 
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			harness := newListenerDeliveryHarness(t)
 			topic := contracts.RoleTopicPrefix + tc.role
 			if tc.holder != "" {
@@ -675,7 +692,8 @@ func TestTheRoleLaneKeepsAMessageNoLiveHolderTakesWithNoException(t *testing.T) 
 			}
 			t.Cleanup(func() { _ = probe.Unsubscribe() })
 			delivered := make(chan contracts.Envelope, 8)
-			durable, err := startListenerSubscription(harness.client, "listener-kept-"+id.New(), func(message *natsgo.Msg) {
+			consumer := "listener-kept-" + id.New()
+			durable, err := startListenerSubscription(harness.client, consumer, func(message *natsgo.Msg) {
 				var item contracts.Envelope
 				if err := json.Unmarshal(message.Data, &item); err == nil {
 					delivered <- item
@@ -697,6 +715,7 @@ func TestTheRoleLaneKeepsAMessageNoLiveHolderTakesWithNoException(t *testing.T) 
 			if kept.Topic != topic {
 				t.Fatalf("the kept copy's topic is %q, want the role topic %s", kept.Topic, topic)
 			}
+			// The lane decides between the keep and an exception before its handler returns.
 			noException(t, probe)
 			lines := logRecordsNamed(harness.logs.String(), "listener kept role message for the role's next holder", tc.role)
 			if len(lines) != 1 || lines[0]["reason"] != string(tc.reason) || lines[0]["session_id"] != tc.holder || lines[0]["event_id"] != item.EventID {
@@ -708,10 +727,22 @@ func TestTheRoleLaneKeepsAMessageNoLiveHolderTakesWithNoException(t *testing.T) 
 					t.Fatalf("the lapsed claim after the delivery = %q, %v; want %s still holding it", held, err, tc.holder)
 				}
 			}
+			// The durable has caught up with the stream once nothing on its filter waits to be
+			// delivered and nothing it delivered waits for its ack. The kept copy is stored by then,
+			// so a copy on its filter would have been delivered, and the durable's handler hands on
+			// what it is delivered before it acknowledges it.
+			ctx := testwait.Context(t)
+			info := testwait.Until(t, "the durable to have nothing pending and nothing unacknowledged once the copy is kept", func() (*natsgo.ConsumerInfo, bool) {
+				info, err := harness.client.JS().ConsumerInfo(bus.Stream, consumer, natsgo.Context(ctx))
+				if err != nil {
+					t.Fatalf("read the durable: %v", err)
+				}
+				return info, info.NumPending == 0 && info.NumAckPending == 0
+			})
 			select {
 			case back := <-delivered:
-				t.Fatalf("the durable delivered event %s on %s: a kept copy is on no consumer's filter", back.EventID, back.Topic)
-			case <-time.After(time.Second):
+				t.Fatalf("the durable delivered event %s on %s: a kept copy is on no consumer's filter (the durable's state: %+v)", back.EventID, back.Topic, info)
+			default:
 			}
 			scrape := httptest.NewRecorder()
 			harness.metrics.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -732,6 +763,7 @@ func TestADeliveredSendAndADeafHoldersSendBothKeepNothing(t *testing.T) {
 	uri := testnats.URL(t)
 
 	t.Run("a live holder is delivered", func(t *testing.T) {
+		t.Parallel()
 		const (
 			role   = "kept-live-holder"
 			holder = "ses_kept_live_holder"
@@ -751,6 +783,7 @@ func TestADeliveredSendAndADeafHoldersSendBothKeepNothing(t *testing.T) {
 	})
 
 	t.Run("a deaf holder is delivered the stored forward", func(t *testing.T) {
+		t.Parallel()
 		const (
 			role   = "kept-deaf-holder"
 			holder = "ses_kept_deaf_holder"
@@ -809,10 +842,8 @@ func TestADrainSpendsItsBudgetOnForwardsRatherThanOnExpiredCopies(t *testing.T) 
 		return time.Now()
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
-	if err := drainKeptRole(ctx, cfg, role, now); err != nil {
+	if err := drainKeptRole(testwait.Context(t), cfg, role, now); err != nil {
 		t.Fatalf("drain role %s's kept lane: %v", role, err)
 	}
 	if !slices.Equal(forwarded, fresh) {
@@ -867,29 +898,39 @@ func TestTwoDrainsOfOneRoleHandEachKeptCopyToExactlyOneHolder(t *testing.T) {
 	// The second drain stands in for a second listener: it has guards of its own, where one
 	// listener's guard for the role would hold it until the first drain had finished. One guard
 	// per role bounds the handovers inside one listener (roleKeepGuards); across listeners the
-	// cursor's compare-and-swap is the guard, which is what this test exercises.
+	// cursor's compare-and-swap is the guard, which is what this test exercises. Its pauses run
+	// on a clock of its own, which the test never moves.
+	clk := clocktest.New(time.Now())
 	second := harness.config
+	second.clock = clk
 	second.roleKeepDrains = newRoleKeepGuards()
 	second.forwardRole = inlineForward(hand("second"))
 
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
+	ctx := testwait.Context(t)
 	done := make(chan error, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		done <- drainKeptRole(ctx, first, role, time.Now)
-	}()
-	<-started
+	go func() { done <- drainKeptRole(ctx, first, role, time.Now) }()
+	testwait.Receive(t, "the first listener's drain to hold its first forward", started)
 	// The second listener's handover reads the claim the first is holding and leaves the lane to
-	// it, which it would wait bus.KeptRoleClaimWindow out to walk again; this context ends it
-	// there, since what the test is about has happened by then.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := drainKeptRole(ctx, second, role, time.Now); err != nil {
+	// it, pausing bus.KeptRoleClaimWindow before it walks the lane again. That pause, waited on the
+	// handover's clock, is armed only once its walk has returned, and the handover is ended there,
+	// since what the test is about has happened by then. A handover that returned with no pause
+	// armed is judged by the error it returned, as one its pause ended.
+	secondCtx, cancelSecond := context.WithCancel(ctx)
+	defer cancelSecond()
+	ended := make(chan error, 1)
+	go func() { ended <- drainKeptRole(secondCtx, second, role, time.Now) }()
+	end := endedOrPaused(t, clk, bus.KeptRoleClaimWindow, ended)
+	err := end.err
+	if end.paused {
+		cancelSecond()
+		err = testwait.Receive(t, "the second listener's drain to end once its pause is cut short", ended)
+	}
+	if err != nil {
 		t.Fatalf("the second listener's drain of role %s's kept lane: %v", role, err)
 	}
 	close(release)
-	if err := <-done; err != nil {
+	if err := testwait.Receive(t, "the first listener's drain to end", done); err != nil {
 		t.Fatalf("the first listener's drain of role %s's kept lane: %v", role, err)
 	}
 
@@ -939,6 +980,7 @@ func TestTheDrainJudgesAKeptCopyByTheRulesEveryForwardPathApplies(t *testing.T) 
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			harness := newListenerDeliveryHarness(t)
 			holder := "ses_" + strings.ReplaceAll(tc.role, "-", "_") + "_claimant"
 			cfg := harness.config
@@ -955,9 +997,7 @@ func TestTheDrainJudgesAKeptCopyByTheRulesEveryForwardPathApplies(t *testing.T) 
 			claimRoleWith(t, harness, holder, tc.role, tc.entry)
 			drain := func(what string) {
 				t.Helper()
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				if err := drainKeptRole(ctx, cfg, tc.role, time.Now); err != nil {
+				if err := drainKeptRole(testwait.Context(t), cfg, tc.role, time.Now); err != nil {
 					t.Fatalf("%s drain of role %s's kept lane: %v", what, tc.role, err)
 				}
 			}
@@ -1018,10 +1058,13 @@ func TestAKeptRoleMessageCarriesTheSenderThePublishStamped(t *testing.T) {
 	if claimRecorder.Code != http.StatusOK {
 		t.Fatalf("claim of %s: status %d, body %s", role, claimRecorder.Code, claimRecorder.Body.String())
 	}
-	forwarded := expectFrames(t, frames, 1, 500*time.Millisecond)[0]
+	forwarded := expectFrames(t, frames, 1, 0)[0]
 	if forwarded.Sender == nil || forwarded.Sender.SessionID != sender || forwarded.Sender.Cwd != dir {
 		t.Fatalf("the forwarded copy's sender is %+v, want the stamp the publish made for %s", forwarded.Sender, sender)
 	}
+	// The claim's handover has made every forward it makes once its listener is idle for the role.
+	awaitKeptHandoversIdle(t, d.delivery, role)
+	noFurtherFrame(t, client.Conn, holder, frames)
 }
 
 // A role token POST /v1/roles/set refuses (roles.PatternString) is a role no session can ever
@@ -1069,9 +1112,7 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 		return nil
 	})
 	claimRoleFor(t, harness.registry, harness.sessions, holder, role, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := drainKeptRole(ctx, cfg, role, time.Now); err != nil {
+	if err := drainKeptRole(testwait.Context(t), cfg, role, time.Now); err != nil {
 		t.Fatalf("the claim's own drain of role %s's still empty kept lane: %v", role, err)
 	}
 
@@ -1079,17 +1120,13 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 	if !keepRoleLaneMessage(cfg, role, item, roleKeptUnclaimed, "") {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
-	select {
-	case forwarded := <-forwards:
-		if forwarded.EventID != item.EventID {
-			t.Fatalf("the holder was handed event %s, want the kept %s", forwarded.EventID, item.EventID)
-		}
-		if forwarded.KeptAt == nil || *forwarded.KeptAt <= 0 {
-			t.Fatalf("the forwarded copy carries kept_at %v, want the time the stream stored it", forwarded.KeptAt)
-		}
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("the copy kept for %s, which held the role already, reached it in none of the time this package gives a wait and no second claim comes:\n%s",
-			holder, harness.logs.String())
+	// No second claim comes, so the keep's own handover is what hands the copy over.
+	forwarded := testwait.Receive(t, "the copy kept for "+holder+", which held the role already, to reach it", forwards)
+	if forwarded.EventID != item.EventID {
+		t.Fatalf("the holder was handed event %s, want the kept %s", forwarded.EventID, item.EventID)
+	}
+	if forwarded.KeptAt == nil || *forwarded.KeptAt <= 0 {
+		t.Fatalf("the forwarded copy carries kept_at %v, want the time the stream stored it", forwarded.KeptAt)
 	}
 }
 
@@ -1177,6 +1214,7 @@ func TestAPublishToTheListenersKeptLaneIsRefused(t *testing.T) {
 	const role = "kept-lane-guard"
 	for _, subject := range []string{bus.KeptRoleSubject(role), bus.KeptRoleCursorSubject(role)} {
 		t.Run(subject, func(t *testing.T) {
+			t.Parallel()
 			recorder, _ := publishThrough(d,
 				`{"topic":"`+subject+`","source":"agent","message":"a copy of my own"}`)
 			if recorder.Code != http.StatusBadRequest {
@@ -1185,9 +1223,7 @@ func TestAPublishToTheListenersKeptLaneIsRefused(t *testing.T) {
 			if body := recorder.Body.String(); !strings.Contains(body, bus.KeptTopicPrefix) {
 				t.Fatalf("the refusal of %s is %q, want it to name %s", subject, body, bus.KeptTopicPrefix)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if _, err := client.LastStoredMessage(ctx, subject); !errors.Is(err, natsgo.ErrMsgNotFound) {
+			if _, err := client.LastStoredMessage(testwait.Context(t), subject); !errors.Is(err, natsgo.ErrMsgNotFound) {
 				t.Fatalf("the stream holds a message on %s (%v); the refused publish stored nothing", subject, err)
 			}
 		})

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -29,8 +30,7 @@ import (
 // agent subjects, so a forward copy published to one is stored there.
 func publishTo(t *testing.T, client *bus.Client, subject string, item contracts.Envelope) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := client.PublishCoreContext(ctx, subject, item); err != nil {
 		t.Fatalf("publish %s to %s: %v", item.Topic, subject, err)
 	}
@@ -175,35 +175,105 @@ func publishThrough(d *listenerDeps, body string) (*httptest.ResponseRecorder, t
 	return recorder, time.Since(started)
 }
 
-// expectFrames reads want frames from frames, then fails on any further one inside quiet.
+// expectFrames reads want frames from frames, each through the shared wait, and fails on a frame
+// past them that has already come. A caller proves that no later frame comes either by a state
+// read or by a marker published after the code under test's forwards (noFurtherFrame), and
+// passes a quiet of 0, which holds no span. A quiet above 0 is a window in which no further frame
+// may come (testwait.Quiet), kept for the callers that pass one, in files whose rows have not yet
+// moved to such a proof.
 func expectFrames(t *testing.T, frames <-chan contracts.Envelope, want int, quiet time.Duration) []contracts.Envelope {
 	t.Helper()
-	var got []contracts.Envelope
+	got := make([]contracts.Envelope, 0, want)
 	for len(got) < want {
-		select {
-		case frame := <-frames:
-			got = append(got, frame)
-		case <-time.After(listenerWaitBound(t)):
-			t.Fatalf("the stand-in received %d frames, want %d", len(got), want)
-		}
+		got = append(got, testwait.Receive(t, fmt.Sprintf("frame %d of the %d the stand-in is sent, after %d", len(got)+1, want, len(got)), frames))
+	}
+	if quiet > 0 {
+		testwait.Quiet(t, fmt.Sprintf("a frame past the %d the stand-in is sent", want), frames, quiet,
+			"the caller has not moved to a state read or to a marker published after the code under test's forwards (noFurtherFrame), so its quiet window is still its proof that no further frame comes")
+		return got
 	}
 	select {
 	case frame := <-frames:
 		t.Fatalf("the stand-in received frame %d (event %s, dedupe key %s), want %d", want+1, frame.EventID, frame.DedupeKey, want)
-	case <-time.After(quiet):
+	default:
 	}
 	return got
 }
 
-// noException fails when any delivery exception is published while the probe listens: the route
-// answers its sender and publishes none.
-func noException(t *testing.T, probe *natsgo.Subscription) {
+// noFurtherFrame fails when the stand-in for sessionID, whose frames come on frames, has been sent
+// a frame past those its caller has read. It proves the absence with a marker rather than a
+// window: once the code under test has made every forward it makes - a route once it has
+// answered, a handover once its listener is idle for the role - it publishes a marker envelope on
+// sessionID's agent subject on publisher, the connection that code forwards on, and waits through
+// the shared wait for the stand-in's next frame, which must be the marker. NATS hands one
+// connection's publishes to a subscriber in the order they were made, so every forward published
+// before the marker reaches the stand-in before it. The stream captures agent subjects and stores
+// the marker as well, so a caller that counts what that subject holds counts it first.
+func noFurtherFrame(t *testing.T, publisher *natsgo.Conn, sessionID string, frames <-chan contracts.Envelope) {
 	t.Helper()
-	if _, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("the route published a delivery exception: the probe answered %v, want a timeout", err)
+	subject := contracts.LegacyAgentSubject(sessionID)
+	marker := listenerTestEnvelope(subject, "frame-marker-"+id.New())
+	if err := publisher.Publish(subject, marshalListenerEnvelope(t, marker)); err != nil {
+		t.Fatalf("publish the marker frame to %s: %v", subject, err)
+	}
+	frame := testwait.Receive(t, fmt.Sprintf("the marker frame published to %s after every forward of the code under test", sessionID), frames)
+	if frame.EventID != marker.EventID {
+		t.Fatalf("the stand-in %s received frame event %s (dedupe key %s, topic %s) before the marker published after every forward, want nothing past the frames it was sent",
+			sessionID, frame.EventID, frame.DedupeKey, frame.Topic)
 	}
 }
 
+// nothingHeardBefore fails when sub has been handed a message by the time it is called. sub is
+// subscribed on the connection the code under test publishes on, and that code has returned. It
+// proves the absence with a marker rather than a window: it publishes a marker, on sub's own
+// connection (natsgo.Msg.Respond publishes on the connection its Sub is bound to), to a subject
+// sub hears (markerSubject), and waits for sub's next message through the shared wait's context,
+// which must be the marker. One connection keeps the order of its publishes, so a message the code
+// published on it before this call reaches sub before the marker. what names what sub must not
+// have been handed, for the failure.
+func nothingHeardBefore(t *testing.T, sub *natsgo.Subscription, what string) {
+	t.Helper()
+	token := "marker " + id.New()
+	marker := &natsgo.Msg{Sub: sub, Reply: markerSubject(sub.Subject)}
+	if err := marker.Respond([]byte(token)); err != nil {
+		t.Fatalf("publish the marker to %s: %v", marker.Reply, err)
+	}
+	heard, err := sub.NextMsgWithContext(testwait.Context(t))
+	if err != nil {
+		t.Fatalf("the marker published to %s after the code under test returned did not reach the probe of %s: %v", marker.Reply, sub.Subject, err)
+	}
+	if heard.Subject != marker.Reply || string(heard.Data) != token {
+		t.Fatalf("%s was published: the probe of %s was handed %s on %s before the marker published after the code under test returned",
+			what, sub.Subject, heard.Data, heard.Subject)
+	}
+}
+
+// markerSubject is a subject that a subscription to subscribed hears: subscribed with each
+// wildcard token replaced by a token of the marker's own. A probe of one literal subject gets its
+// marker on that subject, and the marker's body tells it apart from anything else published there.
+func markerSubject(subscribed string) string {
+	tokens := strings.Split(subscribed, ".")
+	for i, token := range tokens {
+		if token == "*" || token == ">" {
+			tokens[i] = "test-marker"
+		}
+	}
+	return strings.Join(tokens, ".")
+}
+
+// noException fails when any delivery exception was published before it is called: the route
+// answers its sender and publishes none. probe is subscribed on the connection the code under test
+// publishes its exceptions on (exceptionProbe's is on that client's own), and the code has
+// returned, so a marker published on that connection (nothingHeardBefore) reaches probe after any
+// exception it published.
+func noException(t *testing.T, probe *natsgo.Subscription) {
+	t.Helper()
+	nothingHeardBefore(t, probe, "a delivery exception")
+}
+
+// exceptionProbe subscribes to every exception lane on client's own connection, the one the code
+// under test publishes its exceptions on when it holds client, and flushes, so the probe hears
+// every exception published after it returns.
 func exceptionProbe(t *testing.T, client *bus.Client) *natsgo.Subscription {
 	t.Helper()
 	probe, err := client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + ">")
@@ -238,11 +308,13 @@ func TestPublishRouteAnswersStoredOnceTheHoldersForwardIsKept(t *testing.T) {
 	if answer.Holder != "ses_holder" || answer.DedupeKey != "publish.stored-1" {
 		t.Fatalf("answer %s, want holder ses_holder and dedupe key publish.stored-1", recorder.Body.String())
 	}
-	for i, frame := range expectFrames(t, frames, 1, 300*time.Millisecond) {
+	for i, frame := range expectFrames(t, frames, 1, 0) {
 		if frame.EventID != answer.EventID || frame.DedupeKey != roleForwardDedupePrefix+"publish.stored-1" || frame.Topic != contracts.RoleTopicPrefix+role {
 			t.Fatalf("frame %d: event %s dedupe key %s topic %s, want the answered event %s under %s on its role topic", i+1, frame.EventID, frame.DedupeKey, frame.Topic, answer.EventID, roleForwardDedupePrefix+"publish.stored-1")
 		}
 	}
+	// The route has answered, so it has made every forward it makes.
+	noFurtherFrame(t, harness.client.Conn, "ses_holder", frames)
 	noException(t, probe)
 }
 
@@ -269,7 +341,7 @@ func TestPublishRouteStoresTheForwardForAHolderThatIsNotConnected(t *testing.T) 
 		t.Fatalf("answer %s, want holder ses_offline and dedupe key publish.offline-1", recorder.Body.String())
 	}
 	subject := contracts.LegacyAgentSubject("ses_offline")
-	stored, err := harness.client.JS().GetLastMsg(bus.Stream, subject)
+	stored, err := harness.client.JS().GetLastMsg(bus.Stream, subject, natsgo.Context(testwait.Context(t)))
 	if err != nil {
 		t.Fatalf("read the stream's forward on %s: %v", subject, err)
 	}
@@ -309,7 +381,7 @@ func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
 		}
 	}
 	// Both sends forwarded, so the stream took the message twice and stored it under one name.
-	for i, frame := range expectFrames(t, frames, 2, 300*time.Millisecond) {
+	for i, frame := range expectFrames(t, frames, 2, 0) {
 		if frame.DedupeKey != roleForwardDedupePrefix+"publish.stored-once-1" {
 			t.Fatalf("forward %d: dedupe key %s, want %s", i+1, frame.DedupeKey, roleForwardDedupePrefix+"publish.stored-once-1")
 		}
@@ -318,6 +390,8 @@ func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
 	if count := storedForwards(t, harness.client, subject); count != 1 {
 		t.Fatalf("the stream holds %d messages on %s after two forwards of publish.stored-once-1, want the one copy their Nats-Msg-Id keeps", count, subject)
 	}
+	// Both routes have answered, so they have made every forward they make.
+	noFurtherFrame(t, harness.client.Conn, "ses_one_copy", frames)
 	noException(t, probe)
 }
 
@@ -381,7 +455,8 @@ func TestPublishRouteRefusesADeliveryModeTheHolderDoesNotAdvertise(t *testing.T)
 	if body := recorder.Body.String(); body != `{"error":"session ses_aside_only () does not advertise steer","reason":"capability","holder":"ses_aside_only"}`+"\n" {
 		t.Fatalf("body %q", body)
 	}
-	expectFrames(t, frames, 0, 300*time.Millisecond)
+	// The route has answered, so it has made every forward it makes.
+	noFurtherFrame(t, harness.client.Conn, "ses_aside_only", frames)
 }
 
 // A sender that holds the role itself is answered 200 and nothing is sent, to the holder or on the
@@ -409,10 +484,10 @@ func TestPublishRouteSendsNothingToASenderHoldingTheRole(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || answer.Holder != "ses_self" {
 		t.Fatalf("answer %s (%v), want holder ses_self", recorder.Body.String(), err)
 	}
-	expectFrames(t, frames, 0, 300*time.Millisecond)
-	if _, err := lane.NextMsg(100 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("the send went out on the role lane: the probe answered %v, want a timeout", err)
-	}
+	// The route has answered, so it has published all it publishes, on the client the lane probe
+	// listens on too.
+	noFurtherFrame(t, harness.client.Conn, "ses_self", frames)
+	nothingHeardBefore(t, lane, "the send on the role lane")
 }
 
 // A re-send under the key of a message its holder already confirmed is answered 200 and not
@@ -430,7 +505,7 @@ func TestPublishRouteDoesNotForwardARepeatKeyItsHolderConfirmed(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first send: status %d, want 200; body %s", first.Code, first.Body.String())
 	}
-	expectFrames(t, frames, 1, 100*time.Millisecond)
+	expectFrames(t, frames, 1, 0)
 	repeat, _ := publishThrough(deps, body)
 	if repeat.Code != http.StatusOK {
 		t.Fatalf("repeat send: status %d, want 200; body %s", repeat.Code, repeat.Body.String())
@@ -439,7 +514,9 @@ func TestPublishRouteDoesNotForwardARepeatKeyItsHolderConfirmed(t *testing.T) {
 	if err := json.Unmarshal(repeat.Body.Bytes(), &answer); err != nil || answer.Holder != "ses_holder" || answer.DedupeKey != "publish.repeat-1" {
 		t.Fatalf("repeat answer %s (%v), want holder ses_holder under publish.repeat-1", repeat.Body.String(), err)
 	}
-	expectFrames(t, frames, 0, 300*time.Millisecond)
+	// Both sends have been answered, so the route has made every forward it makes for either: a
+	// second forward of the first send, or one of the repeat, comes before the marker.
+	noFurtherFrame(t, harness.client.Conn, "ses_holder", frames)
 }
 
 // A forward copy the stream stored on a session's agent subject reaches every listener's durable;
@@ -459,22 +536,16 @@ func TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing(t *testing.T) {
 
 	forwardCopy := listenerTestEnvelope(topic, "publish.stored-copy")
 	publishTo(t, harness.client, contracts.LegacyAgentSubject("ses_self_subscribed"), forwardCopy)
-	deadline := time.Now().Add(listenerWaitBound(t))
-	for {
-		info, err := harness.client.JS().ConsumerInfo(bus.Stream, consumer)
+	ctx := testwait.Context(t)
+	info := testwait.Until(t, "the durable to acknowledge the stored copy", func() (*natsgo.ConsumerInfo, bool) {
+		info, err := harness.client.JS().ConsumerInfo(bus.Stream, consumer, natsgo.Context(ctx))
 		if err != nil {
 			t.Fatalf("read the durable: %v", err)
 		}
-		if info.Delivered.Stream >= 1 && info.AckFloor.Stream >= info.Delivered.Stream && info.NumAckPending == 0 {
-			if info.Delivered.Consumer != 1 {
-				t.Fatalf("the durable delivered the copy %d times, want once", info.Delivered.Consumer)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the durable did not acknowledge the stored copy: %+v", info)
-		}
-		time.Sleep(20 * time.Millisecond)
+		return info, info.Delivered.Stream >= 1 && info.AckFloor.Stream >= info.Delivered.Stream && info.NumAckPending == 0
+	})
+	if info.Delivered.Consumer != 1 {
+		t.Fatalf("the durable delivered the copy %d times, want once", info.Delivered.Consumer)
 	}
 	if harness.config.dedupeCache.Seen(forwardCopy.DedupeKey, "ses_subscriber") {
 		t.Fatalf("the durable delivered the stored copy to the topic's subscriber, which is sent nothing for it")
