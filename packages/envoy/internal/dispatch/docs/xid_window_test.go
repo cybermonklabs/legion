@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -39,8 +40,8 @@ import (
 // rows, the API's issue-list bound and the auth service's storm, alone" runs them, judging shape
 // and gaps both.
 
-// xidService is a document service on a traced pool of a fresh database, settling after an hour so
-// only the settlement a test runs itself settles.
+// xidService is a document service on a traced pool of a fresh database. Its clock's timers
+// never fire because the test never advances it, so only the settlement a test runs itself settles.
 func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 	t.Helper()
 	tracer := storetest.NewXidTracer()
@@ -50,7 +51,7 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 		Events:   events.NewBroker(),
 		Identity: headerIdentity(database),
 		Origins:  testOrigins,
-		Settle:   time.Hour,
+		Clock:    clocktest.Held(),
 	})
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	ygws "github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -18,13 +19,18 @@ import (
 
 // The room-counters hook counts each room of a document the service closes, and no close that
 // closed nothing (a refusal for the room's peers, a document no room holds), and records the time
-// of each settlement-resumption pass that armed a document's owed settlement.
+// of each settlement-resumption pass that armed a document's owed settlement, on the service's
+// clock. The test never moves that clock, so the recorded time must match its one reading.
 func TestRoomCountersCountServiceClosesAndSettlementResumptions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
-	service, server := newTestServiceInstance(t, database)
+	serviceClock := clocktest.New(time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC))
+	deps := testServiceDeps(database)
+	deps.Clock = serviceClock
+	service := newSeamService(t, deps)
+	server := newTestServer(t, service)
 	service.hooks = newTestHooks()
 	seedServiceText(t, service, artifactID, "before")
 	waitForLandedAppends(t, service, artifactID)
@@ -59,15 +65,13 @@ func TestRoomCountersCountServiceClosesAndSettlementResumptions(t *testing.T) {
 	`, owed); err != nil {
 		t.Fatalf("owe the document's settlement: %v", err)
 	}
-	before := time.Now()
 	if err := service.resumeOwedSettlements(ctx, settlementResumeAge); err != nil {
 		t.Fatalf("resume the owed settlements: %v", err)
 	}
-	after := time.Now()
 	resumed := requireRoomCounters(t, service, owed).SettlementResumptions
-	if len(resumed) != 1 || resumed[0].Before(before) || resumed[0].After(after) {
-		t.Fatalf("settlement resumptions after one pass that armed the document = %v, want one time in [%s, %s]",
-			resumed, before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+	if at := serviceClock.Now(); len(resumed) != 1 || !resumed[0].Equal(at) {
+		t.Fatalf("settlement resumptions after one pass that armed the document = %v, want one, at the service clock's %s",
+			resumed, at.Format(time.RFC3339Nano))
 	}
 	if other := requireRoomCounters(t, service, untouched); other.RoomCloses != 0 || len(other.SettlementResumptions) != 0 {
 		t.Fatalf("the counters of a document whose only close found no room = %+v, want zero", other)
