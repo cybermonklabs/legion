@@ -61,6 +61,7 @@ const (
 // shows that the rule the boot answered reached the server: a write that breaks the rule is
 // refused with the setting on and taken with it off.
 func TestTheServerAnswersOnlyAfterTheParentStatusFix(t *testing.T) {
+	t.Parallel()
 	t.Run("on, with a row that the fix writes locked", func(t *testing.T) {
 		database := breakTheRule(t)
 		// The fix's first step unlinks ACME-2, so its write waits for this lock of the row.

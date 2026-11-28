@@ -2190,6 +2190,22 @@ anything, a `delete` or `retype` by block id that would take an `ask` block out 
 version at once and settlement would retract the ask without writing another, so the question
 would leave the human's Inbox unanswered and the approval refusal would find no block to judge.
 
+`dispatch request-approval` prints a refusal for the form of The Spec as Dispatch writes it, after its code (`SPEC_FORM: <error>`), and exits 1.
+A request that Dispatch records ends with one line on the form when a root of The Spec covers the document (the answer's `spec_form`): the count of each kind of text it read, or that it found no text of The Spec.
+Dispatch reads no list of terms yet, so the line names no terms.
+
+`dispatch spec-form --issue <KEY> [--artifact <document>] [--version <N>]` prints the form of The Spec in one version of a document, as an approval request would judge it, and writes nothing (`specFormCommand`, `src/dispatch-commands/spec-form.ts`, over `GET /api/v1/artifacts/{id}/spec-form`).
+The version is the latest settled one by default.
+A version number belongs to one document, and an issue has several, so `--version` needs `--artifact` (or a `--ref` that names the document), and the argument check refuses it beside an issue alone before any request.
+A covered document prints that Dispatch refuses its approval request and each finding as `- <kind> <node> in <where>: <detail>.`, or what Dispatch read.
+Dispatch writes these lines (`finding_lines` of the read), each finding's line as its refusal writes it, and the command prints them as they are.
+The read lists at most 500 findings; when it holds more, the lines say how many it lists.
+A document out of scope first says why Dispatch refuses nothing for it, by its scope, and still lists its findings.
+With no `--artifact`, it reads the spec and the Verification document of the issue, and names a document that has no version yet.
+It reads them from the issue's own read, so for a key that names no issue it prints what `dispatch read` prints (`NOT_FOUND: not found`) and exits 1.
+`dispatch spec-form --root <KEY>` walks every issue under KEY with the issue list, one parent at a time, and prints one line for each issue and one for each spec and Verification document, with its version, its scope, the count of each kind of text and its findings.
+It ends with the count of issues and documents it read.
+
 `dispatch review --issue <KEY> [--artifact <document>] --version <N> --verdict <verdict>
 [--reason <text>]` records a person's review of one version of an issue's document: what the
 document header's Approve and Request changes record (`reviewCommand`,

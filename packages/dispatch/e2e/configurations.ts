@@ -88,8 +88,9 @@ type ListingSpec = {
 const defaultViewport = { height: 720, width: 1280 };
 
 /** What joins a row's `describe` titles to its own, so two rows of one file whose own titles
- *  match but whose blocks differ stay two rows. Playwright's own reports read this way. */
-const titleSeparator = " › ";
+ *  match but whose blocks differ stay two rows. Playwright's own reports read this way, and so do
+ *  `playwright test --list` and the list reporter; e2e/shard-split.ts keys its table by it. */
+export const titleSeparator = " › ";
 
 /** Whether a page at `origin` is a secure context, which decides what the browser gives it:
  *  `navigator.locks` and `crypto.randomUUID` on a secure one, neither on a plain-HTTP name that is

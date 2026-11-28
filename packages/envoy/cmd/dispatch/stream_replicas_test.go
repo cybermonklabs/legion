@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -57,12 +56,13 @@ type dispatchStart struct {
 // names, exactly as main makes it on the servers at urls: ConnectOwningStream with serverClient
 // over dispatchStreamOptions, with no clock of the test's own and no option but extra, which a
 // caller passes to shorten a period main's own settings leave at a production length and which
-// main itself never sets (bus.WithKeepInterval). It returns the start it made (dispatchStart).
+// main itself never sets (bus.WithKeepInterval), and the logger the client writes its lines to,
+// the start's own buffer (bus.WithLogger) where main leaves them to the process's default logger:
+// the lines are the same, and a test that reads them reads its own client's alone, so it runs in
+// parallel with the package's other tests. It returns the start it made (dispatchStart).
 // The client returns before it has connected, and its first connection reconciles the stream and
 // only then starts its keeper (bus.WithConnectInBackground), so a caller waits for what it expects
-// itself (dispatchStart.awaitReconciled, dispatchStart.awaitHookFailure). The helper sets the
-// default logger to record the client's lines until the test ends: a test that calls it must not
-// run in parallel.
+// itself (dispatchStart.awaitReconciled, dispatchStart.awaitHookFailure).
 func connectDispatchStream(t *testing.T, urls []string, overrides map[string]string, extra ...bus.ConnectOption) dispatchStart {
 	t.Helper()
 	env := bootEnvironment(overrides)
@@ -71,8 +71,9 @@ func connectDispatchStream(t *testing.T, urls []string, overrides map[string]str
 		t.Fatalf("resolveBootConfig(%v): %v", overrides, err)
 	}
 	logged := &cmdtest.LockedBuffer{}
-	logtest.SetDefault(t, slog.NewJSONHandler(logged, nil))
-	client, err := bus.ConnectOwningStream(urls, serverClient(append(dispatchStreamOptions(boot, env), extra...)...)...)
+	options := append(dispatchStreamOptions(boot, env), extra...)
+	options = append(options, bus.WithLogger(slog.New(slog.NewJSONHandler(logged, nil))))
+	client, err := bus.ConnectOwningStream(urls, serverClient(options...)...)
 	if err != nil {
 		t.Fatalf("connect Dispatch's publisher for %v: %v", overrides, err)
 	}
@@ -135,8 +136,7 @@ func (s dispatchStart) awaitHookFailure(t *testing.T) hookFailure {
 // startDispatchStream is the Dispatch server's publisher connect for the settings overrides names,
 // built exactly as main builds it, with extra over it (connectDispatchStream), waited out for
 // reconcileWait until this client's own first connection has reconciled the stream to what the
-// settings ask of it (dispatchStart.awaitReconciled). It sets the default logger
-// (connectDispatchStream), so a test that calls it must not run in parallel.
+// settings ask of it (dispatchStart.awaitReconciled).
 func startDispatchStream(t *testing.T, urls []string, overrides map[string]string, extra ...bus.ConnectOption) *bus.Client {
 	t.Helper()
 	start := connectDispatchStream(t, urls, overrides, extra...)
@@ -222,7 +222,7 @@ func startDispatchNATS(t *testing.T, urls []string, overrides map[string]string)
 // goroutine, because testnats.Server.Start, testnats.Server.Stop and testnats.Cluster.AwaitReady
 // call t.Fatal, which Go forbids off the test goroutine.
 func TestADispatchStartWaitsOutAReconcileFailureTheBusRetries(t *testing.T) {
-	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	cluster.Servers[1].Stop(t)
 	cluster.Servers[2].Stop(t)
@@ -247,7 +247,7 @@ func TestADispatchStartWaitsOutAReconcileFailureTheBusRetries(t *testing.T) {
 // the deployment's settings (ENVOY_NATS_REPLICAS=3 and the byte limit), and with both settings
 // unset, a replica count of 1 and no byte limit, which neither lowers the copies nor drops the limit.
 func TestADispatchStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsTheStream(t *testing.T) {
-	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
+	t.Parallel()
 	for _, drift := range bustest.StreamDrifts() {
 		for _, settings := range []struct {
 			name      string
@@ -341,7 +341,7 @@ func TestRedeliverWebhooksRaisesAnR1RedeliveryBucketToTheReplicaSetting(t *testi
 // On a single server with the default settings, the Dispatch server's start creates the stream and
 // the webhook redelivery bucket at one copy, and its next start creates and updates nothing.
 func TestADefaultDispatchStartOnASingleServerCreatesEverythingAtOneCopyAndTheNextWritesNothing(t *testing.T) {
-	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
+	t.Parallel()
 	_, url := testnats.Start(t)
 	streams := []string{bus.Stream, "KV_" + bus.WebhookRedeliveryBucket}
 
@@ -368,7 +368,7 @@ const keeperRestoreWait = 30 * time.Second
 // reconcile has run: an operator who lowers the stream to one copy and half the byte limit finds
 // both back at the deployment's settings within one keeper period.
 func TestTheDispatchPublishersKeeperRestoresALoweredStream(t *testing.T) {
-	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	js := cluster.JetStream(t)
 	startDispatchStream(t, cluster.URLs(), map[string]string{"ENVOY_NATS_REPLICAS": "3", "ENVOY_STREAM_MAX_BYTES": strconv.Itoa(bustest.StreamMaxBytes)}, bus.WithKeepInterval(keeperPeriod))

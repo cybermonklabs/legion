@@ -175,16 +175,17 @@ function storeOf(tab = keptTab(), login = "alice", files = memoryFiles()) {
 /** The write `writes` holds now, at `index` in press order. */
 const row = (writes: Writes, index = 0): Write | undefined => writes.rows()[index];
 
-/** A page that has just resumed one write on CORE-1, kept in `tab` under `key` as it stood
- *  (`state`) when the page that pressed it went away, as the request it last went out as: a
- *  status pick unless a row names another, a plain write unless it names another kind (`of`). */
-function resuming(
+/** One write on CORE-1 kept in `tab` under `key` as it stood (`state`) when the page that pressed
+ *  it went away, as the request it last went out as: a status pick unless a row names another, a
+ *  plain write unless it names another kind (`of`). It is kept as the release before the issue
+ *  was kept wrote it, with no `issue`. */
+function keptEntry(
   tab: KeptTab,
   key: string,
   state: KeptState,
   request: WriteRequest = patch,
   of: { readonly kind: string; readonly detail: unknown } = { detail: null, kind: "write" }
-): Writes {
+): void {
   tab.storage.setItem(
     `dispatch.write:${key}`,
     JSON.stringify({
@@ -201,6 +202,17 @@ function resuming(
       version: 1,
     })
   );
+}
+
+/** A page that has just resumed the one write kept in `tab` under `key` (`keptEntry`). */
+function resuming(
+  tab: KeptTab,
+  key: string,
+  state: KeptState,
+  request: WriteRequest = patch,
+  of: { readonly kind: string; readonly detail: unknown } = { detail: null, kind: "write" }
+): Writes {
+  keptEntry(tab, key, state, request, of);
   const writes = new Writes(signedIn(), tab.page(), memoryFiles());
   writes.resume("alice");
   return writes;
@@ -240,6 +252,122 @@ test("one key per press, reused by every attempt the store makes", async () => {
     expect(keys).toHaveLength(7);
     expect(new Set(keys).size).toBe(1);
     expect(writes.rows()).toEqual([]);
+  });
+});
+
+// A write of an issue tells that issue's listeners where it stands, from going out to settling.
+// Its issue is its press's, or the issue of its request's path: at its press for a write made
+// from its request, at its first attempt for one made by an attempt. A write naming no issue, or
+// another, tells this one nothing.
+test("a write of an issue tells that issue's listeners as it goes out and settles", async () => {
+  await onFakeClock(async () => {
+    const { writes } = storeOf();
+    const told: string[] = [];
+    const stop = writes.onIssueWrite("CORE-1", (phase, write) => {
+      told.push(`${write.label}: ${phase}`);
+    });
+    const elsewhere: string[] = [];
+    const stopOther = writes.onIssueWrite("CORE-2", (phase) => elsewhere.push(phase));
+
+    // Named by its press: out at once, before its attempt starts.
+    const answer = Promise.withResolvers<unknown>();
+    const keep = writes.run({
+      detail: null,
+      issue: "CORE-1",
+      kind: plainWrite,
+      label: "Keep",
+      method: "POST",
+      presentation: "indicator",
+      write: () => answer.promise,
+    });
+    expect(told).toEqual(["Keep: out"]);
+    expect(writes.writesOutOf("CORE-1").map((write) => write.label)).toEqual(["Keep"]);
+    answer.resolve({ kept: true });
+    expect(await keep).toEqual({ kept: true });
+    expect(told).toEqual(["Keep: out", "Keep: landed"]);
+    expect(writes.writesOutOf("CORE-1")).toEqual([]);
+
+    // Named by its first attempt's request, refused, and out again on its Retry.
+    told.length = 0;
+    let refuse = true;
+    const refused = statusWrite(writes, () =>
+      refuse ? Promise.reject(verdict) : Promise.resolve({ key: "CORE-1" })
+    ).catch((error: unknown) => error);
+    expect(await refused).toBe(verdict);
+    expect(told).toEqual(["CORE-1 set to done: out", "CORE-1 set to done: refused"]);
+    expect(row(writes)?.issue).toBe("CORE-1");
+    refuse = false;
+    writes.retry(row(writes)?.id ?? 0);
+    await tick(1_000);
+    expect(told.slice(2)).toEqual(["CORE-1 set to done: out", "CORE-1 set to done: landed"]);
+
+    // Made from its request on a line: named at its press. One waiting its turn behind it,
+    // discarded before it was sent, settles as discarded.
+    told.length = 0;
+    const first = Promise.withResolvers<unknown>();
+    const ahead = statusWrite(writes, () => first.promise, { label: "Ahead", target: "issue" });
+    const behind = statusWrite(writes, async () => null, {
+      label: "Behind",
+      target: "issue",
+    }).catch((error: unknown) => error);
+    expect(told).toEqual(["Ahead: out", "Behind: out"]);
+    const waiting = writes.rows().find((write) => write.label === "Behind");
+    expect(writes.discard(waiting?.id ?? 0)).toBe(true);
+    expect(told).toEqual(["Ahead: out", "Behind: out", "Behind: discarded"]);
+    first.resolve({ key: "CORE-1" });
+    await ahead;
+    await behind;
+    expect(told.at(-1)).toBe("Ahead: landed");
+
+    // A pin's request names no issue in its path; a write of another issue tells that one.
+    told.length = 0;
+    await writes.run({
+      detail: null,
+      kind: plainWrite,
+      label: "Pin",
+      method: "PUT",
+      presentation: "indicator",
+      write: attemptOf(put, async () => ({ seq: 3 })),
+    });
+    await writes.run({
+      detail: null,
+      issue: "CORE-2",
+      kind: plainWrite,
+      label: "Other",
+      method: "POST",
+      presentation: "indicator",
+      write: async () => ({ key: "CORE-2" }),
+    });
+    expect(told).toEqual([]);
+    expect(elsewhere).toEqual(["out", "landed"]);
+    stop();
+    stopOther();
+  });
+});
+
+// A listener's removal takes away that listener alone, however often it is called: called again
+// once another listener of its issue has come, it leaves that one hearing each write of the issue.
+test("a listener's removal, called again, takes no other listener of its issue away", async () => {
+  await onFakeClock(async () => {
+    const { writes } = storeOf();
+    const stopFirst = writes.onIssueWrite("CORE-1", () => undefined);
+    stopFirst();
+    const told: string[] = [];
+    const stopSecond = writes.onIssueWrite("CORE-1", (phase, write) => {
+      told.push(`${write.label}: ${phase}`);
+    });
+    stopFirst();
+    await writes.run({
+      detail: null,
+      issue: "CORE-1",
+      kind: plainWrite,
+      label: "Keep",
+      method: "POST",
+      presentation: "indicator",
+      write: async () => ({ kept: true }),
+    });
+    expect(told, "the listener that stayed heard nothing").toEqual(["Keep: out", "Keep: landed"]);
+    stopSecond();
   });
 });
 
@@ -393,6 +521,115 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
       );
     } finally {
       send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// A write keeps the issue its caller named, so one resumed after a reload is a write of that
+// issue again, though its request's path - a Keep's, under the document - names none. An entry
+// kept before the issue was kept holds none, and resumes naming the issue of its request's path.
+test("a resumed write names the issue it was kept with, or else its request's path", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockResolvedValue({ kept: true } as never);
+    const keep: WriteRequest = {
+      body: { text_sha256: "sha" },
+      method: "POST",
+      path: "/api/v1/artifacts/artifact-1/blocks/block-1/keep",
+    };
+    const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    try {
+      void before
+        .run({
+          detail: null,
+          issue: "CORE-1",
+          kind: plainWrite,
+          label: "Keep",
+          method: "POST",
+          presentation: "indicator",
+          write: attemptOf(keep, () => Promise.withResolvers<never>().promise),
+        })
+        .catch(() => {});
+      await settle();
+      const key = row(before)?.key ?? "";
+      expect(tab.kept(key)).toMatchObject({ issue: "CORE-1" });
+
+      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+      const told: string[] = [];
+      const stop = after.onIssueWrite("CORE-1", (phase, write) =>
+        told.push(`${write.label}: ${phase}`)
+      );
+      after.resume("alice");
+      await settle();
+      stop();
+      expect(told).toEqual(["Keep: out", "Keep: landed"]);
+
+      keptEntry(tab, "unnamed", { status: "sending" });
+      const older = new Writes(signedIn(), tab.page(), memoryFiles());
+      const toldOlder: string[] = [];
+      const stopOlder = older.onIssueWrite("CORE-1", (phase, write) =>
+        toldOlder.push(`${write.label}: ${phase}`)
+      );
+      older.resume("alice");
+      await settle();
+      stopOlder();
+      expect(toldOlder).toEqual(["CORE-1 set to done: out", "CORE-1 set to done: landed"]);
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+/** A write that builds its request at each attempt, as a composer's send does, and whose attempt
+ *  stays out once that request has gone. */
+const composedHeldWrite = defineWriteKind<null>({
+  kept: (value): value is null => value === null,
+  name: "test-composed-held",
+  resume: () => (bounds) => {
+    bounds.sent?.(patch);
+    return Promise.withResolvers<never>().promise;
+  },
+});
+
+// A resumed write that went out before, kept with no issue and no request, learns its issue from
+// the request its attempt sends. Its row names that issue from then on, as `writesOutOf` and the
+// issue's listeners do: the store shows the write it tells of.
+test("a resumed write that learns its issue from its attempt names it in its row at once", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const key = keyMinted(Date.now());
+    tab.storage.setItem(
+      `dispatch.write:${key}`,
+      JSON.stringify({
+        detail: null,
+        key,
+        kind: composedHeldWrite.name,
+        label: "A message",
+        login: "alice",
+        presentation: "composer",
+        pressedAt: Date.now(),
+        request: null,
+        sent: true,
+        state: { status: "sending" },
+        target: null,
+        version: 1,
+      })
+    );
+    const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+    const told: string[] = [];
+    const stop = writes.onIssueWrite("CORE-1", (phase) => told.push(phase));
+    try {
+      writes.resume("alice");
+      await settle();
+      expect(told).toEqual(["out"]);
+      expect(row(writes)?.issue, "the row of the write CORE-1's listeners were told of").toBe(
+        "CORE-1"
+      );
+      expect(writes.writesOutOf("CORE-1")).toEqual(writes.rows());
+    } finally {
+      stop();
       tab.close();
     }
   });
