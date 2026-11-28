@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A worker whose agent registered a session and was then stopped still records that session, and
@@ -50,6 +51,12 @@ func TestClaimsRetryFreshSessionStartsAStoppedClaimInANewSession(t *testing.T) {
 	if !strings.Contains(out, " launching ") {
 		t.Fatalf("retry --fresh-session stdout = %q, want the claim launching again", out)
 	}
+	// The route answers once the retry has written the claim launching (api's startUnderWay), and
+	// the runtime is asked to spawn after that write, in the same decision, so the spawn is waited
+	// for before the runtime's calls are read.
+	testwait.Eventually(t, "the retry's fresh start to reach the runtime", func() bool {
+		return len(d.runtime.CallsOf("Spawn")) > spawns
+	})
 	if got := len(d.runtime.CallsOf("Resume")); got != resumes {
 		t.Fatalf("the runtime saw %d resumes, want the stopped session left alone", got-resumes)
 	}

@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testport"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -557,6 +558,12 @@ func TestClaimsSuspendResumeAndStopDriveTheClaim(t *testing.T) {
 		if out != step.want {
 			t.Fatalf("%s stdout = %q, want %q", step.action, out, step.want)
 		}
+		// The resume route answers once the start has written the claim launching (api's
+		// startUnderWay), and the runtime is asked to resume after that write, in the same
+		// decision, so the call is waited for before the runtime's calls are read.
+		testwait.Eventually(t, "the runtime's "+step.method+" after "+step.action, func() bool {
+			return len(d.runtime.CallsOf(step.method)) >= 1
+		})
 		if calls := d.runtime.CallsOf(step.method); len(calls) != 1 {
 			t.Fatalf("after %s the runtime saw %v, want one %s", step.action, d.runtime.Methods(), step.method)
 		}
@@ -602,6 +609,11 @@ func TestClaimsRetryPostsToTheClaimsRetryRoute(t *testing.T) {
 	if want := "legion-legion-legion-208-architect architect LEGION-208 launching - 4 0 - - - -\n"; out != want {
 		t.Fatalf("retry stdout = %q, want %q", out, want)
 	}
+	// The retry route answers once its start has written the claim launching (api's
+	// startUnderWay), and the runtime is asked to spawn after that write, so the spawn is waited for.
+	testwait.Eventually(t, "the retry's launch to reach the runtime", func() bool {
+		return len(d.runtime.CallsOf("Spawn")) >= 4
+	})
 	if spawns := d.runtime.CallsOf("Spawn"); len(spawns) != 4 {
 		t.Fatalf("the runtime saw %d spawns, want the retry's launch after the three refused", len(spawns))
 	}
