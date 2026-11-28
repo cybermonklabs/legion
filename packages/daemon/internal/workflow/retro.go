@@ -897,10 +897,12 @@ func retroWakeHeld(run record.RoleRun) bool {
 // retroArchitectWakeTask is the task of a root architect woken for a message to its role topic
 // token while its tree takes a retro's wake (retroWake): what stopped its session, that a retro
 // after a close ran in its tree within the last hour and somebody published the message the wake is
-// for, and what a retro's finding asks of it. The listener's report names the role and nothing of
-// who sent the message, so neither does the task.
+// for, and what a retro's finding asks of it. Its tree is stopped (record.Stopped): closed, or a
+// root moved to backlog, icebox or triage, so the task says the tree left the workflow and never
+// that it closed. The listener's report names the role and nothing of who sent the message, so
+// neither does the task.
 func retroArchitectWakeTask(token string) string {
-	return "Your tree closed, and the daemon stopped your session with it. A retro Legion runs after the close of an issue ran in your tree within the last hour, " +
+	return "Your tree left the workflow, and the daemon stopped your session with it. A retro Legion runs after the close of an issue ran in your tree within the last hour, " +
 		"and somebody published a message to your role topic (" + token + ") while your session was stopped: this wake is for that message. " +
 		"Envoy keeps a role message for one hour: a message kept for your role reaches this session as an Envoy card that shows kept_at, " +
 		"possibly before this task. A requirement a retro finds unmet is yours to put to the person as one decision; " +

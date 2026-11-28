@@ -37,9 +37,12 @@
 // the Dispatch stand-in's step rows, the daemon's HTTP routes, the prompts the agents were given
 // and the claims the runtime launched, and three tables through SQL: run_retros, for an issue's
 // retros after a close (retrosAfterClose, which reads none where the table does not exist, as on
-// main), tree_lifecycles, for a lifecycle's epoch (lifecycleEpoch), and outbox, for the
-// linger_close row a park queues, which it brings due with the issue's linger_until (endLinger),
-// and for a retro phase's start row still queued (queuedRetroStarts).
+// main), tree_lifecycles, for a lifecycle's epoch (lifecycleEpoch) and whether its cleanup is
+// reserved (treeCleanup), and outbox, for the linger_close row a park queues, which it brings due
+// with the issue's linger_until (endLinger), for the linger_close rows that name the end of a
+// tree's last retro after a close (retrosEndedRows), which it brings due with that end and the
+// tree's run_retros ends moved an hour back (passHourAfterRetros), and for a retro phase's start
+// row still queued (queuedRetroStarts).
 // So the same file builds and runs on main. That is what the script's negative control needs.
 //
 // Each step runs on its own and prints `== <step>`, then `ok <step>` or `FAIL <step> at
@@ -88,11 +91,12 @@ const (
 	retroWait = 20 * time.Second
 	// retroPoll is how often a wait asks its question.
 	retroPoll = 50 * time.Millisecond
-	// retroCap is the admission cap: a slot for each of the three roots and for every child that
+	// retroCap is the admission cap: a slot for each of the four roots and for every child that
 	// runs at once.
 	retroCap = 12
 	// retroLinger is the linger every root's park or close begins, the project's default: long
-	// enough that T's and R2's lingers outlast the proof, and R3's is brought forward by hand.
+	// enough that T's and R2's lingers outlast the proof, and R3's and R4's are brought forward by
+	// hand.
 	retroLinger = 72 * time.Hour
 )
 
@@ -109,14 +113,14 @@ const (
 	retroPendingClause = "another open child of the same parent carries is pending and goes to no one"
 )
 
-// retroArchitectWakeOpening is the opening of the daemon's wake task to a closed tree's root
-// architect (workflow's retroArchitectWakeTask).
-const retroArchitectWakeOpening = "Your tree closed, and the daemon stopped your session with it. A retro Legion runs after the close of an issue ran in your tree within the last hour"
+// retroArchitectWakeOpening is the opening of the daemon's wake task to the root architect of a
+// tree that left the workflow (workflow's retroArchitectWakeTask).
+const retroArchitectWakeOpening = "Your tree left the workflow, and the daemon stopped your session with it. A retro Legion runs after the close of an issue ran in your tree within the last hour"
 
 // retroStepFailure is what a step's assertion ends the step with: the assertion that did not hold.
 type retroStepFailure struct{ at string }
 
-// retroLive is one run of the proof: the booted daemon, the three roots it runs, the processes the
+// retroLive is one run of the proof: the booted daemon, the four roots it runs, the processes the
 // driver plays for the claims, and the stand-ins each step reads the daemon's writes back from.
 type retroLive struct {
 	liveProof
@@ -127,10 +131,11 @@ type retroLive struct {
 	listener *idleRigListener
 	natsURL  string
 	// tree is the test root T, whose children each step closes; r2 and r3 are the two more roots
-	// the last steps park and close. Each is seeded at admitted with its design gate approved, so
-	// the boot starts its first phase.
-	tree, r2, r3 string
-	root         *retroAgent
+	// steps 12 and 13 park and close, and r4 the root whose child's retro step 23 leaves open past
+	// r4's linger. Each is seeded at admitted with its design gate approved, so the boot starts its
+	// first phase.
+	tree, r2, r3, r4 string
+	root             *retroAgent
 	// seq is the Dispatch sequence the next envelope the driver publishes carries; number is the
 	// next pull request number; issues numbers the issues the steps make; reviews numbers the
 	// reviews the driver submits.
@@ -149,13 +154,20 @@ type retroLive struct {
 	// unreported until step 10; memberAgent is that agent.
 	member      string
 	memberAgent *retroAgent
-	// child is step 1's child C, whose implementer pushed a head and which step 2 closes.
-	child string
+	// child is step 1's child C, whose implementer pushed a head and which step 2 closes, and
+	// childArchitect is C's own architect, which step 1 registers and step 2's task must not name.
+	child          string
+	childArchitect *retroAgent
+	// lastMember is step 20's started child, closed by a person, whose retro after the close is left
+	// open past T's close, so that it is the last open retro of T's tree that step 21's todo ends.
+	lastMember string
 }
 
 // TestTheRetroRunsAfterTheCloseLive drives the proof's steps against one booted daemon: steps 1 to 9,
-// 17, 18, 14, then the root's (11) and the member's retro it leaves open (10), then the parked roots
-// (12 and 13). Steps 15 and 16 are the plan's after INFRA-3570's branch is merged in.
+// 17, 18, 14, 19 and 20, then the root's (11) and the member's retro it leaves open (10), then 21,
+// then the parked roots (12, 22 on R2, and 13), then 23 on R4. Steps 15 and 16 are the plan's after
+// INFRA-3570's branch is merged in. Steps 19 to 23 are the tester's live probes of the fixes of
+// review rounds 1 to 4, which the architect made steps of the proof.
 func TestTheRetroRunsAfterTheCloseLive(t *testing.T) {
 	fixtureenv.Live(t)
 	r := newRetroLive(t)
@@ -171,16 +183,21 @@ func TestTheRetroRunsAfterTheCloseLive(t *testing.T) {
 	r.run("sent-back-then-closed", r.sentBackThenClosed)
 	r.run("retro-task-held-at-close", r.retroTaskHeldAtClose)
 	r.run("todo-ends-retro", r.todoEndsRetro)
+	r.run("todo-drops-held-task", r.todoDropsHeldTask)
+	r.run("member-left-open", r.memberLeftOpen)
 	r.run("root-closed", r.rootClosed)
 	r.run("member-open-at-root-close", r.memberOpenAtRootClose)
+	r.run("todo-ends-lingering-trees-last-retro", r.todoEndsLingeringTreesLastRetro)
 	r.run("root-closed-in-linger", r.rootClosedInLinger)
+	r.run("woken-root-stops", r.wokenRootStops)
 	r.run("expired-root-closed", r.expiredRootClosed)
+	r.run("past-linger-todo-reserves-cleanup", r.pastLingerTodoReservesCleanup)
 	if len(r.failed) > 0 {
 		t.Fatalf("%d steps did not hold: %s", len(r.failed), strings.Join(r.failed, ", "))
 	}
 }
 
-// newRetroLive boots the daemon over the script's broker with the three roots recorded, and
+// newRetroLive boots the daemon over the script's broker with the four roots recorded, and
 // registers and readies the test root's architect. The Envoy listener starts first: it creates the
 // notification stream with its own subjects, which the daemon's consumers then bind, as a
 // deployment rolls them in.
@@ -216,13 +233,14 @@ func newRetroLive(t *testing.T) *retroLive {
 	t.Cleanup(front.Close)
 	p.cfg.DispatchURL = front.URL
 	r := &retroLive{liveProof: p, rt: fake.NewRuntime(), built: &built{}, github: newStepRecordsGitHub(t), links: links, listener: listener,
-		natsURL: natsURL, seq: 1, number: 100, issues: 3, agents: map[claim.Token]*retroAgent{}}
+		natsURL: natsURL, seq: 1, number: 100, issues: 4, agents: map[claim.Token]*retroAgent{}}
 	r.rt.InPod = true
 	key := func(n int) string { return fmt.Sprintf("%s-%d", p.cfg.Project, n) }
-	r.tree, r.r2, r.r3 = key(1), key(2), key(3)
+	r.tree, r.r2, r.r3, r.r4 = key(1), key(2), key(3), key(4)
 	r.seedRoot(r.tree, "A")
 	r.seedRoot(r.r2, "B")
 	r.seedRoot(r.r3, "C")
+	r.seedRoot(r.r4, "D")
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
@@ -333,6 +351,7 @@ func (r *retroLive) grandchildClosed() {
 	r.releaseBy(r.root, c)
 	r.startsPlanning(c)
 	childArchitect := r.register(c, r.tree, claim.RoleArchitect)
+	r.childArchitect = childArchitect
 	r.walkTo(c, phase.Implementing)
 	implementer := r.registerTask(c, r.tree, claim.RoleImplementer)
 	r.board.place(g, "triage", c, false)
@@ -362,16 +381,21 @@ func (r *retroLive) grandchildClosed() {
 }
 
 // child-closed (A1): T's architect writes done on C, whose implementer pushed a head. The same as
-// the grandchild's: one task, the clauses of R2, a retro that completes, C's status stays done; and
-// a backward move of C with the retro agent's grant is refused BACKWARD_REFUSED.
+// the grandchild's: one task, whose text holds each clause of R2 and names T's architect's role
+// topic, not that of C's own architect, which step 1 registered; a retro that completes; C's status
+// stays done; and a backward move of C with the retro agent's grant is refused BACKWARD_REFUSED.
 func (r *retroLive) childClosed() {
 	c := r.child
+	if c == "" || r.childArchitect == nil {
+		r.fail("step 1 left no child C with its own architect registered")
+	}
 	mark := r.markOf(c, claim.RoleImplementer)
 	r.sessionWrite(r.root, c, "done")
 	r.note("%s's architect wrote done on %s: an issue.updated envelope, actor %s", r.tree, c, r.root.session)
 	agent, task := r.retroTask(c, r.tree, mark)
-	r.requireR2(c, r.tree, task.Message)
-	r.note("read back: one retro task went to %s (the implementer of %s, which pushed the head) after the close: %s", agent.token, c, firstLine(task.Message))
+	r.requireR2(c, r.tree, task.Message, r.childArchitect)
+	r.note("read back: one retro task went to %s (the implementer of %s, which pushed the head) after the close, naming the role topic of %s's architect and not that of %s's own architect %s: %s",
+		agent.token, c, r.tree, c, r.childArchitect.token, firstLine(task.Message))
 	status, body := agent.post("/legion/v1/phase/backward", api.PhaseBackwardRequest{GrantID: agent.grant(), To: phase.Implementing, Reason: "the retro found a gap"})
 	if status == http.StatusOK || !strings.Contains(body, "BACKWARD_REFUSED") {
 		r.fail("the retro agent's backward move of the closed %s was answered %d %s, want BACKWARD_REFUSED", c, status, body)
@@ -667,6 +691,72 @@ func (r *retroLive) retroTaskHeldAtClose() {
 	r.note("read back: the completion was answered 200, Dispatch's retro row of %s ended passed, rated 4, and no other retro task came over %s", c, liveSettle)
 }
 
+// todo-drops-held-task (step 19): another child runs into implementing, and its implementer, idle
+// since its task, starts a turn of its own (it reports streaming). A person closes the child, so the
+// task of its retro after the close waits on that claim behind the turn, unsent; a person then sets
+// the child back to todo under T, held at admitted by a blocked_by link to an open issue, which ends
+// that retro stopped. Once the agent's own turn ends, no retro task reaches it: the todo dropped the
+// task the claim held. The child is closed again at the end, so that T's own first phase can start
+// before step 11.
+func (r *retroLive) todoDropsHeldTask() {
+	c := r.todoChild(r.tree)
+	r.walkTo(c, phase.Implementing)
+	implementer := r.registerTask(c, r.tree, claim.RoleImplementer)
+	implementer.endTurn()
+	implementer.beginOwnTurn()
+	pending := func() string {
+		if p := r.d.claim(implementer.token).Pending; p != nil {
+			return p.ID
+		}
+		return "none"
+	}
+	mark := r.markOf(c, claim.RoleImplementer)
+	r.person(c, "done", r.tree, false)
+	r.waitStatus(c, "done")
+	r.requireRetroStarted(c, 0)
+	r.until("the retro after the close's task held on "+string(implementer.token)+" behind its own turn", retroWait, func() bool {
+		p := r.d.claim(implementer.token).Pending
+		return p != nil && p.ConfirmedAt == nil
+	})
+	r.note("a person closed %s while its implementer is in a turn of its own; read back: the retro's task %s waits on it unconfirmed", c, pending())
+	blocker := r.newKey()
+	r.waitProcessedAny(r.publishIssue(userActor, blocker, "in_progress", "", nil, false))
+	r.waitProcessedAny(r.publishIssue(userActor, c, "todo", r.tree, []string{blocker}, false))
+	r.awaitRetroRow(c, 0, retroRowWant{result: "stopped"})
+	r.note("a person set %s back to todo under %s, blocked_by %s; read back: its retro row ended stopped; the claim's pending task now %s", c, r.tree, blocker, pending())
+	implementer.endOwnTurn()
+	time.Sleep(liveSettle)
+	got := r.retroTasksSince(c, claim.RoleImplementer, mark, false)
+	r.note("read back: after its own turn ended, %s's implementer was given %d retro tasks over %s; its pending task %s", c, got, liveSettle, pending())
+	r.person(c, "done", r.tree, false)
+	r.waitStatus(c, "done")
+	if got != 0 {
+		r.fail("%s's implementer was given %d retro tasks after the todo ended its retro after the close, want none", c, got)
+	}
+}
+
+// member-left-open (step 20): before T's close, another started child of T is closed by a person,
+// and its retro after the close is left open, so that it outlives T's own retro (step 11) and step
+// 3's (step 10) and is the last open retro of T's lingering tree, which step 21's todo ends.
+func (r *retroLive) memberLeftOpen() {
+	r.lastMember = r.leaveRetroOpen(r.tree)
+}
+
+// leaveRetroOpen is a person's done on a new started child of root: one retro task to the child's
+// implementer after the close, and its retro row started, which the step leaves open. It answers
+// the child.
+func (r *retroLive) leaveRetroOpen(root string) string {
+	r.t.Helper()
+	c := r.todoChild(root)
+	mark := r.markOf(c, claim.RoleImplementer)
+	r.person(c, "done", root, false)
+	agent, task := r.retroTask(c, root, mark)
+	r.requireTaskOnce(c, mark)
+	r.requireRetroStarted(c, 0)
+	r.note("a person closed %s; read back: one retro task went to %s (%s); its retro row started and is left open past %s's close", c, agent.token, firstLine(task.Message), root)
+	return c
+}
+
 // root-closed (A2): a person's done on the test root after its first phase: one task to T's retro
 // agent. T's architect, suspended by the close, is resumed in its kept session when the retro agent
 // publishes one finding to its role topic through the real Envoy listener, which keeps the message
@@ -752,6 +842,47 @@ func (r *retroLive) memberOpenAtRootClose() {
 	r.completesRetro(c, agent, taskMark{}, 4)
 }
 
+// todo-ends-lingering-trees-last-retro (step 21): after T's close, T's own retro (step 11) and
+// step 3's (step 10) have ended, so step 20's child holds the last open retro after a close of T's
+// lingering tree; T's architect, woken for the finding in step 11, ends its turn. A person labels
+// that child and sets it back to todo: T lingers, so admission takes the child as an orphan and
+// re-admits it into a tree of its own, which ends that retro stopped. That end stops T's architect
+// as a report of the tree's last retro would: the daemon suspends it, and queues the stop for the
+// hour after the end (a linger_close row of T carrying retrosEnded).
+func (r *retroLive) todoEndsLingeringTreesLastRetro() {
+	c := r.lastMember
+	if c == "" {
+		r.fail("member-left-open left no child")
+	}
+	token := r.root.token
+	r.root.endTurn()
+	r.waitState(token, supervise.StateIdle)
+	if _, open := r.retrosAfterClose(c); open != 1 {
+		r.fail("%s holds %d open retros after a close before the todo, want 1", c, open)
+	}
+	before := r.retrosEndedRows(r.tree)
+	time.Sleep(liveSettle)
+	if held := r.d.claim(token); held.State != string(supervise.StateIdle) {
+		r.fail("T's architect %s stands %s before the todo, want idle", token, held.State)
+	}
+	r.note("T's architect %s ended its turn and stands idle; read back: %s's retro after its close is the tree's last open one; %d linger_close row(s) with retrosEnded of %s",
+		token, c, before, r.tree)
+	r.person(c, "todo", r.tree, true)
+	r.awaitRetroRow(c, 0, retroRowWant{result: "stopped"})
+	r.note("a person labelled %s and set it back to todo; read back: its retro row ended stopped; it stands %s in tree %s", c, r.d.state().Issues[c].Phase, r.d.state().Issues[c].Tree)
+	stopped := testwait.Holds(retroWait*3, retroPoll, func() bool { return r.d.claim(token).State == string(supervise.StateSuspended) })
+	held := r.d.claim(token)
+	after := r.retrosEndedRows(r.tree)
+	r.note("read back: after the todo, T's architect stands %s (suspended by %q); %d linger_close row(s) with retrosEnded of %s", held.State, held.SuspendedBy, after, r.tree)
+	if !stopped {
+		r.fail("T's architect %s stands %s after the todo ended its tree's last open retro, want it suspended by the daemon", token, held.State)
+	}
+	if after <= before {
+		r.fail("no linger_close row with retrosEnded of %s was queued by the todo (%d before, %d after)", r.tree, before, after)
+	}
+	r.root.end()
+}
+
 // root-closed-in-linger: a second root R2 runs into implementing with its architect live, a person
 // moves it to icebox and then closes it inside its linger: one task to its implementer, resumed in
 // its kept session. R2's retro is the one open retro of its tree: its agent publishes one finding to
@@ -763,12 +894,108 @@ func (r *retroLive) rootClosedInLinger() {
 	r.parkedRootClosed(r.r2, "icebox", false)
 }
 
+// woken-root-stops (step 22): after step 12, R2's architect, which the finding woke while R2
+// lingers, ends its turn. The report of R2's retro, the last open retro of its tree, came before
+// that wake, so it stopped nothing then and queued the stop for the hour after its end (a
+// linger_close row of R2 carrying retrosEnded). The driver makes that hour pass
+// (passHourAfterRetros), and once the row comes due the daemon suspends the architect.
+func (r *retroLive) wokenRootStops() {
+	token := r.token(r.r2, claim.RoleArchitect)
+	r.mu.Lock()
+	woken := r.agents[token]
+	r.mu.Unlock()
+	if woken == nil {
+		r.fail("no process of %s is held by the driver", token)
+	}
+	woken.endTurn()
+	r.waitState(token, supervise.StateIdle)
+	var rows int
+	r.until("a linger_close row of "+r.r2+" carrying retrosEnded", retroWait, func() bool {
+		rows = r.retrosEndedRows(r.r2)
+		return rows > 0
+	})
+	var due time.Time
+	if err := r.st.Pool().QueryRow(context.Background(), `select next_at from outbox where issue = $1 and kind = 'linger_close'
+		and payload->>'retrosEnded' is not null order by next_at limit 1`, r.r2).Scan(&due); err != nil {
+		r.fail("read the due time of %s's linger_close row: %v", r.r2, err)
+	}
+	r.note("%s's architect %s ended its turn on the finding; read back: %d linger_close row(s) with retrosEnded queued, the first due %s (%s from now)",
+		r.r2, token, rows, due.UTC().Format(time.RFC3339), time.Until(due).Round(time.Second))
+	r.passHourAfterRetros(r.r2)
+	r.until(string(token)+" suspended once the hour after its tree's last retro came due", retroWait*3, func() bool {
+		return r.d.claim(token).State == string(supervise.StateSuspended)
+	})
+	held := r.d.claim(token)
+	woken.end()
+	r.note("read back: the daemon suspended %s (suspended by %s) once that row came due; %s stands %s", token, held.SuspendedBy, r.r2, r.d.state().Issues[r.r2].Phase)
+}
+
 // expired-root-closed: a third root R3 runs into implementing and a person moves it to triage; the
 // driver brings R3's linger end forward, so that T's and R2's lingers keep the default, and the
 // linger's end retires R3's claims. A person's done then gets one task to its retro agent,
 // relaunched in its kept session in a reopened lifecycle; the retro completes.
 func (r *retroLive) expiredRootClosed() {
 	r.parkedRootClosed(r.r3, "triage", true)
+}
+
+// past-linger-todo-reserves-cleanup (step 23): a fourth root R4, its architect live, gets a started
+// child, which a person closes and whose retro after the close is left open (leaveRetroOpen); a
+// person then closes R4 after its first phase, and R4's own retro completes, so the child's is the
+// last open retro after a close of R4's tree. The driver brings R4's linger end forward (endLinger,
+// as step 13 does R3's), which retires R4's claims but leaves the child's and reserves no cleanup
+// while that retro is open. A person labels the child and sets it back to todo: admission
+// re-admits it into a tree of its own, which ends R4's last open retro and queues the close owed
+// the hour after that end (a linger_close row of R4 carrying retrosEnded). The driver makes that
+// hour pass (passHourAfterRetros), and once the row comes due R4's tree cleanup is reserved
+// (tree_lifecycles.cleanup_started).
+func (r *retroLive) pastLingerTodoReservesCleanup() {
+	root := r.r4
+	r.waitIssue(root+" in planning", root, func(i api.Issue) bool { return i.Phase == phase.Planning })
+	architect := r.register(root, root, claim.RoleArchitect)
+	r.note("registered and readied %s's architect as session %s", root, architect.session)
+	c := r.leaveRetroOpen(root)
+	mark := r.markOf(root, claim.RoleImplementer)
+	r.person(root, "done", "", true)
+	r.note("a person closed %s after its first phase: an issue.updated envelope, status done", root)
+	agent, _ := r.retroTask(root, root, mark)
+	r.until("the architect of "+root+" suspended by the close", retroWait, func() bool {
+		held := r.d.claim(architect.token)
+		return held.State == string(supervise.StateSuspended) && held.SuspendedBy == string(supervise.SuspendedByDaemon)
+	})
+	architect.end()
+	r.completesRetro(root, agent, mark, 4)
+	token := architect.token
+	endLinger(r.t, r.st.Pool(), root, func(what string, cond func() bool) { r.until(what, retroWait, cond) })
+	r.until(root+"'s architect retired by its linger's end", retroWait*3, func() bool {
+		return r.d.claim(token).State == string(supervise.StateRetired)
+	})
+	time.Sleep(liveSettle)
+	started, epoch := r.treeCleanup(root)
+	if _, open := r.retrosAfterClose(c); open != 1 {
+		r.fail("%s holds %d open retros after a close after %s's linger end, want 1", c, open, root)
+	}
+	r.note("read back: %s's linger ended early with %s's retro after its close open: %s's architect retired; %s's lifecycle epoch %d, cleanup_started %v; %s's implementer stands %s",
+		root, c, root, root, epoch, started, c, r.d.claim(r.token(c, claim.RoleImplementer)).State)
+	r.person(c, "todo", root, true)
+	r.awaitRetroRow(c, 0, retroRowWant{result: "stopped"})
+	r.note("a person labelled %s and set it back to todo; read back: its retro row ended stopped; it stands %s in tree %s", c, r.d.state().Issues[c].Phase, r.d.state().Issues[c].Tree)
+	var rows int
+	r.until("a linger_close row of "+root+" carrying retrosEnded", retroWait, func() bool {
+		rows = r.retrosEndedRows(root)
+		return rows > 0
+	})
+	r.passHourAfterRetros(root)
+	r.note("read back: %d linger_close row(s) with retrosEnded of %s queued; the hour after the end made to pass and the row brought due", rows, root)
+	reserved := testwait.Holds(retroWait*3, retroPoll, func() bool { s, _ := r.treeCleanup(root); return s })
+	started, epoch = r.treeCleanup(root)
+	var closes int
+	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'linger_close'`, root).Scan(&closes); err != nil {
+		r.fail("read the linger_close rows of %s: %v", root, err)
+	}
+	r.note("read back: after the hour, %s's lifecycle epoch %d, cleanup_started %v; %d linger_close row(s) of %s left queued", root, epoch, started, closes, root)
+	if !reserved {
+		r.fail("%s's tree cleanup was not reserved after the close owed the hour after its last retro's end came due", root)
+	}
 }
 
 // parkedRootClosed is steps 12 and 13: root runs into implementing, a person parks it at status,
@@ -1700,15 +1927,15 @@ func (r *retroLive) requireNoRetro(issue string, mark taskMark, cause string) {
 }
 
 // requireR2 holds that task, the retro task after issue's close, says each clause of R2 and names
-// the root architect's role topic of tree; owning is the architect of the issue above, whose role
-// topic it must not name.
+// the root architect's role topic of tree; owning is each other architect whose role topic it must
+// not name: the architect of the issue above, or the issue's own.
 func (r *retroLive) requireR2(issue, tree, task string, owning ...*retroAgent) {
 	r.t.Helper()
 	topic := notify.RoleTopicPrefix + string(r.token(tree, claim.RoleArchitect))
 	r.requireTaskHolds(issue, task, "the test root's architect's role topic "+topic, topic, retroClosedClause, retroNowhereClause, retroSkillClause, retroFindingClause, retroPendingClause)
 	for _, architect := range owning {
 		if other := notify.RoleTopicPrefix + string(architect.token); strings.Contains(task, other) {
-			r.fail("%s's retro task names %s, the topic of the architect above it, want the test root's %s alone", issue, other, topic)
+			r.fail("%s's retro task names %s, the role topic of %s's architect, want the test root's %s alone", issue, other, architect.issue, topic)
 		}
 	}
 }
@@ -1865,6 +2092,50 @@ func (r *retroLive) lifecycleEpoch(root string) int64 {
 		r.fail("read the lifecycle of %s: %v", root, err)
 	}
 	return epoch
+}
+
+// treeCleanup is whether the cleanup of root's tree lifecycle is reserved (cleanup_started), and
+// the lifecycle's epoch, read through SQL.
+func (r *retroLive) treeCleanup(root string) (bool, int64) {
+	r.t.Helper()
+	var started bool
+	var epoch int64
+	if err := r.st.Pool().QueryRow(context.Background(), "select cleanup_started, epoch from tree_lifecycles where tree = $1", root).Scan(&started, &epoch); err != nil {
+		r.fail("read the lifecycle of %s: %v", root, err)
+	}
+	return started, epoch
+}
+
+// retrosEndedRows is how many of root's linger_close rows the outbox holds that name the end of
+// its tree's last retro after a close (the payload's retrosEnded): the stop or the close the hour
+// after that end owes, read through SQL.
+func (r *retroLive) retrosEndedRows(root string) int {
+	r.t.Helper()
+	var n int
+	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'linger_close'
+		and payload->>'retrosEnded' is not null`, root).Scan(&n); err != nil {
+		r.fail("read the linger_close rows of %s: %v", root, err)
+	}
+	return n
+}
+
+// passHourAfterRetros makes the hour after the end of the last retro after a close of root's tree
+// pass, as the record and the queued rows read it, through SQL: the ends of the tree's retros
+// (run_retros.ended_at) and the retrosEnded of root's linger_close rows that name one move 61
+// minutes back together, and those rows come due now. Bringing a row due alone would not do: its
+// fact waits until its retrosEnded plus the hour. The outbox can take a few sweeps to run the row,
+// so a step waits up to retroWait*3 for what the row does.
+func (r *retroLive) passHourAfterRetros(root string) {
+	r.t.Helper()
+	ctx := context.Background()
+	if _, err := r.st.Pool().Exec(ctx, `update run_retros set ended_at = ended_at - interval '61 minutes' where tree = $1 and ended_at is not null`, root); err != nil {
+		r.fail("move the retro ends of %s's tree back an hour: %v", root, err)
+	}
+	if _, err := r.st.Pool().Exec(ctx, `update outbox set next_at = now(), payload = jsonb_set(payload, '{retrosEnded}',
+		to_jsonb(to_char(((payload->>'retrosEnded')::timestamptz - interval '61 minutes') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
+		where issue = $1 and kind = 'linger_close' and payload->>'retrosEnded' is not null`, root); err != nil {
+		r.fail("bring the linger_close rows of %s due: %v", root, err)
+	}
 }
 
 // queuedRetroStarts is how many supervise start rows of issue's retro phase the outbox still

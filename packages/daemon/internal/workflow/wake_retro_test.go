@@ -20,7 +20,9 @@ import (
 // marked as that wake (record.SuperviseRequest.RetroWake), of the wake's kind, naming no phase and
 // no run, whose task names the topic the message was published to. Once no retro of the tree is
 // open the same message wakes nothing, as before (s19: TestAWakeDoesNothingOnceTheDaemonTookTheClaimOver
-// and TestAWakeDoesNothingOnceTheIssueHasLeftTheWorkflow).
+// and TestAWakeDoesNothingOnceTheIssueHasLeftTheWorkflow). A root a person moved to backlog, which
+// leaves the workflow and lingers as a close does but does not close, is woken the same way, and
+// the wake's task does not say that its tree closed.
 func TestAMessageToTheRootArchitectOfAClosedTreeWakesItWhileARetroIsOpen(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -28,9 +30,13 @@ func TestAMessageToTheRootArchitectOfAClosedTreeWakesItWhileARetroIsOpen(t *test
 		// started runs the child into implementing before its close, so the close owes its retro;
 		// a child closed before its first phase owes none, and its tree has no retro open.
 		started bool
+		// rootTo is the status a person moves the root to once the child closed: done, which closes
+		// the tree, or backlog, which stops it with no close.
+		rootTo string
 	}{
-		{name: "a retro after a close of the tree is open", started: true},
-		{name: "no retro of the tree is open"},
+		{name: "a retro after a close of the tree is open", started: true, rootTo: "done"},
+		{name: "no retro of the tree is open", rootTo: "done"},
+		{name: "a retro after a close of the tree is open, the root moved to backlog and not closed", started: true, rootTo: "backlog"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -42,7 +48,7 @@ func TestAMessageToTheRootArchitectOfAClosedTreeWakesItWhileARetroIsOpen(t *test
 				r.runTo(t, "LEGION-209", phase.Implementing)
 			}
 			r.person(t, "LEGION-209", "done")
-			r.person(t, "LEGION-208", "done")
+			r.person(t, "LEGION-208", tc.rootTo)
 			lingering(t, r.pool, "LEGION-208")
 			seedRunClaim(t, r.pool, "LEGION-208", claim.RoleArchitect, 1, "suspended", "daemon", "session-architect")
 
@@ -69,6 +75,9 @@ func TestAMessageToTheRootArchitectOfAClosedTreeWakesItWhileARetroIsOpen(t *test
 				wake.Generation != 1 || !strings.Contains(wake.Task, token) {
 				t.Fatalf("the wake of the root architect = %+v, want its architect's start marked as a wake for an open retro, of kind %s, no phase and no run, its task naming %s",
 					wake, pods.WakeRoleMessage, token)
+			}
+			if tc.rootTo != "done" && strings.Contains(wake.Task, "tree closed") {
+				t.Fatalf("the wake's task of the root architect, its root moved to %s and not closed, says its tree closed: %s", tc.rootTo, wake.Task)
 			}
 		})
 	}

@@ -1124,7 +1124,7 @@ func TestARetroWakeOfTheRootArchitectOfALingeringTreeIsSentNotHeld(t *testing.T)
 	}
 	fakeConn := conn.(*fake.Conn)
 
-	wakeTask := "Your tree closed, and the daemon stopped your session with it. A retro Legion runs after the close of an issue of your tree is open."
+	wakeTask := "Your tree left the workflow, and the daemon stopped your session with it. A retro Legion runs after the close of an issue of your tree is open."
 	row := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect,
 		Generation: root.Generation, WakeKind: pods.WakeRoleMessage, RetroWake: true, Task: wakeTask}, time.Now())
 	row.ID = 79
@@ -1170,7 +1170,7 @@ func TestARetroWakeOfTheRootArchitectOfALingeringTreeIsSentNotHeld(t *testing.T)
 
 // retroWakeTask is a task the wake of a root architect for a retro's finding carries in these
 // tests (workflow's retroArchitectWakeTask writes the daemon's own).
-const retroWakeTask = "Your tree closed, and the daemon stopped your session with it. Somebody published a message to your role topic."
+const retroWakeTask = "Your tree left the workflow, and the daemon stopped your session with it. Somebody published a message to your role topic."
 
 // retroWakeRow is the start of the wake of root's architect for a retro's finding, row id: the
 // architect's start of the role message's kind at the root's generation, marked as a retro's wake
