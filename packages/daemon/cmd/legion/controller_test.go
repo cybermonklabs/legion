@@ -537,7 +537,7 @@ func (c *operatorMachine) installPluginAt(root string, contract int) string {
 func (c *operatorMachine) write(name, contents string, mode os.FileMode) {
 	c.t.Helper()
 	path := filepath.Join(c.dir, name)
-	if err := os.WriteFile(path, []byte(contents), mode); err != nil {
+	if err := execfile.Write(path, []byte(contents), mode); err != nil {
 		c.t.Fatalf("write %s: %v", path, err)
 	}
 	if err := os.Chmod(path, mode); err != nil {

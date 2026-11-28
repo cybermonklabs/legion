@@ -1443,7 +1443,7 @@ func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 			config, marker := workflowConfig(t, 13370, tc.key+": ./secret\n")
 			path := filepath.Join(filepath.Dir(config), "secret")
 			if tc.mode != 0 {
-				if err := os.WriteFile(path, []byte(tc.contents), tc.mode); err != nil {
+				if err := execfile.Write(path, []byte(tc.contents), tc.mode); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.Chmod(path, tc.mode); err != nil {
@@ -1507,7 +1507,7 @@ func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 			config, marker := workflowConfig(t, 13370, "nats_daemon_nkey_seed_file: ./nats-daemon-seed\n")
 			path := filepath.Join(filepath.Dir(config), "nats-daemon-seed")
 			if tc.mode != 0 {
-				if err := os.WriteFile(path, []byte(tc.contents), tc.mode); err != nil {
+				if err := execfile.Write(path, []byte(tc.contents), tc.mode); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.Chmod(path, tc.mode); err != nil {
