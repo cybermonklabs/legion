@@ -249,8 +249,10 @@ type StalePlugin struct {
 	// credit back unless the machine takes it as its own (Machine.Handle, settleUntakenCredit,
 	// refreshPlugin): a row that ignores the post, a settle or fence that returns first, and a
 	// post over a credit already held all give it back as that decision ends. A credit the
-	// machine takes goes back at the end of the decision that ends with no refresh wake of this
-	// claim's waiting (endRefreshLane), and so at once where its decision raises none.
+	// machine takes goes back at the end of the first decision that ends with no launch of the
+	// relaunch it raised still owed on this claim — no wake of the lane's kind, in the pacing or
+	// held by a gate, and no retry of that launch (laneLaunchOwed, endRefreshLane) — and so at
+	// once where its decision raises none.
 	Credit *RefreshCredit
 }
 

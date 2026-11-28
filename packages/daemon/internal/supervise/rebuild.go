@@ -307,7 +307,7 @@ func (m *Machine) rebuild(ctx context.Context, row Claim) {
 		}
 	}
 	if (row.Locator == nil && slices.Contains(live, row.State)) || row.ReleasedLaunch() {
-		m.relaunchLater(m.deps.Timeouts.Probe, m.launchFromTop(launchTry{}))
+		m.relaunchLater(m.deps.Timeouts.Probe, WakeLaunch, m.launchFromTop(launchTry{}))
 		m.publish()
 	}
 }

@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -101,6 +100,25 @@ func TestARefusedClaimWriteIsToldOnce(t *testing.T) {
 			ctx := context.Background()
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
+			// A controller notice is published only to a registered controller session that holds
+			// the controller's role live (the outbox's controllerHolds), as in
+			// TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController.
+			st, err := store.Open(ctx, pool.Config().ConnString())
+			if err != nil {
+				t.Fatalf("open the store: %v", err)
+			}
+			defer st.Close()
+			token, err := claim.ProjectToken("LEGION")
+			if err != nil {
+				t.Fatal(err)
+			}
+			generation, err := st.MintController(ctx, token, []byte("capability"))
+			if err != nil {
+				t.Fatalf("mint the controller capability: %v", err)
+			}
+			if ok, err := st.RegisterController(ctx, token, generation, "ses-controller", []byte("secret"), time.Now(), 0); err != nil || !ok {
+				t.Fatalf("register the controller = %t, %v", ok, err)
+			}
 			log := quietLogger()
 			architects := 0
 			if tc.architect != "" {
@@ -116,7 +134,7 @@ func TestARefusedClaimWriteIsToldOnce(t *testing.T) {
 				}
 			}
 
-			var err error = &pgconn.PgError{Code: tc.sqlstate, ConstraintName: tc.constraint, Severity: "ERROR",
+			err = &pgconn.PgError{Code: tc.sqlstate, ConstraintName: tc.constraint, Severity: "ERROR",
 				Message: `new row for relation "claims" violates check constraint "` + tc.constraint + `"`}
 			if tc.sqlstate == "" {
 				err = &supervise.RowRefusedError{Rule: tc.constraint, Err: errors.New("launch_failures 2147483648 does not fit an integer column")}
@@ -148,6 +166,7 @@ func TestARefusedClaimWriteIsToldOnce(t *testing.T) {
 				architectClaim(t, sup, tc.issue, supervise.StateWorking)
 			}
 			publisher := &holderPublisher{}
+			publisher.holds(legionController, "ses-controller")
 			runner := &outbox{log: log, pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
 			if err := runner.RunOnce(ctx); err != nil {
 				t.Fatalf("run the notices: %v", err)
@@ -157,7 +176,7 @@ func TestARefusedClaimWriteIsToldOnce(t *testing.T) {
 			for _, published := range delivered {
 				byTopic[published.topic] = published
 			}
-			controller := notify.ControllerTopic("legion")
+			controller := controllerRoleTopic
 			topics := []string{controller}
 			if tc.architect != "" {
 				topics = append(topics, architectTopic(t, tc.architect))
