@@ -136,7 +136,8 @@ func issuePrefix(issue string) string { return "issue." + issue + "." }
 func rolePrefix(token string) string { return "role." + token + "." }
 
 // Get answers the session's entry with its replacement within its role token: the session key,
-// then the role token's listing. A session the bucket holds no key for is ErrNotFound.
+// then the role token's listing. A session the bucket holds no key for is ErrNotFound, and a
+// record either read finds that does not decode is ErrMalformedRecord (read, list).
 //
 // The session key is claimed before the index keys are written, so a write that ended between them
 // leaves the role token listing the session's older entry, or not listing it yet. The listing's
@@ -166,7 +167,8 @@ func (s *Store) Get(ctx context.Context, sessionID string) (Agent, error) {
 }
 
 // ByRoleToken answers every session of the role token, newest first, each with its replacement:
-// the first is the role's current holder. A token no session holds answers none.
+// the first is the role's current holder. A token no session holds answers none, and a key of the
+// token's that does not decode fails the read with ErrMalformedRecord (list).
 func (s *Store) ByRoleToken(ctx context.Context, token string) ([]Agent, error) {
 	if err := ValidateRoleToken(token); err != nil {
 		return nil, err
@@ -179,7 +181,8 @@ func (s *Store) ByRoleToken(ctx context.Context, token string) ([]Agent, error) 
 }
 
 // ByIssue answers every session of the issue, by role in workflow order (Roles), then newest
-// first, each with its replacement within its role token. An issue no session worked answers none.
+// first, each with its replacement within its role token. An issue no session worked answers none,
+// and a key of the issue's that does not decode fails the read with ErrMalformedRecord (list).
 func (s *Store) ByIssue(ctx context.Context, issue string) ([]Agent, error) {
 	if err := ValidateIssue(issue); err != nil {
 		return nil, err
@@ -191,7 +194,8 @@ func (s *Store) ByIssue(ctx context.Context, issue string) ([]Agent, error) {
 	return issueOrder(entries), nil
 }
 
-// read reads the session key and the revision it is at, ErrNotFound when the bucket holds none.
+// read reads the session key and the revision it is at, ErrNotFound when the bucket holds none and
+// ErrMalformedRecord, naming the session, when what it holds does not decode.
 func (s *Store) read(ctx context.Context, sessionID string) (Entry, uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return Entry{}, 0, err
@@ -205,7 +209,7 @@ func (s *Store) read(ctx context.Context, sessionID string) (Entry, uint64, erro
 	}
 	var entry Entry
 	if err := json.Unmarshal(found.Value(), &entry); err != nil {
-		return Entry{}, 0, fmt.Errorf("decode legion agent %s: %w", sessionID, err)
+		return Entry{}, 0, fmt.Errorf("%w: legion agent %s: %w", ErrMalformedRecord, sessionID, err)
 	}
 	return entry, found.Revision(), nil
 }
@@ -220,7 +224,8 @@ func (s *Store) read(ctx context.Context, sessionID string) (Entry, uint64, erro
 // which names what prefix names (of: the issue or the role token). The write stores each entry
 // under exactly those keys (putIndexKeys), but any writer of the bucket can store any entry under
 // any key, so an entry naming another issue, role token or session than its key is passed over and
-// logged, as no entry of the listing.
+// logged, as no entry of the listing. A key holding what does not decode as an entry at all fails
+// the listing with ErrMalformedRecord naming the key.
 func (s *Store) list(ctx context.Context, prefix string, of func(Entry) bool) ([]Entry, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -229,7 +234,7 @@ func (s *Store) list(ctx context.Context, prefix string, of func(Entry) bool) ([
 	_, err := kvwatch.ScanExistingKeys(ctx, s.bucket(), prefix+"*", "list legion agents under "+prefix, ReadTimeout, s.log, func(found kvwatch.Entry) error {
 		var entry Entry
 		if err := json.Unmarshal(found.Value, &entry); err != nil {
-			return fmt.Errorf("decode legion agent key %s: %w", found.Key, err)
+			return fmt.Errorf("%w: key %s: %w", ErrMalformedRecord, found.Key, err)
 		}
 		if found.Key != prefix+entry.SessionID || !of(entry) {
 			s.log.Warn("legion agent registry passed over an entry that names another key than the one it is stored under",
@@ -251,7 +256,8 @@ func (s *Store) list(ctx context.Context, prefix string, of func(Entry) bool) ([
 // the write, which the caller retries.
 const claimAttempts = 3
 
-// Put records one entry and answers it as stored (prepare, then write).
+// Put records one entry and answers it as stored (prepare, then write). A session whose stored
+// entry does not decode is ErrMalformedRecord, with nothing written: prepare reads it first.
 func (s *Store) Put(ctx context.Context, entry Entry) (Entry, error) {
 	if err := Validate(entry); err != nil {
 		return Entry{}, err
@@ -266,10 +272,12 @@ func (s *Store) Put(ctx context.Context, entry Entry) (Entry, error) {
 // PutAll records entries in order and answers them as stored. Every entry is validated, then every
 // session's stored entry read and checked, before the first write, so a bad entry (a *BatchError
 // naming its index, wrapping ErrInvalid or a *ConflictError) refuses the whole batch with nothing
-// written. Any failure after that, a read or a write the bucket did not answer, or a session
-// another write claimed in the meantime, is a *PartialWriteError naming how many entries were
-// written whole, 0 when it came before the first write, and wrapping the failed entry's
-// *BatchError. Every write is idempotent, so the caller sends the batch again.
+// written. Any failure after that, a read or a write the bucket did not answer, a stored entry
+// that does not decode (ErrMalformedRecord), or a session another write claimed in the meantime,
+// is a *PartialWriteError naming how many entries were written whole, 0 when it came before the
+// first write, and wrapping the failed entry's *BatchError. Every write is idempotent, so the
+// caller sends the batch again; a batch that met a stored entry that does not decode meets it
+// again.
 func (s *Store) PutAll(ctx context.Context, entries []Entry) ([]Entry, error) {
 	if len(entries) > MaxBatch {
 		return nil, fmt.Errorf("%w: this batch holds %d", ErrTooMany, len(entries))

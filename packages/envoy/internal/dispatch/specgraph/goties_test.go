@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // listenerReads is what the repository records that the test of checkStateCheck, in package
@@ -160,7 +162,7 @@ func TestScriptTestReadsReadsTheScript(t *testing.T) {
 			if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(script, []byte("#!/bin/sh\n"+row.script+"\n"), 0o755); err != nil {
+			if err := testexec.WriteFile(script, []byte("#!/bin/sh\n"+row.script+"\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			got, err := ScriptTestReads(root, nil)(".", []string{"example.com/citations/a"}, []string{"GOWORK=off"})
