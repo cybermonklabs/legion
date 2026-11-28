@@ -356,7 +356,8 @@ func (secrets dispatchMountedSecrets) byVolume(volume string) (dispatchMountedSe
 // the one list of them: newDispatchKubernetes registers a class for each secret it lists and none
 // for any other, a pod mounts a secret's volume exactly while it lists that secret (byVolume),
 // and lookupDispatchCluster refuses a cluster with the add-on off exactly while it lists one,
-// naming them.
+// naming the NATS seed without natsAudience, as the refusal always did, whatever else it lists,
+// and with natsAudience each input it lists, in its order.
 func (s dispatchSettings) mountedSecrets() dispatchMountedSecrets {
 	var mounted dispatchMountedSecrets
 	if s.natsAudience == "" {

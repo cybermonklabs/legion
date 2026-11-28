@@ -271,12 +271,13 @@ const advancedDatapath = "ADVANCED_DATAPATH"
 // certificate, which the component's Kubernetes provider reaches and trusts it by; one with no
 // Workload Identity pool, where the pods' principal lives, and without natsAudience the NATS seed's
 // grant to it too; one with the Secret Manager add-on off while a pod mounts a Secret Manager
-// secret through the add-on's CSI driver, which is while mountedSecrets lists one, naming what it
-// lists; and one that enforces no NetworkPolicy (neither Dataplane V2 nor network policy on),
-// since the component's NetworkPolicies are its only fence. NewDispatch calls it after the
-// providers checks and before it registers anything, so a refused cluster leaves nothing
-// registered. Whether the cluster runs on the component's network can be judged only once that
-// network's name resolves, so newDispatchExistingCluster judges it.
+// secret through the add-on's CSI driver, which is exactly while mountedSecrets lists one, naming
+// the NATS seed without natsAudience, as it always did, whatever else the list holds, and with
+// natsAudience each input the list holds, in its order; and one that enforces no NetworkPolicy
+// (neither Dataplane V2 nor network policy on), since the component's NetworkPolicies are its only
+// fence. NewDispatch calls it after the providers checks and before it registers anything, so a
+// refused cluster leaves nothing registered. Whether the cluster runs on the component's network
+// can be judged only once that network's name resolves, so newDispatchExistingCluster judges it.
 func lookupDispatchCluster(ctx *pulumi.Context, s dispatchSettings, gcpProvider pulumi.ProviderResource) (*dispatchLookedUpCluster, error) {
 	existing := s.existingCluster
 	cluster, err := container.LookupCluster(ctx, &container.LookupClusterArgs{Name: existing.Name, Location: pulumi.StringRef(existing.Location)}, pulumi.Provider(gcpProvider))
@@ -288,11 +289,11 @@ func lookupDispatchCluster(ctx *pulumi.Context, s dispatchSettings, gcpProvider 
 	}
 	// What the pool holds and what the add-on mounts, in the refusals' words. The add-on's CSI
 	// driver mounts each secret mountedSecrets lists, the list newDispatchKubernetes registers a
-	// SecretProviderClass for each of, so the add-on is needed exactly while it lists one, and the
-	// refusal names what it lists: the NATS seed without natsAudience, as it always did, and with
-	// natsAudience each input it lists, in its order. No SecretProviderClass syncs a Kubernetes
-	// Secret: the GitHub App's key is a Secret GKE's Secret Sync makes, a feature of its own, which
-	// the lookup does not judge.
+	// SecretProviderClass for each of, so the add-on is needed, and the refusal applies, exactly
+	// while it lists one. Without natsAudience the refusal names the NATS seed, as it always did,
+	// whatever else the list holds; with natsAudience it names each input the list holds, in its
+	// order. No SecretProviderClass syncs a Kubernetes Secret: the GitHub App's key is a Secret
+	// GKE's Secret Sync makes, a feature of its own, which the lookup does not judge.
 	secrets := s.mountedSecrets()
 	pool := "the pods' principal, and the NATS seed's grant to it, live in that pool"
 	mounted := "every pod mounts the NATS seed through it"

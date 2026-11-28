@@ -89,9 +89,12 @@ func clusteredHubListenerArgs(args *ClusteredNatsHubArgs) (*ClusteredHubListener
 // present to it, which would make a token minted for the one spendable at the other, or to
 // oidcIssuer, whose URL the cluster's API server takes as an audience on GKE, which would make the
 // NATS token spendable there and a token minted for the API server a bearer the auth service
-// admits. Its machine id is then held to natsgrant.ServiceMachineID, the rule the auth service
-// reads a BROKER_NATS_SERVICES entry's machine id by, naming <path>.machineId: a dotted id, which
-// core refuses in the seeded mode because it names the listener's user, names no user here and is
+// admits. Its machine id is then held, naming <path>.machineId, to the part of the rule the auth
+// service reads a BROKER_NATS_SERVICES entry's machine id by that core.CheckMachineID, which holds
+// it in either mode, does not already hold: natsgrant.ServiceMachineID, the part the entry's form
+// makes, an id natsgrant.MachineIDToken takes that holds neither '/' nor '=' and is not '-'.
+// core.CheckMachineID holds the other part, bus.CheckListenerMachineID. A dotted id, which core
+// refuses in the seeded mode because it names the listener's user, names no user here and is
 // taken, and an id holding '/' or '=', or the id '-', which core takes, is refused, since no entry
 // can name it. A seed in natsAudience is clusteredHubSeededInput's to refuse, before any of these.
 func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string, s clusteredHubSettings) (*clusteredHubListener, *listenerUser, error) {
