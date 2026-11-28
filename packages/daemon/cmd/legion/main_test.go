@@ -78,11 +78,11 @@ const testJJWordBoundEnv = "LEGION_TEST_JJ_WORD_BOUND"
 const testJJArgMaxEnv = "LEGION_TEST_JJ_ARG_MAX"
 
 func TestMain(m *testing.M) {
-	// An operator's NATS nkey seed, or either seed's _FILE pointer, reaches no test here and no
-	// run of this binary as `legion`: a test that means to hand one over sets it itself. They are
-	// cleared before anything else, so the snapshot below records NATS_NKEY_SEED_FILE as absent
-	// (environment_test.go).
-	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE"} {
+	// An operator's NATS nkey seed, either seed's _FILE pointer, or the daemon's service token's
+	// file (NATS_DAEMON_SERVICE_TOKEN_FILE) reaches no test here and no run of this binary as
+	// `legion`: a test that means to hand one over sets it itself. They are cleared before anything
+	// else, so the snapshot below records NATS_NKEY_SEED_FILE as absent (environment_test.go).
+	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE", "NATS_DAEMON_SERVICE_TOKEN_FILE"} {
 		os.Unsetenv(name)
 	}
 	// No guard of this binary reads through the system's curl (leakguardtest.NoCurl); a run as
@@ -1528,6 +1528,76 @@ func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 					t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 				}
 			} else if want := "legion config check: " + tc.refusal(path); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("the private_key_command ran (marker stat: %v)", err)
+			}
+		})
+	}
+}
+
+// `legion config check` reads the daemon's own service token as boot does: with
+// nats_daemon_service_token_file, or NATS_DAEMON_SERVICE_TOKEN_FILE in its place, its OK line names
+// the account the token names (`nats-daemon-service-account=`), beside the pane seed's user, which
+// the pane seed's settings still give beside the token; with nats_daemon_nkey_seed_file beside the
+// key, it refuses naming both settings, in boot's words, whatever either file holds. The token,
+// written as the kubelet writes a projected token (whole, by a rename), is never printed, nor any
+// seed.
+func TestConfigCheckNamesTheAccountOfTheDaemonsServiceToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState, workflowConfig, t.Setenv).
+	legionState(t)
+	paneSeed, paneUser := testnkeys.User(t)
+	daemonSeed := testnkeys.UserSeed(t)
+	const account = "system:serviceaccount:legion-example:legion-daemon"
+	token := testnkeys.ServiceToken(account, time.Now().Add(time.Hour))
+	for _, tc := range []struct {
+		name string
+		// extra is the legion.yaml lines beside workflowConfig's; variable, whether
+		// NATS_DAEMON_SERVICE_TOKEN_FILE names the token's file; refusal, what the check writes to
+		// stderr after its name, "" for the OK line.
+		extra    string
+		variable bool
+		refusal  string
+	}{
+		{name: "the key", extra: "nats_daemon_service_token_file: ./nats-token\n"},
+		{name: "the variable", variable: true},
+		{name: "the key beside nats_daemon_nkey_seed_file",
+			extra:   "nats_daemon_service_token_file: ./nats-token\nnats_daemon_nkey_seed_file: ./nats-daemon-seed\n",
+			refusal: "nats_daemon_service_token_file and nats_daemon_nkey_seed_file are both set; the daemon's own NATS connection presents one credential, so set one\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, marker := workflowConfig(t, 13370, tc.extra)
+			dir := filepath.Dir(config)
+			tokenPath := filepath.Join(dir, "nats-token")
+			if err := os.WriteFile(tokenPath+".next", []byte(token+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(tokenPath+".next", tokenPath); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "nats-daemon-seed"), []byte(daemonSeed+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("NATS_NKEY_SEED", paneSeed)
+			if tc.variable {
+				t.Setenv("NATS_DAEMON_SERVICE_TOKEN_FILE", tokenPath)
+			}
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+			printed := out.String() + errb.String()
+			for name, credential := range map[string]string{"the service token": token, "the pane seed": paneSeed, "the daemon seed": daemonSeed} {
+				if strings.Contains(printed, credential) {
+					t.Fatalf("the check printed %s: stdout %q stderr %q", name, out.String(), errb.String())
+				}
+			}
+			if tc.refusal == "" {
+				if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-service-account=" + account + "\n" + demoProjectLines + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
+					t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+				}
+			} else if want := "legion config check: " + tc.refusal; code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
 			}
 			if _, err := os.Stat(marker); !os.IsNotExist(err) {

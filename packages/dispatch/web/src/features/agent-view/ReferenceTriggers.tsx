@@ -5,6 +5,7 @@ import {
   type Unstable_TriggerMatcher,
   unstable_useTriggerPopoverScopeContext,
 } from "@assistant-ui/react";
+import { dispatchWritingBox } from "@legion/contracts";
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -59,6 +60,10 @@ import { type RefPicker, useRefPicker } from "../refs/useRefPicker";
 /** What the composer's input hands the reference doors before assistant-ui reads the key: the
  *  doors stop the one key they serve themselves, and leave every other to the composer. */
 export type ReferenceKeys = (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+
+/** This box's row of the writing list: one box, one write - a message to this session. The
+ *  picker reads from it whether a picked party is told (`delivers`). */
+const WRITING = dispatchWritingBox("agent-live-composer", "agent-message");
 
 /** The characters that open each door, as the picker reads them. */
 function doorChars(door: RefPickerDoor): string {
@@ -241,6 +246,7 @@ export function ReferenceTriggers({ keys }: { keys: RefObject<ReferenceKeys | nu
   const text = opened === undefined ? "" : `${doorChars(opened.door)}${opened.query}`;
   const picker = useRefPicker({
     caret: text.length,
+    delivers: WRITING.delivers,
     enabled: opened !== undefined,
     text,
   });

@@ -1108,8 +1108,10 @@ func (e *Engine) pastCompletion(ctx context.Context, tx pgx.Tx, issue record.Iss
 // names (returnStep). It is judged against the place of the step that reports: where the task
 // stands for a current completion, and the place of the role's own step for a role that has left
 // it (Walk.placeOfRole), so of two steps that run as step, the reporting role's own. It is judged
-// before anything is written, so a refusal records nothing, its handoff record among it, and the
-// agent reports again.
+// before anything is written, so a refusal moves nothing and leaves the handoff record the report
+// names unused (record.PhaseRow.LastHandoff), and the agent reports again naming it. The workflow
+// keeps the refusal under the report's key (intake.ApplyFact): the same report again is answered
+// HANDOFF_ALREADY_RECORDED, and a report naming another step or none is a new key.
 func (e *Engine) returnToOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, current bool) (record.TaskPlace, *intake.Refusal, error) {
 	if fact.ReturnTo <= 0 {
 		return record.TaskPlace{}, nil, nil
@@ -1200,7 +1202,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		}
 	}
 	// A worker still in its turn when its tree's root closed can yet complete; linger holds the
-	// member where it stood (record.TreeLingers), so the completion records nothing.
+	// member where it stood (record.TreeLingers), so the completion moves nothing.
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
 		return intake.Result{}, err
@@ -1242,8 +1244,8 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	}
 	// A completion of the phase the issue stands in that is at the head a merge forward replaced
 	// reports code the pull request no longer stands on, and one that names no head once such a
-	// merge landed says nothing about which head it judged: each is refused before anything of it
-	// is recorded (mergedForwardRefusal). A completion of a phase the issue has left is not
+	// merge landed says nothing about which head it judged: each is refused and moves nothing
+	// (mergedForwardRefusal). A completion of a phase the issue has left is not
 	// fenced: it moves nothing, and its handoff is the report of the work the role did before the
 	// move, which the next phase reads (leftItsPhase) and no later completion can make again,
 	// since the review a landed merge forward asks of the reviewer is made with none
@@ -3204,8 +3206,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// closeMergedTelling's rather than a second transition's because a merged issue's close waits
 	// for the issues beneath it still in the workflow (for a root, the rest of its tree), and an
 	// issue that arrives there and waits must be told why: the notice its architect got at the
-	// merge could not say it, since the issue was elsewhere then.
-	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
+	// merge could not say it, since the issue was elsewhere then. The move reads that fact by the
+	// one statement of merging's rule (record.MergedInMerging), at the phase it enters.
+	mergedAlready := record.MergedInMerging(pr, row.To)
 	// A merge GitHub has already made is one of two moves that start a step no phase worker's
 	// start begins: no merger runs it, so it starts here under the agent its step names
 	// (startStandingStep), and its close ends it. Every other move starts what a move into its

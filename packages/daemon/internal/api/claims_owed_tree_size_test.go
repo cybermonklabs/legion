@@ -92,9 +92,11 @@ func seedOwedChain(t *testing.T, h *harness, first, size int) owedChain {
 		var parent *string
 		for n := first; n < first+size; n++ {
 			key := fmt.Sprintf("LEGION-%d", n)
+			// Generation 1, the run admission starts an issue on: a claim serves a run of its
+			// issue, and one of generation 0, which no run has, owes nothing (record.PhaseOwed).
 			if err := records.PutIssue(ctx, tx, record.Issue{
 				Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: key, Parent: parent,
-				Phase: phase.Planning, Status: "in_progress",
+				Phase: phase.Planning, Status: "in_progress", Generation: 1,
 			}); err != nil {
 				return err
 			}

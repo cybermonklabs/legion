@@ -4,8 +4,10 @@ import {
   assistantText,
   isInbound,
   LAST_MESSAGE_LIMIT,
+  owedReminder,
   phaseStallEntryFrom,
   recordedPhaseStall,
+  reminderText,
   stepPhaseStall,
   turnEndOf,
 } from "./phase-stall";
@@ -234,4 +236,62 @@ test("a settle in a quiet wait earns none, and the wait ends on a reminder", () 
   expect(stepPhaseStall({ state: "waiting", count: 2 }, { kind: "reminded" })).toEqual({
     state: { state: "active", count: 3 },
   });
+});
+
+// dispatch://INFRA-2746 R4: the reminder goes only to a role the daemon answers owes work, the
+// work of a phase or of a production check, so every sentence of it holds for both. A role whose
+// completion or report the daemon refuses as not current, or of a check or look that has ended, is
+// told to do nothing more for that work, since the daemon sends any next task itself. A
+// HANDOFF_ALREADY_RECORDED answer while the reminder still comes means the daemon keeps the
+// refusal of an earlier completion under that key and took none, so that sentence names none of
+// the others and tells the role to read its record and that refusal, write a new version of its
+// handoff and complete naming it, or tell its architect if its phase writes no handoff. The
+// opening and the last sentence are the live proofs' needles: scripts/e2e/lib/claude-transcript.sh
+// reads the last, and the real Oh My Pi's case
+// (packages/pi-legion/extensions/legion-phase-stall-omp.test.ts) reads the opening. The WAITING
+// sentence is dispatch://INFRA-2040's to change.
+test("the reminder text says what to do when handoff_complete is refused HANDOFF_NOT_CURRENT_PHASE", () => {
+  const waiting =
+    "If you are waiting on something (CI, a review, a person), reply with a line starting " +
+    "WAITING that names what you are waiting on: that buys a quiet wait, and then this " +
+    "reminder comes again.";
+  for (const work of ["the testing phase of LEGION-208", "the production check of LEGION-208"]) {
+    const reminder = owedReminder(work);
+    const sentences = reminder.split(/(?<=\.) /);
+    expect(reminder.startsWith(`Your turn ended with ${work} still owed`)).toBe(true);
+    expect(reminder).toContain(waiting);
+    expect(reminder).toContain("This reminder repeats at the end of every turn");
+
+    const nothingMore = sentences.filter((sentence) =>
+      sentence.includes("do nothing more for that work")
+    );
+    expect(nothingMore).toHaveLength(1);
+    for (const code of ["HANDOFF_NOT_CURRENT_PHASE", "CHECK_NOT_OPEN", "CHECK_LOOK_NOT_OPEN"]) {
+      expect(nothingMore[0]).toContain(`\`${code}\``);
+    }
+    expect(nothingMore[0]).not.toContain("HANDOFF_ALREADY_RECORDED");
+
+    const alreadyRecorded = sentences.filter((sentence) =>
+      sentence.includes("`HANDOFF_ALREADY_RECORDED`")
+    );
+    expect(alreadyRecorded).toHaveLength(1);
+    for (const step of [
+      "read your record with the `legion` tool's `read_record`",
+      "the refusal your first completion got",
+      "write a new version of your handoff and complete naming it",
+      "if your phase writes no handoff, tell your architect",
+    ]) {
+      expect(alreadyRecorded[0]).toContain(step);
+    }
+
+    // A settling message that holds a tool call written as text leads with the sentence that
+    // says so, and then carries the same reminder.
+    const textCall =
+      'court\n<invoke name="legion">\n<parameter name="op">handoff_complete</parameter>\n</invoke>';
+    expect(reminderText(textCall, work)).toBe(
+      "Your last message holds a tool call written as text, so it did not run: make it a real " +
+        `tool call. ${reminder}`
+    );
+    expect(reminderText("Pushed the change.", work)).toBe(reminder);
+  }
 });

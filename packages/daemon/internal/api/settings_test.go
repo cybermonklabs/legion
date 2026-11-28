@@ -231,6 +231,7 @@ var settingsExcluded = map[string]string{
 	"Config.EnvoyTokenFile":              "the path of a file holding a credential",
 	"Config.NatsNkeySeedFile":            "the path of a file holding a credential",
 	"Config.NatsDaemonNkeySeedFile":      "the path of a file holding a credential",
+	"Config.NatsDaemonServiceTokenFile":  "the path of a file holding a credential",
 	"Config.DispatchTokenFile":           "the path of a file holding a credential",
 	"Config.DispatchTokenTransitionFile": "the path of a file holding a credential: the shared Dispatch token a launch into a pod built before dispatch_token_broker gets",
 	"AgentSecretsConfig.TokenFile":       "the path of a file holding a credential: the daemon's own broker login token",

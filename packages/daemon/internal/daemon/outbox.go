@@ -4573,19 +4573,22 @@ func (r *outbox) issueSandboxName(issue string) string {
 // A cancel while the project is paused queues no resume: the store records each role the release
 // had stopped as stopped by the pause, holds the pod, and arms the open phase's worker's backstop
 // as the stop transaction arms one (decision 12 of dispatch://INFRA-3759). The backstop is the
-// idle release's own (outbox.backstop), and the open phase's worker is the workflow's rule
-// (workflow.OpenRoleAt), over the phase and the role of the running step the store reads. A wake
-// that a role took after the release recorded it is then left as the launch the pause owes that
-// role, and the pause's resume runs its start. The task of that start becomes the task of a wake
-// of a role the pause stopped (workflow.PausedWakeTask), since the release took no pod. While the
-// project runs, the cancel drops that wake and its start instead, and the role's resume carries
-// what the role must still read of it (releaseResume). Two kinds of role the release stopped keep
-// their wake's start, whose task becomes the task of the same wake in the words of a release that
-// did not finish (workflow.TakenOverWakeTask), paused or not: a role whose claim a close, a linger
-// or an operator took over, which no cancel resumes, and a role whose stop the release's mark does
-// not record, which that start brings back. A role of that second kind with no start queued, as
-// where no wake of it was taken, is resumed, or recorded stopped by the pause, as a role the mark
-// records is (store.CancelIssueRelease).
+// idle release's own (outbox.backstop), the open phase's worker is the workflow's rule
+// (workflow.OpenRoleAt), over the phase and the role of the running step the store reads, and
+// whether that worker gets a backstop is the rule a release's backstop reads (outbox.getsBackstop,
+// getsBackstop, its one statement), told that phase and that role: a worker that owes its phase
+// nothing gets none, but for the two kinds of claim that rule keeps. A wake that a role took after
+// the release recorded it is then left as the launch the pause owes that role, and the pause's
+// resume runs its start. The task of that start becomes the task of a wake of a role the pause
+// stopped (workflow.PausedWakeTask), since the release took no pod. While the project runs, the
+// cancel drops that wake and its start instead, and the role's resume carries what the role must
+// still read of it (releaseResume). Two kinds of role the release stopped keep their wake's start,
+// whose task becomes the task of the same wake in the words of a release that did not finish
+// (workflow.TakenOverWakeTask), paused or not: a role whose claim a close, a linger or an operator
+// took over, which no cancel resumes, and a role whose stop the release's mark does not record,
+// which that start brings back. A role of that second kind with no start queued, as where no wake
+// of it was taken, is resumed, or recorded stopped by the pause, as a role the mark records is
+// (store.CancelIssueRelease).
 //
 // The hold the cancel records (store.RecordPodHoldTx) commits in the cancel's own transaction,
 // which CancelIssueRelease joins under its lifecycle serializer, so it is ordered with every other
@@ -4596,8 +4599,7 @@ func (r *outbox) issueSandboxName(issue string) string {
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
 	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
-			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenRoleAt: workflow.OpenRoleAt, WakeTask: workflow.PausedWakeTask,
-				TakenOverWakeTask: workflow.TakenOverWakeTask})
+			r.pausedCancel())
 		if err != nil {
 			return err
 		}
@@ -4625,6 +4627,17 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 		})
 		return nil
 	})
+}
+
+// pausedCancel is what a cancel of a release and a decline of one need for the case where the
+// project is paused (store.ReleaseCancelPause, cancelRelease says what each part is): the moment
+// by the outbox's clock, the idle release's backstop, the workflow's open phase's worker (at step
+// the role of the running step, workflow.OpenRoleAt), the rule of who gets a backstop, and the
+// workflow's words for the task of a wake the cancel keeps.
+// Both build it here alone, so neither can leave a rule out.
+func (r *outbox) pausedCancel() store.ReleaseCancelPause {
+	return store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenRoleAt: workflow.OpenRoleAt, GetsBackstop: r.getsBackstop,
+		WakeTask: workflow.PausedWakeTask, TakenOverWakeTask: workflow.TakenOverWakeTask}
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the

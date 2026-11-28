@@ -166,7 +166,7 @@ func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.
 	ctx := context.Background()
 	due := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 	if err := w.idleStore.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: "legion", Issue: "LEGION-208",
-		Role: claim.RoleImplementer, DueAt: due}); err != nil {
+		Role: claim.RoleImplementer, ArmedAt: due.Add(-10 * time.Minute), DueAt: due}); err != nil {
 		t.Fatalf("arm the backstop: %v", err)
 	}
 
@@ -302,8 +302,9 @@ func TestADueBackstopWakesItsPodsLifecycleLaneOnce(t *testing.T) {
 				Roles: []string{string(claim.RoleImplementer)}, At: woke.Add(time.Minute)}); err != nil {
 				t.Fatalf("record the pod's release: %v", err)
 			}
+			// The release armed the backstop (ArmPodBackstop refuses a backstop with no arm time).
 			if err := w.idleStore.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: "legion", Issue: pauseIssue,
-				Role: claim.RoleImplementer, DueAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+				Role: claim.RoleImplementer, ArmedAt: woke.Add(time.Minute), DueAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
 				t.Fatalf("arm the backstop: %v", err)
 			}
 			podRecords, err := w.idleStore.PodRecordsOf("LEGION")

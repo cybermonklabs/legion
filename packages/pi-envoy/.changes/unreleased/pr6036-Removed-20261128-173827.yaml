@@ -1,0 +1,9 @@
+kind: Removed
+body: |-
+    The `agent-secrets` skill gives no `agent-secrets` command line and points at
+    `agent-secrets --help` for each form; its examples keep only the command a run runs. Its copy of
+    the run form's usage had lost `--target`, and its copy of `secret create` the `group:EMAIL`
+    owner.
+time: 2026-11-28T17:38:27Z
+custom:
+    Issue: pr6036

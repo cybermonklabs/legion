@@ -940,6 +940,18 @@ What each part is for:
   store and its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
+- **`nats_daemon_service_token_file`** (optional) names the file of the daemon's own projected
+  ServiceAccount token, which its NATS connection presents in place of a seed, as user `service`,
+  to a hub whose connections the [Secrets Broker](/legion/broker/)'s NATS auth service admits.
+  Mount the token for the broker's `BROKER_NATS_K8S_AUDIENCE`, for at most 3600 seconds, and list
+  the daemon's account under a `daemon/-/*` entry of the broker's `BROKER_NATS_SERVICES`. The
+  daemon reads the file again at each connect. The key outranks the variable
+  `NATS_DAEMON_SERVICE_TOKEN_FILE`. Either one beside a setting of the daemon's own seed
+  (`nats_daemon_nkey_seed_file`, `NATS_DAEMON_NKEY_SEED_FILE`, `NATS_DAEMON_NKEY_SEED`) refuses
+  the start, naming both; the agents' seed stays allowed beside it. The daemon waits out a refusal
+  of the token
+  ([Configuration](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#configuration)
+  in docs/kubernetes.md).
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
   [Secrets Broker](/legion/broker/): `url` is the broker, and `token_file` is where the daemon's own
   projected ServiceAccount token for the broker's audience is mounted. The daemon logs in with that
@@ -1156,9 +1168,11 @@ What each part is for:
   `LEGION_STALL_RESUME_MS` (120000, after a resume, when the daemon answers that the claim owes
   work) and
   `LEGION_STALL_ARCHITECT_AFTER` (3: how many delivered reminders in a row change nothing before
-  the architect is told, and never fewer than 2). Each of the six millisecond values is a whole
-  number of 0 or more; a value that is not is ignored, the default stands, and the worker's log
-  carries one `warn` line naming the variable.
+  the architect is told, and never fewer than 2). A reminder goes out only while the daemon's
+  record holds work open for the worker's role, and none goes out when the daemon's answer cannot
+  be read: no variable changes that. Each of the six millisecond values is a whole number of 0 or
+  more; a value that is not is ignored, the default stands, and the worker's log carries one
+  `warn` line naming the variable.
 
 The loader refuses any key it does not know, naming it, and refuses `omp_invocation` and
 `omp_launch_prefix` under Kubernetes, since every pod runs the image's Oh My Pi.

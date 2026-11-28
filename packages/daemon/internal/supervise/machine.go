@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -230,12 +231,12 @@ type Claim struct {
 	// the run it goes on working until another delivery of a run replaces it. It is the second of
 	// the three sources ServingRun reads (serving): the pending delivery whose turn is running,
 	// then this, then — for a claim serving no run — a pending task the agent may have read. The
-	// completion route adds a fourth of its own (api/handoff.go): where those three leave the
-	// claim serving no run, it reads the held task directly and takes that task's run, but only
-	// when the task is of the issue's own current generation and phase. It is what answers for a
-	// worker told to wait, whose turn's end retired its delivery and whose next turn an Envoy
-	// notice starts with no delivery behind it. Zero is a claim that has retired no confirmed
-	// task of a run.
+	// one reading of the run a claim serves that every reader of what it owes takes adds a fourth
+	// (ServingAt): for a claim that has retired no run, the task it holds unconfirmed and
+	// undelivered, but only when that task is of the issue's own current generation and phase. It
+	// is what answers for a worker told to wait, whose turn's end retired its delivery and whose
+	// next turn an Envoy notice starts with no delivery behind it. Zero is a claim that has
+	// retired no confirmed task of a run.
 	ServingGeneration uint64
 	// GivenEntry is the phase entry of the last task this claim was queued: the daemon's own
 	// record of what this role was given, beside ServedEntry, which is what its worker took. It
@@ -2762,10 +2763,10 @@ func (m *Machine) EntryGiven(ctx context.Context, entry int64) error {
 
 // ServingRun is the issue generation of the run whose task this claim's worker took, and 0 for a
 // claim that has taken none. It is the first answer to which run a completion belongs to, and the
-// only one outside the completion route's own fallback to a held task (api/handoff.go): a
-// completion names no run, the pane cannot say it (LEGION_GENERATION is the claim's launch
-// counter, and a live worker is handed the next run's task without being relaunched), and the
-// three sources serving reads are read for it.
+// only one outside ServingAt's own fallback to a held task, which every reader that knows the
+// issue reads: a completion names no run, the pane cannot say it (LEGION_GENERATION is the
+// claim's launch counter, and a live worker is handed the next run's task without being
+// relaunched), and the three sources serving reads are read for it.
 //
 // An operator's task belongs to no run and answers for none of them: it carries generation 0.
 // The older work an unread task's run could be mistaken for is a run this claim was left
@@ -2786,6 +2787,60 @@ func (c Claim) ServingRun() uint64 {
 // entry still, and the fallback is what lets it complete.
 func (c Claim) ServingEntry() int64 {
 	return serving(c.Pending, deliveredEntry, c.ServedEntry, c.ServedEntry != 0, c.openRoundHoldsTask())
+}
+
+// ServingAt is the run and the phase entry this claim serves while its issue stands at run
+// generation in phase at. It is the one reading of them that every reader of what a claim owes
+// its phase takes (dispatch://INFRA-2746 R1): the owed answer and the completion route (api's
+// claimServes), the idle release's reminder hold, through the idle view
+// (pods.IdleClaim.ReadServing, workflow's IdleRelease), and the three writers of a released or
+// pause-stopped worker's backstop (internal/daemon's getsBackstop). Each of them knows the issue,
+// and none of them reads ServingRun or ServingGeneration as the run a claim serves.
+//
+// It answers ServingRun and ServingEntry, with one fallback. A claim that has retired no run
+// (ServingGeneration 0) and holds a task its agent neither confirmed nor was marked as reading is
+// working that held task, or waiting for it: that is exactly the state a busy refusal, a late
+// refusal, a lost prompt, a failed adoption or a send that failed before any turn leaves behind,
+// while the agent goes on and does the phase's work in a turn of its own or waits for its first
+// task. So the run and the entry are taken from the task the claim holds, which names the
+// generation and the phase itself, where that task is of the issue's run and phase (HoldsTaskOf):
+// a task of run generation and of phase at. A task of news alone (Delivery.NewsOnly) counts too:
+// it names that run and phase and carries no entry, so a fresh claim that holds one unconfirmed
+// serves the run at entry 0, which compares with no entry, as the completion route read such a
+// claim before this fallback was every reader's. A task of another run, of another phase, or of
+// no phase at all — an operator's own, which carries generation 0, or a wake's, which names no
+// phase — is none of the work the claim could owe, and such a claim serves run 0 and entry 0, as
+// one that holds no task does, whether serving's third rule read that task for it or not.
+//
+// The fallback reads the held task where serving's third rule may not: that rule passes over a
+// task whose prompt came to nothing (Delivery.Prompted) or that an open update round holds back
+// (openRoundHoldsTask), since it knows no issue to hold the task to. So a fresh claim whose first
+// task's send failed before any turn serves that task's run and entry here, and owes its phase,
+// while ServingRun answers 0 for it. A claim that has retired a run is read by ServingRun and
+// ServingEntry alone: one kept across a new generation of its issue whose first task of the new
+// run no turn has confirmed still serves the run and the entry it was left serving, and one whose
+// turn confirmed that task serves the task's run and entry (serving's first rule).
+func (c Claim) ServingAt(generation uint64, at phase.Phase) (run uint64, entry int64) {
+	if p := c.Pending; c.ServingGeneration == 0 && (p == nil || (p.ConfirmedAt.IsZero() && p.DeliveredAt.IsZero())) {
+		if !HoldsTaskOf(p, generation, at) {
+			return 0, 0
+		}
+		return p.Generation, p.Entry
+	}
+	return c.ServingRun(), c.ServingEntry()
+}
+
+// HoldsTaskOf is whether pending, the delivery a claim holds, is a task (HoldsTask) of the issue
+// run generation and of phase at, while the issue stands at that run in that phase. It is the one
+// statement of that test. A task of news alone (Delivery.NewsOnly) counts, though it hands the
+// worker no work of the phase (HoldsWork, StillWorked pass over it): it names the issue's run and
+// phase, so a fresh claim whose news task no turn has confirmed serves that run at entry 0
+// (ServingAt), as the completion route's fallback to a held task read it before ServingAt took
+// that fallback over. ServingAt's fallback applies it, api's heldTaskNotCurrent, which says why a
+// held task is not that run's and phase's, answers "" where it holds, and internal/daemon's
+// holdsUndeliveredNewsTask reads it for the task of news alone it keeps a backstop for.
+func HoldsTaskOf(pending *Delivery, generation uint64, at phase.Phase) bool {
+	return HoldsTask(pending) && pending.Generation == generation && pending.Phase == at
 }
 
 // ServingCheck is the production check look this worker took, or zero if it took none.

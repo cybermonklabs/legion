@@ -2334,8 +2334,8 @@ interface DrawnPair {
 }
 
 /** Whether an attribute is a class an element is drawn with: its own `className`, or the class
- *  a component it mounts draws one of its parts with (the shared text field's `fieldClassName`,
- *  `labelClassName` and `hintClassName`), which is drawn where the component is. */
+ *  a component it mounts draws one of its parts with (the shared text field's `fieldClassName`
+ *  and `labelClassName`), which is drawn where the component is. */
 const CLASS_ATTRIBUTE = /^(?:className|[a-z][A-Za-z]*ClassName)$/;
 
 /** The expression an attribute's value is: what its braces hold, or its string. */

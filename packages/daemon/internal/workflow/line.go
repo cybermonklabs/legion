@@ -334,13 +334,15 @@ func (w Walk) returnOf(issue record.Issue, trigger TriggerKind, target record.Ta
 }
 
 // returnAct is what names a step to go back to: a failed step's report (failReport) or a move back
-// (backwardMove). This is the act as a refusal names it, Again what the caller sends again, and
-// Verb what the step at its place did.
-type returnAct struct{ This, Again, Verb string }
+// (backwardMove). This is the act as a refusal names it, Again what the caller sends again, Verb
+// what the step at its place did, and Left what the refusal says the act changed. A fail's
+// refusal is kept under its report's key (intake.ApplyFact, returnToOf), so it says the report
+// moved nothing rather than that nothing was recorded.
+type returnAct struct{ This, Again, Verb, Left string }
 
 var (
-	failReport   = returnAct{This: "this fail", Again: "the fail", Verb: "failed"}
-	backwardMove = returnAct{This: "this move", Again: "the move", Verb: "moves back"}
+	failReport   = returnAct{This: "this fail", Again: "the fail", Verb: "failed", Left: "this report moved nothing"}
+	backwardMove = returnAct{This: "this move", Again: "the move", Verb: "moves back", Left: "nothing was recorded"}
 )
 
 // returnStep is the one judge of a named place: the place of step n of w's task, which the report
@@ -355,22 +357,22 @@ var (
 // (leftItsPhase), and the route takes returnTo on every fail of a step's worker.
 func returnStep(issue record.Issue, w Walk, from stepSite, n int, act returnAct) (record.TaskPlace, string) {
 	if !w.Stored {
-		return record.TaskPlace{}, fmt.Sprintf("returnTo is %d, and %s has no plan of tasks in Legion's record, so it has no step to name; send %s again without returnTo; nothing was recorded",
-			n, issue.Key, act.Again)
+		return record.TaskPlace{}, fmt.Sprintf("returnTo is %d, and %s has no plan of tasks in Legion's record, so it has no step to name; send %s again without returnTo; %s",
+			n, issue.Key, act.Again, act.Left)
 	}
 	at, ok := w.resolveSite(from)
 	if _, step := w.planStepAt(at); !ok || !step {
-		return record.TaskPlace{}, fmt.Sprintf("returnTo is %d, and task %s of %s has no step that runs as %s now (its steps are %s), so %s names no step of the task to return to; send %s again without returnTo; nothing was recorded",
-			n, w.Task, issue.Key, from.at, strings.Join(plan.Words(record.NamedSteps(w.Steps)), " "), act.This, act.Again)
+		return record.TaskPlace{}, fmt.Sprintf("returnTo is %d, and task %s of %s has no step that runs as %s now (its steps are %s), so %s names no step of the task to return to; send %s again without returnTo; %s",
+			n, w.Task, issue.Key, from.at, strings.Join(plan.Words(record.NamedSteps(w.Steps)), " "), act.This, act.Again, act.Left)
 	}
 	role := w.Steps[at.Position-1].Role
 	switch {
 	case n > len(w.Steps):
-		return record.TaskPlace{}, fmt.Sprintf("returnTo is %d, and task %s of %s has steps 1 to %d, so it names no step of the task whose step %d (%s) %s; send %s again naming an earlier step of that task, or without returnTo; nothing was recorded",
-			n, w.Task, issue.Key, len(w.Steps), at.Position, role, act.Verb, act.Again)
+		return record.TaskPlace{}, fmt.Sprintf("returnTo is %d, and task %s of %s has steps 1 to %d, so it names no step of the task whose step %d (%s) %s; send %s again naming an earlier step of that task, or without returnTo; %s",
+			n, w.Task, issue.Key, len(w.Steps), at.Position, role, act.Verb, act.Again, act.Left)
 	case n >= at.Position:
-		return record.TaskPlace{}, fmt.Sprintf("returnTo is %d, and step %d (%s) of task %s of %s is not before step %d (%s), the step that %s; send %s again naming an earlier step, or without returnTo; nothing was recorded",
-			n, n, w.Steps[n-1].Role, w.Task, issue.Key, at.Position, role, act.Verb, act.Again)
+		return record.TaskPlace{}, fmt.Sprintf("returnTo is %d, and step %d (%s) of task %s of %s is not before step %d (%s), the step that %s; send %s again naming an earlier step, or without returnTo; %s",
+			n, n, w.Steps[n-1].Role, w.Task, issue.Key, at.Position, role, act.Verb, act.Again, act.Left)
 	}
 	return record.TaskPlace{Kind: record.PlaceStep, Position: n}, ""
 }

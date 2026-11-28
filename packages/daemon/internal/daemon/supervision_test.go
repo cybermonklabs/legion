@@ -106,6 +106,25 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		{"NATS_DAEMON_NKEY_SEED holding no seed", func(_ *config.Config, o *overrides) {
 			o.environ = []string{"NATS_DAEMON_NKEY_SEED=hunter2"}
 		}, "NATS_DAEMON_NKEY_SEED does not hold a valid nkey seed"},
+		{"the service token beside a daemon NATS nkey seed file", func(c *config.Config, _ *overrides) {
+			c.NatsDaemonServiceTokenFile = tokenFile(t, testnkeys.ServiceToken(tokenAccount, time.Now().Add(time.Hour)))
+			c.NatsDaemonNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
+		}, "nats_daemon_service_token_file and nats_daemon_nkey_seed_file are both set; the daemon's own NATS connection presents one credential, so set one"},
+		{"the service token beside a daemon NATS nkey seed file, with a pane seed file that is not there", func(c *config.Config, _ *overrides) {
+			c.NatsDaemonServiceTokenFile = tokenFile(t, testnkeys.ServiceToken(tokenAccount, time.Now().Add(time.Hour)))
+			c.NatsDaemonNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
+			c.NatsNkeySeedFile = filepath.Join(c.StateDir, "absent")
+		}, "nats_daemon_service_token_file and nats_daemon_nkey_seed_file are both set; the daemon's own NATS connection presents one credential, so set one"},
+		{"NATS_DAEMON_SERVICE_TOKEN_FILE set but empty", func(_ *config.Config, o *overrides) {
+			o.environ = []string{"NATS_DAEMON_SERVICE_TOKEN_FILE="}
+		}, "NATS_DAEMON_SERVICE_TOKEN_FILE is set but empty"},
+		{"a service token file that is not there", func(c *config.Config, _ *overrides) {
+			c.NatsDaemonServiceTokenFile = filepath.Join(c.StateDir, "absent")
+		}, "nats_daemon_service_token_file names a service token file that could not be read: open: no such file or directory"},
+		{"the service token beside a NATS URL with userinfo", func(c *config.Config, _ *overrides) {
+			c.NatsDaemonServiceTokenFile = tokenFile(t, testnkeys.ServiceToken(tokenAccount, time.Now().Add(time.Hour)))
+			c.NatsURLs = []string{"nats://madeUpNatsUser@127.0.0.1:4222"}
+		}, "the NATS server URL 1 of 1 carries a user name, which the NATS client presents in place of user service and the service token nats_daemon_service_token_file names: write the URL with no user name or password"},
 		{"no omp_invocation and no LEGION_OMP_PATH", func(c *config.Config, o *overrides) {
 			c.OmpInvocation = ""
 			o.runtime = nil

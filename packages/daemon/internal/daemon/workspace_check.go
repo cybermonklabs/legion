@@ -399,9 +399,11 @@ func keptNoticeDecline(issue, pod string, readAt time.Time, work runtime.Workspa
 // (store.DeclineIssueRelease, declineFor), which the idle rule reads to keep the pod under that
 // reason with no new mark and no new read while it stands (pods.IdleDecline.Stands). So a pod that
 // keeps its work is asked once, and its role is told once: a read after a turn that finds the same
-// work keeps the decline and tells nobody. Its hold carries the read's sentence as its detail,
-// where a cancel's carries none, and is otherwise recorded as a cancel's is (cancelRelease), as is
-// its line.
+// work keeps the decline and tells nobody. A decline made while the project is paused, where the
+// release had stopped a role, records each such role as stopped by the pause rather than resuming
+// it, holds the pod and arms the open phase's worker's backstop as a cancel does, by the same rule
+// (pausedCancel, outbox.getsBackstop). Its hold carries the read's sentence as its detail, where a
+// cancel's carries none, and is otherwise recorded as a cancel's is (cancelRelease), as is its line.
 func (r *outbox) declineRelease(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, readAt time.Time, work runtime.WorkspaceWork, failed error) error {
 	decline, hold, why, err := r.declineFor(ctx, issue, payload, readAt, work, failed)
 	if err != nil {
@@ -409,8 +411,7 @@ func (r *outbox) declineRelease(ctx context.Context, issue string, payload recor
 	}
 	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		declined, err := r.trees.DeclineIssueRelease(ctx, r.project, issue, decline, r.releaseResume(issue, payload.Tree), record.OutOfWorkflow,
-			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenRoleAt: workflow.OpenRoleAt, WakeTask: workflow.PausedWakeTask,
-				TakenOverWakeTask: workflow.TakenOverWakeTask})
+			r.pausedCancel())
 		if err != nil {
 			return err
 		}

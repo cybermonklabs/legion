@@ -2400,10 +2400,8 @@ test("every word that Threads draws outside the text of an entry is in the page'
     const names = new Set(
       [...seed.names, LIVE_PLANNER.title, ...parties.map((party) => party.title)].flatMap(wordsIn)
     );
-    const hints = new Set(DISPATCH_WRITING_BOXES.map((row) => row.hint));
     const undeclared = (texts: readonly string[]) =>
       texts
-        .filter((text) => !hints.has(text))
         .flatMap(wordsIn)
         .filter(
           (word) => !DECLARED_WORDS.includes(word) && !/^\d+$/.test(word) && !names.has(word)

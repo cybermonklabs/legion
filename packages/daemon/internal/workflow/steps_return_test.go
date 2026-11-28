@@ -413,7 +413,7 @@ func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 // A failed step's report can name the step of its task that the task returns to (returnTo):
 // any earlier step of the same task, not only the step of the type implementation that the
 // steps' types give, and the agent of that step gets the report. A report that names the failed
-// step itself or a later one, or a place no step of the task holds, is refused and changes
+// step itself or a later one, or a place no step of the task holds, is refused and moves
 // nothing, so the agent reports again (RETURN_REFUSED), as a backward move that no row serves is
 // refused today. An issue with no plan rows has no step to name: a report naming one is refused,
 // and the same report naming none returns to implementing as today.
@@ -474,9 +474,9 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		want     string
 	}{
 		{"returnTo naming the failed step itself is not earlier", 3,
-			"returnTo is 3, and step 3 (tester) of task a of LEGION-208 is not before step 3 (tester), the step that failed; send the fail again naming an earlier step, or without returnTo; nothing was recorded"},
+			"returnTo is 3, and step 3 (tester) of task a of LEGION-208 is not before step 3 (tester), the step that failed; send the fail again naming an earlier step, or without returnTo; this report moved nothing"},
 		{"returnTo naming a place no step of the task holds names another task's", 4,
-			"returnTo is 4, and task a of LEGION-208 has steps 1 to 3, so it names no step of the task whose step 3 (tester) failed; send the fail again naming an earlier step of that task, or without returnTo; nothing was recorded"},
+			"returnTo is 4, and task a of LEGION-208 has steps 1 to 3, so it names no step of the task whose step 3 (tester) failed; send the fail again naming an earlier step of that task, or without returnTo; this report moved nothing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, engine, root := planned(t)
@@ -485,9 +485,9 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 
 			assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, tc.returnTo, "test-1")), tc.want, before)
 
-			// The refusal recorded nothing, its handoff record among it, so the tester reports
-			// again with the same record, and the report naming no step returns to the
-			// implementer, the step of the type implementation before it.
+			// The refusal moved nothing and left its handoff record unused, so the tester reports
+			// again with the same record, naming no step, which is a new key, and that report
+			// returns to the implementer, the step of the type implementation before it.
 			if result := apply("fail-again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
 				t.Fatalf("the tester's fail sent again without returnTo was refused: %+v", result.Refusal)
 			}
@@ -503,7 +503,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		apply := applyFacts(t, pool, engine)
 
 		assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, 1, "test-1")),
-			"returnTo is 1, and LEGION-208 has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; nothing was recorded", before)
+			"returnTo is 1, and LEGION-208 has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; this report moved nothing", before)
 
 		if result := apply("fail-again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail sent again without returnTo was refused: %+v", result.Refusal)
@@ -521,7 +521,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 // the owner stopped task a in testing and gave version 3, `implementer reviewer`, which started
 // the task again at its implementer. The fail is a report of a run the daemon ended without it
 // (leftItsPhase), and returnTo names no step of the task now, so it is refused 409 RETURN_REFUSED
-// with what to send instead, and records nothing, as every returnTo the task's steps cannot take
+// with what to send instead, and moves nothing, as every returnTo the task's steps cannot take
 // is. The same fail naming no step is then taken on the tester's own row and moves nothing. Before,
 // the walk's error answered the route 500 FACT_APPLY_FAILED at every retry of the same fail.
 func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
@@ -554,7 +554,7 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 	before := standingOf(t, pool, engine, root.Key, true)
 
 	assertRefusedReturnTo(t, pool, engine, root.Key, apply("late fail", failedTest(root.Key, 1, "test-1")),
-		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this fail names no step of the task to return to; send the fail again without returnTo; nothing was recorded",
+		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this fail names no step of the task to return to; send the fail again without returnTo; this report moved nothing",
 		before)
 
 	if result := apply("late fail again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {

@@ -59,7 +59,7 @@ func TestAFailedStepReturnsToThePlaceItNames(t *testing.T) {
 			t.Fatalf("returnStep(3) at step 4 = %+v, %q; want step 3 and no refusal", got, why)
 		}
 		const refusal = "returnTo is 4, and step 4 (critic) of task a of LEGION-208 is not before step 4 (critic), the step that failed; " +
-			"send the fail again naming an earlier step, or without returnTo; nothing was recorded"
+			"send the fail again naming an earlier step, or without returnTo; this report moved nothing"
 		if got, why := returnStep(issue, w, from, 4, failReport); why != refusal || got != (record.TaskPlace{}) {
 			t.Fatalf("returnStep(4) at step 4 = %+v, %q; want the refusal %q", got, why, refusal)
 		}

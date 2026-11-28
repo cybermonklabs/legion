@@ -1,6 +1,7 @@
 package specform
 
 import (
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -63,6 +64,7 @@ func TestExtractReadsEachFormOfText(t *testing.T) {
 		{Node: "dispatch-search", Kind: KindPurpose, Body: "It finds relevant records.", Where: fixtureWhere},
 		{Node: "dispatch-inbox", Kind: KindName, Body: "Inbox", Where: fixtureWhere},
 		{Node: "dispatch-inbox", Kind: KindPurpose, Body: "It shows a person what waits on that person.", Where: fixtureWhere},
+		{Node: "stray", Kind: KindTermLine, Body: "This line is no term.", Where: fixtureWhere},
 	}
 	// No text of the fixture holds code font, so the page shows each one as its body. The run and
 	// the negative_control of a check are attributes, which a text holds as they are written.
@@ -273,6 +275,118 @@ func TestALineUnderTermsThatIsNoTermLineIsAFinding(t *testing.T) {
 	want := []Finding{finding(prose, "term-line", detail), finding(drift, "term-line", detail)}
 	if findings := check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, want) {
 		t.Fatalf("Check =\n%#v\nwant\n%#v", findings, want)
+	}
+}
+
+// A heading that a reader reads as Terms is not dropped in silence. Under "## terms", "## TERMS",
+// "## **Terms**" and "## Terms:" the definitions would never join the list. Either fix passes this
+// test: read the heading as Terms, or make the heading a finding. The control: "## Terms" reads the
+// term.
+func TestATermsHeadingInAnotherFormIsNotDroppedInSilence(t *testing.T) {
+	body := "\n\n- **heartbeat**: A pulse of a pump.\n"
+	extracted, err := ExtractDocument("spec.md", 1, "# Spec\n\n## Terms"+body)
+	if err != nil || len(extracted.Terms) != 1 {
+		t.Fatalf("control, ## Terms: ExtractDocument = %#v, %v, want the one term heartbeat", extracted.Terms, err)
+	}
+	for _, heading := range []string{"## terms", "## TERMS", "## **Terms**", "## Terms:"} {
+		extracted, err := ExtractDocument("spec.md", 1, "# Spec\n\n"+heading+body)
+		if err != nil {
+			t.Fatalf("ExtractDocument under %q: %v", heading, err)
+		}
+		if len(extracted.Terms) == 0 && len(check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})) == 0 {
+			t.Errorf("under %q the extractor read no term and Check found nothing, so the definition is dropped in silence", heading)
+		}
+	}
+}
+
+// A heading whose text, as a person reads it, is Terms in another case or with a last colon is a
+// text of Kind heading, named by that text in quotes, and Check gives it one finding of rule
+// terms-heading, whose detail shows the one form. One form is the decision, so the blocks under it
+// are no Terms part: they are neither terms nor texts of Kind line, and a line in the form of a
+// term line there is a text of Kind term_line, which adds no term. The controls: the one form at
+// another level is a Terms heading, and another word, or Terms in a longer text, is no rule's.
+func TestATermsHeadingInAnotherFormIsAFinding(t *testing.T) {
+	detail := `it is no Terms heading, and a Terms heading has the form "## Terms" at any level`
+	for _, c := range []struct{ heading, reads string }{
+		{"## terms", "terms"}, {"## TERMS", "TERMS"}, {"## **TERMS**", "TERMS"}, {"## Terms:", "Terms:"},
+		{"### __terms__ :", "terms :"}, {"# *Terms*:", "Terms:"},
+	} {
+		got, err := ExtractDocument("spec.md", 12, "# Spec\n\n"+c.heading+"\n\n- **heartbeat**: A pulse of a pump.\n\nEach term has one definition.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := Text{Node: fmt.Sprintf("%q", c.reads), Kind: KindHeading, Body: c.reads, Where: where}
+		line := Text{Node: "heartbeat", Kind: KindTermLine, Body: "A pulse of a pump.", Where: where, Held: Held{Shown: "A pulse of a pump."}}
+		if !reflect.DeepEqual(got.Texts, []Text{text, line}) || len(got.Terms) != 0 || got.Counts[KindHeading] != 1 {
+			t.Errorf("under %q: Texts = %#v, Terms = %#v, Counts = %v; want the heading text, the term_line text and no term", c.heading, got.Texts, got.Terms, got.Counts)
+			continue
+		}
+		if findings := check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, []Finding{finding(text, "terms-heading", detail)}) {
+			t.Errorf("Check under %q = %#v, want one terms-heading finding", c.heading, findings)
+		}
+	}
+	for _, heading := range []string{"# Terms", "#### Terms", "## Glossary", "## Definitions", "## Terms of use", "## The terms"} {
+		got, err := ExtractDocument("spec.md", 12, "# Spec\n\n"+heading+"\n\n- **heartbeat**: A pulse of a pump.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if findings := check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); len(findings) != 0 || got.Counts[KindHeading] != 0 {
+			t.Errorf("control %q: Check = %#v, Counts = %v, want no finding and no heading text", heading, findings, got.Counts)
+		}
+	}
+}
+
+// A heading whose text, as a person reads it, is Terms is the heading Terms, also when emphasis
+// marks it or when it is written in another markdown form: the person reads Terms, and the plan
+// reads the list of terms under "a heading whose text is Terms". So each opens the Terms part,
+// whose term line is a term, and none is a finding. The control: "## **Terms:**" reads as Terms:,
+// which is a terms-heading finding.
+func TestAHeadingThatAPersonReadsAsTermsIsTheListOfTerms(t *testing.T) {
+	for _, heading := range []string{"## **Terms**", "## *Terms*", "### __Terms__", "## Terms ##", "Terms\n-----"} {
+		got, err := ExtractDocument("spec.md", 12, "# Spec\n\n"+heading+"\n\n- **heartbeat**: A pulse of a pump.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []Term{{Name: "heartbeat", Definition: "A pulse of a pump.", Where: where, NameHeld: Held{Shown: "heartbeat"}, DefinitionHeld: Held{Shown: "A pulse of a pump."}}}
+		if !reflect.DeepEqual(got.Terms, want) || len(got.Texts) != 0 || got.Counts[KindHeading] != 0 {
+			t.Errorf("under %q: Terms = %#v, Texts = %#v, Counts = %v; want the term heartbeat and no text", heading, got.Terms, got.Texts, got.Counts)
+		}
+		if findings := check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); len(findings) != 0 {
+			t.Errorf("Check under %q = %#v, want no finding", heading, findings)
+		}
+	}
+	got, err := ExtractDocument("spec.md", 12, "# Spec\n\n## **Terms:**\n\n- **heartbeat**: A pulse of a pump.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Terms) != 0 || got.Counts[KindHeading] != 1 {
+		t.Errorf("control ## **Terms:**: Terms = %#v, Counts = %v, want no term and one heading text", got.Terms, got.Counts)
+	}
+}
+
+// A heading in code font is the heading that the page shows: "## `Terms`" opens the part of Terms,
+// whose term line is a term, and "## `TERMS`" is a terms-heading finding named by the words the
+// page shows. Its body keeps the code font, as the body of every text does.
+func TestATermsHeadingInCodeFontIsReadAsThePageShowsIt(t *testing.T) {
+	got, err := ExtractDocument("spec.md", 12, "# Spec\n\n## `Terms`\n\n- **heartbeat**: A pulse of a pump.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Term{{Name: "heartbeat", Definition: "A pulse of a pump.", Where: where, NameHeld: Held{Shown: "heartbeat"}, DefinitionHeld: Held{Shown: "A pulse of a pump."}}}
+	if !reflect.DeepEqual(got.Terms, want) || len(got.Texts) != 0 {
+		t.Errorf("under ## `Terms`: Terms = %#v, Texts = %#v; want the term heartbeat and no text", got.Terms, got.Texts)
+	}
+	got, err = ExtractDocument("spec.md", 12, "# Spec\n\n## `TERMS`\n\n- **heartbeat**: A pulse of a pump.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := Text{Node: `"TERMS"`, Kind: KindHeading, Body: "`TERMS`", Where: where}
+	if len(got.Terms) != 0 || len(got.Texts) == 0 || !reflect.DeepEqual(got.Texts[0], text) {
+		t.Fatalf("under ## `TERMS`: Terms = %#v, Texts = %#v; want no term and first the heading text %#v", got.Terms, got.Texts, text)
+	}
+	detail := `it is no Terms heading, and a Terms heading has the form "## Terms" at any level`
+	if findings := check(planted(), Input{Texts: got.Texts[:1]}); !sameFindings(findings, []Finding{finding(text, "terms-heading", detail)}) {
+		t.Errorf("Check of the heading ## `TERMS` = %#v, want one terms-heading finding", findings)
 	}
 }
 
