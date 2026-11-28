@@ -56,6 +56,36 @@ func TestParseSteps(t *testing.T) {
 	}
 }
 
+// Each step has one agent. The steps of one key are one agent, in any task; a step with no key is
+// an agent of that step alone, the same at each return to it; and the key owner is the owner of
+// the task. The fault: a keyed step given a fresh agent, so implementer:a and tester:a run in two
+// sessions.
+func TestStepsOfOneKeyHaveOneAgent(t *testing.T) {
+	steps, err := ParseSteps("implementer:a tester:a reviewer acceptance:owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]Agent, len(steps))
+	for i, s := range steps {
+		got[i] = AgentOf("t", i+1, s)
+	}
+	if got[0] != got[1] {
+		t.Errorf("implementer:a and tester:a: agents %+v and %+v, want one", got[0], got[1])
+	}
+	if other := AgentOf("u", 2, Step{Role: "reviewer", Key: "a"}); other != got[0] {
+		t.Errorf("reviewer:a of task u: agent %+v, want %+v, the agent of the key a in task t", other, got[0])
+	}
+	if got[2] == got[0] || got[2] != (Agent{Task: "t", Place: 3}) {
+		t.Errorf("reviewer: agent %+v, want a fresh agent of step 3", got[2])
+	}
+	if again := AgentOf("t", 3, steps[2]); again != got[2] {
+		t.Errorf("reviewer again: agent %+v, want %+v, the agent it had", again, got[2])
+	}
+	if !got[3].Owner() || got[0].Owner() || got[2].Owner() {
+		t.Errorf("owner: %v, %v and %v, want only acceptance:owner", got[3].Owner(), got[0].Owner(), got[2].Owner())
+	}
+}
+
 // The default steps walk today's line: the five steps' phases in order, then Legion's own retro
 // and merge.
 func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {

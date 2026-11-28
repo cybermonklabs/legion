@@ -11,9 +11,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// PodRelease is one release of an issue pod: which roles were in it and when their claims were
-// suspended as released. It is the row every resume of that pod hangs from, so a reader can pair
-// a release with what woke it and how long the agent waited.
+// PodRelease is one release of an issue pod: which claims were in it and the roles they held, and
+// when their claims were suspended as released. It is the row every resume of that pod hangs from,
+// so a reader can pair a release with what woke it and how long the agent waited.
 type PodRelease struct {
 	// ID is the row's own id, which the store fills.
 	ID int64
@@ -22,8 +22,12 @@ type PodRelease struct {
 	Issue   string
 	// Generation is the issue's generation at the release.
 	Generation uint64
-	// Roles are the roles whose claims the release suspended, sorted.
+	// Roles are the roles of the claims the release suspended, each once, sorted.
 	Roles []string
+	// Claims are the tokens of the claims the release suspended, sorted (pod_releases.claims).
+	// Two claims can hold one role, so this names what Roles cannot. A record the release before
+	// 20261128145836 wrote names none.
+	Claims []string
 	// At is when the release completed.
 	At time.Time
 	// BundleBytes is the size of the git bundle of unpushed work an earlier release saved, which
@@ -55,6 +59,9 @@ type PodResume struct {
 	Issue   string
 	// Role is the role the wake was for.
 	Role string
+	// Claim is the token of the claim the wake brought back (pod_resumes.claim). Every resume
+	// names one: 20261128145834 named the role's own claim on each resume the release before wrote.
+	Claim string
 	// Kind names the wake: a daemon delivery, a CI settlement, a role message, an agent message
 	// or the backstop.
 	Kind string
@@ -123,14 +130,14 @@ type PodReleaseRecords struct {
 // a streak of its own.
 //
 // It also points at this release each wake taken while the release still stood: a resume of the
-// issue above the mark's wake_row, of a role in the mark's suspended set, with no first turn and
-// not closed. Such a wake came after a stop of this release recorded the role as `released`, so
+// issue above the mark's wake_row, of a claim in the mark's suspended set, with no first turn and
+// not closed. Such a wake came after a stop of this release recorded the claim as `released`, so
 // it ends this release, but the take read the release before it, since this one had no row yet
 // (TakePodWake). Its release_id and seen_release become this release's id, and its time and its
 // stuck clock (clock_at) become this release's time when they were earlier, because the pod starts
 // to come back at the release's end. A resume dated before its release would count negative pod
 // hours, and a stuck clock started at the take would warn of a pod still being built. A
-// seen_release below this release would let the role's next wake close the resume as one whose pod
+// seen_release below this release would let the claim's next wake close the resume as one whose pod
 // went away (ClosePodGoneResume), and take a second wake with a second start. A held wake, one a
 // project's pause holds (pod_resumes.pause_id), keeps release_id 0, as every held wake does
 // (pod_resumes_held_wake_pairs_with_no_release, decision 15 of dispatch://INFRA-3759): its
@@ -209,10 +216,11 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 			id = recorded
 			return nil
 		}
-		err = tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes, issue_release_id)
-			values ($1, $2, $3, $4, $5, $6, nullif($7::bigint, 0))
+		err = tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, claims, at, bundle_bytes, issue_release_id)
+			values ($1, $2, $3, $4, $5, $6, $7, nullif($8::bigint, 0))
 			on conflict (issue_release_id) where issue_release_id is not null do nothing returning id`,
-			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes, named).Scan(&id)
+			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), strings.Join(rel.Claims, ","),
+			rel.At, rel.BundleBytes, named).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return tx.QueryRow(ctx, `select id from pod_releases where issue_release_id = $1`, named).Scan(&id)
 		}
@@ -222,8 +230,8 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 		rows, err := tx.Query(ctx, `with pointed as (update pod_resumes r set release_id = case when r.pause_id is null then $3::bigint else 0 end,
 			seen_release = $3, at = greatest(r.at, $4), clock_at = greatest(r.clock_at, $4)
 			from issue_releases m where m.project = $1 and m.issue = $2 and `+wakeTakenUnderMark+`
-			returning r.role)
-			select distinct role from pointed`,
+			returning r.claim)
+			select distinct claim from pointed`,
 			rel.Project, rel.Issue, id, rel.At)
 		if err != nil {
 			return fmt.Errorf("point the wakes taken during the release at it: %w", err)
@@ -255,9 +263,9 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 // no resume that a record pointed at its release is changed here.
 //
 // Otherwise it settles each wake taken while the release stood, the resumes the record would
-// point at itself: a resume of the issue above the mark's wake_row, of a role in the mark's
+// point at itself: a resume of the issue above the mark's wake_row, of a claim in the mark's
 // suspended set, with no first turn and not closed. The start that such a wake queued waits for
-// the teardown row (record's outboxInOrder), so it is the role's one start, in the pod that comes
+// the teardown row (record's outboxInOrder), so it is the claim's one start, in the pod that comes
 // back, as after a recorded release. The resume pairs with release 0. The release it ends has no
 // row, and the release before it, which the take read (LatestPodRelease), did not take this pod. A
 // resume of release 0 that no pause holds is the resume of no release, as the first wake of an
@@ -268,8 +276,8 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 // release. Its time and its stuck clock (clock_at) move to at where they were earlier, as the
 // record moves them, because the pod starts to come back at the release's end, and at is the
 // time of this release's give-up, which the close compares strictly with a resume's own time. So
-// the role's next wake does not close the resume as one whose pod went away (ClosePodGoneResume),
-// the open resume refuses that wake's take (pod_resumes_one_open_per_role), and the role gets no
+// the claim's next wake does not close the resume as one whose pod went away (ClosePodGoneResume),
+// the open resume refuses that wake's take (pod_resumes_one_open_per_claim), and the claim gets no
 // second start. A release recorded later, or a later release that gives up on its record, takes
 // the pod again and lets the next wake close it, as it does for every such resume. A held wake
 // keeps its pause. The same transaction retells the start of each such wake in the release's
@@ -314,8 +322,8 @@ func (s *Store) SettleUnrecordedRelease(ctx context.Context, project, issue stri
 		rows, err := tx.Query(ctx, `with settled as (update pod_resumes r set release_id = 0,
 			at = greatest(r.at, $3), clock_at = greatest(r.clock_at, $3)
 			from issue_releases m where m.project = $1 and m.issue = $2 and `+wakeTakenUnderMark+`
-			returning r.role)
-			select distinct role from settled`,
+			returning r.claim)
+			select distinct claim from settled`,
 			project, issue, at)
 		if err != nil {
 			return fmt.Errorf("settle the wakes taken during the release: %w", err)
@@ -343,12 +351,13 @@ func (s *Store) SettleUnrecordedRelease(ctx context.Context, project, issue stri
 
 // wakeTakenUnderMark is the rule of which resumes are the wakes taken while a release stood, over
 // the outer tables pod_resumes `r` and issue_releases `m`, the release's mark: a resume of the
-// mark's issue above its wake_row, of a role in its suspended set, with no first turn and not
-// closed. The release's record points these resumes at itself (RecordPodRelease), and the
-// teardown that gives up on that record settles the same resumes (SettleUnrecordedRelease), so the
-// give-up settles exactly the set the record would have pointed at itself.
+// mark's issue above its wake_row, of a claim in its suspended set (the tokens of the claims the
+// release's stops suspended), with no first turn and not closed. The release's record points these
+// resumes at itself (RecordPodRelease), and the teardown that gives up on that record settles the
+// same resumes (SettleUnrecordedRelease), so the give-up settles exactly the set the record would
+// have pointed at itself.
 const wakeTakenUnderMark = `r.project = m.project and r.issue = m.issue
-	and r.id > m.wake_row and r.role = any(m.suspended) and r.first_turn_at is null and r.closed_at is null`
+	and r.id > m.wake_row and r.claim = any(m.suspended) and r.first_turn_at is null and r.closed_at is null`
 
 // lockMarkForRecord takes, through tx, the first steps of a release's record (RecordPodRelease)
 // and of the teardown that gives up on that record (SettleUnrecordedRelease), in their lock order.
@@ -400,26 +409,26 @@ func recordReleaseGiveUp(ctx context.Context, tx pgx.Tx, project, issue string, 
 
 // retellWakesUnderRelease rewrites the task of each start that a wake taken under the release's
 // mark queued, for the release's record (RecordPodRelease) and for the teardown that gives up on
-// that record (SettleUnrecordedRelease). roles are the roles of the wakes that the record points at
-// itself, or that the give-up settles, as the update returns them: each role of the mark's
-// suspended set that has a resume above the mark's wake_row with no first turn and not closed. The
-// update changes none of the columns that choose those resumes, so this reads the starts of the
-// same roles and does not choose them again. The starts are the starts of those roles above last,
-// the mark's last_row, that have a wake's own shape (wakeStartRow). A root architect's entry start
-// and a production check's look are no wake's start, and keep their task. retell answers the
-// task a start carries from now on, from the wake kind and the detail the start carries
-// (record.SuperviseRequest.WakeKind and WakeDetail), which its task was rendered with, and from
-// the task it carries now (PodRelease.WakeTask). The role's resume shows only that such a wake was
-// taken: its kind can be another wake's. A start of a role with no such resume is no such wake's,
-// and keeps its task, and so does a start an earlier daemon queued with no detail (retellStarts).
-// With no role or a nil retell, it writes nothing. A record with no mark points at no resume, so
-// it has no role.
-func retellWakesUnderRelease(ctx context.Context, tx pgx.Tx, issue string, roles []string, last int64, retell func(kind, detail, task string) string) error {
-	if retell == nil || len(roles) == 0 {
+// that record (SettleUnrecordedRelease). claims are the tokens of the claims of the wakes that the
+// record points at itself, or that the give-up settles, as the update returns them: each claim of
+// the mark's suspended set that has a resume above the mark's wake_row with no first turn and not
+// closed. The update changes none of the columns that choose those resumes, so this reads the
+// starts of the same claims and does not choose them again. The starts are the starts of those
+// claims above last, the mark's last_row, that have a wake's own shape (wakeStartRow), each read
+// by the claim it names (startNamesClaimIn). A root architect's entry start and a production
+// check's look are no wake's start, and keep their task. retell answers the task a start carries
+// from now on, from the wake kind and the detail the start carries (record.SuperviseRequest.WakeKind
+// and WakeDetail), which its task was rendered with, and from the task it carries now
+// (PodRelease.WakeTask). The claim's resume shows only that such a wake was taken: its kind can be
+// another wake's. A start of a claim with no such resume is no such wake's, and keeps its task, and
+// so does a start an earlier daemon queued with no detail (retellStarts). With no claim or a nil
+// retell, it writes nothing. A record with no mark points at no resume, so it has no claim.
+func retellWakesUnderRelease(ctx context.Context, tx pgx.Tx, issue string, claims []string, last int64, retell func(kind, detail, task string) string) error {
+	if retell == nil || len(claims) == 0 {
 		return nil
 	}
 	return retellStarts(ctx, tx, issue, retell, `where outbox.issue = $1 and outbox.id > $2 and `+wakeStartRow+`
-		and outbox.payload->>'role' = any($3)`, issue, last, roles)
+		and `+startNamesClaimIn("$3::text[]"), issue, last, claims)
 }
 
 // retellStarts rewrites, through tx, the task of each start that it reads of the wakes taken
@@ -604,7 +613,7 @@ func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project s
 // its resume starts the clock again.
 // A queued launch has not been let out, so its clock is not running either.
 func podResumesWithoutAFirstTurn(ctx context.Context, tx pgx.Tx, project string, before time.Time, unmarked bool) ([]PodResume, error) {
-	query := `select id, release_id, project, issue, role, kind, at, clock_at, coalesce(pause_id, 0), stuck
+	query := `select id, release_id, project, issue, role, claim, kind, at, clock_at, coalesce(pause_id, 0), stuck
 		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and clock_at <= $2
 		and not queued and not exists (select 1 from project_pauses p where lower(p.project) = r.project and p.ended_at is null)`
 	if unmarked {
@@ -623,7 +632,7 @@ func podResumesWithoutAFirstTurn(ctx context.Context, tx pgx.Tx, project string,
 	var out []PodResume
 	for rows.Next() {
 		var r PodResume
-		if err := rows.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Kind, &r.At, &r.ClockAt, &r.Pause, &r.Stuck); err != nil {
+		if err := rows.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Claim, &r.Kind, &r.At, &r.ClockAt, &r.Pause, &r.Stuck); err != nil {
 			return nil, fmt.Errorf("read the unfinished resumes of %s: %w", project, err)
 		}
 		out = append(out, r)
@@ -758,7 +767,7 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 
 func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since time.Time) (PodReleaseRecords, error) {
 	var out PodReleaseRecords
-	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, at, bundle_bytes, coalesce(issue_release_id, 0)
+	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, claims, at, bundle_bytes, coalesce(issue_release_id, 0)
 		from pod_releases where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
 		return out, fmt.Errorf("read the release records of %s: %w", project, err)
@@ -766,14 +775,17 @@ func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since tim
 	for releases.Next() {
 		var r PodRelease
 		var generation int64
-		var roles string
-		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &r.At, &r.BundleBytes, &r.Release); err != nil {
+		var roles, claims string
+		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &claims, &r.At, &r.BundleBytes, &r.Release); err != nil {
 			releases.Close()
 			return out, fmt.Errorf("read the release records of %s: %w", project, err)
 		}
 		r.Generation = uint64(generation)
 		if roles != "" {
 			r.Roles = strings.Split(roles, ",")
+		}
+		if claims != "" {
+			r.Claims = strings.Split(claims, ",")
 		}
 		out.Releases = append(out.Releases, r)
 	}
@@ -783,8 +795,9 @@ func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since tim
 	}
 
 	// Each resume carries the pause that held it (decision 15 of dispatch://INFRA-3759), so a
-	// reader of the window tells a held wake's wait from a released pod's.
-	resumes, err := tx.Query(ctx, `select id, release_id, project, issue, role, kind, at, clock_at, coalesce(pause_id, 0),
+	// reader of the window tells a held wake's wait from a released pod's, and the claim it brought
+	// back, since two claims of one role can each be woken.
+	resumes, err := tx.Query(ctx, `select id, release_id, project, issue, role, claim, kind, at, clock_at, coalesce(pause_id, 0),
 		pod_ready_at, first_turn_at, stuck
 		from pod_resumes where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
@@ -793,7 +806,7 @@ func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since tim
 	for resumes.Next() {
 		var r PodResume
 		var ready, first *time.Time
-		if err := resumes.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Kind, &r.At, &r.ClockAt, &r.Pause,
+		if err := resumes.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Claim, &r.Kind, &r.At, &r.ClockAt, &r.Pause,
 			&ready, &first, &r.Stuck); err != nil {
 			resumes.Close()
 			return out, fmt.Errorf("read the resume records of %s: %w", project, err)

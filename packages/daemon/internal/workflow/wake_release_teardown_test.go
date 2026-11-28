@@ -46,7 +46,7 @@ func TestAWakeTakenBeforeTheTeardownLeavesTheRoleInOneTrueState(t *testing.T) {
 		setClaimState(t, rig.pool, claim.RoleImplementer, "idle", "")
 		boundary := markRelease(t, st)
 		setClaimState(t, rig.pool, claim.RoleImplementer, "suspended", "released")
-		if err := st.ReleaseSuspendedClaim(ctx, wakeProjectToken(t), "LEGION-208", claim.RoleImplementer, boundary); err != nil {
+		if err := st.ReleaseSuspendedClaim(ctx, wakeProjectToken(t), "LEGION-208", wakeToken(t, claim.RoleImplementer), boundary); err != nil {
 			t.Fatalf("record the claim the release suspended: %v", err)
 		}
 		if _, err := rig.pool.Exec(ctx, `delete from outbox where id = $1`, boundary); err != nil {
@@ -100,9 +100,9 @@ func TestAWakeTakenBeforeTheTeardownLeavesTheRoleInOneTrueState(t *testing.T) {
 			t.Fatalf("the teardown with the architect working = %s for %s, want it cancelled for %s: a role works in the pod",
 				decision.Act, decision.Cause, store.ReleaseCauseOvertaken)
 		}
-		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
+		resume := func(token claim.Token, role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
 			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
-				Role: role, Generation: generation}, time.Now())
+				Role: role, Claim: token, Generation: generation}, time.Now())
 			if err != nil {
 				return store.IdleReleaseRow{}, err
 			}

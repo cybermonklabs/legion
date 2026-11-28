@@ -136,9 +136,9 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 // A re-admission clears the work a role's phase entry named and leaves the number where it
 // stands. The task goes because it is the old generation's, cleared with that generation's
 // handoffs (ClearGeneration): the tree runs again, and what the role is owed is whatever its
-// promotion hands it, not the task of a run that ended. The number stays because it counts the
-// entries the role has been handed on this issue and nothing of a re-admission unhands one: the
-// promotion raises it again (StartPromotedWorker), so the entry the new work is sent under is
+// promotion hands it, not the task of a run that ended. The number stays because it is one counter
+// of the issue's phases rows (enter), and nothing of a re-admission unhands one: the promotion
+// raises it again (StartPromotedWorker), so the entry the new work is sent under is
 // above every entry a completion still in flight could name. The task the role was last given for
 // an entry, with that entry and the issue's generation it was given in (record.PhaseRow.Given,
 // record.GivenTask), is read back as it was written, and goes with the entry's task: it was the old

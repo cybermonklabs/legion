@@ -45,7 +45,7 @@ A release refused with a code below writes nothing: release the rest again witho
 
 - Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one Inbox.
 
-- As a child's own architect, in the turn you file its children, send one `envoy_publish` to the agent that holds its plan: its planner where its task names one, else its implementer, at `notifications.role.<token>` (the token is below).
+- As a child's own architect, in the turn you file its children, send one `envoy_publish` to the agent that holds its plan: its planner step's agent, else its implementer step's, at `notifications.role.<token>` (below).
   The message names each child you filed, with its key and repository, and says that the plan now covers only this issue's own part and the join with those children's work.
   Send it even when you also stop the task or give a later plan: that agent keeps its session and what it read of the whole issue.
 

@@ -28,7 +28,7 @@ func testPlugins() *runtime.PluginInstall {
 // An installing launch's agent argv (launcherCommand) becomes `/bin/sh -c '<script>' legion-start
 // 0 <agent argv…>`: with no setup command the count is 0, the agent argv rides after it as
 // legion-start's own positional parameters, never quoted into the script, and the script names
-// both sources, the generation directory under the role's state home, and the contract, runs the
+// both sources, the generation directory under the slot's state home, and the contract, runs the
 // install in a subshell on stderr, ends `exec "$@"`, and the agent argv it wraps carries the two
 // installed --extension roots rather than the image's. The install carries `--backend=copyfile`,
 // which keeps bun from hardlinking the installed plugin files out of the role's bun install
@@ -68,7 +68,7 @@ func TestAnInstallingLaunchWrapsTheAgentArgvInTheInstallScript(t *testing.T) {
 		t.Fatalf("an installing launch's agent command is %q, want /bin/sh -c <script> %s 0 ...", agent, startName)
 	}
 	script := agent[2]
-	stateHome := roleStateHome(claim.RoleTester)
+	stateHome := roleStateHome(claim.Agent(claim.RoleTester))
 	genDir := pluginGenDir(stateHome, spec.Generation)
 	for _, want := range []string{
 		spec.Plugins.PiLegion, spec.Plugins.PiEnvoy, genDir, "/g*",
@@ -253,7 +253,7 @@ func TestStartArgvIsAgentUnchangedWithoutPluginsOrSetup(t *testing.T) {
 // into the generation's own directory, before the agent execs. Nothing else makes either — both
 // are on the issue's volume, which the image cannot prepare, and the image carries the pin and no
 // Claude Code — and Claude Code is told the directory as CLAUDE_CONFIG_DIR rather than asked to
-// create it. The install block names the role's install root, clears its earlier generations,
+// create it. The install block names the slot's install root, clears its earlier generations,
 // copies the image's pin, takes the bounded flock on the issue's npm cache, runs `npm ci` with
 // scripts off from the committed lockfile, has a failure branch that exits, and holds the
 // installed binary to the pin. The agent argv the script wraps names that generation's binary. An
@@ -276,16 +276,16 @@ func TestAClaudeLaunchsStartScriptMakesItsConfigurationDirectory(t *testing.T) {
 	if got, want := agent[5:], l.agentArgv(r.agent); !slices.Equal(got, want) {
 		t.Errorf("the wrapped agent argv is %q, want the Claude command %q", got, want)
 	}
-	stateHome := roleStateHome(spec.Role)
+	stateHome := roleStateHome(claim.Agent(spec.Role))
 	if binary := claudeCodeBinary(stateHome, spec.Generation); !slices.Contains(agent[5:], binary) {
 		t.Errorf("the wrapped agent argv %q does not name the generation's Claude Code %s", agent[5:], binary)
 	}
 	script := agent[2]
-	made := "mkdir -p -- " + shellprefix.Literal(claudeConfigDir(spec.Role))
+	made := "mkdir -p -- " + shellprefix.Literal(claudeConfigDir(claim.Agent(spec.Role)))
 	installs := "rm -rf -- " + shellprefix.Literal(claudeCodeRoot(stateHome)) + "/g*"
 	at, install, execs := strings.Index(script, made), strings.Index(script, installs), strings.Index(script, `exec "$@"`)
 	if at < 0 || install < at || execs < install {
-		t.Errorf("the start script does not make %s, then install Claude Code, then exec:\n%s", claudeConfigDir(spec.Role), script)
+		t.Errorf("the start script does not make %s, then install Claude Code, then exec:\n%s", claudeConfigDir(claim.Agent(spec.Role)), script)
 	}
 	genDir := claudeCodeGenDir(stateHome, spec.Generation)
 	for _, want := range []string{

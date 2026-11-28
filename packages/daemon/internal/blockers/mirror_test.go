@@ -95,14 +95,14 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.MergeQueueReadDone{}, intake.ConflictConfirmDone{}, intake.PullRequestMissing{}, intake.Push{}, intake.BasePush{},
 		intake.HandoffComplete{}, intake.BackwardMove{}, intake.RetryOrEscalate{}, intake.RestartPhase{}, intake.SignOff{},
 		intake.GateRegistered{}, intake.PlanGiven{}, intake.TaskStopped{}, intake.CloseRoot{}, intake.ClaimFailed{},
-		intake.SessionLost{}, intake.SessionStoreFault{},
+		intake.SessionLost{}, intake.SessionStoreFault{}, intake.RefusedStartEnded{},
 		intake.MemoryGuardKill{}, intake.ControllerMemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{},
 		intake.GateRequestFound{},
 		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.LingerDeadline{}, intake.DaemonBooted{},
 		intake.CutoverMergerRepair{}, intake.CheckReport{}, intake.CheckWakeDue{}, intake.CheckLookEnded{},
 		intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
-		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.PendingBasisRead{}, intake.BasisChangesRead{},
-		intake.ReparentRead{},
+		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.PodRefusedLaunch{}, intake.PendingBasisRead{},
+		intake.BasisChangesRead{}, intake.ReparentRead{},
 	} {
 		rows = append(rows, row{fact: fact})
 	}

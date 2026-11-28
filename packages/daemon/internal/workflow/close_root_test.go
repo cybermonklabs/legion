@@ -26,6 +26,7 @@ func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	seedRoleClaims(t, pool, "LEGION-1")
 	var logged bytes.Buffer
 	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logged, nil)))
 	apply := func(id string, fact intake.Fact) intake.Result {

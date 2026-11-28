@@ -28,19 +28,16 @@ import (
 // itself does not call this; tests use it to take a wake as a workflow wake leaves one, or as a
 // delivery wake leaves one once no release mark stands.
 //
-// token is the claim the wake brings back, and the role it names is the role woken: a token that
-// names no role is an error. mark is the pause that held the outbox row the wake is taken for
+// token is the claim the wake brings back and role the role that claim holds now (claims.role),
+// which the caller has read with the claim: a claim's token names its agent and no role, so it is
+// never read off the token. mark is the pause that held the outbox row the wake is taken for
 // (record.OutboxRow.HeldByPause), 0 for a row no pause held, as TakeDeliveryWake reads it.
 //
 // project is the project token the claim-keyed tables hold, as it is for every other
 // project-keyed method of this file and of wake.go: the daemon derives it once at boot
 // (claim.ProjectToken, internal/daemon/bootreads.go) and its outbox carries that, so nothing is
 // derived again here.
-func (s *Store) TakePodWake(ctx context.Context, project, issue string, token claim.Token, kind string, at time.Time, mark int64) (bool, error) {
-	role, ok := token.Role()
-	if !ok {
-		return false, fmt.Errorf("take a wake of %s: claim token %q names no role", issue, token)
-	}
+func (s *Store) TakePodWake(ctx context.Context, project, issue string, token claim.Token, role claim.Role, kind string, at time.Time, mark int64) (bool, error) {
 	records := &PodRecords{store: s, project: project}
 	var taken bool
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -48,7 +45,7 @@ func (s *Store) TakePodWake(ctx context.Context, project, issue string, token cl
 		if err != nil {
 			return err
 		}
-		taken, err = records.TakePodWake(ctx, tx, issue, role, kind, at, pause)
+		taken, err = records.TakePodWake(ctx, tx, issue, role, token, kind, at, pause)
 		return err
 	})
 	return taken, err
@@ -62,13 +59,13 @@ type DeliveryWake struct {
 	// InRelease is a release mark of the issue that stands: the call takes nothing until the
 	// release ends.
 	InRelease bool
-	// StartQueued is a start that brings the role back, queued in the outbox (StartQueued): the
-	// call takes nothing, and that start resumes the role.
+	// StartQueued is a start that brings the claim back, queued in the outbox (StartQueued): the
+	// call takes nothing, and that start resumes the claim.
 	StartQueued bool
 	// NotReleased is a claim whose row the record does not hold as suspended by a release: the
-	// call took nothing, since something already brought the role back or took the claim over.
+	// call took nothing, since something already brought the claim back or took it over.
 	NotReleased bool
-	// OpenResumePause and WakeStartQueued say, where the role's open resume refused the take, what
+	// OpenResumePause and WakeStartQueued say, where the claim's open resume refused the take, what
 	// that resume is, as the take read it in its own transaction, after the refusal and under the
 	// lock it holds on the claim's row (openPodResume). The caller logs the refusal from them and
 	// reads nothing itself (internal/daemon's logRefusedByOpenResume).
@@ -77,7 +74,7 @@ type DeliveryWake struct {
 	// resume is then that pause's held wake (decision 15 of dispatch://INFRA-3759). It is 0 for a
 	// resume that no pause held.
 	//
-	// WakeStartQueued is that a wake's own start of the role is queued (wakeStartRow): the start
+	// WakeStartQueued is that a wake's own start of the claim is queued (wakeStartRow): the start
 	// of the wake that took that resume, which has not run yet. The open resume is then a wake on
 	// its way, not a fault: the start of a workflow wake taken while a release stood runs only
 	// once the release's teardown row leaves the outbox (record's outboxInOrder), and a pause's
@@ -85,7 +82,7 @@ type DeliveryWake struct {
 	//
 	// Both are zero only where the take was not refused by an open resume: it took the wake, or it
 	// answered InRelease, StartQueued or NotReleased before it tried. A resume another wake of the
-	// role took while this take waited for the claim's row is in them, since the read comes after
+	// claim took while this take waited for the claim's row is in them, since the read comes after
 	// the refusal that resume made.
 	OpenResumePause int64
 	WakeStartQueued bool
@@ -94,21 +91,21 @@ type DeliveryWake struct {
 // TakeDeliveryWake takes the wake of the outbox's delivery wake (internal/daemon's
 // wakeForDelivery) in a transaction of its own: the wake for a notice, a phase-ended message, a
 // hook prompt, a merge-queue removal, a merge holds change or a merge forward's message that found
-// the role it is for released. While a release mark of issue stands, it writes nothing and answers
-// InRelease. While the role has no open resume and a start that brings it back at generation is
+// the claim it is for released. While a release mark of issue stands, it writes nothing and answers
+// InRelease. While the claim has no open resume and a start that brings it back at generation is
 // queued, it writes nothing and answers StartQueued. Otherwise it takes the wake as
 // PodRecords.TakePodWake does, held by the pause PodRecords.PauseOfWake reads, and answers whether
 // this call took it.
 //
 // The delivery wake waits for any release of the issue that still stands, not only for one that
-// recorded the role. Its resume runs in process (supervise.RequestRuleResume), so no `start` row
+// recorded the claim. Its resume runs in process (supervise.RequestRuleResume), so no `start` row
 // waits behind the teardown row (record's outboxInOrder), as a workflow wake's `start` does. A
-// resume while the release stands would launch the role in the pod the teardown is about to take.
-// The role on the mark does not show that in time. A release's stop suspends the claim as
-// `released` first, and records the role on the mark after it, in a transaction of its own
-// (ReleaseSuspendedClaim). A wake in that gap reads the role as not recorded and resumes it. The
-// record then names the role, and the release, which no wake of a recorded role cancels
-// (releaseOvertaken), tears the pod down under the resumed role.
+// resume while the release stands would launch the claim in the pod the teardown is about to take.
+// The claim on the mark does not show that in time. A release's stop suspends the claim as
+// `released` first, and records the claim on the mark after it, in a transaction of its own
+// (ReleaseSuspendedClaim). A wake in that gap reads the claim as not recorded and resumes it. The
+// record then names the claim, and the release, which no wake of a recorded claim cancels
+// (releaseOvertaken), tears the pod down under the resumed claim.
 //
 // The mark is read with the take's own lock (lockReleaseMark), in the take's own transaction, so
 // nothing can come between the read and the take. A release's record or cancel that has not
@@ -121,18 +118,19 @@ type DeliveryWake struct {
 // resumes (CancelIssueRelease). The claim reads `released` until that start runs, but its pod
 // never went away. A wake taken then would record a resume, paired with the newest release
 // recorded before it, for a pod that no release took, and the records would count that pod's
-// return. So the call reads, after the mark, whether a start that brings the role back is queued,
-// and takes nothing while one is. The cancel committed before this read began, so the read sees
-// the cancel's start. The row waits, the start resumes the role in the pod that stayed, and the
-// row's next attempt finds the claim live and hands its delivery over. The read is made only for a
-// role with no open resume, which is the cancel's case: the cancel deleted the wakes taken under
-// its mark. A role with an open resume refuses the take whatever is queued, so the take records
-// nothing, and the caller resumes the role in process as it always did (internal/daemon's
+// return. So the call reads, after the mark, whether a start that brings the claim back is queued
+// (startQueued: a start that names the claim, or one an earlier daemon queued naming none for its
+// role), and takes nothing while one is. The cancel committed before this read began, so the read
+// sees the cancel's start. The row waits, the start resumes the claim in the pod that stayed, and
+// the row's next attempt finds the claim live and hands its delivery over. The read is made only
+// for a claim with no open resume, which is the cancel's case: the cancel deleted the wakes taken
+// under its mark. A claim with an open resume refuses the take whatever is queued, so the take
+// records nothing, and the caller resumes the claim in process as it always did (internal/daemon's
 // wakeForDelivery): the pause's held wake, whose start is queued for the pause's resume, and a
 // workflow wake whose start has not run. Both are normal, and the call answers what that open
 // resume is for them: the pause that held it (OpenResumePause), and whether a wake's own start of
-// the role is queued (wakeStartQueued, WakeStartQueued). It reads both after the refusal, under
-// the lock it holds on the claim's row, so a resume another wake of the role took while this take
+// the claim is queued (wakeStartQueued, WakeStartQueued). It reads both after the refusal, under
+// the lock it holds on the claim's row, so a resume another wake of the claim took while this take
 // waited for that lock is what they name. The caller can then tell such a wake from a resume with
 // no start behind it, with no read of its own.
 //
@@ -168,8 +166,8 @@ type DeliveryWake struct {
 // and the delivery's next attempt takes the wake itself. So the delivery logs its own wait at
 // debug and adds no warning of its own.
 //
-// token is the claim the wake brings back, and the role it names is the role woken: a token that
-// names no role is an error. generation is the issue's generation, which a start that brings the
+// token is the claim the wake brings back; the role it is woken in is the role the claim's row
+// holds, read with that row below. generation is the issue's generation, which a start that brings the
 // role back names. mark is the pause that held the outbox row the wake is taken for
 // (record.OutboxRow.HeldByPause, which the resume writes on every row its pause holds), 0 for a
 // row no pause held. PodRecords.PauseOfWake reads which pause holds the wake from the token and
@@ -183,10 +181,6 @@ type DeliveryWake struct {
 //
 // project is the project token the claim-keyed tables hold, as it is for TakePodWake.
 func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, token claim.Token, generation uint64, at time.Time, mark int64) (DeliveryWake, error) {
-	role, ok := token.Role()
-	if !ok {
-		return DeliveryWake{}, fmt.Errorf("take a delivery wake of %s: claim token %q names no role", issue, token)
-	}
 	records := &PodRecords{store: s, project: project}
 	var wake DeliveryWake
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -195,12 +189,21 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 		if wake.InRelease, err = lockReleaseMark(ctx, tx, project, issue); err != nil || wake.InRelease {
 			return err
 		}
-		_, _, open, err := openPodResume(ctx, tx, project, issue, role)
+		_, _, open, err := openPodResume(ctx, tx, project, issue, token)
 		if err != nil {
 			return err
 		}
+		var role string
 		if !open {
-			if wake.StartQueued, err = startQueued(ctx, tx, issue, role, generation); err != nil || wake.StartQueued {
+			// The claim's role, as its row holds it now, is read without a lock first: a start
+			// queued before starts named their claim names the role it reached (startNamesClaim).
+			// The row is read again under its lock below, after the pause's row, as the lock order
+			// requires.
+			if err := tx.QueryRow(ctx, `select role from claims where project = $1 and token = $2`,
+				project, string(token)).Scan(&role); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("read the role of %s: %w", token, err)
+			}
+			if wake.StartQueued, err = startQueued(ctx, tx, issue, token, claim.Role(role), generation); err != nil || wake.StartQueued {
 				return err
 			}
 		}
@@ -209,28 +212,28 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 			return err
 		}
 		var released bool
-		err = tx.QueryRow(ctx, `select state = 'suspended' and suspended_by = 'released' from claims
-			where project = $1 and token = $2 for update`, project, string(token)).Scan(&released)
+		err = tx.QueryRow(ctx, `select state = 'suspended' and suspended_by = 'released', role from claims
+			where project = $1 and token = $2 for update`, project, string(token)).Scan(&released, &role)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("read whether %s is still released: %w", token, err)
 		}
 		if wake.NotReleased = !released; wake.NotReleased {
 			return nil
 		}
-		if wake.Taken, err = records.TakePodWake(ctx, tx, issue, role, pods.WakeDelivery, at, held); err != nil || wake.Taken {
+		if wake.Taken, err = records.TakePodWake(ctx, tx, issue, claim.Role(role), token, pods.WakeDelivery, at, held); err != nil || wake.Taken {
 			return err
 		}
-		// The take was refused, and the role's open resume is what refuses it. The read above was
+		// The take was refused, and the claim's open resume is what refuses it. The read above was
 		// made before this transaction locked the claim's row, so a resume another wake of the
-		// role took while this one waited for that lock is not in it. Read it again here, under
+		// claim took while this one waited for that lock is not in it. Read it again here, under
 		// the lock and after the refusal, so the caller names the wake that refused this one
 		// rather than a resume with nothing behind it (logRefusedByOpenResume).
-		_, pause, open, err := openPodResume(ctx, tx, project, issue, role)
+		_, pause, open, err := openPodResume(ctx, tx, project, issue, token)
 		if err != nil || !open {
 			return err
 		}
 		wake.OpenResumePause = pause
-		wake.WakeStartQueued, err = wakeStartQueued(ctx, tx, issue, role, generation)
+		wake.WakeStartQueued, err = wakeStartQueued(ctx, tx, issue, token, claim.Role(role), generation)
 		return err
 	})
 	return wake, err
@@ -251,54 +254,72 @@ const resumeStartRow = `outbox.kind = 'supervise' and outbox.payload->>'op' = 's
 // PauseWakeRow). A root architect's entry start and a production check's look have the shape of
 // resumeStartRow and carry no kind: they are work the pod is given, not a wake. Four reads of the
 // wakes taken while a release stands read this shape. The teardown passes over a wake's own start
-// of a role the release recorded (IssueRelease). A cancel deletes that start
+// of a claim the release recorded (IssueRelease). A cancel deletes that start
 // (dropWakesUnderRelease). The release's record and a cancel rewrite its task
 // (retellWakesUnderRelease, retellWakesOf). One more read is the delivery wake's, which tells an
 // open resume whose start has not run from one with no start behind it (wakeStartQueued).
 const wakeStartRow = resumeStartRow + ` and coalesce(outbox.payload->>'wakeKind', '') <> ''`
 
-// StartQueued is whether the outbox holds a `start` that brings issue's role back at generation:
-// a start of that role and generation that names no phase, waits for no admission slot
-// (resumeStartRow), looks at no production check and is not queued for news alone. Rows of that
-// shape come from a cancelled release (its resume of each claim it suspended: CancelIssueRelease,
-// the daemon outbox's releaseResume), a wake (workflow's wakeRow) and an architect start
-// (admission, and the resume of an awaited root). Such a row meets no phase fence and waits for no
-// slot. When it runs, the outbox's start executor resumes a suspended claim of that role
-// (supervise.RequestRuleResume), so a role with one queued is coming back. A production check's
-// look has the same shape, but it is fenced on its check and look, and it finishes without acting
-// when its look ended before it ran. So a look is not counted: a wake that read it as the role
-// coming back would take nothing, and the role would stay released when the look starts nothing.
-// An architect's start queued for news of the approved design alone (record.SuperviseRequest.News)
-// has the same shape too, and it is not counted for the same reason: it finishes without acting at
-// a claim it may not reach, and wherever the record owes nothing when it runs (the daemon's
-// startNewsOf). workflow's startsWork reads such a start as no start for the same reason. A row the
-// outbox has finished is deleted, so every row this reads is still to run.
-func (p *PodRecords) StartQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error) {
-	return startQueued(ctx, tx, issue, role, generation)
+// startNamesClaim is the one SQL condition, over an outbox start `outbox`, that the start is for
+// the claim token names, which holds the role role names (each an SQL expression): the claim its
+// payload names (record.SuperviseRequest.Claim), or, for a start an earlier daemon queued, which
+// names no claim, the role its payload names, as such a start reached the claim of that role. Two
+// claims of one issue can hold one role, so a start that names its claim is read by its claim.
+func startNamesClaim(token, role string) string {
+	return `(outbox.payload->>'claim' = ` + token + ` or (coalesce(outbox.payload->>'claim', '') = '' and outbox.payload->>'role' = ` + role + `))`
+}
+
+// startNamesClaimIn is startNamesClaim for any claim of tokens, an SQL expression of a text[]: a
+// start that names no claim is read by the role a claim of tokens on the start's issue holds.
+func startNamesClaimIn(tokens string) string {
+	return `(outbox.payload->>'claim' = any(` + tokens + `) or (coalesce(outbox.payload->>'claim', '') = ''
+		and exists (select 1 from claims c where c.issue = outbox.issue and c.token = any(` + tokens + `)
+			and c.role = outbox.payload->>'role')))`
+}
+
+// StartQueued is whether the outbox holds a `start` that brings issue's claim token, which holds
+// role, back at generation: a start for that claim (startNamesClaim) of that generation that names
+// no phase, waits for no admission slot (resumeStartRow), looks at no production check and is not
+// queued for news alone. Rows of that shape come from a cancelled release (its resume of each claim
+// it suspended: CancelIssueRelease, the daemon outbox's releaseResume), a wake (workflow's wakeRow)
+// and an architect start (admission, and the resume of an awaited root). Such a row meets no phase
+// fence and waits for no slot. When it runs, the outbox's start executor resumes the suspended
+// claim it names (supervise.RequestRuleResume), so a claim with one queued is coming back. A
+// production check's look has the same shape, but it is fenced on its check and look, and it
+// finishes without acting when its look ended before it ran. So a look is not counted: a wake that
+// read it as the claim coming back would take nothing, and the claim would stay released when the
+// look starts nothing. An architect's start queued for news of the approved design alone
+// (record.SuperviseRequest.News) has the same shape too, and it is not counted for the same reason:
+// it finishes without acting at a claim it may not reach, and wherever the record owes nothing when
+// it runs (the daemon's startNewsOf). workflow's startsWork reads such a start as no start for the
+// same reason. A row the outbox has finished is deleted, so every row this reads is still to run.
+// Another claim of the same role is not read: its start brings that claim back, not this one.
+func (p *PodRecords) StartQueued(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, role claim.Role, generation uint64) (bool, error) {
+	return startQueued(ctx, tx, issue, token, role, generation)
 }
 
 // startQueued is StartQueued through tx, which the delivery wake reads in its own transaction too
 // (Store.TakeDeliveryWake).
-func startQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error) {
+func startQueued(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, role claim.Role, generation uint64) (bool, error) {
 	var queued bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+resumeStartRow+`
 		and coalesce(outbox.payload->>'checkLook', '') = '' and coalesce(outbox.payload->>'news', '') <> 'true'
-		and payload @> jsonb_build_object('role', $2::text, 'generation', $3::bigint))`,
-		issue, string(role), int64(generation)).Scan(&queued); err != nil {
-		return false, fmt.Errorf("read whether a start of %s's %s is queued: %w", issue, role, err)
+		and payload @> jsonb_build_object('generation', $3::bigint) and `+startNamesClaim("$2", "$4")+`)`,
+		issue, string(token), int64(generation), string(role)).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether a start of %s's claim %s is queued: %w", issue, token, err)
 	}
 	return queued, nil
 }
 
 // wakeStartQueued is whether the outbox holds a wake's own start (wakeStartRow) that brings issue's
-// role back at generation, through tx: the delivery wake reads it for a role whose open resume
-// refused its take (Store.TakeDeliveryWake, DeliveryWake.WakeStartQueued).
-func wakeStartQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error) {
+// claim token, which holds role, back at generation, through tx: the delivery wake reads it for a
+// claim whose open resume refused its take (Store.TakeDeliveryWake, DeliveryWake.WakeStartQueued).
+func wakeStartQueued(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, role claim.Role, generation uint64) (bool, error) {
 	var queued bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+wakeStartRow+`
-		and payload @> jsonb_build_object('role', $2::text, 'generation', $3::bigint))`,
-		issue, string(role), int64(generation)).Scan(&queued); err != nil {
-		return false, fmt.Errorf("read whether a wake's start of %s's %s is queued: %w", issue, role, err)
+		and payload @> jsonb_build_object('generation', $3::bigint) and `+startNamesClaim("$2", "$4")+`)`,
+		issue, string(token), int64(generation), string(role)).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether a wake's start of %s's claim %s is queued: %w", issue, token, err)
 	}
 	return queued, nil
 }
@@ -320,21 +341,23 @@ func lockReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string) (boo
 	return true, nil
 }
 
-// TakePodWake takes one wake of issue's role inside the caller's transaction, and is the whole
-// of what taking a wake is: the mark under the wake's own key, the resume recorded against the
-// release that wake ends, and the role's own backstop cancelled. It answers whether this call
-// took the wake; false is a wake another pass already took, and then the caller resumes nothing,
-// because the first wake is already bringing the pod back.
+// TakePodWake takes one wake of issue's claim token, which holds role, inside the caller's
+// transaction, and is the whole of what taking a wake is: the mark under the wake's own key, the
+// resume recorded against the release that wake ends, and the woken claim's own backstop
+// cancelled. It answers whether this call took the wake; false is a wake another pass already
+// took, and then the caller resumes nothing, because the first wake is already bringing the pod
+// back.
 //
-// A role is woken once while its pod is coming back, whatever else reaches it: at most one
-// resume of a role has no first turn stamped on it (pod_resumes_one_open_per_role), so the
+// A claim is woken once while its pod is coming back, whatever else reaches it: at most one
+// resume of a claim has no first turn stamped on it (pod_resumes_one_open_per_claim), so the
 // insert that records this wake is also what takes it. A CI settlement wakes the pod and, in the
 // same transaction, sends that worker a role message, whose listener report then arrives while
-// the claim is still released; both are the same pod coming back for the same role, and the
+// the claim is still released; both are the same pod coming back for the same claim, and the
 // second writes nothing rather than leaving two resumes and two start rows — one describing the
 // daemon's own settlement to the worker as a message somebody published — against R6's one task
-// per wake. Another role of the same pod is not held by it: a wake resumes one claim, and a role
-// whose wake was dropped would have no process in a pod that is running.
+// per wake. Another claim of the same pod is not held by it, of another role or of the same one:
+// a wake resumes one claim, and a claim whose wake was dropped would have no process in a pod that
+// is running.
 //
 // The index decides it inside the caller's transaction, so the workflow's four wakes and the
 // outbox's delivery wake, which runs in a transaction of its own, are held to it alike; a read
@@ -410,7 +433,7 @@ func lockReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string) (boo
 // pause on the resume (pod_resumes.pause_id) and pairs with release 0 rather than the issue's
 // latest release (decision 15 of dispatch://INFRA-3759): the pause, not a release, is what kept
 // the role down, so the release measurements leave its wait out.
-func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time, pause int64) (bool, error) {
+func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, token claim.Token, kind string, at time.Time, pause int64) (bool, error) {
 	if _, err := lockReleaseMark(ctx, tx, p.project, issue); err != nil {
 		return false, err
 	}
@@ -422,11 +445,11 @@ func (p *PodRecords) TakePodWake(ctx context.Context, tx pgx.Tx, issue string, r
 		}
 	}
 	_, taken, err := RecordPodWakeTx(ctx, tx, PodResume{Release: release, Project: p.project, Issue: issue,
-		Role: string(role), Kind: kind, At: at, Pause: pause})
+		Role: string(role), Claim: string(token), Kind: kind, At: at, Pause: pause})
 	if err != nil || !taken {
 		return false, err
 	}
-	return true, CancelPodBackstops(ctx, tx, p.project, issue, role)
+	return true, CancelPodBackstops(ctx, tx, p.project, issue, token)
 }
 
 // PauseOfWake is the one rule of which pause holds a wake of claim token, issue's role (decision
@@ -480,14 +503,17 @@ func (p *PodRecords) LockReleaseMark(ctx context.Context, tx pgx.Tx, issue strin
 	return err
 }
 
-// ClosePodGoneResume closes the open resume of issue's role when the pod that resume was waiting
-// for has gone away since the wake was taken: a release of the issue, of whatever kind, recorded
-// since (newestPodRelease, seen_release), or a release whose teardown gave up on its record after
-// the resume's time (pod_release_give_ups.at after pod_resumes.at). A release that gave up took
-// the pod as a recorded release does, and it writes no pod_releases row (SettleUnrecordedRelease),
-// so a read of pod_releases alone would leave such a resume open. Without the close that row would
-// refuse every later wake of the role for as long as the issue lives, because a release that
-// suspends no role closes no resume and a pod fully released is never released again.
+// ClosePodGoneResume closes the open resume of issue's claim token, which holds role now, when the
+// pod that resume was waiting for has gone away since the wake was taken: a release of the issue,
+// of whatever kind, recorded since (newestPodRelease, seen_release), or a release whose teardown
+// gave up on its record after the resume's time (pod_release_give_ups.at after pod_resumes.at). It
+// closes such a resume of role too, of any claim, since that pod is gone for every claim of it,
+// and the claim's own whatever role it held at its wake: a claim re-roled since names its old role
+// there. A release that gave up took the pod as a recorded release does, and it writes no
+// pod_releases row (SettleUnrecordedRelease), so a read of pod_releases alone would leave such a
+// resume open. Without the close that row would refuse every later wake of the claim for as long
+// as the issue lives, because a release that suspends no role closes no resume and a pod fully
+// released is never released again.
 //
 // The comparison with a give-up's time is strict. The give-up's settle moves the time of each wake
 // taken under that release's mark to the give-up's time where it was earlier, as a record moves it
@@ -521,7 +547,7 @@ func (p *PodRecords) LockReleaseMark(ctx context.Context, tx pgx.Tx, issue strin
 // The other way a resume sticks — a daemon that stopped between the take and the resume it leads
 // to, with no release since — is the outbox's to heal, in process, because the claim's own state
 // is what tells it (the delivery wake, internal/daemon's wakeForDelivery).
-func (p *PodRecords) ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (newest int64, closed bool, err error) {
+func (p *PodRecords) ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, role claim.Role) (newest int64, closed bool, err error) {
 	if _, err := lockReleaseMark(ctx, tx, p.project, issue); err != nil {
 		return 0, false, err
 	}
@@ -529,11 +555,11 @@ func (p *PodRecords) ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue st
 		return 0, false, err
 	}
 	tag, err := tx.Exec(ctx, `update pod_resumes r set closed_at = now()
-		where r.project = $1 and r.issue = $2 and r.role = $3 and r.first_turn_at is null and r.closed_at is null
+		where r.project = $1 and r.issue = $2 and (r.claim = $3 or r.role = $5) and r.first_turn_at is null and r.closed_at is null
 		and (r.seen_release < $4 or exists (select 1 from pod_release_give_ups g
-			where g.project = $1 and g.issue = $2 and g.at > r.at))`, p.project, issue, string(role), newest)
+			where g.project = $1 and g.issue = $2 and g.at > r.at))`, p.project, issue, string(token), newest, string(role))
 	if err != nil {
-		return 0, false, fmt.Errorf("close the stale resume of %s's %s: %w", issue, role, err)
+		return 0, false, fmt.Errorf("close the stale resume of %s's claim %s: %w", issue, token, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return 0, false, nil

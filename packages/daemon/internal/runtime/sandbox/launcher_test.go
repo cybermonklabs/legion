@@ -372,7 +372,7 @@ func TestRejectedLauncherHellosDoNotSpendKubernetesRequests(t *testing.T) {
 
 // A Claude Code launch's start command carries one file beside its credentials and the system
 // prompt file every launch carries: the MCP document its agent command reads, naming the image's
-// bun and the claude-envoy server it runs, with the plugin's data under the role's own Claude Code
+// bun and the claude-envoy server it runs, with the plugin's data under the slot's own Claude Code
 // directory. It travels in Files and not in the spec's secrets, which would point a `<NAME>_FILE`
 // variable at it and be refused for its name besides. An Oh My Pi launch carries no such file.
 func TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile(t *testing.T) {
@@ -400,8 +400,8 @@ func TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile(t *testing.T) {
 	server, named := document.MCPServers[claudelaunch.MCPServer]
 	if !named || server.Command != "/usr/local/bin/bun" ||
 		!slices.Equal(server.Args, []string{"/opt/legion/claude-envoy/dist/envoy-channel.js"}) ||
-		server.Env["CLAUDE_PLUGIN_DATA"] != claudeConfigDir(spec.Role)+"/envoy-plugin-data" {
-		t.Errorf("the MCP document is %q, want the image's bun running the claude-envoy server with its data under %s", raw, claudeConfigDir(spec.Role))
+		server.Env["CLAUDE_PLUGIN_DATA"] != claudeConfigDir(claim.Agent(spec.Role))+"/envoy-plugin-data" {
+		t.Errorf("the MCP document is %q, want the image's bun running the claude-envoy server with its data under %s", raw, claudeConfigDir(claim.Agent(spec.Role)))
 	}
 	if got := slices.Index(start.Argv, "--mcp-config"); got < 0 || start.Argv[got+1] != generationDir(spec.Generation)+"/"+claudeMCPFile {
 		t.Errorf("the start command's argv %q does not read the document where the launcher writes it", start.Argv)

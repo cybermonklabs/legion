@@ -74,12 +74,13 @@ func (e *Engine) addGiver(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven,
 // (plan.ChangedTasks), but a running task whose text alone it changes (plan.RunningChange), which
 // keeps its steps and where it stands, as a task the version leaves as it was does. Those running
 // tasks are textOnly, which the log of the version names. It also holds whether the version is
-// the one in force (taken), which planGiven writes nothing of but its giver, and the version in
-// force that only earlier owners gave, which planGiven deletes before it writes (passedOver, nil
-// for none). source is the source the version is stored with (givenRows): the owner's, but for
-// an issue whose group runs the project's default steps (takesNoPlan), whose one version taken
-// changes nothing but the text of the task default and keeps the source default, as the steps it
-// runs are still the project's.
+// the one in force (taken), which planGiven writes nothing of but its giver, the version in force
+// that only earlier owners gave, which planGiven deletes before it writes (passedOver, nil for
+// none), and the rows the write stores (givenRows), each step named with its agent
+// (record.NameAgents). source is the source the version is stored with (givenRows): the owner's,
+// but for an issue whose group runs the project's default steps (takesNoPlan), whose one version
+// taken changes nothing but the text of the task default and keeps the source default, as the
+// steps it runs are still the project's.
 type givenVersion struct {
 	issue      *record.Issue
 	recorded   bool
@@ -89,6 +90,9 @@ type givenVersion struct {
 	source     string
 	taken      bool
 	passedOver *record.PlanVersion
+	version    record.PlanVersion
+	tasks      []record.PlanTask
+	steps      []record.PlanStep
 }
 
 // retextsAlone says whether the version changes nothing of the plan in force but the text of its
@@ -134,6 +138,12 @@ func (g givenVersion) retakesDefault() bool {
 // (plan.RunningChange): every other change of a running task is refused, one reason for each, and
 // so is any change of a task that is done or left the workflow. A plan given in a lingering tree
 // is refused too, the version in force among them.
+//
+// Each step of the version is named from every row of the issue as it stands now
+// (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
+// steps of each task it gives: so a key keeps its name, and a version in which a fresh agent would
+// need the name a key holds from an earlier version is refused as a plan (intake.AgentUnnamed),
+// never by the write.
 //
 // A recorded issue whose group runs the project's default steps (groupOf, takesNoPlan) takes one
 // kind of version from its owner: a later version that changes nothing but the text of a running
@@ -187,6 +197,23 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 		if err != nil || lingers {
 			return givenVersion{}, refusalUnless(err, refusedLingering(*issue, fmt.Sprintf("version %d of the owner's plan", fact.Plan.Version)).Refusal), err
 		}
+	}
+	given.version, given.tasks, given.steps = givenRows(fact, given, e.cfg.DefaultSteps, e.cfg.Deployment, e.now())
+	earlier, err := e.store.PlanStepsOf(ctx, tx, fact.Issue)
+	if err != nil {
+		return givenVersion{}, nil, err
+	}
+	held, err := e.store.KeyNames(ctx, tx, fact.Issue)
+	if err != nil {
+		return givenVersion{}, nil, err
+	}
+	given.steps = record.NameAgents(earlier, given.steps, held)
+	if unnamed := record.UnnamedAgents(earlier, given.steps, held); len(unnamed) > 0 {
+		reasons := make([]plan.Refusal, len(unnamed))
+		for i, agent := range unnamed {
+			reasons[i] = intake.AgentUnnamed(agent.Step.Task, agent.Step.Position, string(agent.Name), agent.Holder)
+		}
+		return givenVersion{}, intake.PlanRefused(reasons), nil
 	}
 	return given, nil, nil
 }
@@ -268,12 +295,13 @@ type writtenVersion struct {
 	started bool
 }
 
-// writeVersion stores fact's version as the version in force (givenRows): each task it leaves as
-// it was, and each running task whose text alone it changes, keeps its steps and where it stands,
-// each other task it changes takes the steps its block now names, and each task it removes is
-// deleted. It answers what it read of the version before.
+// writeVersion stores fact's version as the version in force, the rows versionRefusal built and
+// named (given, givenRows): each task it leaves as it was, and each running task whose text alone
+// it changes, keeps its steps and where it stands, each other task it changes takes the steps its
+// block now names, and each task it removes is deleted. It answers what it read of the version
+// before.
 func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion) (writtenVersion, error) {
-	version, tasks, steps := givenRows(fact, given, e.cfg.DefaultSteps, e.cfg.Deployment, e.now())
+	version, tasks, steps := given.version, given.tasks, given.steps
 	var removed []string
 	var written writtenVersion
 	if given.stored != nil {

@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  Phase hooks use the registered claim when an agent works a step of another role, keeping that agent on its own session and state home.
+time: 2026-11-24T20:14:11Z
+custom:
+    Issue: pr5156

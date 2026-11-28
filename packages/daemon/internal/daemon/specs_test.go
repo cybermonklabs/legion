@@ -264,10 +264,12 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 
 // A worker's addressing ends naming its issue's repository and default branch, then the reach
 // its role's own GitHub App gives it: the owner accounts that App is installed on, and that its
-// token reaches every repository of those owners. It names no repository list, since the
-// installation decides where the project may work (INFRA-2543 R6), and the owners are the App's
-// own and not the owners of the repositories the project's records name, which the daemon
-// answers per role (plan.appOwners). A daemon that runs no workflow resolves no
+// token reaches every repository of those owners whose directory its gh holds, which in an issue
+// pod leaves out an owner the Apps were installed on after the pod was created, until the update
+// round that install opens replaces the pod (workerRepositoriesClause). It names no repository
+// list, since the installation decides where the project may work (INFRA-2543 R6), and the owners
+// are the App's own and not the owners of the repositories the project's records name, which the
+// daemon answers per role (plan.appOwners). A daemon that runs no workflow resolves no
 // repository for its claims: the whole sentence is left off, not just the issue's own
 // repository. A deployment whose Apps are installed nowhere is told the App is installed on
 // none, as the controller's addressing is.
@@ -298,16 +300,17 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 		return spec.Prompt.Addressing
 	}
 	const own = "Your issue's repository is acme/widgets (default branch release/v7.1); "
+	const pod = ": in an issue pod, an owner the Apps of your pod's roles were installed on after the pod was created has none until the update round that install opens replaces the pod."
 	for _, tc := range []struct {
 		name   string
 		owners []string
 		want   string
 	}{
-		{"two owners", owners, own + "your role's GitHub App is installed on the owners acme, sjawhar, and its token reaches every repository of those owners."},
+		{"two owners", owners, own + "your role's GitHub App is installed on the owners acme, sjawhar, and its token reaches every repository of those owners whose directory your gh holds" + pod},
 		{
 			"one owner",
 			[]string{"acme"},
-			own + "your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.",
+			own + "your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner once your gh holds its directory" + pod,
 		},
 		{"no installation", nil, own + "your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."},
 	} {
@@ -333,7 +336,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 		}
 		return []string{string(app) + "-owner"}
 	}
-	if got, want := launch(), own+"your role's GitHub App is installed on the owner implement-owner, and its token reaches every repository of that owner."; !strings.HasSuffix(got, want) {
+	if got, want := launch(), own+"your role's GitHub App is installed on the owner implement-owner, and its token reaches every repository of that owner once your gh holds its directory"+pod; !strings.HasSuffix(got, want) {
 		t.Fatalf("the implementer's addressing = %q, want it to end with %q", got, want)
 	}
 
@@ -382,7 +385,10 @@ func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
 		}
 		return spec.Prompt.Addressing
 	}
-	const reach = "your role's GitHub App is installed on the owners acme, zeta, and its token reaches every repository of those owners."
+	// A worker is told the reach of its own App's owners whose directory its gh holds
+	// (workerRepositoriesClause), and the correction's sentences follow it.
+	const reach = "your role's GitHub App is installed on the owners acme, zeta, and its token reaches every repository of those owners whose directory your gh holds: " +
+		"in an issue pod, an owner the Apps of your pod's roles were installed on after the pod was created has none until the update round that install opens replaces the pod."
 	const sentences = "The daemon changed your issue's repository from acme/widgets at 2026-11-12T07:30:00Z. " +
 		"Your issue's branch and your issue's pull request are on acme/widgets. " +
 		"Your work on this issue is on zeta/tools now."

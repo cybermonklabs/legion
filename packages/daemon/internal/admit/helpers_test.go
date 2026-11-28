@@ -210,9 +210,10 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 // row of any other kind is still compared here.
 //
 // A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
-// which the transition raised on the role's phases row: the record counts the entries a role has
-// been handed, so two runs of the same events write the same number and a comparison of two runs
-// reads it like any other field.
+// which the transition raised on the role's phases row, one above the highest entry of every row
+// of the issue (workflow's enter): the
+// record counts the entries, so two runs of the same events write the same number and a
+// comparison of two runs reads it like any other field.
 //
 // The state lane's rows are left out too (notStateRows): these tests assert the effects of the
 // other lanes, and the state events are asserted where they are written.

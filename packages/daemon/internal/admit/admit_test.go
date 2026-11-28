@@ -170,10 +170,10 @@ func TestApplyFactDropsWaitingIssueWhenHumanMovesItOutOfTodo(t *testing.T) {
 func TestApplyFactReleasesSlotWhenEngineCompletesPhaseAndPromotesHead(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+	seedSlotted(t, pool, "LEGION-750", "A")
 	seedWaiting(t, pool, "LEGION-NEXT", "B")
 
-	apply(t, pool, admission, "phase-done", intake.DispatchIssue{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "active", Rank: "A"}, engineStub{store: record.NewStore(), done: "LEGION-ACTIVE"})
+	apply(t, pool, admission, "phase-done", intake.DispatchIssue{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "active", Rank: "A"}, engineStub{store: record.NewStore(), done: "LEGION-750"})
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-NEXT", Index: 0, AdmittedAt: fixedNow}})
 	if got := issue(t, pool, "LEGION-NEXT"); got.Status != "in_progress" {
 		t.Fatalf("promoted status = %q, want in_progress", got.Status)
@@ -189,12 +189,12 @@ func TestApplyFactReleasesSlotWhenEngineCompletesPhaseAndPromotesHead(t *testing
 func TestApplyFactReleasesSlotWhenDispatchLeavesActiveSetAndPromotesHead(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+	seedSlotted(t, pool, "LEGION-750", "A")
 	seedWaiting(t, pool, "LEGION-NEXT", "B")
 
-	apply(t, pool, admission, "status-done", intake.DispatchIssue{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "active", Rank: "A"}, engineStub{})
+	apply(t, pool, admission, "status-done", intake.DispatchIssue{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "active", Rank: "A"}, engineStub{})
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-NEXT", Index: 0, AdmittedAt: fixedNow}})
-	if got := issue(t, pool, "LEGION-ACTIVE"); got.Status != "done" {
+	if got := issue(t, pool, "LEGION-750"); got.Status != "done" {
 		t.Fatalf("released issue status = %q, want done", got.Status)
 	}
 }
@@ -1098,13 +1098,13 @@ func TestReconcileFillsRaisedCapInRankOrderAndIsIdempotent(t *testing.T) {
 func TestReconcileReleasesSlotWhoseDispatchStatusLeftActiveSet(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+	seedSlotted(t, pool, "LEGION-750", "A")
 
 	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
-		{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Title: "active", Status: "done", Rank: "A", LastSeq: 1},
+		{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Title: "active", Status: "done", Rank: "A", LastSeq: 1},
 	}, 1, 1, true)
 	assertSlots(t, pool, nil)
-	if got := issue(t, pool, "LEGION-ACTIVE"); got.Status != "done" {
+	if got := issue(t, pool, "LEGION-750"); got.Status != "done" {
 		t.Fatalf("reconciled status = %q, want done", got.Status)
 	}
 }

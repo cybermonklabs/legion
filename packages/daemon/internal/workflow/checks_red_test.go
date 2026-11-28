@@ -19,15 +19,16 @@ import (
 
 // A CI settlement moves no issue, in any phase (dispatch://INFRA-714/spec R1): a failed check is
 // information the worker holding the phase decides on - re-run, wait, or fix - and not the
-// daemon's to read the semantics of. What the settlement says is told instead, as one message per
-// role to the roles that decide: the worker holding the issue's phase, the implementer, whose code
-// the checks ran on, and the architect that owns the issue, here the root's, since the issue is the
-// tree's root. In merging the implementer is not told: the merge and what breaks it are the
-// merger's, which asks the implementer when it needs it (cybermonklabs/legion#4979). Each message
-// names every check the settlement reports and the conclusion it reports for it, in name order. A
-// role named twice - the implementer holding the phase, the architect holding admitted or
-// accepting - is told once, and a phase no worker holds names none. Nothing else happens: no phase
-// moves, no architect hears checks-red, no worker is started, and no return is counted.
+// daemon's to read the semantics of. What the settlement says is told instead, as one message to
+// the claim of each worker of the roles that decide: the worker holding the issue's phase, the
+// implementer, whose code the checks ran on, and the architect that owns the issue, here the
+// root's, since the issue is the tree's root. In merging the implementer is not told: the merge
+// and what breaks it are the merger's, which asks the implementer when it needs it
+// (cybermonklabs/legion#4979). Each message names every check the settlement reports and the
+// conclusion it reports for it, in name order. A claim named twice - the implementer holding the
+// phase, the architect holding admitted or accepting, or one keyed agent working two of the roles
+// - is told once (addressRoles), and a phase no worker holds names none. Nothing else happens: no
+// phase moves, no architect hears checks-red, no worker is started, and no return is counted.
 func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -468,7 +469,9 @@ func toldBody(settled string) string {
 	return "Pull request #42: " + settled + ". Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code."
 }
 
-// roleToken is the Envoy role token of LEGION-208's role, the address a role message carries.
+// roleToken is the Envoy role token of LEGION-208's role's own claim, the address a role message
+// carries here: an issue with no plan rows, whose every step's worker is its role's own claim
+// (addressRoles, record.WorkerClaim).
 func roleToken(t *testing.T, role claim.Role) string {
 	t.Helper()
 	token, err := claim.NewToken("legion", "LEGION-208", role)
@@ -518,9 +521,11 @@ func checksRedNotice(t *testing.T, pool *pgxpool.Pool) (reason string, stays pha
 	return reason, phase.Phase(named)
 }
 
-// phaseStartKeys is every key a phase worker's start payload carries
+// phaseStartKeys is every key a phase worker's start payload carries here
 // (record.SuperviseRequest): the operation, the issue's tree, the role, its task, the issue
-// generation, the phase the start serves and the phase entry that task is of. The list is
+// generation, the phase the start serves, the phase entry that task is of, and whether it waits
+// for a slot. It names no claim: a phase worker's start reaches the claim of the worker on the
+// role's step when it runs (the outbox's workerToken), here the role's own claim. The list is
 // asserted whole rather than key by key, so a start that grows a field nobody meant it to carry —
 // a role to wait for before it acts, say — fails here.
 const phaseStartKeys = "entry,generation,needsSlot,op,phase,role,task,tree"
@@ -528,8 +533,9 @@ const phaseStartKeys = "entry,generation,needsSlot,op,phase,role,task,tree"
 // implementerStart is the task of the implementer's start the outbox holds, the one row a phase
 // worker's start is (workflow.StartOrOwe); the task tells it from a start admission writes for a
 // role it brings back beside a worker, which carries none. That row carries phaseStartKeys and
-// nothing else; needsSlot is among them, because the delivery of a worker's task is the one part
-// of a transition that waits, for the issue's admission slot.
+// nothing else, no claim among them; needsSlot is among them,
+// because the delivery of a worker's task is the one part of a transition that waits, for the
+// issue's admission slot.
 func implementerStart(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	var task, keys string

@@ -20,31 +20,38 @@ import (
 )
 
 // newsHolder is the claim that holds one member's phase now, as the reconcile, the start, the send
-// and the root architect's summary all name it (newsClaims.holderOf): the claim of the role the
-// member's phase names, or, for a member in accepting, the architect that owns it. issue is the
-// issue whose role that claim holds, the member itself or the issue the owning architect's token
-// names, and role and token are the claim's.
+// and the root architect's summary all name it (newsClaims.holderOf): the claim of the agent that
+// works the step of the role the member's phase names, or, for a member in accepting, the
+// architect that owns it. issue is the issue whose role that claim holds, the member itself or the
+// issue the owning architect's token names, role is that role, and token is the claim's.
 type newsHolder struct {
 	issue record.Issue
 	role  claim.Role
 	token claim.Token
 }
 
-// phaseHolder is the holder of member's phase where a phase worker holds it: the claim, in the
-// project whose token is project, of the role that works the member there (record.Issue.RoleAt:
-// at step the role of the running step, a role the deployment defines). A phase no role holds,
-// accepting, which the owning architect holds (newsClaims.holderOf), and a token that cannot be
-// built name none.
-func phaseHolder(project string, member record.Issue) (newsHolder, bool) {
+// phaseHolder is the holder of member's phase where a phase worker holds it: in the project whose
+// token is project, the claim of the agent that works the step of the role that works the member
+// there (record.Issue.RoleAt: at step the role of the running step, a role the deployment
+// defines). That claim is record.WorkerClaim's over the member's phases rows, read in tx: the
+// claim the role's row names while that row runs a step of the plan, which can be the claim of a
+// key's agent that started on an earlier step of another role, beside the role's own claim. A
+// phase no role holds, accepting, which the owning architect holds (newsClaims.holderOf), and a
+// token that cannot be built name none, and read no rows.
+func phaseHolder(ctx context.Context, tx pgx.Tx, phases record.PhaseReader, project string, member record.Issue) (newsHolder, bool, error) {
 	role := member.RoleAt(member.Phase)
 	if role == "" || role == claim.RoleArchitect {
-		return newsHolder{}, false
+		return newsHolder{}, false, nil
 	}
-	token, err := claim.NewToken(project, member.Key, role)
+	rows, err := phases.Phases(ctx, tx, member.Key)
 	if err != nil {
-		return newsHolder{}, false
+		return newsHolder{}, false, fmt.Errorf("read the phases rows of %s: %w", member.Key, err)
 	}
-	return newsHolder{issue: member, role: role, token: token}, true
+	token, err := record.WorkerClaim(project, member.Key, role, rows)
+	if err != nil {
+		return newsHolder{}, false, nil
+	}
+	return newsHolder{issue: member, role: role, token: token}, true, nil
 }
 
 // newsClaims names the holder of each member of one tree (holderOf). project is the tree's project
@@ -125,10 +132,10 @@ func (c *newsClaims) member(ctx context.Context, tx pgx.Tx, records record.Store
 // itself, as the reviewer's approval notice that moved it there was routed and as sign_off accepts
 // it, which ends at its own architect while that claim holds its role, else at the nearest one
 // above it whose claim does, else at the tree root's); for a member in any other phase, the claim
-// of the role that phase names (phaseHolder). The reconcile hands a member's news to it
-// (settleNews), a start carries the news of the members it holds (owedToClaim), a send tells a
-// member only while the claim it is held for is it (readNewsAtSend), and the root architect's
-// summary says how it is told (readMemberClaims).
+// of the agent that works the step of the role that phase names (phaseHolder). The reconcile hands
+// a member's news to it (settleNews), a start carries the news of the members it holds
+// (owedToClaim), a send tells a member only while the claim it is held for is it
+// (readNewsAtSend), and the root architect's summary says how it is told (readMemberClaims).
 //
 // A member it names no holder of is held by no claim, in every one of those readers alike: a phase
 // no role holds, and a token that cannot be built, the owning architect's among them. No
@@ -140,8 +147,7 @@ func (c *newsClaims) holderOf(ctx context.Context, tx pgx.Tx, records record.Sto
 	case c.project == "":
 		return newsHolder{}, false, nil
 	case member.Phase != phase.Accepting:
-		holder, held := phaseHolder(c.project, member)
-		return holder, held, nil
+		return phaseHolder(ctx, tx, records, c.project, member)
 	}
 	key, err := c.owningIssue(ctx, tx, records, member)
 	if err != nil {

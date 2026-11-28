@@ -567,6 +567,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a release's stop fenced on a turn start", payload: SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
 		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
 		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
+		{name: "a suspend naming a refused pod", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, RefusedPod: "pod-1"}, reason: "only a start a refused launch queued names one"},
 		{name: "a start naming a wake detail and no wake kind", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeDetail: "head1 failed build"}, reason: "only a wake's start names one"},
 		{name: "a suspend naming a wake detail", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeDetail: "head1 failed build"}, reason: "only a wake's start names one"},
 		{name: "an intake-gave-up notice counting none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, GiveUps: noticeGiveUps(1)}, reason: "counts one give-up or more"},
@@ -1663,10 +1664,10 @@ func TestAPhaseEndedMessageIntoAwaitingChildrenGivesTheWaitsOwnWords(t *testing.
 func TestAMergeForwardReviewTellsTheArchitectAndTheWorkerOfThePhase(t *testing.T) {
 	pr := PullRequest{Repo: "sjawhar/legion"}
 	for at, want := range map[phase.Phase]string{
-		phase.Testing:   " Then tell the architect and the tester what you decided, each on its own role topic.",
+		phase.Testing:   " Then tell the architect and the tester what you decided, each on the topic of the claim that works its step.",
 		phase.Accepting: " Then tell the architect what you decided, on its role topic.",
-		phase.Retro:     " Then tell the architect and the implementer what you decided, each on its own role topic.",
-		phase.Merging:   " Then tell the architect and the merger what you decided, each on its own role topic.",
+		phase.Retro:     " Then tell the architect and the implementer what you decided, each on the topic of the claim that works its step.",
+		phase.Merging:   " Then tell the architect and the merger what you decided, each on the topic of the claim that works its step.",
 	} {
 		review := MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main",
 			Phase: at, PullRequest: 42}

@@ -410,7 +410,7 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 			t.Fatal("the cancelled release left its mark behind")
 		}
 		// The line and the attributes it has always carried: the hold that stopped the release
-		// and the roles its cancel resumed, which is the empty set here because no role stop of
+		// and the roles its cancel resumed, which is the empty set here because no claim's stop of
 		// it had suspended anything. The release of a pod no role can use carries no such
 		// attribute at all, since it suspends nothing there is to resume.
 		line := releaseLogLine(t, logs, idleRigIdleCancel)

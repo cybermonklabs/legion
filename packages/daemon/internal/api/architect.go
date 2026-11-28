@@ -1525,7 +1525,7 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		entry = machine.Claim().ServingEntry()
 	}
 	s.applyFact(w, r, requestFactID("phase/backward"),
-		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason, ReturnTo: returnTo, PhaseEntry: entry}, PhaseBackwardResponse{})
+		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason, ReturnTo: returnTo, By: grant.Claim, PhaseEntry: entry}, PhaseBackwardResponse{})
 }
 
 func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {

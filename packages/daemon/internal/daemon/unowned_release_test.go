@@ -101,13 +101,13 @@ func (r *idleRig) storedClaim(t *testing.T, token claim.Token) supervise.Claim {
 func (r *idleRig) awaitedWake(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := r.pool.Exec(ctx, `insert into pod_wake_backstops (project, issue, role, due_at)
-		values ('legion', $1, 'implementer', now() + interval '55 minutes')`, r.issue.Key); err != nil {
+	if _, err := r.pool.Exec(ctx, `insert into pod_wake_backstops (project, issue, claim, role, due_at)
+		values ('legion', $1, $2, 'implementer', now() + interval '55 minutes')`, r.issue.Key, string(r.token)); err != nil {
 		t.Fatalf("arm the earlier release's backstop: %v", err)
 	}
-	if _, err := r.pool.Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
-		values (0, 'legion', $1, 'implementer', $2, now())`,
-		r.issue.Key, pods.WakeChecks); err != nil {
+	if _, err := r.pool.Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at)
+		values (0, 'legion', $1, 'implementer', $2, $3, now())`,
+		r.issue.Key, string(r.token), pods.WakeChecks); err != nil {
 		t.Fatalf("seed the open resume the earlier release's wake left: %v", err)
 	}
 }
@@ -116,7 +116,7 @@ func (r *idleRig) awaitedWake(t *testing.T) {
 // nothing has closed, each as one line, so a test can compare what a release found with what it
 // left. A teardown that armed a backstop would have cancelled the open ones of the issue first
 // (outbox.armBackstops), and the open resume is what tells the daemon a pod is already coming
-// back for that role (migration 20261105183200, one open resume per role).
+// back for that claim (migration 20261128145834, one open resume per claim).
 func (r *idleRig) podWakes(t *testing.T) []string {
 	t.Helper()
 	ctx := context.Background()
@@ -252,7 +252,7 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 			t.Fatalf("teardowns asked = %v, want the release's alone: the issue stays in the workflow", asked)
 		}
 		if len(read) != 0 {
-			t.Fatalf("the workspace was read through %v, want no role: no shim is left to read it", read)
+			t.Fatalf("the workspace was read through %v, want no claim: no shim is left to read it", read)
 		}
 		if rig.declined(t) {
 			t.Fatal("the release recorded a decline, which only an idle release's check writes")
@@ -619,8 +619,9 @@ func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
 
 // issueSandboxSecrets are the Secrets an issue's Sandbox owns under a deployment that defines no
 // role of its own, named as the sandbox runtime names them: the provisioning Secret
-// `<sandbox>-boot` (secretName) and the Secret `<sandbox>-<role>-boot` of each of Legion's six
-// roles (roleSecretName).
+// `<sandbox>-boot` (secretName) and the Secret `<sandbox>-<slot>-boot` of each of its six slots
+// (roleSecretName), one for each of Legion's six roles, each the slot of the agent named for that
+// role.
 func issueSandboxSecrets(sandbox string) []string {
 	secrets := []string{sandbox + "-boot"}
 	for _, role := range claim.Roles {

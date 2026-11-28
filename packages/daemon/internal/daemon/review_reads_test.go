@@ -133,9 +133,11 @@ func reviewReadRuntime(pool *store.Pool, api string) *workflowRuntime {
 // session on, and the claim each of the reviewer's completions carries.
 const captureReviewClaim claim.Token = "legion-capture-capture-1-reviewer"
 
-// seedReviewerSession records the reviewer claim of project's issue with session, under the token
-// the daemon starts the reviewer under (workflow's reviewerToken: claim.NewToken of the project's
-// token), as a registration records it: the session and its transcript. A claim already recorded
+// seedReviewerSession records the reviewer claim of project's issue with session, under the
+// reviewer role's own token (claim.NewToken of the project's token), the claim the daemon starts
+// the reviewer under where the reviewer's row runs no step of a plan, as each row here does
+// (workflow's reviewersClaim), as a registration records it: the session and its transcript. A
+// claim already recorded
 // takes the session given, as a registration writes it on the claim the outbox made with none; an
 // empty session is that claim before any registration.
 func seedReviewerSession(t *testing.T, pool *store.Pool, project, issue, session string) {
@@ -621,12 +623,12 @@ func TestTheReadSetsAsideAReviewAppReviewFromAnotherSession(t *testing.T) {
 	}
 }
 
-// In the reviewer's first round its row names no claim: the reviewer submits the review of its
-// first round before it completes, and only a completion writes a row's claim. The read still
+// In this reviewer's first round the reviewer submits the review of its first round before it
+// completes, and its row names no claim, as a row that runs no step of a plan does. The read still
 // tells the reviewer's own review from another review-App session's by the session the claims
-// record holds for the claim the daemon starts the reviewer under (workflow.Engine.ReviewerSession),
-// so the controller's approval it lists is set aside and kept as refused, and the round stays
-// undecided, as in a later round.
+// record holds for the claim of the worker on the reviewer's step, here the reviewer role's own
+// token (workflow.Engine.ReviewerSession), so the controller's approval it lists is set aside and
+// kept as refused, and the round stays undecided, as in a later round.
 func TestTheReadSetsAsideAnotherSessionsReviewInTheReviewersFirstRound(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)

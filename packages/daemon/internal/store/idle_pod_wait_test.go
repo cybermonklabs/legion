@@ -32,7 +32,8 @@ func suspendedImplementer(t *testing.T, st *Store, suspendedBy supervise.Suspend
 	}
 }
 
-// A start that waits because the issue's pod was built before its role is no delivery the pod
+// A start that waits because the issue's pod lacks the slot of its claim or the role of its step
+// is no delivery the pod
 // waits for: the pod cannot run it, and only its round or its release lets it start, so main's
 // rule for a pod with no live claim must not wait on it. The view names such
 // a start's role, and the reason of the pod's running hold streak.

@@ -388,12 +388,17 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 // ends its header (migrations.WayBack), with <PROJECT> the run's project. A rollback of the
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
-// the plan's tables and columns, so the roll forward creates them again empty. The way back of the
+// the plan's tables and columns, so the roll forward creates them again empty. The name of each
+// step's agent (planStepAgentMigration) adds a column to plan_steps, so its way back runs first,
+// as the guide's list says: left recorded, its version would keep the roll forward from adding the
+// column to the plan_steps it creates again, and every later write of a plan would fail. Its
+// header gives that way back as a psql heredoc, which headerTransaction reads. The way back of the
 // givers of a plan version, in the header of the migration whose name ends
-// _plan_earlier_givers.up.sql, runs too, here before it (the guide allows either order), so the
-// roll forward adds its column again to the table it creates.
+// _plan_earlier_givers.up.sql, runs too, before the plan rows' own (the guide allows either
+// order), so the roll forward adds its column again to the table it creates.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
+	r.exec(strings.ReplaceAll(r.headerTransaction(planStepAgentMigration), "<PROJECT>", r.cfg.Project))
 	all, err := migrations.All()
 	if err != nil {
 		r.t.Fatalf("read the embedded migrations: %v", err)
@@ -410,6 +415,38 @@ func (r *stepRecordsRig) rollBackOwnersPlans() {
 		r.exec(strings.ReplaceAll(block, "<PROJECT>", r.cfg.Project))
 	}
 }
+
+// headerTransaction is the way back the header of the embedded migration whose name ends with
+// suffix gives, from its `begin;` to its `commit;`, each line with the comment marker and its
+// indent taken off. It fails the test where the header holds no such block.
+func (r *stepRecordsRig) headerTransaction(suffix string) string {
+	r.t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		r.t.Fatalf("read the embedded migrations: %v", err)
+	}
+	var block []string
+	for _, migration := range all {
+		if !strings.HasSuffix(migration.Name, suffix) {
+			continue
+		}
+		for _, line := range strings.Split(migration.SQL, "\n") {
+			statement, comment := strings.CutPrefix(line, "--")
+			if statement = strings.TrimSpace(statement); !comment || (len(block) == 0 && statement != "begin;") {
+				continue
+			}
+			if block = append(block, statement); statement == "commit;" {
+				return strings.Join(block, "\n")
+			}
+		}
+	}
+	r.t.Fatalf("no embedded migration ending %s carries a way back from begin; to commit;, read %d lines of it", suffix, len(block))
+	return ""
+}
+
+// planStepAgentMigration is the migration that adds plan_steps.agent, the name of each step's
+// agent.
+const planStepAgentMigration = "_plan_step_agent.up.sql"
 
 // The record of a member of a tree: a child's acceptance is the work of the architect that owns
 // the child when its step starts, so the record of its step 5 names that architect, with the

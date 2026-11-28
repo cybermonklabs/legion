@@ -3069,12 +3069,16 @@ func TestAClosedTreeSetBackToTodoRelaunchesItsArchitect(t *testing.T) {
 	// takes its closed shape only afterwards.
 	putOutboxIssue(t, pool, records, root)
 	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
+	// The claims are stored as the daemon stores them, where the linger's close reads every stored
+	// claim of the tree (record.Store.IssueClaims) and the tree's cleanup waits for each to retire.
+	st := outboxTreeStore(t, pool, root.Key)
+	sup.deps.Store, sup.store = st, st
 	provisioned, removed := 0, 0
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 2, "legion", quietLogger())
 	runner := &outbox{
 		dispatchProject: "LEGION",
-		pool:            pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+		pool:            pool, records: records, supervisor: sup, trees: st, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		githubAPI: newBranchGitHub(t, nil, branchExists).url,
 		dispatch:  &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "todo"}}, handlers: []intake.Handler{engine, admission},
 		now: func() time.Time { return time.Now().Add(time.Hour) }, log: quietLogger(),

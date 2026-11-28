@@ -115,7 +115,7 @@ var causeWords = [causes]string{
 	taskPartOf:             "tasks that are a part of another task",
 	taskMerges:             "tasks that name merges",
 	acceptanceNoKey:        "steps that name acceptance with no key",
-	stepKey:                "steps that name a key",
+	stepKey:                "steps that name a key this release does not take",
 	roleTwice:              "roles a task names at two steps",
 	noImplementer:          "tasks with no step implementer",
 	readsBeforeImplementer: "steps that read a pull request with no implementer step before them",
@@ -134,10 +134,11 @@ var causeWords = [causes]string{
 // counts the rest of that kind, right after the kind's last reason named. The reasons named keep
 // the order the checks find them in. Every cause of either check is added here with its kind, so
 // each kind a plan has is named at least once, and a plan whose blocks give a cause for each of
-// their items (each `needs` word that names no task, each role nobody defines, each step's key,
-// each step that reads a pull request with no implementer before it) gets a refusal of at most
-// MostReasons + 1 reasons of each kind, however many items it holds: one reason for each item
-// answered a 1 MiB attribute in 34 MB (its `needs` words), 44 MB (roles) or 66 MB (keyed steps).
+// their items (each `needs` word that names no task, each role nobody defines, each step's key this
+// release does not take, each step that reads a pull request with no implementer before it) gets
+// a refusal of at most MostReasons + 1 reasons of each kind, however many items it holds: one
+// reason for each item answered a 1 MiB attribute in 34 MB (its `needs` words), 44 MB (roles) or
+// tens of MB (keyed steps).
 type reasons struct {
 	named []namedReason
 	found [causes]int // the causes of each kind found, named or not
@@ -450,13 +451,14 @@ func cycleFrom(needs [][]int, component, parent []int, task int) (path []int) {
 // Supported is what this release does not carry out yet: more than one task, more than one
 // task that no task needs (Sinks, over the task ids FromBlocks reads), whose work would each
 // merge by itself where this release merges an issue's work as one change, a role block, and,
-// for each task, `needs`, `owner`, a task that is a part of another (Places) and `merges`, each
-// key but the owner's on acceptance, acceptance with no key, a role named at two steps, no
-// implementer, each step of a role that reads the implementer's pull request with no implementer
-// step before it, and each step after the implementer's whose role d gives the type
-// implementation, since Legion's retro is done by the implementer. Its steps stand in any other
-// order: the planner at any place, the tester, the reviewer and the acceptance in any order after
-// the implementer, and a role of the deployment at any place. A task that names no steps runs the
+// for each task, `needs`, `owner`, a task that is a part of another (Places) and `merges`, the
+// key owner on a role but acceptance, acceptance with a key but owner or with none, a role named
+// at two steps, no implementer, each step of a role that reads the implementer's pull request
+// with no implementer step before it, and each step after the implementer's whose role d gives
+// the type implementation, since Legion's retro is done by the implementer. Any other key is
+// taken: it names the agent of its steps (AgentOf). Its steps stand in any other order: the
+// planner at any place, the tester, the reviewer and the acceptance in any order after the
+// implementer, and a role of the deployment at any place. A task that names no steps runs the
 // project's default steps, which the configuration loader holds to these same checks, so none of
 // its step causes apply. Its reasons are bounded as reasons bounds each kind.
 func Supported(p Plan, d Deployment) []Refusal {
@@ -513,11 +515,13 @@ func taskReasons(t Task, d Deployment, found *reasons) {
 // The role decides, never the step's type.
 var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "acceptance": true}
 
-// stepReasons adds Supported's causes in the steps of t to found, in this order: each step's key,
-// in step order; each role named at two steps, at its first two; no implementer; each step of a
-// role that reads a pull request with no implementer step before it, in step order, named by its
-// word as the plan writes it; and each step after the implementer's whose role d gives the type
-// implementation, in step order.
+// stepReasons adds Supported's causes in the steps of t to found, in this order: each step that
+// names the key owner on a role but acceptance, or acceptance with a key but owner or with none, in
+// step order; each role named at two steps, at its first two; no implementer; each step of a role
+// that reads a pull request with no implementer step before it, in step order, named by its word
+// as the plan writes it; and each step after the implementer's whose role d gives the type
+// implementation, in step order. The owner does the accepting step in this release, so a key on
+// it but owner would name an agent Legion does not run it in.
 func stepReasons(t Task, d Deployment, found *reasons) {
 	firstAt := map[string]int{}
 	var roles []string // each role once, in the order of its first step
@@ -530,7 +534,8 @@ func stepReasons(t Task, d Deployment, found *reasons) {
 			found.yet(acceptanceNoKey, t.ID, func() string {
 				return fmt.Sprintf("step %d of task %s names acceptance with no key, which asks for a fresh agent of the role acceptance.", at, t.ID)
 			})
-		case step.Key != "" && (step.Role != "acceptance" || step.Key != "owner"):
+		// The key owner and the role acceptance go together: either one without the other is refused.
+		case step.Key != "" && (step.Key == "owner") != (step.Role == "acceptance"):
 			found.yet(stepKey, t.ID, func() string { return fmt.Sprintf("step %d of task %s names the key %s.", at, t.ID, quoted(step.Key)) })
 		}
 		if _, seen := firstAt[step.Role]; !seen {

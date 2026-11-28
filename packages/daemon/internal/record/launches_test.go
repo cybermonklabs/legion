@@ -192,11 +192,12 @@ func TestKeepFinalKeepsTheFirstFinal(t *testing.T) {
 }
 
 // A step's end reads each launch of its agent from the generation its start read. AgentLaunches
-// answers the claim's generation now, whether the claim records a process now, and each launch
-// row of that claim from since on, in generation order, with its newest read and its final. A
-// launch of another claim is none of them, and a claim the store does not hold has none. A step's
-// start reads the launch row of the claim's generation now alone (AgentLaunchNow): of a claim with
-// rows at several generations that one row, and of a claim with no row at its generation none.
+// answers the claim's generation now, whether the claim records a process now, the role it holds,
+// and each launch row of that claim from since on, in generation order, with its newest read and
+// its final. A launch of another claim is none of them, and a claim the store does not hold has
+// none and no role. A step's start reads the launch row of the claim's generation now alone
+// (AgentLaunchNow): of a claim with rows at several generations that one row, and of a claim with
+// no row at its generation none.
 func TestAgentLaunchesReadsEachLaunchSinceAGeneration(t *testing.T) {
 	st := migratedStore(t)
 	store := NewStore()
@@ -236,8 +237,8 @@ func TestAgentLaunchesReadsEachLaunchSinceAGeneration(t *testing.T) {
 		}
 		now, err := store.AgentLaunchNow(t.Context(), tx, agent)
 		must(t, err)
-		if now.Generation != 5 || !now.Live {
-			t.Fatalf("AgentLaunchNow = generation %d, live %t; want the claim's generation 5, live", now.Generation, now.Live)
+		if now.Generation != 5 || !now.Live || now.Role != claim.RoleReviewer {
+			t.Fatalf("AgentLaunchNow = generation %d, live %t, role %q; want the claim's generation 5, live, role %s", now.Generation, now.Live, now.Role, claim.RoleReviewer)
 		}
 		assertLaunches(t, "AgentLaunchNow", now.Launches, Launch{Generation: 5, Newest: &newest})
 		bare, err := store.AgentLaunchNow(t.Context(), tx, unlaunched)
@@ -257,9 +258,9 @@ func TestAgentLaunchesReadsEachLaunchSinceAGeneration(t *testing.T) {
 		assertLaunches(t, "with no process", got.Launches, Launch{Generation: 5, Newest: &newest})
 		unknown, err := store.AgentLaunches(t.Context(), tx, "legion-legion-legion-404-reviewer", 0)
 		must(t, err)
-		if unknown.Generation != 0 || unknown.Live || len(unknown.Launches) != 0 {
-			t.Fatalf("AgentLaunches of a claim the store does not hold = generation %d, live %t, %s; want nothing",
-				unknown.Generation, unknown.Live, launchesText(unknown.Launches))
+		if unknown.Generation != 0 || unknown.Live || unknown.Role != "" || len(unknown.Launches) != 0 {
+			t.Fatalf("AgentLaunches of a claim the store does not hold = generation %d, live %t, role %q, %s; want nothing",
+				unknown.Generation, unknown.Live, unknown.Role, launchesText(unknown.Launches))
 		}
 	})
 }
@@ -268,7 +269,11 @@ func TestAgentLaunchesReadsEachLaunchSinceAGeneration(t *testing.T) {
 // from zero, and FromZero is the first generation that does. A live launch is the start's own,
 // so the next generation is the first. A claim with no process whose generation has a launch row
 // ran that launch before the step, so the next generation is the first again. A claim with no
-// process and no row at its generation has not launched it, so that generation is the first.
+// process and no row at its generation has not launched it, so that generation is the first. A
+// claim that holds another role than the step's, a key's agent whose earlier step was of that
+// role, runs the step only in the launch that takes the step's role: its launch now, live or not
+// launched yet, is none of the step's, so the start keeps no live launch and no read, and the next
+// generation is the first.
 func TestAgentLaunchesGiveTheStartTotalsAndTheirFirstLaunchFromZero(t *testing.T) {
 	at := time.Date(2026, 11, 24, 4, 0, 0, 0, time.UTC)
 	read := launchRead(3, at, opus(2))
@@ -278,18 +283,22 @@ func TestAgentLaunchesGiveTheStartTotalsAndTheirFirstLaunchFromZero(t *testing.T
 		used     *LaunchRead
 		want     StartTotals
 	}{
-		{"a live launch with a read", AgentLaunches{Generation: 5, Live: true, Launches: []Launch{{Generation: 2}, {Generation: 5}}},
+		{"a live launch with a read", AgentLaunches{Generation: 5, Live: true, Role: claim.RoleTester, Launches: []Launch{{Generation: 2}, {Generation: 5}}},
 			&read, StartTotals{Generation: 5, Live: true, Read: &read, FromZero: 6}},
-		{"a live launch with no usable read", AgentLaunches{Generation: 5, Live: true, Launches: []Launch{{Generation: 5}}},
+		{"a live launch with no usable read", AgentLaunches{Generation: 5, Live: true, Role: claim.RoleTester, Launches: []Launch{{Generation: 5}}},
 			nil, StartTotals{Generation: 5, Live: true, FromZero: 6}},
-		{"a launch that ended before the step", AgentLaunches{Generation: 5, Launches: []Launch{{Generation: 2}, {Generation: 5, Final: &read}}},
+		{"a launch that ended before the step", AgentLaunches{Generation: 5, Role: claim.RoleTester, Launches: []Launch{{Generation: 2}, {Generation: 5, Final: &read}}},
 			nil, StartTotals{Generation: 5, FromZero: 6}},
-		{"a generation not launched yet", AgentLaunches{Generation: 5, Launches: []Launch{{Generation: 2}, {Generation: 3}}},
+		{"a generation not launched yet", AgentLaunches{Generation: 5, Role: claim.RoleTester, Launches: []Launch{{Generation: 2}, {Generation: 3}}},
 			nil, StartTotals{Generation: 5, FromZero: 5}},
 		{"a claim never launched", AgentLaunches{}, nil, StartTotals{}},
+		{"a live launch of another role", AgentLaunches{Generation: 5, Live: true, Role: claim.RoleImplementer, Launches: []Launch{{Generation: 5}}},
+			&read, StartTotals{Generation: 5, FromZero: 6}},
+		{"a generation of another role not launched yet", AgentLaunches{Generation: 5, Role: claim.RoleImplementer, Launches: []Launch{{Generation: 3}}},
+			nil, StartTotals{Generation: 5, FromZero: 6}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.launches.StartTotals(tc.used)
+			got := tc.launches.StartTotals(claim.RoleTester, tc.used)
 			if got.Generation != tc.want.Generation || got.Live != tc.want.Live || got.FromZero != tc.want.FromZero || !sameRead(got.Read, tc.want.Read) {
 				t.Fatalf("StartTotals = {generation %d live %t read %s fromZero %d}, want {generation %d live %t read %s fromZero %d}",
 					got.Generation, got.Live, readText(got.Read), got.FromZero,

@@ -9,7 +9,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The stores `legion gh` keeps under the role's $XDG_STATE_HOME/legion-gh, its call log
+// The stores `legion gh` keeps under the agent's $XDG_STATE_HOME/legion-gh (in a pod, its slot's
+// state home, whatever role its step is on), its call log
 // (appendGhCallLog) and its copies of gh's help (ghHelpKeep), make their directories, open their
 // files and write them through these helpers, so both hold one rule: a directory that is no link,
 // and a file that is no link, each owned by this process's user with no permission for its group

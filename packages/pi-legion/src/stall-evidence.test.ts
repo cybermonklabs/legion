@@ -635,7 +635,12 @@ test("a session never publishes to the role its own session holds", async () => 
   // its own role as the owner would hand it its own message.
   const rig = tellerRig({
     session: { kind: "phase-worker", role: "architect", tree: "INFRA-1000", issue: "INFRA-1300" },
-    claim: claimOf({ issue: "INFRA-1300", role: "architect", sessionID: "ses_sub" }),
+    claim: claimOf({
+      claimToken: "legion-legion-infra-1300-architect",
+      issue: "INFRA-1300",
+      role: "architect",
+      sessionID: "ses_sub",
+    }),
   });
   rig.owed = owedNaming("legion-legion-infra-1300-architect");
   await rig.teller.tellOverdue(evidenceOf());
@@ -646,7 +651,11 @@ test("a session never publishes to the role its own session holds", async () => 
   expect(
     stallNoticeTopic({
       session: { kind: "phase-worker", role: "architect", tree: "INFRA-1000", issue: "INFRA-1000" },
-      claim: claimOf({ issue: "INFRA-1000", role: "architect" }),
+      claim: claimOf({
+        claimToken: "legion-legion-infra-1000-architect",
+        issue: "INFRA-1000",
+        role: "architect",
+      }),
       project: "legion",
       owner: "legion-legion-infra-1000-architect",
       notice: "overdue",
@@ -669,6 +678,44 @@ test("a session never publishes to the role its own session holds", async () => 
     kind: "none",
     why: "the controller's own session is the owner, so its evidence is its transcript and its log",
   });
+});
+
+// A session's own token is the one the daemon registered its claim with, which names its agent;
+// the claim's role is the role of the step it runs now. So a session whose claim is its issue's
+// architect still never tells itself while it runs another role's step, though the daemon names
+// that architect claim as its owner, and a claim of the agent implementer that runs a tester's
+// step tells the architect the daemon names. The fault: the own token spelled from the claim's
+// role (`…-infra-2-tester`), a claim the session does not hold, which misses the architect role
+// the session does hold and publishes to it.
+test("a session's own token is the one it registered, whatever role its claim holds now", () => {
+  expect(
+    stallNoticeTopic({
+      session: { kind: "phase-worker", role: "tester", tree: "INFRA-1", issue: "INFRA-2" },
+      claim: claimOf({
+        claimToken: "legion-p-infra-2-architect",
+        tree: "INFRA-1",
+        issue: "INFRA-2",
+        role: "tester",
+      }),
+      project: "p",
+      owner: "legion-p-infra-2-architect",
+      notice: "overdue",
+    })
+  ).toEqual({ kind: "topic", topic: "notifications.role.legion-p-infra-1-architect" });
+  expect(
+    stallNoticeTopic({
+      session: { kind: "phase-worker", role: "tester", tree: "INFRA-1", issue: "INFRA-1" },
+      claim: claimOf({
+        claimToken: "legion-p-infra-1-implementer",
+        tree: "INFRA-1",
+        issue: "INFRA-1",
+        role: "tester",
+      }),
+      project: "p",
+      owner: "legion-p-infra-1-architect",
+      notice: "overdue",
+    })
+  ).toEqual({ kind: "topic", topic: "notifications.role.legion-p-infra-1-architect" });
 });
 
 // A listener answers a notice whose key another sender's message already holds with that
@@ -725,9 +772,11 @@ test("a refused publish and a session with Envoy off leave a line in the log", a
     ownerTold: true,
   });
 
-  // A claim whose issue key no role token can be built from is one owner not told, and the
-  // evidence is written all the same.
-  const unbuildable = tellerRig({ claim: claimOf({ issue: "not-an-issue-key" }) });
+  // A claim whose tree key no role token can be built from is one owner not told, and the
+  // evidence is written all the same. The teller builds no token from the claim's issue: the
+  // session's own token is its claim's, and the one token it builds is the tree's architect's,
+  // from `tree`, whatever owner the daemon names.
+  const unbuildable = tellerRig({ claim: claimOf({ tree: "not-an-issue-key" }) });
   expect(await unbuildable.teller.tellOverdue(evidenceOf())).toEqual({
     evidenceWritten: true,
     ownerTold: false,

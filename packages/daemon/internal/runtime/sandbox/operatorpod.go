@@ -194,9 +194,10 @@ func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[str
 // issue's workspace or a repository cache;
 // a mount at, under, or above a path Legion mounts, the image owns (imageOwnedPaths), or a tool
 // runs from hides it or is hidden by it; and a mount at, under, or above xdgStateHome
-// (/home/legion/.local/state), the path Legion reserves in the image's home directory: no role's
-// agent keeps its Oh My Pi state there any more — each role has a separate state home, under the
-// issue's scratch on its volume (roleStateHome), which legionMountPaths already fences through
+// (/home/legion/.local/state), the path Legion reserves in the image's home directory: no
+// agent keeps its Oh My Pi state there any more — each slot of the pod has a separate state home,
+// its agent's, under the issue's scratch on its volume (roleStateHome), which legionMountPaths
+// already fences through
 // TreeRoot — and the image makes nothing there either, but Legion names it to the issue pod's
 // workspace-init (xdgEnvironment), so an operator's mount over it is refused here, at
 // `legion config check`, rather than left to surprise someone in a pod. (An operator's

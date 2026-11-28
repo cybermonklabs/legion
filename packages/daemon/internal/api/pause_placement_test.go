@@ -137,7 +137,7 @@ func TestTheReleaseRecordsPlaceACallerThatStatesNoContractByItsPod(t *testing.T)
 			err   error
 		)
 		resumeID, taken, err = store.RecordPodWakeTx(ctx, tx, store.PodResume{
-			Project: testProject, Issue: "LEGION-209", Role: "tester", Kind: "delivery",
+			Project: testProject, Issue: "LEGION-209", Role: "tester", Claim: "legion-legion-legion-209-tester", Kind: "delivery",
 			At: pauseStartsAt.Add(10 * time.Minute), Pause: began.ID,
 		})
 		if err == nil && !taken {

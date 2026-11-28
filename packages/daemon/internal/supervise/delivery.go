@@ -273,17 +273,22 @@ func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 	return d.Generation < generation || (d.Generation == generation && d.Entry < entry)
 }
 
-// sentences is which of the claim's two untold records a prompt carries the sentence of: the
-// session the claim abandoned (AbandonedSession, abandonedTask), and what the last let-go of its
-// process ended (EndedWork, relaunchSentence). Delivery.message answers it beside the prompt it
-// composes, so what a prompt is marked as telling is what its text holds (Machine.carried, which
-// confirmCarrying reads).
-type sentences struct{ abandoned, ended bool }
+// sentences is which of the claim's three untold records a prompt carries the sentence of: the
+// session the claim abandoned (AbandonedSession, abandonedTask), what the last let-go of its
+// process ended (EndedWork, relaunchSentence), and the other role the claim took (RoleChange,
+// roleChangedTask). Delivery.message answers it beside the prompt it composes, so what a prompt is
+// marked as telling is what its text holds (Machine.carried, which confirmCarrying reads).
+type sentences struct{ abandoned, ended, role bool }
 
-// message is the prompt a delivery is sent as, and which of the claim's two untold records it
+// message is the prompt a delivery is sent as, and which of the claim's three untold records it
 // tells (sentences): its task, behind the sentences the claim's state gives it that say what
 // became of the agent's earlier work, and then the provider's. In order:
 //
+//   - A claim that took another role and has not told its agent so (RoleChange.Tells) puts that
+//     first, in front of any prompt, the daemon's own delivery of a relaunch's record included
+//     (roleChangedTask): the agent reads which role and App it acts as before anything it is told
+//     to do. It goes in front of the sentences below rather than among them, so the one of them
+//     that is last before the task still carries the task's instruction.
 //   - The first task the agent that replaced an abandoned session is given names that session
 //     (abandonedTask), and says that everything of the old session is gone. A record that still
 //     tells beside it is one of the fresh session's own processes (forgetSession), and that
@@ -323,10 +328,10 @@ type sentences struct{ abandoned, ended bool }
 // its text is the record's sentence alone (RelaunchSentence), composed from the record as it
 // stands when the prompt goes, so a let-go recorded after it was queued is told in it too. One
 // whose record no longer tells has nothing to say, and sendPending retires it rather than send it.
-// The abandoned session's sentence, the out-of-memory note and the provider's go in front of that
-// text as they go in front of a task, the abandoned session's without the task's instruction,
-// since there is no task to continue (abandonedTask); the record's sentence does not, because it
-// is the text.
+// The role change's sentence, the abandoned session's, the out-of-memory note and the provider's
+// go in front of that text as they go in front of a task, the abandoned session's without the
+// task's instruction, since there is no task to continue (abandonedTask); the record's sentence
+// does not, because it is the text.
 //
 // A task of the reviewer ends with the daemon's two sentences of its review round, the last two
 // of each task the reviewer is sent (reviewround.Sentences), and this is the one place each
@@ -347,17 +352,25 @@ type sentences struct{ abandoned, ended bool }
 func (d Delivery) message(c Claim) (string, sentences) {
 	text, carried := d.Task, sentences{}
 	relaunch := d.Relaunch()
-	if relaunch && c.EndedWork.Tells() {
+	switch {
+	case relaunch && c.EndedWork.Tells():
 		text, carried.ended = RelaunchSentence(c.EndedWork), true
+	case relaunch && c.RoleChange.Tells():
+		// The daemon's own delivery of a claim whose let-go's record no longer tells says the role
+		// change alone: its sentence, put in front below, is the whole of the prompt.
+		text = ""
 	}
 	if !relaunch && !d.RoundNamed && c.Role == claim.RoleReviewer {
 		text += reviewround.Sentences("", 0)
 	}
 	var prefix string
+	if c.RoleChange.Tells() {
+		prefix, carried.role = roleChangedTask(c), true
+	}
 	if c.Abandoned.Tells() {
 		// The task's instruction ends the last sentence before the task, so the abandoned
 		// session's carries it only where no record's sentence follows it.
-		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells()), true
+		prefix, carried.abandoned = prefix+abandonedTask(c, !relaunch && !c.EndedWork.Tells()), true
 	}
 	// oldTurn is whether a turn this task was taken back from is the abandoned session's, whose
 	// sentence stands in place of the notes of that turn: an abandoned session still tells, and
@@ -376,6 +389,10 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	}
 	if d.ProviderErrorNote != "" {
 		prefix += d.ProviderErrorNote + "\n\n"
+	}
+	if relaunch && text == "" {
+		// The daemon's own delivery that tells the role change alone ends with its sentence.
+		return strings.TrimSuffix(prefix, "\n\n"), carried
 	}
 	return prefix + text, carried
 }
@@ -736,14 +753,14 @@ func (c Claim) answeredOpenRound() bool {
 
 // openRoundHoldsTask is whether the claim's open round holds the task the claim has pending: the
 // hold above, over a task that is not an ask of this round (updatesRound). This daemon queues no
-// ask of a round as a task: it publishes the ask to the role's Envoy topic (record.UpdateAsk). A
-// task under an `update:` delivery id (updateTaskPrefix) is one an older daemon queued and left
-// in the store. An ask of this round is excepted, because that daemon may have sent it before
-// the worker answered, so the round's hold is not what keeps it from the worker: the restore
-// asks whether the agent holds it (askFirst), and no send of this daemon carries it
-// (sendPending drops it, and the round's end takes it back). An older daemon's ask of another
-// round, on a claim that answered its current round, is not excepted: the answered round holds
-// it, and the sendPending that runs after the round ends drops it. It is built from
+// ask of a round as a task: it publishes the ask to the Envoy topic of the claim it asks
+// (record.UpdateAsk.Claim). A task under an `update:` delivery id (updateTaskPrefix) is one an
+// older daemon queued and left in the store. An ask of this round is excepted, because that
+// daemon may have sent it before the worker answered, so the round's hold is not what keeps it
+// from the worker: the restore asks whether the agent holds it (askFirst), and no send of this
+// daemon carries it (sendPending drops it, and the round's end takes it back). An older daemon's
+// ask of another round, on a claim that answered its current round, is not excepted: the answered
+// round holds it, and the sendPending that runs after the round ends drops it. It is built from
 // sendPending's own hold rather than written out again, so the restore that reads it
 // (NewMachine) can never judge a task held that sendPending would send, or the other way about.
 func (c Claim) openRoundHoldsTask() bool {
@@ -808,17 +825,19 @@ func (c Claim) openRoundHoldsTask() bool {
 // could be worked with. So such a task waits for the credit and then for the replacement
 // process's ready, which is the same wait every other task of that claim is already in.
 //
-// This daemon queues no ask of an update round as a task: it publishes the ask to the role's
-// Envoy topic (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one
-// an older daemon queued, and a claim restored from the store can hold one. Such a task is
-// dropped here and never sent, whichever round it names, the round the claim is in now included.
+// This daemon queues no ask of an update round as a task: it publishes the ask to the Envoy topic
+// of the claim it asks (record.UpdateAsk.Claim). A task under an `update:` delivery id
+// (updateTaskPrefix) is one an older daemon queued, and a claim restored from the store can hold
+// one. Such a task is dropped here and never sent, whichever round it names, the round the claim
+// is in now included.
 // Its text is the older daemon's, and that text can tell the worker that the daemon reads the end
 // of the turn as its answer. This daemon reads no end of a turn as an answer: only the worker's
 // ready_for_update call answers a round. A worker that read that text would end its turn and
-// take the end for its answer, so this daemon never sends it; a role that read it before the
-// deploy gets the round's Envoy ask as well. A claim that has answered its open round reaches no
-// drop here (answeredOpenRound): the task waits for the round's end, which takes back an ask of
-// that round (dropUpdateTask), and the send after the end drops an ask of any other round here.
+// take the end for its answer, so this daemon never sends it; a worker that read it before the
+// deploy gets the round's ask on its claim's Envoy topic as well. A claim that has answered its
+// open round reaches no drop here (answeredOpenRound): the task waits for the round's end, which
+// takes back an ask of that round (dropUpdateTask), and the send after the end drops an ask of any
+// other round here.
 // The delivery id names the round, and keeps it across every take-back (rotateTaskID), so an ask
 // whose turn a death cut off comes back still an ask and is dropped here rather than sent again.
 // That drop and the phase check's are one shape below, and both leave through the answer every
@@ -896,13 +915,14 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	//
 	// holds is whether the delivery is still the claim's to send. An older daemon's ask of an
 	// update round never is, whichever round it names, and its issue's phase is not asked about.
-	// Nor is the daemon's own delivery of a relaunch's record whose record no longer tells
-	// (spent), whose sentence is all it carries; it names no phase either. says is whether a task
-	// that still holds has anything to say: a task queued for news of the approved design alone
-	// can have nothing left once the record is read again (currentNews), which is asked only of a
-	// task that holds, so a task its phase has left is dropped without a read of its news.
+	// Nor is the daemon's own delivery of a relaunch's record once neither record it tells, the
+	// let-go's or the role change's, tells any more (spent), whose sentences are all it carries; it
+	// names no phase either. says is whether a task that still holds has anything to say: a task
+	// queued for news of the approved design alone can have nothing left once the record is read
+	// again (currentNews), which is asked only of a task that holds, so a task its phase has left is
+	// dropped without a read of its news.
 	round, asks := updateRoundOf(p.ID)
-	spent := p.Relaunch() && !m.claim.EndedWork.Tells()
+	spent := p.Relaunch() && !m.claim.EndedWork.Tells() && !m.claim.RoleChange.Tells()
 	holds, says := !asks && !spent, true
 	if holds {
 		var err error
@@ -1685,8 +1705,8 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 // no send of a worker's task, the first or any resend after a busy answer, a lost answer or a
 // relaunch, goes out with the line its start was composed with. The task is marked as put to the
 // agent before the goroutine starts (Delivery.Prompted), whatever the agent then answers: from
-// here on, a prompt of it has gone out. Of the claim's two untold records, this marks which the
-// prompt carries the sentence of, as message composed it (Machine.carried), and tells neither, as
+// here on, a prompt of it has gone out. Of the claim's three untold records, this marks which the
+// prompt carries the sentence of, as message composed it (Machine.carried), and tells none, as
 // confirmCarrying states. Whether the send adopts the working copy first is decided here, under
 // the machine's lock, so the goroutine acts on the claim the hold in sendPending was decided
 // against.
@@ -1708,6 +1728,7 @@ func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
 	prompt, carried := d.message(m.claim)
 	m.carried.abandoned = m.carried.abandoned || carried.abandoned
 	m.carried.ended = m.carried.ended || carried.ended
+	m.carried.role = m.carried.role || carried.role
 	if p := m.claim.Pending; p != nil && p.ID == d.ID {
 		p.Prompted = true
 	}
@@ -1868,15 +1889,15 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // the delivery when the turn ends, and the handshake is what keeps when the worker took that
 // entry's work. The same write carries it, since the claim is half of it.
 //
-// This is also where the claim's two records of what became of the agent's earlier work — the
-// session the claim abandoned (AbandonedSession) and what the last let-go of its process ended
-// (EndedWork) — become told, and it is the rule every other mention of their telling points to.
-// A record is told at the confirmation of a prompt that carried its sentence to this process
-// (Delivery.message, Machine.carried), since the turn starting is the agent reading that prompt,
-// and it records the delivery whose confirmation told it (ToldBy). A confirmation later taken
-// back takes that telling back with it, so the next prompt carries the sentence again
-// (moveTelling); one a let-go takes back once the prompt's result has come keeps it
-// (interrupted). Neither is marked at the prompt's acknowledgement (acked): the pinned Oh My Pi
+// This is also where the claim's three records its agent is told of — the session the claim
+// abandoned (AbandonedSession), what the last let-go of its process ended (EndedWork) and the
+// other role the claim took (RoleChange) — become told, and it is the rule every other mention of
+// their telling points to. A record is told at the confirmation of a prompt that carried its
+// sentence to this process (Delivery.message, Machine.carried), since the turn starting is the
+// agent reading that prompt, and it records the delivery whose confirmation told it (ToldBy). A
+// confirmation later taken back takes that telling back with it, so the next prompt carries the
+// sentence again (moveTelling); one a let-go takes back once the prompt's result has come keeps it
+// (interrupted). None is marked at the prompt's acknowledgement (acked): the pinned Oh My Pi
 // acknowledges a prompt at its admission and can then answer it busy, and a sentence marked told
 // there would never reach the agent, since the prompt sent after the busy answer would carry none.
 // A turn whose prompt carried no sentence — one sent before the record was written, or one an
@@ -1884,8 +1905,8 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // carries the sentence again: told twice, never not at all. So it goes where a let-go cuts off a
 // turn that confirmed the task while the send of its prompt was still in flight or a prompt of the
 // task still waited on its result: that turn may have been another input's, so the let-go takes
-// the telling back (untellInFlight). Both records are the claim's fields, so they go in the same
-// write as the confirmation, and a restart reads both or neither. The one record told anywhere
+// the telling back (untellInFlight). The records are the claim's fields, so they go in the same
+// write as the confirmation, and a restart reads all of them or none. The one record told anywhere
 // else is the old session's record of a let-go, which the abandonment of that session ends by no
 // delivery (forgetSession, where that rule is written).
 //
@@ -1914,6 +1935,11 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 		e.Told, e.ToldBy = true, p.ID
 		m.log.Info("supervise: a turn took the prompt that told the agent what its relaunch ended",
 			"delivery", p.ID, "cause", e.Cause, "ended", e.Generation)
+	}
+	if r := &m.claim.RoleChange; m.carried.role && r.Tells() {
+		r.Told, r.ToldBy = true, p.ID
+		m.log.Info("supervise: a turn took the prompt that told the agent its claim took another role",
+			"delivery", p.ID, "from", r.From, "to", m.claim.Role)
 	}
 	if err := m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx))); err != nil {
 		return err
@@ -2138,6 +2164,22 @@ func abandonedTask(c Claim, last bool) string {
 		sentence += " Then continue the task."
 	}
 	return sentence + "\n\n"
+}
+
+// roleChangedTask begins the first prompt the agent of a claim that took another role takes in the
+// role it holds now (RoleChange, Delivery.message), or is the whole of the daemon's own delivery
+// where the claim holds no task (queueRelaunch). The claim kept its session (Machine.Rerole), so
+// the transcript that session resumes can hold a GitHub token of the earlier role's App that the
+// agent printed, which GitHub accepts for up to an hour, and nothing in the transcript says the
+// token is no longer the agent's to use. The sentence says that every token of an earlier role is
+// no longer the agent's to use though GitHub may accept it until it expires, and that the agent's
+// gh and git now act as the App of the role the claim holds, which its next generation's gh files
+// are minted for. It names no earlier role: two changes before the prompt, or one back to the role
+// the claim first held, leave tokens of every role between in the transcript.
+func roleChangedTask(c Claim) string {
+	return fmt.Sprintf("You now work as the %s of %s, and this claim held another role before. "+
+		"Any GitHub token you saw in an earlier role is no longer yours to use, though GitHub may accept it until it expires: do not use it. "+
+		"Your gh and git now act as the GitHub App of the %s role.\n\n", c.Role, c.Issue, c.Role)
 }
 
 // controllerAbandonedTask is abandonedTask for the project's controller: the session it replaces
@@ -2565,7 +2607,7 @@ func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 
 // moveTelling hands what the confirmation of delivery from told (confirmCarrying) to to, the id
 // that confirmation stands under from here on, and reports whether any record had a telling to
-// hand: each of the claim's two records whose ToldBy is from names to instead. to "" is the
+// hand: each of the claim's three records whose ToldBy is from names to instead. to "" is the
 // confirmation taken back, which tells nothing any more, so such a record goes back to untold and
 // the next prompt carries its sentence again. Its callers:
 //
@@ -2594,8 +2636,11 @@ func (m *Machine) moveTelling(from, to string) bool {
 	if e := &m.claim.EndedWork; e.Told && e.ToldBy == from {
 		e.Told, e.ToldBy, moved = to != "", to, true
 	}
+	if r := &m.claim.RoleChange; r.Told && r.ToldBy == from {
+		r.Told, r.ToldBy, moved = to != "", to, true
+	}
 	if moved && to == "" {
-		m.log.Info("supervise: the confirmation of the prompt that told the agent what became of its earlier work was taken back; the next prompt tells it again",
+		m.log.Info("supervise: the confirmation of the prompt that told the agent what became of its earlier work or role was taken back; the next prompt tells it again",
 			"delivery", from)
 	}
 	return moved

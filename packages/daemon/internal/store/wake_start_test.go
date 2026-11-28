@@ -53,7 +53,7 @@ func wakesBesideWork(t *testing.T, st *Store, entry, look bool) int64 {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if taken, err := st.TakePodWake(ctx, "legion", rootIssue, token, wake.kind, at, 0); err != nil || !taken {
+		if taken, err := st.TakePodWake(ctx, "legion", rootIssue, token, wake.role, wake.kind, at, 0); err != nil || !taken {
 			t.Fatalf("take the %s wake of the %s = %t, %v; want it taken", wake.kind, wake.role, taken, err)
 		}
 		queueWakeStart(t, st, wake.role, wake.kind)
@@ -142,9 +142,9 @@ func TestACancelKeepsAnEntryStartAndACheckLookQueuedBesideAWake(t *testing.T) {
 	st := migratedStore(t)
 	wakesBesideWork(t, st, true, true)
 	told := map[claim.Role]string{}
-	woken := func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
+	woken := func(token claim.Token, role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
 		told[role] = wake.Kind + "|" + wake.Detail + "|" + wake.Task
-		return resumeRow(role, generation, wake)
+		return resumeRow(token, role, generation, wake)
 	}
 
 	cancelled, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, woken, record.OutOfWorkflow,
@@ -231,7 +231,7 @@ func TestAStartQueuedIsNoProductionChecksLook(t *testing.T) {
 		var queued bool
 		inTx(t, st, func(tx pgx.Tx) error {
 			var err error
-			queued, err = records.StartQueued(context.Background(), tx, rootIssue, claim.RoleImplementer, 1)
+			queued, err = records.StartQueued(context.Background(), tx, rootIssue, releasedToken, claim.RoleImplementer, 1)
 			return err
 		})
 		return queued
@@ -265,7 +265,7 @@ func TestAStartQueuedIsNoArchitectsStartOfNewsAlone(t *testing.T) {
 		var queued bool
 		inTx(t, st, func(tx pgx.Tx) error {
 			var err error
-			queued, err = records.StartQueued(context.Background(), tx, rootIssue, claim.RoleArchitect, 1)
+			queued, err = records.StartQueued(context.Background(), tx, rootIssue, rootToken(claim.RoleArchitect), claim.RoleArchitect, 1)
 			return err
 		})
 		return queued
@@ -300,7 +300,7 @@ func TestACancelDeletesTheResumeOfAWakeWhoseClaimAnOperatorTookOver(t *testing.T
 	boundary, stop, _ := releaseTwoRolesThroughTheStore(t, st)
 	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
 	stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
-	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeChecks, at, 0); err != nil || !taken {
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer, pods.WakeChecks, at, 0); err != nil || !taken {
 		t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
 	}
 	queueWakeStart(t, st, claim.RoleImplementer, pods.WakeChecks)
@@ -341,7 +341,7 @@ func TestACancelRetellsTheKeptStartOfAWakeWhoseClaimAnOperatorTookOver(t *testin
 			boundary, stop, _ := releaseTwoRolesThroughTheStore(t, st)
 			stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
 			stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
-			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeRoleMessage, time.Now().UTC(), 0); err != nil || !taken {
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer, pods.WakeRoleMessage, time.Now().UTC(), 0); err != nil || !taken {
 				t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
 			}
 			queueWakeStart(t, st, claim.RoleImplementer, pods.WakeRoleMessage)
@@ -496,7 +496,7 @@ func TestACancelKeepsThePausesOwedLaunchOfARoleAnOperatorTookOver(t *testing.T) 
 	pause, _ := pauseLegion(t, st, time.Now().UTC())
 	records := podRecords(t, st)
 	inTx(t, st, func(tx pgx.Tx) error {
-		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakePause, time.Now().UTC(), pause.ID); err != nil || !taken {
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakePause, time.Now().UTC(), pause.ID); err != nil || !taken {
 			t.Fatalf("take the pause's owed launch of the implementer = %t, %v; want it taken", taken, err)
 		}
 		return nil
@@ -612,7 +612,7 @@ func earlierDaemonsWakes(t *testing.T, st *Store) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if taken, err := st.TakePodWake(ctx, "legion", rootIssue, token, wake.kind, at, 0); err != nil || !taken {
+		if taken, err := st.TakePodWake(ctx, "legion", rootIssue, token, wake.role, wake.kind, at, 0); err != nil || !taken {
 			t.Fatalf("take the %s wake of the %s = %t, %v; want it taken", wake.kind, wake.role, taken, err)
 		}
 	}
@@ -685,9 +685,9 @@ func TestAStartAnEarlierDaemonQueuedWithNoDetailKeepsItsTask(t *testing.T) {
 		earlierDaemonsWakes(t, st)
 		logged := captureLog(t, st.Pool())
 		told := map[claim.Role]DroppedWake{}
-		woken := func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
+		woken := func(token claim.Token, role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
 			told[role] = wake
-			return resumeRow(role, generation, wake)
+			return resumeRow(token, role, generation, wake)
 		}
 		if _, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, woken, record.OutOfWorkflow,
 			ReleaseCancelPause{At: time.Now().UTC()}); err != nil {
@@ -756,16 +756,16 @@ func wakeOfAnotherKindUnderTheMark(t *testing.T, st *Store) string {
 	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
 	stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
 	at := time.Now().UTC()
-	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeChecks, at, 0); err != nil || !taken {
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer, pods.WakeChecks, at, 0); err != nil || !taken {
 		t.Fatalf("take the implementer's settlement wake = %t, %v; want it taken", taken, err)
 	}
 	task := renderedWake(pods.WakeChecks, settledHead, "released") + roundSentences
-	queueSupervise(t, st, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer, Generation: 1,
+	queueSupervise(t, st, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer, Claim: releasedToken, Generation: 1,
 		Task: task, WakeKind: pods.WakeChecks, WakeDetail: settledHead})
 	if _, err := st.Pool().Exec(ctx, `update pod_resumes set closed_at = $2 where issue = $1 and role = 'implementer'`, rootIssue, at); err != nil {
 		t.Fatalf("close the implementer's settlement resume: %v", err)
 	}
-	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeBackstop, at.Add(time.Minute), 0); err != nil || !taken {
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer, pods.WakeBackstop, at.Add(time.Minute), 0); err != nil || !taken {
 		t.Fatalf("take the implementer's backstop wake = %t, %v; want it taken", taken, err)
 	}
 	return task
@@ -826,9 +826,9 @@ func TestARetellRendersAWakesStartFromTheKindItsTaskWasRenderedWith(t *testing.T
 		st := migratedStore(t)
 		task := wakeOfAnotherKindUnderTheMark(t, st)
 		told := map[claim.Role]DroppedWake{}
-		woken := func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
+		woken := func(token claim.Token, role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
 			told[role] = wake
-			return resumeRow(role, generation, wake)
+			return resumeRow(token, role, generation, wake)
 		}
 		if _, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, woken, record.OutOfWorkflow,
 			ReleaseCancelPause{At: time.Now().UTC()}); err != nil {

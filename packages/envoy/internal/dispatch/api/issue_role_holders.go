@@ -14,18 +14,20 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
-	"github.com/sjawhar/envoy/internal/legionagents"
-	"github.com/sjawhar/envoy/internal/legionrole"
+	"github.com/sjawhar/envoy/internal/legionclaim"
 )
 
-// An issue's role holders are the sessions that hold its Legion roles, one session for each role
-// (issue_role_holders, migration 20261116163813_issue_role_holders). The Legion daemon is the one
-// party that gives a session a role. It publishes the set of each issue here: when a claim
-// readies, when a claim ends and at each boot. A claim whose idle pod the daemon released, or that
-// a project pause's stop suspended, keeps its session and its role, so its session stays in the
-// set until the claim ends (packages/daemon's supervise.HoldsRole). The results route of a later
-// release reads the set in the write transaction of a result (heldRole), so that the stored role
-// of a result is the role that its session holds.
+// An issue's role holders are the sessions that hold its Legion roles, each with the claim it holds
+// its role by (issue_role_holders, migrations 20261116163813_issue_role_holders and
+// 20261124213825_issue_role_holders_by_session). Two claims of one issue can hold one role — the
+// agent of a key on a step of another role, beside that role's own claim of an earlier version of
+// the plan — so a role can have more than one session, and each session holds one role. The
+// Legion daemon is the one party that gives a session a role. It publishes the set of each issue
+// here: when a claim readies, when a claim ends and at each boot. A claim whose idle pod the daemon
+// released, or that a project pause's stop suspended, keeps its session and its role, so its
+// session stays in the set until the claim ends (packages/daemon's supervise.HoldsRole). The
+// results route of a later release reads the set in the write transaction of a result (heldRole),
+// so that the stored role of a result is the role that its session holds.
 //
 // With DISPATCH_LEGION_STATUS_SCOPE on, only a Legion daemon's own broker token can publish. It
 // must hold model.ScopeLegionStatus. It must prove session legion-daemon:<project> of the issue's
@@ -70,22 +72,23 @@ import (
 // role_holders_publish row per issue, and a lane runs its issue's rows one at a time
 // (packages/daemon's internal/daemon/outbox_lanes.go, the lanes' comment).
 //
-// Each write that changes the set appends one issue event, issue.role_holders_changed
-// (issueRoleHoldersChange), in the transaction that stores the set: the set before the write and
-// the set it stored, each in the order the routes answer, as the daemon's session and at the time
-// of the write, which is the event's own time. So the issue's event log says which session held
-// each role at a past time, which the set alone cannot: a reader that judges a comment by the role
-// its author held when it wrote it, such as a review gate that counts an approval of a parent's
-// architect, reads the newest such event at or before that comment. The log starts at the release
-// that writes the event: a change made before it has no event. A write that stores the set already
-// stored, as the daemon's publication at each boot does, appends nothing, so a republished set
-// moves no issue's sequence or activity feed. The event is quiet (events.Quiet), since it is the
-// daemon's own record of what it did: it wakes nobody, and the daemon's intake reads no fact from
-// it (packages/daemon's intake.decodeDispatchEvent passes over a type it does not act on). It
-// moves the issue's sequence, as every issue event does, so a fenced daemon write that read the
-// issue before it is refused ISSUE_CHANGED and read again (packages/daemon's
-// dispatch.HTTPClient.SetStatusAt). The write takes a closed issue, because the tester's production
-// check runs after the close.
+// Each write that changes which session holds which role (sameRoleHolders) appends one issue
+// event, issue.role_holders_changed (issueRoleHoldersChange), in the transaction that stores the
+// set: the set before the write and the set it stored, each in the order the routes answer, as the
+// daemon's session and at the time of the write, which is the event's own time. So the issue's
+// event log says which session held each role at a past time, which the set alone cannot: a reader
+// that judges a comment by the role its author held when it wrote it, such as a review gate that
+// counts an approval of a parent's architect, reads the newest such event at or before that
+// comment. The log starts at the release that writes the event: a change made before it has no
+// event. A write that keeps each role with the sessions that held it appends nothing - one that
+// stores the set already stored, as the daemon's publication at each boot does, and one that
+// changes only a holder's claim or works_step - so a republished set moves no issue's sequence or
+// activity feed. The event is quiet (events.Quiet), since it is the daemon's own record of what it
+// did: it wakes nobody, and the daemon's intake reads no fact from it (packages/daemon's
+// intake.decodeDispatchEvent passes over a type it does not act on). It moves the issue's sequence,
+// as every issue event does, so a fenced daemon write that read the issue before it is refused
+// ISSUE_CHANGED and read again (packages/daemon's dispatch.HTTPClient.SetStatusAt). The write takes
+// a closed issue, because the tester's production check runs after the close.
 
 // issueRoleHoldersChange is the payload of issue.role_holders_changed: the issue, the set this
 // write stored and the set it replaced, each pair with the time Dispatch first stored it.
@@ -103,25 +106,35 @@ func sameRoleHolders(a, b []issueRoleHolderRecord) bool {
 	})
 }
 
-// issueRoleHolder is one pair of a publication: a role of the issue and the session that holds it.
-// Both are required: the route refuses a pair that leaves either out. The role is one of Legion's
+// issueRoleHolder is one holder of a publication: a role of the issue, the session that holds it,
+// the claim it holds the role by and whether that claim works the role's step. Role and session
+// are required: the route refuses a holder that leaves either out. The role is one of Legion's
 // six or a role the deployment defines, a name of the role grammar but the controller's
-// (legionrole.IsRole), so the shape spells the grammar and lists no roles.
+// (legionclaim.IsRole), so the shape spells the grammar and lists no roles. The claim is the
+// Legion claim token of the issue the session runs (legionclaim.CutClaimToken), and works_step
+// is true for the claim the daemon's record gives the role's step: two claims of one issue can
+// hold one role, and the way back of 20261124213825 keeps that claim's session where it folds a
+// role back to one session. A daemon before that release names neither, which reads as no claim
+// and no step.
 type issueRoleHolder struct {
-	Role    string `json:"role" required:"true" pattern:"^[a-z][a-z0-9-]{0,31}$"`
-	Session string `json:"session" required:"true"`
+	Role      string `json:"role" required:"true" pattern:"^[a-z][a-z0-9-]{0,31}$"`
+	Session   string `json:"session" required:"true"`
+	Claim     string `json:"claim,omitempty"`
+	WorksStep bool   `json:"works_step,omitempty"`
 }
 
-// issueRoleHolderRecord is one stored pair, with the time Dispatch first stored it. A publication
-// that names the same pair again keeps that time.
+// issueRoleHolderRecord is one stored holder, with the time Dispatch first stored it. A
+// publication that names the same role, session and claim again keeps that time.
 type issueRoleHolderRecord struct {
 	Role       string    `json:"role" pattern:"^[a-z][a-z0-9-]{0,31}$"`
 	Session    string    `json:"session"`
+	Claim      string    `json:"claim"`
+	WorksStep  bool      `json:"works_step"`
 	RecordedAt time.Time `json:"recorded_at"`
 }
 
 // issueRoleHolders is the stored set both routes answer: the issue and its holders, Legion's six in
-// the order of legionagents.Roles, the order of the default steps, then every role the deployment
+// the order of legionclaim.Roles, the order of the default steps, then every role the deployment
 // defines by name. An issue where no session holds a role answers [].
 type issueRoleHolders struct {
 	Issue   string                  `json:"issue"`
@@ -197,20 +210,21 @@ func heldRole(ctx context.Context, q queryer, issueKey, session string) (string,
 }
 
 // issueRoleHoldersStatement reads an issue and its stored set, $1 the issue's key and $2 Legion's
-// roles in the order of the default steps, which is the order the set is answered in, every other role after them
-// by name. The left join answers one row with no holder for an issue where no session holds a
-// role, and no row for a key that no issue carries, so one statement says both.
+// roles in the order of the default steps, which is the order the set is answered in, every other
+// role after them by name, and the sessions of one role by session. The left join answers one row
+// with no holder for an issue where no session holds a role, and no row for a key that no issue
+// carries, so one statement says both.
 const issueRoleHoldersStatement = `
-	select i.key, h.role, h.session, h.recorded_at
+	select i.key, h.role, h.session, h.claim, h.works_step, h.recorded_at
 	from issues i
 	left join issue_role_holders h on h.issue_key = i.key
 	where i.key = $1
-	order by array_position($2::text[], h.role) nulls last, h.role
+	order by array_position($2::text[], h.role) nulls last, h.role, h.session
 `
 
 // readIssueRoleHolders answers the stored set of issueKey, and false when no issue carries the key.
 func readIssueRoleHolders(ctx context.Context, q queryer, issueKey string) (issueRoleHolders, bool, error) {
-	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionagents.Roles)
+	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionclaim.Roles)
 	if err != nil {
 		return issueRoleHolders{}, false, err
 	}
@@ -218,14 +232,16 @@ func readIssueRoleHolders(ctx context.Context, q queryer, issueKey string) (issu
 	read := issueRoleHolders{Holders: []issueRoleHolderRecord{}}
 	found := false
 	for rows.Next() {
-		var role, session *string
+		var role, session, claim *string
+		var worksStep *bool
 		var recordedAt *time.Time
-		if err := rows.Scan(&read.Issue, &role, &session, &recordedAt); err != nil {
+		if err := rows.Scan(&read.Issue, &role, &session, &claim, &worksStep, &recordedAt); err != nil {
 			return issueRoleHolders{}, false, err
 		}
 		found = true
 		if role != nil {
-			read.Holders = append(read.Holders, issueRoleHolderRecord{Role: *role, Session: *session, RecordedAt: *recordedAt})
+			read.Holders = append(read.Holders, issueRoleHolderRecord{Role: *role, Session: *session, Claim: *claim,
+				WorksStep: *worksStep, RecordedAt: *recordedAt})
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -256,21 +272,26 @@ const maxRoleHolderSessionBytes = 256
 // on, every other credential is refused 403 ROLE_HOLDER_FORBIDDEN. With it off, the actor must be
 // that session (this file's comment).
 //
-// The daemon sends the issue's whole set, so the transaction deletes each stored pair that the
-// body does not name, then inserts the pairs that are not stored yet. A pair that changed is
-// deleted before the insert, so the insert meets neither key of the table, and a pair that did not
-// change keeps its recorded_at. The delete statement writes daemon_proven, whether the credential
-// is the daemon's own, on each stored pair the body keeps, and the insert writes it on each pair it
-// adds, with the setting on or off. The answer does not carry the mark.
+// The daemon sends the issue's whole set, so the transaction deletes each stored holder whose role,
+// session and claim the body does not name together, then writes each holder by its session, which
+// keeps one row a session: a holder whose role, session and claim did not change keeps its row,
+// recorded_at included, and is written again only where whether its claim works the role's step
+// changed, so a publication that changes nothing writes no row. A holder that changed is deleted
+// before the write, so the write meets the session key alone. The delete statement writes
+// daemon_proven, whether the credential is the daemon's own, on each stored holder the body keeps,
+// and the insert writes it on each holder it adds, with the setting on or off. The answer does not
+// carry the mark.
 //
 // The body is checked whole before the transaction opens: each role is a role of an issue
-// (legionrole.IsRole: one of Legion's six or a role the deployment defines), once, and each
-// session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A body
-// that fails is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a check or
-// an index of the table, whose check takes the same roles. On a project whose proven_sessions is
-// on, a write whose credential does not prove its actor's session, the session of the issue's
-// project's daemon or of another project's daemon (isIssueDaemon), is 403 ROLE_HOLDER_NOT_PROVEN,
-// after those refusals; a write the route takes marks the issue's project in its transaction
+// (legionclaim.IsRole: one of Legion's six or a role the deployment defines), and may be named for
+// several sessions, since two claims of one issue can hold one role; each session is a session id
+// (text.IsSessionID) of at most maxRoleHolderSessionBytes, once; and each claim named is a claim
+// token of this issue (legionclaim.CutClaimToken), once. A body that fails is 400
+// INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a check or an index of the
+// table, whose check takes the same roles. On a project whose proven_sessions is on, a write whose
+// credential does not prove its actor's session, the session of the issue's project's daemon or of
+// another project's daemon (isIssueDaemon), is 403 ROLE_HOLDER_NOT_PROVEN, after those refusals; a
+// write the route takes marks the issue's project in its transaction
 // (project_role_holder_marks).
 func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	var input issueRoleHoldersInput
@@ -315,17 +336,26 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	holders := *input.Holders
 	roles := make([]string, len(holders))
 	sessions := make([]string, len(holders))
+	claims := make([]string, len(holders))
+	worksStep := make([]bool, len(holders))
 	for index, holder := range holders {
-		if !legionrole.IsRole(holder.Role) {
+		if !legionclaim.IsRole(holder.Role) {
 			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
 				"%s is no role of an issue. A role is a name of %s other than controller: one of %s, or a role the deployment defines.",
-				holder.Role, legionrole.Pattern, strings.Join(legionagents.Roles, ", ")))
+				holder.Role, legionclaim.RolePattern, strings.Join(legionclaim.Roles, ", ")))
 			return
 		}
-		if slices.Contains(roles[:index], holder.Role) {
-			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
-				"%s is named twice. Name each role once.", holder.Role))
-			return
+		if holder.Claim != "" {
+			if _, claimed, _, ok := legionclaim.CutClaimToken(holder.Claim); !ok || claimed != key {
+				writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+					"%s is no claim of %s. A claim is the Legion claim token of an agent of the issue.", holder.Claim, key))
+				return
+			}
+			if slices.Contains(claims[:index], holder.Claim) {
+				writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+					"claim %s is named twice. A claim holds one role of an issue.", holder.Claim))
+				return
+			}
 		}
 		if strings.TrimSpace(holder.Session) == "" {
 			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
@@ -340,11 +370,13 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		}
 		if slices.Contains(sessions[:index], holder.Session) {
 			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
-				"session %s is named for two roles. A session holds one role of an issue.", holder.Session))
+				"session %s is named twice. A session holds one role of an issue.", holder.Session))
 			return
 		}
 		roles[index] = holder.Role
 		sessions[index] = holder.Session
+		claims[index] = holder.Claim
+		worksStep[index] = holder.WorksStep
 	}
 
 	tx, err := s.begin(r.Context())
@@ -394,28 +426,29 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	// Keep all three operations in one statement so no statement is added to the transaction ID window.
 	if _, err := tx.Exec(r.Context(), `
 		with marked_project as (
-			insert into project_role_holder_marks (project_key) values ($5) on conflict do nothing
+			insert into project_role_holder_marks (project_key) values ($6) on conflict do nothing
 		), marked_pairs as (
-			update issue_role_holders set daemon_proven = $4
-			where issue_key = $1 and daemon_proven <> $4
-			  and (role, session) in (select * from unnest($2::text[], $3::text[]))
+			update issue_role_holders set daemon_proven = $5
+			where issue_key = $1 and daemon_proven <> $5
+			  and (role, session, claim) in (select * from unnest($2::text[], $3::text[], $4::text[]))
 		)
 		delete from issue_role_holders
 		where issue_key = $1
-		  and (role, session) not in (select * from unnest($2::text[], $3::text[]))
-	`, issue, roles, sessions, daemonProven, project); err != nil {
+		  and (role, session, claim) not in (select * from unnest($2::text[], $3::text[], $4::text[]))
+	`, issue, roles, sessions, claims, daemonProven, project); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The delete above is the whole of the publication that names no holder, so the insert runs
-	// only when there is a pair to write.
+	// The delete above is the whole of the publication that names no holder, so the write runs
+	// only when there is a holder to write.
 	if len(holders) > 0 {
 		if _, err := tx.Exec(r.Context(), `
-			insert into issue_role_holders (issue_key, role, session, daemon_proven)
-			select $1::text, published.role, published.session, $4::boolean
-			from unnest($2::text[], $3::text[]) as published(role, session)
-			on conflict (issue_key, role) do nothing
-		`, issue, roles, sessions, daemonProven); err != nil {
+			insert into issue_role_holders (issue_key, role, session, claim, works_step, daemon_proven)
+			select $1::text, published.role, published.session, published.claim, published.works_step, $6::boolean
+			from unnest($2::text[], $3::text[], $4::text[], $5::boolean[]) as published(role, session, claim, works_step)
+			on conflict (issue_key, session) do update set works_step = excluded.works_step
+			where issue_role_holders.works_step is distinct from excluded.works_step
+		`, issue, roles, sessions, claims, worksStep, daemonProven); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

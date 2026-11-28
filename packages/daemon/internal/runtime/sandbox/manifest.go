@@ -416,6 +416,10 @@ type launch struct {
 	// role Secret records (GitHubDefaultKey, launcherBound), the projection being the pod's own.
 	gitHubDirs    []string
 	gitHubDefault string
+	// gitHubCredential is what the slot's gh files must hold before the child starts, which a
+	// launch into a pod it keeps writes just before its start (writeLaunchCredential); nil for a
+	// launch that builds its pod, whose Secret is written before the pod starts.
+	gitHubCredential *shimwire.LauncherGitHubCredential
 	// gh is the image's real gh (Tools.GH), every agent's LEGION_GH_PATH.
 	gh string
 	// claude is what a Claude Code launch needs beyond an Oh My Pi one, resolved once in prepare
@@ -836,7 +840,8 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		if spec.ResumeSession != "" {
 			return launch{}, refuse("a Claude Code claim resumes its session from its recorded transcript, never by the session id %s alone", spec.ResumeSession)
 		}
-		mcp, err := claudelaunch.MCPConfig(claudeBun, claudePluginDir, claudeConfigDir(spec.Role))
+		slot, _ := spec.Claim.Slot()
+		mcp, err := claudelaunch.MCPConfig(claudeBun, claudePluginDir, claudeConfigDir(slot))
 		if err != nil {
 			return launch{}, refuse("its Claude Code MCP configuration: %v", err)
 		}
@@ -846,7 +851,7 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		// (claudeResumeSession, runtime/tmux/claude.go): a transcript of this pod's own Claude
 		// Code directory and nothing else. One that starts a session names a fresh uuid.
 		if spec.ResumeSessionFile != "" {
-			session, err := claudelaunch.ResumeSession(claudeConfigDir(spec.Role), spec.ResumeSessionFile)
+			session, err := claudelaunch.ResumeSession(claudeConfigDir(slot), spec.ResumeSessionFile)
 			if err != nil {
 				return launch{}, refuse("%v", err)
 			}
@@ -981,7 +986,8 @@ func (l launch) agentArgv(agent []string) []string {
 	}
 	envoy, legion := envoyPlugin, legionPlugin
 	if l.spec.Plugins != nil {
-		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
+		slot, _ := l.spec.Claim.Slot()
+		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(slot), l.spec.Generation))
 	}
 	model := "@default"
 	if l.spec.Model != "" {
@@ -1003,8 +1009,9 @@ func (l launch) agentArgv(agent []string) []string {
 
 // claudeArgv is the command the shim runs for a Claude Code role: the agent command
 // claudelaunch.Argv builds around the `legion claude-bridge` the pod runs it under, naming the
-// Claude Code this generation's start script installed (claudeCodeBinary, under the role's state
-// home: the image carries none) and the image's claude-envoy root (claudePluginDir), reading the
+// Claude Code this generation's start script installed (claudeCodeBinary, under the state home of
+// the claim's slot, claim.Token.Slot, whatever role its step is on: the image carries none) and the
+// image's claude-envoy root (claudePluginDir), reading the
 // MCP document its launcher writes into this generation's private directory (claudeMCPFile), and
 // `--append-system-prompt-file` naming the system prompt file the same launcher writes beside it
 // (systemPromptPath), the file the Oh My Pi branch names too: a pod cannot read the daemon's
@@ -1018,7 +1025,8 @@ func (l launch) agentArgv(agent []string) []string {
 // My Pi override, does not reach here: the Claude command is the runtime's, as the tmux lane's is
 // the host's boot-resolved one.
 func (l launch) claudeArgv() []string {
-	claude := claudeCodeBinary(roleStateHome(l.spec.Role), l.spec.Generation)
+	slot, _ := l.spec.Claim.Slot()
+	claude := claudeCodeBinary(roleStateHome(slot), l.spec.Generation)
 	paths := claudelaunch.Paths{Legion: l.claude.legion, Claude: claude, PluginDir: claudePluginDir}
 	return claudelaunch.Argv(paths, generationDir(l.spec.Generation)+"/"+claudeMCPFile, l.claude.session, l.claude.resume,
 		systemPromptPath(l.spec.Generation), l.spec.Model)
@@ -1637,15 +1645,16 @@ func composeEntry(env []corev1.EnvVar, name string, compose func(operator string
 // The XDG base directories, at the standard offsets from the image's HOME: what the issue pod's
 // workspace-init is told (xdgEnvironment), the state home xdgStateHome itself there. A role is
 // told none of the three home-directory ones: its cache and data homes are the issue's
-// scratch's, shared with every other role of the pod, and its state home a directory per role under
-// that scratch (roleEnvironment). The config home is the one path a role is told the same as
+// scratch's, shared with every other role of the pod, and its state home a directory per slot,
+// named for the agent that runs in it, under that scratch (roleEnvironment, roleStateHome). The
+// config home is the one path a role is told the same as
 // workspace-init. There it is the pod's shared in-memory volume: jj keeps a repository's `--repo`
 // configuration under $XDG_CONFIG_HOME/jj/repos/, so workspace-init writes Legion's settings of the
 // issue's clone there (git.abandon-unreachable-commits false, no repository identity). In an issue
 // pod's roles container that volume is under launcher.HomeMountsDir, which no role sees, and each
-// role's role-init binds the role's own config home at the path instead, a copy of the shared one
-// made once per pod (launcher.ConfigHomeDir): the role's jj reads Legion's settings, and what a
-// role writes there — a git `core.fsmonitor`, a jj alias — never runs in another role's git or
+// slot's role-init binds the slot's own config home at the path instead, a copy of the shared one
+// made once per pod (launcher.ConfigHomeDir): the agent's jj reads Legion's settings, and what an
+// agent writes there — a git `core.fsmonitor`, a jj alias — never runs in another slot's git or
 // jj. The shared volume starts empty in every pod, and no role writes it, so nothing an agent wrote
 // reaches workspace-init's jj.
 const (
@@ -1657,8 +1666,8 @@ const (
 
 // xdgEnvironment is the four XDG base directories on the image's HOME: what the issue pod's
 // workspace-init is told (initEnvironment). A role is told none of the three home-directory ones
-// but the config home, at whose path it sees its own; its cache and data homes are the issue's
-// scratch's and its state home a directory per role there (roleEnvironment).
+// but the config home, at whose path it sees its slot's own; its cache and data homes are the
+// issue's scratch's and its state home a directory per slot there (roleEnvironment).
 func xdgEnvironment() []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "XDG_CONFIG_HOME", Value: xdgConfigHome},
@@ -1670,7 +1679,8 @@ func xdgEnvironment() []corev1.EnvVar {
 
 // scratchRoot is the issue's scratch, on the issue's volume, which every launcher container
 // mounts whole at TreeRoot: the four directories every role of the pod is told the same one of
-// (roleEnvironment) and `state`, which holds one state home per role (roleStateHome).
+// (roleEnvironment) and `state`, which holds one state home per slot, each named for the agent
+// that runs in it (roleStateHome).
 const scratchRoot = TreeRoot + "/scratch"
 
 // roleEnvironment is where a role's agent puts what it writes without being told where:
@@ -1690,21 +1700,22 @@ const scratchRoot = TreeRoot + "/scratch"
 // installs for (LEGION-198, where that hardlinking was first met), and the issue's roles share one
 // checkout — workspace.Location names the repository and the issue, never a role — so a file
 // edited in place inside node_modules is already in the packages every role runs from, whatever we
-// do about caches. XDG_STATE_HOME alone stays the role's own (roleStateHome), and for a mechanism
-// rather than caution: Oh My Pi names its browser broker's lock from the state root, the name is
-// an abstract unix socket, and an abstract socket name is one name across every container of the
-// pod, so one state home would block every role's broker but the first. Only the config home is
-// neither the issue's scratch nor a directory of it: each role sees its own at xdgConfigHome,
+// do about caches. XDG_STATE_HOME alone stays one per slot, the agent's own whatever role its step
+// is on (roleStateHome), and for a mechanism rather than caution: Oh My Pi names its browser
+// broker's lock from the state root, the name is an abstract unix socket, and an abstract socket
+// name is one name across every container of the pod, so one state home would block every agent's
+// broker but the first. Only the config home is
+// neither the issue's scratch nor a directory of it: each slot's agent sees its own at xdgConfigHome,
 // which role-init seeds from the pod's shared in-memory volume, where workspace-init writes the jj
 // configuration the agents' jj reads. None of these directories outlives the pod: the issue's disk
 // is the pod's own generic ephemeral volume, so a later pod of the issue downloads and builds
 // again, and the sharing here is between the roles of one pod, not between pods.
-func roleEnvironment(role claim.Role) []corev1.EnvVar {
+func roleEnvironment(slot claim.Agent) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "XDG_CONFIG_HOME", Value: xdgConfigHome},
 		{Name: "XDG_CACHE_HOME", Value: scratchRoot + "/cache"},
 		{Name: "XDG_DATA_HOME", Value: scratchRoot + "/data"},
-		{Name: "XDG_STATE_HOME", Value: roleStateHome(role)},
+		{Name: "XDG_STATE_HOME", Value: roleStateHome(slot)},
 		{Name: "TMPDIR", Value: scratchRoot + "/tmp"},
 		{Name: "GOCACHE", Value: goBuildCache},
 		{Name: "GOMODCACHE", Value: goModCache},
@@ -1712,9 +1723,12 @@ func roleEnvironment(role claim.Role) []corev1.EnvVar {
 	}
 }
 
-// roleStateHome is the XDG_STATE_HOME a role's agent is told, `/legion/scratch/state/<role>`: the
-// one directory of the issue's scratch that is one per role rather than one for the issue, in a pod
-// whose roles share the network namespace, the workspace path and the rest of that
+// roleStateHome is the XDG_STATE_HOME the agent in slot is told, `/legion/scratch/state/<slot>`,
+// the slot being the agent's name (claim.Token.Slot) whatever role its step is on, so each
+// generation of one
+// agent finds the state its earlier ones left: the one directory of the issue's scratch that is one
+// per slot rather than one for the issue, in a pod whose roles share the network namespace, the
+// workspace path and the rest of that
 // scratch. Oh My Pi keeps its browser broker's lock under its state root (`run/daemons/<hash of
 // the workspace's real path>/broker.pid`), taken as an abstract unix socket named from the lock
 // path, and an abstract socket name is one name across every role of the pod, whose namespaces
@@ -1730,18 +1744,19 @@ func roleEnvironment(role claim.Role) []corev1.EnvVar {
 // charged to neither — and, unlike the container's own filesystem, the state home outlives a
 // restart of the `roles` container, though not the pod, whose own ephemeral volume the issue's
 // disk is.
-func roleStateHome(role claim.Role) string {
-	return scratchRoot + "/state/" + string(role)
+func roleStateHome(slot claim.Agent) string {
+	return scratchRoot + "/state/" + string(slot)
 }
 
-// claudeConfigDir is a Claude Code role's CLAUDE_CONFIG_DIR, `<role state home>/claude`: its
-// transcripts, its plugin data and the rest of Claude Code's own state. It is the role's own
-// directory of the issue's scratch (roleStateHome), so it is writable by the pod's uid and gid
-// 1000 and is no other role's; like the rest of the pod's disk it lives and dies with the pod
-// (INFRA-80). Nothing in the image makes it: the generation's start script does, before the agent
-// execs (startScript).
-func claudeConfigDir(role claim.Role) string {
-	return roleStateHome(role) + "/claude"
+// claudeConfigDir is the CLAUDE_CONFIG_DIR of a Claude Code agent in slot, `<slot state
+// home>/claude`: its transcripts, its plugin data and the rest of Claude Code's own state. It is
+// the slot's own directory of the issue's scratch (roleStateHome), so it is writable by the pod's
+// uid and gid 1000 and is no other agent's, and a generation of the agent on another role resumes
+// the transcripts its earlier ones left; like the rest of the pod's disk it lives and dies with
+// the pod (INFRA-80). Nothing in the image makes it: the generation's start script does, before the
+// agent execs (startScript).
+func claudeConfigDir(slot claim.Agent) string {
+	return roleStateHome(slot) + "/claude"
 }
 
 // uv's settings in the worker container, which the pod's environment hands the image's uv.
@@ -1782,14 +1797,14 @@ const (
 	// (`go help module-auth`) in a directory it then makes read-only, which only `go build
 	// -modcacherw` leaves writable. They are the issue's rather than the tree's because each issue
 	// has a volume of its own; a pair is 751 MiB of build cache and 375 MiB of module cache for this
-	// repository, so roles with a pair each would hold a redundant copy for each role but one, five
-	// for Legion's six roles, about 5.5 GiB of the issue's volume spent on nothing. They keep their
-	// own place at `/legion/go`, beside the workspaces rather than under the issue's scratch
-	// (scratchRoot), where they were the issue's one pair before the rest of the scratch became the
-	// issue's too.
-	// The state home is the one directory of that scratch no two roles share: Oh My Pi's browser
+	// repository, so the roles of an issue pod, Legion's six and each role of the deployment, with a
+	// pair each would hold a redundant copy for every role but one, five for the six alone,
+	// about 5.5 GiB of the issue's volume spent on nothing. They keep their own place at
+	// `/legion/go`, beside the workspaces rather than under the issue's scratch (scratchRoot),
+	// where they were the issue's one pair before the rest of the scratch became the issue's too.
+	// The state home is the one directory of that scratch no two slots share: Oh My Pi's browser
 	// broker takes its lock as an abstract unix socket named from a path under the state home, one
-	// name across every container of the pod, so one state home would block every role's broker
+	// name across every container of the pod, so one state home would block every agent's broker
 	// but the first (roleStateHome).
 	goBuildCache = TreeRoot + "/go/build"
 	goModCache   = TreeRoot + "/go/mod"
@@ -1878,7 +1893,8 @@ func (r *Runtime) LaunchBound() time.Duration {
 // and the daemon an operator's variable naming one of the runtime's or a spec's. The temporary
 // directory, XDG homes and tool caches are the issue pod's disk's (roleEnvironment) — the issue's
 // scratch and its Go caches, which every role of it is told the same of, but the state home, one
-// per role — carried to the role's shim by the start command (launcherCommand's Env). POD_UID is
+// per slot, the agent's — carried to the role's shim by the start command (launcherCommand's
+// Env). POD_UID is
 // the pod's own incarnation, from the downward API. The secrets broker is told when the runtime
 // enrolls pods. PI_SHELL_PREFIX puts the `legion` directory first on PATH alone: a pod's gh is the
 // image's, so no directory of the issue's disk leads PATH. The GIT_CONFIG pairs are the GitHub
@@ -1891,6 +1907,7 @@ func (r *Runtime) LaunchBound() time.Duration {
 // (runtime.SessionExclusiveVariable=1).
 func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	spec := l.spec
+	slot, _ := spec.Claim.Slot()
 	env := l.kind.agentEnv(l)
 	add := func(name, value string) { env = append(env, corev1.EnvVar{Name: name, Value: value}) }
 	add("LEGION_ROLE", string(spec.Role))
@@ -1981,7 +1998,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 		// so the result is read in a turn the daemon sees rather than after one it thinks has
 		// ended. Both names are the runtime's (runtimeOwned), so neither a spec nor an operator's
 		// pod.env may place them.
-		for _, pair := range claudelaunch.Environment(claudeConfigDir(spec.Role)) {
+		for _, pair := range claudelaunch.Environment(claudeConfigDir(slot)) {
 			name, value, _ := strings.Cut(pair, "=")
 			add(name, value)
 		}
@@ -1995,7 +2012,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 		// start command alone (launchEnvironment) and changes nothing of the pod.
 		add(claudelaunch.SessionVariable, l.claude.session)
 	}
-	env = append(env, roleEnvironment(spec.Role)...)
+	env = append(env, roleEnvironment(slot)...)
 	env = append(env, corev1.EnvVar{Name: "POD_UID", ValueFrom: &corev1.EnvVarSource{
 		FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"},
 	}})
@@ -2128,7 +2145,8 @@ type handedAddress struct{ name, value string }
 // carries no enrollment says what it was handed, which is no broker at all. The stream is fixed
 // for the pod's life, so a pod a daemon created under another stream dials it until the pod is
 // replaced; the other five are fixed for the generation's life, and the Sandbox records them per
-// role (recordAddresses) so a daemon restarted under other addresses can tell (evaluate).
+// slot, the agent's whatever role its step is on (recordAddresses), so a daemon restarted under
+// other addresses can tell (evaluate).
 // TestHandedAddressesAreEveryAddressAPodCarries keeps this list equal to what those two build.
 func (r *Runtime) handedAddresses(enrolled bool) []handedAddress {
 	brokerURL := ""

@@ -23,24 +23,29 @@ import (
 )
 
 // heldIn is the hold of the merge forward of conflictHead onto main to role, the worker of at, for
-// why: the message that tells role to stop writing the workspace while another role merges.
-func heldIn(role claim.Role, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
-	return record.MergeForwardMessage{Role: role, Step: record.MergeForwardHold, Head: conflictHead, Base: "main", Phase: at,
+// why, on the topic of role's own claim (seededClaim): the message that tells role to stop writing
+// the workspace while another role merges.
+func heldIn(t *testing.T, role claim.Role, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
+	t.Helper()
+	return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, role), Step: record.MergeForwardHold, Head: conflictHead, Base: "main", Phase: at,
 		PullRequest: 42, Why: why}
 }
 
 // withdrawnIn is the implementer's withdrawal of the merge forward of conflictHead onto main, told
-// while the issue stands at at, for why: the message that the merge is no longer its work.
-func withdrawnIn(at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
-	return record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardWithdrawn, Head: conflictHead, Base: "main",
-		Phase: at, PullRequest: 42, Why: why}
+// while the issue stands at at, for why, on the topic of the implementer's own claim: the message
+// that the merge is no longer its work.
+func withdrawnIn(t *testing.T, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
+	t.Helper()
+	return record.MergeForwardMessage{Role: claim.RoleImplementer, Claim: seededClaim(t, claim.RoleImplementer), Step: record.MergeForwardWithdrawn,
+		Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}
 }
 
 // mergerAsked is the merger's ask of the merge forward of conflictHead onto main in merging, where
-// the merge comes next.
-func mergerAsked() record.MergeForwardMessage {
-	return record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main",
-		Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}
+// the merge comes next, on the topic of the merger's claim.
+func mergerAsked(t *testing.T) record.MergeForwardMessage {
+	t.Helper()
+	return record.MergeForwardMessage{Role: claim.RoleMerger, Claim: seededClaim(t, claim.RoleMerger), Step: record.MergeForwardAsk,
+		Head: conflictHead, Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}
 }
 
 // approvesConflictHead is the reviewer's approval of conflictHead, a minute before the first read
@@ -82,8 +87,8 @@ func TestATesterStartedAfterTheReviewWhileTheMergeIsOpenIsHeld(t *testing.T) {
 		t.Fatalf("after the confirmed conflict the issue is in %s, want testing: the approval of a conflicting head ends its round", got)
 	}
 	why := record.ConflictRequiresCurrent
-	want := []record.MergeForwardMessage{implementerAsked(phase.Reviewing, why), heldIn(claim.RoleReviewer, phase.Reviewing, why),
-		heldIn(claim.RoleTester, phase.Testing, why)}
+	want := []record.MergeForwardMessage{implementerAsked(t, phase.Reviewing, why), heldIn(t, claim.RoleReviewer, phase.Reviewing, why),
+		heldIn(t, claim.RoleTester, phase.Testing, why)}
 	asked := mergeForwardMessages(t, pool)
 	if !reflect.DeepEqual(asked, want) {
 		t.Errorf("the merge-forward messages are %+v, want %+v: the tester starts while the implementer merges, so it is held", asked, want)
@@ -94,7 +99,7 @@ func TestATesterStartedAfterTheReviewWhileTheMergeIsOpenIsHeld(t *testing.T) {
 		t.Errorf("the landing in testing queued %v, want the tester told the new head and the reviewer asked to read the merge", got)
 	}
 	result := applyFacts(t, pool, readsAfter(4*time.Minute))("the tester's pass at the replaced head", intake.HandoffComplete{Generation: 1,
-		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass", Commit: conflictHead,
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: seededClaim(t, claim.RoleTester), Summary: "tested", Verdict: "pass", Commit: conflictHead,
 		HandoffRecord: "test-1", HandoffVersion: 1})
 	if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
 		t.Errorf("the tester's pass at %s, the head the merge replaced, was answered %q, want HANDOFF_HEAD_MERGED_FORWARD", conflictHead, code)
@@ -118,7 +123,7 @@ func TestATesterStartedByTheSignOffWhileTheMergeIsOpenIsHeld(t *testing.T) {
 		t.Fatalf("after the owner's sign-off the issue is in %s, want testing", got)
 	}
 	why := record.ConflictCheckNotGreen
-	want := []record.MergeForwardMessage{implementerAsked(phase.Accepting, why), heldIn(claim.RoleTester, phase.Testing, why)}
+	want := []record.MergeForwardMessage{implementerAsked(t, phase.Accepting, why), heldIn(t, claim.RoleTester, phase.Testing, why)}
 	asked := mergeForwardMessages(t, pool)
 	if !reflect.DeepEqual(asked, want) {
 		t.Errorf("the merge-forward messages are %+v, want %+v: the tester starts while the implementer merges, so it is held", asked, want)
@@ -143,8 +148,8 @@ func TestAPlannerAfterTheImplementerIsHeldAndFenced(t *testing.T) {
 		t.Fatalf("after the implementer's completion the issue is in %s, want planning", got)
 	}
 	why := record.ConflictCheckNotGreen
-	want := []record.MergeForwardMessage{implementerAsked(phase.Implementing, why), implementerAsked(phase.Planning, why),
-		heldIn(claim.RolePlanner, phase.Planning, why)}
+	want := []record.MergeForwardMessage{implementerAsked(t, phase.Implementing, why), implementerAsked(t, phase.Planning, why),
+		heldIn(t, claim.RolePlanner, phase.Planning, why)}
 	asked := mergeForwardMessages(t, pool)
 	if !reflect.DeepEqual(asked, want) {
 		t.Errorf("the merge-forward messages are %+v, want %+v: the planner works in the workspace the implementer merges in", asked, want)
@@ -155,7 +160,7 @@ func TestAPlannerAfterTheImplementerIsHeldAndFenced(t *testing.T) {
 		t.Errorf("the landing in planning queued %v, want the planner told the new head", got)
 	}
 	planned := func(commit string) intake.HandoffComplete {
-		return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RolePlanner, Claim: "planner-claim", Summary: "planned",
+		return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RolePlanner, Claim: seededClaim(t, claim.RolePlanner), Summary: "planned",
 			Commit: commit, HandoffRecord: "plan-" + commit, HandoffVersion: 1}
 	}
 	result := applyFacts(t, pool, readsAfter(4*time.Minute))("the planner at the replaced head", planned(conflictHead))
@@ -190,8 +195,8 @@ func TestADefaultStepThatStartsWhileTheMergeIsOpenIsHeld(t *testing.T) {
 		if got := issuePhase(t, pool); got != phase.Reviewing {
 			t.Fatalf("after the tester's pass the issue is in %s, want reviewing", got)
 		}
-		want := []record.MergeForwardMessage{implementerAsked(phase.Testing, why), heldIn(claim.RoleTester, phase.Testing, why),
-			heldIn(claim.RoleReviewer, phase.Reviewing, why)}
+		want := []record.MergeForwardMessage{implementerAsked(t, phase.Testing, why), heldIn(t, claim.RoleTester, phase.Testing, why),
+			heldIn(t, claim.RoleReviewer, phase.Reviewing, why)}
 		if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 			t.Errorf("the merge-forward messages are %+v, want %+v: the reviewer starts while the implementer merges", got, want)
 		}
@@ -214,8 +219,8 @@ func TestADefaultStepThatStartsWhileTheMergeIsOpenIsHeld(t *testing.T) {
 			if got := issuePhase(t, pool); got != tc.to {
 				t.Fatalf("after the move back the issue is in %s, want %s", got, tc.to)
 			}
-			want := []record.MergeForwardMessage{implementerAsked(tc.from, why), heldIn(tc.by, tc.from, why),
-				heldIn(RoleFor(tc.to), tc.to, why)}
+			want := []record.MergeForwardMessage{implementerAsked(t, tc.from, why), heldIn(t, tc.by, tc.from, why),
+				heldIn(t, RoleFor(tc.to), tc.to, why)}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 				t.Errorf("the merge-forward messages are %+v, want %+v: the %s starts while the implementer merges", got, want, RoleFor(tc.to))
 			}
@@ -251,8 +256,8 @@ func TestAWorkerStartedAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 			if got := issuePhase(t, pool); got != phase.Testing {
 				t.Fatalf("after %s the issue is in %s, want testing", tc.name, got)
 			}
-			want := []record.MergeForwardMessage{implementerAsked(phase.Testing, why), heldIn(claim.RoleTester, phase.Testing, why),
-				heldIn(claim.RoleTester, phase.Testing, why)}
+			want := []record.MergeForwardMessage{implementerAsked(t, phase.Testing, why), heldIn(t, claim.RoleTester, phase.Testing, why),
+				heldIn(t, claim.RoleTester, phase.Testing, why)}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 				t.Errorf("after %s the merge-forward messages are %+v, want %+v: the tester starts again while the implementer merges", tc.name, got, want)
 			}
@@ -309,8 +314,8 @@ func testerHeldWhileTheImplementerMerges(t *testing.T) *pgxpool.Pool {
 	why := record.ConflictCheckNotGreen
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
-	if got, want := mergeForwardMessages(t, pool), []record.MergeForwardMessage{implementerAsked(phase.Testing, why),
-		heldIn(claim.RoleTester, phase.Testing, why)}; !reflect.DeepEqual(got, want) {
+	if got, want := mergeForwardMessages(t, pool), []record.MergeForwardMessage{implementerAsked(t, phase.Testing, why),
+		heldIn(t, claim.RoleTester, phase.Testing, why)}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("after the confirmed conflict the merge-forward messages are %+v, want %+v", got, want)
 	}
 	return pool
@@ -352,8 +357,8 @@ func TestAWorkerSentItsWorkAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 				}
 				return tc.send(ctx, tx, engine, *issue, row)
 			})
-			want := []record.MergeForwardMessage{implementerAsked(phase.Testing, why), heldIn(claim.RoleTester, phase.Testing, why),
-				heldIn(claim.RoleTester, phase.Testing, why)}
+			want := []record.MergeForwardMessage{implementerAsked(t, phase.Testing, why), heldIn(t, claim.RoleTester, phase.Testing, why),
+				heldIn(t, claim.RoleTester, phase.Testing, why)}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 				t.Errorf("after %s the merge-forward messages are %+v, want %+v: the tester is sent work while the implementer merges", tc.name, got, want)
 			}
@@ -372,7 +377,7 @@ func TestAWorkerSentItsWorkAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 // rather than to work at that head now, which words of its own say apart.
 func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
 	t.Parallel()
-	pool := testerStartedWhileTheSecondMergeIsAsked(t)
+	pool := testerStartedWhileTheSecondMergeIsAsked(t, "implementer", "reviewer", "tester")
 	issue, pr := storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
 	fence, fenced := mergedForwardRefusal(issue, claim.RoleTester, phase.Testing, conflictHead, &pr)
 	if !fenced || fence.Role != claim.RoleTester || !fence.Wait || fence.Head != forwardHead || fence.Base != "main" ||
@@ -387,7 +392,7 @@ func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
 	}
 
 	result := applyFacts(t, pool, readsAfter(7*time.Minute))("the tester at the first replaced head", intake.HandoffComplete{Generation: 1,
-		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass", Commit: conflictHead,
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: seededClaim(t, claim.RoleTester), Summary: "tested", Verdict: "pass", Commit: conflictHead,
 		HandoffRecord: "test-1", HandoffVersion: 1})
 	if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
 		t.Fatalf("the tester's completion at %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", conflictHead, code, result.Refusal)
@@ -397,16 +402,58 @@ func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
 	}
 }
 
+// The agent of a key that runs the tester's step and is the implementer the open merge was asked
+// of is told that merge is its own to make (dispatch://INFRA-4112). In `implementer:a reviewer
+// tester:a` key a's agent, `…-implementer`, ran the implementer's step and runs the tester's, so
+// the second merge forward, asked of the implementer, is its own, and no hold reached it
+// (holdStartedWorker). Its completion of testing at the head the first merge replaced is refused,
+// and the refusal tells it to make that merge and push it (mergedForwardFence.Own), in place of
+// the wait for a landing nobody else brings. The control is `implementer reviewer tester`, whose
+// tester the hold reached, and whose refusal tells it to wait (Wait).
+func TestARefusalTellsAKeyedAgentTheOpenMergeIsItsOwnToMake(t *testing.T) {
+	t.Parallel()
+	implementer := seededClaim(t, claim.RoleImplementer)
+	for _, tc := range []struct {
+		name   string
+		steps  []string
+		tester claim.Token
+		wait   bool
+		own    claim.Role
+	}{
+		{name: "key a's agent on the implementer's and the tester's steps", steps: []string{"implementer:a", "reviewer", "tester:a"}, tester: implementer,
+			own: claim.RoleImplementer},
+		{name: "control: the tester on a step of no key", steps: []string{"implementer", "reviewer", "tester"}, tester: seededClaim(t, claim.RoleTester), wait: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool := testerStartedWhileTheSecondMergeIsAsked(t, tc.steps...)
+			if row := storedPhaseRow(t, pool, "LEGION-208", claim.RoleTester); row.Claim != tc.tester || row.StepTask == "" {
+				t.Fatalf("the tester's row names %s on the step of task %q, want %s on a step of the plan", row.Claim, row.StepTask, tc.tester)
+			}
+			result := applyFacts(t, pool, readsAfter(7*time.Minute))("the tester at the first replaced head", intake.HandoffComplete{Generation: 1,
+				Issue: "LEGION-208", Role: claim.RoleTester, Claim: tc.tester, Summary: "tested", Verdict: "pass", Commit: conflictHead,
+				HandoffRecord: "test-1", HandoffVersion: 1})
+			want := mergedForwardFence{Issue: "LEGION-208", Role: claim.RoleTester, Reported: phase.Testing, Number: 42, Head: forwardHead, Base: "main",
+				Replaced: conflictHead, Landed: forwardHead, Wait: tc.wait, Own: tc.own}
+			if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" || result.Refusal.Message != want.Message() {
+				t.Errorf("the tester's completion at %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD with the refusal of the fence %+v, %q",
+					conflictHead, code, result.Refusal, want, want.Message())
+			}
+		})
+	}
+}
+
 // testerStartedWhileTheSecondMergeIsAsked is the issue of
-// TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge on the steps implementer, reviewer,
-// tester: a first merge forward landed, the head it left conflicts in its turn and a second merge
-// forward of that head is asked in reviewing, and the reviewer's approval of that head started the
-// tester, in testing, while the second merge has not landed. It fails the test unless the issue
-// stands in testing and the record holds that second ask.
-func testerStartedWhileTheSecondMergeIsAsked(t *testing.T) *pgxpool.Pool {
+// TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge on steps, the steps implementer,
+// reviewer, tester, each with or without a key: a first merge forward landed, the head it left
+// conflicts in its turn and a second merge forward of that head is asked in reviewing, and the
+// reviewer's approval of that head started the tester, in testing, while the second merge has not
+// landed. It fails the test unless the issue stands in testing and the record holds that second
+// ask.
+func testerStartedWhileTheSecondMergeIsAsked(t *testing.T, steps ...string) *pgxpool.Pool {
 	t.Helper()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
-	pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), "implementer", "reviewer", "tester")
+	pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), steps...)
 	confirmsConflict(t, pool, requiresCI)
 	landsMergeForward(t, pool)
 	again := conflictingRead(requiresCI)
@@ -431,7 +478,7 @@ func testerStartedWhileTheSecondMergeIsAsked(t *testing.T) *pgxpool.Pool {
 // a landed message that cannot come (mergedForwardFence.Wait).
 func TestARefusalOnAClosedPullRequestTellsNoWorkerToWait(t *testing.T) {
 	t.Parallel()
-	pool := testerStartedWhileTheSecondMergeIsAsked(t)
+	pool := testerStartedWhileTheSecondMergeIsAsked(t, "implementer", "reviewer", "tester")
 	applyRefusingNothing(t, pool, readsAfter(8*time.Minute), closedAt(forwardHead, firstConflictRead.Add(8*time.Minute)))
 	issue, pr := storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
 	if pr.State != record.PullRequestClosed || pr.MergeForward == nil || pr.MergeForward.Head != forwardHead || issue.Phase != phase.Testing {
@@ -465,7 +512,7 @@ func TestTheDefaultStepsSendWhatTheySentWhenAReviewedHeadConflicts(t *testing.T)
 	approvesConflictHead(t, pool)
 	confirmsConflict(t, pool, requiresCurrent)
 	why := record.ConflictRequiresCurrent
-	want := []record.MergeForwardMessage{implementerAsked(phase.Reviewing, why), heldIn(claim.RoleReviewer, phase.Reviewing, why)}
+	want := []record.MergeForwardMessage{implementerAsked(t, phase.Reviewing, why), heldIn(t, claim.RoleReviewer, phase.Reviewing, why)}
 	sent := func(after string, at phase.Phase) {
 		t.Helper()
 		if got := issuePhase(t, pool); got != at {
@@ -489,11 +536,11 @@ func TestTheDefaultStepsSendWhatTheySentWhenAReviewedHeadConflicts(t *testing.T)
 
 	applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
 		Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "retro done", Commit: conflictHead})
-	want = append(want, heldIn(claim.RoleMerger, phase.Merging, why))
+	want = append(want, heldIn(t, claim.RoleMerger, phase.Merging, why))
 	sent("the retro's completion", phase.Merging)
 
 	applyRefusingNothing(t, pool, readsAfter(3*time.Minute+30*time.Second), intake.ClaimReady{Issue: "LEGION-208", Role: claim.RoleMerger, Launch: 2})
-	if got, held := mergeForwardMessages(t, pool), append(slices.Clone(want), heldIn(claim.RoleMerger, phase.Merging, why)); !reflect.DeepEqual(got, held) {
+	if got, held := mergeForwardMessages(t, pool), append(slices.Clone(want), heldIn(t, claim.RoleMerger, phase.Merging, why)); !reflect.DeepEqual(got, held) {
 		t.Errorf("after the ready of the merger's launch 2 the merge-forward messages are %+v, want %+v: the ready holds the merger again", got, held)
 	}
 	if told := capNotices(t, pool, "checks-red"); told != 1 {

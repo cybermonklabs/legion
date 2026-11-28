@@ -902,12 +902,12 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the shared verifier, which Cognito tokens, pods' tokens and the listener go through, reads none of them.
   A refusal logs `msg="dispatch: sign-in refused" email=<email> hd=<hd> reason=<reason>`, where a pool refusal logs `username=<username>`.
 
-  Either way, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
+- Either way, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
   A refresh the issuer refuses (`400` or `401` with the OAuth error `invalid_grant`:
   the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold.
   A refresh that fails any other way (the issuer undiscovered, down or slow, a `5xx` or `429`, another OAuth error, or an answer without an ID token that verifies) ends nothing:
   the request that found the confirmation lapsed is refused `503 SIGNIN_UNAVAILABLE`, the sessions and the refresh token are kept, and the first request after the issuer answers again refreshes and is served.
-  A refresh is one request to the issuer's token endpoint, with the client's secret sent the way the issuer's discovery document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic where it names `client_secret_basic` (Google's does), else in the form where it names `client_secret_post`.
+  A refresh is one request to the issuer's token endpoint (two at most where the issuer's discovery document names neither method, below), with the client's secret sent the way that document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic where it names `client_secret_basic` (Google's does), else in the form where it names `client_secret_post`.
   Each request to the token endpoint has ten seconds, and the whole refresh, which also reads the person's row and, the first time, the discovery document, has fifteen; a refusal ends the sessions when its answer comes within both.
   An issuer whose document names neither is asked by HTTP Basic and, when that fails, may be asked again in the form, so its refusal can need both requests to answer within the fifteen seconds.
   The list says what the issuer supports, not what each client may use, so an issuer that holds a client to the one `token_endpoint_auth_method` it registered (RFC 7591 section 2) refuses a client registered for `client_secret_post` alone, under a document that names `client_secret_basic`, with `invalid_client` and no second request in the form: its sign-ins fail, and its refreshes end nothing and are answered `503 SIGNIN_UNAVAILABLE`.
@@ -2307,10 +2307,10 @@ the contracting migration — one that drops, renames or narrows — ships no ea
 - A narrowing — a type made smaller, a nullable column made `not null`, a check added
   — ships behind a release that writes only the values the narrower shape admits, and narrows in the release after it.
 
-No migration is an exception to that rule: a change that cannot be written that way is split into releases that can, so no release stops every server process.
+No migration is an exception to that rule but one, `20261124213825` (below), after which the release before cannot write `issue_role_holders` while both serve: every other change that cannot be written that way is split into releases that can, and no release stops every server process.
 `0113`, `0117` and `20261111210103` below were each deployed with no server of the earlier release running, under an exception this rule no longer has (`20261111210103` ships in `legion-envoy-v30.11.0`), and a deployment still on a release before one of them crosses it once that way, before it runs more than one replica.
 So a release from a build below `20261111210103` onto this one or any later one is stop-the-world: stop every server process of the old release, then start the new one.
-The two-build guarantee does not cover that release, and it is an outage for as long as the migration and the new release's start take; it covers every release after it.
+The two-build guarantee does not cover that release, and it is an outage for as long as the migration and the new release's start take; it covers every release after it but that of `20261124213825`.
 The pre-deploy census ("Pre-deploy census" below) is unchanged by that rule and still applies to every migration:
 it is taken before any migration of the release applies, and a census that refuses fails the deploy before the service moves.
 The rule in brief is `internal/dispatch/store/README.md`, beside the migrations directory rather than in it, since the loader below refuses a set holding a file named anything else.
@@ -2681,7 +2681,7 @@ A census that refuses on it is repaired on the release still serving, before the
 **`0117` was deployed with no server of the earlier release running:
 deploy it that way, and never start a release older than `0117` over it again.**
 A deployment still on a release before it crosses it once with Dispatch stopped, before it runs more than one replica.
-The last such migration is `20261111210103` (below), and every release after it rolls.
+The last such migration before `20261124213825_issue_role_holders_by_session` is `20261111210103` (below); `20261124213825` is the one exception after it (below, and `internal/dispatch/store/README.md`), and every other release after `20261111210103` rolls.
 Stop the earlier release, or scale it to zero, before the new release boots and migrates:
 a Kubernetes Deployment's `strategy: Recreate`, which `envoy-infra:gcp:Dispatch` uses at its default one replica (`packages/envoy/infra/README.md`);
 a deployment running more than one replica, which rolls, is scaled to zero first.
@@ -3505,10 +3505,19 @@ The head of the call's recovery point stays in `request_keys.recovery`, and a ro
 Each step adds one row, where the step would otherwise rewrite a growing value in the key's row.
 A new table: the foreign key holds `request_keys` in `SHARE ROW EXCLUSIVE` for the migration's transaction, so a keyed request's claim waits behind it while a read does not; otherwise nothing existing is read or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
-Migration `20261124122030_issue_role_holders_any_role` widens the `role` check of `issue_role_holders` from the six Legion roles to the role grammar, `^[a-z][a-z0-9-]{0,31}$` other than `controller`, the names `legionrole.IsRole` takes: a role a Legion deployment defines in its settings holds a role of an issue as the six do, and the route takes it (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
+Migration `20261124122030_issue_role_holders_any_role` widens the `role` check of `issue_role_holders` from the six Legion roles to the role grammar, `^[a-z][a-z0-9-]{0,31}$` other than `controller`, the names `legionclaim.IsRole` takes: a role a Legion deployment defines in its settings holds a role of an issue as the six do, and the route takes it (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The check is dropped without `cascade` and added back `not valid`, so no stored row is read: each was written under the narrower check.
 It narrows nothing, so it rolls: the release before it writes only the six, which the wider check takes, and reads a role as text.
 Both statements are catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
+
+Migration `20261124213825_issue_role_holders_by_session` keys `issue_role_holders` by session: it drops the primary key on `(issue_key, role)`, so the unique index on `(issue_key, session)` is the table's key and a role can have more than one session, and adds `claim`, the token of the claim a session holds its role by, and `works_step`, whether that claim works the role's step, at the constant defaults `''` and `false`.
+Two claims of one issue can hold one role (an agent's on another role's step, beside that role's own claim of an earlier version of the plan), and the route refused a set that named a role twice, so the second claim's session held no role.
+Every statement is catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
+**It is the one migration after `20261111210103` that does not roll.**
+The release before it inserts with `on conflict (issue_key, role)`, which Postgres refuses once no unique index on exactly those columns stands, so while both releases serve, a role-holder publication that reaches a server of the release before is answered `500`.
+The Legion daemon is the one writer of the table, and it retries a `500` on its publication rather than ending it, so the set lands once a server of this release takes it, and nothing is lost.
+The release before's reads of the table, an issue's set and the role of one session, answer over the new key as they did.
+Its way back is in its header: run with Dispatch stopped and before the earlier image starts, it folds each role two sessions hold back to one row (the session whose claim works the role's step, else the newest), drops the two columns, puts the key on `(issue_key, role)` back and deletes the version row.
 
 Migration `20261117190118_events_owed_keys` adds `events.owed_keys`, nullable `text[]` with no default: what an event still owes once the outbox's last record of it was written (`recordBatch`, `owedKeys`).
 It holds the key of each destination of the event's list that no batch has reached, the owner's topic family spelled `topic-family`, a session's own subject and a role's topic by their subjects, and `any-session` beside them when the event's recipient read failed;
@@ -3853,8 +3862,8 @@ That held under the `Recreate` rollout of that release; production now runs two 
 An older release started over the new schema creates a project with no default, which the column now refuses (`23502`), so that create answers `500`;
 recover a failed deploy forward, as `0113` and `0117` require.
 
-A migration runs while the build before it is still serving.
-The app Deployment of `envoy-infra:gcp:Dispatch` rolls above one replica (`packages/envoy/infra/README.md`), so from the start of a rollout until the last pod of the previous release is gone
+Above one replica, unless `replaceUnderHold` is set, a migration runs while the build before it is still serving.
+The app Deployment of `envoy-infra:gcp:Dispatch` is recreated at one replica and rolls above one unless `replaceUnderHold` is set (`packages/envoy/infra/README.md`), so from the start of a rollout until the last pod of the previous release is gone
 — and again for as long as a rollback lasts — the previous image's queries run against the new schema.
 A migration may therefore only add: a table, an index, a trigger, a column that is nullable or defaulted, a constraint added `not valid`.
 In the same release as the code that depends on it, it may not drop or rename a column or a table, change a column's type, or tighten a constraint the running build's queries would violate.
@@ -7025,41 +7034,41 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; with `DISPATCH_LEGION_STATUS_SCOPE` on, only a Legion daemon's own broker token; with it off, the actor must be a Legion daemon's session)
 
-  Publish the session that holds each role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
-  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`, or a role the Legion deployment defines in its settings: a name of `^[a-z][a-z0-9-]{0,31}$` other than `controller` (`legionrole.IsRole`).
+  Publish the session that holds each role of the issue: `{holders: [{role, session, claim, works_step}], actor}`, each holder naming its role and its session, and the token of the claim it holds the role by and whether that claim works the role's step where the daemon knows them.
+  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`, or a role the Legion deployment defines in its settings: a name of `^[a-z][a-z0-9-]{0,31}$` other than `controller` (`legionclaim.IsRole`).
   The session is a session id (`text.IsSessionID`) of at most 256 bytes: it holds no whitespace, no control character, no backtick and none of `/?#<>"'[]|`.
   The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
+  A role can be named for more than one session: two claims of one issue can hold one role, each by its own token.
+  A claim is the Legion claim token of an issue's agent (`legionclaim.CutClaimToken`), named once.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
-  A pair that did not change keeps its `recorded_at`.
+  A holder whose role, session and claim did not change keeps its `recorded_at`.
   The session `legion-daemon:<project>`, the key up to its first `-`, is the session that the daemon of the issue's project writes as.
-  With `DISPATCH_LEGION_STATUS_SCOPE` on, only a credential that holds `legion-status` can publish, and it must prove this session.
-  The daemon of another project can publish too: its broker token holds `legion-status`, names its project `P` and proves its session `legion-daemon:<P>`.
+  With `DISPATCH_LEGION_STATUS_SCOPE` on, only a credential that holds `legion-status` can publish: one that proves this session, or one that proves `legion-daemon:<P>` and names its project `P`.
   Every other credential is `403 ROLE_HOLDER_FORBIDDEN`, including a shared token whose `actor` names the daemon and a broker token whose session is no daemon's.
-  With the setting off, any actor other than the daemon's session is `403 ROLE_HOLDER_FORBIDDEN`, but for the daemon of another project.
-  That daemon writes the set too when its broker token names its project `P` and proves its session `legion-daemon:<P>`.
+  With the setting off, the actor must be this session, or `legion-daemon:<P>` on a broker token that names `P` and proves that session; any other is `403 ROLE_HOLDER_FORBIDDEN`.
   A daemon that runs a claim on another project's issue publishes that issue's set this way.
-  A bearer with no proven session can name the session of the issue's project's daemon in its body, but the project's `proven_sessions` setting can refuse it.
-  With `proven_sessions` on (`/api/v1/projects/{key}/proven-sessions`, above), an actor whose credential does not prove its session, the session of the issue's project's daemon or of another project's daemon, is `403 ROLE_HOLDER_NOT_PROVEN`, after the `400` and `404` refusals.
-  Each stored pair carries a mark that says whether a daemon's own token wrote it, the issue's project's daemon's or another project's daemon's (`issue_role_holders.daemon_proven`, Database migrations above).
-  Each publication sets the mark on every pair it stores or keeps, regardless of either setting.
-  Only a marked pair identifies an architect who can write a Legion issue's status under the status guard.
+  A bearer with no proven session can name this session in its body, but the project's `proven_sessions` setting can refuse it.
+  With `proven_sessions` on (`/api/v1/projects/{key}/proven-sessions`, above), an actor whose credential does not prove its session is `403 ROLE_HOLDER_NOT_PROVEN`, after the `400` and `404` refusals.
+  Each stored holder carries a mark that says whether a daemon's own token wrote it, this project's or another's (`issue_role_holders.daemon_proven`, Database migrations above).
+  Each publication sets the mark on every holder it stores or keeps, regardless of either setting.
+  Only a marked holder names an architect whose status write the status guard lets through.
   The answer does not carry the mark.
 
 - `/api/v1/issues/{key}/role-holders` (PUT: its refusals, the project's mark and its answer)
 
-  A body without `holders`, a role that is no name of that grammar or is `controller`, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
+  A body without `holders`, a role that is no name of that grammar or is `controller`, a session that is not a session id or is longer than 256 bytes, a session or a claim named twice, a claim that is no claim token of the issue and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
   The write takes a closed issue and notifies nobody.
   Each publication the route takes marks the issue's project (`project_role_holder_marks`) in the transaction that writes the set, an empty set included, and a refused one marks nothing.
   The mark puts the issues of the project that Legion runs under the check of who writes their spec and Verification document (`403 DOCUMENT_WRITER_NOT_ARCHITECT`, Document errors below).
-  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, recorded_at}`, Legion's six in the order of the default steps, then every role the deployment defines by name.
+  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, claim, works_step, recorded_at}`, Legion's six in the order of the default steps, then every role the deployment defines by name, the sessions of one role by session.
 
   - **The change event.**
-    A write that changes the set appends one issue event, `issue.role_holders_changed`, in the transaction that stores it.
-    Its payload is `{key, holders, previous_holders}`: the set the write stored and the set it replaced, each in the order the answer names them (Legion's six in workflow order, then each role the deployment defines by name) and each pair `{role, session, recorded_at}`.
+    A write that changes which session holds which role appends one issue event, `issue.role_holders_changed`, in the transaction that stores it.
+    Its payload is `{key, holders, previous_holders}`: the set the write stored and the set it replaced, each in the order the answer names them (Legion's six in workflow order, then each role the deployment defines by name) and each holder `{role, session, claim, works_step, recorded_at}`.
     The event's actor and `created_at` are the write's actor, the daemon's session, and the time of the write.
     `GET /api/v1/issues/{key}/events` serves it, so the issue's log says which session held each role at a past time; the log holds no change made before the release that writes the event.
-    A write that stores the set already stored, as the daemon's publication at each boot does, appends nothing.
+    A write that keeps each role with the sessions that held it appends nothing: one that stores the set already stored, as the daemon's publication at each boot does, and one that changes only a holder's `claim` or `works_step`.
     The event is quiet (`events.Quiet`): it wakes nobody, and the daemon's intake reads no fact from it.
 
   - **Two writes of one issue.**

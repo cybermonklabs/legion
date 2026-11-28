@@ -773,6 +773,7 @@
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "architect": {
+              "token": "legion-legion-legion-1-architect",
               "session": "",
               "state": "launching",
               "pluginContract": 0,
@@ -1147,6 +1148,7 @@
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "architect": {
+              "token": "legion-legion-legion-1-architect",
               "session": "ses_legion_1_architect",
               "state": "working",
               "pluginContract": 0,
@@ -1521,6 +1523,7 @@
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "architect": {
+              "token": "legion-legion-legion-1-architect",
               "session": "ses_legion_1_architect",
               "state": "idle",
               "pluginContract": 0,
@@ -1895,6 +1898,7 @@
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "architect": {
+              "token": "legion-legion-legion-1-architect",
               "session": "ses_legion_1_architect",
               "state": "idle",
               "pluginContract": 0,
@@ -2275,6 +2279,7 @@
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "architect": {
+              "token": "legion-legion-legion-1-architect",
               "session": "ses_legion_1_architect",
               "state": "idle",
               "pluginContract": 0,
@@ -2672,6 +2677,7 @@
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "architect": {
+              "token": "legion-legion-legion-1-architect",
               "session": "ses_legion_1_architect",
               "state": "idle",
               "pluginContract": 0,
@@ -3069,6 +3075,7 @@
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "architect": {
+              "token": "legion-legion-legion-1-architect",
               "session": "ses_legion_1_architect",
               "state": "idle",
               "pluginContract": 0,
@@ -3457,6 +3464,7 @@
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "architect": {
+              "token": "legion-legion-legion-1-architect",
               "session": "ses_legion_1_architect",
               "state": "idle",
               "pluginContract": 0,
@@ -3551,6 +3559,7 @@
             "phase": "unrecorded",
             "status": "unrecorded",
             "architect": {
+              "token": "legion-legion-legion-7-architect",
               "session": "",
               "state": "launching",
               "pluginContract": 0,
@@ -3859,6 +3868,7 @@
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "architect": {
+              "token": "legion-legion-legion-1-architect",
               "session": "ses_legion_1_architect",
               "state": "idle",
               "pluginContract": 0,
@@ -3953,6 +3963,7 @@
             "phase": "unrecorded",
             "status": "unrecorded",
             "architect": {
+              "token": "legion-legion-legion-7-architect",
               "session": "",
               "state": "launching",
               "pluginContract": 0,

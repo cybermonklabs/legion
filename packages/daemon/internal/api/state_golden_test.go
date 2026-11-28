@@ -439,11 +439,14 @@ func (s stubPauses) Paused() (int64, bool) { return s.paused, s.paused != 0 }
 
 // pauseRouteAnswer is what the operator's route at target answers with svc behind it (nil for a
 // daemon with no pause service), held to want and decoded strictly into into, so a key the Go type
-// does not name fails here before it reaches a fixture.
+// does not name fails here before it reaches a fixture. The server reads a record of its own: the
+// operator's spawn reads the claim of the agent on the role's step before the pause refuses it, so
+// the refusal names the claim the spawn would have reached.
 func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, want int, into any) {
 	t.Helper()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet}).Handler
+	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet,
+		Pool: testStore(t).Pool(), Record: record.NewStore()}).Handler
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -597,13 +600,14 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 // project's records — so the rows carry only what is served.
 //
 // Two rows of each list, because one row of each pins less than the shape, and a third resume:
-//   - the releases are a release that suspended two roles and saved a bundle, and one whose
-//     stops suspended no claim and whose workspace the check read clean (recordPodRelease
-//     counts only the claims this release's own stops suspended, and the store reads an empty
-//     `roles` column back as none): `roles` is `[]` and never `null`, and `bundleBytes` is 0
-//     rather than absent;
-//   - the resumes are a wake whose pod was Ready and whose role took its first turn, which is
-//     the row that fills both optional stamps, and a wake of a pod with no release row recorded
+//   - the releases are a release that suspended two claims of two roles, named in `claims`, and
+//     saved a bundle, and one whose stops suspended no claim and whose workspace the check read
+//     clean (recordPodRelease counts only the claims this release's own stops suspended, and the
+//     store reads an empty `roles` column back as none): `roles` is `[]` and never `null`,
+//     `claims` is absent, and `bundleBytes` is 0 rather than absent;
+//   - the resumes are a wake whose pod was Ready and whose claim took its first turn, which is
+//     the row that fills both optional stamps and names the claim it woke in `claim`, here the
+//     agent of a key on the implementer's step; a wake of a pod with no release row recorded
 //     for it (`release` is 0) that went ten minutes with no turn, so it is `stuck` and its
 //     `firstTurnAt` is left out until something observes it; and a wake a project pause held
 //     (decision 15 of dispatch://INFRA-3759), which pairs with no release and names its pause in
@@ -616,11 +620,12 @@ func TestReleaseRecordsResponseGolden(t *testing.T) {
 	golden(t, "release-records.json", releaseRecordsBody(store.PodReleaseRecords{
 		Releases: []store.PodRelease{
 			{ID: 101, Issue: "LEGION-208", Generation: 3, Roles: []string{"implementer", "tester"},
-				At: released, BundleBytes: 4096},
+				Claims: []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"},
+				At:     released, BundleBytes: 4096},
 			{ID: 102, Issue: "LEGION-209", Generation: 1, At: released.Add(15 * time.Minute)},
 		},
 		Resumes: []store.PodResume{
-			{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Kind: "delivery",
+			{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Claim: "legion-legion-legion-208-tester", Kind: "delivery",
 				At: released.Add(30 * time.Minute), PodReadyAt: released.Add(31 * time.Minute),
 				FirstTurnAt: released.Add(32 * time.Minute)},
 			{ID: 202, Issue: "LEGION-207", Role: "architect", Kind: "backstop",

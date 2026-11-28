@@ -16,7 +16,9 @@ import (
 // returnTo 2 carries it as well. A returnTo below 1 names no step and is refused before anything
 // is recorded. A phase worker's move carries the entry its claim serves (PhaseEntry), which the
 // workflow holds to the worker's phases row under the fact's lock: 0 for a claim that took no task
-// of an entry, and 2 for the checker that took entry 2's task; the owner's move carries none.
+// of an entry, and 2 for the checker that took entry 2's task; the owner's move carries none. A
+// phase worker's move names the claim its grant carries (By), which the workflow holds to the claim
+// the role's row names on its step.
 func TestTheBackwardRouteTakesADeploymentRoleAndReturnTo(t *testing.T) {
 	const key = "LEGION-208"
 	one, two, zero := 1, 2, 0
@@ -31,7 +33,8 @@ func TestTheBackwardRouteTakesADeploymentRoleAndReturnTo(t *testing.T) {
 		if answer.Code != http.StatusOK {
 			t.Fatalf("the checker's move = %d %s, want 200", answer.Code, answer.Body)
 		}
-		want := []intake.Fact{intake.BackwardMove{Issue: key, Requester: "checker", To: phase.Implementing, Reason: "the build is broken", ReturnTo: 1}}
+		want := []intake.Fact{intake.BackwardMove{Issue: key, Requester: "checker", To: phase.Implementing, Reason: "the build is broken", ReturnTo: 1,
+			By: checker.token}}
 		if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("facts = %#v, want %#v", got, want)
 		}
@@ -48,7 +51,8 @@ func TestTheBackwardRouteTakesADeploymentRoleAndReturnTo(t *testing.T) {
 		if answer.Code != http.StatusOK {
 			t.Fatalf("the checker's move = %d %s, want 200", answer.Code, answer.Body)
 		}
-		want := []intake.Fact{intake.BackwardMove{Issue: key, Requester: "checker", To: phase.Implementing, Reason: "the build is broken", PhaseEntry: 2}}
+		want := []intake.Fact{intake.BackwardMove{Issue: key, Requester: "checker", To: phase.Implementing, Reason: "the build is broken", PhaseEntry: 2,
+			By: checker.token}}
 		if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("facts = %#v, want %#v", got, want)
 		}

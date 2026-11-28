@@ -1219,9 +1219,11 @@ func artifactReview(step record.DesignStep, fact intake.DispatchArtifact) Decisi
 }
 
 // tellGateMoved tells every worker holding a phase in the tree of key, and the tree's root
-// architect, that the design gate closed or opened at version: one message per role topic
-// (record.RoleMessage), the way the daemon reaches a role holder with something to read rather
-// than work to do (tellChecks). A new version of an approved spec closes the gate under workers
+// architect, that the design gate closed or opened at version: one message to the claim of each
+// holder's worker, each claim once (record.RoleMessage, addressRoles: one keyed agent that holds
+// two of the phases is told once), the way the daemon reaches a role holder with something to
+// read rather than work to do (tellChecks). A new version of an approved spec closes the gate
+// under workers
 // already running on the old one, and until now it told none of them: they went on building to a
 // design the person was being asked about again (dispatch://INFRA-714/spec R5). The opening is
 // told the same way, so a worker that was told to expect a change hears that it landed.
@@ -1240,7 +1242,7 @@ func artifactReview(step record.DesignStep, fact intake.DispatchArtifact) Decisi
 // reaches it only by the news it is owed, settleChildArchitectOpenings); that gate's merge hold
 // reaches the child's merger once it holds merging.
 //
-// Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
+// Linger holds a member of a closed tree where it stood (record.TreeLingers): every claim of it is
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
 //
 // The closed message is sent to each of them alike. The opening is decided for each of them by
@@ -1261,7 +1263,9 @@ func artifactReview(step record.DesignStep, fact intake.DispatchArtifact) Decisi
 // opening it was told: a later version that changes decision blocks alone then sends that holder
 // nothing (the daemon's settlementOf).
 //
-// A holder whose message token cannot be built is logged and skipped, and the rest are told. The
+// A holder whose message token cannot be built is logged and skipped, and the rest are told; a
+// failed read of the phases rows that name each holder's claim fails the transaction, as it does
+// for every sender (addressRoles). The
 // gate's state is the record this transaction writes; a message is what the record is worth
 // telling, and secondary to it. Aborting here would roll the gate's own move back for a name the
 // daemon could not spell - a tree whose root key is not an issue key is one such - which would
@@ -1292,7 +1296,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		}
 	}
 	recipients = append(recipients, roleRecipient{issue: root.Tree, role: claim.RoleArchitect, row: root.Tree})
-	addressed, err := e.addressRoles(root.Project, recipients,
+	addressed, err := e.addressRoles(ctx, tx, root.Project, recipients,
 		e.logUnnamable(ctx, "workflow: the design gate moved and this holder could not be named, so it is not told",
 			"tree", root.Tree, "step", string(step), "version", version, "open", open))
 	if err != nil {
@@ -1321,7 +1325,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	messages, byNews := 0, 0
 	for _, to := range addressed {
 		audience := record.AudienceHolder
-		if role, _ := to.token.Role(); role == claim.RoleArchitect {
+		if to.role == claim.RoleArchitect {
 			audience = record.AudienceArchitect
 		}
 		way := openingDelivery(owed, facts.Told, to.issue, audience, opened, step, version)

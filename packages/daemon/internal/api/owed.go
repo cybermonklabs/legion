@@ -168,6 +168,16 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // what finishes that phase (workflow.PhaseFinished) while a merged root stands in merging until
 // the rest of its tree leaves.
 //
+// Where the role's row runs a step of the plan, the role's phase is owed only by the claim that
+// row names (completionPosition's stepClaim, read in the transaction that reads the row), the one
+// rule the completion route refuses a report by (workflow's HANDOFF_NOT_THE_STEPS_WORKER). Two
+// claims of one issue can hold one role — the agent of a key re-roled onto a step of another
+// role, beside that role's own claim — and the row's entry and completion are the step worker's:
+// the other claim of the role owes nothing of the phase, since the completion route refuses its
+// report of the step and the daemon sends it none of the step's work. A row that runs no step
+// names no worker, and a claim of the role is judged by its role, as the completion route judges
+// it.
+//
 // Within the role's own open phase, the two numbers the daemon closes the difference between
 // decide, read as the daemon reads them, so this answer and the daemon's sending of the entry's
 // work cannot part. A claim behind the entry its row names — the entry it was given is below the
@@ -213,7 +223,8 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token) O
 			return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 		}
 	}
-	if position.lingers || issue.RoleAt(issue.Phase) != c.Role || position.merged() {
+	notTheStepsWorker := position.stepClaim != "" && c.Token != "" && c.Token != position.stepClaim
+	if position.lingers || issue.RoleAt(issue.Phase) != c.Role || notTheStepsWorker || position.merged() {
 		return nothing
 	}
 	if behind := c.GivenEntry < position.entry; !behind && position.completed {

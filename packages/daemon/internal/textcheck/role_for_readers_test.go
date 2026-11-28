@@ -67,7 +67,9 @@ type roleForReader struct {
 // stands at, and answers an error for a task that stands at no act), or reads the retro's own
 // phase (retroHeldNotice and Engine.StartHeldRetro, which run only
 // for a parent held before its retro for the issues beneath it), or answers RoleFor's role for
-// every phase but step to the readers this list holds (record.Issue.RoleAt), or never reads
+// every phase but step to the readers this list holds (record.Issue.RoleAt), or reads the phase a
+// held issue's retry restores only past the refusal of a plan's own hold, which is the one hold an
+// issue at admitted takes (Engine.retryOrEscalate, for the retry of a named claim), or never reads
 // admitted at all because a check before it refuses that phase, which is what each named test
 // holds it to. A parent's wait on its open children (awaiting_children.go, dispatch://INFRA-3320)
 // is of the last kind: each of its readers runs only past record.OpenChildHolds, which refuses
@@ -90,8 +92,6 @@ type roleForReader struct {
 var roleForReaders = map[roleForSite]roleForReader{
 	{file: "cmd/legion/main.go", fn: "entriesBehind"}: {calls: 1, tests: []string{"TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor"}},
 	{file: "internal/admit/admit.go", fn: "Admission.startMidPhaseMembers"}: {calls: 1, tests: []string{
-		"TestReadmissionStartsTheTreesMidPhaseChildren", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
-	{file: "internal/admit/admit.go", fn: "promotedRoles"}: {calls: 1, tests: []string{
 		"TestReadmissionStartsTheTreesMidPhaseChildren", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
 	{file: "internal/admit/stalled.go", fn: "stalledTreeReason"}: {calls: 1, tests: []string{
 		"TestAWaitByDesignIsNeverToldAsAStall", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
@@ -152,6 +152,10 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole"}},
 	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}: {calls: 1, tests: []string{
 		"TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole"}},
+	// The role of the held phase a retry naming a claim restarts, read past the refusal of a
+	// plan's own hold.
+	{file: "internal/workflow/engine.go", fn: "Engine.retryOrEscalate"}: {calls: 1, tests: []string{
+		"TestARestartNamingAClaimRestartsNoStepAnotherClaimWorks"}},
 	// The role the move starts, read by the phase on an issue with no plan rows and by the place on
 	// a task with them.
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}: {calls: 2, tests: []string{

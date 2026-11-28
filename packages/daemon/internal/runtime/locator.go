@@ -116,13 +116,15 @@ func (l Locator) Validate() error {
 		if want := SandboxIncarnation(l.Sandbox.PodUID, l.Sandbox.Generation); l.Incarnation != want {
 			return fmt.Errorf("locator %s: sandbox incarnation %q, want %q from pod UID and generation", l.Claim, l.Incarnation, want)
 		}
-		role, ok := l.Claim.Role()
+		_, _, ofIssue := l.Claim.Cut()
 		switch {
-		case !ok:
-			return fmt.Errorf("locator %s: the claim names no role", l.Claim)
-		case role == claim.RoleController && l.Sandbox.Container != ControllerPodContainer:
-			return fmt.Errorf("locator %s: sandbox container %q; the controller's process runs in container %q", l.Claim, l.Sandbox.Container, ControllerPodContainer)
-		case role != claim.RoleController && l.Sandbox.Container != IssuePodContainer:
+		case l.Claim.IsController():
+			if l.Sandbox.Container != ControllerPodContainer {
+				return fmt.Errorf("locator %s: sandbox container %q; the controller's process runs in container %q", l.Claim, l.Sandbox.Container, ControllerPodContainer)
+			}
+		case !ofIssue:
+			return fmt.Errorf("locator %s: the claim is neither the controller's nor an issue's", l.Claim)
+		case l.Sandbox.Container != IssuePodContainer:
 			return fmt.Errorf("locator %s: sandbox container %q; an issue pod's role runs in its one container %q", l.Claim, l.Sandbox.Container, IssuePodContainer)
 		}
 	default:

@@ -228,8 +228,12 @@ func testerSuspendRow(t *testing.T, _ *podStopRig) record.OutboxRow {
 // as the idle tick marks it (idleReleaseRows): the tester's role stop is its boundary.
 func testerReleaseRow(t *testing.T, r *podStopRig) record.OutboxRow {
 	t.Helper()
+	tester, err := claim.NewToken("legion", pauseIssue, claim.RoleTester)
+	if err != nil {
+		t.Fatalf("the tester's token of %s: %v", pauseIssue, err)
+	}
 	marked, err := r.st.ReleaseIdleIssue(context.Background(), "legion", pauseIssue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		return idleReleaseRows(view, workflow.IdleDecision{Release: true, Roles: []claim.Role{claim.RoleTester}}, time.Now())
+		return idleReleaseRows(view, workflow.IdleDecision{Release: true, Claims: []store.ReleasedClaim{{Token: tester, Role: claim.RoleTester}}}, time.Now())
 	})
 	if err != nil || !marked {
 		t.Fatalf("mark the release of %s = %t, %v", pauseIssue, marked, err)

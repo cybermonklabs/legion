@@ -562,7 +562,8 @@ func abandonSession(t *testing.T, dsn string, token claim.Token, session string)
 // tmux process its locator names and this daemon's plugin contract: the boot re-adopts it rather
 // than launching it.
 func earlierBootClaim(project string, token claim.Token, issue, session string, state supervise.ClaimState, n int) supervise.Claim {
-	role, _ := token.Role()
+	_, agent, _ := token.Cut()
+	role := claim.Role(agent)
 	pane := strconv.Itoa(n)
 	return supervise.Claim{
 		Token: token, Project: project, Tree: issue, Issue: issue, Role: role, Generation: 1,

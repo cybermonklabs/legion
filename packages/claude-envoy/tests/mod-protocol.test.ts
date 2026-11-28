@@ -89,8 +89,9 @@ test("a macOS session resolves under its configuration directory, inside the bou
 })
 
 // A Legion pane's `CLAUDE_CONFIG_DIR` is the claim's own directory under `/legion`
-// (`claudeConfigDir`, `<role state home>/claude`, in
-// `packages/daemon/internal/runtime/sandbox/manifest.go`): the longest base this plugin runs on.
+// (`claudeConfigDir`, `<the state home of the claim's slot>/claude`, the slot being named for the
+// claim's agent, in `packages/daemon/internal/runtime/sandbox/manifest.go`): the longest base this
+// plugin runs on.
 test("a Legion pane's configuration directory is inside the bound as well", () => {
   const pane = "/legion/scratch/state/implementer/claude"
   expect(pane.length).toBe(40)

@@ -144,8 +144,9 @@ func IsSessionID(id string) bool {
 
 // Transcript is the session id of file when file is a transcript Claude Code writes —
 // `<CLAUDE_CONFIG_DIR>/projects/<cwd>/<session>.jsonl`, wherever that configuration directory is —
-// and ok false for any other path. A pod keeps a role's configuration directory on the issue's
-// volume and a tmux pane the claim's under the daemon's state directory, and a reader of a recorded
+// and ok false for any other path. A pod keeps a slot's configuration directory, its claim's
+// agent's, on the issue's volume and a tmux pane the claim's under the daemon's state directory,
+// and a reader of a recorded
 // session is told neither, so the shape is the whole test: no Oh My Pi session file, named for a
 // timestamp and a counter, has it.
 func Transcript(file string) (session string, ok bool) {

@@ -80,11 +80,13 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 //   - LEGION-208, the tree root at work in implementing, carries every optional a claim view has
 //     between its architect, planner and implementer, a plan task's counts, a pull request with
 //     changes requested, an approved design gate, the memory draw and the handshake of its
-//     architect's entry; LEGION-209 is a child of its tree the workflow holds at admitted behind
-//     two Dispatch blockers, LEGION-210 and LEGION-213, a key the daemon has no record of, and
-//     LEGION-220 a child of it at work in implementing in a slot of its own, whose own architect
-//     failed: its notices go to LEGION-208's architect until it runs again (workflow's
-//     claimFailed).
+//     architect's entry, and a second claim of one role: the reviewer's own claim of an earlier
+//     version of the plan, beside the agent of a key that works the reviewer's step, which the
+//     state lists among the issue's `otherClaims`; LEGION-209 is a child of its tree the workflow
+//     holds at admitted behind two Dispatch blockers, LEGION-210 and LEGION-213, a key the daemon
+//     has no record of, and LEGION-220 a child of it at work in implementing in a slot of its own,
+//     whose own architect failed: its notices go to LEGION-208's architect until it runs again
+//     (workflow's claimFailed).
 //   - LEGION-210, held from implementing on its architect's escalation, with a failed implementer
 //     nothing will wake, no architect claim, and a spec whose architect registered a version after
 //     its approval. Dispatch corrected its repository from acme/widgets to zeta/tools, and the
@@ -394,18 +396,33 @@ func populatedRecord(s *seeding) {
 			LastWakeKind: "issue.deployed", LastWakeDetail: "run 38230245571 completed 2126-09-22T09:10:44Z", LastWakeAt: new(at(22, 9, 10, 51)),
 		})
 	})
-	// LEGION-208's run walks the project's default steps (workflow's defaultRows,
-	// record.Store.PutPlan), and its implementer counts its returns on the plan's one task
-	// (workflow's recordPass, record.Store.PutReturnCounts): three passes, two of them ended by a
-	// review that requested changes, each pair of the moves back that made them.
+	// LEGION-208's architect gave the owner's plan `planner implementer:a tester reviewer:a`
+	// (workflow's planGiven, record.Store.PutPlan): key a's agent, named implementer for its first
+	// step (record.NameAgents), works the implementer's step and the reviewer's (plan.Agent). The
+	// task stands at the implementer's step 2 (workflow's moveTask, record.Store.MoveTask), and its
+	// implementer counts its returns on the task (workflow's recordPass,
+	// record.Store.PutReturnCounts): three passes, two of them ended by a review that requested
+	// changes, each pair of the moves back that made them.
 	s.in("LEGION-208's plan", func(ctx context.Context, tx pgx.Tx) error {
-		version := record.PlanVersion{Issue: "LEGION-208", Generation: 3, Source: record.PlanSourceDefault, GivenAt: at(21, 18, 42, 11)}
-		task := record.PlanTask{Issue: "LEGION-208", Generation: 3, Task: "default", BlockText: "The project's default steps.",
-			StepsByDefault: true, State: record.TaskWaiting}
-		if err := s.records.PutPlan(ctx, tx, version, []record.PlanTask{task}, nil); err != nil {
+		version := record.PlanVersion{Issue: "LEGION-208", Generation: 3, Version: 1, ArtifactID: populatedStepPlans["LEGION-208"],
+			Source: record.PlanSourceOwner, GivenBy: s.token("LEGION", "LEGION-208", claim.RoleArchitect), GivenAt: at(21, 18, 42, 11)}
+		task := record.PlanTask{Issue: "LEGION-208", Generation: 3, Task: "a", PlanVersion: 1, BlockText: "Plan the widget, build it, test it and review it.",
+			State: record.TaskWaiting}
+		steps := []record.PlanStep{
+			{Issue: "LEGION-208", Generation: 3, Task: "a", Position: 1, Role: string(claim.RolePlanner), Type: "planning", Agent: claim.Agent(claim.RolePlanner)},
+			{Issue: "LEGION-208", Generation: 3, Task: "a", Position: 2, Role: string(claim.RoleImplementer), Type: "implementation", AgentKey: "a",
+				Agent: claim.Agent(claim.RoleImplementer)},
+			{Issue: "LEGION-208", Generation: 3, Task: "a", Position: 3, Role: string(claim.RoleTester), Type: "testing", Agent: claim.Agent(claim.RoleTester)},
+			{Issue: "LEGION-208", Generation: 3, Task: "a", Position: 4, Role: string(claim.RoleReviewer), Type: "review", AgentKey: "a",
+				Agent: claim.Agent(claim.RoleImplementer)},
+		}
+		if err := s.records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
-		return s.records.PutReturnCounts(ctx, tx, "LEGION-208", 3, "default", record.ReturnCounts{
+		if err := s.records.MoveTask(ctx, tx, "LEGION-208", 3, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
+			return err
+		}
+		return s.records.PutReturnCounts(ctx, tx, "LEGION-208", 3, "a", record.ReturnCounts{
 			Pass: 3, Rounds: 2, BackwardMoves: map[string]int{"reviewing-implementing": 1, "testing-implementing": 1},
 		})
 	})
@@ -434,8 +451,10 @@ func populatedRecord(s *seeding) {
 // LEGION-240 and LEGION-241 stand at.
 const populatedChecker claim.Role = "checker"
 
-// populatedStepPlans is the document of the owner's plan of each of LEGION-240 and LEGION-241.
+// populatedStepPlans is the document of the owner's plan of each of LEGION-208, LEGION-240 and
+// LEGION-241.
 var populatedStepPlans = map[string]string{
+	"LEGION-208": "8a4c6e10-2b3d-4f57-9e1a-7c5d3f9b1e62",
 	"LEGION-240": "5e7a9c12-3b4d-4f68-a0c2-9d1e3f5b7a84",
 	"LEGION-241": "b3d5f7a9-1c2e-4d46-8f80-6a2c4e6b8d03",
 }
@@ -447,6 +466,7 @@ func populatedClaims(s *seeding, rows populatedRows) {
 	architect208 := token("LEGION-208", claim.RoleArchitect)
 	planner208 := token("LEGION-208", claim.RolePlanner)
 	implementer208 := token("LEGION-208", claim.RoleImplementer)
+	reviewer208 := token("LEGION-208", claim.RoleReviewer)
 
 	// The phases rows each role's work writes (workflow's start, enter and completion,
 	// record.Store.PutPhase).
@@ -461,10 +481,15 @@ func populatedClaims(s *seeding, rows populatedRows) {
 		// The planner's completion named its Dispatch handoff record.
 		{Issue: "LEGION-208", Role: claim.RolePlanner, Claim: planner208,
 			HandoffRecord: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", HandoffVersion: 1},
-		// The implementer holds the work its row names: the entry its claim was given.
-		{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: implementer208, Entry: 4, EntryRaisedAt: at(22, 8, 58, 14)},
-		// The reviewer's round asked for changes; its claim is gone, so it is no worker.
-		{Issue: "LEGION-208", Role: claim.RoleReviewer, Decision: &record.ReviewDecision{State: "changes_requested"}},
+		// The implementer holds the work its row names: the entry its claim was given, on key a's
+		// step 2 of the plan.
+		{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: implementer208, Entry: 4, EntryRaisedAt: at(22, 8, 58, 14), StepTask: "a", StepPlace: 2},
+		// The reviewer's round asked for changes. Key a's agent worked the reviewer's step 4
+		// (plan.Agent), so the row names that agent's claim on that step (record.WorkerClaim), which
+		// went back to its first step with the work; the reviewer's own claim, of an earlier version
+		// of the plan, is no worker.
+		{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: implementer208, StepTask: "a", StepPlace: 4,
+			Decision: &record.ReviewDecision{State: "changes_requested"}},
 		// LEGION-210's architect was started on entry 1 at its promotion; no architect claim of it
 		// stands now, and nothing queued a start of one, so the stall reading's second arm holds
 		// (admit/architect_stall.go's architectClaimUnreachable).
@@ -542,6 +567,12 @@ func populatedClaims(s *seeding, rows populatedRows) {
 				At: at(22, 9, 17, 12), TurnStartedAt: at(22, 9, 16, 30), Tool: "bash", CallID: "toolu_impl_11",
 				ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673", StartedAt: at(22, 9, 17, 12),
 			}},
+		// The reviewer's own claim of an earlier version of the plan, parked since: a second claim
+		// of the reviewer's role beside the agent of the key that works its step, which `workers`
+		// does not show (projection's listIssues), so the state lists it with its role among the
+		// issue's `otherClaims` and names it by its token.
+		{Token: reviewer208, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 3,
+			State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon, Session: "ses_reviewer_208_v1"},
 		// Its implementer failed and nothing has launched it since: the cause, the sentence, the
 		// moment and the counts it failed with, the death whose refused relaunches spent the budget,
 		// and the sentence a launch try was refused with for the shared leak check. It is a worker

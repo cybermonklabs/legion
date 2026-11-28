@@ -18,12 +18,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// strandedStore is the issue record, the admission slots and the queued supervise rows Stranded
-// reads; every claim's stored row is the one its role run reads back.
+// strandedStore is the issue record, the admission slots, the phases rows and the queued
+// supervise rows Stranded reads; every claim's stored row is the one its role run reads back.
 type strandedStore struct {
 	record.Store
 	issues        []record.Issue
 	slots         []record.Slot
+	entries       map[record.PhaseRole]record.PhaseEntry
 	queued        map[claim.Token][]record.QueuedSupervise
 	claims        map[claim.Token]supervise.Claim
 	roleRunCalls  int
@@ -31,6 +32,12 @@ type strandedStore struct {
 }
 
 func (s *strandedStore) Issues(context.Context, pgx.Tx) ([]record.Issue, error) { return s.issues, nil }
+
+// PhaseEntries is the fixture's phases rows; a fixture that gives none has issues with no plan
+// rows, whose worker of each role is the role's own claim.
+func (s *strandedStore) PhaseEntries(context.Context, pgx.Tx, []string) (map[record.PhaseRole]record.PhaseEntry, error) {
+	return s.entries, nil
+}
 
 func (s *strandedStore) Slots(context.Context, pgx.Tx) ([]record.Slot, error) { return s.slots, nil }
 
@@ -146,12 +153,12 @@ func TestStrandedNamesAReleasedClaimOnlyWhenItsWakeNeverBroughtThePodBack(t *tes
 
 	resumes := []ReleasedWake{
 		// Woken a minute ago: the replacement pod is still being built.
-		{Issue: "LEGION-2", Role: string(claim.RoleTester), ClockAt: strandedNow.Add(-time.Minute)},
-		// Woken well past the bound with no turn, for both roles of LEGION-3's pod.
-		{Issue: "LEGION-3", Role: string(claim.RoleReviewer), ClockAt: strandedNow.Add(-30 * time.Minute)},
-		{Issue: "LEGION-3", Role: string(claim.RoleArchitect), ClockAt: strandedNow.Add(-30 * time.Minute)},
+		{Claim: fresh.Token, ClockAt: strandedNow.Add(-time.Minute)},
+		// Woken well past the bound with no turn, for both claims of LEGION-3's pod.
+		{Claim: stuck.Token, ClockAt: strandedNow.Add(-30 * time.Minute)},
+		{Claim: architect.Token, ClockAt: strandedNow.Add(-30 * time.Minute)},
 		// The same fact already recorded by the stuck pass, whatever the wake's age reads as now.
-		{Issue: "LEGION-4", Role: string(claim.RolePlanner), ClockAt: strandedNow, Stuck: true},
+		{Claim: marked.Token, ClockAt: strandedNow, Stuck: true},
 	}
 
 	got, err := Stranded(context.Background(), nil, s, "LEGION", nil, claims, resumes, strandedNow)
@@ -164,7 +171,7 @@ func TestStrandedNamesAReleasedClaimOnlyWhenItsWakeNeverBroughtThePodBack(t *tes
 	}
 
 	// A wake exactly at the bound has not run out of it.
-	atTheBound := []ReleasedWake{{Issue: "LEGION-1", Role: string(claim.RoleImplementer),
+	atTheBound := []ReleasedWake{{Claim: never.Token,
 		ClockAt: strandedNow.Add(-StrandedReleaseWake)}}
 	got, err = Stranded(context.Background(), nil, s, "LEGION", nil, []supervise.Claim{never}, atTheBound, strandedNow)
 	if err != nil {
@@ -428,5 +435,40 @@ func TestStrandedReadsRoleRunsInBatches(t *testing.T) {
 	}
 	if store.roleRunCalls != 0 || store.roleRunsCalls != 3 {
 		t.Fatalf("role-run reads = %d single and %d batches, want 0 single and 3 bounded batches", store.roleRunCalls, store.roleRunsCalls)
+	}
+}
+
+// Two claims of the tester's role on an issue at testing, both failed: the agent of a key, whose
+// claim the tester's phases row names while it runs the plan's step, and the tester's own claim of
+// an earlier version of the plan. Only the step's worker is a worker a start of the phase brings
+// back, so only it is stranded; the other works nothing.
+func TestStrandedNamesTheStepsWorkerAndNotAnotherClaimOfItsRole(t *testing.T) {
+	t.Parallel()
+	issue := strandedIssue("LEGION-1", "LEGION-1", phase.Testing)
+	keyedToken, err := claim.AgentToken("legion", "LEGION-1", "implementer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := strandedClaim(t, "LEGION-1", "LEGION-1", claim.RoleTester, supervise.StateFailed)
+	keyed := own
+	keyed.Token = keyedToken
+	s := &strandedStore{
+		issues: []record.Issue{issue},
+		slots:  slotsOf("LEGION-1"),
+		entries: map[record.PhaseRole]record.PhaseEntry{
+			{Issue: "LEGION-1", Role: claim.RoleTester}: {Entry: 1, Claim: keyedToken, StepTask: "task-1"},
+		},
+		claims: map[claim.Token]supervise.Claim{own.Token: own, keyed.Token: keyed},
+	}
+	got, err := Stranded(context.Background(), nil, s, "LEGION", nil, []supervise.Claim{own, keyed}, nil, strandedNow)
+	if err != nil {
+		t.Fatalf("Stranded: %v", err)
+	}
+	var tokens []claim.Token
+	for _, c := range got {
+		tokens = append(tokens, c.Token)
+	}
+	if !reflect.DeepEqual(tokens, []claim.Token{keyedToken}) {
+		t.Fatalf("stranded = %v, want the step's worker %s alone", tokens, keyedToken)
 	}
 }

@@ -226,6 +226,63 @@ func TestTheOwedRouteAtAStepOwesTheRunningStepsRoleItsWork(t *testing.T) {
 	}
 }
 
+// Two claims of one issue can hold one role: the agent of key a, `…-implementer`, re-roled onto
+// the tester's step of `implementer:a tester:a reviewer`, beside the tester's own claim,
+// `…-tester`, of an earlier version of the plan. The tester's row names key a's claim at its
+// step's entry. The claim that works that step owes the testing phase, and the tester's own claim
+// owes nothing, though it holds the role and stands behind the row's entry: the completion route
+// refuses its report of the step (HANDOFF_NOT_THE_STEPS_WORKER), and the daemon sends it none of
+// the step's work. The fault is a rule that judges a claim by its role alone, under which both
+// claims owe the phase. The twin: once the row runs no step (a new generation cleared it), it
+// names no worker, the completion route judges a report by its role, and so both claims owe.
+func TestClaimOwedIsThePhaseOfTheClaimThatWorksTheStepAlone(t *testing.T) {
+	const key = "LEGION-208"
+	h, _, _ := newEntryHarness(t)
+	seedIssueAt(t, h, key, phase.Testing)
+	keyed, err := claim.NewToken(testProject, key, claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putTesterRow := func(stepTask string, place int) {
+		t.Helper()
+		if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: keyed,
+				StepTask: stepTask, StepPlace: place, Entry: 2, EntryTask: "Test the change."})
+		}); err != nil {
+			t.Fatalf("seed the tester's row of %s: %v", key, err)
+		}
+	}
+	putTesterRow("a", 2)
+	own := newLiveClaim(t, h, key, claim.RoleTester)
+	worker := liveClaimOnRole(t, h, key, keyed, claim.RoleTester)
+
+	worker.owes(t, "the testing phase of "+key)
+	own.owesNothing(t)
+
+	putTesterRow("", 0)
+	worker.owes(t, "the testing phase of "+key)
+	own.owes(t, "the testing phase of "+key)
+}
+
+// liveClaimOnRole is newLiveClaim for the claim token on issue, which holds role though its agent
+// is named for another: the claim of a key's agent re-roled onto role's step. The issue's tree
+// lifecycle is open already (newLiveClaim's launch opens it).
+func liveClaimOnRole(t *testing.T, h *harness, issue string, token claim.Token, role claim.Role) liveClaim {
+	t.Helper()
+	m, _, err := h.supervisor.Create(h.ctx, supervise.Claim{Token: token, Project: testProject, Tree: issue, Issue: issue, Role: role,
+		State: supervise.StateQueued}, "role prompt")
+	if err != nil {
+		t.Fatalf("create %s: %v", token, err)
+	}
+	if err := m.Handle(h.ctx, supervise.RequestSpawn{Claim: token}); err != nil {
+		t.Fatalf("spawn %s: %v", token, err)
+	}
+	session := "ses_" + string(token)
+	registration := h.registered(h.bootToken(token), session)
+	working(t, h, token, issue)
+	return liveClaim{h: h, token: token, session: session, secret: registration.Secret, tree: issue, issue: issue}
+}
+
 // The merger merges (dispatch://INFRA-714): merging is its working phase, with no wait for the
 // daemon's merge after it, so a merger whose issue stands in merging with its pull request open
 // owes that phase, and the answer names it. The merged pull request is what finishes merging

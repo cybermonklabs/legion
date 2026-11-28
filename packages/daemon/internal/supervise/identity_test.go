@@ -186,7 +186,7 @@ func TestTheControllersTaskReachesItWithNoWorkingCopyAdopted(t *testing.T) {
 
 // testerToken and testerClaim are the tester of the implementer's own issue (queuedClaim): two
 // roles of one issue, and so of the one jj workspace its roles share.
-const testerToken claim.Token = "legion-LEGION-209-tester"
+const testerToken claim.Token = "legion-legion-legion-209-tester"
 
 func testerClaim() Claim {
 	return Claim{

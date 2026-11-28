@@ -755,7 +755,7 @@ func idleRigWorking(state string) bool {
 	return false
 }
 
-// token is the claim token of the issue's role.
+// token is the claim token of the agent named for the issue's role, the role's own claim.
 func (r *idleWakeRig) token(issue idleRigIssue) claim.Token {
 	r.t.Helper()
 	token, err := claim.NewToken(r.project, issue.key, issue.role)

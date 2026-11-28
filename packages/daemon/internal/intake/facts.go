@@ -1349,8 +1349,10 @@ func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 // architect's request from accepting (Requester claim.RoleArchitect, api's phaseBackward): the
 // claim of the architect, the issue's generation and the run of the step the issue stood in
 // (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
-// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three, and
-// carries PhaseEntry instead, which the architect's move does not: each check reads its own field.
+// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries By alone of the three,
+// the claim that asked it, which the workflow holds to the claim the role's row names on its step
+// (two claims of one issue can hold one role); it carries PhaseEntry too, which the architect's
+// move does not: each check reads its own field.
 type BackwardMove struct {
 	Issue      string
 	Requester  claim.Role
@@ -1395,12 +1397,17 @@ const (
 // (api's phaseRetry): its claim and the issue's generation its route read, which the workflow
 // judges again under the fact lock (ArchitectRequest). The operator's retry of a held claim
 // (`legion claims retry`, api's retryClaim) is no architect's request, and carries neither.
+//
+// Claim is the claim a caller retrying the phase for one claim read as the worker on the held
+// phase's step (api's restartWorkedPhase), and "" for the architect's own decision, which names
+// none: a retry that names one is refused where the step is another claim's when it applies.
 type RetryOrEscalate struct {
 	Issue      string
 	Decision   RetryOrEscalateDecision
 	Reason     string
 	By         claim.Token
 	Generation uint64
+	Claim      claim.Token
 }
 
 func (f RetryOrEscalate) namedIssue() (string, bool) { return f.Issue, true }
@@ -1416,10 +1423,16 @@ func (f RetryOrEscalate) namedIssue() (string, bool) { return f.Issue, true }
 // claim in a new session rather than resuming the one it recorded (supervise's RequestRetry). It
 // rides the fact so that the session is forgotten inside the retry decision itself, which means a
 // restart the workflow refuses leaves the claim's session where the operator still has it.
+//
+// Claim is the claim the caller retries, which it read as the worker on Role's step, and the
+// restart is refused where the step is another claim's when the fact applies: the start it would
+// queue hands the step's entry to whichever claim the role's row names, and that claim's step,
+// entered for it since, is no step of the claim the caller asked about. "" names none.
 type RestartPhase struct {
 	Issue        string
 	Role         claim.Role
 	FreshSession bool
+	Claim        claim.Token
 }
 
 func (f RestartPhase) namedIssue() (string, bool) { return f.Issue, true }
@@ -1517,7 +1530,9 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // issue's first step will run, as taken and writes nothing, but where that version names another
 // giver, whom it adds (record.Store.AddPlanGiver); it stores the plan (workflow's planGiven) where
 // its task has not started, and applies the rules of a later version. It answers PLAN_REFUSED
-// (plan.RunningChange, or StartedBeforePlans for an issue that ran before Legion took plans),
+// (plan.RunningChange; StartedBeforePlans for an issue that ran before Legion took plans; or
+// AgentUnnamed for a version in which an agent would need a name, its key's or its role's, that
+// another agent of the plan holds from an earlier version, refused before anything is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE, PLAN_NOT_TAKEN (a plan of an issue whose experiment's
 // group runs the project's default steps, but a version that changes nothing but the text of its
@@ -1713,8 +1728,15 @@ func (f CloseRoot) Message() string {
 // cluster did — and because it is persisted on the claim, so the boot's replay of a failure no
 // daemon applied reports the same end (the daemon's replayTerminal).
 type ClaimFailed struct {
-	Issue        string
-	Role         claim.Role
+	Issue string
+	Role  claim.Role
+	// Claim is the token of the claim that failed. Two claims of one issue can hold one role — the
+	// agent of a key on a step of another role, beside that role's own claim of an earlier version
+	// of the plan — so the role does not name the claim: only the failure of the claim that works
+	// the role's step holds the issue, and only the failure of a look's claim ends that look
+	// (workflow's claimFailed). It is "" on a fact from a daemon before the claim was carried,
+	// which keeps the role's rule.
+	Claim        claim.Token
 	Reason       string
 	Death        string
 	StartFailure string
@@ -1746,15 +1768,16 @@ func (f ClaimFailed) namedIssue() (string, bool) { return f.Issue, true }
 // OpenAI's cyber-policy refusal, which tells the workflow of that failure again where it now holds
 // the issue (the daemon outbox's heldStartRefused).
 func ClaimFailedOf(c supervise.Claim, limits supervise.Limits) ClaimFailed {
-	return ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
+	return ClaimFailed{Issue: c.Issue, Role: c.Role, Claim: c.Token, Reason: c.Failure, PodEnd: c.PodEnd,
 		Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
 		Cause: c.FailureCause, Budgets: c.Budgets, Limits: limits}
 }
 
 // SessionLost is a claim that forgot its recorded session: its worker now runs a fresh agent that
-// has read none of its own earlier work (supervise's startFresh). Detail is why, as the supervisor
-// said it. It is told on the issue and to its architect, because a worker that silently lost its
-// memory looks like one that is merely slow; the controller gets no copy (#4065).
+// has read none of its own earlier work (supervise's startFresh). Claim is that claim, whose name
+// is its agent's, and Role the role of the step it runs. Detail is why, as the supervisor said it.
+// It is told on the issue and to its architect, because a worker that silently lost its memory
+// looks like one that is merely slow; the controller gets no copy (#4065).
 //
 // Cause is why the claim forgot the session; empty reads as gone (supervise.SessionLossGone).
 // Session is the session the claim forgot (supervise.AbandonedSession.Session), which the
@@ -1762,6 +1785,7 @@ func ClaimFailedOf(c supervise.Claim, limits supervise.Limits) ClaimFailed {
 type SessionLost struct {
 	Issue   string
 	Role    claim.Role
+	Claim   claim.Token
 	Detail  string
 	Cause   supervise.SessionLoss
 	Session string
@@ -1782,20 +1806,63 @@ type SessionStoreFault struct {
 
 func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
 
+// PodRefusedLaunch is a launch of a claim refused because the issue's pod cannot run it until that
+// pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate): the claim is
+// suspended, charged nothing, and runs nothing while that pod stands (supervise's podRefused). It
+// is told on the issue and to the controller at the first refusal and hourly while the pod
+// stands, and the workflow queues a start of the claim wherever its outbox holds none that brings
+// the claim back, so that whatever replaces the pod resumes it (workflow's podRefusedLaunch).
+type PodRefusedLaunch struct {
+	Issue  string
+	Role   claim.Role
+	Claim  claim.Token
+	Pod    string
+	Detail string
+	// Generation is the generation of the claim whose launch the pod refused, as the machine held
+	// it at the refusal: a claim the store holds at a later generation has launched since, and the
+	// fact applies nothing (workflow's refusalStands).
+	Generation uint64
+}
+
+func (f PodRefusedLaunch) namedIssue() (string, bool) { return f.Issue, true }
+
+// RefusedStartEnded is a start row of a claim that the outbox finished while the claim's last launch
+// stands refused by its issue's pod (supervise's Machine.RefusedPod), and that was not queued for
+// that same refusal (record.SuperviseRequest.RefusedPod): the refusal's own fact (PodRefusedLaunch)
+// may have read the row as the start that brings the claim back, so the workflow reads the claim's
+// queued starts again, now the row is gone, and queues its start wherever none stands (workflow's
+// refusedStartEnded). It tells nobody: the refusal did.
+type RefusedStartEnded struct {
+	Issue string
+	Role  claim.Role
+	Claim claim.Token
+	// Pod is the uid of the issue pod that refused the claim's last launch when the row ended
+	// (supervise.Machine.RefusedPod), which the start this fact queues is marked with
+	// (record.SuperviseRequest.RefusedPod).
+	Pod string
+	// Generation is the claim's generation when the row ended, which the fact is judged by as the
+	// refusal's report is (PodRefusedLaunch.Generation).
+	Generation uint64
+}
+
+func (f RefusedStartEnded) namedIssue() (string, bool) { return f.Issue, true }
+
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
 // the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
-// shimwire.MemoryKillCauseKernelProtected for a process that runs the role's session), as the pod's
-// launcher reported it on the connection of the role whose process it was
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the claim's session), as the
+// pod's launcher reported it on the connection of the slot whose process it was, the slot of a
+// claim's agent
 // (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
 // the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id
 // `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a report the launcher sent
 // twice is applied once (INFRA-3557). For the kernel's kill, <guard> is the id of the launcher's
 // guest watch (memoryguard.Guest).
 //
-// Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
-// the role the connection authenticated for, and that pod), never anything the report says.
-// The workflow tells that role, on its own role topic, which of its processes was ended and why,
+// Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim the
+// connection authenticated for, its slot's agent's whatever role that agent's step is on, and that
+// pod), never anything the report says. The workflow tells that claim, on the role topic of its
+// token, which of its processes was ended and why,
 // in the note the report's Cause chooses (workflow's memoryGuardKill).
 type MemoryGuardKill struct {
 	Issue  string
@@ -2052,13 +2119,16 @@ const (
 )
 
 // PodBackstopDue is one armed backstop of a released pod coming due (the pod_wake_backstops row
-// at its due_at): the phase worker it names is woken whatever else did or did not happen since
-// the release. It is never decoded from an event — the daemon's own pass reads the due rows and
-// applies one fact per row, under the row's id, so a backstop that came due while the daemon was
-// down fires once after it starts.
+// at its due_at): the claim it was armed for (Claim), the worker of the open phase at its release,
+// is woken where it stands released (ClaimByToken, Claim.Released), whatever else did or did not
+// happen since the release, and a backstop of an issue the record no longer holds does nothing.
+// Role is the role that claim held then. It is never decoded from an event — the daemon's own pass
+// reads the due rows and applies one fact per row, under the row's id, so a backstop that came due
+// while the daemon was down fires once after it starts.
 type PodBackstopDue struct {
 	ID    int64
 	Issue string
+	Claim claim.Token
 	Role  claim.Role
 }
 
@@ -2068,10 +2138,14 @@ func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 // between turns, in no update round, its last step older than Bound (config.Config.WorkerSilence),
 // and its session's report explaining none of that quiet. The sweep applies it from the live
 // claims, never from an event, and its handler decides in the fact's own transaction
-// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is).
+// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is). Claim
+// is the claim the sweep read: two claims of one issue can hold one role, and the handler judges
+// only the one that works the role's step, so a fact of the other is passed over; "" on a fact
+// from before the claim was carried, which the handler reads as the step's worker's.
 type WorkerSilent struct {
 	Issue      string
 	Role       claim.Role
+	Claim      claim.Token
 	Generation uint64
 	LastStep   time.Time
 	Bound      time.Duration
@@ -2083,10 +2157,12 @@ func (f WorkerSilent) namedIssue() (string, bool) { return f.Issue, true }
 // on background work of its own (Kinds) whose session's report, at ReportedAt, is older than
 // Bound (config.Config.WorkerBackground). The sweep applies it from the live claims, never from
 // an event, and its handler tells the architect and sends nothing (internal/daemon's
-// workerBackgroundEventID says what its id is).
+// workerBackgroundEventID says what its id is). Claim is the claim the sweep read, as
+// WorkerSilent's is.
 type WorkerBackgroundStalled struct {
 	Issue      string
 	Role       claim.Role
+	Claim      claim.Token
 	Generation uint64
 	ReportedAt time.Time
 	Kinds      []string
@@ -2132,14 +2208,30 @@ type Refusal struct {
 // register_plan answers it for a plan that plan.FromBlocks cannot read, or that plan.Supported or
 // plan.Validate refuses, each naming the first plan.MostReasons causes of each kind and counting
 // the rest, and the workflow for a version that removes a running task or changes more of it than
-// its text (plan.RunningChange). The message holds every reason given, in its order, so a reader
-// of the sentence alone reads every reason the list holds.
+// its text (plan.RunningChange), or one whose agent this release cannot name (AgentUnnamed). The
+// message holds every reason given, in its order, so a reader of the sentence alone reads every
+// reason the list holds.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
 		texts[i] = reason.Reason
 	}
 	return &Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + strings.Join(texts, " "), Reasons: reasons}
+}
+
+// AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task
+// would take name — the name its key held in an earlier version, or its role's — which holder holds:
+// the key of another agent of the plan that holds the name, or the key whose rows held it in an
+// earlier version, "" for an agent with no key (record.NameAgents, record.UnnamedAgents). A name a
+// key held is that key's alone, and this release runs one agent of each role for an issue, so such
+// a version is refused as a plan before anything is written, never as an error of the write.
+func AgentUnnamed(task string, place int, name, holder string) plan.Refusal {
+	held := "another agent of this plan, with no key,"
+	if holder != "" {
+		held = "key " + holder + ", from this version or an earlier one,"
+	}
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and %s holds the name %s, which this step's agent would take; "+
+		"a name a key held is that key's alone, and this release runs one agent of each role for an issue. This release of Legion does not carry it out yet.", place, task, held, name)}
 }
 
 // PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,
@@ -2580,11 +2672,17 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 	return clause
 }
 
+// StaleEntryClause names a report's receiver and its served and current issue-wide entry identities.
+func StaleEntryClause(issue string, role claim.Role, p phase.Phase, current, serving int64, report string) string {
+	return fmt.Sprintf("%s handed the %s phase %s again: this %s is of entry %d, not the phase's current entry %d",
+		issue, role, p, report, serving, current)
+}
+
 // StaleEntry is the 409 HANDOFF_STALE_ENTRY refusal of a completion of a phase entry the issue's
 // phase has moved past: the role was given this phase's work again — the issue left the phase and
 // came back, or the phase ended under the worker and another role's round sent it here — and the
-// turn reporting this completion is on the earlier entry, current - serving entries behind. It
-// names the queued task of the entry the phase hands the role now when the claim already holds it
+// turn reporting this completion is on the earlier entry.
+// It names the queued task of the entry the phase hands the role now when the claim already holds it
 // (pending, which only the completion route reads; the workflow passes nil), as api's
 // staleCompletion does for a run. Either way that entry's task is owed to this claim and comes by
 // itself: the claim is behind the entry its phases row names, which is what the admission pass
@@ -2601,8 +2699,7 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 //
 // clause says what refused this completion (BehindEntryClause).
 func StaleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery, clause string) *Refusal {
-	stale := fmt.Sprintf("%s handed the %s phase %s again: this completion is of entry %d, which is %d behind the entry %d the phase is on, and %s; nothing was recorded",
-		issue, role, p, serving, current-serving, current, clause)
+	stale := StaleEntryClause(issue, role, p, current, serving, "completion") + ", and " + clause + "; nothing was recorded"
 	if pending != nil && pending.Entry == current {
 		stale = fmt.Sprintf("%s, and your turn began before the daemon's task for entry %d (%s) reached this session", stale, current, pending.ID)
 	}

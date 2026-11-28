@@ -25,11 +25,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -252,7 +254,10 @@ func (d *recordingDaemon) requests() []seenRequest {
 
 // operatorDaemon is the daemon's HTTP surface as `legion claims` reaches it: the real
 // api.NewServer over real claim machines and a fake runtime, on a loopback port, with every
-// request that reached it recorded.
+// request that reached it recorded. Its record is a migrated database of its own that holds no
+// issue, as a real daemon's holds none of an operator's tree: the spawn and the controller's
+// recoveries read the worker on a role's step from it (api's workerToken), and refuse on a daemon
+// with no record.
 type operatorDaemon struct {
 	*recordingDaemon
 	t               *testing.T
@@ -279,9 +284,11 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}
+	records := testpg.CloneStore(t, "legion_cmd_claims")
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: claims, Trees: claims, Releaser: rt, BootTokens: tokens, Project: claimsProject, OperatorToken: claimsOperatorToken, Log: quiet,
+		Pool: records.Pool(), Record: record.NewStore(),
 	}).Handler
 
 	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
@@ -1228,6 +1235,43 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 			claim: api.OperatorClaim{Token: "legion-legion-legion-210-reviewer", Role: "reviewer", Issue: "LEGION-210",
 				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-210-reviewer reviewer LEGION-210 failed - 2 " + thisBinarysContract + " - - - -\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			writeClaimLine(&out, tc.claim)
+			if out.String() != tc.want {
+				t.Fatalf("claim line = %q, want %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// A claim whose refused launch's fact the store has not taken (api.OperatorClaim.UnrecordedRefusal)
+// prints the cause word `refusal-unrecorded` beside its state, where a claim with no failure record
+// prints `-`: the daemon tries such a fact again for as long as it fails, and nothing else on the
+// listing says that the claim waits on a fact the store does not take. A claim that failed prints
+// the cause it failed with instead, which is why it runs nothing; `--json` carries both.
+func TestClaimLineNamesARefusalTheStoreHasNotRecorded(t *testing.T) {
+	t.Parallel()
+	unrecorded := &api.UnrecordedRefusalView{Since: time.Date(2026, 11, 23, 17, 0, 0, 0, time.UTC), Attempts: 4, Error: "the database did not answer"}
+	for _, tc := range []struct {
+		name  string
+		claim api.OperatorClaim
+		want  string
+	}{
+		{
+			name: "suspended for its pod",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-208-tester", Role: "tester", Issue: "LEGION-208",
+				State: "suspended", SuspendedBy: "daemon", Generation: 2, PluginContract: api.DaemonAPIVersion(), UnrecordedRefusal: unrecorded},
+			want: "legion-legion-legion-208-tester tester LEGION-208 suspended refusal-unrecorded 2 " + thisBinarysContract + " - - - -\n",
+		},
+		{
+			name: "failed",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-208-tester", Role: "tester", Issue: "LEGION-208",
+				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion(), UnrecordedRefusal: unrecorded,
+				Failure: &api.ClaimFailureView{Cause: supervise.CauseLaunchRefused, Detail: "launch failures ran out"}},
+			want: "legion-legion-legion-208-tester tester LEGION-208 failed launch_refused 2 " + thisBinarysContract + " - - - -\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

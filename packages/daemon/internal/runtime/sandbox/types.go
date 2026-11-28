@@ -400,6 +400,10 @@ type Options struct {
 	// controller's, which acts as the review App. Required: configure refuses nil as it refuses a
 	// nil Tokens.
 	GitHubCredential runtime.GitHubCredential
+	// ActsAs answers the role whose App a claim's slot holds while the claim does work other than
+	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each write of a slot's gh
+	// files. Optional: nil gives every slot its claim's stored role.
+	ActsAs runtime.ActsAs
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
 	// (appauth.ControllerCredential). The refresher asks it for the owner the Secret holds
 	// (refreshGitHubCredential); a launch asks for none, taking the first owner, which is the

@@ -45,7 +45,7 @@ func TestAWakeTakenWhileItsReleaseIsRecordedNamesThatRelease(t *testing.T) {
 		t.Fatalf("begin the wake's transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeAgentMessage, at.Add(-time.Second), 0); err != nil || !taken {
+	if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakeAgentMessage, at.Add(-time.Second), 0); err != nil || !taken {
 		t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
 	}
 	var take int32
@@ -128,7 +128,7 @@ func TestAWakeTakenWhileItsReleaseIsCancelledLeavesNoResume(t *testing.T) {
 		t.Fatalf("begin the wake's transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeAgentMessage, at, 0); err != nil || !taken {
+	if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakeAgentMessage, at, 0); err != nil || !taken {
 		t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
 	}
 	var take int32
@@ -208,11 +208,11 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 	if err != nil {
 		t.Fatalf("record the idle release: %v", err)
 	}
-	if taken, err := store.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeDelivery,
+	if taken, err := store.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer, pods.WakeDelivery,
 		at.Add(-time.Hour), 0); err != nil || !taken {
 		t.Fatalf("take the implementer's first wake = %t, %v; want it taken", taken, err)
 	}
-	old, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleImplementer)
+	old, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, releasedToken)
 	if err != nil || !found {
 		t.Fatalf("the implementer's open resume = %t, %v; want the one its first wake recorded", found, err)
 	}
@@ -264,10 +264,10 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 		var w woken
 		w.err = Transact(wakeCtx, store.Pool(), func(wakeCtx context.Context, tx pgx.Tx) error {
 			var err error
-			if w.newest, w.closed, err = records.ClosePodGoneResume(wakeCtx, tx, rootIssue, claim.RoleImplementer); err != nil {
+			if w.newest, w.closed, err = records.ClosePodGoneResume(wakeCtx, tx, rootIssue, releasedToken, claim.RoleImplementer); err != nil {
 				return err
 			}
-			w.taken, err = records.TakePodWake(wakeCtx, tx, rootIssue, claim.RoleImplementer, pods.WakeBackstop, at, 0)
+			w.taken, err = records.TakePodWake(wakeCtx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakeBackstop, at, 0)
 			return err
 		})
 		done <- w
@@ -414,7 +414,7 @@ func TestARecordedReleaseKeepsAHeldWakeTakenUnderItsMarkPairedWithNoRelease(t *t
 			t.Fatalf("the pause of the implementer's wake = held %d, stopping %d, %v; want held by pause %d and stopped by none",
 				held, stopping, err, pause.ID)
 		}
-		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at.Add(-30*time.Second), held); err != nil || !taken {
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakeChecks, at.Add(-30*time.Second), held); err != nil || !taken {
 			t.Fatalf("take the held wake = %t, %v; want it taken", taken, err)
 		}
 		return nil
@@ -460,10 +460,10 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 		t.Fatal(err)
 	}
 	// A wake of the reviewer before the mark: the mark's wake_row is its resume's id.
-	if taken, err := store.TakePodWake(ctx, "legion", rootIssue, reviewer, pods.WakeChecks, at.Add(-time.Hour), 0); err != nil || !taken {
+	if taken, err := store.TakePodWake(ctx, "legion", rootIssue, reviewer, claim.RoleReviewer, pods.WakeChecks, at.Add(-time.Hour), 0); err != nil || !taken {
 		t.Fatalf("take the reviewer's wake before the mark = %t, %v; want it taken", taken, err)
 	}
-	before, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleReviewer)
+	before, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, reviewer)
 	if err != nil || !found {
 		t.Fatalf("the reviewer's open resume = %t, %v; want the one its wake recorded", found, err)
 	}
@@ -481,7 +481,7 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 		if err != nil || held != pause.ID {
 			t.Fatalf("the pause of the implementer's wake = %d, %v; want pause %d", held, err, pause.ID)
 		}
-		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at.Add(-30*time.Second), held); err != nil || !taken {
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakeChecks, at.Add(-30*time.Second), held); err != nil || !taken {
 			t.Fatalf("take the held wake = %t, %v; want it taken", taken, err)
 		}
 		return nil
@@ -489,7 +489,7 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 	// The held wake's start, as the workflow's wake queues it (wakeRow), in the pause's words.
 	const paused = "the pause's words for the settlement"
 	wake, err := record.NewOutboxRow(rootIssue, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer,
-		Generation: 1, Task: paused, WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build", Pause: pause.ID}, time.Now().UTC())
+		Claim: releasedToken, Generation: 1, Task: paused, WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build", Pause: pause.ID}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("encode the held wake's start: %v", err)
 	}
@@ -579,14 +579,14 @@ func TestARecordedReleaseAndAResumeOfThePauseAtOnceBothCommit(t *testing.T) {
 		if err != nil || held != pause.ID {
 			t.Fatalf("the pause of the implementer's wake = %d, %v; want pause %d", held, err, pause.ID)
 		}
-		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at.Add(-30*time.Second), held); err != nil || !taken {
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, releasedToken, pods.WakeChecks, at.Add(-30*time.Second), held); err != nil || !taken {
 			t.Fatalf("take the held wake = %t, %v; want it taken", taken, err)
 		}
 		return nil
 	})
 	const paused = "the pause's words for the settlement"
 	start := queueSupervise(t, store, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer,
-		Generation: 1, Task: paused, WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build", Pause: pause.ID})
+		Claim: releasedToken, Generation: 1, Task: paused, WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build", Pause: pause.ID})
 
 	recordIn, resumeIn, resumeMarked := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var recordOnce, resumeOnce, markedOnce sync.Once

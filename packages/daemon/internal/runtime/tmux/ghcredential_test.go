@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"maps"
 	"os"
@@ -396,12 +397,14 @@ func TestNewRefusesACredentialFunctionWithoutTheRealGh(t *testing.T) {
 	}
 }
 
-// The refresher brings every tracked pane's gh bundle to the current render of its role's
-// credential for the pane's own repository, the one its launch recorded (none for the controller), and
+// The refresher brings every tracked pane's gh bundle to the current render of the credential of
+// the role the pane was launched as (paneRole), for the pane's own repository, the one its launch
+// recorded (none for the controller), and
 // touches nothing else: a stale owner's hosts.yml is replaced whole, by rename, and logged with the
 // claim, role, App, expiry and the owners it rewrote; an owner already at the render is not
 // rewritten; a root that is gone is made again, including the controller's, whose render is the
-// review App's (appauth.AppRoleFor); a token that names no role is skipped. A mint that fails is
+// review App's (appauth.AppRoleFor); a pane whose role it cannot know, a token that names no claim,
+// is skipped. A mint that fails is
 // logged and leaves the pane's last tokens in place until the next tick, and so does a render whose
 // default is not the owner of the pane's own repository.
 func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
@@ -413,6 +416,7 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 		controllerCredential: staticControllerCredential,
 		log:                  slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		tracked:              map[string]*trackedProcess{},
+		writeBundle:          ghconfig.WriteBundle,
 	}
 	token := func(issue string, role claim.Role) claim.Token {
 		t.Helper()
@@ -428,11 +432,12 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 		stale: ghrepo.MustParse("acme/widgets"), current: ghrepo.MustParse("sjawhar/widgets"),
 		gone: ghrepo.MustParse("sjawhar/widgets"), controller: {}, nameless: ghrepo.MustParse("acme/widgets"),
 	}
+	launched := map[claim.Token]claim.Role{stale: claim.RoleTester, current: claim.RoleImplementer, gone: claim.RoleReviewer, controller: claim.RoleController}
 	for i, token := range []claim.Token{stale, current, gone, controller, nameless} {
 		r.track(runtime.Locator{
 			Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "4242:" + string(rune('1'+i)),
 			Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%" + string(rune('1'+i))},
-		}, "LEGION-45", repos[token], "acme")
+		}, "LEGION-45", repos[token], "acme", launched[token])
 	}
 	root := func(token claim.Token) string { return runtime.GHConfigDir(r.stateDir, token) }
 	staleBundle, _ := staticCredential(ctx, claim.RoleTester, ghrepo.MustParse("acme/widgets"))
@@ -591,14 +596,21 @@ func TestAnAdoptedPanesRepositoryIsTheDaemonsRecordNotItsGhDirectory(t *testing.
 			}
 			return ghrepo.MustParse("acme/widgets"), nil
 		},
-		log:     slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		tracked: map[string]*trackedProcess{},
+		// Each pane here was adopted, so its role is the daemon's record of its claim, which for
+		// these claims is the role their token names.
+		claimRole: func(_ context.Context, token claim.Token) (claim.Role, error) {
+			_, agent, _ := token.Cut()
+			return claim.Role(agent), nil
+		},
+		log:         slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		tracked:     map[string]*trackedProcess{},
+		writeBundle: ghconfig.WriteBundle,
 	}
 	for i, token := range []claim.Token{tester, planner, controller} {
 		r.track(runtime.Locator{
 			Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "4242:" + string(rune('1'+i)),
 			Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%" + string(rune('1'+i))},
-		}, "", ghrepo.Repository{}, "")
+		}, "", ghrepo.Repository{}, "", "")
 	}
 	root := func(token claim.Token) string { return runtime.GHConfigDir(r.stateDir, token) }
 	// The pane's user rewrote its bundle to name sjawhar its default, with sjawhar's directory
@@ -665,14 +677,15 @@ func TestAControllerPaneIsRefreshedForTheOwnerItsLaunchRecorded(t *testing.T) {
 				"sjawhar": ghconfig.Render("read-sjawhar", app, staticCredentialExpiry),
 			}}, nil
 		},
-		log:     slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		tracked: map[string]*trackedProcess{},
+		log:         slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		tracked:     map[string]*trackedProcess{},
+		writeBundle: ghconfig.WriteBundle,
 	}
 	controller := claim.ControllerToken("omp")
 	r.track(runtime.Locator{
 		Runtime: runtime.RuntimeTmux, Claim: controller, Incarnation: "4242:1",
 		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
-	}, "", ghrepo.Repository{}, "sjawhar")
+	}, "", ghrepo.Repository{}, "sjawhar", claim.RoleController)
 	root := runtime.GHConfigDir(r.stateDir, controller)
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "sjawhar", Dirs: map[string]ghconfig.Rendered{
 		"sjawhar": ghconfig.Render("read-sjawhar-first-lease", app, staticCredentialExpiry),
@@ -761,10 +774,11 @@ func TestAPaneWithNoRepositoryIsRenderedForThatSameAbsentRepository(t *testing.T
 		}
 		return ghrepo.Repository{}, nil
 	}
+	f.claimRole = func(context.Context, claim.Token) (claim.Role, error) { return claim.RoleTester, nil }
 	f.track(runtime.Locator{
 		Runtime: runtime.RuntimeTmux, Claim: adopted, Incarnation: "4242:7",
 		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%7"},
-	}, "", ghrepo.Repository{}, "")
+	}, "", ghrepo.Repository{}, "", "")
 	ownLeases := func(when string, tokens ...claim.Token) {
 		t.Helper()
 		for _, token := range tokens {
@@ -791,6 +805,44 @@ func TestAPaneWithNoRepositoryIsRenderedForThatSameAbsentRepository(t *testing.T
 	mu.Unlock()
 	if failed := logLines(logs.String(), "github credential refresh failed"); len(failed) != 0 {
 		t.Errorf("the runtime logged failures %q, want none", failed)
+	}
+}
+
+// Key a's claim `…-implementer` took the role tester for its tester step, and its pane was
+// launched as the tester. The refresh of that pane writes the review App's bundle, the tester's:
+// the role the pane was launched as, and for a pane this runtime adopted, the daemon's record of
+// the claim's role, never the token's name.
+func TestATmuxPaneOfAReroledClaimFollowsItsRole(t *testing.T) {
+	ctx := context.Background()
+	keyed, err := claim.NewToken("omp", "LEGION-48", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adopted, err := claim.NewToken("omp", "LEGION-49", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Runtime{
+		stateDir:             t.TempDir(),
+		gitHubCredential:     staticCredential,
+		controllerCredential: staticControllerCredential,
+		claimRepository:      acmeWidgets,
+		claimRole:            func(context.Context, claim.Token) (claim.Role, error) { return claim.RoleTester, nil },
+		log:                  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		tracked:              map[string]*trackedProcess{},
+		writeBundle:          ghconfig.WriteBundle,
+	}
+	r.track(runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: keyed, Incarnation: "4242:1",
+		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"}}, "LEGION-48", ghrepo.MustParse("acme/widgets"), "acme", claim.RoleTester)
+	r.track(runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: adopted, Incarnation: "4242:2",
+		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%2"}}, "", ghrepo.Repository{}, "", "")
+
+	r.refreshGitHubCredentials(ctx)
+
+	for _, token := range []claim.Token{keyed, adopted} {
+		if got := readHostsToken(t, ghconfig.Dir(runtime.GHConfigDir(r.stateDir, token), "acme")); got != staticCredentialToken(claim.RoleTester) {
+			t.Errorf("%s's pane holds %q, want the tester's App's %q", token, got, staticCredentialToken(claim.RoleTester))
+		}
 	}
 }
 
@@ -826,7 +878,7 @@ func TestAPaneRecordedOnAPairsFromKeepsRefreshing(t *testing.T) {
 	f.track(runtime.Locator{
 		Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "4242:8",
 		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%8"},
-	}, "", ghrepo.Repository{}, "")
+	}, "", ghrepo.Repository{}, "", claim.RoleImplementer)
 
 	f.refreshGitHubCredentials(ctx)
 
@@ -866,6 +918,7 @@ func TestAWalkBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 		controllerCredential: staticControllerCredential,
 		log:                  slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		tracked:              map[string]*trackedProcess{},
+		writeBundle:          ghconfig.WriteBundle,
 	}
 	r.gitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		app, err := appauth.AppRoleFor(role, nil)
@@ -904,7 +957,7 @@ func TestAWalkBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 		r.track(runtime.Locator{
 			Runtime: runtime.RuntimeTmux, Claim: token(pane.issue, pane.role), Incarnation: "4242:" + string(rune('1'+i)),
 			Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%" + string(rune('1'+i))},
-		}, pane.issue, pane.repo, strings.ToLower(pane.repo.Owner()))
+		}, pane.issue, pane.repo, strings.ToLower(pane.repo.Owner()), pane.role)
 	}
 
 	walk := func() map[built]int {

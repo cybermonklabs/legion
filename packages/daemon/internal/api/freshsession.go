@@ -123,7 +123,7 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, notRestarted, effect, ok := s.freshSession(w, r, target.machine, target.token, target.by)
+	_, notRestarted, effect, ok := s.freshSession(w, target.request, target.machine, target.token, target.by)
 	if !ok {
 		return
 	}
@@ -314,8 +314,9 @@ func outcomeOf(started bool) freshOutcome {
 // the claim moved on. The refusal names that launch and stops there (refuseParkedRelaunch).
 // The project's controller is refused whatever state it is in: its keeper starts it, as that
 // keeper alone is told when it must (supervise's askedRetry refuses the controller's retry
-// for the same reason), and the controller's own door cannot name it at all, since `controller`
-// is no role a claim token is built from (claimFreshSession). A controller held for OpenAI's
+// for the same reason), and the controller's own door cannot name it at all, since that door
+// names a claim by an issue and a role of it, or by the token of an agent of that issue, and the
+// controller's claim belongs to no issue (agentDoor). A controller held for OpenAI's
 // cyber-policy refusal is the exception, by the one rule the keeper and the machine read too
 // (supervise.Claim.KeeperRetries): its keeper retries it no more, so the operator's `legion
 // claims retry`, with or without --fresh-session, is how it comes back, in a new session either

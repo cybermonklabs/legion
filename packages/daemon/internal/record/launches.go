@@ -53,6 +53,8 @@ type AgentLaunches struct {
 	Generation uint64
 	// Live says the claim records a process now: its row holds a locator.
 	Live bool
+	// Role is the role the claim holds now, "" for a claim the store does not hold.
+	Role claim.Role
 	// Launches is each launch row of the claim the read asked for, by generation: from a generation
 	// on (Postgres.AgentLaunches), or at its generation now alone (Postgres.AgentLaunchNow).
 	Launches []Launch
@@ -68,14 +70,25 @@ func (a AgentLaunches) At(generation uint64) *Launch {
 	return nil
 }
 
-// StartTotals is what a step's start keeps of the agent a, given the read the start used of a's
-// live launch, nil where it has none. A launch after the start counts from zero, and FromZero is
-// the first generation whose launch does. A live launch is the start's own, so it is the next
-// generation. A claim with no process ran its generation's launch before the step where a launch
-// row of that generation exists, so it is the next generation then. With no such row that
-// generation has not launched, so it is the generation itself. The rule reads a's launch of its
-// own generation, so a must be read from that generation or an earlier one.
-func (a AgentLaunches) StartTotals(used *LaunchRead) StartTotals {
+// StartTotals is what a step's start keeps of the agent a, which runs the step as role, given the
+// read the start used of a's live launch, nil where it has none. A launch after the start counts
+// from zero, and FromZero is the first generation whose launch does. A live launch is the start's
+// own, so it is the next generation. A claim with no process ran its generation's launch before the
+// step where a launch row of that generation exists, so it is the next generation then. With no
+// such row that generation has not launched, so it is the generation itself. The rule reads a's
+// launch of its own generation, so a must be read from that generation or an earlier one.
+//
+// A claim that holds another role than role is the agent of a key, whose step of another role
+// starts while the claim still holds its earlier step's role. The claim takes role only once it
+// runs nothing, and its next launch runs it (supervise's Machine.Rerole). So the launch of its
+// generation now, live or still starting, is the earlier role's and none of the step's: the start
+// keeps no live launch and no read, and the next generation is the first that counts from zero.
+// The step's set model is then that role's, and no call the earlier launch made after the start
+// is the step's.
+func (a AgentLaunches) StartTotals(role claim.Role, used *LaunchRead) StartTotals {
+	if a.Role != "" && a.Role != role {
+		return StartTotals{Generation: a.Generation, FromZero: a.Generation + 1}
+	}
 	start := StartTotals{Generation: a.Generation, Live: a.Live, Read: used, FromZero: a.Generation}
 	if a.Live || a.At(a.Generation) != nil {
 		start.FromZero = a.Generation + 1
@@ -83,9 +96,9 @@ func (a AgentLaunches) StartTotals(used *LaunchRead) StartTotals {
 	return start
 }
 
-// AgentLaunches reads the claim agent: its generation now, whether its row records a process, and
-// each of its launch rows from the generation since on. A claim the store does not hold has
-// generation 0, no process and no launch.
+// AgentLaunches reads the claim agent: its generation now, whether its row records a process, the
+// role it holds, and each of its launch rows from the generation since on. A claim the store does
+// not hold has generation 0, no process, no role and no launch.
 func (s *Postgres) AgentLaunches(ctx context.Context, tx pgx.Tx, agent claim.Token, since uint64) (AgentLaunches, error) {
 	launches, err := agentNow(ctx, tx, agent)
 	if err != nil {
@@ -116,16 +129,18 @@ func (s *Postgres) AgentLaunchNow(ctx context.Context, tx pgx.Tx, agent claim.To
 	return launches, nil
 }
 
-// agentNow is the claim agent's generation now and whether its row records a process, with no
-// launch row: generation 0 and no process for a claim the store does not hold.
+// agentNow is the claim agent's generation now, whether its row records a process and the role it
+// holds, with no launch row: generation 0, no process and no role for a claim the store does not
+// hold.
 func agentNow(ctx context.Context, tx pgx.Tx, agent claim.Token) (AgentLaunches, error) {
 	var launches AgentLaunches
 	var generation int64
-	err := tx.QueryRow(ctx, `select generation, locator is not null from claims where token = $1`, string(agent)).Scan(&generation, &launches.Live)
+	var role string
+	err := tx.QueryRow(ctx, `select generation, locator is not null, role from claims where token = $1`, string(agent)).Scan(&generation, &launches.Live, &role)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return AgentLaunches{}, fmt.Errorf("read the claim %s: %w", agent, err)
 	}
-	launches.Generation = uint64(generation)
+	launches.Generation, launches.Role = uint64(generation), claim.Role(role)
 	return launches, nil
 }
 

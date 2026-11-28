@@ -93,6 +93,12 @@ type launcherSession struct {
 	// and resume the file it finds (shimwire.LauncherHello.ResumesBySession). A launcher built
 	// before it could says nothing, and relaunch names it no session by its id alone.
 	resumesBySession bool
+	// credentialWait is whether this launcher's hello said it starts a child only once its slot's
+	// gh files hold the credential the start names (shimwire.LauncherHello.CredentialWait). A
+	// launcher of an image before that wait says nothing: a re-role into its slot waits for the
+	// pod's update round (Runtime.SlotWaitsForCredential), and relaunch refuses a start of another
+	// App into it (slotAppChanges).
+	credentialWait bool
 	// readsWorkspace is whether this launcher's hello said it answers the workspace read on its
 	// own connection (shimwire.LauncherHello.ReadsWorkspace). A launcher built before it closes
 	// its connection on that frame, so the daemon asks only one that said so (workspaceReader).
@@ -121,13 +127,14 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, keptStar
 
 // accept registers a launcher connection of the pod of issue, whose Sandbox owns the issue's kept
 // volume since keptSince (the zero time for a pod on a volume of its own). The newest
-// authenticated connection for a role wins: a half-open predecessor is closed so its pending
-// requests fail instead of waiting forever.
+// authenticated connection for a slot, by the slot's token, wins: two claims of one role run in
+// two slots, each with its own launcher. A half-open predecessor is closed so its pending requests
+// fail instead of waiting forever.
 func (d *launchers) accept(token claim.Token, issue string, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
 		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession,
-		readsWorkspace: hello.ReadsWorkspace}
+		credentialWait: hello.CredentialWait, readsWorkspace: hello.ReadsWorkspace}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -269,10 +276,31 @@ func (d *launchers) resumesBySession(token claim.Token, podUID string) bool {
 	return !session.closed && session.resumesBySession
 }
 
+// credentialWaits is the uid of the pod the launcher of token, a slot's token, connected from, and
+// whether its hello said it starts a child only once the slot's gh files hold the start's
+// credential (launcherSession.credentialWait). It answers "" and true where no launcher of the
+// slot is connected, as for every slot right after a daemon restart, though a pod the release
+// before built may still stand: the launch itself then judges the launcher it reaches, and
+// refuses a start of another App into one that does not wait (relaunch, slotAppChanges).
+func (d *launchers) credentialWaits(token claim.Token) (string, bool) {
+	d.mu.Lock()
+	session := d.sessions[token]
+	d.mu.Unlock()
+	if session == nil {
+		return "", true
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed {
+		return "", true
+	}
+	return session.podUID, session.credentialWait
+}
+
 // workspaceReader is a connected, ready launcher session of issue's pod podUID whose hello said it
 // reads the issue workspace (launcherSession.readsWorkspace), and nil where there is none. Every
-// role of a pod has a launcher connection of its own, and each of them reads the one workspace the
-// pod's roles share, so any of them answers the same; the one whose token sorts first is asked, so
+// slot of a pod has a launcher connection of its own, and each of them reads the one workspace the
+// pod's slots share, so any of them answers the same; the one whose token sorts first is asked, so
 // two reads of one pod go to the same launcher while it stays connected.
 func (d *launchers) workspaceReader(issue, podUID string) *launcherSession {
 	d.mu.Lock()
@@ -1012,18 +1040,19 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	files[bootTokenKey] = l.spec.BootToken
 	files[runtime.SystemPromptFile] = l.prompt
-	claudeDir := ""
+	slot, _ := l.spec.Claim.Slot()
+	claudeDir, stateHome := "", roleStateHome(slot)
 	if l.runsClaude() {
-		claudeDir = claudeConfigDir(l.spec.Role)
+		claudeDir = claudeConfigDir(slot)
 		files[claudeMCPFile] = l.claude.mcp
 	}
 	agent := l.agentArgv(r.agent)
-	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, r.setup,
+	agentArgv := startArgv(stateHome, l.spec.Generation, l.spec.Plugins, claudeDir, r.setup,
 		agent, installLockWait(r.bootTimeout, r.registrationIntervals))
 	command := shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
 		Argv: append(shim, append([]string{"--"}, agentArgv...)...), Env: values, Files: files,
-		ResumeFile: l.spec.ResumeSessionFile,
+		ResumeFile: l.spec.ResumeSessionFile, GitHubCredential: l.gitHubCredential,
 	}
 	if !l.spec.ResumeByAgent {
 		command.ResumeSession = l.spec.ResumeSession

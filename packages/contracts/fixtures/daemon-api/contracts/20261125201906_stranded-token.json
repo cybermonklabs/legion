@@ -1,0 +1,380 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "architect.token",
+        "otherClaims",
+        "otherClaims.*",
+        "otherClaims.*.claim",
+        "otherClaims.*.claim.failure",
+        "otherClaims.*.claim.failure.at",
+        "otherClaims.*.claim.failure.attempts",
+        "otherClaims.*.claim.failure.attempts.deaths",
+        "otherClaims.*.claim.failure.attempts.launchFailures",
+        "otherClaims.*.claim.failure.attempts.promptFailures",
+        "otherClaims.*.claim.failure.attempts.promptRetires",
+        "otherClaims.*.claim.failure.cause",
+        "otherClaims.*.claim.failure.detail",
+        "otherClaims.*.claim.pendingCause",
+        "otherClaims.*.claim.pendingTask",
+        "otherClaims.*.claim.pendingTask.lastSendError",
+        "otherClaims.*.claim.pendingTask.phase",
+        "otherClaims.*.claim.pendingTask.queuedAt",
+        "otherClaims.*.claim.pendingTask.sendFailures",
+        "otherClaims.*.claim.pluginContract",
+        "otherClaims.*.claim.session",
+        "otherClaims.*.claim.state",
+        "otherClaims.*.claim.token",
+        "otherClaims.*.claim.updateState",
+        "otherClaims.*.role",
+        "workers.*.claim.token"
+      ],
+      "addValues": {
+        "otherClaims.*.claim.failure.cause": [
+          "cyber_policy",
+          "died",
+          "launch_refused",
+          "never_registered",
+          "prompt_retires_exhausted",
+          "provider_error",
+          "stale_plugin",
+          "unrecorded"
+        ],
+        "otherClaims.*.claim.pendingCause": [
+          "cyber_policy",
+          "died",
+          "launch_refused",
+          "never_registered",
+          "prompt_retires_exhausted",
+          "provider_error",
+          "stale_plugin",
+          "unrecorded"
+        ],
+        "otherClaims.*.claim.pendingTask.phase": [
+          "accepting",
+          "admitted",
+          "awaiting_children",
+          "awaiting_person",
+          "done",
+          "held",
+          "implementing",
+          "integrating",
+          "merging",
+          "planning",
+          "retro",
+          "reviewing",
+          "step",
+          "testing"
+        ],
+        "otherClaims.*.claim.state": [
+          "failed",
+          "idle",
+          "launch_uncertain",
+          "launching",
+          "queued",
+          "ready",
+          "registered",
+          "retired",
+          "shim_connected",
+          "suspended",
+          "working"
+        ],
+        "otherClaims.*.claim.updateState": [
+          "answered",
+          "asked",
+          "none",
+          "open"
+        ]
+      }
+    },
+    {
+      "answer": "release-records",
+      "addKeyPaths": [
+        "releases.*.claims",
+        "releases.*.claims.*",
+        "resumes.*.claim"
+      ]
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.architect.token",
+        "issues.*.otherClaims",
+        "issues.*.otherClaims.*",
+        "issues.*.otherClaims.*.claim",
+        "issues.*.otherClaims.*.claim.failure",
+        "issues.*.otherClaims.*.claim.failure.at",
+        "issues.*.otherClaims.*.claim.failure.attempts",
+        "issues.*.otherClaims.*.claim.failure.attempts.deaths",
+        "issues.*.otherClaims.*.claim.failure.attempts.launchFailures",
+        "issues.*.otherClaims.*.claim.failure.attempts.promptFailures",
+        "issues.*.otherClaims.*.claim.failure.attempts.promptRetires",
+        "issues.*.otherClaims.*.claim.failure.cause",
+        "issues.*.otherClaims.*.claim.failure.detail",
+        "issues.*.otherClaims.*.claim.pendingCause",
+        "issues.*.otherClaims.*.claim.pendingTask",
+        "issues.*.otherClaims.*.claim.pendingTask.lastSendError",
+        "issues.*.otherClaims.*.claim.pendingTask.phase",
+        "issues.*.otherClaims.*.claim.pendingTask.queuedAt",
+        "issues.*.otherClaims.*.claim.pendingTask.sendFailures",
+        "issues.*.otherClaims.*.claim.pluginContract",
+        "issues.*.otherClaims.*.claim.session",
+        "issues.*.otherClaims.*.claim.state",
+        "issues.*.otherClaims.*.claim.token",
+        "issues.*.otherClaims.*.claim.updateState",
+        "issues.*.otherClaims.*.role",
+        "issues.*.workers.*.claim.token",
+        "strandedClaims.*.token"
+      ],
+      "addValues": {
+        "issues.*.otherClaims.*.claim.failure.cause": [
+          "cyber_policy",
+          "died",
+          "launch_refused",
+          "never_registered",
+          "prompt_retires_exhausted",
+          "provider_error",
+          "stale_plugin",
+          "unrecorded"
+        ],
+        "issues.*.otherClaims.*.claim.pendingCause": [
+          "cyber_policy",
+          "died",
+          "launch_refused",
+          "never_registered",
+          "prompt_retires_exhausted",
+          "provider_error",
+          "stale_plugin",
+          "unrecorded"
+        ],
+        "issues.*.otherClaims.*.claim.pendingTask.phase": [
+          "accepting",
+          "admitted",
+          "awaiting_children",
+          "awaiting_person",
+          "done",
+          "held",
+          "implementing",
+          "integrating",
+          "merging",
+          "planning",
+          "retro",
+          "reviewing",
+          "step",
+          "testing"
+        ],
+        "issues.*.otherClaims.*.claim.state": [
+          "failed",
+          "idle",
+          "launch_uncertain",
+          "launching",
+          "queued",
+          "ready",
+          "registered",
+          "retired",
+          "shim_connected",
+          "suspended",
+          "working"
+        ],
+        "issues.*.otherClaims.*.claim.updateState": [
+          "answered",
+          "asked",
+          "none",
+          "open"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/agents/resume",
+      "addFieldPaths": [
+        "claim"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/agents/retry",
+      "addFieldPaths": [
+        "claim"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/agents/stop",
+      "addFieldPaths": [
+        "claim"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/agents/suspend",
+      "addFieldPaths": [
+        "claim"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/claims/compact",
+      "addFieldPaths": [
+        "claim"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/claims/fresh-session",
+      "addFieldPaths": [
+        "claim"
+      ]
+    }
+  ],
+  "answerRows": [],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "issues.*.otherClaims.*.claim.state",
+      "values": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.otherClaims.*.claim.updateState",
+      "values": [
+        "answered",
+        "asked",
+        "none",
+        "open"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.otherClaims.*.claim.failure.cause",
+      "values": [
+        "cyber_policy",
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.otherClaims.*.claim.pendingCause",
+      "values": [
+        "cyber_policy",
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.otherClaims.*.claim.pendingTask.phase",
+      "values": [
+        "accepting",
+        "admitted",
+        "awaiting_children",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "step",
+        "testing"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "otherClaims.*.claim.state",
+      "values": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "otherClaims.*.claim.updateState",
+      "values": [
+        "answered",
+        "asked",
+        "none",
+        "open"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "otherClaims.*.claim.failure.cause",
+      "values": [
+        "cyber_policy",
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "otherClaims.*.claim.pendingCause",
+      "values": [
+        "cyber_policy",
+        "died",
+        "launch_refused",
+        "never_registered",
+        "prompt_retires_exhausted",
+        "provider_error",
+        "stale_plugin",
+        "unrecorded"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "otherClaims.*.claim.pendingTask.phase",
+      "values": [
+        "accepting",
+        "admitted",
+        "awaiting_children",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "step",
+        "testing"
+      ]
+    }
+  ]
+}

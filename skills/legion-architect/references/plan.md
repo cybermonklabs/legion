@@ -2,7 +2,7 @@
 
 Part of `skill://legion-architect`, sections 1 and 2.
 Read it before you write or give an issue's plan.
-Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, `retro-held` and `plan-not-taken` notices:
+Stopping a task, a later version of a plan Legion runs and the reasons it gets for where its task stands, and the `task-stopped`, `retro-held` and `plan-not-taken` notices:
 `skill://legion-architect/references/plan-changes.md`.
 
 ## The task block
@@ -22,8 +22,9 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 - Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
   A change of `serves` alone changes no task.
 
-- This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
-  It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
+- To have one agent work several steps, give each the same key after its role, as `steps="implementer:a tester:a reviewer"`.
+  Legion runs the steps of one key as one agent, in one claim and one session, whatever role each step is on; a step with no key is an agent of its own.
+  A key other than `owner` may stand on any role but `acceptance`, and `owner` on `acceptance` alone.
 
 ## The roles and their order
 
@@ -66,8 +67,6 @@ An issue whose experiment's group runs the project's default steps takes no plan
 Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
 The one exception is a version that changes only the text of its running task `default`, which Legion takes as for any issue.
 `read_record` shows such an issue: one of its `assignments` has `plan` `default`.
-
-The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
 ## When to give it
 

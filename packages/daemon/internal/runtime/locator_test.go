@@ -51,7 +51,7 @@ func sandboxLocator() Locator {
 }
 
 // controllerLocator is the project controller's process: the one launcher of its own Sandbox,
-// whose container is the controller role its token names (claim.Token.Role).
+// whose container is the controller's, which its token names (claim.Token.IsController).
 func controllerLocator() Locator {
 	return Locator{
 		Runtime:     RuntimeSandbox,
@@ -231,6 +231,15 @@ func TestValidateRefusesALocatorNothingCouldBeActedOnThrough(t *testing.T) {
 			}(),
 			wantFragment: `an issue pod's role runs in its one container "roles"`,
 		},
+		{
+			name: "a claim that is neither the controller's nor an issue's",
+			locator: func() Locator {
+				l := sandboxLocator()
+				l.Claim = "legion-omp-tester"
+				return l
+			}(),
+			wantFragment: "locator legion-omp-tester: the claim is neither the controller's nor an issue's",
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			err := testCase.locator.Validate()
@@ -241,6 +250,29 @@ func TestValidateRefusesALocatorNothingCouldBeActedOnThrough(t *testing.T) {
 				t.Fatalf("refusal %q does not name %q", err, testCase.wantFragment)
 			}
 		})
+	}
+}
+
+// A claim of an issue names its agent, whose name can be no role (`implementer-2`): its process
+// runs in the issue pod's one container like every claim of the issue, and the controller's keeps
+// its own container. Neither rule reads a role off the token.
+func TestALocatorOfAnAgentWhoseNameIsNoRoleIsAnIssuePods(t *testing.T) {
+	agent := sandboxLocator()
+	agent.Claim = "legion-omp-legion-43-implementer-2"
+	if err := agent.Validate(); err != nil {
+		t.Fatalf("validate the locator of implementer-2 in the issue pod's container: %v", err)
+	}
+	agent.Sandbox.Container = ControllerPodContainer
+	if err := agent.Validate(); err == nil || !strings.Contains(err.Error(), `an issue pod's role runs in its one container "roles"`) {
+		t.Fatalf("validate the locator of implementer-2 in the controller's container = %v, want the issue pod's container rule", err)
+	}
+	controller := controllerLocator()
+	if err := controller.Validate(); err != nil {
+		t.Fatalf("validate the controller's locator: %v", err)
+	}
+	controller.Sandbox.Container = IssuePodContainer
+	if err := controller.Validate(); err == nil || !strings.Contains(err.Error(), `the controller's process runs in container "controller"`) {
+		t.Fatalf("validate the controller's locator in the issue pod's container = %v, want the controller's container rule", err)
 	}
 }
 

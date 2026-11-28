@@ -202,7 +202,10 @@ func TestRepositoryCorrectionNamesNoPullRequestForAnIssueNoCorrectionHasReached(
 	if strings.Contains(task, "The pull request") || strings.Contains(task, "changed your issue's repository") {
 		t.Fatalf("the task of an issue no correction has reached = %q, want neither the correction's sentences nor the pull request's", task)
 	}
-	if !strings.HasSuffix(task, "your role's GitHub App is installed on the owners acme, zeta, and its token reaches every repository of those owners.") {
-		t.Fatalf("the task = %q, want it to end with the reach clause", task)
+	// The addressing ends with a worker's reach (workerRepositoriesClause), with no sentence after it.
+	const reach = "your role's GitHub App is installed on the owners acme, zeta, and its token reaches every repository of those owners whose directory your gh holds: " +
+		"in an issue pod, an owner the Apps of your pod's roles were installed on after the pod was created has none until the update round that install opens replaces the pod."
+	if !strings.HasSuffix(task, reach) {
+		t.Fatalf("the task = %q, want it to end with the reach clause %q", task, reach)
 	}
 }

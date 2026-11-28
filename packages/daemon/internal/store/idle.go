@@ -40,13 +40,14 @@ import (
 // row is pending, which is one attempt where the publish goes through or finds no holder. A hook
 // prompt's or a phase-ended message's row waits up to an hour for a session to hold its role (the
 // daemon's keptRoleMessageEnded and keptRoleMessageHoldBound), and holds the pod for that wait
-// only while its role has a claim this pod answers (idleWaitingRow).
+// only while its claim is one this pod answers (idleWaitingRow).
 var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt", "update_ask", "merge_queue_read",
 	"merge_queue_removal", "merge_holds_changed", "conflict_confirm", "merge_forward"}
 
-// startWaitsForPodRow is the predicate of a start row that waits because the issue's pod was
-// built before the deployment defined its role (the outbox's roleWaitsForItsPod writes its last
-// error with pods.StartWaitsForPodPrefix, the parameter %s names). Such a start is no delivery the
+// startWaitsForPodRow is the predicate of a start row that waits because the issue's pod lacks the
+// slot of the start's claim or the role of its step, built before the deployment defined that name
+// (the outbox's roleWaitsForItsPod writes its last error with pods.StartWaitsForPodPrefix, the
+// parameter %s names). Such a start is no delivery the
 // pod waits for: the pod cannot run it, and only its update round or its release lets it start.
 // The view's StartsWaitingForPod lists the roles of such starts (readIdleView).
 const startWaitsForPodRow = `(kind = 'supervise' and payload->>'op' = 'start' and starts_with(coalesce(last_error, ''), %s))`
@@ -73,27 +74,28 @@ const startWaitsForPodRow = `(kind = 'supervise' and payload->>'op' = 'start' an
 //
 // A pod held for either would stand idle for all that time.
 //
-// A start that waits because the pod was built before its role (startWaitsForPodRow). The pod
-// cannot run it, and the release is one of the two things that let it start, so it neither holds
-// the pod nor cancels the release.
+// A start that waits because the pod lacks the slot of its claim or the role of its step
+// (startWaitsForPodRow). The pod cannot run it, and the release is one of the two things that let
+// it start, so it neither holds the pod nor cancels the release.
 //
-// A hook prompt (record.HookPrompt) or a phase-ended message (record.PhaseEnded) to a role that has
-// no claim on the issue, or whose claim failed, was retired or was suspended for any cause but an
-// idle release (heldMessageForNoClaimThisPodAnswers). Such a role comes back only by a start or a
-// resume, the operator's or the controller's, and either brings a pod of its own, so a release
-// under the row loses it nothing: the row waits on and ends undelivered once its hour has passed,
-// a hook prompt with a message on the issue and a phase-ended message with a log line (the daemon's
-// keptRoleMessageEnded). A claim that runs or is starting holds the pod, since its session is in
-// this pod or coming to it, and so does a claim an idle release suspended, since the row's own
-// first attempt wakes it (the daemon's wakeForDelivery). The row's attempts go on either way,
-// about one a minute on its backoff, and the Envoy listener answers each `404` with a WARN request
-// line, a refusal exception and a role wake report. A pod held for such a row would stand idle
-// for all that time.
+// A hook prompt (record.HookPrompt) or a phase-ended message (record.PhaseEnded) whose claim — the
+// claim the row names, else the claim record.WorkerClaim gives the row's role, the one the row's
+// executor reaches — the issue does not have, or whose claim failed, was retired or was suspended
+// for any cause but an idle release (heldMessageForNoClaimThisPodAnswers). Such a claim comes back
+// only by a start or a resume, the operator's or the controller's, and either brings a pod of its
+// own, so a release under the row loses it nothing: the row waits on and ends undelivered once its
+// hour has passed, a hook prompt with a message on the issue and a phase-ended message with a log
+// line (the daemon's keptRoleMessageEnded). A claim that runs or is starting holds the pod, since
+// its session is in this pod or coming to it, and so does a claim an idle release suspended, since
+// the row's own first attempt wakes it (the daemon's wakeForDelivery). The row's attempts go on
+// either way, about one a minute on its backoff, and the Envoy listener answers each `404` with a
+// WARN request line, a refusal exception and a role wake report. A pod held for such a row would
+// stand idle for all that time.
 //
 // All three reads take this one rule, so the rule that holds a pod and the rules that cancel its
 // release never disagree. The teardown passes over one start of this predicate: a wake's own
-// start of a role the release recorded, with a wake since the mark (wakeStartRow, IssueRelease).
-// That start waits for the teardown and starts the role in the pod that comes back.
+// start of a claim the release recorded, with a wake since the mark (wakeStartRow, IssueRelease).
+// That start waits for the teardown and starts the claim in the pod that comes back.
 func idleWaitingRow(prefix string) string {
 	return `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')
 	and not (` + slotWaitingStart + `)
@@ -111,11 +113,23 @@ const slotWaitingStart = `kind = 'supervise' and payload->>'op' = 'start' and co
 	and not exists (select 1 from slots where slots.issue = outbox.issue)`
 
 // heldMessageForNoClaimThisPodAnswers is the predicate, over an outbox row the statement names
-// `outbox`, of a hook prompt or a phase-ended message whose role has no claim on the issue that
-// runs, is starting, or was suspended by an idle release. The idle rule leaves such a row out
-// (idleWaitingRow).
+// `outbox`, of a hook prompt or a phase-ended message with no claim on the issue that runs, is
+// starting, or was suspended by an idle release, of the one claim its executor reaches: the claim
+// the row names (record.HookPrompt.Claim, record.PhaseEnded.Claim); else, for a row that names
+// none, the claim record.WorkerClaim gives the row's role: the claim of the role's phases row while
+// that row runs a step of the plan (step_task set), else the role's own claim, whose token names
+// the role's own agent (claim.NewToken, `legion-<project>-<issue, lower case>-<role>`), whatever
+// role that claim is on now. A claim takes the role of each step its agent runs, so a claim on the
+// row's role need not be the claim the row reaches: a row whose named claim, or whose role's own
+// claim, has failed holds no pod, though a keyed agent's claim on that role runs. The phases table
+// keys a row by issue and role, so the subquery reads one row at most. The idle rule leaves such a
+// row out (idleWaitingRow).
 const heldMessageForNoClaimThisPodAnswers = `kind in ('hook_prompt', 'phase_ended') and not exists (select 1 from claims c
-	where c.issue = outbox.issue and c.role = outbox.payload->>'role'
+	where c.issue = outbox.issue
+		and c.token = coalesce(nullif(outbox.payload->>'claim', ''),
+			(select p.claim from phases p where p.issue = outbox.issue and p.role = outbox.payload->>'role'
+				and p.step_task <> '' and p.claim <> ''),
+			'legion-' || c.project || '-' || lower(outbox.issue) || '-' || (outbox.payload->>'role'))
 		and (c.state not in ('suspended', 'failed', 'retired') or (c.state = 'suspended' and c.suspended_by = 'released')))`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
@@ -133,9 +147,9 @@ type IdleReleaseRow struct {
 	Boundary bool
 }
 
-// IdleReleaseMark is what a decision to release writes: the rows above and the role whose shim
-// the workspace is read through, which is also the role told when the read finds unpushed work.
-// Rows empty means the pod is not released, and nothing is written.
+// IdleReleaseMark is what a decision to release writes: the rows above and the role of the claim
+// whose shim the workspace is read through, which is also the role told when the read finds
+// unpushed work. Rows empty means the pod is not released, and nothing is written.
 //
 // SuspendsNoRole is the release of a pod no role can use (workflow.UnownedPodRelease), whose
 // every claim is already failed, retired or suspended: it suspends no role, so it names no role,
@@ -227,7 +241,7 @@ func issueKeys(rows pgx.Rows) ([]string, error) {
 // table holds (claims.project, "legion"), which is what IdlePods and ReleaseIdleIssue read.
 // The caller has both already (daemon.releaseUnownedPods: w.dispatchProject and w.projectID).
 // The claims this read asks about are this project's, as they are in every other claim read of
-// this file and of the cancel's (IdlePods, readIdleView, release_cancel.go's stillReleasedRoles),
+// this file and of the cancel's (IdlePods, readIdleView, release_cancel.go's stillReleasedClaims),
 // and the predicate costs nothing: the subqueries scan the same rows either way.
 //
 // outOfWorkflow is the workflow's list of statuses that take an issue out of it
@@ -320,10 +334,10 @@ func (s *Store) LeftPods(ctx context.Context, project, claimProject string, outO
 // The mark records the ids the rows were given: first_row and last_row are the release's own
 // first and last, which is how a row of this release is told from a row of one that is over
 // (IssueReleaseStop, IssueRelease), and boundary_row is the row the mark names its boundary —
-// the stop of the first role process of the pod — which is where a delivery that reached the
-// pod after the mark, while every role still ran, cancels the release. Once a stop has recorded
-// its role's claim as `released`, a wake of that role no longer cancels the release: the release
-// runs to its end, and the role comes back in the new pod (releaseOvertaken).
+// the stop of the first live claim of the pod — which is where a delivery that reached the pod
+// after the mark, while every claim still ran, cancels the release. Once a stop has recorded its
+// claim as `released`, a wake of that claim no longer cancels the release: the release runs to its
+// end, and the claim comes back in the new pod (releaseOvertaken).
 //
 // It answers whether it wrote the decision's rows: a release's with its mark, or a close's
 // (IdleReleaseMark.Close), which carries none. decide answering no rows writes nothing, which is
@@ -338,8 +352,8 @@ func (s *Store) LeftPods(ctx context.Context, project, claimProject string, outO
 //
 // A mark that names no role and does not say it suspends none is refused before anything is
 // written, as a fault of the rule that decided it rather than of the database: the check of the
-// workspace is read through the role the mark names, so a release without one and without the
-// second rule's kind is a release nobody can carry out.
+// workspace is read through the claim the check row names, whose role the mark records, so a
+// release without one and without the second rule's kind is a release nobody can carry out.
 func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
 	if project == "" || issue == "" {
 		return false, errors.New("an idle release needs its project and its issue")
@@ -405,16 +419,17 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			turned = &newest
 		}
 		// The newest wake this pod has had: a wake recorded above it is one this release never
-		// saw. It cancels the release, unless it is a wake of a role this release has since
+		// saw. It cancels the release, unless it is a wake of a claim this release has since
 		// recorded as `released` (releaseOvertaken).
 		var wake int64
 		if err := tx.QueryRow(ctx, `select coalesce(max(id), 0) from pod_resumes where project = $1 and issue = $2`,
 			project, issue).Scan(&wake); err != nil {
 			return fmt.Errorf("read the newest wake of %s: %w", issue, err)
 		}
-		// The kind is the rule that decided this release, and the role is the one whose shim the
-		// check reads the workspace through: a release that suspends no role has none, and leaves the column
-		// empty, which is the one spelling the table's check takes beside that kind.
+		// The kind is the rule that decided this release, and the role is that of the claim whose
+		// shim the check reads the workspace through: a release that suspends no role has none,
+		// and leaves the column empty, which is the one spelling the table's check takes beside
+		// that kind.
 		kind, role := releaseKindIdle, string(mark.Role)
 		if mark.SuspendsNoRole {
 			kind, role = releaseKindUnowned, ""
@@ -488,12 +503,13 @@ func insertOutboxRow(ctx context.Context, tx pgx.Tx, project, issue string, row 
 // IdleReleaseDecline is what the workspace check found when it declines a release, or the close of
 // a left pod (DeclineIssueRelease, DeclineLeftPodClose). At is the moment of the check, by the
 // caller's clock, which the rules compare a later turn's start with (pods.IdleDecline.Stands).
-// Role is the role the workspace was read through, and Reason is one of pods.DeclineUnpushedWork
-// and pods.DeclineWorkspaceUnread. Head, Commits and Changed are what the read found: the
-// working-copy commit, how many commits on a working copy or a local bookmark no branch or tag on
-// origin holds, and whether the working copy holds a change; a read that failed found none of
-// them. PodUID is the pod the read was made in, "" where the runtime could not say. Message is the
-// one row that tells the role the release waits for its push; nil sends none.
+// Role is the role the workspace was read through, and Claim is the worker told of its work.
+// Reason is one of pods.DeclineUnpushedWork and pods.DeclineWorkspaceUnread. Head, Commits and
+// Changed are what the read found: the working-copy commit, how many commits on a working copy or
+// a local bookmark no branch or tag on origin holds, and whether the working copy holds a change;
+// a read that failed found none of them. PodUID is the pod the read was made in, "" where the
+// runtime could not say. Message is the one row that tells the claim the release waits for its
+// push; nil sends none.
 //
 // Kept is the decline of a pod in which no role process runs, whose launcher made the read (R6 of
 // #5285): the release of a pod no claim owns or the close of a left pod with no live
@@ -502,6 +518,7 @@ func insertOutboxRow(ctx context.Context, tx pgx.Tx, project, issue string, row 
 type IdleReleaseDecline struct {
 	At      time.Time
 	Role    claim.Role
+	Claim   claim.Token
 	Reason  string
 	Head    string
 	Commits int
@@ -642,14 +659,12 @@ var leftPodTurnedQuery = `select exists (select 1 from claims where project = $1
 // message. The row's started_row is the newest start row of the issue's claims, read in this
 // transaction, so a role process started after it ends the decline (pods.IdleDecline.Stands).
 //
-// A decline that finds the same work as the decline on record, read through the same role — the
-// same working-copy commit, the same count of commits, the same change and the same role — is a
-// read that role was already told of: it moves checked_at, started_row and pod_uid, sets the
-// reason, keeps declined_at, and queues no message. That is what ends the loop a message would
-// otherwise start. The message starts a turn in the role's session, the turn ends the decline (it
-// can change the workspace), the next read finds the same work, and a second message would start
-// the next turn. The role is part of the key because the row names the role that was told: a role
-// that takes over, the next phase's worker, is told of the work once, as its own.
+// A decline that finds the same work as the decline on record, read through the same claim — the
+// same working-copy commit, count of commits and change — is work that claim was already told of:
+// it moves checked_at, started_row and pod_uid, sets the reason, keeps declined_at, and queues no
+// message. That ends the loop a message would otherwise start: its turn ends the decline, and a
+// read of the same work would start another turn. The claim is part of the key because two agents
+// can hold one role; a different worker taking over is told once, as its own.
 //
 // A decline whose read failed (pods.DeclineWorkspaceUnread) says nothing of the work, so it keeps
 // what the last read that could read found, and the role that read told: on a row that stands it
@@ -683,19 +698,20 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 		}
 	}
 	unread := decline.Reason == pods.DeclineWorkspaceUnread
-	// same is a read that could read and found the work the row names, through the role it names.
+	// same is a read that could read and found the work the row names, through the role and the
+	// claim it names.
 	var same bool
 	if !unread {
-		err := tx.QueryRow(ctx, `select head = $3 and commits = $4 and changed = $5 and role = $6
+		err := tx.QueryRow(ctx, `select head = $3 and commits = $4 and changed = $5 and role = $6 and claim = $7
 			from idle_release_declines where project = $1 and issue = $2 for update`,
-			project, issue, decline.Head, decline.Commits, decline.Changed, string(decline.Role)).Scan(&same)
+			project, issue, decline.Head, decline.Commits, decline.Changed, string(decline.Role), string(decline.Claim)).Scan(&same)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return false, fmt.Errorf("read the decline of %s's release: %w", issue, err)
 		}
 	}
 	// tells is whether the decline queues its message, decided once: a Kept decline tells unless
 	// the architect was told of its pod (told), and any other tells only where it replaces the row
-	// whole, since its role was told of the work the row names and a failed read tells a role
+	// whole, since its claim was told of the work the row names and a failed read tells a claim
 	// nothing.
 	tells := decline.Message != nil && !told && (decline.Kept || (!unread && !same))
 	switch {
@@ -716,8 +732,8 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
 		}
 		if tells {
-			if _, err := tx.Exec(ctx, `update idle_release_declines set role = $3, declined_at = $4
-				where project = $1 and issue = $2`, project, issue, string(decline.Role), decline.At); err != nil {
+			if _, err := tx.Exec(ctx, `update idle_release_declines set role = $3, claim = $5, declined_at = $4
+				where project = $1 and issue = $2`, project, issue, string(decline.Role), decline.At, string(decline.Claim)); err != nil {
 				return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
 			}
 		}
@@ -729,14 +745,14 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 		}
 	default:
 		if _, err := tx.Exec(ctx, `insert into idle_release_declines
-			(project, issue, declined_at, checked_at, role, reason, head, commits, changed, started_row, pod_uid)
-			values ($1, $2, $3, $3, $4, $5, $6, $7, $8, `+startedRow+`, $9)
+			(project, issue, declined_at, checked_at, role, reason, head, commits, changed, started_row, pod_uid, claim)
+			values ($1, $2, $3, $3, $4, $5, $6, $7, $8, `+startedRow+`, $9, $10)
 			on conflict (project, issue) do update set declined_at = excluded.declined_at,
 				checked_at = excluded.checked_at, role = excluded.role, reason = excluded.reason,
 				head = excluded.head, commits = excluded.commits, changed = excluded.changed,
-				started_row = excluded.started_row, pod_uid = excluded.pod_uid`,
+				started_row = excluded.started_row, pod_uid = excluded.pod_uid, claim = excluded.claim`,
 			project, issue, decline.At, string(decline.Role), decline.Reason, decline.Head, decline.Commits, decline.Changed,
-			decline.PodUID); err != nil {
+			decline.PodUID, string(decline.Claim)); err != nil {
 			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
 		}
 	}
@@ -814,8 +830,8 @@ func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) e
 // issueStepRoleColumn is the role of the step the task of issue i's generation stands at, "" where
 // its plan rows hold none or the task stands at no step: the subquery record.issueColumns ends
 // with, written here a second time over the alias i, since store and record import neither each
-// other. The idle view, a release's cancel and an update round's keep (PodKeepOf) read it, so each
-// names the worker of a step's open phase as the issue's own record does (record.Issue.StepRole).
+// other. The idle view and an update round's keep (PodKeepOf) read it, so each names the worker of
+// a step's open phase as the issue's own record does (record.Issue.StepRole).
 // No statement here judges a queued start by it: whether a start is the work of the step the task
 // stands at is record.Issue.HoldsQueued's one statement to say, which the workflow asks of the
 // starts PodRecords.SlotWaitingStarts reads.
@@ -839,7 +855,7 @@ const issueStepRoleColumn = `coalesce((select s.role from plan_tasks t join plan
 //
 // The view's StepRole is issueStepRoleColumn.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
-	view := pods.IdleView{Issue: issue}
+	view := pods.IdleView{Issue: issue, Project: project}
 	var issueGeneration, rootGeneration int64
 	var issuePhase, rootPhase, stepRole string
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
@@ -861,7 +877,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	view.StepRole = claim.Role(stepRole)
 	view.Generation, view.Root.Generation = uint64(issueGeneration), uint64(rootGeneration)
 
-	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
+	claims, err := tx.Query(ctx, `select c.token, c.role, c.state, c.plugin_contract, c.serving_generation,
 		c.last_start_row, c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
 		c.update_round, c.updated_at, c.locator is not null, c.suspended_by,
 		greatest(d.delivered_at, d.confirmed_at), c.last_turn_start
@@ -873,15 +889,15 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	defer claims.Close()
 	for claims.Next() {
 		var c pods.IdleClaim
-		var role, state, kinds, suspendedBy string
+		var token, role, state, kinds, suspendedBy string
 		var servingGeneration int64
 		var activityAt, reminder, lastTurn, lastTurnStart *time.Time
-		if err := claims.Scan(&role, &state, &c.PluginContract, &servingGeneration, &c.LastStartRow,
+		if err := claims.Scan(&token, &role, &state, &c.PluginContract, &servingGeneration, &c.LastStartRow,
 			&activityAt, &c.ActivityBackground, &kinds, &reminder, &c.UpdateRound, &c.UpdatedAt,
 			&c.HasProcess, &suspendedBy, &lastTurn, &lastTurnStart); err != nil {
 			return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 		}
-		c.Role, c.State = claim.Role(role), supervise.ClaimState(state)
+		c.Token, c.Role, c.State = claim.Token(token), claim.Role(role), supervise.ClaimState(state)
 		c.SuspendedBy = supervise.SuspendSource(suspendedBy)
 		c.ServingGeneration = uint64(servingGeneration)
 		c.ActivityAt, c.ActivityNextReminderAt, c.LastTurnAt = orZero(activityAt), orZero(reminder), orZero(lastTurn)
@@ -893,6 +909,9 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	}
 	if err := claims.Err(); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
+	}
+	if view.Phases, err = phasesOf(ctx, tx, issue); err != nil {
+		return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
 	}
 
 	// The rows of a close are read with the rows that wait for a role, in the one statement:
@@ -960,4 +979,29 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	}
 	view.Holding = holding
 	return view, nil
+}
+
+// phasesOf is issue's phases rows as tx reads them, keyed by role: each role's claim and the task
+// of the plan step its row runs (phases.claim and phases.step_task), what record.WorkerClaim reads
+// of a row, and nil where the issue has none. The idle view carries them (pods.IdleView.Phases),
+// and a claim write's state event reads them (workedRoles). The phases table keys a row by issue
+// and role, so the map holds every row.
+func phasesOf(ctx context.Context, tx pgx.Tx, issue string) (map[claim.Role]pods.IdlePhase, error) {
+	rows, err := tx.Query(ctx, `select role, claim, step_task from phases where issue = $1`, issue)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var phases map[claim.Role]pods.IdlePhase
+	for rows.Next() {
+		var role, token, stepTask string
+		if err := rows.Scan(&role, &token, &stepTask); err != nil {
+			return nil, err
+		}
+		if phases == nil {
+			phases = map[claim.Role]pods.IdlePhase{}
+		}
+		phases[claim.Role(role)] = pods.IdlePhase{Claim: claim.Token(token), StepTask: stepTask}
+	}
+	return phases, rows.Err()
 }

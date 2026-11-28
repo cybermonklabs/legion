@@ -1100,19 +1100,21 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column. So does one that changes a table a version of the list creates, as the givers of a plan
 // version (20261124033010) and the parent of a plan task (20261124022547) add a column to
-// 20261117034837's issue_plans and plan_tasks, or reads one, as the observed step role
-// (20261127224354) fills issues.observed_step_role from plan_tasks and plan_steps: applied as
-// main's, before that table exists, each fails on the missing table. So does the launch totals'
-// 20261125171320, which alters step_starts (20261117004117). 20261126163320 is the last
-// migration that writes outbox_kind_check: it stands above main's 20261126110259, 20261122154643,
+// 20261117034837's issue_plans and plan_tasks, and 20261128145833 adds a column to its plan_steps,
+// or reads one, as the observed step role (20261127224354) fills issues.observed_step_role from
+// plan_tasks and plan_steps: applied as main's, before that table exists, each fails on the
+// missing table; and one that replaces an index a version of the list creates, as 20261128145834
+// replaces 20261105183200's pod_resumes_one_open_per_role. So does the launch totals'
+// 20261125171320, which alters step_starts (20261117004117). 20261126163320 is the last migration
+// that writes outbox_kind_check: it stands above main's 20261126110259, 20261122154643,
 // 20261119203047 and 20261119003157, which write it too, and main's 20261111090000,
 // 20261111091500, 20261116144907 and 20261123212127 write none. The cache trimmer's two,
-// 20261111090000 and 20261111091500, read no column a version of
-// the list adds either, so neither is in the list. The project pause's 20261115194357 is in it as
-// well, though it rewrites no kind list: a database migrated before the pause takes it in the
-// upgrade, over a row of every kind the schema admits, and its held_by_pause column on the outbox
-// must take them all. Any other version left out makes the cases below weaker, never red, which is
-// why the comment says where the list comes from.
+// 20261111090000 and 20261111091500, read no column a version of the list adds either, so neither
+// is in the list. The project pause's 20261115194357 is in it as well, though it rewrites no kind
+// list: a database migrated before the pause takes it in the upgrade, over a row of every kind the
+// schema admits, and its held_by_pause column on the outbox must take them all. Any other version
+// left out makes the cases below weaker, never red, which is why the comment says where the list
+// comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1124,7 +1126,8 @@ var thisRelease = map[int]bool{
 	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
 	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124022547: true,
-	20261124033010: true, 20261125171320: true, 20261126110259: true, 20261126163320: true, 20261127224354: true,
+	20261124033010: true, 20261125171320: true, 20261126110259: true, 20261126163320: true,
+	20261127224354: true, 20261128145833: true, 20261128145834: true,
 }
 
 const idleRelease = 20261101222956

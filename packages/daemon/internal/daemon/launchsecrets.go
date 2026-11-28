@@ -19,6 +19,15 @@ type launchSecret struct {
 	read func() (string, error)
 }
 
+// envoyTokenVariable is the Envoy bearer's name among the launch secrets.
+const envoyTokenVariable = "ENVOY_TOKEN"
+
+// launchSecretVariables are the names of every secret a launch's spec can carry
+// (launchSecrets), whichever the configuration names: the closed set of the files a tmux launch
+// writes for a claim beside its boot token, each `<claim>-<lowercased name>` (runtime/tmux's
+// secretFiles), which the prune of a claim's files reads back by name (ownedBy).
+var launchSecretVariables = []string{envoyTokenVariable, natsauth.SeedVariable}
+
 // launchSecrets are the secrets every launch's spec carries, in name order: the Envoy bearer, when
 // the daemon has one; the deployment's private-name rule file (leakguard.RulesSecret), when the
 // configuration or the daemon's environment names one (config.Config.PrivateNameRulesFile), as
@@ -34,7 +43,7 @@ type launchSecret struct {
 func launchSecrets(cfg config.Config, lookup func(string) (string, bool)) []launchSecret {
 	var secrets []launchSecret
 	if cfg.EnvoyTokenFile != "" {
-		secrets = append(secrets, launchSecret{"ENVOY_TOKEN", func() (string, error) {
+		secrets = append(secrets, launchSecret{envoyTokenVariable, func() (string, error) {
 			return config.ReadSecretPointer("envoy_token_file", cfg.EnvoyTokenFile)
 		}})
 	}

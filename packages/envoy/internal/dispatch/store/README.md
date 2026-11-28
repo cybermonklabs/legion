@@ -39,8 +39,9 @@ An enabled DDL event trigger voids the exemption, and a UNIQUE build is refused,
 A Dispatch release rolls, so the old build and the new build run against this schema at once, and nothing at boot refuses a schema newer than the binary knows.
 A change is therefore expand-then-contract across two releases:
 the expanding migration adds, with a default or a backfill, and the release that ships it writes both shapes, while the migration that drops, renames or narrows ships no earlier than the next release, once no running build reads the old shape.
-No migration is an exception:
+No migration is an exception but one:
 a change that cannot be written that way is split into releases that can, so no release stops every server process.
+The exception is `20261124213825_issue_role_holders_by_session`, which drops the key on `(issue_key, role)` of `issue_role_holders` that the release before's role-holder publication names in its `on conflict` (`../../../cmd/dispatch/README.md`, "Database migrations", beside `0117`): while both builds serve, a publication that reaches the release before answers `500`, the Legion daemon, the table's one writer, retries it until a server of the new release takes it, and nothing is lost; the release before's reads of the table answer as they did.
 The same rule holds for everything else the two builds share (request bodies and routes, query values, socket frames, response members, stored documents, NATS stream and consumer settings and subjects, messages, and settings), and the two-build test checks it (`go test -tags twobuild ./cmd/dispatch`).
 **Messages:** envelope and payload members are additive, and every consumer ignores a member it does not know;
 a consumer ignores an event type or `kind` it does not know, and acks it;

@@ -96,7 +96,8 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 // Each cause this release does not carry out yet (Supported), with its exact text and its task.
 // Each cause gets one reason, so a plan with two causes gets two. The taken plans keep the
 // implementer before each tester, reviewer and acceptance step, a role of the deployment of the
-// type implementation before the implementer, and the other steps at any place.
+// type implementation before the implementer, and the other steps at any place, with the owner's
+// acceptance, and with a key on a role but acceptance.
 func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	implementer, _ := ParseSteps("implementer")
 	withTask := func(task Task) Plan { return Plan{Tasks: []Task{task}} }
@@ -129,8 +130,6 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			want: []Refusal{{Task: "a", Reason: "task a names the role reviewer at steps 2 and 3." + yet}}},
 		{name: "acceptance with no key", plan: oneTask("a", "implementer acceptance"),
 			want: []Refusal{{Task: "a", Reason: "step 2 of task a names acceptance with no key, which asks for a fresh agent of the role acceptance." + yet}}},
-		{name: "a key", plan: oneTask("a", "implementer:cd reviewer"),
-			want: []Refusal{{Task: "a", Reason: "step 1 of task a names the key cd." + yet}}},
 		{name: "the key owner on a role but acceptance", plan: oneTask("a", "implementer:owner"),
 			want: []Refusal{{Task: "a", Reason: "step 1 of task a names the key owner." + yet}}},
 		{name: "a key on acceptance but owner", plan: oneTask("a", "implementer acceptance:r"),
@@ -155,7 +154,7 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 		})
 	}
 
-	for _, steps := range []string{"implementer reviewer", "planner implementer tester reviewer acceptance:owner", "implementer acceptance:owner", "implementer"} {
+	for _, steps := range []string{"implementer reviewer", "planner implementer tester reviewer acceptance:owner", "implementer acceptance:owner", "implementer", "implementer:cd reviewer"} {
 		if r := Supported(oneTask("a", steps), builtin); len(r) != 0 {
 			t.Fatalf("Supported(%s) = %+v, want none", steps, r)
 		}
@@ -172,6 +171,23 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("two tasks and prober =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// A step can name its agent by a key, and the steps of one key are one agent, so a plan whose
+// steps share a key is taken. The key owner stays the owner's alone, and the owner alone does the
+// accepting step: the key owner on a role but acceptance, and any other key on acceptance, are
+// refused, each with the sentence of a step this release does not carry out, since Legion would
+// otherwise run the step in another agent than the plan names.
+func TestAKeyOtherThanOwnerIsTaken(t *testing.T) {
+	if got := Supported(oneTask("t", "implementer:a tester:a reviewer"), builtin); len(got) != 0 {
+		t.Fatalf("Supported = %v, want none", got)
+	}
+	if got := Supported(oneTask("t", "implementer:owner reviewer"), builtin); len(got) != 1 || got[0].Reason != "step 1 of task t names the key owner."+yet {
+		t.Fatalf("Supported = %v, want the key owner refused", got)
+	}
+	if got := Supported(oneTask("t", "implementer:a acceptance:a"), builtin); len(got) != 1 || got[0].Reason != "step 2 of task t names the key a."+yet {
+		t.Fatalf("Supported = %v, want the key a on acceptance refused", got)
 	}
 }
 
@@ -468,18 +484,19 @@ func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 			want: slices.Concat(naming("a", numbered("r", MostReasons)...), counting(7))},
 		{name: "roles nobody defines, at the bound", plan: steps(implementer, numbered("r", MostReasons)),
 			want: naming("a", numbered("r", MostReasons)...)},
-		// Each step reviewer:kNNNNN names a key, and then the role reviewer is named at two steps.
-		{name: "keys, past the bound", plan: steps(implementer, keyed("reviewer", numbered("k", past))),
-			want: slices.Concat(naming("a", numbered("k", MostReasons)...), counting(7), naming("a", "reviewer at steps 2 and 3"))},
-		{name: "keys, at the bound", plan: steps(implementer, keyed("reviewer", numbered("k", MostReasons))),
-			want: slices.Concat(naming("a", numbered("k", MostReasons)...), naming("a", "reviewer at steps 2 and 3"))},
+		// Each step acceptance:kNNNNN names a key this release does not take on acceptance, and
+		// then the role acceptance is named at two steps.
+		{name: "keys, past the bound", plan: steps(implementer, keyed("acceptance", numbered("k", past))),
+			want: slices.Concat(naming("a", numbered("k", MostReasons)...), counting(7), naming("a", "acceptance at steps 2 and 3"))},
+		{name: "keys, at the bound", plan: steps(implementer, keyed("acceptance", numbered("k", MostReasons))),
+			want: slices.Concat(naming("a", numbered("k", MostReasons)...), naming("a", "acceptance at steps 2 and 3"))},
 		// The role tester is named at two steps, and then each tester step has no implementer before it.
 		{name: "steps with no implementer before them, past the bound", plan: steps(testers(past), implementer),
 			want: slices.Concat(naming("a", "tester at steps 1 and 2"), naming("a", stepAt(MostReasons)...), counting(7))},
 		{name: "steps with no implementer before them, at the bound", plan: steps(testers(MostReasons), implementer),
 			want: slices.Concat(naming("a", "tester at steps 1 and 2"), naming("a", stepAt(MostReasons)...))},
-		{name: "Supported's kinds and Validate's each have their own bound", plan: steps(implementer, keyed("reviewer", numbered("k", 25)), numbered("r", 25)),
-			want: slices.Concat(naming("a", numbered("k", MostReasons)...), counting(5), naming("a", "reviewer at steps 2 and 3"),
+		{name: "Supported's kinds and Validate's each have their own bound", plan: steps(implementer, keyed("acceptance", numbered("k", 25)), numbered("r", 25)),
+			want: slices.Concat(naming("a", numbered("k", MostReasons)...), counting(5), naming("a", "acceptance at steps 2 and 3"),
 				naming("a", numbered("r", MostReasons)...), counting(5))},
 		// The ring's chain of 22 needs is named by its first MostReasons - 1, a count of the two
 		// left out, and the need that closes it.
@@ -546,12 +563,12 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 		{"a need at the bound", Validate(planOf(t, 1, taskNeeding("a", atBound)), d), 0, "a", "needs " + atBound + ",", 1},
 		{"a need cut at the start of a character", Validate(planOf(t, 1, taskNeeding("a", wide)), d), 0, "a", wide[:127] + "… (cut from 201 bytes),", 1},
 		{"a role of 301 bytes", Validate(oneTask("a", "implementer "+role), d), 0, "a", cut(role) + ",", 1},
-		{"a key of 301 bytes", Supported(oneTask("a", "implementer reviewer:"+role), d), 0, "a", cut(role) + ".", 1},
+		{"a key of 301 bytes", Supported(oneTask("a", "implementer acceptance:"+role), d), 0, "a", cut(role) + ".", 1},
 		{"a role block's id of 301 bytes", Supported(Plan{RoleBlocks: []string{role}, Tasks: []Task{{ID: "a", Steps: []Step{{Role: "implementer"}}}}}, d), 0, "", cut(role) + ".", 1},
 		{"a role of 301 bytes at two steps", Supported(oneTask("a", "implementer "+role+" "+role), d), 0, "a", cut(role) + " at steps 2 and 3.", 1},
-		// The key's reason comes first, then the step's. stepReasons names the whole word
-		// `tester:<key>` twice, so its size includes two quotes.
-		{"a step of 308 bytes read before the implementer", Supported(oneTask("a", "tester:"+role+" implementer"), d), 1, "a", cut("tester:"+role) + ",", 2},
+		// A key on a role but acceptance is taken, so the step's reason is the only one. stepReasons
+		// names the whole word `tester:<key>` twice, so its size includes two quotes.
+		{"a step of 308 bytes read before the implementer", Supported(oneTask("a", "tester:"+role+" implementer"), d), 0, "a", cut("tester:"+role) + ",", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if len(tc.got) <= tc.at {
@@ -741,10 +758,11 @@ func credentialIn(text string) string {
 // quotes the word, however long the word is: the word is read whole through the URL rule
 // (redact.URLCredentials) before it is cut to MostQuotedBytes, so the cut, and the length its mark
 // gives, are of what the rule left. Each place that quotes a word is given plantedURL: a need, a
-// role nobody defines, a role block's id, a key, a role at two steps and a step read before the
-// implementer, each a reason of its task or of the whole plan, and one id on two blocks, a task id
-// outside the form and a step outside the grammar, each an error of the read, which the route
-// answers as a reason of the whole plan. Each case holds the reason's task, the quote of
+// role nobody defines, a role block's id, a key acceptance does not take (a step of another role
+// may name any key, and acceptance takes owner alone), a role at two steps and a step read before
+// the implementer, each a reason of its task or of the whole plan, and one id on two blocks, a
+// task id outside the form and a step outside the grammar, each an error of the read, which the
+// route answers as a reason of the whole plan. Each case holds the reason's task, the quote of
 // redactedURL cut and marked, and no run of six bytes of plantedUser, and each error of the read
 // names no length of plantedURL, which would give away the length of its credential, where the
 // rule leaves neither a part nor the length of one (redact.URLCredentials). The fault is a cut
@@ -769,7 +787,7 @@ func TestAReasonQuotesNoByteOfAURLsCredential(t *testing.T) {
 		{"a need", Validate(planOf(t, 1, taskNeeding("a", plantedURL)), d), "a", quote},
 		{"a role nobody defines", Validate(withSteps(implementer, Step{Role: plantedURL}), d), "a", quote},
 		{"a role block's id", Supported(Plan{RoleBlocks: []string{plantedURL}, Tasks: []Task{{ID: "a", Steps: []Step{implementer}}}}, d), "", quote},
-		{"a key", Supported(withSteps(implementer, Step{Role: "reviewer", Key: plantedURL}), d), "a", quote},
+		{"a key acceptance does not take", Supported(withSteps(implementer, Step{Role: "acceptance", Key: plantedURL}), d), "a", quote},
 		{"a role at two steps", Supported(withSteps(implementer, Step{Role: plantedURL}, Step{Role: plantedURL}), d), "a", quote},
 		{"a step read before the implementer", Supported(withSteps(Step{Role: "tester", Key: plantedURL}, implementer), d), "a", cut("tester:" + redactedURL)},
 	} {

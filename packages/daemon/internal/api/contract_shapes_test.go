@@ -376,12 +376,15 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // starts again at its first value, so the fourteen issues carry every value of every list. Each
 // issue's architect carries a failure, a pending cause and a held task, as a worker does. No
 // other body carries them on an architect, so without this body no record describes those keys
-// at their architect paths, and the value comparison reads no value there. Each issue also carries
-// a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
-// merge states, so the fourteen issues carry all eight words at both key paths. A gated step on an
-// ancestor's basis carries the `basis` its status writes it with. Every issue of the line is held,
-// so one more issue carries the one value of an issue's own `phase` above the floor,
-// `awaiting_children`. The project's pause waits on the stop of one claim of each role, so
+// at their architect paths, and the value comparison reads no value there. Each issue also lists
+// one other claim (`otherClaims`, the stranded token's entry) with a failure, a pending cause and
+// a held task, in state i of a claim view's states, so the fourteen carry every value of the five
+// fields at their `otherClaims` paths, every one of which arrived at that entry with the key. Each
+// issue also carries a merge wait with every key of one, whose `mergeState` and `toldState` take
+// value i of the merge states, so the fourteen issues carry all eight words at both key paths. A
+// gated step on an ancestor's basis carries the `basis` its status writes it with. Every issue of
+// the line is held, so one more issue carries the one value of an issue's own `phase` above the
+// floor, `awaiting_children`. The project's pause waits on the stop of one claim of each role, so
 // `paused.waitsOn.*.role` carries every role, where pausedState's pause waits on an architect,
 // implementers and a reviewer alone. Its repositories block names five live repositories, both
 // role Apps installed on each, whose caches stand in the five states a cache can be in, so
@@ -458,6 +461,18 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			},
 		}
 	}
+	// otherClaim is issue i's other claim of the implementer's role: the claim view claimView
+	// builds, with its token, in state i of the claim view's states, its update state, causes and
+	// held task's phase further along their lists than the worker's.
+	stateWords := []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
+		supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady, supervise.StateWorking,
+		supervise.StateIdle, supervise.StateSuspended, supervise.StateFailed, supervise.StateRetired}
+	otherClaim := func(i int, key string) ClaimView {
+		view := claimView("ses_other_"+key, updateWords[(i+2)%len(updateWords)], i+5, phaseWords[(i+2)%len(phaseWords)])
+		view.Token = claim.Token("legion-values-" + strings.ToLower(key) + "-tester")
+		view.State = string(stateWords[i%len(stateWords)])
+		return view
+	}
 	notSlot := false
 	issues := make(map[string]Issue, len(phaseWords))
 	keys := make([]string, 0, len(phaseWords))
@@ -488,6 +503,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			Workers: map[claim.Role]PhaseView{
 				claim.RoleImplementer: {Claim: claimView("ses_implementer_"+key, updateWords[(i+1)%len(updateWords)], i+3, heldFrom)},
 			},
+			OtherClaims: []OtherClaimView{{Role: claim.RoleImplementer, Claim: otherClaim(i, key)}},
 			PullRequest: &PullRequestView{
 				Repo: "acme/widgets", Number: 2000 + i, Head: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29", State: "open",
 				MergeState: string(mergeWords[i%len(mergeWords)]),
@@ -658,15 +674,17 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// The release-records golden's own value (TestReleaseRecordsResponseGolden), built
 		// through releaseRecordsBody from the store's rows as the route builds it. Its third
 		// resume is a wake a project pause held, the one resume that carries `pause` (contract
-		// 178), which the record of every contract below 178 describes no key of.
+		// 178), which the record of every contract below 178 describes no key of. Its first
+		// release names the claims it suspended (`claims`, the stranded token's entry).
 		AnswerReleaseRecords: {roots: typesOf(ReleaseRecordsResponse{}), bodies: []any{releaseRecordsBody(store.PodReleaseRecords{
 			Releases: []store.PodRelease{
 				{ID: 101, Issue: "LEGION-208", Generation: 3, Roles: []string{"implementer", "tester"},
-					At: released, BundleBytes: 4096},
+					Claims: []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"},
+					At:     released, BundleBytes: 4096},
 				{ID: 102, Issue: "LEGION-209", Generation: 1, At: released.Add(15 * time.Minute)},
 			},
 			Resumes: []store.PodResume{
-				{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Kind: "delivery",
+				{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Claim: "legion-legion-legion-208-tester", Kind: "delivery",
 					At: released.Add(30 * time.Minute), PodReadyAt: released.Add(31 * time.Minute),
 					FirstTurnAt: released.Add(32 * time.Minute)},
 				{ID: 202, Issue: "LEGION-207", Role: "architect", Kind: "backstop",

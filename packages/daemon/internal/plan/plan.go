@@ -47,6 +47,27 @@ func (s Step) String() string {
 	return s.Role + ":" + s.Key
 }
 
+// Agent is who does one step: the owner of the task (Key "owner"), the agent of a key (Key set,
+// Task "" and Place 0), or, for a step with no key, an agent of that step alone (Key "", Task and
+// Place set). Two steps have one agent exactly when their Agent values are equal, so the steps of
+// one key are one agent in any task, and a return to a step with no key finds the agent it had.
+type Agent struct {
+	Key   string
+	Task  string
+	Place int
+}
+
+// AgentOf is the agent of step place (from 1) of task, whose step is s.
+func AgentOf(task string, place int, s Step) Agent {
+	if s.Key != "" {
+		return Agent{Key: s.Key}
+	}
+	return Agent{Task: task, Place: place}
+}
+
+// Owner says whether a is the owner of its task.
+func (a Agent) Owner() bool { return a.Key == "owner" }
+
 // DefaultTask is the id of the one task of an issue whose owner gives no plan, or whose
 // experiment's group takes none, which runs the project's default steps.
 const DefaultTask = "default"

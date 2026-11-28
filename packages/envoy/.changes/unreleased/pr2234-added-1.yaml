@@ -10,9 +10,13 @@ body: |-
   before the first write, a bad one refusing the batch with a 400 naming its index, and a batch
   that fails after that naming how many were written, `written`, with the failed entry's own
   status: a 503 to retry for a write the bucket did not answer, a 409 or 400 as a single PUT
-  answers it). `role_token` must be `legion-<legion_project>-<issue lower-cased>-<role>` with the
-  Legion project token, not the Dispatch project, and a write moving a recorded session to another
-  issue or role is `409 {"error":"legion agent <id> is recorded for <issue> <role>"}` with nothing
+  answers it). `role_token` must be the claim token of an agent of the issue,
+  `legion-<legion_project>-<issue lower-cased>-<agent>` with the Legion project token, not the
+  Dispatch project, the agent's name being a role of the grammar but `controller` (the role of its
+  first step, kept whatever role its later steps are on), and `role` is the role of the step the
+  session runs as of that write, which a later write of the same session may change. A write
+  moving a recorded session to another issue or another claim token is
+  `409 {"error":"legion agent <id> is recorded for <issue> as <role_token>"}` with nothing
   written: every write claims `session.<id>` by compare-and-swap before it writes the index keys,
   so of two concurrent writes moving one session only one lands, and a write that ends after its
   claim is completed by its retry; `recorded_at` is the listener's time at a session's first
@@ -20,8 +24,8 @@ body: |-
   `GET
   /v1/legion/agents/roles/<role_token>` (newest first) and `GET /v1/legion/agents?issue=<KEY>` (by
   role in workflow order, then newest first) read the bucket itself, never a cache, and add `live`
-  (from the session registry) and `replaced_by`/`replaced_at` (the next session of the role token by
-  `started_at`), both derived at the read. Dispatch's listener client reads them with `Agent`,
+  (from the session registry) and `replaced_by`/`replaced_at` (the next session of the claim's role
+  token by `started_at`), both derived at the read. Dispatch's listener client reads them with `Agent`,
   `RoleAgents` and `IssueAgents`. The listener's NATS grant (`ListenerPermissions`, and so
   `HostPermissions` and `DispatchPermissions`) gains the bucket's key-value calls, so a hub's
   rendered authorization changes, which replaces a GCP hub's VM on its next update. Deploy order:

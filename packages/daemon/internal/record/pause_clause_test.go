@@ -49,6 +49,14 @@ var pauseQueue = []pauseQueued{
 	{name: "a check's wake", issue: "LEGION-308", held: true, payload: CheckWakeDue{Look: 1, Reason: "the tester's own wake"}},
 	{name: "a check's look bound", issue: "LEGION-309", held: true, payload: CheckLook{Look: 1}},
 	{name: "a check's bound", issue: "LEGION-310", held: true, payload: CheckBound{}},
+	// A row that names its claim is for that claim, a keyed agent on another role's step among them,
+	// not for the claim of its role's own token.
+	{name: "a merge forward's hold to a keyed agent", issue: "LEGION-313", held: true, claim: "legion-legion-legion-313-implementer",
+		payload: MergeForwardMessage{Role: claim.RoleTester, Claim: "legion-legion-legion-313-implementer", Step: MergeForwardHold, Head: "c0de", Base: "main",
+			Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}},
+	{name: "a hook's words to a keyed agent", issue: "LEGION-314", held: true, claim: "legion-legion-legion-314-implementer",
+		payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleTester, Claim: "legion-legion-legion-314-implementer",
+			From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}},
 	{name: "the controller's notice", issue: "LEGION", payload: ControllerNotice{Kind: TickNotice}},
 	{name: "a suspend", issue: "LEGION-311",
 		payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-311", Role: claim.RoleImplementer, Generation: 1, Reason: "parked"}},
@@ -231,6 +239,55 @@ func TestAPausedProjectsHeldRowsAreNotClaimable(t *testing.T) {
 		must(t, err)
 		if len(left) != 0 {
 			t.Fatalf("PauseHeldRows after the resume = %+v, want none", left)
+		}
+	})
+}
+
+// A held row that names no claim, a start the release before wrote and a merge-queue message, is
+// for the claim its executor reaches: the worker on its role's step, which the role's phases row
+// names while it runs a step of the plan. Here key a's agent works the tester's step and the
+// merger's, so the pause's list names it for both rows, where the role's own token would name a
+// claim the rows never reach.
+func TestAHeldRowThatNamesNoClaimIsForTheWorkerOnItsRolesStep(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	st := migratedStore(t)
+	records := NewStore()
+	const issue = "LEGION-401"
+	keyed := claim.Token("legion-legion-legion-401-implementer")
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, Issue{Key: issue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+			Tree: issue, Project: "LEGION", Title: issue, Phase: phase.Testing, Generation: 1, Status: "in_progress", Rank: "U"}))
+		for _, role := range []claim.Role{claim.RoleTester, claim.RoleMerger} {
+			must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue, Role: role, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2}))
+		}
+		for _, payload := range []OutboxPayload{
+			SuperviseRequest{Op: "start", Tree: issue, Role: claim.RoleTester, Generation: 1, Task: "test it"},
+			MergeQueueRemoval{Number: 42, Head: "c0de"},
+		} {
+			row, err := NewOutboxRow(issue, payload, now)
+			must(t, err)
+			_, err = records.EnqueueID(ctx, tx, row)
+			must(t, err)
+		}
+	})
+	_, _, err := st.Pause(ctx, store.PauseRequest{Project: "LEGION", By: store.PauseActor{Kind: store.PauseByOperator},
+		Reason: "the model provider is down", At: now,
+		StopRow: func(store.Pause, store.PauseStopClaim) (store.PauseRow, error) {
+			return store.PauseRow{}, errors.New("this project has no claim to stop")
+		}})
+	must(t, err)
+
+	inTx(t, st, func(tx pgx.Tx) {
+		held, err := records.PauseHeldRows(ctx, tx, "LEGION", now)
+		must(t, err)
+		if len(held) != 2 {
+			t.Fatalf("PauseHeldRows = %+v, want the start and the merge-queue message", held)
+		}
+		for _, row := range held {
+			if row.Claim != keyed {
+				t.Errorf("the held %s row is for %q, want %s: the worker its executor reaches on the role's step", row.Kind, row.Claim, keyed)
+			}
 		}
 	})
 }

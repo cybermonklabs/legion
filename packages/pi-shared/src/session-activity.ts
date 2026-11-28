@@ -1,4 +1,3 @@
-import { roleToken } from "@legion/contracts";
 import type {
   LegionActivityRequestBody,
   LegionSessionActivityBody,
@@ -104,31 +103,21 @@ export function sameSessionActivity(
 }
 
 /**
- * The body of `POST /legion/v1/claims/activity` for this session's report, or undefined when the
- * claim token cannot be spelled — no project on the pane's environment, or an issue key the token
- * rule refuses — which is a report not sent rather than a throw inside a host's hook.
+ * The body of `POST /legion/v1/claims/activity` for this session's report.
  *
- * The claim token is the role token of the claim's project, issue and role, which is how the
- * daemon minted it (`claim.NewToken`) and how the phase reminder already spells the architect's
- * (`tellArchitect` in `src/phase-reminder.ts`). An architect reports as a phase worker does
- * (pi-legion), since the daemon releases a pod only when each of its live roles has reported;
- * claude-envoy runs phase workers alone, so its reports are theirs.
+ * The claim token is the one the daemon answered this session's registration with
+ * (`ClaimCapability.claimToken`), which names the claim's agent whatever role the claim holds now,
+ * so the session reports for the claim it holds and never spells one from its role. An architect
+ * reports as a phase worker does (pi-legion), since the daemon releases a pod only when each of
+ * its live roles has reported; claude-envoy runs phase workers alone, so its reports are theirs.
  */
 export function sessionActivityRequest(input: {
-  readonly project: string | undefined;
   readonly claim: ClaimCapability;
   readonly report: SessionActivityReport;
-}): LegionActivityRequestBody | undefined {
-  const { claim, project } = input;
-  if (project === undefined || project === "") return undefined;
-  let claimToken: string;
-  try {
-    claimToken = roleToken(project, claim.issue, claim.role);
-  } catch {
-    return undefined;
-  }
+}): LegionActivityRequestBody {
+  const { claim } = input;
   return {
-    claimToken,
+    claimToken: claim.claimToken,
     sessionId: claim.sessionID,
     secret: claim.secret,
     activity: input.report,

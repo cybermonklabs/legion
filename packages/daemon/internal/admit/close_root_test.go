@@ -18,10 +18,10 @@ func TestAClosedRootFreesItsSlotForTheNextWaitingRoot(t *testing.T) {
 	pool := migratedPool(t)
 	var logged bytes.Buffer
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(&logged, nil)))
-	seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+	seedSlotted(t, pool, "LEGION-750", "A")
 	seedWaiting(t, pool, "LEGION-NEXT", "B")
 
-	result, err := intake.ApplyFact(context.Background(), pool, "api", "close", intake.CloseRoot{Issue: "LEGION-ACTIVE", Reason: "no change"}, admission.engine, admission)
+	result, err := intake.ApplyFact(context.Background(), pool, "api", "close", intake.CloseRoot{Issue: "LEGION-750", Reason: "no change"}, admission.engine, admission)
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("close = %+v, %v", result.Refusal, err)
 	}
@@ -33,7 +33,7 @@ func TestAClosedRootFreesItsSlotForTheNextWaitingRoot(t *testing.T) {
 		}
 	}
 	want := []string{
-		`msg="admission: slot released" issue=LEGION-ACTIVE slots=0 cap=1`,
+		`msg="admission: slot released" issue=LEGION-750 slots=0 cap=1`,
 		`msg="admission: slot taken" issue=LEGION-NEXT slots=1 cap=1`,
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {

@@ -309,32 +309,56 @@ export const IssueReleasedEventPayloadSchema = z
 
 export type IssueReleasedEventPayload = z.output<typeof IssueReleasedEventPayloadSchema>;
 
-/** One pair of an issue's role holders as Dispatch stores it (`IssueRoleHolderRecord` of the
- *  route table, which `dispatch-api-owned.ts` holds this schema to): a role of an issue's claim,
- *  one of Legion's six or a role the deployment defines (`legionStepRole`), the session that holds
- *  it, and the time Dispatch first stored the pair. */
+/** What every holder of an issue's roles names: a role of an issue's claim, one of Legion's six or
+ *  a role the deployment defines (`legionStepRole`), the session that holds it, and the time
+ *  Dispatch first stored the holder. */
+const issueRoleHolderFields = {
+  role: legionStepRole,
+  session: z.string(),
+  recorded_at: z.iso.datetime(),
+};
+
+/** One holder of an issue's roles as Dispatch stores it and the role-holders routes answer it
+ *  (`IssueRoleHolderRecord` of the route table, which `dispatch-api-owned.ts` holds this schema
+ *  to): the role, the session, the Legion claim token the session holds the role by (empty where
+ *  the publication named none) and whether that claim works the role's step. */
 export const IssueRoleHolderRecordSchema = z
-  .strictObject({ role: legionStepRole, session: z.string(), recorded_at: z.iso.datetime() })
+  .strictObject({ ...issueRoleHolderFields, claim: z.string(), works_step: z.boolean() })
   .readonly();
 
 export type IssueRoleHolderRecord = z.output<typeof IssueRoleHolderRecordSchema>;
 
+/** One holder as an `issue.role_holders_changed` event carries it. A Dispatch of this release
+ *  writes the stored record whole, `claim` and `works_step` included, but an event a Dispatch
+ *  before them stored holds neither, and the event log keeps that event as it was written, so a
+ *  reader of the feed reads both: the two fields are optional here and nowhere else. */
+const IssueRoleHolderEventRecordSchema = z
+  .strictObject({
+    ...issueRoleHolderFields,
+    claim: z.string().optional(),
+    works_step: z.boolean().optional(),
+  })
+  .readonly();
+
 /**
  * `issue.role_holders_changed`: the Legion daemon's publication of an issue's role holders
- * (`PUT /api/v1/issues/{key}/role-holders`) changed the set. `holders` is the set it stored and
- * `previous_holders` the set it replaced, each in the route's order (Legion's six in workflow
- * order, then each role the deployment defines by name); the event's actor is the
- * daemon's session and its `created_at` the time of the write, so the issue's log says which
- * session held each role at a past time. A publication that stores the set already stored appends
- * none, and the log holds no change made before the release that writes the event. Quiet: it
+ * (`PUT /api/v1/issues/{key}/role-holders`) changed which session holds which role. `holders` is
+ * the set it stored and `previous_holders` the set it replaced, each in the route's order
+ * (Legion's six in workflow order, then each role the deployment defines by name), each holder
+ * `{role, session, claim, works_step, recorded_at}`; the event's actor is the daemon's session and
+ * its `created_at` the time of the write, so the issue's log says which session held each role at
+ * a past time. A publication that keeps each role with the sessions that held it appends none:
+ * one that stores the set already stored, and one that changes only a holder's `claim` or
+ * `works_step`. The log holds no change made before the release that writes the event. Quiet: it
  * wakes nobody. Strict: the Go writer (`issueRoleHoldersChange` in
- * `packages/envoy/internal/dispatch/api/issue_role_holders.go`) emits exactly these three fields.
+ * `packages/envoy/internal/dispatch/api/issue_role_holders.go`) emits exactly these three fields,
+ * each holder as `IssueRoleHolderEventRecordSchema` reads it.
  */
 export const IssueRoleHoldersChangedEventPayloadSchema = z
   .strictObject({
     key: z.string(),
-    holders: z.array(IssueRoleHolderRecordSchema),
-    previous_holders: z.array(IssueRoleHolderRecordSchema),
+    holders: z.array(IssueRoleHolderEventRecordSchema),
+    previous_holders: z.array(IssueRoleHolderEventRecordSchema),
   })
   .readonly();
 

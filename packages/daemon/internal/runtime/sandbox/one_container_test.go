@@ -460,10 +460,10 @@ func TestAnEndedPodOfTheEarlierLayoutReportsTheRolesOwnContainer(t *testing.T) {
 	}
 }
 
-// A role's locator in an issue pod names the pod's one container, `roles`, so the role whose
-// enrollment, address record and launcher are read is the claim's: an enrolled pod holding the
-// role's own key directory is alive, and a generation the role's record says was told a moved
-// daemon URL is stale.
+// A claim's locator in an issue pod names the pod's one container, `roles`, so the slot whose
+// enrollment, address record and launcher are read is the claim's (claim.Token.Slot, its agent's
+// name, whatever role its step is on): an enrolled pod holding the slot's own key directory is
+// alive, and a generation the slot's record says was told a moved daemon URL is stale.
 func TestAnIssuePodsRoleIsReadFromItsClaimNotItsContainer(t *testing.T) {
 	t.Parallel()
 	broker := func(o *Options) {
@@ -542,7 +542,7 @@ func TestTheRolesContainerEndingEndsEveryRole(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Probe %s: %v", token, err)
 		}
-		role, _ := token.Role()
+		_, role, _ := token.Cut()
 		if obs.Kind != runtime.Gone || !strings.Contains(obs.Detail, "container roles terminated (OOMKilled, exit code 137)") ||
 			!strings.Contains(obs.Detail, "last lines of "+string(role)) || strings.Contains(obs.Detail, "fake logs") {
 			t.Fatalf("%s: %s %q, want Gone naming the container's end and quoting only %s's lines", token, obs.Kind, obs.Detail, role)

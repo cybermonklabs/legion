@@ -823,7 +823,7 @@ func (r *cutoverRig) await(t *testing.T, what string, condition func() bool) {
 	testwait.WithinPolling(t, testwait.Bounded(t, cutoverWait, time.Second), cutoverPoll, what, condition)
 }
 
-// token is role's claim token on issue.
+// token is the claim token of the agent named for role on issue, the role's own claim.
 func (r *cutoverRig) token(t *testing.T, issue string, role claim.Role) claim.Token {
 	t.Helper()
 	token, err := claim.NewToken(r.project, issue, role)

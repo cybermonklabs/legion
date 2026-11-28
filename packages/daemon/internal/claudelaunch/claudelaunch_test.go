@@ -93,7 +93,8 @@ func TestMCPConfigNamesItsOneServerLegion(t *testing.T) {
 }
 
 // A transcript is recognized by its shape alone, wherever its configuration directory is — a pod
-// role's on the issue's volume and a tmux claim's under the daemon's state directory alike — and
+// slot's, its claim's agent's, on the issue's volume and a tmux claim's under the daemon's state
+// directory alike — and
 // its session id is its name's. An Oh My Pi session file, a transcript name below another
 // directory than a project's, and a project file named for no session id are none.
 func TestTranscript(t *testing.T) {

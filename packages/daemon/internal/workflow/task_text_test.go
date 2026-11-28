@@ -39,7 +39,7 @@ func lastStart(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) st
 // version n, through the completion route (intake.ApplyFact), which writes the role's phases row.
 func completes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, word string, n int) {
 	t.Helper()
-	fact := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: role, Claim: claim.Token(string(role) + "-claim"),
+	fact := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: role, Claim: workerOr(t, pool, "LEGION-208", role, claim.Token(string(role)+"-claim")),
 		Summary: "done", Commit: "head", HandoffRecord: word + "-" + string(rune('0'+n)), HandoffVersion: n}
 	if role == claim.RoleTester {
 		fact.Verdict = "pass"
@@ -218,7 +218,7 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		completes(t, pool, engine, claim.RolePlanner, "plan", 1)
 		completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
-		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
+		if result := applyFacts(t, pool, engine)("fail-1", failedTest(t, pool, root.Key, 1, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
 		}
 		planner := lastStart(t, pool, root.Key, claim.RolePlanner)
@@ -293,7 +293,7 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", Title: "root", Phase: phase.Reviewing}
-	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
+	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer", AgentKey: "a"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
@@ -315,9 +315,9 @@ func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 		t.Errorf("the task %q does not open with %q, the words of %s, a line break and then its continue line", written, want, workingCopyForm)
 	}
 	for template, values := range map[string][]string{
-		"`Task: <id>. Step <i> of <n>: <role>.`":                        {"<id>", "a", "<i>", "2", "<n>", "2", "<role>", "reviewer"},
-		"`Steps: 1 <role>, 2 <role>, … then Legion's retro and merge.`": {"1 <role>, 2 <role>, …", "1 implementer, 2 reviewer"},
-		"`Step <j> (<role>) reported: <word> version <v>.`":             {"<j>", "1", "<role>", "implementer", "<word>", "implement", "<v>", "1"},
+		"`Task: <id>. Step <i> of <n>: <step>.`":                        {"<id>", "a", "<i>", "2", "<n>", "2", "<step>", "reviewer"},
+		"`Steps: 1 <step>, 2 <step>, … then Legion's retro and merge.`": {"1 <step>, 2 <step>, …", "1 implementer:a, 2 reviewer"},
+		"`Step <j> (<step>) reported: <word> version <v>.`":             {"<j>", "1", "<step>", "implementer:a", "<word>", "implement", "<v>", "1"},
 	} {
 		if want := strings.NewReplacer(values...).Replace(strings.Trim(template, "`")); !strings.Contains(written, " "+want) {
 			t.Errorf("the task %q does not say %q, the words of %s", written, want, template)
@@ -338,7 +338,7 @@ func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := " " + strings.NewReplacer("<id>", "a").Replace(strings.Trim(noStep, "`")) + " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
+		want := " " + strings.NewReplacer("<id>", "a").Replace(strings.Trim(noStep, "`")) + " Steps: 1 implementer:a, 2 reviewer then Legion's retro and merge."
 		if !strings.HasSuffix(at.lines, want) || at.owners != owners {
 			t.Errorf("the task of %s is %q then %q, want its lines to end %q, the words of %s and the task's steps, then %q", p, at.lines, at.owners, want, noStep, owners)
 		}

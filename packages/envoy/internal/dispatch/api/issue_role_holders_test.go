@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/legionrole"
+	"github.com/sjawhar/envoy/internal/legionclaim"
 )
 
 // putRoleHoldersAs sends PUT /api/v1/issues/{key}/role-holders over the deployment's bearer, the
@@ -121,6 +122,44 @@ func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
 	requireHeldRole(t, database, issue, "ses-b", "tester")
 }
 
+// Two claims of one issue can hold one role: the agent of a key on the tester's step, beside the
+// tester's own claim of an earlier version of the plan. The daemon publishes the session of each,
+// with the claim it holds the role by and whether that claim works the role's step, and Dispatch
+// stores both: each session holds the role, the set reads back with both, and a later set that
+// names one of them leaves the other's session with no role.
+func TestTwoClaimsOfOneRoleBothHoldIt(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	claimOf := func(agent string) string {
+		project, number, _ := strings.Cut(strings.ToLower(issue), "-")
+		return "legion-acme-" + project + "-" + number + "-" + agent
+	}
+	keyed := issueRoleHolder{Role: "tester", Session: "ses-keyed", Claim: claimOf("implementer"), WorksStep: true}
+	own := issueRoleHolder{Role: "tester", Session: "ses-own", Claim: claimOf("tester")}
+	holders := func(answer issueRoleHolders) []issueRoleHolder {
+		got := []issueRoleHolder{}
+		for _, holder := range answer.Holders {
+			got = append(got, issueRoleHolder{Role: holder.Role, Session: holder.Session, Claim: holder.Claim, WorksStep: holder.WorksStep})
+		}
+		return got
+	}
+
+	want := []issueRoleHolder{keyed, own}
+	if got := holders(publishRoleHolders(t, handler, issue, []issueRoleHolder{own, keyed})); !slices.Equal(got, want) {
+		t.Fatalf("the publish answered %#v, want both claims of the tester %#v", got, want)
+	}
+	if got := holders(readRoleHolders(t, handler, issue)); !slices.Equal(got, want) {
+		t.Fatalf("the read answered %#v, want both claims of the tester %#v", got, want)
+	}
+	requireHeldRole(t, database, issue, "ses-keyed", "tester")
+	requireHeldRole(t, database, issue, "ses-own", "tester")
+
+	publishRoleHolders(t, handler, issue, []issueRoleHolder{keyed})
+	requireHeldRole(t, database, issue, "ses-keyed", "tester")
+	requireHeldRole(t, database, issue, "ses-own", "")
+}
+
 // The daemon publishes again at each boot and at each start and end of a claim. A pair that did
 // not change keeps the time that Dispatch first recorded it.
 func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
@@ -141,6 +180,65 @@ func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 	}
 	if read := readRoleHolders(t, handler, issue); len(read.Holders) != 1 || !read.Holders[0].RecordedAt.Equal(first.Holders[0].RecordedAt) {
 		t.Fatalf("the read answered %#v, want the time %s of the first publish", read, first.Holders[0].RecordedAt)
+	}
+}
+
+// A publication that changes nothing writes no row. recorded_at cannot show it, since no write of
+// the route sets it again, so the test reads each row's version: the transaction that wrote it
+// (xmin) and where it stands (ctid), which an update replaces and a write that leaves the row
+// does not. Control: a publication whose one change is that a claim now works the role's step
+// writes that holder's row, and leaves the row of the holder beside it.
+func TestAnUnchangedPublicationWritesNoRow(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	versions := func() map[string]string {
+		t.Helper()
+		rows, err := database.Pool.Query(context.Background(), `
+			select session, xmin::text || ' ' || ctid::text from issue_role_holders where issue_key = $1
+		`, issue)
+		if err != nil {
+			t.Fatalf("read the row versions of %s: %v", issue, err)
+		}
+		defer rows.Close()
+		read := map[string]string{}
+		for rows.Next() {
+			var session, version string
+			if err := rows.Scan(&session, &version); err != nil {
+				t.Fatalf("read a row version of %s: %v", issue, err)
+			}
+			read[session] = version
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the row versions of %s: %v", issue, err)
+		}
+		return read
+	}
+	set := []issueRoleHolder{{Role: "tester", Session: "ses-a"}, {Role: "implementer", Session: "ses-b", WorksStep: true}}
+	publishRoleHolders(t, handler, issue, set)
+	first := versions()
+	if len(first) != 2 {
+		t.Fatalf("the first publication stored the rows %v, want one of ses-a and one of ses-b", first)
+	}
+
+	publishRoleHolders(t, handler, issue, set)
+	if again := versions(); !maps.Equal(again, first) {
+		t.Fatalf("a publication of the same set wrote its rows again: their versions were %v, and are %v", first, again)
+	}
+
+	set[0].WorksStep = true
+	published := publishRoleHolders(t, handler, issue, set)
+	changed := versions()
+	if changed["ses-a"] == first["ses-a"] {
+		t.Fatalf("control: the publication in which ses-a's claim works the step left its row at version %s, want a new one", first["ses-a"])
+	}
+	if changed["ses-b"] != first["ses-b"] {
+		t.Fatalf("the publication that changed ses-a wrote the row of ses-b too: its version was %s, and is %s", first["ses-b"], changed["ses-b"])
+	}
+	for _, holder := range published.Holders {
+		if holder.Session == "ses-a" && !holder.WorksStep {
+			t.Fatalf("the publication answered %#v, want ses-a's claim working the step", published)
+		}
 	}
 }
 
@@ -488,9 +586,13 @@ func TestARoleHoldersPublicationRefusesWhatIsNoSet(t *testing.T) {
 		"the role controller":     {"holders": []issueRoleHolder{{Role: "controller", Session: "ses-a"}}, "actor": daemonSessionOf("ACME")},
 		"a role with a capital":   {"holders": []issueRoleHolder{{Role: "Checker", Session: "ses-a"}}, "actor": daemonSessionOf("ACME")},
 		"a role of 33 characters": {"holders": []issueRoleHolder{{Role: "c" + strings.Repeat("h", 32), Session: "ses-a"}}, "actor": daemonSessionOf("ACME")},
-		"a role named twice": {"holders": []issueRoleHolder{
-			{Role: "tester", Session: "ses-a"}, {Role: "tester", Session: "ses-b"},
+		"a claim named twice": {"holders": []issueRoleHolder{
+			{Role: "tester", Session: "ses-a", Claim: "legion-acme-acme-1-tester"}, {Role: "tester", Session: "ses-b", Claim: "legion-acme-acme-1-tester"},
 		}, "actor": daemonSessionOf("ACME")},
+		"a claim of another issue": {"holders": []issueRoleHolder{{Role: "tester", Session: "ses-a", Claim: "legion-acme-acme-999-tester"}},
+			"actor": daemonSessionOf("ACME")},
+		"a claim that is no claim token": {"holders": []issueRoleHolder{{Role: "tester", Session: "ses-a", Claim: "tester"}},
+			"actor": daemonSessionOf("ACME")},
 		"an empty session": {"holders": []issueRoleHolder{{Role: "tester", Session: "  "}}, "actor": daemonSessionOf("ACME")},
 		"a session named twice": {"holders": []issueRoleHolder{
 			{Role: "tester", Session: "ses-a"}, {Role: "implementer", Session: "ses-a"},
@@ -513,6 +615,37 @@ func TestARoleHoldersPublicationRefusesWhatIsNoSet(t *testing.T) {
 	}
 }
 
+// A session holds one role of an issue, so a publication that names one session twice is refused
+// whole, whether the two entries name one role or two: two claims of one role name two sessions.
+// The refusal names the session, and nothing is stored. Without it the write meets the session key
+// twice in one statement, which the database refuses, and the route answers 500.
+func TestASessionNamedTwiceIsRefusedNamingTheSession(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	claimOf := func(agent string) string {
+		project, number, _ := strings.Cut(strings.ToLower(issue), "-")
+		return "legion-acme-" + project + "-" + number + "-" + agent
+	}
+	const twice = "ses-twice"
+	for name, holders := range map[string][]issueRoleHolder{
+		"for one role": {{Role: "tester", Session: twice}, {Role: "tester", Session: twice}},
+		"for one role by two claims": {
+			{Role: "tester", Session: twice, Claim: claimOf("tester")}, {Role: "tester", Session: twice, Claim: claimOf("implementer")},
+		},
+		"for two roles": {{Role: "tester", Session: twice}, {Role: "implementer", Session: twice}},
+	} {
+		response := putRoleHoldersAs(t, handler, issue, map[string]any{"holders": holders, "actor": daemonSessionOf("ACME")})
+		code, message := refusalOf(t, response)
+		if response.Code != http.StatusBadRequest || code != "INVALID_ROLE_HOLDER" || !strings.Contains(message, twice) {
+			t.Errorf("a session named twice %s: status=%d body=%s, want 400 INVALID_ROLE_HOLDER naming %s", name, response.Code, response.Body.String(), twice)
+		}
+	}
+	if count := countRoleHolders(t, database); count != 0 {
+		t.Fatalf("issue_role_holders holds %d rows after the refusals, want 0", count)
+	}
+}
+
 // The tester's production check comes after the close, so a closed issue takes its role holders.
 func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
 	t.Parallel()
@@ -524,7 +657,7 @@ func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
 	requireHeldRole(t, database, issue, "ses-a", "tester")
 }
 
-// A role the deployment defines holds a role of an issue as Legion's six do (legionrole.IsRole):
+// A role the deployment defines holds a role of an issue as Legion's six do (legionclaim.IsRole):
 // a set naming checker and linter beside the tester is stored whole, and the read the results route
 // makes finds the checker's session. A role is a name of the role grammar, so one of 32 characters
 // is taken too. The set reads back with Legion's six in the order of the default steps, then
@@ -566,7 +699,7 @@ func TestARoleTheDeploymentDefinesHoldsARoleOfAnIssue(t *testing.T) {
 			"actor":   daemonSessionOf("ACME"),
 		})
 		code, message := refusalOf(t, response)
-		if response.Code != http.StatusBadRequest || code != "INVALID_ROLE_HOLDER" || !strings.Contains(message, legionrole.Pattern) {
+		if response.Code != http.StatusBadRequest || code != "INVALID_ROLE_HOLDER" || !strings.Contains(message, legionclaim.RolePattern) {
 			t.Errorf("%s: status=%d body=%s, want 400 INVALID_ROLE_HOLDER naming the role grammar", name, response.Code, response.Body.String())
 		}
 	}
@@ -575,7 +708,7 @@ func TestARoleTheDeploymentDefinesHoldsARoleOfAnIssue(t *testing.T) {
 	}
 }
 
-// The set reads back in the order of legionagents.Roles, the order of the default steps (each
+// The set reads back in the order of legionclaim.Roles, the order of the default steps (each
 // task names its own), whatever order the publication named them in. The PUT answers in that
 // order too. The publication names reviewer, implementer and tester, whose sort by name
 // (implementer, reviewer, tester) is not their order (implementer, tester, reviewer).
@@ -734,7 +867,7 @@ func TestASessionThatIsNoSessionIDIsRefused(t *testing.T) {
 
 // The contract spells a role as the route takes it, a name of the role grammar, in the `pattern` of
 // each shape, and lists no enum of roles: the route takes a role the deployment defines, which no
-// list names. The tag must spell the pattern legionrole.IsRole matches.
+// list names. The tag must spell the pattern legionclaim.IsRole matches.
 func TestTheRoleHolderShapesSpellTheRoleGrammar(t *testing.T) {
 	t.Parallel()
 	for _, shape := range []any{issueRoleHolder{}, issueRoleHolderRecord{}} {
@@ -742,7 +875,7 @@ func TestTheRoleHolderShapesSpellTheRoleGrammar(t *testing.T) {
 		if !ok {
 			t.Fatalf("%T has no Role", shape)
 		}
-		if got, want := field.Tag.Get("pattern"), legionrole.Pattern; got != want {
+		if got, want := field.Tag.Get("pattern"), legionclaim.RolePattern; got != want {
 			t.Errorf("%T.Role spells the pattern %q, want %q", shape, got, want)
 		}
 		if enum, listed := field.Tag.Lookup("enum"); listed {
@@ -795,7 +928,7 @@ func TestTheContractRequiresTheRoleAndTheSessionOfEachHolder(t *testing.T) {
 	}
 }
 
-// The table's own check on role holds the role grammar the route takes (legionrole.IsRole), so a
+// The table's own check on role holds the role grammar the route takes (legionclaim.IsRole), so a
 // row the route writes is never refused by the table, a 500, and a row written past the route is
 // held to the same rule: a role the deployment defines and a name of 32 characters are stored, and
 // the controller, a name with a capital and a name of 33 characters are refused by the check.

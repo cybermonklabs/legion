@@ -30,9 +30,9 @@ func seedTaskPlan(t *testing.T, h *harness, key string, s taskStanding) {
 	v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-" + key, Source: record.PlanSourceOwner,
 		GivenBy: "owner", GivenAt: time.Date(2026, 11, 17, 6, 0, 0, 0, time.UTC)}
 	tasks := []record.PlanTask{{Issue: key, Generation: 1, Task: s.task, PlanVersion: 1, BlockText: "Task " + s.task + ".", State: record.TaskWaiting}}
-	steps := []record.PlanStep{
+	steps := record.NameAgents(nil, []record.PlanStep{
 		{Issue: key, Generation: 1, Task: s.task, Position: 1, Role: "implementer", Type: "implementation"},
-		{Issue: key, Generation: 1, Task: s.task, Position: 2, Role: "tester", Type: "testing"}}
+		{Issue: key, Generation: 1, Task: s.task, Position: 2, Role: "tester", Type: "testing"}}, nil)
 	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPlan(ctx, tx, v, tasks, steps); err != nil {
 			return err

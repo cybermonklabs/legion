@@ -94,15 +94,16 @@ func (r *registry) contents(t *testing.T) map[string]string {
 	return held
 }
 
-// agent is a valid entry of the session id on issue's role, under the Legion project token
-// project, started at started.
+// agent is a valid entry of the session id of the agent named for issue's role, on a step of that
+// role, under the Legion project token project, started at started: its token is the role's own
+// claim token.
 func agent(project, issue, role, id, started string) legionagents.Entry {
 	return legionagents.Entry{
 		SessionID:     id,
 		LegionProject: project,
 		Issue:         issue,
 		Role:          role,
-		RoleToken:     "legion-" + project + "-" + strings.ToLower(issue) + "-" + role,
+		RoleToken:     legionagents.RoleToken(project, issue, role),
 		Title:         "Legion " + role + " · " + issue,
 		Harness:       "omp",
 		StartedAt:     started,
@@ -122,15 +123,6 @@ func sessionIDs(agents []legionagents.Agent) []string {
 		ids[i] = a.SessionID
 	}
 	return ids
-}
-
-func TestRoleTokenIsTheDaemonsToken(t *testing.T) {
-	if got := legionagents.RoleToken("infra", "INFRA-448", "tester"); got != "legion-infra-infra-448-tester" {
-		t.Fatalf("RoleToken = %q, want legion-infra-infra-448-tester", got)
-	}
-	if got := legionagents.RoleToken("sjawharlegion", "LEGION-7", "architect"); got != "legion-sjawharlegion-legion-7-architect" {
-		t.Fatalf("RoleToken = %q, want legion-sjawharlegion-legion-7-architect", got)
-	}
 }
 
 // One entry written is read back whole by each read: by its session, its role token and its issue,
@@ -250,17 +242,20 @@ func mapsEqual(a, b map[string]string) bool {
 	return true
 }
 
-// A session belongs to one issue and role for good: a write naming another Legion project, issue
-// or role for a recorded session is refused, naming what it is recorded for, and writes nothing.
+// A session belongs to one claim of one issue for good: a write naming another Legion project,
+// issue or claim token for a recorded session is refused, naming what it is recorded for, and
+// writes nothing.
 func TestARePutMovingASessionIsRefusedAndWritesNothing(t *testing.T) {
 	r := openRegistry(t)
 	if _, err := r.store.Put(ctx(t), agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	before := r.contents(t)
+	anotherAgent := agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")
+	anotherAgent.RoleToken = "legion-infra-infra-448-reviewer"
 	for name, moved := range map[string]legionagents.Entry{
 		"another issue":          agent("infra", "INFRA-449", "tester", "ses-tester", "2026-10-26T03:15:00Z"),
-		"another role":           agent("infra", "INFRA-448", "reviewer", "ses-tester", "2026-10-26T03:15:00Z"),
+		"another agent's claim":  anotherAgent,
 		"another Legion project": agent("sjawharlegion", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z"),
 	} {
 		_, err := r.store.Put(ctx(t), moved)
@@ -268,12 +263,78 @@ func TestARePutMovingASessionIsRefusedAndWritesNothing(t *testing.T) {
 		if !errors.As(err, &conflict) {
 			t.Fatalf("%s: err = %v, want a conflict", name, err)
 		}
-		if got := err.Error(); got != "legion agent ses-tester is recorded for INFRA-448 tester" {
+		if got := err.Error(); got != "legion agent ses-tester is recorded for INFRA-448 as legion-infra-infra-448-tester" {
 			t.Fatalf("%s: err = %q", name, got)
 		}
 		if after := r.contents(t); !mapsEqual(before, after) {
 			t.Fatalf("%s: the refused write changed the bucket: %v, then %v", name, before, after)
 		}
+	}
+}
+
+// An agent keeps its claim token and its session across the roles of its steps (a keyed agent
+// whose token ends in the role of its first step, implementer). Its session on its tester step is
+// stored under that token, and the same session written again on its reviewer step is stored too,
+// not refused: it keeps its recorded_at and its keys, and carries the role of the latest write.
+func TestAKeyedAgentsSessionIsStoredUnderItsClaimInEachRoleOfItsSteps(t *testing.T) {
+	r := openRegistry(t)
+	onTester := agent("infra", "INFRA-448", "tester", "ses-key-a", "2026-10-26T03:15:00Z")
+	onTester.RoleToken = "legion-infra-infra-448-implementer"
+	if _, err := r.store.Put(ctx(t), onTester); err != nil {
+		t.Fatalf("put key a's agent on its tester step: %v; want it stored under its claim token", err)
+	}
+	keys := r.keys(t)
+	r.clock.advance(time.Hour)
+	onReviewer := onTester
+	onReviewer.Role, onReviewer.Title = "reviewer", "Legion reviewer · INFRA-448"
+	stored, err := r.store.Put(ctx(t), onReviewer)
+	if err != nil {
+		t.Fatalf("put the same session on its reviewer step: %v; want it stored, since its claim is the same", err)
+	}
+	onReviewer.RecordedAt = "2026-10-26T04:00:00Z"
+	if stored != onReviewer {
+		t.Fatalf("stored %#v, want %#v", stored, onReviewer)
+	}
+	if after := r.keys(t); !slices.Equal(keys, after) {
+		t.Fatalf("the keys moved from %v to %v, want the claim's own", keys, after)
+	}
+	byToken, err := r.store.ByRoleToken(ctx(t), "legion-infra-infra-448-implementer")
+	if err != nil || len(byToken) != 1 || byToken[0].LegionAgentEntry != onReviewer {
+		t.Fatalf("by the claim token = %#v, %v; want the one session, on its reviewer step", byToken, err)
+	}
+	byIssue, err := r.store.ByIssue(ctx(t), "INFRA-448")
+	if err != nil || len(byIssue) != 1 || byIssue[0].LegionAgentEntry != onReviewer {
+		t.Fatalf("by issue = %#v, %v; want the one session, on its reviewer step", byIssue, err)
+	}
+}
+
+// An entry the release before wrote, whose token is its role's own (the claim of the agent named
+// for its role), reads and writes as before: each read answers it, the daemon's write of it again
+// keeps its recorded_at, and a write moving it to another issue is refused as it was.
+func TestAnEntryOfTheReleaseBeforeReadsAndWritesAsBefore(t *testing.T) {
+	r := openRegistry(t)
+	old := agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:15:00Z")
+	old.RecordedAt = "2026-10-25T09:00:00Z"
+	value, _ := json.Marshal(old)
+	for _, key := range []string{"session.ses-tester", "issue.INFRA-448.ses-tester", "role.legion-infra-infra-448-tester.ses-tester"} {
+		if _, err := r.raw.Put(key, value); err != nil {
+			t.Fatalf("put %s as the release before wrote it: %v", key, err)
+		}
+	}
+	got, err := r.store.Get(ctx(t), "ses-tester")
+	if err != nil || got.LegionAgentEntry != old {
+		t.Fatalf("get = %#v, %v; want the entry as written", got, err)
+	}
+	r.listsUnder(t, "INFRA-448", "tester", []string{"ses-tester"})
+	rewrite := old
+	rewrite.RecordedAt = ""
+	stored, err := r.store.Put(ctx(t), rewrite)
+	if err != nil || stored != old {
+		t.Fatalf("the daemon's write of it again = %#v, %v; want %#v", stored, err, old)
+	}
+	var conflict *legionagents.ConflictError
+	if _, err := r.store.Put(ctx(t), agent("infra", "INFRA-449", "tester", "ses-tester", "2026-10-26T03:15:00Z")); !errors.As(err, &conflict) {
+		t.Fatalf("a write moving it to another issue: %v, want a conflict", err)
 	}
 }
 
@@ -313,7 +374,8 @@ func TestEveryInvalidEntryIsRefusedByBothWrites(t *testing.T) {
 			e.LegionProject = "sjawharlegion"
 		}, "role_token"},
 		{"a role_token of another issue", func(e *legionagents.Entry) { e.RoleToken = "legion-infra-infra-449-tester" }, "role_token"},
-		{"a role_token of another role", func(e *legionagents.Entry) { e.RoleToken = "legion-infra-infra-448-reviewer" }, "role_token"},
+		{"a role_token whose agent is the controller", func(e *legionagents.Entry) { e.RoleToken = "legion-infra-infra-448-controller" }, "role_token"},
+		{"a role_token whose agent is outside the grammar", func(e *legionagents.Entry) { e.RoleToken = "legion-infra-infra-448-Checker" }, "role_token"},
 		{"a lower-case issue", func(e *legionagents.Entry) { e.Issue = "infra-448" }, "issue"},
 		{"an issue that is not a key", func(e *legionagents.Entry) { e.Issue = "INFRA" }, "issue"},
 		{"a harness outside the two", func(e *legionagents.Entry) { e.Harness = "codex" }, "harness"},
@@ -757,7 +819,7 @@ func TestABatchLosingASessionMidWriteNamesWhatItWrote(t *testing.T) {
 	if !errors.As(err, &partial) || partial.Written != 1 || partial.Total != 2 || !errors.As(err, &batch) || batch.Index != 1 || !errors.As(err, &conflict) {
 		t.Fatalf("put all = %v; want entries[1] refused as a conflict after 1 of 2 written", err)
 	}
-	if got := err.Error(); got != "wrote 1 of 2 legion agents, then entries[1]: legion agent ses-raced is recorded for INFRA-448 tester" {
+	if got := err.Error(); got != "wrote 1 of 2 legion agents, then entries[1]: legion agent ses-raced is recorded for INFRA-448 as legion-infra-infra-448-tester" {
 		t.Fatalf("err = %q", got)
 	}
 	r.listsUnder(t, "INFRA-448", "tester", []string{"ses-raced"})

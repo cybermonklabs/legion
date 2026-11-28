@@ -27,9 +27,9 @@ type idleRigCheckWatch struct {
 	observe  func()
 }
 
-func (w *idleRigCheckWatch) WorkspaceWork(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+func (w *idleRigCheckWatch) WorkspaceWork(ctx context.Context, issue string, token claim.Token) (runtime.WorkspaceWork, error) {
 	w.observe()
-	return w.reader.WorkspaceWork(ctx, issue, role)
+	return w.reader.WorkspaceWork(ctx, issue, token)
 }
 
 func (w *idleRigCheckWatch) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),

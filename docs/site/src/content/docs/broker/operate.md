@@ -355,7 +355,7 @@ deployment moves its pods: a pair added after a role's enrollment was refused ta
 that role's next enrollment, and the grants and pending requests of the old enrollment come across
 only while the broker still keeps them,
 `BROKER_SESSION_CARRY_SECONDS` after that enrollment ended. While a pair stands, a pod of either
-account can claim any session name the other holds, not only its own role's, so remove the pairs
+account can claim any session name the other holds, not only its own claim's, so remove the pairs
 with the old account once no live pod runs as it. The start line `session account pairs` names
 the pairs the broker read ([Health and logs](#health-and-logs)).
 

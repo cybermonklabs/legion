@@ -54,8 +54,8 @@ type Call struct {
 	// PodUID is ReplaceIssuePod's pod, and the pod a launch replaced as its round's own
 	// replacement (ReplaceRoundPodAtLaunch, whose Spec is the launch's).
 	PodUID string
-	// Role is WorkspaceWork's role.
-	Role claim.Role
+	// Token is WorkspaceWork's claim.
+	Token claim.Token
 }
 
 // SpawnResult is one scripted answer to Spawn or Resume.
@@ -326,6 +326,14 @@ func (r *Runtime) ScriptIssuePod(issue, pod string) {
 	r.issuePods[issue] = pod
 }
 
+// ScriptIssuePodUnread makes every later IssuePod of issue answer read false, as the Sandbox
+// runtime answers an issue whose Sandbox it cannot read, until a ScriptIssuePod names it again.
+func (r *Runtime) ScriptIssuePodUnread(issue string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.issuePods, issue)
+}
+
 // ScriptKeptVolume makes every later IssueKeepsVolume of issue answer as the Sandbox runtime
 // answers an issue Sandbox that owns a kept volume, carries no reset mark, has the disk shape that
 // the configuration renders and was made at created: true for a since whose second is after
@@ -367,9 +375,9 @@ func (r *Runtime) LaunchSession(loc runtime.Locator) (string, bool) {
 }
 
 // ScriptWorkspaceWork makes every later WorkspaceWork and PodWorkspaceWork of issue answer work, as
-// the Sandbox runtime answers what the shim of a role in the issue's pod, or the pod's launcher,
-// read: the roles and the launcher of a pod read the one workspace. An issue no call named holds no
-// work, which is the uninteresting case.
+// the Sandbox runtime answers what the shim of a claim in the issue's pod, or the pod's launcher,
+// read: the claims and the launcher of a pod read the one workspace. An issue no call named holds
+// no work, which is the uninteresting case.
 func (r *Runtime) ScriptWorkspaceWork(issue string, work runtime.WorkspaceWork) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -383,17 +391,18 @@ func (r *Runtime) FailWorkspaceWork(issue string, err error) { r.fail("Workspace
 
 // WorkspaceWork records its call and answers what FailWorkspaceWork set for the issue, else what
 // ScriptWorkspaceWork set, else no work.
-func (r *Runtime) WorkspaceWork(_ context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+func (r *Runtime) WorkspaceWork(_ context.Context, issue string, token claim.Token) (runtime.WorkspaceWork, error) {
 	r.reading()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "WorkspaceWork", Issue: issue, Role: role})
+	r.calls = append(r.calls, Call{Method: "WorkspaceWork", Issue: issue, Token: token})
 	return r.workspaceWork(issue)
 }
 
 // OnWorkspaceWork makes every later WorkspaceWork and PodWorkspaceWork run during first, before it
 // answers, with no lock of the fake held, so during may drive the daemon and the fake again: a test
-// starts a turn of a role there, as a turn can start while the read runs in the pod. nil clears it.
+// starts a turn of a claim there, as a turn can start while the read runs in the pod. nil clears
+// it.
 func (r *Runtime) OnWorkspaceWork(during func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -411,7 +420,7 @@ func (r *Runtime) reading() {
 }
 
 // PodWorkspaceWork is the read the Sandbox runtime has the issue pod's launcher make: it records
-// its call, with no role, and answers as WorkspaceWork does, naming the pod the issue's Sandbox
+// its call, with no claim, and answers as WorkspaceWork does, naming the pod the issue's Sandbox
 // holds at the call (ScriptIssuePod, followed through the replacements the fake made), as the
 // Sandbox runtime names the pod its launcher read, error or not. An issue no ScriptIssuePod named
 // names no pod.

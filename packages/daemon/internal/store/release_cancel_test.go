@@ -53,7 +53,7 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64, DroppedWake) (IdleReleaseRow, error) {
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Token, claim.Role, uint64, DroppedWake) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
 	}, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
@@ -124,7 +124,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 	openRunningTree(t, st)
 	releasedClaim(t, st, claim.RoleImplementer)
 	first, boundary, last := releaseThroughTheStore(t, st, rootIssue)
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleImplementer, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, rootToken(claim.RoleImplementer), boundary); err != nil {
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
 
@@ -190,14 +190,14 @@ func TestACancelAfterAWakeOfARoleTheReleaseRecordedStartsTheRoleOnceWithNoWake(t
 	rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
 	at := time.Now().UTC()
 	recordRelease(t, st, at.Add(-2*time.Hour))
-	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken,
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer,
 		pods.WakeDelivery, at.Add(-time.Hour), 0); err != nil || !taken {
 		t.Fatalf("take the wake before the mark = %t, %v; want it taken", taken, err)
 	}
 
 	boundary, _, _ := releaseTwoRolesThroughTheStore(t, st)
 	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
-	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken,
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer,
 		pods.WakeAgentMessage, at, 0); err != nil || !taken {
 		t.Fatalf("take the wake after the record = %t, %v; want it taken", taken, err)
 	}
@@ -274,7 +274,7 @@ func TestATurnAfterTheMarkCancelsTheReleaseAndStartsTheWokenRoleOnce(t *testing.
 			rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
 			boundary, stop, _ := releaseTwoRolesThroughTheStore(t, st)
 			stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
-			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken,
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer,
 				pods.WakeAgentMessage, time.Now().UTC(), 0); err != nil || !taken {
 				t.Fatalf("take the wake after the record = %t, %v; want it taken", taken, err)
 			}
@@ -349,7 +349,7 @@ func TestACancelPairsTheKeptWakeOfARoleItsMarkDoesNotRecordWithNoRelease(t *test
 			// The implementer's stop suspended its claim and did not record the role on the mark,
 			// so its row stays queued.
 			releasedClaim(t, st, claim.RoleImplementer)
-			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeRoleMessage, at, 0); err != nil || !taken {
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer, pods.WakeRoleMessage, at, 0); err != nil || !taken {
 				t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
 			}
 			queueWakeStart(t, st, claim.RoleImplementer, pods.WakeRoleMessage)
@@ -398,7 +398,7 @@ func TestACancelPairsTheKeptWakeOfARoleItsMarkDoesNotRecordWithNoRelease(t *test
 func architectsWake(t *testing.T, st *Store, at time.Time) func() int64 {
 	t.Helper()
 	ctx := context.Background()
-	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", pods.WakeRoleMessage, at, 0); err != nil || !taken {
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect, pods.WakeRoleMessage, at, 0); err != nil || !taken {
 		t.Fatalf("take the architect's wake = %t, %v; want it taken", taken, err)
 	}
 	return func() int64 {
@@ -448,7 +448,7 @@ func TestACancelDeletesTheWakeOfARoleItsMarkDoesNotRecordThatAnotherPathTookOver
 			// The implementer's stop suspended its claim and did not record the role on the mark,
 			// so its row stays queued.
 			releasedClaim(t, st, claim.RoleImplementer)
-			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeChecks, at, 0); err != nil || !taken {
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer, pods.WakeChecks, at, 0); err != nil || !taken {
 				t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
 			}
 			queueWakeStart(t, st, claim.RoleImplementer, pods.WakeChecks)
@@ -485,7 +485,7 @@ func TestACancelDeletesTheWakeOfARoleItsMarkDoesNotRecordThatAnotherPathTookOver
 			if starts := startsOfTheRoot(t, st); !slices.Contains(starts, "implementer||the wake's task|"+pods.WakeChecks+"||") {
 				t.Errorf("queued starts after the cancel = %q, want the implementer's wake start among them", starts)
 			}
-			next, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeRoleMessage, at.Add(2*time.Minute), 0)
+			next, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer, pods.WakeRoleMessage, at.Add(2*time.Minute), 0)
 			if err != nil || next != tc.takenOver {
 				t.Errorf("the implementer's next wake taken = %t, %v; want %t", next, err, tc.takenOver)
 			}
@@ -530,7 +530,7 @@ func TestACancelResumesARoleItsMarkDoesNotRecordThatNoStartBringsBack(t *testing
 			// so its row stays queued.
 			releasedClaim(t, st, claim.RoleImplementer)
 			if tc.woken {
-				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeChecks, at, 0); err != nil || !taken {
+				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer, pods.WakeChecks, at, 0); err != nil || !taken {
 					t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
 				}
 				queueWakeStart(t, st, claim.RoleImplementer, pods.WakeChecks)

@@ -87,7 +87,11 @@ func TestAPhaseEndedMessageToARelaunchParkedOverALiveProcessPublishesAtOnce(t *t
 func TestAPhaseEndedMessageRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	row := mustOutboxRow(t, "LEGION-208", endedByTheWait, time.Now())
+	// The message names the claim of the tester's step: this runner has no record to read the step
+	// from.
+	named := endedByTheWait
+	named.Claim = mustClaimToken(t, "LEGION-208", claim.RoleTester)
+	row := mustOutboxRow(t, "LEGION-208", named, time.Now())
 	row.ID, row.CreatedAt = 61, time.Now()
 	publisher := &outboxPublisher{}
 	runner := &outbox{project: "legion", notices: publisher, log: quietLogger(), now: time.Now}

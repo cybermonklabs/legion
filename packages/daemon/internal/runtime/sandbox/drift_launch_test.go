@@ -467,6 +467,21 @@ func TestARoleStartedInAKeptPodWhoseSandboxMovedIsStartedAsItsPodWasBuilt(t *tes
 	if want := "sandbox null, now " + testMicroVMSandboxShape; !slices.Equal(drifted, []string{want}) {
 		t.Fatalf("PodDrift = %q, want %q alone, or this case proves nothing", drifted, want)
 	}
+	// A start into a kept pod bounds its credential wait by what remains of the daemon's own wait
+	// on that start, read off the clock as the frame is built, so the two launches' bounds differ
+	// by the time between them: each is checked for a bound, and the two starts are compared
+	// without it.
+	for _, sent := range []*shimwire.LauncherStart{&start, &built} {
+		if sent.GitHubCredential == nil {
+			continue
+		}
+		if wait := time.Duration(sent.GitHubCredential.WaitMs) * time.Millisecond; wait <= 0 || wait > time.Hour {
+			t.Fatalf("the start into the kept pod bounds its credential wait at %s, want a bound above 0 and within its launch", wait)
+		}
+		credential := *sent.GitHubCredential
+		credential.WaitMs = 0
+		sent.GitHubCredential = &credential
+	}
 	if !reflect.DeepEqual(start, built) {
 		t.Errorf("the start into the kept gVisor pod is\n%+v\nwant the one a configuration naming no canary sends\n%+v", start, built)
 	}

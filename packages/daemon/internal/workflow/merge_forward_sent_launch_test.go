@@ -24,9 +24,9 @@ import (
 
 // askRowEnds is the daemon's executor ending LEGION-208's queued ask row, whatever role it asks:
 // under the fact lock (intake.SerializeFacts) the row leaves the outbox, and the workflow settles
-// its end (MergeForwardAskEnded) with delivered and told, the launch the delivery reached (0 for
-// an undelivered row, and for a delivery the listener named no holder of), and launch, the
-// claim's launch as the executor reads it at the end.
+// its end (MergeForwardAskEnded) with the claim the row names, delivered and told, the launch the
+// delivery reached (0 for an undelivered row, and for a delivery the listener named no holder of),
+// and launch, the claim's launch as the executor reads it at the end.
 func askRowEnds(t *testing.T, pool *pgxpool.Pool, engine *Engine, delivered bool, told, launch uint64) {
 	t.Helper()
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -42,7 +42,7 @@ func askRowEnds(t *testing.T, pool *pgxpool.Pool, engine *Engine, delivered bool
 		if err := json.Unmarshal(payload, &ask); err != nil {
 			return err
 		}
-		_, err := MergeForwardAskEnded(ctx, engine.store, tx, "LEGION-208", ask, delivered, told, launch, engine.now())
+		_, err := MergeForwardAskEnded(ctx, engine.store, tx, engine.cfg.Deployment, "LEGION-208", ask, ask.Claim, delivered, told, launch, engine.now())
 		return err
 	})
 }
@@ -57,7 +57,7 @@ func sentAgainAtLaunch2(t *testing.T) *pgxpool.Pool {
 	asksDelivered(t, pool, 1)
 	applyRefusingNothing(t, pool, readsAfter(2*time.Minute), implementerReady(2))
 	why := record.ConflictCheckNotGreen
-	want := []record.MergeForwardMessage{heldIn(claim.RoleTester, phase.Testing, why), sentAgain(implementerAsked(phase.Testing, why), 2)}
+	want := []record.MergeForwardMessage{heldIn(t, claim.RoleTester, phase.Testing, why), sentAgain(implementerAsked(t, phase.Testing, why), 2)}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("after the ready of launch 2 the merge-forward messages are %+v, want %+v", got, want)
 	}
@@ -77,7 +77,7 @@ func TestAnAskRowEndedUndeliveredLeavesItsLaunchToBeToldAgain(t *testing.T) {
 	pool := sentAgainAtLaunch2(t)
 	askRowEnds(t, pool, readsAfter(3*time.Minute), false, 0, 2)
 	why := record.ConflictCheckNotGreen
-	want := []record.MergeForwardMessage{heldIn(claim.RoleTester, phase.Testing, why), sentAgain(implementerAsked(phase.Testing, why), 2)}
+	want := []record.MergeForwardMessage{heldIn(t, claim.RoleTester, phase.Testing, why), sentAgain(implementerAsked(t, phase.Testing, why), 2)}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 		t.Errorf("after the undelivered end the merge-forward messages are %+v, want %+v: launch 2 is told the ask", got, want)
 	}
@@ -116,9 +116,9 @@ func TestAnOlderAskRowDeliveredRecordsNothingOnANewerAsk(t *testing.T) {
 	seedPR(t, pool, pr)
 	askRowEnds(t, pool, readsAfter(3*time.Minute), true, 2, 2)
 	why := record.ConflictCheckNotGreen
-	toNewer := sentAgain(implementerAsked(phase.Testing, why), 2)
+	toNewer := sentAgain(implementerAsked(t, phase.Testing, why), 2)
 	toNewer.Head = forwardHead
-	want := []record.MergeForwardMessage{heldIn(claim.RoleTester, phase.Testing, why), toNewer}
+	want := []record.MergeForwardMessage{heldIn(t, claim.RoleTester, phase.Testing, why), toNewer}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 		t.Errorf("after the older row's delivery the merge-forward messages are %+v, want %+v: the newer ask is sent to launch 2", got, want)
 	}

@@ -747,7 +747,8 @@ func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
 }
 
 // killed applies one kill of issue's pod as one intake fact (runtime.MemoryGuardKilled), crediting
-// it to token, the role whose connection carried the report, and to podUID, the pod that launcher
+// it to token, the claim of the slot whose launcher connection carried the report (a claim token
+// names its agent, whatever role the agent's step is on), and to podUID, the pod that launcher
 // runs in, both the session's and never the report's. It runs on the launcher's own frame loop
 // under that loop's bounded context, so an apply that cannot be made is returned to the launcher
 // session, which logs it and drops the report. Every launcher's frame loop runs beside the others
@@ -758,7 +759,7 @@ func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
 // The event id is the kill's own identity, the guard's id and its sequence
 // (memoryGuardKillEventID), and never the daemon's receipt: a launcher that wrote a report on a
 // connection it then lost sends it again on the next, and ApplyFact applies one id once, so the
-// role is told of one kill once however often its report arrives.
+// claim is told of one kill once however often its report arrives.
 func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
 	return m.apply(ctx, report, intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: podUID, Report: report}, issue, podUID)
 }

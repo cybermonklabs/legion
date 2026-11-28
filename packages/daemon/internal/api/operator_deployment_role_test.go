@@ -61,7 +61,7 @@ func TestTheOperatorRetriesADeploymentRolesClaim(t *testing.T) {
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("retry of a failed checker = %d, want 202; body %s", recorder.Code, recorder.Body)
 	}
-	want := []intake.Fact{intake.RestartPhase{Issue: "LEGION-209", Role: "checker"}}
+	want := []intake.Fact{intake.RestartPhase{Issue: "LEGION-209", Role: "checker", Claim: token}}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the retry applied %#v, want %#v", got, want)
 	}

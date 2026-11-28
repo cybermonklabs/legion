@@ -32,11 +32,11 @@ func seedStepStartPlan(t *testing.T, pool *store.Pool, records record.Store, at 
 		v := record.PlanVersion{Issue: stepStartKey, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: mustClaimToken(t, stepStartKey, claim.RoleArchitect), GivenAt: time.Now().UTC()}
 		task := record.PlanTask{Issue: stepStartKey, Generation: 2, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := []record.PlanStep{
+		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: stepStartKey, Generation: 2, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: stepStartKey, Generation: 2, Task: "a", Position: 2, Role: "checker", Type: "testing"},
 			{Issue: stepStartKey, Generation: 2, Task: "a", Position: 3, Role: string(stepStartLinter), Type: "testing"},
-		}
+		}, nil)
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}

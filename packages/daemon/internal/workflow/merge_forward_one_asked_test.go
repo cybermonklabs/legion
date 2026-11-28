@@ -30,12 +30,12 @@ func TestTheMergersAskEndsTheImplementersAskOfTheSameHead(t *testing.T) {
 	left := func(t *testing.T, pool *pgxpool.Pool, role claim.Role) string {
 		t.Helper()
 		pr := recordedPR(t, pool, "LEGION-208")
-		return leftMergeForwardAt(storedIssue(t, pool, "LEGION-208"), false, &pr, readsAfter(0).cfg.Deployment, role, record.MergeForwardAsk, conflictHead)
+		return leftMergeForwardAt(storedIssue(t, pool, "LEGION-208"), false, &pr, readsAfter(0).cfg.Deployment, role, seededClaim(t, role), record.MergeForwardAsk, conflictHead)
 	}
 	retroCompletes := func(t *testing.T, pool *pgxpool.Pool) {
 		t.Helper()
 		applyRefusingNothing(t, pool, readsAfter(150*time.Second), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
-			Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "retro done", Commit: conflictHead})
+			Role: claim.RoleImplementer, Claim: seededClaim(t, claim.RoleImplementer), Summary: "retro done", Commit: conflictHead})
 		if got := issuePhase(t, pool); got != phase.Merging {
 			t.Fatalf("after the retro's completion the issue is in %s, want merging", got)
 		}
@@ -49,7 +49,7 @@ func TestTheMergersAskEndsTheImplementersAskOfTheSameHead(t *testing.T) {
 			t.Fatalf("after the implementer's completion the issue is in %s, want retro", got)
 		}
 		why := record.ConflictCheckNotGreen
-		want := []record.MergeForwardMessage{implementerAsked(phase.Implementing, why), withdrawnIn(phase.Retro, why)}
+		want := []record.MergeForwardMessage{implementerAsked(t, phase.Implementing, why), withdrawnIn(t, phase.Retro, why)}
 		if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 			t.Errorf("after the move into the retro the merge-forward messages are %+v, want %+v", got, want)
 		}
@@ -58,7 +58,7 @@ func TestTheMergersAskEndsTheImplementersAskOfTheSameHead(t *testing.T) {
 		}
 
 		retroCompletes(t, pool)
-		want = append(want, mergerAsked())
+		want = append(want, mergerAsked(t))
 		asked := mergeForwardMessages(t, pool)
 		if !reflect.DeepEqual(asked, want) {
 			t.Errorf("after the move into merging the merge-forward messages are %+v, want %+v: the merger is asked, with no second withdrawal",
@@ -85,7 +85,7 @@ func TestTheMergersAskEndsTheImplementersAskOfTheSameHead(t *testing.T) {
 		pool := seedConflictIssue(t, phase.Retro, "retro", askedInReviewing())
 		confirmsConflict(t, pool, requiresCI)
 		retroCompletes(t, pool)
-		want := []record.MergeForwardMessage{heldIn(claim.RoleMerger, phase.Merging, record.ConflictCheckNotGreen)}
+		want := []record.MergeForwardMessage{heldIn(t, claim.RoleMerger, phase.Merging, record.ConflictCheckNotGreen)}
 		if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 			t.Errorf("after the move into merging the merge-forward messages are %+v, want the merger's one hold %+v", got, want)
 		}

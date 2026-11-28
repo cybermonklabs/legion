@@ -367,12 +367,12 @@ func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
 			// its teardown: its resume reads the earlier release, and its start waits for the
 			// teardown row (record's outboxInOrder).
 			takenAt := time.Now().UTC().Truncate(time.Microsecond)
-			if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeChecks, takenAt, 0); err != nil || !taken {
+			if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, claim.RoleImplementer, pods.WakeChecks, takenAt, 0); err != nil || !taken {
 				t.Fatalf("take the settlement's wake = %t, %v; want it taken", taken, err)
 			}
 			const detail = "head1 failed build"
 			start, err := record.NewOutboxRow(rig.issue.Key, record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree,
-				Role: claim.RoleImplementer, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByRelease),
+				Role: claim.RoleImplementer, Claim: rig.token, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByRelease),
 				WakeKind: pods.WakeChecks, WakeDetail: detail}, time.Now().UTC())
 			if err != nil {
 				t.Fatalf("encode the wake's start: %v", err)
@@ -590,7 +590,7 @@ func TestARoleAPauseStoppedBeforeAReleaseThatGaveUpIsToldTheReleasesWords(t *tes
 		t.Fatalf("the backstop's start = task %q held by pause %d; want the task %q and no pause: the release took the pod after the pause's stop (the pause's words are %q)",
 			start.Task, start.Pause, want, workflow.WakeTask(start.WakeKind, start.WakeDetail, workflow.StoppedByPause))
 	}
-	if _, held, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || !open || held != 0 {
+	if _, held, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, rig.token); err != nil || !open || held != 0 {
 		t.Fatalf("the implementer's open resume = pause %d, open %t, %v; want the backstop's wake, held by no pause", held, open, err)
 	}
 }
@@ -611,7 +611,7 @@ func TestARoleAPauseStoppedBeforeAReleaseThatGaveUpIsToldTheReleasesWords(t *tes
 //
 // The negative control is the close without its reading of a give-up (the `exists` over
 // pod_release_give_ups in ClosePodGoneResume): the stale resume refuses the take
-// (pod_resumes_one_open_per_role), so no start is queued and that resume stays open.
+// (pod_resumes_one_open_per_claim), so no start is queued and that resume stays open.
 func TestAWakeAfterAReleaseThatGaveUpClosesTheResumeItLeftOpenAndTakesItsOwn(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
@@ -623,11 +623,11 @@ func TestAWakeAfterAReleaseThatGaveUpClosesTheResumeItLeftOpenAndTakesItsOwn(t *
 	if err != nil {
 		t.Fatalf("record the earlier release: %v", err)
 	}
-	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, architect, pods.WakeRoleMessage,
+	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, architect, claim.RoleArchitect, pods.WakeRoleMessage,
 		time.Now().UTC().Add(-time.Hour), 0); err != nil || !taken {
 		t.Fatalf("take the architect's earlier wake = %t, %v; want it taken", taken, err)
 	}
-	stale, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleArchitect)
+	stale, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, architect)
 	if err != nil || !open {
 		t.Fatalf("the architect's open resume = %t, %v; want the one its earlier wake recorded", open, err)
 	}
@@ -651,7 +651,7 @@ func TestAWakeAfterAReleaseThatGaveUpClosesTheResumeItLeftOpenAndTakesItsOwn(t *
 		t.Fatalf("after the attempt at the bound the mark stands = %t, the give-ups = %d and the releases = %+v; want the teardown given up once, with the earlier release %d alone recorded",
 			rig.marked(t), gaveUp, releases, earlier)
 	}
-	if id, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleArchitect); err != nil || !open || id != stale {
+	if id, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, architect); err != nil || !open || id != stale {
 		t.Fatalf("the architect's open resume after the give-up = %d (open %t, %v); want the earlier wake's %d, which a release that suspends no role leaves open",
 			id, open, err, stale)
 	}
@@ -678,7 +678,7 @@ func TestAWakeAfterAReleaseThatGaveUpClosesTheResumeItLeftOpenAndTakesItsOwn(t *
 	if err := rig.pool.QueryRow(ctx, `select closed_at is not null from pod_resumes where id = $1`, stale).Scan(&closed); err != nil || !closed {
 		t.Fatalf("the earlier wake's resume %d closed = %t, %v; want it closed by the wake", stale, closed, err)
 	}
-	if id, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleArchitect); err != nil || !open || id == stale {
+	if id, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, architect); err != nil || !open || id == stale {
 		t.Fatalf("the architect's open resume = %d (open %t, %v); want the listener wake's own, not the earlier wake's %d", id, open, err, stale)
 	}
 }
@@ -800,10 +800,10 @@ func (r *idleRig) implementerWake(t *testing.T, at time.Time) (newest int64, clo
 		if err != nil {
 			return err
 		}
-		if newest, closed, err = records.ClosePodGoneResume(ctx, tx, r.issue.Key, claim.RoleImplementer); err != nil {
+		if newest, closed, err = records.ClosePodGoneResume(ctx, tx, r.issue.Key, r.token, claim.RoleImplementer); err != nil {
 			return err
 		}
-		taken, err = records.TakePodWake(ctx, tx, r.issue.Key, claim.RoleImplementer, pods.WakeBackstop, at, pause)
+		taken, err = records.TakePodWake(ctx, tx, r.issue.Key, claim.RoleImplementer, r.token, pods.WakeBackstop, at, pause)
 		return err
 	}); err != nil {
 		t.Fatalf("take the implementer's next wake: %v", err)

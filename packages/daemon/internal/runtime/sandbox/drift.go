@@ -444,8 +444,8 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	if err := r.checkLocator(*k.Locator); err != nil {
 		return nil, err
 	}
-	role, _ := k.Locator.Claim.Role()
-	kind := podKindFor(role)
+	slot, _ := k.Locator.Claim.Slot()
+	kind := podKindFor(launcherOf(slot))
 	if !roundCovers(kind) {
 		return nil, nil
 	}
@@ -503,16 +503,18 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	// The exchange identity's reason (movedExchangeIdentity) opens on the mark only where a launch
 	// into this pod is refused until the pod's round replaces it (spec v26): the deployment sets
 	// dispatch_token_broker, names no dispatch_token_transition_file, and the pod carries no
-	// identity the exchange trades for the claim's role (awaitsPodRound over tradesIn of the live
-	// pod, the condition dispatchCredential refuses on). A round that kept such a pod for work on
-	// its disk would leave a claim that waits on the pod, where it is the issue's only claim, with
-	// no way to run again (runtime.ErrAwaitingPodRound). Any other drift of the exchange identity
-	// is one the roles can keep working under: a token of another lifetime still trades
-	// (carriesExchangeIdentity), and where the identity is missing and no launch is refused, a role
-	// keeps the credential it had or carries the transition token. No other reason carries the mark.
-	for _, moved := range r.driftedInPod(pod, role) {
+	// identity the exchange trades for the launcher of the claim's slot (awaitsPodRound over
+	// tradesIn of the live pod, the condition dispatchCredential refuses on). A round that kept such
+	// a pod for work on its disk would leave a claim that waits on the pod, where it is the issue's
+	// only claim, with no way to run again (runtime.ErrAwaitingPodRound). Any other drift of the
+	// exchange identity is one the roles can keep working under: a token of another lifetime still
+	// trades (carriesExchangeIdentity), and where the identity is missing and no launch is refused, a
+	// role keeps the credential it had or carries the transition token. No other reason carries the
+	// mark.
+	launcher := launcherOf(slot)
+	for _, moved := range r.driftedInPod(pod, launcher) {
 		reason := moved.String()
-		if moved.where == agentSecretsExchangeVolume && r.awaitsPodRound(r.tradesIn(&pod.Spec, role)) {
+		if moved.where == agentSecretsExchangeVolume && r.awaitsPodRound(r.tradesIn(&pod.Spec, launcher)) {
 			reason = runtime.BreakingDrift + reason
 		}
 		drifted = append(drifted, reason)
@@ -773,6 +775,15 @@ func templateRoles(s *sandbox) []claim.Role {
 	return builtRoles(s.Spec.PodTemplate.Spec)
 }
 
+// templateLacks answers, for a role, whether the Sandbox s's template was built without it: a
+// template that holds roles (templateRoles) lacks each role it does not hold, and a template no
+// launcher of this layout wrote holds none and lacks nothing. It is the one rule both a launch into
+// a kept pod (runtime.PodLacks, in relaunch) and PodLacksRole judge a pod by.
+func templateLacks(s *sandbox) func(role claim.Role) bool {
+	held := templateRoles(s)
+	return func(role claim.Role) bool { return len(held) > 0 && !slices.Contains(held, role) }
+}
+
 // builtRoles are the roles a pod of spec runs: the --role values its launcher container's command
 // names (issuePod.launcherContainer writes one for each role of the launch,
 // controllerPod.launcherContainer the controller's), read off a running pod's spec or off a stored
@@ -803,7 +814,7 @@ func rolesDrift(s *sandbox, roles []claim.Role) []string {
 }
 
 // PodLacksRole satisfies runtime.IssuePodRoles: the uid of the issue's live pod (livePod) whose
-// template was built without role (templateRoles), and true; "" and false where the issue has
+// template was built without role (templateLacks), and true; "" and false where the issue has
 // no Sandbox, no live pod, or a pod built with role. It reads the informers' stores alone and
 // makes no API call.
 func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
@@ -819,8 +830,30 @@ func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
 	if !livePod(s, pod) {
 		return "", false
 	}
-	if held := templateRoles(s); len(held) == 0 || slices.Contains(held, role) {
+	if !templateLacks(s)(role) {
 		return "", false
 	}
 	return string(pod.UID), true
+}
+
+// SlotWaitsForCredential satisfies runtime.IssuePodRoles: the uid of the issue's pod whose
+// launcher of slot is connected and said in its hello no credential wait (launchers.credentialWaits),
+// and false; "" and true where that launcher waits, or where no launcher of the slot is connected.
+// It refuses a slot no claim token of the issue carries (claim.AgentToken), and a project no token
+// spells: no launcher serves such a slot, and an answer that it waits would let a re-role into it
+// start with no credential wait. It reads the launchers this runtime accepted and makes no API call.
+func (r *Runtime) SlotWaitsForCredential(issue string, slot claim.Agent) (string, bool, error) {
+	project, err := claim.ProjectToken(r.project)
+	if err != nil {
+		return "", false, fmt.Errorf("the credential wait of the slot %s of %s: %w", slot, issue, err)
+	}
+	token, err := issuePod{}.claimToken(project, issue, slot)
+	if err != nil {
+		return "", false, fmt.Errorf("the credential wait of the slot %s of %s: %w", slot, issue, err)
+	}
+	pod, waits := r.launchers.credentialWaits(token)
+	if waits {
+		return "", true, nil
+	}
+	return pod, false, nil
 }

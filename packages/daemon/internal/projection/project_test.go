@@ -101,10 +101,29 @@ func (s projectionStore) StartsWaitingForPod(context.Context, pgx.Tx, string) (m
 }
 
 // AllPhases is every issue's phases rows, by issue, as the real store answers them in one
-// statement for the project's issues (record.Postgres.AllPhases). Every issue of this store is
-// the project's.
+// statement for the project's issues (record.Postgres.AllPhases): each row with only the columns
+// that statement reads (listedPhase), so a reader of a column it leaves out reads the zero value
+// here as it does there. Every issue of this store is the project's.
 func (s projectionStore) AllPhases(context.Context, pgx.Tx, string) (map[string][]record.PhaseRow, error) {
-	return s.phases, nil
+	all := make(map[string][]record.PhaseRow, len(s.phases))
+	for issue, rows := range s.phases {
+		listed := make([]record.PhaseRow, len(rows))
+		for i, row := range rows {
+			listed[i] = listedPhase(row)
+		}
+		all[issue] = listed
+	}
+	return all, nil
+}
+
+// listedPhase is row with only the columns record.Postgres.AllPhases reads (its
+// listedPhaseColumns): the issue, the role, the claim, the handoff commit, the pass, the handoff
+// record and its version, the rounds, the counts of the moves back, the review decision, the
+// entry and the task of the step the row runs. Every other field is zero.
+func listedPhase(row record.PhaseRow) record.PhaseRow {
+	return record.PhaseRow{Issue: row.Issue, Role: row.Role, Claim: row.Claim, HandoffCommit: row.HandoffCommit, Pass: row.Pass,
+		HandoffRecord: row.HandoffRecord, HandoffVersion: row.HandoffVersion, Rounds: row.Rounds, BackwardMoves: row.BackwardMoves,
+		Decision: row.Decision, Entry: row.Entry, StepTask: row.StepTask}
 }
 
 // PullRequestsOf is the pull request of each of issues this store holds, by issue, as the real
@@ -339,12 +358,12 @@ func TestProjectShowsOperatorSpawnedClaimsWithoutRecordIssue(t *testing.T) {
 		t.Fatalf("operator-spawned issue key = %q, want %q", view.Key, issue)
 	}
 	// No round is open over either claim, which every claim view says of itself
-	// (api.UpdateStateOf).
-	architectView := api.ClaimView{Session: "session-1", State: string(supervise.StateReady), UpdateState: api.UpdateStateNone}
+	// (api.UpdateStateOf), and each view names its claim's token.
+	architectView := api.ClaimView{Token: architect, Session: "session-1", State: string(supervise.StateReady), UpdateState: api.UpdateStateNone}
 	if !reflect.DeepEqual(view.Architect, &architectView) {
 		t.Fatalf("operator-spawned architect = %#v, want %#v", view.Architect, &architectView)
 	}
-	implementerView := api.ClaimView{Session: "session-2", State: string(supervise.StateIdle), UpdateState: api.UpdateStateNone}
+	implementerView := api.ClaimView{Token: implementer, Session: "session-2", State: string(supervise.StateIdle), UpdateState: api.UpdateStateNone}
 	if got, want := view.Workers[claim.RoleImplementer], (api.PhaseView{Claim: implementerView}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("operator-spawned implementer = %#v, want %#v", got, want)
 	}
@@ -1379,24 +1398,24 @@ func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 		issues: []record.Issue{issue("LEGION-70", phase.Step, checker), held, issue("LEGION-72", phase.Testing, claim.RoleTester), child},
 		phases: map[string][]record.PhaseRow{
 			"LEGION-70": {
-				{Issue: "LEGION-70", Role: claim.RoleImplementer, Claim: "legion-70-implementer", Entry: 2},
-				{Issue: "LEGION-70", Role: checker, Claim: "legion-70-checker", Entry: 3},
+				{Issue: "LEGION-70", Role: claim.RoleImplementer, Claim: realToken("LEGION-70", claim.RoleImplementer), Entry: 2},
+				{Issue: "LEGION-70", Role: checker, Claim: realToken("LEGION-70", checker), Entry: 3},
 			},
-			"LEGION-71": {{Issue: "LEGION-71", Role: checker, Claim: "legion-71-checker", Entry: 4}},
-			"LEGION-72": {{Issue: "LEGION-72", Role: claim.RoleTester, Claim: "legion-72-tester", Entry: 2}},
-			"LEGION-73": {{Issue: "LEGION-73", Role: checker, Claim: "legion-73-checker", Entry: 2}},
+			"LEGION-71": {{Issue: "LEGION-71", Role: checker, Claim: realToken("LEGION-71", checker), Entry: 4}},
+			"LEGION-72": {{Issue: "LEGION-72", Role: claim.RoleTester, Claim: realToken("LEGION-72", claim.RoleTester), Entry: 2}},
+			"LEGION-73": {{Issue: "LEGION-73", Role: checker, Claim: realToken("LEGION-73", checker), Entry: 2}},
 		},
 	}
 	claims := []supervise.Claim{
-		{Token: "legion-70-implementer", Issue: "LEGION-70", Role: claim.RoleImplementer, State: supervise.StateIdle,
+		{Token: realToken("LEGION-70", claim.RoleImplementer), Issue: "LEGION-70", Role: claim.RoleImplementer, State: supervise.StateIdle,
 			Session: "ses_implementer_70", GivenEntry: 2},
-		{Token: "legion-70-checker", Issue: "LEGION-70", Role: checker, State: supervise.StateSuspended,
+		{Token: realToken("LEGION-70", checker), Issue: "LEGION-70", Role: checker, State: supervise.StateSuspended,
 			Session: "ses_checker_70", GivenEntry: 1},
-		{Token: "legion-71-checker", Issue: "LEGION-71", Role: checker, State: supervise.StateSuspended,
+		{Token: realToken("LEGION-71", checker), Issue: "LEGION-71", Role: checker, State: supervise.StateSuspended,
 			Session: "ses_checker_71", GivenEntry: 1},
-		{Token: "legion-72-tester", Issue: "LEGION-72", Role: claim.RoleTester, State: supervise.StateWorking,
+		{Token: realToken("LEGION-72", claim.RoleTester), Issue: "LEGION-72", Role: claim.RoleTester, State: supervise.StateWorking,
 			Session: "ses_tester_72", GivenEntry: 2},
-		{Token: "legion-73-checker", Issue: "LEGION-73", Role: checker, State: supervise.StateWorking,
+		{Token: realToken("LEGION-73", checker), Issue: "LEGION-73", Role: checker, State: supervise.StateWorking,
 			Session: "ses_checker_73", GivenEntry: 2,
 			Handshake: supervise.EntryHandshake{Entry: 2, Generation: 1, QueuedAt: queuedAt, ConfirmedAt: confirmedAt}},
 	}
@@ -1440,10 +1459,10 @@ func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 	}
 }
 
-// The served issue names each role whose start waits because the issue's pod was built before the
-// deployment defined it: such a role has no claim to show, and its start row waits on its backoff,
-// which no other part of the state lists. An issue with no such start names none, and its JSON
-// holds no such key.
+// The served issue names the role of each start that waits because the issue's pod lacks the slot
+// of the start's claim or the role of its step: such a start may have no claim to show yet, and
+// its start row waits on its backoff, which no other part of the state lists. An issue with no
+// such start names none, and its JSON holds no such key.
 func TestTheServedIssueNamesTheRoleWhoseStartWaitsForItsPod(t *testing.T) {
 	store := projectionStore{
 		issues: []record.Issue{

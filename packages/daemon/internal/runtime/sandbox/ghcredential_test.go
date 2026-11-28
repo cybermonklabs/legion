@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // secretUpdates are the Secret updates among writes, by name.
@@ -45,12 +46,13 @@ func linesHolding(logged, text string) []string {
 	return held
 }
 
-// The refresher brings a live pod's role Secrets to the current render of each role's credential
-// for the default owner its Secret records, and touches nothing else, the controller's included: a
+// The refresher brings a live pod's slot Secrets to the current render of the credential each slot
+// holds — here every slot runs its own role, so it holds its own name's App — for the default
+// owner its Secret records, and touches nothing else, the controller's included: a
 // Secret whose owners' hosts.yml are already the render is not written, one another Sandbox owns is
 // skipped, one that records no default is logged and left, and a rewrite changes the stale owner's
 // two gh keys alone — the other owner's, the default, the launcher token and the annotations the
-// binding wrote stay — and is logged naming the sandbox, the role, its App, the lease's expiry and
+// binding wrote stay — and is logged naming the sandbox, the slot and its role, its App, the lease's expiry and
 // the owner it rewrote.
 func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 	t.Parallel()
@@ -130,15 +132,15 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 	}
 }
 
-// A lease the daemon re-minted reaches every role of every live pod on the next tick, the
-// controller's included: each role's Secret is rewritten to its own App's new tokens, every
-// owner's. A role whose render fails keeps its last files, logged, while the roles of the
-// pod's other App are refreshed, and so does one whose render holds no directory for the default
-// owner its Secret records.
+// A lease the daemon re-minted reaches every slot of every live pod on the next tick, the
+// controller's included: each slot's Secret, here each slot running its own role, is rewritten to
+// the new tokens of the App it holds, every owner's. A slot whose render fails keeps its last
+// files, logged, while the slots of the pod's other App are refreshed, and so does one whose
+// render holds no directory for the default owner its Secret records.
 //
 // The stand-in answers by App role and repository and by nothing else, as the daemon's own
 // function does (appauth.GitHubCredential): a bundle is that pair, which is why the walk builds
-// one per pair and hands it to every role of it (appauth.Bundles). So the implement App's
+// one per pair and hands it to every slot that holds it (appauth.Bundles). So the implement App's
 // failure is the implementer's and the merger's, and the review App's new lease is the four
 // roles' that run as it; the controller's bundle comes from the function that answers by owner,
 // and a render of it that holds no directory for the owner its Secret records is refused on its
@@ -912,6 +914,56 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 	}
 	if asked := leases.asked(); !slices.Equal(asked, []string{"cybermonklabs's write lease"}) {
 		t.Errorf("GitHub was asked for %v over the launch and both ticks, want cybermonklabs' write lease alone: the two directories hold it, and the installation the repository left is asked for nothing", asked)
+	}
+}
+
+// The slot `implementer` of an issue pod holds key a's claim `…-implementer`, which took the role
+// tester for its tester step. The refresh writes that slot's Secret for the review App, the tester's,
+// so its check run is not refused as the implement App's would be; a slot whose claim holds its own
+// name's role keeps its App. The change of App moves no owner directory, so the pod reads no drift
+// and no update round replaces it.
+func TestASlotsGhFilesFollowItsClaimsRole(t *testing.T) {
+	t.Parallel()
+	keyed := claim.Token("legion-legion-legion-208-implementer")
+	g := newRig(t, nil, withOptions(func(o *Options) {
+		o.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+			owner := strings.ToLower(repo.Owner())
+			if owner == "" {
+				owner = "sjawhar"
+			}
+			appRole, err := appauth.AppRoleFor(role, nil)
+			if err != nil {
+				return ghconfig.Bundle{}, err
+			}
+			app := string(appRole)
+			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
+				"acme": ghconfig.Render("ghs_"+app+"_read", app, staticCredentialExpiry),
+				owner:  ghconfig.Render("ghs_"+app, app, staticCredentialExpiry),
+			}}, nil
+		}
+	}))
+	g.spawn(rootSpec(t))
+	issue := SandboxName(rootToken)
+	g.store.mu.Lock()
+	g.store.claims = append(g.store.claims,
+		supervise.Claim{Token: keyed, Project: testProject, Tree: testTree, Issue: testTree, Role: claim.RoleTester},
+		supervise.Claim{Token: otherToken, Project: testProject, Tree: testTree, Issue: testTree, Role: claim.RoleReviewer})
+	g.store.mu.Unlock()
+
+	g.r.refreshGitHubCredentials(g.ctx)
+
+	for slot, want := range map[claim.Role]string{claim.RoleImplementer: "ghs_review", claim.RoleReviewer: "ghs_review", claim.RoleArchitect: "ghs_review"} {
+		secret := g.secret(roleSecretName(issue, slot))
+		if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey("sjawhar")]); err != nil || token != want {
+			t.Errorf("the %s slot's hosts.yml holds %q (%v), want %q", slot, token, err, want)
+		}
+	}
+	pod := g.r.storedPod(issue)
+	if pod == nil {
+		t.Fatalf("the issue pod %s is not in the store", issue)
+	}
+	if moved := g.r.driftedInPod(pod, claim.RoleImplementer); len(moved) != 0 {
+		t.Fatalf("the implementer slot reads the drift %+v after its App changed, want none", moved)
 	}
 }
 

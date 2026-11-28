@@ -108,8 +108,9 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 // suspendedOwner is a claim that owns its issue's unfinished phase in a running tree and stands
 // suspended (suspendedPhaseOwners), with what a start of it is weighed against and built from:
 // the issue; its tree root, which StartFor and OwedEntry read; the role that works the phase;
-// that role's claim token; and the role's queued rows and claim at the issue's generation, whose
-// Claim is never nil.
+// the claim of the agent that works that role's step (Engine.workerClaim), which is the role's own
+// token on an issue with no plan rows; and that claim's queued rows and state at the issue's
+// generation, whose Claim is never nil.
 type suspendedOwner struct {
 	issue record.Issue
 	root  record.Issue
@@ -200,11 +201,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if finished {
 			continue
 		}
-		project, err := claim.ProjectToken(issue.Project)
-		if err != nil {
-			return phaseOwners{}, err
-		}
-		token, err := claim.NewToken(project, issue.Key, role)
+		token, err := e.workerClaim(ctx, tx, issue, role)
 		if err != nil {
 			return phaseOwners{}, err
 		}

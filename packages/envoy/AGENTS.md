@@ -41,7 +41,7 @@ Start with `docs/architecture.md`; `.dispatch/architecture/` at the repository r
 
 - A Dispatch route whose answer holds a credential goes in `answerHoldsSecret` (`internal/dispatch/api/request_keys.go`), or the keyed-write layer stores that answer for 24 hours.
 
-- Dispatch and the broker migrate at boot while the previous release still serves the same database:
+- Above one replica, Dispatch and the broker can migrate at boot while the previous release still serves the same database:
   a migration that drops, renames or narrows waits a release (`cmd/dispatch/README.md`, "Database migrations").
 
 - Deliver to a session only through its own durable consumer on `ENVOY_NOTIFICATIONS`: add no plain NATS subscription and no fallback path.

@@ -49,9 +49,9 @@ import pkg from "../package.json";
 
 /** This plugin's own build, which `read_build` answers with: the manifest of the module this
  * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
- * the role's state home and loads it with `--extension`, so `/opt/legion/pi-legion` is another
- * build on every pod made from an older image. Its contract is `daemonContract`'s, read as the
- * module loads. */
+ * the state home of its claim's agent, the same whatever role the agent's step is on, and loads
+ * it with `--extension`, so `/opt/legion/pi-legion` is another build on every pod made from an
+ * older image. Its contract is `daemonContract`'s, read as the module loads. */
 const BUILD = pluginBuildOf(pkg, import.meta.dir);
 
 export type LegionToolRole = "architect" | "phase-worker" | "controller";
@@ -92,7 +92,8 @@ type AgentAction = (typeof AGENT_ACTIONS)[number];
 const isAgentAction = (operation: string): operation is AgentAction =>
   (AGENT_ACTIONS as readonly string[]).includes(operation);
 
-/** The fields every agent action takes: the agent, by its issue and its role. */
+/** The fields every agent action takes: the agent, by its issue and its role. The two recoveries
+ * take the claim token besides these (the stranded token's contract entry, `OPERATION_FIELDS`). */
 const AGENT_FIELDS = ["issue", "role"] as const;
 
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
@@ -157,6 +158,12 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   set_status: ["issue", "status"],
   replace_pod: ["issue"],
   ...Object.fromEntries(AGENT_ACTIONS.map((operation) => [operation, AGENT_FIELDS])),
+  // The two recoveries take the claim token besides the agent's two fields (the stranded token's
+  // contract entry), so each is written after the line that gives every agent action those two:
+  // two claims of one issue can hold one role, and issue and role reach the one that works the
+  // role's step.
+  fresh_session: [...AGENT_FIELDS, "claim"],
+  compact: [...AGENT_FIELDS, "claim"],
   pause: ["reason"],
   resume: [],
   set_p0_bound: ["bound", "unbounded", "reason"],
@@ -170,11 +177,19 @@ const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
 const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
   toolSuccess(JSON.stringify(details), details);
 
-/** Posts one agent action, its grant minted, and answers the daemon's answer whole. */
+/** Posts one agent action, its grant minted, and answers the daemon's answer whole. `claim` is
+ * the claim token the caller named (the stranded token's contract entry), sent only when named,
+ * since a daemon below that entry refuses the member as unknown; only the two recoveries take it
+ * (`OPERATION_FIELDS`), so no other action of the six is reached with one. */
 async function agentAction(
   client: LegionDaemonClient,
   operation: AgentAction,
-  request: { readonly grantId: string; readonly issue: string; readonly role: LegionStepRole }
+  request: {
+    readonly grantId: string;
+    readonly issue: string;
+    readonly role: LegionStepRole;
+    readonly claim?: string;
+  }
 ): Promise<ToolResult> {
   switch (operation) {
     case "compact":
@@ -464,20 +479,30 @@ function stateSummary(state: LegionState): string {
       }
       lines.push(line);
     }
-    const claims: Array<readonly [string, SummaryClaim]> = [];
-    if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
+    // Each claim with its label and what ends its line: the token of a claim `workers` does not show.
+    const claims: Array<readonly [string, SummaryClaim, string]> = [];
+    if (issue.architect !== undefined) claims.push(["architect", issue.architect, ""]);
     // Each worker of the issue's map: Legion's six in the order of the default steps, then each
     // role of the deployment (the deployment roles' contract entry) in the map's order.
     const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
     for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
-      if (claim !== undefined) claims.push([role, claim]);
+      if (claim !== undefined) claims.push([role, claim, ""]);
     }
-    for (const [role, claim] of claims) {
+    // Each other claim of the issue, with the role it holds (the stranded token's contract
+    // entry): two claims of one issue can hold one role, and `workers` shows one of them, so the
+    // other is listed after the
+    // workers, marked as another claim of its role, with its token: issue and role reach only the
+    // claim `workers` shows, and fresh_session and compact reach this one by its token (`claim`).
+    for (const other of issue.otherClaims ?? []) {
+      const token = other.claim.token === undefined ? "" : ` claim ${other.claim.token}`;
+      claims.push([`${other.role} (another claim)`, other.claim, token]);
+    }
+    for (const [role, claim, token] of claims) {
       // A working claim whose last turn began hours ago is wedged; an idle claim's end is when
       // it last did anything, and a dash is a turn the daemon recorded none of.
       lines.push(
-        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}`
+        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}${token}`
       );
     }
   }
@@ -618,6 +643,15 @@ function toolSchema(pi: PiApi): unknown {
     role: z
       .string()
       .regex(/^[a-z][a-z0-9-]{0,31}$/)
+      .optional(),
+    // A claim's token (the stranded token's contract entry), for fresh_session and compact: two
+    // claims of one issue can hold one role, and issue and role reach the one that works the
+    // role's step.
+    claim: z
+      .string()
+      .describe(
+        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role that does not work the role's step; leave it out to reach the claim that does"
+      )
       .optional(),
     // The give-ups replay_give_up and discard_give_up take: one record by its id, or a consumer's
     // open records through a stream sequence, checked whole before a grant is minted
@@ -921,7 +955,9 @@ export function createLegionTool(deps: {
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
         "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner` and of the roles " +
         "the deployment defines, each named once, with `implementer` in it, before each `tester`, `reviewer` or `acceptance:owner` " +
-        "step and after each other step of the type implementation; a " +
+        "step and after each other step of the type implementation; a step may carry a key after its role: acceptance carries `owner` " +
+        "and no other, any other role any key but `owner` or none, and the steps of one key run as one agent in one claim and one " +
+        "session (`implementer:a tester:a`); a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. A later version that changes only " +
         "the text of a running task is taken: the task goes on at its step, and every later start of it reads the new text. The answer is the " +
@@ -1045,8 +1081,11 @@ export function createLegionTool(deps: {
         "stands), and for a pod a pause holds (POD_HELD_BY_PAUSE): the hold of a pause that began after the daemon read " +
         "the project as running, or a hold the resume left on a pod until a role of that pod is running again; neither " +
         "opens a round. " +
-        "fresh_session (issue, role) starts one agent again in a new session, leaving behind the session it ran in: the daemon " +
-        "stops the agent if it runs, forgets the session, and starts the agent, which loses everything that session held. A " +
+        "fresh_session (issue, role, and optionally claim) starts one agent again in a new session, leaving behind the session it ran in: the daemon " +
+        "stops the agent if it runs, forgets the session, and starts the agent, which loses everything that session held. " +
+        "issue and role reach the agent that works the role's step; two claims of one issue can hold one role, so name the " +
+        "other one by the token a notice gives (claim), which the daemon refuses for a token of another issue (INVALID_CLAIM) " +
+        "and for a claim that holds another role (CLAIM_NOT_OF_ROLE); compact takes claim the same way. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
         "The answer is empty when the agent came back and its start is under way or queued: the daemon answers once it has " +
         "written the agent's claim launching, or once it has queued the start of the agent's phase, which runs at once while " +
@@ -1229,8 +1268,21 @@ export function createLegionTool(deps: {
                 `${operation} requires role ${LEGION_ROLES.join(", ")} or a role of the deployment`
               );
             }
+            // A claim the controller names by its token (the stranded token's contract entry) is
+            // sent only when named, since a daemon below that entry refuses the member as unknown.
+            // Only the two recoveries take the field (`OPERATION_FIELDS`), so the other four are
+            // refused it before this check reads it.
+            const named = parameters.claim;
+            if (named !== undefined && (typeof named !== "string" || named.trim() === "")) {
+              throw new Error(`${operation}'s claim is a claim token, as a notice names it`);
+            }
             const { grantId } = await controllerGrant(active.sessionID);
-            return await agentAction(client, operation, { grantId, issue, role });
+            return await agentAction(client, operation, {
+              grantId,
+              issue,
+              role,
+              ...(named === undefined ? {} : { claim: named }),
+            });
           }
           // The project's pause and its resume name no issue: the daemon acts on its own project.
           // Each is validated whole before its grant is minted, and each answer is the daemon's

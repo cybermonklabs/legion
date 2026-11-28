@@ -25,7 +25,9 @@ import (
 // step's calls are what the shim counted between the read its start used and the read its end
 // used. A launch that started during the step counts from zero. The final totals of a launch that
 // ended during the step stand in for the read at its end. Where any of these is missing, the
-// record says that it does not know its counts.
+// record says that it does not know its counts. Only the launches of the step's role count: the
+// step of a key's agent whose claim still holds another role at the start counts from the launch
+// that takes the step's role (record.AgentLaunches.StartTotals).
 
 // FactReads is each read of a launch's totals that a fact made before its transaction and that
 // gave totals, by launch (Config.ReadTotals).
@@ -153,13 +155,14 @@ func usedRead(reads FactReads, key record.LaunchKey, launch *record.Launch) *rec
 	return &read
 }
 
-// keepStartTotals keeps what the start of the step at place on issue read of its agent. start is
-// the record the start wrote: its id, its agent, and the moment it started. It reads the agent's
-// generation and liveness now, and its launch row of that generation alone
-// (record.Store.AgentLaunchNow), the one row the start reads. A live launch's read is the one
-// usedRead gives, which is kept and logged. A start with no agent, or an engine that reads no
-// totals, keeps nothing.
-func (e *Engine) keepStartTotals(ctx context.Context, tx pgx.Tx, issue string, place record.StepPlace, start *record.StepRecord) error {
+// keepStartTotals keeps what the start of the step at place on issue read of its agent, which runs
+// the step as role. start is the record the start wrote: its id, its agent, and the moment it
+// started. It reads the agent's generation, liveness and role now, and its launch row of that
+// generation alone (record.Store.AgentLaunchNow), the one row the start reads. A live launch's read
+// is the one usedRead gives. The start keeps it, and it is kept and logged, unless the claim holds
+// another role than role: that launch is then the earlier role's (record.AgentLaunches.StartTotals).
+// A start with no agent, or an engine that reads no totals, keeps nothing.
+func (e *Engine) keepStartTotals(ctx context.Context, tx pgx.Tx, issue string, place record.StepPlace, role claim.Role, start *record.StepRecord) error {
 	agent := claim.Token(start.Agent)
 	if agent == "" || e.cfg.ReadTotals == nil {
 		return nil
@@ -173,16 +176,17 @@ func (e *Engine) keepStartTotals(ctx context.Context, tx pgx.Tx, issue string, p
 	if launches.Live {
 		used = usedRead(factReads(ctx), key, launches.At(key.Generation))
 	}
-	if err := e.store.KeepStartTotals(ctx, tx, issue, place, launches.StartTotals(used)); err != nil {
+	began := launches.StartTotals(role, used)
+	if err := e.store.KeepStartTotals(ctx, tx, issue, place, began); err != nil {
 		return err
 	}
-	if used == nil {
+	if began.Read == nil {
 		return nil
 	}
-	if err := e.store.KeepRead(ctx, tx, key, *used); err != nil {
+	if err := e.store.KeepRead(ctx, tx, key, *began.Read); err != nil {
 		return err
 	}
-	e.logUsedRead(ctx, stepRead{step: start.ID, issue: issue, place: place, startedAt: *start.StartedAt, side: "start", key: key, read: *used})
+	e.logUsedRead(ctx, stepRead{step: start.ID, issue: issue, place: place, startedAt: *start.StartedAt, side: "start", key: key, read: *began.Read})
 	return nil
 }
 

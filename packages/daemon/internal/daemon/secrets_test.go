@@ -18,14 +18,64 @@ import (
 )
 
 // claimSecrets writes what a tmux launch leaves under the secrets directory for token: the boot
-// token file, the grant file, and the gh directory with its two files.
+// token file, the file of each secret every launch carries (launchSecretVariables, written as
+// runtime/tmux's secretFiles writes them), and the gh directory with its two files.
 func claimSecrets(t *testing.T, stateDir string, token claim.Token) {
 	t.Helper()
-	for _, name := range []string{string(token), string(token) + "-grant"} {
-		writeFile(t, runtime.SecretFilePath(stateDir, name))
+	writeFile(t, runtime.SecretFilePath(stateDir, string(token)))
+	for _, variable := range launchSecretVariables {
+		writeFile(t, runtime.SecretFilePath(stateDir, string(token)+"-"+strings.ToLower(variable)))
 	}
 	for _, name := range []string{ghconfig.HostsFile, ghconfig.ConfigFile} {
 		writeFile(t, filepath.Join(runtime.GHConfigDir(stateDir, token), name))
+	}
+}
+
+// claimFiles are the names claimSecrets leaves for token, sorted.
+func claimFiles(token claim.Token) []string {
+	names := []string{string(token), string(token) + "-gh"}
+	for _, variable := range launchSecretVariables {
+		names = append(names, string(token)+"-"+strings.ToLower(variable))
+	}
+	slices.Sort(names)
+	return names
+}
+
+// An agent's name may hold a "-" of its own, so one claim's token can begin another's: the agent
+// code's `…-code` begins the agent code-checker's `…-code-checker`. A claim's files are the names
+// its launch writes and no others, so the end of `…-code` removes every file of its own — its boot
+// token, each launch secret and its gh directory — and none of the running `…-code-checker`'s:
+// neither its own files, nor a file of a secret whose name holds no "_" (`…-code-checker-token`),
+// which no rule about how secrets are named could tell from a file of `…-code`'s.
+func TestTheEndOfAClaimLeavesTheFilesOfAClaimWhoseTokenItsOwnBegins(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	project, _ := claim.ProjectToken("omp")
+	code, err := claim.AgentToken(project, "LEGION-1", "code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker, err := claim.AgentToken(project, "LEGION-1", "code-checker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimSecrets(t, stateDir, code)
+	claimSecrets(t, stateDir, checker)
+	writeFile(t, runtime.SecretFilePath(stateDir, string(checker)+"-token"))
+
+	store := pruningStore{dir: runtime.SecretsDir(stateDir), log: quietLogger()}
+	store.written(supervise.Claim{Token: code})
+
+	want := append(claimFiles(checker), string(checker)+"-token")
+	slices.Sort(want)
+	got := secretEntries(t, stateDir)
+	if !slices.Equal(got, want) {
+		t.Fatalf("after the end of %s the secrets directory holds %v, want %v: the files of the running %s and none of %s's", code, got, want, checker, code)
+	}
+	for _, name := range claimFiles(code) {
+		if slices.Contains(got, name) {
+			t.Errorf("the ended claim's %s is still there", name)
+		}
 	}
 }
 
@@ -63,7 +113,8 @@ func TestTheClaimPruneTakesTheGhDirectoryOfAClaimWrittenWithNoProcess(t *testing
 	store := pruningStore{dir: runtime.SecretsDir(stateDir), log: quietLogger()}
 	store.written(supervise.Claim{Token: ended})
 
-	want := []string{runtime.DispatchTokenFileName, string(live), string(live) + "-gh", string(live) + "-grant", "provider-env"}
+	want := append([]string{runtime.DispatchTokenFileName, "provider-env"}, claimFiles(live)...)
+	slices.Sort(want)
 	if got := secretEntries(t, stateDir); !slices.Equal(got, want) {
 		t.Fatalf("after the claim's write the secrets directory holds %v, want %v", got, want)
 	}
@@ -156,7 +207,8 @@ func TestBootsPruneTakesTheGhDirectoriesOfClaimsWithNoProcess(t *testing.T) {
 		}},
 	}, quietLogger())
 
-	want := []string{runtime.DispatchTokenFileName, string(live), string(live) + "-gh", string(live) + "-grant", "provider-env"}
+	want := append([]string{runtime.DispatchTokenFileName, "provider-env"}, claimFiles(live)...)
+	slices.Sort(want)
 	if got := secretEntries(t, stateDir); !slices.Equal(got, want) {
 		t.Fatalf("after boot's prune the secrets directory holds %v, want %v", got, want)
 	}

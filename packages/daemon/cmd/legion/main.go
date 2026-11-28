@@ -1377,9 +1377,11 @@ var strandedPhrases = map[api.StrandedMove]string{
 }
 
 // strandedSummary is the one line an operator reads for the claims nothing will wake: how many,
-// and each by issue and role under the move that brings it back (api.StrandedClaim.Move, which the
-// boot's log line groups by too). A suspended phase worker's move is the troubleshooting page's "A
-// tree does not move after a restart" for its suspendedBy, which `legion claims list --json` shows;
+// and each by its name (api.StrandedClaim.Name: its issue and role, and its token beside them for
+// the claim of an agent named for another role) under the move that brings it back
+// (api.StrandedClaim.Move, which the boot's log line groups by too). A suspended phase worker's
+// move is the troubleshooting page's "A tree does not move after a restart" for its suspendedBy,
+// which `legion claims list --json` shows;
 // a released one is a pod whose wake was taken and whose replacement never took a turn, which is
 // the daemon's own log of that wake to read, not a suspension to lift.
 func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) string {
@@ -1527,8 +1529,10 @@ func wakesWaitingSummary(wakes []api.WakeWaiting) string {
 // operator claim routes serve it, and this reads them with the bearer --operator-token-file
 // names, on the daemon op already names. Without that flag, and when the daemon refuses the
 // bearer or answers nothing, the lookup is empty and every stranded claim reads as the plain
-// suspension it is, which `legion claims list --json` tells apart. The state is the operator's
-// one unguarded read, so nothing here fails the command.
+// suspension it is, which `legion claims list --json` tells apart. The lookup is by claim token,
+// which each stranded claim of the state carries, so two claims of one role on one issue each
+// read their own suspender. The state is the operator's one unguarded read, so nothing here fails
+// the command.
 func strandedSuspenders(ctx context.Context, op operator, stranded []api.StrandedClaim) api.Suspenders {
 	if len(stranded) == 0 || op.bearer == "" {
 		return nil

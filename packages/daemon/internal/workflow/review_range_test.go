@@ -57,10 +57,20 @@ func reviewAt(t *testing.T, pool *pgxpool.Pool, id int64, state, head string, at
 // implementer's and the tester's completions of round n do.
 func backToReviewing(t *testing.T, apply func(string, intake.Fact) intake.Result, round int) {
 	t.Helper()
+	backToReviewingAs(t, apply, round, func(role claim.Role) claim.Token {
+		return map[claim.Role]claim.Token{claim.RoleImplementer: "implement-claim", claim.RoleTester: "test-claim"}[role]
+	})
+}
+
+// backToReviewingAs is backToReviewing with each completion from the claim as names for its role,
+// read when that completion is made: on an issue with plan rows, the step's worker (workerOr),
+// whose token the step's entry writes on the role's row.
+func backToReviewingAs(t *testing.T, apply func(string, intake.Fact) intake.Result, round int, as func(claim.Role) claim.Token) {
+	t.Helper()
 	n := strconv.Itoa(round)
-	apply("implementer-"+n, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim",
+	apply("implementer-"+n, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: as(claim.RoleImplementer),
 		Summary: "fixed", Commit: "round-" + n, HandoffRecord: "implement-" + n, HandoffVersion: round})
-	apply("tester-"+n, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
+	apply("tester-"+n, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: as(claim.RoleTester),
 		Summary: "tested", Verdict: "pass", HandoffRecord: "test-" + n, HandoffVersion: round})
 }
 

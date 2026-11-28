@@ -11,7 +11,7 @@ import (
 // may end, since only the tree's root ends with its tree.
 func subArchitectClaim() Claim {
 	c := rootClaim()
-	c.Token, c.Issue, c.Role = "legion-LEGION-209-architect", "LEGION-209", claim.RoleArchitect
+	c.Token, c.Issue, c.Role = "legion-legion-legion-209-architect", "LEGION-209", claim.RoleArchitect
 	return c
 }
 

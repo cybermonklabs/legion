@@ -35,6 +35,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -93,6 +94,10 @@ type Options struct {
 	// way (appauth.AppRoleFor). Nil is a daemon with no GitHub Apps (Stage 2's, which configures no
 	// workflow): its panes are told no gh variable, hold no gh files, and the refresher does nothing.
 	GitHubCredential runtime.GitHubCredential
+	// ActsAs answers the role whose App a claim's pane holds while the claim does work other than
+	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each mint of a pane's gh
+	// files. Optional: nil gives every pane its claim's stored role.
+	ActsAs runtime.ActsAs
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
 	// (appauth.ControllerCredential). The refresher asks it for the owner the pane's launch
 	// recorded (trackedProcess.ghDefault); a launch asks for none, taking the first owner, which
@@ -109,6 +114,11 @@ type Options struct {
 	// restart, whose launch's repository it never saw, and never reads that from the pane's gh
 	// directory, which the pane's own user can write. Required with GitHubCredential.
 	ClaimRepository func(ctx context.Context, token claim.Token) (ghrepo.Repository, error)
+	// ClaimRole is a claim's stored role, from the daemon's own state: the role whose App the pane
+	// of a claim this runtime adopted without seeing its launch holds (runtime.SlotRole), since the
+	// claim's token names its agent and not its role. Optional: without it such a pane keeps its
+	// gh files until it is launched again.
+	ClaimRole func(ctx context.Context, token claim.Token) (claim.Role, error)
 	// Launchers are how a pane runs each harness the daemon resolved at boot (Launcher), by backend:
 	// a spec whose backend (runtime.Of) has none is refused. At least one, and only backends the
 	// tmux runtime launches (runtime.Backends).
@@ -196,11 +206,14 @@ type Runtime struct {
 	dispatchURL      string
 	dispatchToken    string
 	gitHubCredential runtime.GitHubCredential
+	// actsAs is Options.ActsAs.
+	actsAs runtime.ActsAs
 	// controllerCredential is the controller pane's bundle by default owner
 	// (Options.ControllerCredential), set with gitHubCredential and nil without it.
 	controllerCredential runtime.ControllerCredential
 	gh                   string
 	claimRepository      func(ctx context.Context, token claim.Token) (ghrepo.Repository, error)
+	claimRole            func(ctx context.Context, token claim.Token) (claim.Role, error)
 	launchers            map[runtime.Backend]Launcher
 	markers              []string
 	agents               string
@@ -239,11 +252,17 @@ type Runtime struct {
 	run func(ctx context.Context, argv []string) (result, error)
 	// readProc reads a /proc file; a field for the same reason.
 	readProc func(path string) ([]byte, error)
+	// writeBundle writes a claim's gh bundle for the credential refresh (writeWatchedBundle); New
+	// sets it to ghconfig.WriteBundle. A field so an in-package test can hold the refresh inside its
+	// write, under the launch lock, while a relaunch of the same claim runs.
+	writeBundle func(root string, bundle ghconfig.Bundle) ([]string, error)
 
 	// launchMu serializes everything that decides which window a pane lands in and every change
 	// to the private server's set of panes the runtime must not race: session creation, a launch's
 	// refusal of a claim whose process still runs and the files it then writes for the claim, window
-	// choice, the pane's opening and recording, orphan reaping, and the scrub.
+	// choice, the pane's opening and recording, orphan reaping, and the scrub. A refresh's write of
+	// a claim's gh directory takes it too, to judge under it that its pane is still watched
+	// (writeWatchedBundle).
 	launchMu sync.Mutex
 
 	trackedMu sync.Mutex
@@ -262,16 +281,19 @@ type Runtime struct {
 // opened it (empty for one it adopted, whose window is then not offered to later panes),
 // ghRepo, the repository its launch minted the gh bundle's write token for: its spec's, or the
 // zero Repository for a launch on no repository and for the controller, whose bundle is
-// read-only throughout; and ghDefault, the default owner its launch wrote, whose directory is
+// read-only throughout; ghDefault, the default owner its launch wrote, whose directory is
 // the pane's GH_CONFIG_DIR, which is what a controller's refresh asks its bundle for
-// (Options.ControllerCredential). An adopted tree pane's repository is the daemon's record of
-// its claim (Options.ClaimRepository); an adopted controller's default is the first owner,
-// sorted, as its launch took it, since the launch this runtime never saw recorded nothing here.
+// (Options.ControllerCredential); and role, the role its launch ran it as, "" for a process this
+// runtime adopted without seeing its launch. An adopted tree pane's repository and role are the
+// daemon's record of its claim (Options.ClaimRepository, Options.ClaimRole); an adopted
+// controller's default is the first owner, sorted, as its launch took it, since the launch this
+// runtime never saw recorded nothing here.
 type trackedProcess struct {
 	locator   runtime.Locator
 	issue     string
 	ghRepo    ghrepo.Repository
 	ghDefault string
+	role      claim.Role
 }
 
 // New builds a runtime from opts, resolving the tmux and legion binaries now so a daemon that
@@ -364,9 +386,11 @@ func New(opts Options) (*Runtime, error) {
 		dispatchURL:             opts.DispatchURL,
 		dispatchToken:           opts.DispatchTokenFile,
 		gitHubCredential:        opts.GitHubCredential,
+		actsAs:                  opts.ActsAs,
 		controllerCredential:    opts.ControllerCredential,
 		gh:                      opts.GH,
 		claimRepository:         opts.ClaimRepository,
+		claimRole:               opts.ClaimRole,
 		launchers:               opts.Launchers,
 		markers:                 markers,
 		agents:                  agents,
@@ -390,6 +414,7 @@ func New(opts Options) (*Runtime, error) {
 		takeOver:                takeOver,
 		leakCheckManifestSHA256: opts.LeakCheckManifestSHA256,
 		readProc:                os.ReadFile,
+		writeBundle:             ghconfig.WriteBundle,
 		tracked:                 map[string]*trackedProcess{},
 		displaced:               map[claim.Token]runtime.Locator{},
 	}
@@ -635,15 +660,24 @@ func (r *Runtime) displacedObservation(loc runtime.Locator) runtime.Observation 
 }
 
 // track watches the process a launch opened: the issue it works, the repository its gh bundle's
-// write token was minted for, and the default owner that bundle was written with. A record this
-// runtime already made of the same incarnation stands, since it is the launch's own.
-func (r *Runtime) track(loc runtime.Locator, issue string, ghRepo ghrepo.Repository, ghDefault string) {
+// write token was minted for, the default owner that bundle was written with, and the role the
+// process was launched as (the spec's role, the claim's stored role then), which it runs for its
+// whole life: a claim takes another role only while it runs nothing. A record this runtime already
+// made of the same incarnation stands, since it is the launch's own.
+func (r *Runtime) track(loc runtime.Locator, issue string, ghRepo ghrepo.Repository, ghDefault string, role claim.Role) {
 	r.trackedMu.Lock()
 	defer r.trackedMu.Unlock()
 	if existing, ok := r.tracked[loc.Incarnation]; ok && existing.issue != "" {
-		issue, ghRepo, ghDefault = existing.issue, existing.ghRepo, existing.ghDefault
+		r.tracked[loc.Incarnation] = existing.at(loc)
+		return
 	}
-	r.tracked[loc.Incarnation] = &trackedProcess{locator: loc, issue: issue, ghRepo: ghRepo, ghDefault: ghDefault}
+	r.tracked[loc.Incarnation] = &trackedProcess{locator: loc, issue: issue, ghRepo: ghRepo, ghDefault: ghDefault, role: role}
+}
+
+// at is a copy of p, every field as p holds it, located at loc.
+func (p trackedProcess) at(loc runtime.Locator) *trackedProcess {
+	p.locator = loc
+	return &p
 }
 
 func (r *Runtime) untrack(loc runtime.Locator) {
@@ -671,11 +705,11 @@ func (r *Runtime) adoptExactly(located []runtime.Locator) {
 		}
 	}
 	for _, loc := range located {
-		entry := &trackedProcess{locator: loc}
 		if existing, ok := r.tracked[loc.Incarnation]; ok {
-			entry.issue, entry.ghRepo, entry.ghDefault = existing.issue, existing.ghRepo, existing.ghDefault
+			r.tracked[loc.Incarnation] = existing.at(loc)
+			continue
 		}
-		r.tracked[loc.Incarnation] = entry
+		r.tracked[loc.Incarnation] = &trackedProcess{locator: loc}
 	}
 }
 

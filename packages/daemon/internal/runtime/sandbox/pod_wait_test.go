@@ -33,10 +33,11 @@ func podBuiltBeforeChecker(t *testing.T, g *rig) runtime.Locator {
 	return loc
 }
 
-// A launch of a role into a live pod built before the deployment defined it writes nothing and
-// waits: it neither replaces the pod nor suspends its Sandbox, since that would delete the issue's
-// disk with everything a role did not push, and only the pod's update round or its release
-// replaces it. The runtime answers which issue's pod lacks which role.
+// A launch into a live pod that lacks the slot of its claim or the role of its step, both
+// `checker` here (a claim named for its role), writes nothing and waits: it neither replaces the
+// pod nor suspends its Sandbox, since that would delete the issue's disk with everything a role
+// did not push, and only the pod's update round or its release replaces it. The runtime answers
+// which issue's pod lacks which name.
 func TestALaunchOfARoleItsPodWasBuiltWithoutWritesNothingAndWaits(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
@@ -65,9 +66,9 @@ func TestALaunchOfARoleItsPodWasBuiltWithoutWritesNothingAndWaits(t *testing.T) 
 	}
 }
 
-// One of Legion's roles still launches into a pod built before a role of the deployment: the
-// pod is judged by the roles it was built with, so the missing Secret of the deployment's role is
-// no reason to replace it.
+// One of Legion's roles, in its own claim's slot, still launches into a pod built before a role of
+// the deployment: the pod is judged by the slots and roles it was built with, so the missing
+// Secret of the deployment's role is no reason to replace it.
 func TestABuiltinRoleLaunchesIntoAPodBuiltBeforeADeploymentRole(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
@@ -129,6 +130,53 @@ func TestALaunchTheSupervisorMakesIntoAPodBuiltWithoutItsRoleIsRefusedNamingTheP
 	}
 	if pod := g.pod(loc.Sandbox.Name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
 		t.Errorf("the issue's pod is %v, want the pod %s kept", pod, loc.Sandbox.PodUID)
+	}
+}
+
+// A claim runs in the slot of its agent (claim.Token.Slot) and on the role of its step, and a
+// launch into a pod the runtime keeps needs both of that pod: the slot's launcher, Secret and
+// volumes, and the role's own resources, its role_config_files overlays among them. A keyed
+// agent's slot and its step's role can be two names, so a launch into a pod built before a role of
+// the deployment waits where the pod lacks either, its text naming the one it lacks, and goes on
+// where it holds both.
+func TestALaunchIntoAKeptPodWaitsForTheSlotOfItsClaimAndTheRoleOfItsStep(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		token claim.Token
+		role  claim.Role
+		// lacks is what the refusal names, "" for a launch that goes on.
+		lacks string
+	}{
+		{"the pod lacks the slot of the claim's agent", checkerToken, claim.RoleTester, "checker, the slot of the claim's agent"},
+		{"the pod lacks the role of the step", workerToken, "checker", "checker, the role of its step"},
+		{"the pod holds the slot and the role", workerToken, claim.RoleReviewer, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newRig(t, nil)
+			loc := podBuiltBeforeChecker(t, g)
+			g.clearActions()
+			spec := testSpec(t, tc.token, tc.role, testTree)
+			if tc.lacks == "" {
+				if launched := g.spawn(spec); launched.Sandbox.PodUID != loc.Sandbox.PodUID {
+					t.Errorf("the launch went into the pod %s, want the kept pod %s", launched.Sandbox.PodUID, loc.Sandbox.PodUID)
+				}
+				return
+			}
+			_, err := g.r.Spawn(g.ctx, spec)
+			if !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+				t.Errorf("the launch = %v, want an error that is runtime.ErrAwaitsPodUpdate", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.lacks) || !strings.Contains(err.Error(), loc.Sandbox.PodUID) {
+				t.Errorf("the launch = %v, want its text to name %s and the pod %s", err, tc.lacks, loc.Sandbox.PodUID)
+			}
+			if writes := g.writes(); len(writes) > 0 {
+				t.Errorf("the launch wrote %v, want nothing written", writes)
+			}
+			if pod := g.pod(loc.Sandbox.Name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+				t.Errorf("the issue's pod is %v, want the pod %s kept", pod, loc.Sandbox.PodUID)
+			}
+		})
 	}
 }
 

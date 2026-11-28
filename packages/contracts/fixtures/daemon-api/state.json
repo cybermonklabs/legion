@@ -106,6 +106,7 @@
       "workers": {
         "implementer": {
           "claim": {
+            "token": "legion-legion-legion-207-implementer",
             "session": "ses_implementer_207",
             "state": "working",
             "locator": {
@@ -187,6 +188,7 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
+        "token": "legion-legion-legion-208-architect",
         "session": "ses_architect_208",
         "state": "ready",
         "locator": {
@@ -231,6 +233,7 @@
       "workers": {
         "implementer": {
           "claim": {
+            "token": "legion-legion-legion-208-implementer",
             "session": "ses_implementer_208",
             "state": "working",
             "locator": {
@@ -288,6 +291,7 @@
         },
         "planner": {
           "claim": {
+            "token": "legion-legion-legion-208-planner",
             "session": "ses_planner_208",
             "state": "suspended",
             "locator": {
@@ -318,8 +322,74 @@
           },
           "pass": 0,
           "rounds": 0
+        },
+        "reviewer": {
+          "claim": {
+            "token": "legion-legion-legion-208-implementer",
+            "session": "ses_implementer_208",
+            "state": "working",
+            "locator": {
+              "runtime": "sandbox",
+              "claim": "legion-legion-legion-208-implementer",
+              "incarnation": "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11/5",
+              "sandbox": {
+                "namespace": "legion",
+                "name": "legion-legion-legion-208",
+                "podUid": "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+                "container": "roles",
+                "generation": 5
+              }
+            },
+            "capabilities": {
+              "measuredAt": "2126-09-22T09:17:03Z",
+              "incarnation": "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11/5",
+              "ok": [
+                "subagents",
+                "dispatch-envoy-tools"
+              ],
+              "open": [
+                {
+                  "name": "github",
+                  "detail": "gh api user: HTTP 401: Bad credentials"
+                }
+              ]
+            },
+            "servingGeneration": 3,
+            "pluginContract": 46,
+            "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+            "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+            "updateState": "asked",
+            "providerErrorRun": 2,
+            "pendingTask": {
+              "phase": "implementing",
+              "queuedAt": "2126-09-22T09:16:58Z"
+            },
+            "step": {
+              "at": "2126-09-22T09:17:12Z",
+              "turnStartedAt": "2126-09-22T09:16:30Z",
+              "tool": "bash",
+              "callId": "toolu_impl_11",
+              "argsBytes": 128,
+              "argsHash": "9b2e45c0d1f8a673",
+              "startedAt": "2126-09-22T09:17:12Z"
+            }
+          },
+          "pass": 0,
+          "rounds": 0
         }
       },
+      "otherClaims": [
+        {
+          "role": "reviewer",
+          "claim": {
+            "token": "legion-legion-legion-208-reviewer",
+            "session": "ses_reviewer_208_v1",
+            "state": "suspended",
+            "pluginContract": 0,
+            "updateState": "none"
+          }
+        }
+      ],
       "pullRequest": {
         "repo": "acme/widgets",
         "number": 1247,
@@ -428,6 +498,7 @@
       "workers": {
         "implementer": {
           "claim": {
+            "token": "legion-legion-legion-210-implementer",
             "session": "ses_implementer_210",
             "state": "failed",
             "pluginContract": 0,
@@ -505,6 +576,7 @@
       "workers": {
         "implementer": {
           "claim": {
+            "token": "legion-legion-legion-211-implementer",
             "session": "ses_implementer_211",
             "state": "suspended",
             "pluginContract": 0,
@@ -572,6 +644,7 @@
       "workers": {
         "tester": {
           "claim": {
+            "token": "legion-legion-legion-212-tester",
             "session": "ses_tester_212",
             "state": "retired",
             "pluginContract": 0,
@@ -741,6 +814,7 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
+        "token": "legion-legion-legion-218-architect",
         "session": "ses_architect_218",
         "state": "suspended",
         "pluginContract": 0,
@@ -750,6 +824,7 @@
       "workers": {
         "implementer": {
           "claim": {
+            "token": "legion-legion-legion-218-implementer",
             "session": "ses_implementer_218",
             "state": "idle",
             "locator": {
@@ -773,6 +848,7 @@
         },
         "reviewer": {
           "claim": {
+            "token": "legion-legion-legion-218-reviewer",
             "session": "ses_reviewer_218",
             "state": "idle",
             "locator": {
@@ -843,6 +919,7 @@
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "architect": {
+        "token": "legion-legion-legion-219-architect",
         "session": "ses_architect_219",
         "state": "retired",
         "pluginContract": 0,
@@ -852,6 +929,7 @@
       "workers": {
         "implementer": {
           "claim": {
+            "token": "legion-legion-legion-219-implementer",
             "session": "ses_implementer_219",
             "state": "idle",
             "locator": {
@@ -878,6 +956,7 @@
         },
         "reviewer": {
           "claim": {
+            "token": "legion-legion-legion-219-reviewer",
             "session": "ses_reviewer_219",
             "state": "idle",
             "locator": {
@@ -961,6 +1040,7 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
+        "token": "legion-legion-legion-220-architect",
         "session": "ses_architect_220",
         "state": "failed",
         "pluginContract": 0,
@@ -981,6 +1061,7 @@
       "workers": {
         "implementer": {
           "claim": {
+            "token": "legion-legion-legion-220-implementer",
             "session": "ses_implementer_220",
             "state": "working",
             "locator": {
@@ -1087,6 +1168,7 @@
       "workers": {
         "checker": {
           "claim": {
+            "token": "legion-legion-legion-241-checker",
             "session": "ses_checker_241",
             "state": "failed",
             "pluginContract": 0,
@@ -1147,22 +1229,26 @@
     {
       "issue": "LEGION-210",
       "role": "implementer",
-      "state": "failed"
+      "state": "failed",
+      "token": "legion-legion-legion-210-implementer"
     },
     {
       "issue": "LEGION-218",
       "role": "architect",
-      "state": "suspended"
+      "state": "suspended",
+      "token": "legion-legion-legion-218-architect"
     },
     {
       "issue": "LEGION-219",
       "role": "architect",
-      "state": "retired"
+      "state": "retired",
+      "token": "legion-legion-legion-219-architect"
     },
     {
       "issue": "LEGION-241",
       "role": "checker",
-      "state": "failed"
+      "state": "failed",
+      "token": "legion-legion-legion-241-checker"
     }
   ],
   "wakesWaiting": [

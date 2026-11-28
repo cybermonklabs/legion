@@ -599,8 +599,14 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 		t.Fatalf("the reconcile after the move queued %d news-only starts of the reviewer, want none: its phase start carries the news", len(got))
 	}
 	starts := r.run(startOf(pathRoot, claim.RoleReviewer, false))
-	if len(starts) != 1 || starts[0].payload.(record.SuperviseRequest).Entry != 1 {
-		t.Fatalf("the reviewer's start rows = %+v, want its one phase start of entry 1", starts)
+	// The reviewer's start carries its row's entry, above every earlier row of the issue.
+	var others int64
+	if err := r.pool.QueryRow(r.ctx, `select coalesce(max(entry), 0) from phases where issue = $1 and role <> 'reviewer'`, pathRoot).Scan(&others); err != nil {
+		t.Fatalf("read the entries of %s's other rows: %v", pathRoot, err)
+	}
+	entry := rolePhaseRow(t, r.pool, pathRoot, claim.RoleReviewer).Entry
+	if len(starts) != 1 || entry <= others || starts[0].payload.(record.SuperviseRequest).Entry != entry {
+		t.Fatalf("the reviewer's start rows = %+v under a row at entry %d, want its one phase start above every other row's entry %d", starts, entry, others)
 	}
 	reviewer, reviewerConn := r.connect(pathRoot, claim.RoleReviewer)
 	sent := r.delivered(reviewer)

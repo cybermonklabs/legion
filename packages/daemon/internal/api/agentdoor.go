@@ -12,12 +12,20 @@ import (
 // ClaimRequest is what every action of the agent door names (agentDoor): the agent on Role of
 // Issue, under the caller's controller grant. Role is a workflow role or `architect`; the
 // project controller is no role here, so the controller's own agent cannot be named at all
-// (claim.IsRole, which refuses the controller). The six actions take the same
-// three members, so they take one type.
+// (claim.IsRole, which refuses the controller). The six actions take the same members, so they
+// take one type.
+//
+// Claim, from the stranded token's entry (strandedTokenContract), names the agent by its claim
+// token: two claims of one issue can hold one role — the agent of a key on a step of another
+// role, beside that role's own claim of an earlier version of the plan — and the issue and the
+// role reach the one that works the role's step, while a notice of provider errors can name the
+// other. It must be a claim of Issue that holds Role. Without it the request reaches the worker on
+// the role's step, as it did before that entry; a daemon below it refuses the member as unknown.
 type ClaimRequest struct {
 	GrantID string `json:"grantId"`
 	Issue   string `json:"issue"`
 	Role    string `json:"role"`
+	Claim   string `json:"claim,omitempty"`
 }
 
 // agentAction is one of the six agent actions in the words its own refusals name it by, which
@@ -90,15 +98,18 @@ type agentAction struct {
 
 // claimTarget is the claim of the agent an action of the agent door named, read and
 // authenticated: the machine to run the effect on, the issue and role the caller spelled, which
-// the route logs as the caller named them, and by, who the caller is — the project's controller,
+// the route logs as the caller named them, by, who the caller is — the project's controller,
 // supervise.SuspendedByController — which is the source its suspension records and what decides
-// which suspensions refuse it (supervise.Claim.HeldAgainst).
+// which suspensions refuse it (supervise.Claim.HeldAgainst), and request, the caller's request
+// carrying the step's standing, which the two recoveries run on (agentDoor, claimFreshSession,
+// claimCompact).
 type claimTarget struct {
 	machine *supervise.Machine
 	token   claim.Token
 	issue   string
 	role    claim.Role
 	by      supervise.SuspendSource
+	request *http.Request
 }
 
 // agentDoor is the door all six agent actions come through — the two recoveries
@@ -125,9 +136,28 @@ type claimTarget struct {
 // as what starts it (refuseState, holdSentences). The compaction is the one request let past such
 // a suspension at this door (agentAction.controllerPassesHold).
 //
-// The controller is refused its own agent here and nowhere else: the token is built from the
-// issue and the role, and no issue's role spells the controller's token (claim.ControllerToken),
-// so a role this check takes can never name it.
+// The controller is refused its own agent here and nowhere else: the token is the claim of the
+// agent that works the role's step of the issue (workerToken), which the issue's role names, or
+// the claim the body names, which must be an agent's claim of the issue (claim.AgentToken refuses
+// the controller's name); no issue's role spells the controller's token (claim.ControllerToken),
+// so neither can name it.
+//
+// The worker's claim is read before any lock an action's acts take, so the request this door
+// hands back carries its standing, which the two recoveries run on (worksStep,
+// supervise.Standing, claimTarget.request): the recovery's first act on the machine judges again
+// under the machine's lock that the record still names the claim on the role's step, and a step
+// that moved to another claim before it is refused there with nothing of the claim changed
+// (operationFailure, compact's refusal of a claim not taken). A move after that act finds the
+// effect under way, and the phase's restart the fresh session applies names the claim, so a step
+// entered for another claim since is not restarted (restartWorkedPhase).
+//
+// A claim the body names must hold the role the body names (409 CLAIM_NOT_OF_ROLE), whether or not
+// it is the step's worker, so the log line's role is the claim's: the role's own token names a
+// claim that a re-role moved to another role's step, and that claim answers for the role it holds.
+// A named claim that is not the step's worker — another claim of the role, which two claims of one
+// issue can hold — runs on no standing, since no step's move changes which claim the body names.
+// Its phase's restart names it and is refused for a step that is another claim's, so the claim
+// comes back owing what it owed and the answer says so.
 func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentAction) (claimTarget, bool) {
 	var req ClaimRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -145,11 +175,16 @@ func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentActio
 			roleList(), op.invalidRole))
 		return claimTarget{}, false
 	}
-	token, err := claim.NewToken(s.project, req.Issue, role)
-	if err != nil {
-		s.logFailure("api: build the claim token of "+op.name, "issue", req.Issue, "role", req.Role, "error", err)
-		s.writeFailure(w, r, http.StatusInternalServerError, "CLAIM_TOKEN_FAILED", err.Error())
-		return claimTarget{}, false
+	// The claim the body names is judged by its form here, with the body's other fields: that form
+	// reads nothing of any claim. The record is read only below the controller's grant.
+	if req.Claim != "" {
+		_, agent, cut := claim.Token(req.Claim).Cut()
+		if of, err := claim.AgentToken(s.project, req.Issue, agent); !cut || err != nil || of != claim.Token(req.Claim) {
+			s.writeFailure(w, r, http.StatusBadRequest, "INVALID_CLAIM", fmt.Sprintf(
+				"claim %s is no claim of %s: name the token of an agent of the issue, as a notice names it, or leave claim out to reach the claim that works the %s's step",
+				req.Claim, req.Issue, role))
+			return claimTarget{}, false
+		}
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)
 	if !ok {
@@ -159,11 +194,28 @@ func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentActio
 		s.writeFailure(w, r, http.StatusForbidden, "CONTROLLER_REQUIRED", op.name+" requires a controller grant")
 		return claimTarget{}, false
 	}
+	worker, err := s.workerToken(r.Context(), req.Issue, role)
+	if err != nil {
+		s.logFailure("api: build the claim token of "+op.name, "issue", req.Issue, "role", req.Role, "error", err)
+		s.writeFailure(w, r, http.StatusInternalServerError, "CLAIM_TOKEN_FAILED", err.Error())
+		return claimTarget{}, false
+	}
+	token := worker
+	if req.Claim != "" {
+		token = claim.Token(req.Claim)
+	}
 	by := supervise.SuspendedByController
 	m, supervised := s.supervisor.Machine(token)
 	if !supervised {
 		s.writeFailure(w, r, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
 		return claimTarget{}, false
+	}
+	if req.Claim != "" {
+		if holds := m.Claim().Role; holds != role {
+			s.writeFailure(w, r, http.StatusConflict, "CLAIM_NOT_OF_ROLE", fmt.Sprintf(
+				"claim %s holds the role %s of %s, not %s: name the role it holds", token, holds, req.Issue, role))
+			return claimTarget{}, false
+		}
 	}
 	if !op.controllerPassesHold {
 		if err := m.View().HeldAgainst(by); err != nil {
@@ -171,7 +223,11 @@ func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentActio
 			return claimTarget{}, false
 		}
 	}
-	return claimTarget{machine: m, token: token, issue: req.Issue, role: role, by: by}, true
+	request := r
+	if token == worker {
+		request = r.WithContext(supervise.Standing(r.Context(), s.worksStep(req.Issue, role, token)))
+	}
+	return claimTarget{machine: m, token: token, issue: req.Issue, role: role, by: by, request: request}, true
 }
 
 // roleList names the roles a claim can be on: Legion's six, in claim.Roles' order, and each role

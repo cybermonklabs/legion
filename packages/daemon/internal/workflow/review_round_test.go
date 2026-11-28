@@ -500,13 +500,12 @@ func wakes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, se
 		apply("wake-agent-message", intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: session, At: reviewTestedAt, Report: "report-agent"})
 		return WakeTask(kind, session, StoppedByRelease)
 	case pods.WakeBackstop:
-		id := armBackstop(t, pool, role, reviewTestedAt)
-		apply("wake-backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: role})
+		apply("wake-backstop", armBackstop(t, pool, wakeToken(t, role), role, reviewTestedAt))
 		return WakeTask(kind, fmt.Sprintf("the backstop armed for LEGION-208's %s came due", role), StoppedByRelease)
 	}
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		released, found, err := engine.cfg.Pods.ReleasedClaimOfRole(ctx, tx, "LEGION-208", role)
-		if err != nil || !found {
+		released, found, err := engine.cfg.Pods.ClaimByToken(ctx, tx, token)
+		if err != nil || !found || !released.Released() {
 			return fmt.Errorf("read the released %s claim: found %t, %v", role, found, err)
 		}
 		issue, err := engine.store.Issue(ctx, tx, released.Issue)

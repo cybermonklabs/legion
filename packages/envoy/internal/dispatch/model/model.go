@@ -4231,21 +4231,22 @@ type HandoffRecordedEventPayload struct {
 // run's start and at its end (PUT /api/v1/issues/{key}/steps/{id}) and as the read of the issue
 // lists it. Task is the plan's task, `default` for an issue whose owner gave no plan; Step is the
 // step's place in the task from 1, and 0 for a retro and a merge, which Kind tells apart. Type is
-// "" for those two kinds, Agent the claim token of the role that ran it ("" for a merge GitHub
-// made), Session the claim's session and Model `<provider>/<model>`, or the model alone where the
-// agent named no provider, each "" where the daemon knew none. Model is the model that answered the
-// agent last. SetModel is the model the role set its agent to, "" where the record names none.
-// Answers is each model that answered the agent's calls during the run, with its count of calls.
-// It is null where the record does not know them, and [] for a run whose agent made no call.
-// Generation is the issue's run, and Attempt, which no write stores, the place of this run among
-// the issue's runs of the same task, step and kind, from 1. Result is passed, failed or stopped, ""
-// while the run still runs; ReturnedTo is the place a failed or stopped run returned its task to, 0
-// being the retro's and the merge's place, and Report the handoff its ending role named, each null
-// where the run has none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the
-// agent that did the retro gave the plan the issue ran, and its reason, each null where the record
-// holds none (PUT /api/v1/issues/{key}/steps/{id}/rating writes them). Experiment and Variant are
-// the experiment a draw put the issue in and the variant it drew there, each null where the record
-// holds none (PUT /api/v1/issues/{key}/steps/{id}/experiment writes them).
+// "" for those two kinds, Agent the claim token of the step's agent, the claim that ran it ("" for
+// a merge GitHub made), Session the claim's session and Model `<provider>/<model>`, or the model
+// alone where the agent named no provider, each "" where the daemon knew none. Model is the model
+// that answered the agent last. SetModel is the model the step's role set its agent to, "" where
+// the record names none. Answers is each model that answered the agent's calls during the run,
+// with its count of calls. It is null where the record does not know them, and [] for a run whose
+// agent made no call. Generation is the issue's run, and Attempt, which no write stores, the place
+// of this run among the issue's runs of the same task, step and kind, from 1. Result is passed,
+// failed or stopped, "" while the run still runs; ReturnedTo is the place a failed or stopped run
+// returned its task to, 0 being the retro's and the merge's place, and Report the handoff its
+// ending role named, each null where the run has none. Rating and RatingReason are a retro's
+// alone: the rating, 1 to 5, that the agent that did the retro gave the plan the issue ran, and
+// its reason, each null where the record holds none (PUT /api/v1/issues/{key}/steps/{id}/rating
+// writes them). Experiment and Variant are the experiment a draw put the issue in and the variant
+// it drew there, each null where the record holds none (PUT
+// /api/v1/issues/{key}/steps/{id}/experiment writes them).
 type StepRecord struct {
 	ID           string       `json:"id"`
 	Issue        string       `json:"issue"`

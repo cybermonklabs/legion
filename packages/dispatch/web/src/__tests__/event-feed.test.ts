@@ -810,8 +810,18 @@ const rules: Record<string, Rule> = {
     spares: ["steps", "collaborators"],
   },
   "a change of the role holders refreshes the issue's log and no step or collaborator": {
+    // One holder as this release writes it, with its claim and whether that claim works the
+    // step, and one an earlier Dispatch stored without them, which the log keeps as written.
     event: event("issue.role_holders_changed", {
-      holders: [{ recorded_at: "2026-11-25T18:06:17Z", role: "architect", session: "session-b" }],
+      holders: [
+        {
+          claim: "legion-core-core-1-architect",
+          recorded_at: "2026-11-25T18:06:17Z",
+          role: "architect",
+          session: "session-b",
+          works_step: false,
+        },
+      ],
       key: "CORE-1",
       previous_holders: [
         { recorded_at: "2026-11-25T00:34:14Z", role: "architect", session: "session-a" },

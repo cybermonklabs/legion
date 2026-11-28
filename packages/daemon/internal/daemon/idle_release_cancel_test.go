@@ -29,26 +29,26 @@ type releaseRecordRefused struct {
 	err error
 }
 
-func (s *releaseRecordRefused) ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error {
+func (s *releaseRecordRefused) ReleaseSuspendedClaim(ctx context.Context, project, issue string, token claim.Token, row int64) error {
 	if s.err != nil {
 		return s.err
 	}
-	return s.outboxTrees.ReleaseSuspendedClaim(ctx, project, issue, role, row)
+	return s.outboxTrees.ReleaseSuspendedClaim(ctx, project, issue, token, row)
 }
 
-// queueRoleMessageWake takes a role message's wake of role while the release stands and queues
-// the start the workflow's wake queues for it (workflow's wakeRow): the wake's kind and detail,
-// and WakeTask for a session the release stopped. It answers that start's task.
+// queueRoleMessageWake takes a role message's wake of role's claim while the release stands and
+// queues the start the workflow's wake queues for it (workflow's wakeRow): the claim, the wake's
+// kind and detail, and WakeTask for a session the release stopped. It answers that start's task.
 func (r *idleRig) queueRoleMessageWake(t *testing.T, role claim.Role) string {
 	t.Helper()
 	ctx := context.Background()
 	token := mustClaimToken(t, r.issue.Key, role)
-	if taken, err := r.st.TakePodWake(ctx, "legion", r.issue.Key, token, pods.WakeRoleMessage, time.Now().UTC(), 0); err != nil || !taken {
+	if taken, err := r.st.TakePodWake(ctx, "legion", r.issue.Key, token, role, pods.WakeRoleMessage, time.Now().UTC(), 0); err != nil || !taken {
 		t.Fatalf("take the role message's wake of the %s = %t, %v; want it taken", role, taken, err)
 	}
 	task := workflow.WakeTask(pods.WakeRoleMessage, string(token), workflow.StoppedByRelease)
 	enqueueOutbox(t, r.pool, r.issues, mustOutboxRow(t, r.issue.Key, record.SuperviseRequest{Op: "start", Tree: r.issue.Tree,
-		Role: role, Generation: 1, Task: task, WakeKind: pods.WakeRoleMessage, WakeDetail: string(token)}, time.Now().UTC()))
+		Role: role, Claim: token, Generation: 1, Task: task, WakeKind: pods.WakeRoleMessage, WakeDetail: string(token)}, time.Now().UTC()))
 	return task
 }
 
@@ -281,11 +281,11 @@ func TestACancelAfterASettlementWakeTellsTheRoleTheSettlement(t *testing.T) {
 
 	// The settlement's wake, as the workflow takes it (wakeReleased): the resume, and the start
 	// that carries the wake's task and the wake's kind (workflow's wakeRow).
-	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeChecks, time.Now().UTC(), 0); err != nil || !taken {
+	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, claim.RoleImplementer, pods.WakeChecks, time.Now().UTC(), 0); err != nil || !taken {
 		t.Fatalf("take the settlement's wake = %t, %v; want it taken", taken, err)
 	}
 	wake, err := record.NewOutboxRow(rig.issue.Key, record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree,
-		Role: claim.RoleImplementer, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, "head1 failed build", workflow.StoppedByRelease),
+		Role: claim.RoleImplementer, Claim: rig.token, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, "head1 failed build", workflow.StoppedByRelease),
 		WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build"}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("encode the wake's start: %v", err)
@@ -348,12 +348,12 @@ func TestACancelWhileThePausedProjectTellsTheKeptWakeThatThePauseStoppedTheRole(
 	// The settlement's wake, as the workflow takes it while the project is paused (wakeReleased):
 	// a held wake of the pause, and its start, whose task WakeTask wrote for a session the release
 	// stopped.
-	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeChecks, time.Now().UTC(), 0); err != nil || !taken {
+	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, claim.RoleImplementer, pods.WakeChecks, time.Now().UTC(), 0); err != nil || !taken {
 		t.Fatalf("take the settlement's wake = %t, %v; want it taken", taken, err)
 	}
 	const detail = "head1 failed build"
 	wake, err := record.NewOutboxRow(rig.issue.Key, record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree,
-		Role: claim.RoleImplementer, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByRelease),
+		Role: claim.RoleImplementer, Claim: rig.token, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByRelease),
 		WakeKind: pods.WakeChecks, WakeDetail: detail, Pause: pause}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("encode the wake's start: %v", err)
@@ -385,7 +385,7 @@ func TestACancelWhileThePausedProjectTellsTheKeptWakeThatThePauseStoppedTheRole(
 		t.Fatalf("queued starts = %+v, want the kept wake's one start of the implementer, of the %s wake held by pause %d, with the task %q: the release took no pod, and the pause owes the role its launch",
 			starts, pods.WakeChecks, pause, want)
 	}
-	if _, held, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || !open || held != pause {
+	if _, held, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, rig.token); err != nil || !open || held != pause {
 		t.Fatalf("the implementer's open resume = pause %d, open %t, %v; want the kept wake, held by pause %d", held, open, err, pause)
 	}
 }
@@ -408,11 +408,11 @@ func TestACancelAfterASettlementWakeKeepsACheckLookQueuedForTheRole(t *testing.T
 		t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",
 			got.State, got.SuspendedBy, rig.marked(t))
 	}
-	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeChecks, time.Now().UTC(), 0); err != nil || !taken {
+	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, claim.RoleImplementer, pods.WakeChecks, time.Now().UTC(), 0); err != nil || !taken {
 		t.Fatalf("take the settlement's wake = %t, %v; want it taken", taken, err)
 	}
 	enqueueOutbox(t, rig.pool, rig.issues, mustOutboxRow(t, rig.issue.Key, record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree,
-		Role: claim.RoleImplementer, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, "head1 failed build", workflow.StoppedByRelease),
+		Role: claim.RoleImplementer, Claim: rig.token, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, "head1 failed build", workflow.StoppedByRelease),
 		WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build"}, time.Now().UTC()))
 	const lookTask = "Production check of LEGION-208: the look the merge's deploy woke."
 	opened := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)

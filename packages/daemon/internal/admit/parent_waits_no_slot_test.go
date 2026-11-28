@@ -123,8 +123,8 @@ func pnArmBackstop(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role
 	if err != nil {
 		t.Fatalf("project token of %s: %v", testProject, err)
 	}
-	if _, err := pool.Exec(context.Background(), `insert into pod_wake_backstops (project, issue, role, release_id, due_at)
-		values ($1, $2, $3, 0, $4)`, project, key, string(role), due); err != nil {
+	if _, err := pool.Exec(context.Background(), `insert into pod_wake_backstops (project, issue, role, claim, release_id, due_at)
+		values ($1, $2, $3, $4, 0, $5)`, project, key, string(role), string(pwRoleToken(t, key, role)), due); err != nil {
 		t.Fatalf("arm the %s backstop of %s: %v", role, key, err)
 	}
 }
@@ -239,6 +239,17 @@ func pnWorkerStart(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role
 	return *found
 }
 
+// pnTopEntry is the highest entry of every phases row of key, 0 for none. The next raise of any
+// role of key is one above it, because the issue has one counter for its entries (workflow's enter).
+func pnTopEntry(t *testing.T, pool *pgxpool.Pool, key string) int64 {
+	t.Helper()
+	var top int64
+	if err := pool.QueryRow(context.Background(), `select coalesce(max(entry), 0) from phases where issue = $1`, key).Scan(&top); err != nil {
+		t.Fatalf("read the highest entry of %s: %v", key, err)
+	}
+	return top
+}
+
 // pnMovedParent is a live tree whose root, the parent, stands in from holding the slot that phase
 // keeps, with its pull request #42 open and one child filed and not released, and seed for what
 // else the case needs; fact, applied from source, is the move the child holds. It fails unless the
@@ -347,6 +358,8 @@ func pnReturnsAs(held phase.Phase, merged bool) phase.Phase {
 // merged with its pull request. With the pull request merged the parent comes back at the start it
 // held, on the held task, and a held accepting starts no role, tells the architect under the wait's
 // own notice kind and raises no entry. No task asks for a forward merge.
+// The new entry is one above the highest entry of all the issue's phases rows (workflow's enter),
+// not of the role's row alone.
 func pnReturnsWhereItTakes(t *testing.T, held pnHeldStart, merged bool) {
 	pool, admission, wait := pnMovedParent(t, held.from, held.seed, held.source, held.fact, held.start, held.cause)
 	if merged {
@@ -359,6 +372,7 @@ func pnReturnsWhereItTakes(t *testing.T, held pnHeldStart, merged bool) {
 	for _, role := range claim.Roles {
 		rows[role] = spPhaseRow(t, pool, spParent, role)
 	}
+	top := pnTopEntry(t, pool, spParent)
 
 	back := pnChildDone(t, pool, admission)
 
@@ -387,8 +401,9 @@ func pnReturnsWhereItTakes(t *testing.T, held pnHeldStart, merged bool) {
 	}
 	work := starts[0].task
 	pnAsksNoForwardMerge(t, "the "+string(role)+"'s task", work)
-	if row := spPhaseRow(t, pool, spParent, role); row.Entry != rows[role].Entry+1 || !row.EntryMovedBack || row.EntryFrom != phase.AwaitingChildren {
-		t.Fatalf("the %s's phases row after the return = %+v, want a new entry above %d raised as a move back out of awaiting_children", role, row, rows[role].Entry)
+	if row := spPhaseRow(t, pool, spParent, role); row.Entry <= top || !row.EntryMovedBack || row.EntryFrom != phase.AwaitingChildren {
+		t.Fatalf("the %s's phases row after the return = %+v, want an entry above the issue's highest entry %d, raised as a move back out of awaiting_children",
+			role, row, top)
 	}
 	named := pnMergedChildren(spParent, pnMerged(spChild, 51))
 	switch {
@@ -785,6 +800,11 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		// the child reaches done with its pull request merged.
 		seedWaiting(t, pool, above, "A")
 		counted := spPhaseRow(t, pool, spParent, claim.RoleImplementer)
+		top := pnTopEntry(t, pool, spParent)
+		if top != counted.Entry {
+			t.Fatalf("the highest entry of %s before the return = %d, want %d, the implementer's: no other row of the issue is above it",
+				spParent, top, counted.Entry)
+		}
 		back := pnChildDone(t, pool, restarted)
 
 		if back.Phase != phase.Testing || back.ChildrenWait != nil || back.Status != workflow.PhaseStatus(phase.Testing) {
@@ -811,13 +831,15 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("admission.waiting = %v, want %v: the returned start before the root ranked above the parent's tree", got, want)
 		}
 		// The return counts no review round and no move back: the implementer's row, which holds
-		// the counts, is as it was, and the tester's is on a new entry raised as a move back.
+		// the counts, is as it was. The tester's row is on a new entry raised as a move back, above
+		// the issue's highest entry.
 		if row := spPhaseRow(t, pool, spParent, claim.RoleImplementer); row.Pass != counted.Pass || row.Rounds != counted.Rounds ||
 			!maps.Equal(row.BackwardMoves, counted.BackwardMoves) || row.Entry != counted.Entry {
 			t.Fatalf("the implementer's row after the return = %+v, want the entry and the counts of %+v: the return counts no round and no move back", row, counted)
 		}
-		if row := spPhaseRow(t, pool, spParent, claim.RoleTester); row.Entry != 1 || !row.EntryMovedBack || row.EntryFrom != phase.AwaitingChildren || row.EntryTask != work {
-			t.Fatalf("the tester's row after the return = %+v, want entry 1 raised on its task as a move back out of awaiting_children", row)
+		if row := spPhaseRow(t, pool, spParent, claim.RoleTester); row.Entry <= top || !row.EntryMovedBack || row.EntryFrom != phase.AwaitingChildren || row.EntryTask != work {
+			t.Fatalf("the tester's row after the return = %+v, want an entry above the issue's highest entry %d, raised on its task as a move back out of awaiting_children",
+				row, top)
 		}
 		if told := spNotices(t, pool, spParent); len(told) != 1 {
 			t.Fatalf("awaiting-children notices = %+v, want the move's one: the return tells nobody", told)
@@ -1399,9 +1421,9 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 					}
 				}
 				row := spPhaseRow(t, pool, spParent, claim.RoleReviewer)
-				if entry := fmt.Sprintf(" %s: %d.", reviewround.EntryLabel, row.Entry); row.Entry != stopped.Entry+1 || !strings.HasSuffix(work, entry) {
-					t.Fatalf("the reviewer's task after the return = %q on its row's entry %d; want it to end with the return's entry %d, above the stopped %d: %q",
-						work, row.Entry, stopped.Entry+1, stopped.Entry, entry)
+				if entry := fmt.Sprintf(" %s: %d.", reviewround.EntryLabel, row.Entry); row.Entry <= stopped.Entry || !strings.HasSuffix(work, entry) {
+					t.Fatalf("the reviewer's task after the return = %q on its row's entry %d; want it to end with the return's entry, above the stopped %d: %q",
+						work, row.Entry, stopped.Entry, entry)
 				}
 				if named := pnMergedChildren(spParent, pnMerged(spChild, 51)); !strings.HasPrefix(work, wait.Task) || !strings.Contains(work, named) {
 					t.Fatalf("the reviewer's task after the return = %q, want the held task %q followed by %q", work, wait.Task, named)

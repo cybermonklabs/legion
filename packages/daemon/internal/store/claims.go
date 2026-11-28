@@ -63,7 +63,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.last_turn_start, c.last_turn_end, c.message_mark_at,
 	c.last_death_cause, c.last_death_at, c.last_death_digest,
 	c.last_start_failure, c.last_start_failure_at, c.last_start_failure_digest, c.last_ready,
-	c.turn_outcomes, c.abandoned_session, c.ended_work, c.session_run,
+	c.turn_outcomes, c.abandoned_session, c.ended_work, c.role_change, c.session_run,
 	c.update_round, c.update_reasons, c.update_repository, c.update_repository_round,
 	c.update_opened_at, c.update_tasked_at, c.update_signalled_at, c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
@@ -316,16 +316,17 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // by any source but the idle release's — or comes back to them. The idle release's suspension and
 // a pause's stop, which both suspend as released, keep the session and its role, and so does the
 // launch that resumes that session, so none of them queues a publication. The state event is
-// queued when the write moves the state the state route serves at c's issue's role, or lists c's
-// issue first (storedClaim.unlisted, queueClaimState). The release of a left session's Dispatch
-// claim is queued when the write moves the claim off a session the stored row names — a fresh
-// session that clears it, or a new session written over it — as one claim_release row of c's
-// issue that names that session (enqueueLeftSessionRelease): while c's issue runs, no move's row
-// and no boot row releases the Dispatch claim that session holds (left_sessions.go says why). All
-// three are read against the row the write replaces, read under its lock (lockedClaim). The three
-// switches (queuesRoleHolders, queuesState, queuesLeftSessionRelease) depend on no stored row, so
-// putClaim reads them inside tx before it takes that lock: a write for which all three are off
-// writes the row without reading it first (upsertClaim) and queues nothing. A write that changes
+// queued when the write moves c's state or its role, naming the state under each role of c's issue
+// whose step c works (workedRoles), or lists c's issue first (storedClaim.unlisted,
+// queueClaimState). The release of a left session's Dispatch claim is queued when the write moves
+// the claim off a session the stored row names — a fresh session that clears it, or a new session
+// written over it — as one claim_release row of c's issue that names that session
+// (enqueueLeftSessionRelease): while c's issue runs, no move's row and no boot row releases the
+// Dispatch claim that session holds (left_sessions.go says why). All three are read against the
+// row the write replaces, read under its lock (lockedClaim). The three switches
+// (queuesRoleHolders, queuesState, queuesLeftSessionRelease) depend on no stored row, so putClaim
+// reads them inside tx before it takes that lock: a write for which all three are off writes the
+// row without reading it first (upsertClaim) and queues nothing. A write that changes
 // none queues nothing either. A write of a claim of another project's issue queues no publication
 // and no release, since only that project's daemon runs a row keyed by its issue
 // (queuesRoleHolders, queuesLeftSessionRelease).
@@ -375,15 +376,16 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 }
 
 // storedClaim is what the row of a claim holds before a write replaces it (lockedClaim): its state,
-// the source of its suspension and its session, all empty for a claim the store does not hold yet.
-// unlisted is whether the write is the first to list the claim's issue in the state route at all:
-// the issue has no issues row of the daemon's Dispatch project, so the route serves it for its
-// claims alone, at phase unrecorded (internal/projection's Project, over the issues
+// its role, the source of its suspension and its session, all empty for a claim the store does not
+// hold yet. unlisted is whether the write is the first to list the claim's issue in the state route
+// at all: the issue has no issues row of the daemon's Dispatch project, so the route serves it for
+// its claims alone, at phase unrecorded (internal/projection's Project, over the issues
 // internal/daemon's projectRecords keeps), and no claim of the claim's project names it yet. It is
 // false for a claim the store holds a row of, since that row names the issue already, and it is
 // read only with the state events on (PublishState).
 type storedClaim struct {
 	state       supervise.ClaimState
+	role        claim.Role
 	suspendedBy supervise.SuspendSource
 	session     string
 	unlisted    bool
@@ -399,9 +401,9 @@ type storedClaim struct {
 // and the claims table has no index on the issue.
 func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *statePublication) (storedClaim, error) {
 	var stored storedClaim
-	var storedState, by, session *string
-	err := tx.QueryRow(ctx, `select state, suspended_by, session from claims where token = $1 for update`,
-		string(c.Token)).Scan(&storedState, &by, &session)
+	var storedState, role, by, session *string
+	err := tx.QueryRow(ctx, `select state, role, suspended_by, session from claims where token = $1 for update`,
+		string(c.Token)).Scan(&storedState, &role, &by, &session)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if state == nil {
 			return stored, nil
@@ -418,6 +420,9 @@ func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *state
 	}
 	if storedState != nil {
 		stored.state = supervise.ClaimState(*storedState)
+	}
+	if role != nil {
+		stored.role = claim.Role(*role)
 	}
 	if by != nil {
 		stored.suspendedBy = supervise.SuspendSource(*by)
@@ -513,6 +518,17 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		}
 		endedWork = encoded
 	}
+	// Null is a claim that never took another role; one that did records the role it held before
+	// and whether its agent has been told, for the first prompt in the new role to tell
+	// (supervise's RoleChange, roleChangedTask).
+	var roleChange []byte
+	if c.RoleChange.From != "" {
+		encoded, err := json.Marshal(c.RoleChange)
+		if err != nil {
+			return fmt.Errorf("put claim %s: encode the other role it took: %w", c.Token, err)
+		}
+		roleChange = encoded
+	}
 	// The run of the claim's session since it last finished a turn, as JSON: never null, the
 	// empty run `{}` for a session that has ended no launch and finished no turn (supervise's
 	// SessionRun, dispatch://INFRA-2045 R1).
@@ -547,7 +563,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
 		update_head, update_told_at,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
-		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
+		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work, role_change,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
 		update_repository, update_repository_round,
 		working_repository, working_repository_incarnation,
@@ -555,7 +571,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69,
+		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -609,6 +625,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		held_for = excluded.held_for,
 		leak_check_cause = excluded.leak_check_cause,
 		ended_work = excluded.ended_work,
+		role_change = excluded.role_change,
 		session_run = excluded.session_run,
 		handshake_entry = excluded.handshake_entry,
 		handshake_generation = excluded.handshake_generation,
@@ -651,7 +668,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
 		c.UpdateHead, c.UpdateToldAt,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
-		c.PodEnd, storedCause(c.FailureCause), instant(c.FailedAt), storedCause(c.PendingCause), c.LeakCheckCause, endedWork,
+		c.PodEnd, storedCause(c.FailureCause), instant(c.FailedAt), storedCause(c.PendingCause), c.LeakCheckCause, endedWork, roleChange,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
 		repository, repositoryRound,
 		working, workingIncarnation,
@@ -704,17 +721,33 @@ func readClaims(ctx context.Context, tx pgx.Tx) ([]supervise.Claim, error) {
 // claimRepository, the tmux runtime's Options.ClaimRepository), the one its bundle's write token
 // reaches, since a token spells its issue lowercased. A token no claim holds is refused.
 func (s *Store) ClaimIssue(ctx context.Context, token claim.Token) (string, error) {
-	var issue string
+	return s.claimColumn(ctx, token, "issue")
+}
+
+// ClaimRole is the stored role of the claim of token, the role of the step its agent does now,
+// from the daemon's own claims: what a tmux pane adopted after a restart holds the App of (the tmux
+// runtime's Options.ClaimRole), since a token names its agent and not its role. A token no claim
+// holds is refused.
+func (s *Store) ClaimRole(ctx context.Context, token claim.Token) (claim.Role, error) {
+	role, err := s.claimColumn(ctx, token, "role")
+	return claim.Role(role), err
+}
+
+// claimColumn is column of the claim of token (ClaimIssue, ClaimRole), read in a read-only
+// transaction of its own; a token no claim holds is refused. column is a column name its callers
+// spell, never a value read from outside.
+func (s *Store) claimColumn(ctx context.Context, token claim.Token, column string) (string, error) {
+	var value string
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `select issue from claims where token = $1`, string(token)).Scan(&issue)
+		return tx.QueryRow(ctx, `select `+column+` from claims where token = $1`, string(token)).Scan(&value)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("no claim holds token %s", token)
 	}
 	if err != nil {
-		return "", fmt.Errorf("read the issue of claim %s: %w", token, err)
+		return "", fmt.Errorf("read the %s of claim %s: %w", column, token, err)
 	}
-	return issue, nil
+	return value, nil
 }
 
 // claimMayRun is the stored claim that may still hold a process: one in a state that runs, or one
@@ -1044,6 +1077,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		outcomes                    []byte
 		abandoned                   []byte
 		endedWork                   []byte
+		roleChange                  []byte
 		sessionRun                  []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
@@ -1071,7 +1105,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
 		&turnStart, &turnEnd, &messageMark,
 		&c.LastDeathCause, &deathAt, &deathDigest, &c.LastStartFailure, &startFailureAt, &failureDigest, &lastReady,
-		&outcomes, &abandoned, &endedWork, &sessionRun,
+		&outcomes, &abandoned, &endedWork, &roleChange, &sessionRun,
 		&c.UpdateRound, &c.UpdateReasons, &repository, &repositoryRound, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
@@ -1124,6 +1158,12 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	if endedWork != nil {
 		if err := json.Unmarshal(endedWork, &c.EndedWork); err != nil {
 			return supervise.Claim{}, fmt.Errorf("read claim %s: decode what its last let-go ended: %w", token, err)
+		}
+	}
+	// Null is a claim that never took another role (putClaim).
+	if roleChange != nil {
+		if err := json.Unmarshal(roleChange, &c.RoleChange); err != nil {
+			return supervise.Claim{}, fmt.Errorf("read claim %s: decode the other role it took: %w", token, err)
 		}
 	}
 	// The run of the session since it last finished a turn, `{}` for none (putClaim).

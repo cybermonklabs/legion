@@ -34,11 +34,11 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 	}
 }
 
-// refreshGitHubCredentials brings the gh bundle of every tracked pane to the current render of its
-// role's GitHub credential, so the pane's gh (the `legion gh` wrapper's real gh) and the clone's
-// `legion git-credential` helper read the tokens the daemon holds now. It walks a snapshot of the
-// watch (trackedProcesses), takes each pane's role from its claim token (claim.Token.Role),
-// skipping a token that names no role, and renders a tree pane's credential for the pane's own
+// refreshGitHubCredentials brings the gh bundle of every tracked pane to the current render of the
+// GitHub credential of the role whose App the pane holds (paneRole), so the pane's gh (the
+// `legion gh` wrapper's real gh) and the clone's `legion git-credential` helper read the tokens
+// the daemon holds now. It walks a snapshot of the watch (trackedProcesses), skipping a pane whose
+// role the runtime cannot know, and renders a tree pane's credential for the pane's own
 // repository: the one its launch minted the write token for, recorded on the tracked entry. For a
 // tree pane adopted after a restart, whose launch the runtime never saw, the repository is the one
 // the claim's issue works, read from the daemon's own state (Options.ClaimRepository).
@@ -53,11 +53,14 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // Nothing under the pane's gh directory, which the pane's own user can write, decides a repository
 // or an owner, and a bundle's default owner, the directory GH_CONFIG_DIR names, is never minting
 // authority. It rewrites only the directories whose hosts.yml differs
-// (ghconfig.WriteBundle), recreating a root that is gone. A repository that cannot be read, a
-// render that fails, or a render whose default is not the directory the pane's own repository
-// routes to by the bundle's pairs (ghconfig.RouteDir, which the bundle's default is chosen by:
-// the repository's owner, or the owner a configured pair moved it to) is logged and the pane
-// keeps its last tokens until the next tick. A controller whose project has
+// (ghconfig.WriteBundle), recreating a root that is gone, and only while the pane it rendered for
+// is still watched, judged again under the launch lock (writeWatchedBundle): the claim's gh
+// directory is the claim's, for every pane it runs in, and a relaunch of a re-roled claim writes
+// its new role's bundle there. A repository that cannot be read, a render that fails, or a render
+// whose default is not the directory the pane's own repository routes to by the bundle's pairs
+// (ghconfig.RouteDir, which the bundle's default is chosen by: the repository's owner, or the
+// owner a configured pair moved it to) is logged and the pane keeps its last tokens until the
+// next tick. A controller whose project has
 // no GitHub owner to mint for (runtime.ErrNoGitHubOwner) launched with gh acting as nobody, its
 // gh directory empty, and has nothing to refresh: it is passed over without a word, as the
 // sandbox runtime passes over such a controller's pod. A runtime with no credential function
@@ -77,12 +80,16 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	bundles := appauth.NewBundles(r.gitHubCredential)
 	for _, entry := range r.trackedProcesses() {
 		token := entry.locator.Claim
-		role, ok := token.Role()
-		if !ok {
-			continue
-		}
+		role, ok, err := r.paneRole(ctx, entry)
 		refreshFailed := func(err error) {
 			r.log.Warn("tmux runtime: github credential refresh failed", "claim", token, "role", role, "err", err)
+		}
+		if err != nil {
+			refreshFailed(err)
+			continue
+		}
+		if !ok {
+			continue
 		}
 		repo := entry.ghRepo
 		if entry.issue == "" && role != claim.RoleController {
@@ -94,7 +101,6 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 			repo = recorded
 		}
 		var bundle ghconfig.Bundle
-		var err error
 		if role == claim.RoleController {
 			bundle, err = r.controllerCredential(ctx, entry.ghDefault)
 		} else {
@@ -114,9 +120,12 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 			}
 		}
 		root := runtime.GHConfigDir(r.stateDir, token)
-		changed, err := ghconfig.WriteBundle(root, bundle)
+		changed, watched, err := r.writeWatchedBundle(entry, root, bundle)
 		if err != nil {
 			refreshFailed(fmt.Errorf("write the github credential: %w", err))
+			continue
+		}
+		if !watched {
 			continue
 		}
 		if len(changed) > 0 {
@@ -125,4 +134,50 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 				"expiresAt", written.ExpiresAt, "dirs", changed)
 		}
 	}
+}
+
+// writeWatchedBundle writes bundle, rendered for entry's pane, into root, the gh directory of
+// entry's claim, and answers the directories it rewrote and true, or nothing and false where the
+// pane is no longer watched. It judges that under the launch lock, the lock a launch holds from
+// its refusal of the claim's earlier process, which lets that process go (refuseLiveIncarnation),
+// through its own write of the claim's bundle to its watch of the new pane (launch): a pane the
+// refresh's snapshot held and a relaunch has since let go is passed over, since the relaunch has
+// written the bundle of the role its new pane runs as, and a relaunch that starts after this
+// judgment writes its bundle after this write. The next tick refreshes the new pane.
+func (r *Runtime) writeWatchedBundle(entry trackedProcess, root string, bundle ghconfig.Bundle) ([]string, bool, error) {
+	r.launchMu.Lock()
+	defer r.launchMu.Unlock()
+	r.trackedMu.Lock()
+	watched, ok := r.tracked[entry.locator.Incarnation]
+	r.trackedMu.Unlock()
+	if !ok || watched.locator.Claim != entry.locator.Claim {
+		return nil, false, nil
+	}
+	changed, err := r.writeBundle(root, bundle)
+	return changed, true, err
+}
+
+// paneRole is the role whose App entry's pane holds (runtime.SlotRole): the controller's for the
+// controller's pane, else the role the pane was launched as, which the claim held then and the
+// process keeps for its whole life, and for a pane this runtime adopted without seeing its launch,
+// the daemon's record of the claim's role (Options.ClaimRole). It answers false for a pane whose
+// role it cannot know: an adopted pane with no record to ask, or a token that names no claim.
+func (r *Runtime) paneRole(ctx context.Context, entry trackedProcess) (claim.Role, bool, error) {
+	token := entry.locator.Claim
+	if token.IsController() {
+		return claim.RoleController, true, nil
+	}
+	stored := entry.role
+	if stored == "" {
+		if _, _, named := token.Cut(); !named || r.claimRole == nil {
+			return "", false, nil
+		}
+		recorded, err := r.claimRole(ctx, token)
+		if err != nil {
+			return "", false, fmt.Errorf("the claim's role: %w", err)
+		}
+		stored = recorded
+	}
+	role, err := runtime.SlotRole(ctx, r.actsAs, token, stored)
+	return role, err == nil, err
 }

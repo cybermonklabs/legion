@@ -66,7 +66,7 @@ func TestALiveTerminalFactQueuedPastTheBootBudgetDoesNotStopTheWorkflow(t *testi
 		t.Fatalf("a failure fact that waited %s on the serializer stopped the workflow: %v", bootTimeout+5*time.Second, err)
 	default:
 	}
-	want := intake.ClaimFailed{Issue: failed.Issue, Role: failed.Role, Reason: failed.Failure, Cause: failed.FailureCause, Budgets: failed.Budgets, Limits: replayLimits}
+	want := intake.ClaimFailed{Issue: failed.Issue, Role: failed.Role, Claim: failed.Token, Reason: failed.Failure, Cause: failed.FailureCause, Budgets: failed.Budgets, Limits: replayLimits}
 	if facts := handler.facts(); len(facts) != 1 || facts[0] != want {
 		t.Fatalf("facts applied = %#v, want the one failure once the serializer was free", facts)
 	}

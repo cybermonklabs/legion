@@ -396,12 +396,7 @@ export default function legionExtension(pi: PiApi): void {
     ) {
       return;
     }
-    const request = sessionActivityRequest({
-      project: process.env.LEGION_PROJECT,
-      claim,
-      report,
-    });
-    if (request === undefined) return;
+    const request = sessionActivityRequest({ claim, report });
     lastActivity = report;
     try {
       await roleDaemon().activity(request);
@@ -517,7 +512,7 @@ export default function legionExtension(pi: PiApi): void {
       }),
       exits: createStallExits({
         stateDir: requiredEnvironment(process.env, "LEGION_STATE_DIR"),
-        session,
+        claim: paneClaim,
         now: Date.now,
         log: logger,
       }),
@@ -1012,8 +1007,9 @@ export default function legionExtension(pi: PiApi): void {
   };
 
   // The session the tool answers for: a claim's (a root architect's, a sub-architect's or a phase
-  // worker's, keyed by its role) or the claimed controller's; a `task` subagent holds neither and
-  // is refused, as is a session whose boot has not registered yet.
+  // worker's, under the claim token its registration was answered with, on the role its step is on
+  // now) or the claimed controller's; a `task` subagent holds neither and is refused, as is a
+  // session whose boot has not registered yet.
   let legionToolRegistered = false;
   const registerLegionTool = (): void => {
     if (legionToolRegistered) return;

@@ -32,7 +32,7 @@ const workerSilentNotice record.NoticeKind = "worker-silent"
 // and the launch the id is keyed on stand still. Spent, that id would be skipped at every later
 // sweep and the worker never repaired. Every other refusal spends it.
 func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.WorkerSilent) (intake.Result, error) {
-	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role)
+	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role, fact.Claim)
 	if err != nil || read == nil {
 		return intake.Result{}, err
 	}
@@ -57,7 +57,7 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 // do: no such issue, another run of it, a role that does not work its phase, a worker owed no
 // turn (PhaseWorkerOwedTurn), or a key that yields no claim token. The two cheap refusals come
 // before the other reads because the sweep cannot make them: a supervise.Claim carries no phase.
-func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, generation uint64, role claim.Role) (*phaseWorkerReading, error) {
+func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, generation uint64, role claim.Role, swept claim.Token) (*phaseWorkerReading, error) {
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
 		return nil, err
@@ -86,10 +86,14 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil {
 		return nil, err
 	}
-	// A key that yields no claim token has no run, and is passed over as admission's
-	// resumeSlottedWorkers passes over one.
-	token, err := claim.NewToken(project, issue.Key, role)
-	if err != nil {
+	// The run is the run of the agent that works the role's step (record.WorkerClaim over the role's
+	// row PhaseWorkerOwedTurn read), a keyed agent on a step of another role included. A key that
+	// yields no claim token has no run, and is passed over as admission's resumeSlottedWorkers
+	// passes over one. A fact the sweep read off another claim of the role (swept) — two claims of
+	// one issue can hold one role — says nothing of the worker's quiet, and is passed over too; a
+	// fact that names no claim is the worker's.
+	token, err := record.WorkerClaim(project, issue.Key, role, []record.PhaseRow{row})
+	if err != nil || swept != "" && swept != token {
 		return nil, nil
 	}
 	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
@@ -206,7 +210,7 @@ const workerBackgroundNotice record.NoticeKind = "worker-background-stalled"
 // It writes one notice and no start row: nothing in the daemon tells a long job from a hung one,
 // so the architect decides.
 func (e *Engine) workerBackgroundStalled(ctx context.Context, tx pgx.Tx, fact intake.WorkerBackgroundStalled) (intake.Result, error) {
-	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role)
+	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role, fact.Claim)
 	if err != nil || read == nil {
 		return intake.Result{}, err
 	}

@@ -8899,12 +8899,11 @@ describe("the stall watch the plugin's entry arms", () => {
     expect(restart[0]).toMatchObject({ content: expect.stringContaining(stuckCall.toolCallId) });
     expect(pane.exits).toEqual([STALL_EXIT_CODE]);
     expect(
-      JSON.parse(
-        await readFile(stallExitsFile(pane.stateDir, classifySession(process.env)), "utf8")
-      )
-      // The file is named and stamped for this claim alone, so one worker's exits never spend
-      // another's budget in a state directory several panes share.
-    ).toMatchObject({ exits: 1, who: "repo-43-implementer" });
+      JSON.parse(await readFile(stallExitsFile(pane.stateDir, pane.claimToken), "utf8"))
+      // The file is named and stamped for this claim's token alone, so one claim's exits never
+      // spend another's budget in a state directory several panes share, two claims of one role
+      // among them.
+    ).toMatchObject({ exits: 1, who: pane.claimToken });
   });
 
   test("a root architect's session sweeps on the same interval", async () => {

@@ -176,7 +176,7 @@ func TestOnlyAnIssueCarryingTheLegionLabelIsAdmitted(t *testing.T) {
 func TestTheWaitingLineRanksOnlyLabeledRootsInDispatchOrder(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+	seedSlotted(t, pool, "LEGION-750", "A")
 
 	for _, event := range []intake.DispatchIssue{
 		{Key: "LEGION-TOP", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "todo", Title: "ranked first, not handed over", Rank: "0"},
@@ -187,7 +187,7 @@ func TestTheWaitingLineRanksOnlyLabeledRootsInDispatchOrder(t *testing.T) {
 	}
 	assertWaiting(t, pool, []string{"LEGION-B", "LEGION-C"})
 
-	apply(t, pool, admission, "active-done", intake.DispatchIssue{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "active", Rank: "A", HandedOver: handed}, engineStub{})
+	apply(t, pool, admission, "active-done", intake.DispatchIssue{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "active", Rank: "A", HandedOver: handed}, engineStub{})
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-B", Index: 0, AdmittedAt: fixedNow}})
 	assertWaiting(t, pool, []string{"LEGION-C"})
 }
@@ -214,21 +214,21 @@ func TestAnUnlabeledChildOfAnAdmittedRootRunsInItsTree(t *testing.T) {
 func TestTakingTheLabelOffAWaitingRootDequeuesItButStopsNoRunningTree(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+	seedSlotted(t, pool, "LEGION-750", "A")
 	seedWaiting(t, pool, "LEGION-NEXT", "B")
 	registerController(t, pool)
 
 	apply(t, pool, admission, "next-unlabeled", intake.DispatchIssue{Key: "LEGION-NEXT", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "next", Rank: "B"}, engineStub{})
 	assertWaiting(t, pool, nil)
-	apply(t, pool, admission, "active-unlabeled", intake.DispatchIssue{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "active", Rank: "A"}, engineStub{})
-	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-ACTIVE", Index: 0, AdmittedAt: fixedNow}})
+	apply(t, pool, admission, "active-unlabeled", intake.DispatchIssue{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "active", Rank: "A"}, engineStub{})
+	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-750", Index: 0, AdmittedAt: fixedNow}})
 
 	// The only waiting root lost its label, so the finished tree's slot stays free: nothing starts,
 	// and the controller is woken about the free slot.
-	apply(t, pool, admission, "active-done", intake.DispatchIssue{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "done", Title: "active", Rank: "A"}, engineStub{})
+	apply(t, pool, admission, "active-done", intake.DispatchIssue{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "done", Title: "active", Rank: "A"}, engineStub{})
 	assertSlots(t, pool, nil)
 	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindControllerNotice, issue: "LEGION-ACTIVE", payload: record.ControllerNotice{Kind: record.SlotFreeNotice}},
+		{kind: record.OutboxKindControllerNotice, issue: "LEGION-750", payload: record.ControllerNotice{Kind: record.SlotFreeNotice}},
 	})
 
 	apply(t, pool, admission, "next-labeled", intake.DispatchIssue{Key: "LEGION-NEXT", ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: "next", Rank: "B", HandedOver: handed}, engineStub{})
@@ -443,7 +443,7 @@ func TestPromotingAWaitingRootReentersAChildStrandedWhileItsLabelWasOff(t *testi
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+	seedSlotted(t, pool, "LEGION-750", "A")
 	const root, child = "LEGION-WAIT", "LEGION-CHILD"
 	parent := root
 	putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: root, Tree: root, Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
@@ -467,7 +467,7 @@ func TestPromotingAWaitingRootReentersAChildStrandedWhileItsLabelWasOff(t *testi
 	}
 
 	// The active slot frees, the waiting root is promoted, and its stranded child is re-entered too.
-	apply(t, pool, admission, "active-done", intake.DispatchIssue{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "LEGION-ACTIVE", Rank: "A"}, engine)
+	apply(t, pool, admission, "active-done", intake.DispatchIssue{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "LEGION-750", Rank: "A"}, engine)
 	assertSlots(t, pool, []record.Slot{{Issue: root, Index: 0, AdmittedAt: fixedNow}})
 	got := issue(t, pool, child)
 	if got.Tree != root || got.Phase != phase.Admitted || got.Generation != 2 {

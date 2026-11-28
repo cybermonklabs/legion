@@ -31,7 +31,7 @@ import (
 // The take is made here without the resume behind it, which is what both shapes leave in the
 // record: a resume that failed after its take committed, and a daemon that came back up between
 // the two and reads the claim released with the resume open. The wake that meets it takes no wake
-// of its own — the resume already recorded is still the role's one open resume — and brings the
+// of its own — the resume already recorded is still the claim's one open resume — and brings the
 // claim back. No pause held that resume, so the wake says at Warn that it stands open with no
 // process behind it (logRefusedByOpenResume).
 func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
@@ -44,11 +44,11 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 		t.Fatalf("the claim after the release = %s by %s, want it released", got.State, got.SuspendedBy)
 	}
 
-	taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeDelivery, time.Now().UTC(), 0)
+	taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, claim.RoleImplementer, pods.WakeDelivery, time.Now().UTC(), 0)
 	if err != nil || !taken {
 		t.Fatalf("take the wake whose resume never ran = %t, %v; want it taken", taken, err)
 	}
-	resume, pause, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
+	resume, pause, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, rig.token)
 	if err != nil || !open || pause != 0 {
 		t.Fatalf("the open resume after that take = %d, pause %d, %t, %v; want the one it recorded, which no pause held", resume, pause, open, err)
 	}
@@ -72,7 +72,7 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	}
 	// The heal takes no wake of its own: the resume the first take recorded is still the one
 	// open, so the records hold one resume of this release rather than two.
-	again, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
+	again, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, rig.token)
 	if err != nil || !open || again != resume {
 		t.Fatalf("the open resume after the heal = %d, %t, %v; want the first take's %d", again, open, err, resume)
 	}
@@ -105,11 +105,11 @@ func TestADeliveryWakeMeetingAWakeWhoseStartIsQueuedLogsAtDebug(t *testing.T) {
 		t.Fatalf("the claim after the release = %s by %s and the mark stands = %t, want it released and the release finished",
 			got.State, got.SuspendedBy, rig.marked(t))
 	}
-	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, pods.WakeChecks, time.Now().UTC(), 0); err != nil || !taken {
+	if taken, err := rig.st.TakePodWake(ctx, "legion", rig.issue.Key, rig.token, claim.RoleImplementer, pods.WakeChecks, time.Now().UTC(), 0); err != nil || !taken {
 		t.Fatalf("take the settlement's wake = %t, %v; want it taken", taken, err)
 	}
 	enqueueOutbox(t, rig.pool, rig.issues, mustOutboxRow(t, rig.issue.Key, record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree,
-		Role: claim.RoleImplementer, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, "head1 failed build", workflow.StoppedByRelease),
+		Role: claim.RoleImplementer, Claim: rig.token, Generation: 1, Task: workflow.WakeTask(pods.WakeChecks, "head1 failed build", workflow.StoppedByRelease),
 		WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build"}, time.Now().UTC().Add(time.Hour)))
 	logs := &testlog.Buffer{}
 	rig.runner.log = slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -160,7 +160,7 @@ func TestADeliveryWakeWaitsForTheTeardownOfAReleaseThatRecordedItsRole(t *testin
 		t.Fatalf("the wake while the release runs = %t, %s, %v; want no wake and a routine wait until 30 seconds on: the release recorded the role",
 			woken, turn, err)
 	}
-	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || open {
+	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, rig.token); err != nil || open {
 		t.Fatalf("an open resume after the wake that waited = %t, %v; want none: the wake took nothing", open, err)
 	}
 	if got := rig.machine.Claim(); !got.Released() || len(rig.rt.CallsOf("Resume")) != resumes {

@@ -36,7 +36,7 @@ func TestADaemonBuiltFactLeavesTheCopy(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-		seedSlotted(t, pool, "LEGION-ACTIVE", "A")
+		seedSlotted(t, pool, "LEGION-750", "A")
 		const root, child = "LEGION-WAIT", "LEGION-CHILD"
 		parent := root
 		putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: root, Tree: root, Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
@@ -49,7 +49,7 @@ func TestADaemonBuiltFactLeavesTheCopy(t *testing.T) {
 		stranded.LastDispatchSeq = 20
 		putIssue(t, pool, stranded)
 
-		if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "active-done", intake.DispatchIssue{Key: "LEGION-ACTIVE", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "LEGION-ACTIVE", Rank: "A"},
+		if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "active-done", intake.DispatchIssue{Key: "LEGION-750", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "LEGION-750", Rank: "A"},
 			blockers.NewMirror(record.NewStore(), testProject), engine, admission); err != nil {
 			t.Fatalf("ApplyFact active-done: %v", err)
 		}

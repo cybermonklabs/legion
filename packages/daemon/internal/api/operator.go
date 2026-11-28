@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
@@ -12,31 +11,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/experiment"
-	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // invalidOperatorToken is every operator route's one refusal.
 const invalidOperatorToken = "Invalid operator token"
-
-// SpawnRequest is the operator's spawn: the claim on Role of Issue, in the tree Tree roots.
-// Prompt is an optional test override; without it the daemon composes the role prompt itself.
-// Task, when set, is its first delivery, queued before the agent is ready and sent once it is.
-type SpawnRequest struct {
-	Tree   string     `json:"tree"`
-	Issue  string     `json:"issue"`
-	Role   claim.Role `json:"role"`
-	Prompt string     `json:"prompt,omitempty"`
-	Task   string     `json:"task,omitempty"`
-}
 
 // DeliverRequest gives a claim a task.
 type DeliverRequest struct {
@@ -76,118 +57,6 @@ func (s *server) operator(next http.HandlerFunc) http.HandlerFunc {
 func secureBearerEqual(expected [sha256.Size]byte, given string) bool {
 	presented := sha256.Sum256([]byte(given))
 	return subtle.ConstantTimeCompare(presented[:], expected[:]) == 1
-}
-
-// spawn creates the claim — or finds it, when it exists — and posts the launch to its machine,
-// then the task, so a claim the machine will not launch is given no task either. While the project
-// is paused it creates and launches nothing (refusedWhilePaused).
-func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
-	var req SpawnRequest
-	if !s.readBody(w, r, &req, nil) || !s.requireFields(w, r,
-		field{"tree", req.Tree}, field{"issue", req.Issue}, field{"role", string(req.Role)},
-	) {
-		return
-	}
-	for _, key := range []field{{"tree", req.Tree}, {"issue", req.Issue}} {
-		if !claim.IsIssueKey(key.value) {
-			s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("%s %q is not an issue key", key.name, key.value))
-			return
-		}
-	}
-	if !claim.IsRole(req.Role) {
-		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("role %q is not a role", req.Role))
-		return
-	}
-	role := string(req.Role)
-	if !claim.IsBuiltin(req.Role) && !s.spawnableDeploymentRole(role) {
-		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("role %q is not a spawnable role; deployment-defined roles: %s",
-			req.Role, s.deploymentRoleNames()))
-		return
-	}
-	token, err := claim.NewToken(s.project, req.Issue, req.Role)
-	if err != nil {
-		s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
-		return
-	}
-	ctx, decided := s.decision(r, token)
-	defer decided()
-	if s.stopped(w, r, "spawn") {
-		return
-	}
-	c := supervise.Claim{
-		Token: token, Project: s.project, Tree: req.Tree, Issue: req.Issue, Role: req.Role, State: supervise.StateQueued,
-	}
-	if s.refusedWhilePaused(w, r, "spawn", c) {
-		return
-	}
-	if claim.IsTreeArchitect(req.Role, req.Issue, req.Tree) {
-		if _, err := s.trees.OpenOperatorTreeLifecycle(ctx, s.project, req.Tree, s.drawExperiments(req.Tree)); errors.Is(err, treelifecycle.ErrCleanupReserved) {
-			s.refuse(w, r, http.StatusConflict, fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err))
-			return
-		} else if err != nil {
-			s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
-			return
-		}
-	}
-	m, created, err := s.supervisor.Create(ctx, c, req.Prompt)
-	if err != nil {
-		s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
-		return
-	}
-	// The operator is waiting on this answer, so the wake pacing never holds this launch
-	// (supervise's reserveWake): one person's spawn is not the wave the pacing exists for, and a
-	// route that answered with a claim parked launching would read as a daemon that did nothing.
-	if err := m.Handle(ctx, supervise.RequestSpawn{Claim: token, Exempt: true}); err != nil {
-		s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
-		return
-	}
-	if req.Task != "" {
-		if err := m.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: req.Task}); err != nil {
-			s.operationFailure(w, r, supervise.SuspendedByOperator, "deliver", token, err)
-			return
-		}
-	}
-	status := http.StatusOK
-	if created {
-		status = http.StatusCreated
-	}
-	s.operatorDone(r, token)
-	s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(ctx, m.Claim()))
-}
-
-// spawnableDeploymentRole says whether role is a role of the deployment the operator may start: one
-// the deployment's settings define that runs as the phase step and is none of Legion's six. The
-// plan's built-in steps, including owner acceptance, are not deployment roles.
-func (s *server) spawnableDeploymentRole(role string) bool {
-	return plan.RunsAs(role) == phase.Step && !claim.IsBuiltin(claim.Role(role)) && s.deployment.Defines(role)
-}
-
-// deploymentRoleNames lists the spawnable roles configured in addition to Legion's six.
-func (s *server) deploymentRoleNames() string {
-	var names []string
-	for role := range s.deployment.Roles {
-		if s.spawnableDeploymentRole(role) {
-			names = append(names, role)
-		}
-	}
-	if len(names) == 0 {
-		return "none"
-	}
-	sort.Strings(names)
-	return strings.Join(names, ", ")
-}
-
-// drawExperiments draws the tree-unit experiments the project declares for tree, for the open
-// that creates the tree's lifecycle row to run in its own transaction
-// (store.Store.OpenOperatorTreeLifecycle, experiment.DrawAndRecord): one answer per experiment,
-// under the mode the project declares it at and at the instant this server's clock reads,
-// recorded against the tree's root issue key (record.Store.PutAssignments, which admission's own
-// path draws through too). An operator's tree usually has no issue record at all, and then the
-// draw writes nothing — nothing is refused and no record is invented.
-func (s *server) drawExperiments(tree string) func(ctx context.Context, tx pgx.Tx) error {
-	return func(ctx context.Context, tx pgx.Tx) error {
-		return experiment.DrawAndRecord(ctx, tx, s.records, tree, s.experiments, config.ExperimentTree, s.source, s.now())
-	}
 }
 
 // claimRequest is one operator request on an existing claim: event builds the request the claim's
@@ -686,15 +555,22 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 }
 
 // operationFailure answers an agent action its machine did not take, the operator's or the
-// controller's (by): 409 with the machine's reason when the claim's state does not allow it, and
-// otherwise a 500 that says what failed — the caller is the one who has to act on a launch the
-// runtime refused. The line it logs names the caller in its `by` field, so the operator's failures
-// are told from the controller's (operatorDone).
+// controller's (by): 409 with the machine's reason when the claim's state does not allow it, 409
+// when the request's first act found the step it read the claim on moved to another claim
+// (supervise.ErrStepLeft, agentDoor), with nothing of the claim changed, and otherwise a 500 that
+// says what failed — the caller is the one who has to act on a launch the runtime refused. The
+// line it logs names the caller in its `by` field, so the operator's failures are told from the
+// controller's (operatorDone).
 func (s *server) operationFailure(w http.ResponseWriter, r *http.Request, by supervise.SuspendSource, request string,
 	token claim.Token, err error) {
 	var refused *supervise.RefusedError
-	if errors.As(err, &refused) {
+	switch {
+	case errors.As(err, &refused):
 		s.refuse(w, r, http.StatusConflict, refused.Error())
+		return
+	case errors.Is(err, supervise.ErrStepLeft):
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+			"%s refused: the step %s was read on is another claim's now, and nothing of %s changed, so ask again: %v", request, token, token, err))
 		return
 	}
 	s.logFailure("api: an agent action failed", "by", string(by), "request", request, "claim", token, "error", err)

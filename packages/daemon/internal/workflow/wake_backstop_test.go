@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -68,11 +67,11 @@ func TestABackstopWakesNoWorkerOfAnIssueThatWaitsForItsSlot(t *testing.T) {
 					t.Fatalf("give the issue its slot: %v", err)
 				}
 			}
-			id := armBackstop(t, rig.pool, woken, wakeAt.Add(-time.Minute))
-			rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: woken})
+			fact := armBackstop(t, rig.pool, wakeToken(t, woken), woken, wakeAt.Add(-time.Minute))
+			rig.apply("backstop", fact)
 
 			var fired bool
-			if err := rig.pool.QueryRow(ctx, `select fired from pod_wake_backstops where id = $1`, id).Scan(&fired); err != nil {
+			if err := rig.pool.QueryRow(ctx, `select fired from pod_wake_backstops where id = $1`, fact.ID).Scan(&fired); err != nil {
 				t.Fatalf("read the backstop: %v", err)
 			}
 			if !fired {

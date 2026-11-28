@@ -376,6 +376,11 @@
           "claim": {
             "state": "suspended"
           }
+        },
+        "reviewer": {
+          "claim": {
+            "state": "working"
+          }
         }
       }
     },

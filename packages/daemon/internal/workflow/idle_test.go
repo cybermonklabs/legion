@@ -30,18 +30,18 @@ var (
 // either. Each row of the table below changes exactly one thing about it.
 func idleChild() pods.IdleView {
 	return pods.IdleView{
-		Issue: "LEGION-209", Tree: "LEGION-208", Found: true,
+		Issue: "LEGION-209", Project: "legion", Tree: "LEGION-208", Found: true,
 		Phase: phase.Implementing, Status: "in_progress", Generation: 3,
 		Root: pods.IdleRoot{Phase: phase.Admitted, Status: "in_progress", Generation: 2},
 		Claims: []pods.IdleClaim{
 			{
-				Role:  claim.RoleImplementer,
+				Token: "legion-legion-legion-209-implementer", Role: claim.RoleImplementer,
 				State: supervise.StateIdle, PluginContract: idleContract, ServingGeneration: 3,
 				LastTurnAt: idleNow.Add(-20 * time.Minute),
 				ActivityAt: idleNow.Add(-15 * time.Minute), UpdatedAt: idleNow.Add(-15 * time.Minute),
 			},
 			{
-				Role: claim.RoleTester, State: supervise.StateSuspended,
+				Token: "legion-legion-legion-209-tester", Role: claim.RoleTester, State: supervise.StateSuspended,
 				PluginContract: 11, UpdatedAt: idleNow.Add(-40 * time.Minute),
 			},
 		},
@@ -55,7 +55,7 @@ func idleRoot() pods.IdleView {
 	view.Issue, view.Tree, view.Phase = "LEGION-208", "LEGION-208", phase.Admitted
 	view.Generation = 2
 	view.Claims = view.Claims[:1]
-	view.Claims[0].Role = claim.RoleArchitect
+	view.Claims[0].Token, view.Claims[0].Role = "legion-legion-legion-208-architect", claim.RoleArchitect
 	view.Claims[0].ServingGeneration = 2
 	return view
 }
@@ -476,12 +476,12 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			if want := tc.want == IdleHoldNone; got.Release != want {
 				t.Fatalf("release = %v, want %v (hold %s)", got.Release, want, got.Hold)
 			}
-			if len(got.Roles) != len(tc.roles) {
-				t.Fatalf("roles = %v, want %v", got.Roles, tc.roles)
+			if len(got.Claims) != len(tc.roles) {
+				t.Fatalf("claims = %v, want the roles %v", got.Claims, tc.roles)
 			}
 			for i, role := range tc.roles {
-				if got.Roles[i] != role {
-					t.Fatalf("roles = %v, want %v", got.Roles, tc.roles)
+				if got.Claims[i].Role != role {
+					t.Fatalf("claims = %v, want the roles %v", got.Claims, tc.roles)
 				}
 			}
 		})
@@ -531,7 +531,7 @@ func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
 		if !decided.Release {
 			return store.IdleReleaseMark{}, nil
 		}
-		return store.IdleReleaseMark{Generation: view.Generation, Role: decided.Roles[0], Rows: []store.IdleReleaseRow{
+		return store.IdleReleaseMark{Generation: view.Generation, Role: decided.Claims[0].Role, Rows: []store.IdleReleaseRow{
 			{Kind: "issue_bundle", Payload: []byte(`{"tree":"OTHER-8","generation":1,"treeGeneration":1,"role":"architect"}`)},
 			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"OTHER-8","role":"architect","generation":1}`), Boundary: true},
 			{Kind: "issue_release", Payload: []byte(`{"tree":"OTHER-8","generation":1,"treeGeneration":1}`)},

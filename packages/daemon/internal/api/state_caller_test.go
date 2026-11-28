@@ -678,6 +678,9 @@ func servedAt(t *testing.T, body []byte, contract int) []byte {
 			}
 		}
 	}
+	if contract < entryNumber(strandedTokenContract) {
+		strandedWithoutTokens(served)
+	}
 	servedShape(served, contract)
 	encoded, err := json.Marshal(served)
 	if err != nil {
@@ -1243,6 +1246,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// Every row that reaches here is below repositoryAppsContract too, so no entry of the
 			// repositories it is served carries `apps`.
 			stripRepositoryApps(want)
+			// And below strandedTokenContract, so no claim nothing will wake carries its `token`
+			// (withoutStrandedTokens).
+			strandedWithoutTokens(want)
 			// Every row that reaches here is below supervise.PodUpdateContract, which is below
 			// both of the contracts servedShape reads: such a caller is served each check
 			// without `role` and both fix-attempt stand-ins.
@@ -1282,6 +1288,34 @@ func strandedWithoutRetired(t *testing.T, stranded any) []any {
 		kept = append(kept, row)
 	}
 	return kept
+}
+
+// strandedWithoutTokens takes off a baseline body every key strandedTokenContract added to the
+// state, which a pod below that contract is served without: `token` off each entry of
+// `strandedClaims` (api's withoutStrandedTokens), and off each issue's claim views, and each
+// issue's `otherClaims` (api's withoutClaimTokens).
+func strandedWithoutTokens(body map[string]any) {
+	rows, _ := body["strandedClaims"].([]any)
+	for _, row := range rows {
+		delete(row.(map[string]any), "token")
+	}
+	issues, _ := body["issues"].(map[string]any)
+	for _, issue := range issues {
+		issue, ok := issue.(map[string]any)
+		if !ok {
+			continue
+		}
+		delete(issue, "otherClaims")
+		if architect, ok := issue["architect"].(map[string]any); ok {
+			delete(architect, "token")
+		}
+		workers, _ := issue["workers"].(map[string]any)
+		for _, worker := range workers {
+			if view, ok := worker.(map[string]any)["claim"].(map[string]any); ok {
+				delete(view, "token")
+			}
+		}
+	}
 }
 
 // withoutLowestContract is a state body as a string with `lowestPluginContract` and the
@@ -1429,10 +1463,13 @@ func TestTheStateRouteServesAPodItsPluginContractsStrandedClaims(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(retiredStrandedContract-1))
 	every, carried := strandedServed(t, full)
 	// A pod below retiredStrandedContract is below deploymentRolesContract too, so its entries are
-	// those of Legion's six roles alone (withoutDeploymentRoleClaims) whose state it knows.
+	// those of Legion's six roles alone (withoutDeploymentRoleClaims) whose state it knows, and
+	// below strandedTokenContract, so none carries its `token` (withoutStrandedTokens).
 	var kept []map[string]string
 	for _, entry := range every {
 		if entry["state"] != string(supervise.StateRetired) && claim.IsBuiltin(claim.Role(entry["role"])) {
+			entry = maps.Clone(entry)
+			delete(entry, "token")
 			kept = append(kept, entry)
 		}
 	}

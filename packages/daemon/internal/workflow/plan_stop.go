@@ -29,8 +29,11 @@ import (
 // status, since held has none (PhaseStatus). The process of the step's role is stopped with its
 // session kept (the op step_stop, whose source is the daemon's, said as its reason), except for
 // accepting, whose architect is the owner itself and runs no process of Legion's for the step, and a
-// phase no role works. The task's state is the caller's to have read: a task done or left is no task
-// to stop (StopTask refuses it).
+// phase no role works. The stop's row names the claim of the agent that ran the step, read here in
+// the fact's transaction (workerClaim), and the outbox stops that claim: a restart of the task before
+// the row runs enters the first step and writes its agent on the role's row, and a row resolved when
+// it runs would stop that agent and leave the stopped step's running. The task's state is the
+// caller's to have read: a task done or left is no task to stop (StopTask refuses it).
 func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, why, said string, end StepEnd) (*intake.Refusal, error) {
 	if refusal := stopRefusal(issue, w.Task); refusal != nil {
 		return refusal, nil
@@ -67,7 +70,12 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	if role == "" {
 		return nil, nil
 	}
-	return nil, e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: said})
+	agent, err := e.workerClaim(ctx, tx, issue, role)
+	if err != nil {
+		return nil, err
+	}
+	return nil, e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: role, Claim: agent,
+		Generation: issue.Generation, Reason: said})
 }
 
 // StoppedStepRole is the role whose process the stop of issue's task stopped (stopTask's

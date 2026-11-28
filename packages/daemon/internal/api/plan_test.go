@@ -512,15 +512,16 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 // reason lists at most plan.MostReasons task ids. Three versions below are one `plan_task` block
 // whose one attribute holds 1 MiB of words, the most a Dispatch document holds as its server
 // writes it, each word a cause of its own: 262,144 `needs` words that name no task, 209,712 roles
-// nobody defines, and 116,508 steps `tester:k`, each with a key and with no implementer before
-// it. Each answer is within perKind bytes for each kind it holds, and counts the rest of each kind
-// past the bound, in its sentence too. Three more quote or list long values, each within
-// perLongKind for each kind, a bound computed from those constants: a ring of 40,000 tasks, whose
-// reasons list the plan's tasks and the cycle through them; a task whose id is 900 KB; and a task
-// whose one need is a word of 1 MiB, each of the last two quoted with its mark. The faults are an
-// answer with a reason for each cause and one that quotes or lists a value whole; the controls
-// take out plan's bound of the reasons, under which the three versions are answered in 34, 44 and
-// 66 MB and the ring in 9.6 MB, and quoted's cut with listed's and chainOf's, under which the
+// nobody defines, and 80,659 steps `acceptance:k`, each with a key acceptance does not take (it
+// takes the key owner alone) and with no implementer before it. Each answer is within perKind
+// bytes for each kind it holds, and counts the rest of each kind past the bound, in its sentence
+// too. Three more quote or list long values, each within perLongKind for each kind, a bound
+// computed from those constants: a ring of 40,000 tasks, whose reasons list the plan's tasks and
+// the cycle through them; a task whose id is 900 KB; and a task whose one need is a word of 1 MiB,
+// each of the last two quoted with its mark. The faults are an answer with a reason for each cause
+// and one that quotes or lists a value whole; the controls take out plan's bound of the reasons,
+// under which the first two versions are answered in 34 and 44 MB and the third in tens of MB,
+// and the ring in 9.6 MB, and quoted's cut with listed's and chainOf's, under which the
 // ring, the long id and the long need are answered whole. It holds the counts and the size, and no
 // sentence.
 func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
@@ -554,8 +555,10 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 	for i := range (mib - len("implementer ")) / len("abcd ") {
 		roles = append(roles, string(letters[i/(37*37*37)])+digits(i, rest, 3))
 	}
-	steps := mib / len("tester:k ")
-	keyed := strings.TrimSuffix(strings.Repeat("tester:k ", steps), " ")
+	// A step of another role may name any key, and acceptance takes the key owner alone, so each
+	// step acceptance:k is refused for its key.
+	steps := mib / len("acceptance:k ")
+	keyed := strings.TrimSuffix(strings.Repeat("acceptance:k ", steps), " ")
 	// The ring: t00000 to t39999, each needing the next and the last the first.
 	const ringSize = 40_000
 	ring := make([]dispatch.DocumentBlock, ringSize)
@@ -576,9 +579,9 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 			perKind, plan.MostReasons + 1, []int{len(words) - plan.MostReasons}, ""},
 		{"209,712 roles nobody defines", []dispatch.DocumentBlock{taskBlock("a", strings.Join(roles, " "))},
 			perKind, plan.MostReasons + 1, []int{len(roles) - 1 - plan.MostReasons}, ""},
-		// Four kinds: a key at each step, the role tester at two steps, no implementer, and no
-		// implementer before each step.
-		{"116,508 steps tester:k", []dispatch.DocumentBlock{taskBlock("a", keyed)},
+		// Four kinds: a key acceptance does not take at each step, the role acceptance at two
+		// steps, no implementer, and no implementer before each step.
+		{"80,659 steps acceptance:k", []dispatch.DocumentBlock{taskBlock("a", keyed)},
 			4 * perKind, 2*(plan.MostReasons+1) + 2, []int{steps - plan.MostReasons, steps - plan.MostReasons}, ""},
 		// Three kinds: the plan's tasks, the need of each task, and the one cycle.
 		{"a ring of 40,000 tasks", ring, 3 * perLongKind, 1 + plan.MostReasons + 1 + 1, []int{ringSize - plan.MostReasons}, ""},

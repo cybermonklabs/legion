@@ -79,7 +79,7 @@ import {
   LegionWaveReleaseResponse,
   legionStateMessage,
 } from "./legion-api";
-import { DISPATCH_KEY_PATTERN, isStepRole, LEGION_ROLES } from "./legion-roles";
+import { DISPATCH_KEY_PATTERN, isStepRole, LEGION_ROLES, roleToken } from "./legion-roles";
 import { PlanRatingCases } from "./plan-rating-cases";
 
 test("a look's report names its check and carries no step's record or commit", () => {
@@ -2346,6 +2346,40 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
+// A claim whose refused launch's fact the store has not taken carries `unrecordedRefusal` on the
+// operator routes (`api.OperatorClaim.UnrecordedRefusal`): when the first failed try failed, how
+// many tries have failed, and the last try's error. The daemon writes it only while such a fact
+// fails, and the schema must name it, since a key it does not name is stripped. A count below one
+// or an empty error, which the daemon never writes, is refused.
+test("an operator claim carries a refusal the store has not recorded", () => {
+  const listing = fixture("operator-claims.json") as {
+    claims: {
+      token: string;
+      unrecordedRefusal?: { since: string; attempts: number; error: string };
+    }[];
+  };
+  const testerClaim = "legion-legion-legion-211-tester";
+  const tester = listing.claims.find((claim) => claim.token === testerClaim);
+  if (tester === undefined) {
+    throw new Error(`operator-claims fixture lacks ${testerClaim}`);
+  }
+  const unrecorded = {
+    since: "2026-11-23T17:00:00Z",
+    attempts: 3,
+    error: `apply fact supervise/pod-refused:${testerClaim}:1: the database did not answer`,
+  };
+  tester.unrecordedRefusal = unrecorded;
+  expect(
+    LegionOperatorClaimsResponse.parse(listing).claims.find((claim) => claim.token === testerClaim)
+      ?.unrecordedRefusal
+  ).toEqual(unrecorded);
+
+  tester.unrecordedRefusal = { ...unrecorded, attempts: 0 };
+  expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
+  tester.unrecordedRefusal = { ...unrecorded, error: "" };
+  expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
+});
+
 // The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // it shaped the body to — and the body it narrows for a caller below it carries no such key at
@@ -3295,8 +3329,23 @@ const strandedClaimAt45 = z.strictObject({
 });
 
 test("a reader at the previous contract parses the state body this daemon serves", () => {
-  const state = fixture("state.json") as {
-    strandedClaims: { issue: string; role: string; state: string }[];
+  const golden = fixture("state.json") as {
+    strandedClaims: { issue: string; role: string; state: string; token?: string }[];
+  };
+  // Each entry names its claim's token since the stranded token's contract entry, a key the 45
+  // reader does not know: a strict object refuses the entry, and so the whole state body, over it.
+  // That is why the state route serves a pod below that entry every entry without it (`api`'s
+  // `withoutStrandedTokens`, pinned on the Go side), and the entries below are read as such a pod
+  // is served them.
+  const withToken = golden.strandedClaims[0];
+  if (withToken?.token === undefined) {
+    throw new Error("state fixture lacks a stranded claim with its token");
+  }
+  const tokened = strandedClaimAt45.safeParse(withToken);
+  expect(tokened.success).toBeFalse();
+  expect(tokened.error?.issues[0]?.code).toBe("unrecognized_keys");
+  const state = {
+    strandedClaims: golden.strandedClaims.map(({ token: _token, ...entry }) => entry),
   };
   const builtin = new Set<string>(LEGION_ROLES);
   // The golden carries all three kinds: a failed claim, a claim the operator suspended — the
@@ -3602,7 +3651,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
   // claim view; and contract 275's, which takes `dispatchCredential` off the state. Above them
-  // stand six entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
+  // stand seven entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
   // the `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`);
   // the state-seq entry's, entry 20261125174131's (dispatch://INFRA-3931), which takes `stateSeq`,
   // `stateId` and `stateRun` off the daemon block; the roles of a deployment's, entry
@@ -3612,8 +3661,11 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // without its `resolvedPriority` and `priorityFrom` and the admission without its `p0Holders` and
   // `p0Bound`; the repository correction's (dispatch://INFRA-3136), entry 20261125181104's, which
   // serves each issue without its `repoBefore`, `repoCorrectedAt`, `repoChangePending` and
-  // `repoChangeReason`; and the claim-left entry's (dispatch://INFRA-3144), entry 20261127202231's,
-  // which serves each issue without its `claimLeft` (`withoutClaimLeft`).
+  // `repoChangeReason`; the stranded token's, entry 20261125201906's (`strandedTokenContract`),
+  // which serves each claim nothing will wake and each claim view without its `token`, and each
+  // issue without its `otherClaims` (`withoutStrandedTokens`, `withoutClaimTokens`); and the
+  // claim-left entry's (dispatch://INFRA-3144), entry 20261127202231's, which serves each issue
+  // without its `claimLeft` (`withoutClaimLeft`).
   // So the golden's issues, rows, claim views and daemon block are compared without them. One
   // value strip stands above 199 as well: `caches`, the source of the repository-cache-room row,
   // arrived at contract 213, so that row is served here without its `source`, every other field of
@@ -3723,15 +3775,46 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     p0Bound: _p0Bound,
     ...admission
   } = z.record(z.string(), z.unknown()).parse(rest.admission);
-  expect(narrowedRest).toEqual(
-    belowDeploymentRoles({
-      ...rest,
-      daemon: daemonBelowStateSeq,
-      issues: narrowedIssues,
-      capabilities: withoutCachesSource,
-      admission,
-    })
+  const below = belowDeploymentRoles({
+    ...rest,
+    daemon: daemonBelowStateSeq,
+    issues: narrowedIssues,
+    capabilities: withoutCachesSource,
+    admission,
+  });
+  const stranded = below.strandedClaims as Record<string, unknown>[] | undefined;
+  const withoutToken = (view: unknown): unknown => {
+    if (typeof view !== "object" || view === null) return view;
+    const { token: _token, ...kept } = view as Record<string, unknown>;
+    return kept;
+  };
+  const issuesWithoutTokens = Object.fromEntries(
+    Object.entries((below.issues ?? {}) as Record<string, Record<string, unknown>>).map(
+      ([key, { otherClaims: _others, architect, workers, ...issue }]) => [
+        key,
+        {
+          ...issue,
+          ...(architect === undefined ? {} : { architect: withoutToken(architect) }),
+          ...(workers === undefined
+            ? {}
+            : {
+                workers: Object.fromEntries(
+                  Object.entries(workers as Record<string, Record<string, unknown>>).map(
+                    ([role, worker]) => [role, { ...worker, claim: withoutToken(worker.claim) }]
+                  )
+                ),
+              }),
+        },
+      ]
+    )
   );
+  expect(narrowedRest).toEqual({
+    ...below,
+    issues: issuesWithoutTokens,
+    ...(stranded === undefined
+      ? {}
+      : { strandedClaims: stranded.map(({ token: _token, ...kept }) => kept) }),
+  });
 
   // What serving the current block would do: the reader of 152 refuses it for the three keys it
   // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to
@@ -3945,15 +4028,27 @@ test("the state golden shows a claim's capability report beside its locator", ()
 // held, LEGION-218's tree architect, which the operator suspended, LEGION-219's tree architect,
 // which the close of the run before retired and which only its tree's admission would start
 // again (contract 56), and LEGION-241's failed checker, a role of the deployment (the deployment
-// roles' contract entry) — three keys each, neither the suspended nor the retired one wider than
-// the failed one — and a state with none carries an empty list rather than none.
+// roles' contract entry) — four keys each, neither the suspended nor the retired one wider than
+// the failed one, the fourth the claim's token, which tells two claims of one role on one issue
+// apart — and a state with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list may be left out", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
+  // Each claim is the one named for its role, so its token is that role's own (`roleToken`).
+  const entry = (
+    issue: "LEGION-210" | "LEGION-218" | "LEGION-219" | "LEGION-241",
+    role: Parameters<typeof roleToken>[2],
+    held: "failed" | "suspended" | "retired"
+  ) => ({
+    issue,
+    role,
+    state: held,
+    token: roleToken("legion", issue, role),
+  });
   expect(state.strandedClaims).toEqual([
-    { issue: "LEGION-210", role: "implementer", state: "failed" },
-    { issue: "LEGION-218", role: "architect", state: "suspended" },
-    { issue: "LEGION-219", role: "architect", state: "retired" },
-    { issue: "LEGION-241", role: "checker", state: "failed" },
+    entry("LEGION-210", "implementer", "failed"),
+    entry("LEGION-218", "architect", "suspended"),
+    entry("LEGION-219", "architect", "retired"),
+    entry("LEGION-241", "checker", "failed"),
   ]);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).strandedClaims).toEqual([]);
 

@@ -33,6 +33,7 @@ func TestATesterProjectsMergedChildCloseOpensItsCheckAndSparesTheTester(t *testi
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	seedRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, ProductionCheckRole: claim.RoleTester, Clock: func() time.Time { return now }}, nil)
 
 	if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}, engine, admissionStub{}); err != nil || result.Refusal != nil {
@@ -62,7 +63,7 @@ func TestATesterProjectsMergedChildCloseOpensItsCheckAndSparesTheTester(t *testi
 			want = 0
 		}
 		if closed["LEGION-209/"+string(role)] != want {
-			t.Fatalf("issue_close rows = %v, want one for every role but the tester, the implementer's among them", closed)
+			t.Fatalf("issue_close rows = %v, want one for each stored claim, one of each role here, but the tester's, the implementer's among them", closed)
 		}
 	}
 	starts := superviseRowsOf(t, pool, "LEGION-209", "start")
@@ -122,6 +123,7 @@ func TestAnOffProjectsMergedChildCloseRetiresEveryClaimAndReleasesItsPod(t *test
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	seedRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, Clock: func() time.Time { return now }}, nil)
 
 	if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}, engine, admissionStub{}); err != nil || result.Refusal != nil {
@@ -156,6 +158,7 @@ func TestARootsCloseLingersItsTreeAndOpensItsCheckBehindTheLingersRows(t *testin
 	t.Parallel()
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	pool := rig.pool
+	seedRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	assertPhase(t, pool, phase.Merging)
 
 	rig.apply("child-done", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V1"})
@@ -210,6 +213,7 @@ func TestAnOffProjectsMergedRootCloseLingersWithEveryClaimSuspended(t *testing.T
 	t.Parallel()
 	rig := seedMergedRootUnder(t, "", record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	pool := rig.pool
+	seedRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	assertPhase(t, pool, phase.Merging)
 
 	rig.apply("child-done", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V1"})
@@ -294,6 +298,7 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	parent := "LEGION-208"
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "V", LastDispatchSeq: 1})
+	seedRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Clock: func() time.Time { return time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC) }}, nil)
 
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "child-done", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "child", Parent: "LEGION-208", Rank: "V"}, engine, admissionStub{}); err != nil {
@@ -302,7 +307,7 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 	closed := superviseRequests(t, pool, "issue_close")
 	for _, role := range claim.Roles {
 		if closed["LEGION-209/"+string(role)] != 1 {
-			t.Fatalf("issue_close rows = %v, want one for every role", closed)
+			t.Fatalf("issue_close rows = %v, want one for each stored claim, one of each role here", closed)
 		}
 	}
 	if got := issueSuspensions(t, pool, "LEGION-209"); len(got) != 1 {
@@ -419,6 +424,7 @@ func TestAMergedRootClosesWhenItsLastOpenChildLeaves(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := seedMergedRoot(t, tc.child)
+			seedRoleClaims(t, rig.pool, "LEGION-208", "LEGION-209")
 			tc.leave(t, rig)
 			assertPhase(t, rig.pool, phase.Done)
 			var lingering bool

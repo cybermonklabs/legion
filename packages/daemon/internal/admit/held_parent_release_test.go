@@ -103,10 +103,10 @@ func TestAParentHeldForItsChildrenIsReleasedWheneverNothingBeneathItIsOpen(t *te
 			GivenBy: "legion-legion-legion-208-architect", GivenAt: fixedNow.Add(-time.Hour)}
 		task := record.PlanTask{Issue: parent, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskRunning,
 			Place: record.TaskPlace{Kind: record.PlaceRetro}}
-		steps := []record.PlanStep{
+		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: parent, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: parent, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-		}
+		}, nil)
 		inTx(t, pool, func(tx pgx.Tx) {
 			records := record.NewStore()
 			for _, put := range []error{
@@ -197,10 +197,10 @@ func TestARetryOfAParentHeldForItsChildrenSaysWhyItsRetroWaits(t *testing.T) {
 			GivenBy: "legion-legion-legion-208-architect", GivenAt: fixedNow.Add(-time.Hour)}
 		task := record.PlanTask{Issue: parent, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskRunning,
 			Place: record.TaskPlace{Kind: record.PlaceRetro}}
-		steps := []record.PlanStep{
+		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: parent, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: parent, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-		}
+		}, nil)
 		// The operator paused the project, so nothing promotes the parent once it is a root.
 		pauseTestProject(t, pool, fixedNow)
 		inTx(t, pool, func(tx pgx.Tx) {

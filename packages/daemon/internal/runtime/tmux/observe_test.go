@@ -72,7 +72,7 @@ func TestAGraceZeroSweepReapsOrphansWhoseActivityIsALaterSecondThanTheSweepBegan
 	r.track(runtime.Locator{
 		Runtime: runtime.RuntimeTmux, Claim: "legion-omp-legion-1-architect", Incarnation: "4242:1",
 		Tmux: &runtime.TmuxLocator{Window: "@2", Pane: "%2"},
-	}, "LEGION-1", ghrepo.Repository{}, "")
+	}, "LEGION-1", ghrepo.Repository{}, "", claim.RoleArchitect)
 	var kills [][]string
 	r.run = func(_ context.Context, argv []string) (result, error) {
 		switch verb(argv) {

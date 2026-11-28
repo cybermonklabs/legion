@@ -43,7 +43,8 @@ const EXEMPT = /\/\/ fixture-secret: \S/;
 const EXEMPT_NEXT = /^\s*\/\/ fixture-secret-next-line: \S/;
 
 /** A name that ends like a secret's but names no credential, whatever its case: a claim token
- *  names a role, and a page or continuation token is a list's cursor. None is ever held. */
+ *  names an agent of an issue, and a page or continuation token is a list's cursor. None is ever
+ *  held. */
 const NO_CREDENTIAL = /(?:^|_)claim_?token$|^(?:page|next|continuation)_?token$/i;
 /** An upper-case name that names a secret, as an environment variable or a constant does. */
 const SECRET_KEY = /^[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|CAPABILITY|API_KEY)$/;

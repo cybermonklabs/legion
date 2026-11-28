@@ -31,6 +31,12 @@ func (r podRolesRuntime) PodLacksRole(_ string, role claim.Role) (string, bool) 
 	return pod, lacks
 }
 
+// SlotWaitsForCredential answers that every launcher of the pod waits for a start's credential:
+// the pods of this fake are built by this release.
+func (podRolesRuntime) SlotWaitsForCredential(string, claim.Agent) (string, bool, error) {
+	return "", true, nil
+}
+
 // podWaitRunner is the outbox over a real PostgreSQL with the issue LEGION-208 stored, the
 // supervisor reading the claims of that store and its runtime answering that its pod lacks the
 // roles of lacks.
@@ -93,6 +99,58 @@ func TestAStartOfARoleThePodLacksWaitsAndMakesNoClaim(t *testing.T) {
 			}
 			if spawns, resumes := rt.CallsOf("Spawn"), rt.CallsOf("Resume"); len(spawns)+len(resumes) > 0 {
 				t.Errorf("the runtime was asked %d spawns and %d resumes, want none", len(spawns), len(resumes))
+			}
+		})
+	}
+}
+
+// A start reaches the claim its row names, which runs in the slot of its agent, on the role of
+// the step: a keyed agent, `implementer` here, on the step of a role the pod was built before,
+// `checker`. The launch needs both of the pod (the runtime's kept-pod fence reads both), so the
+// start waits on its row where the pod lacks either, its text naming the one it lacks, and asks
+// the runtime for nothing: a launch refused for the role would be charged as a launch failure.
+func TestAKeyedAgentsStartWaitsWhereThePodLacksItsSlotOrTheRoleOfItsStep(t *testing.T) {
+	t.Parallel()
+	implementer, err := claim.NewToken("legion", "LEGION-208", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker, err := claim.NewToken("legion", "LEGION-208", "checker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		claim claim.Token
+		role  claim.Role
+		// names is what the wait's text names that the pod lacks.
+		names string
+	}{
+		{"the pod holds the slot and lacks the role of the step", implementer, "checker", "defined checker, the role of its step"},
+		{"the pod lacks the slot and holds the role of the step", checker, claim.RoleTester, "defined checker, the slot of the claim's agent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner, sup, rt, issue := podWaitRunner(t, map[claim.Role]string{"checker": "pod-1"})
+			row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: tc.role, Claim: tc.claim, Task: "Check it.", Generation: issue.Generation}, time.Now())
+			row.ID = 95
+
+			err := runner.execute(context.Background(), row)
+			if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+				t.Errorf("the start = %v, want a wait that is runtime.ErrAwaitsPodUpdate", err)
+			}
+			if err == nil || !strings.HasPrefix(err.Error(), pods.StartWaitsForPodPrefix) || !strings.Contains(err.Error(), tc.names) {
+				t.Errorf("the start's text = %v, want it to begin %q and name %q", err, pods.StartWaitsForPodPrefix, tc.names)
+			}
+			if _, found := sup.Machine(tc.claim); found {
+				t.Errorf("the start made the claim %s, want none while it waits", tc.claim)
+			}
+			if spawns, resumes := rt.CallsOf("Spawn"), rt.CallsOf("Resume"); len(spawns)+len(resumes) > 0 {
+				t.Errorf("the runtime was asked %d spawns and %d resumes, want none", len(spawns), len(resumes))
+			}
+			// No claim records a process in the pod and the idle release is off, so the controller
+			// is told of the wait, naming the same.
+			if notices := outboxPodWaitHeld(t, runner, issue.Key); len(notices) != 1 || !strings.Contains(notices[0], tc.names) {
+				t.Errorf("the pod-wait-held notices = %q, want one that names %q", notices, tc.names)
 			}
 		})
 	}

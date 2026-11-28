@@ -36,8 +36,8 @@ func ownersPlan(issue string, generation uint64, version int, givenBy claim.Toke
 		StepsByDefault: true, State: TaskWaiting,
 	}}
 	steps := []PlanStep{
-		{Issue: issue, Generation: generation, Task: "a", Position: 1, Role: planStepOne, Type: "implementation", AgentKey: "fast"},
-		{Issue: issue, Generation: generation, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
+		{Issue: issue, Generation: generation, Task: "a", Position: 1, Role: planStepOne, Type: "implementation", AgentKey: "fast", Agent: "implementer"},
+		{Issue: issue, Generation: generation, Task: "a", Position: 2, Role: "reviewer", Type: "review", Agent: "reviewer"},
 	}
 	return v, tasks, steps
 }
@@ -100,6 +100,38 @@ func TestPlanRowsRoundTrip(t *testing.T) {
 		must(t, err)
 		if recorded != nil {
 			t.Fatalf("%s is recorded as %#v, want no record: the fixture must hold a plan of an issue the daemon has not recorded", unrecorded, recorded)
+		}
+	})
+}
+
+// PlanStepsOf is every plan_steps row of an issue, of every generation, each with the name of its
+// agent, ordered by generation, task and place: what the naming of a version's agents reads before
+// the version is written, so a key keeps the name an earlier generation gave it. Another issue's
+// rows are not among them.
+func TestPlanStepsOfReadsEveryGenerationsStepsWithTheirNames(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	issue := issueFixture(planIssue)
+	issue.Generation = 2
+	first, firstTasks, firstSteps := ownersPlan(planIssue, 1, 1, planOwner, planGivenAt)
+	second, secondTasks, secondSteps := ownersPlan(planIssue, 2, 1, planOwner, planGivenAt.Add(time.Hour))
+	secondTasks[0].Task = "b"
+	for i := range secondSteps {
+		secondSteps[i].Task = "b"
+	}
+	secondSteps[0].Agent = "implementer-of-b"
+	other, otherTasks, otherSteps := ownersPlan(unrecorded, 2, 1, otherOwner, planGivenAt)
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, NewStore().PutIssue(ctx, tx, issue))
+		putPlan(t, tx, second, secondTasks, secondSteps)
+		putPlan(t, tx, first, firstTasks, firstSteps)
+		putPlan(t, tx, other, otherTasks, otherSteps)
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := NewStore().PlanStepsOf(ctx, tx, planIssue)
+		must(t, err)
+		if want := append(append([]PlanStep{}, firstSteps...), secondSteps...); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the steps of %s = %#v, want every generation's, in order: %#v", planIssue, got, want)
 		}
 	})
 }

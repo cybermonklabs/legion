@@ -770,7 +770,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 
 	// The worker is suspended, so the tarballs go where it will read them through the container
 	// every role shares: its state home is on the issue's volume.
-	dir := roleStateHome(worker.role) + "/stage4a-plugin-tarballs"
+	dir := roleStateHome(claim.Agent(worker.role)) + "/stage4a-plugin-tarballs"
 	if _, err := r.execPod(worker, "mkdir", "-p", dir); err != nil {
 		return err
 	}
@@ -816,7 +816,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	note("runtime", "Resume(prev %s, Plugins) returned %s in the unchanged issue pod uid %s (created %s), Sandbox Running",
 		short(old.Incarnation), short(loc.Incarnation), after.UID, after.CreationTimestamp)
 
-	genDir := pluginGenDir(roleStateHome(worker.role), installedGen)
+	genDir := pluginGenDir(roleStateHome(claim.Agent(worker.role)), installedGen)
 	envoyRoot, legionRoot := pluginRoots(genDir)
 	legionVersion, legionContract, err := r.pluginPackageInfo(worker, legionRoot+"/package.json")
 	if err != nil {
@@ -884,7 +884,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	}
 	note("operator", "pod %s is still uid %s after the negative control", name, final.UID)
 
-	oldGenDir := pluginGenDir(roleStateHome(worker.role), installedGen)
+	oldGenDir := pluginGenDir(roleStateHome(claim.Agent(worker.role)), installedGen)
 	if _, err := r.execPod(worker, "sh", "-c", `test ! -e "$1"`, "sh", oldGenDir); err != nil {
 		return fmt.Errorf("%s still exists after the negative control's own install ran rm -rf .../g* first: %w", oldGenDir, err)
 	}

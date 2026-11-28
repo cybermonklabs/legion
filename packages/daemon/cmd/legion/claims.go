@@ -31,7 +31,7 @@ import (
 // every other claim of the tree.
 func newClaimsCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "claims", Short: "the operator's hand on the daemon's claims"},
-		claimsCommand("spawn", "create a claim on a role of an issue and launch it", claimsSpawn, stdout, stderr),
+		claimsCommand("spawn", "launch the claim that works a role's step of an issue, creating it where none is stored", claimsSpawn, stdout, stderr),
 		claimsCommand("deliver", "give a claim a task", claimsDeliver, stdout, stderr),
 		claimsCommand("suspend", "suspend a claim, once the turn its agent is in ends", claimsSuspend, stdout, stderr),
 		claimsCommand("resume", "resume a suspended claim", claimRequest("resume"), stdout, stderr),
@@ -201,9 +201,10 @@ func issuesOrNone(name string, issues []string) string {
 	return fmt.Sprintf("%s: %d — %s", name, len(issues), strings.Join(named, ", "))
 }
 
-// writeClaimLine is the one line a claim prints as: token, role, issue, state, why it failed
-// (claimCauseWord), generation, the plugin contract its registration declared (0 when none is
-// recorded), the update round the claim is in with the head its worker reported when it
+// writeClaimLine is the one line a claim prints as: token, role, issue, state, why it failed or
+// that a refused launch's fact is not recorded (claimCauseWord), generation, the plugin contract
+// its registration declared (0 when none is recorded), the update round the claim is in with the
+// head its worker reported when it
 // answered (`-` for a claim in no round, and `-` for a head no worker has reported yet), the
 // call its record holds open (openCallWord), and last the sentence its latest launch try was
 // refused with because the shared public leak check could not be installed in its pod, quoted so
@@ -268,15 +269,28 @@ func claimStateWord(c api.OperatorClaim) string {
 // failed it chose (supervise.FailureCause), which the line carries beside the state rather than
 // the sentence written with it, because one word is what fits a column and what an operator
 // sorts a listing by; the sentence, the moment and the counts are read with --json
-// (api.ClaimFailureView). It is empty for a claim the daemon holds no failure record for — one
-// that never failed, one that has been given another run since, which clears the record, and one
+// (api.ClaimFailureView). A claim with no failure record that carries a refused launch's fact the
+// store has not taken (api.OperatorClaim.UnrecordedRefusal) prints `refusal-unrecorded`: the
+// daemon tries each such fact again, at least once an hour, for as long as it fails and the refusal
+// it names stands; until one is taken the claim's start is not queued, and where the failing fact
+// is the refusal's report, the issue and the controller are told nothing; when the oldest such
+// fact's first try failed, how many of its tries have failed and its last error are read with
+// --json. It is empty for every other claim the daemon holds no failure record for — one that
+// never failed, one that has been given another run since, which clears the record, and one
 // holding a cause with no sentence (api.FailureViewOf) — which the line prints as `-`.
 func claimCauseWord(c api.OperatorClaim) string {
-	if c.Failure == nil {
-		return ""
+	if c.Failure != nil {
+		return string(c.Failure.Cause)
 	}
-	return string(c.Failure.Cause)
+	if c.UnrecordedRefusal != nil {
+		return refusalUnrecordedWord
+	}
+	return ""
 }
+
+// refusalUnrecordedWord is the cause word of a claim whose refused launch's fact the store has not
+// taken (claimCauseWord).
+const refusalUnrecordedWord = "refusal-unrecorded"
 
 // orNone is a field a claim need not have, as the line prints it.
 func orNone(value string) string {
@@ -298,7 +312,9 @@ func quotedOrNone(value string) string {
 	return strconv.Quote(value)
 }
 
-// claimsSpawn creates the claim on --role of --issue, in the tree --tree roots, and launches it.
+// claimsSpawn launches the claim that works --role's step of --issue now, in the tree --tree
+// roots: the claim of the agent the step names, a keyed agent on a step of another role included,
+// or the role's own where no step names one, created where none is stored.
 // --prompt-file is an optional operator override; omitted, the daemon composes the role's shared
 // and Go-specific parts, or, for a role of the deployment, its prompt_file with the headless part
 // and worker-common.md. --task is its first delivery, sent once the agent is ready.
@@ -424,13 +440,13 @@ func printReleasedNames(w io.Writer, answer []byte) error {
 // reaches for before a fresh session, since the session, its workspace and everything the worker
 // knows of its issue stay where they are (api's compact).
 //
-// The request waits as long as `--wait` says, one minute by default, as every `legion claims`
-// request does, and the daemon goes on with a handoff that outlasts it: the handoff is a model
-// call over the whole transcript, and the daemon bounds it at ten minutes
-// (runtime.CompactTimeout). The daemon's answer is printed whether or not the session was
-// shortened — a handoff Oh My Pi refused is reported with Oh My Pi's own words for it, and one
-// that made no document with the daemon's — and whatever task the claim owed has gone again in
-// either case.
+// The request runs under the --wait every `legion claims` command takes (newClaimsCall), one
+// minute by default, while the handoff is a model call over the whole transcript that the daemon
+// bounds at ten minutes (runtime.CompactTimeout): a call the --wait ends is refused and the
+// handoff goes on, so an operator gives it a longer --wait to read its answer. The daemon's
+// answer is printed whether or not the session was shortened — a handoff Oh My Pi refused is
+// reported with Oh My Pi's own words for it, and one that made no document with the daemon's —
+// and whatever task the claim owed has gone again in either case.
 func claimsCompact(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
 	return func(ctx context.Context, _ []string) int {

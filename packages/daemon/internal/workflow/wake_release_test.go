@@ -93,7 +93,7 @@ func markTwoRoleRelease(t *testing.T, st *store.Store) (implementer, architect, 
 func stoppedByTheRelease(t *testing.T, pool *pgxpool.Pool, st *store.Store, role claim.Role, row int64) {
 	t.Helper()
 	setClaimState(t, pool, role, "suspended", "released")
-	if err := st.ReleaseSuspendedClaim(context.Background(), wakeProjectToken(t), "LEGION-208", role, row); err != nil {
+	if err := st.ReleaseSuspendedClaim(context.Background(), wakeProjectToken(t), "LEGION-208", wakeToken(t, role), row); err != nil {
 		t.Fatalf("record the %s claim the release suspended: %v", role, err)
 	}
 	if _, err := pool.Exec(context.Background(), `delete from outbox where id = $1`, row); err != nil {
@@ -213,7 +213,7 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 
 			// The release records the claim as released, and the wake is delivered again.
 			setClaimState(t, rig.pool, claim.RoleImplementer, "suspended", "released")
-			if err := st.ReleaseSuspendedClaim(context.Background(), wakeProjectToken(t), "LEGION-208", claim.RoleImplementer, boundary); err != nil {
+			if err := st.ReleaseSuspendedClaim(context.Background(), wakeProjectToken(t), "LEGION-208", wakeToken(t, claim.RoleImplementer), boundary); err != nil {
 				t.Fatalf("record the claim the release suspended: %v", err)
 			}
 			if err := applyWake(rig, "wake", fact); err != nil {
@@ -231,12 +231,12 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		// The release has recorded the implementer as released, and is then cancelled before the
 		// start its cancel queued runs.
 		boundary := markRelease(t, st)
-		if err := st.ReleaseSuspendedClaim(ctx, project, "LEGION-208", claim.RoleImplementer, boundary); err != nil {
+		if err := st.ReleaseSuspendedClaim(ctx, project, "LEGION-208", wakeToken(t, claim.RoleImplementer), boundary); err != nil {
 			t.Fatalf("record the claim the release suspended: %v", err)
 		}
-		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
+		resume := func(token claim.Token, role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
 			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
-				Role: role, Generation: generation}, time.Now())
+				Role: role, Claim: token, Generation: generation}, time.Now())
 			if err != nil {
 				return store.IdleReleaseRow{}, err
 			}
@@ -333,9 +333,9 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		if err := applyWake(rig, "wake", fact); !errors.As(err, &later) {
 			t.Fatalf("applying the wake while the release stands = %v, want a retry", err)
 		}
-		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
+		resume := func(token claim.Token, role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
 			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
-				Role: role, Generation: generation}, time.Now())
+				Role: role, Claim: token, Generation: generation}, time.Now())
 			if err != nil {
 				return store.IdleReleaseRow{}, err
 			}
@@ -390,9 +390,9 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		if err := applyWake(rig, "wake", fact); !errors.As(err, &later) {
 			t.Fatalf("applying the wake while the release stands = %v, want a retry", err)
 		}
-		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
+		resume := func(token claim.Token, role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
 			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
-				Role: role, Generation: generation}, time.Now())
+				Role: role, Claim: token, Generation: generation}, time.Now())
 			if err != nil {
 				return store.IdleReleaseRow{}, err
 			}
@@ -470,8 +470,7 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 				return settlementDetail(fact)
 			}},
 			{name: "the backstop", kind: pods.WakeBackstop, take: func(t *testing.T, rig wakeRig) string {
-				id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
-				rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer})
+				rig.apply("backstop", armBackstop(t, rig.pool, wakeToken(t, claim.RoleImplementer), claim.RoleImplementer, wakeAt.Add(-time.Minute)))
 				return "the backstop armed for LEGION-208's implementer came due"
 			}},
 		} {
@@ -504,16 +503,19 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 				}
 
 				// The release finishes as the outbox's teardown finishes it (releaseIssue): the
-				// release recorded with the roles the mark suspended, then the mark cleared, then
-				// the row finished.
+				// release recorded with the claims the mark suspended and their roles, then the mark
+				// cleared, then the row finished.
 				roles := make([]string, 0, len(decision.Suspended))
-				for _, role := range decision.Suspended {
-					roles = append(roles, string(role))
+				claims := make([]string, 0, len(decision.Suspended))
+				for _, suspended := range decision.Suspended {
+					roles = append(roles, string(suspended.Role))
+					claims = append(claims, string(suspended.Token))
 				}
 				slices.Sort(roles)
+				slices.Sort(claims)
 				releasedAt := wakeAt.Add(5 * time.Minute)
 				released, _, err := st.RecordPodRelease(ctx, store.PodRelease{Project: project, Issue: "LEGION-208",
-					Generation: wakeIssueGeneration, Roles: roles, At: releasedAt})
+					Generation: wakeIssueGeneration, Roles: roles, Claims: claims, At: releasedAt})
 				if err != nil {
 					t.Fatalf("record the release: %v", err)
 				}
@@ -568,7 +570,7 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 			t.Fatalf("applying the wake during the release = %v, want a retry: the release has not recorded the claim", err)
 		}
 		setClaimState(t, rig.pool, claim.RoleImplementer, "suspended", "released")
-		if err := st.ReleaseSuspendedClaim(ctx, project, "LEGION-208", claim.RoleImplementer, boundary); err != nil {
+		if err := st.ReleaseSuspendedClaim(ctx, project, "LEGION-208", wakeToken(t, claim.RoleImplementer), boundary); err != nil {
 			t.Fatalf("record the claim the release suspended: %v", err)
 		}
 		if err := applyWake(rig, "wake", fact); err != nil {

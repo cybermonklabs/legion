@@ -2,7 +2,6 @@ package admit
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,10 +36,10 @@ func runAtCheckerStep(t *testing.T, pool *pgxpool.Pool, key string, generation u
 		}
 		v := record.PlanVersion{Issue: key, Generation: generation, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: architect, GivenAt: fixedNow}
 		task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := []record.PlanStep{
+		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: key, Generation: generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: key, Generation: generation, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
-		}
+		}, nil)
 		for _, put := range []error{
 			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps),
 			records.MoveTask(ctx, tx, key, generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning),
@@ -77,20 +76,13 @@ func standInFinishingTree(t *testing.T, pool *pgxpool.Pool, key string, held boo
 // workflow.OpenRoleOf), so at step it is the role of the running step, which no phase of
 // Legion's names (phase.RoleFor answers none for step):
 //   - a re-admission's promotion (startMidPhaseMembers) starts the checker of a member at step
-//     with its phase's work;
-//   - the roles a promotion brings back (promotedRoles) take the checker of a member at step and
-//     of one held from it, after Legion's six, so a checker that has run on a held member comes
-//     back with no task, as each role of Legion's that has run on a held member does;
+//     with its phase's work; a checker that has run on a held member comes back with every other
+//     stored claim of it (record.Store.IssueClaims), with no task;
 //   - the tick's silent list (silentWorkers, through phaseWorkerOf) names a silent checker of an
 //     issue at step, and the entry repair (owedEntryRoles, through the same selection) sends the
 //     checker of a slotted issue at step the work of the entry its phases row names;
 //   - the stalled-tree notice (stalledTreeReason) gives the checker the turn of a member at step
 //     and of one held from it, as it gives the tester the turn of a member at testing.
-//
-// The promotion of a member held from step is read through promotedRoles alone: the promotion
-// then starts that member's step record again (workflow.Engine.StartStepRecord), whose agent is
-// still read by phase (workflow's startAgent) and is none for step until the workflow's own task
-// reads the role there.
 func TestTheAdmissionReadsTheRunningDeploymentRole(t *testing.T) {
 	t.Run("a promotion starts the checker", func(t *testing.T) {
 		pool, admission, engine := seedFinishingTree(t)
@@ -111,28 +103,6 @@ func TestTheAdmissionReadsTheRunningDeploymentRole(t *testing.T) {
 		}
 	})
 
-	t.Run("the roles a promotion brings back", func(t *testing.T) {
-		withChecker := append(slices.Clone(claim.Roles), checker)
-		for _, c := range []struct {
-			name   string
-			member record.Issue
-			want   []claim.Role
-		}{
-			{"at step", record.Issue{Phase: phase.Step, StepRole: checker}, withChecker},
-			{"held from step", record.Issue{Phase: phase.Held, Hold: &record.Hold{From: phase.Step}, StepRole: checker}, withChecker},
-			{"at testing", record.Issue{Phase: phase.Testing, StepRole: claim.RoleTester}, claim.Roles},
-			{"held from testing", record.Issue{Phase: phase.Held, Hold: &record.Hold{From: phase.Testing}}, claim.Roles},
-			{"at step with no plan rows", record.Issue{Phase: phase.Step}, claim.Roles},
-		} {
-			if got := promotedRoles(c.member); !slices.Equal(got, c.want) {
-				t.Errorf("%s: the roles a promotion brings back = %v, want %v", c.name, got, c.want)
-			}
-		}
-		if len(claim.Roles) != 6 {
-			t.Errorf("claim.Roles = %v after promotedRoles, want Legion's six: promotedRoles must not append to it", claim.Roles)
-		}
-	})
-
 	t.Run("the silent list names the checker", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 2)
@@ -149,6 +119,39 @@ func TestTheAdmissionReadsTheRunningDeploymentRole(t *testing.T) {
 		silent := tickNotice(t, pool).Silent
 		if len(silent) != 1 || silent[0].Issue != key || silent[0].Role != checker || !silent[0].LastStep.Equal(silentStep) {
 			t.Fatalf("the tick names %#v as silent, want %s's checker, last stepped at %s: the role that runs the issue's step", silent, key, silentStep)
+		}
+	})
+
+	// The checker's step is worked by key a's agent, `…-implementer`, whose claim holds the role
+	// checker and is the claim the checker's phases row names: the silent list reads that claim's
+	// run, so it names the step's agent last stepped when that claim last stepped. A read of the
+	// checker's own token would find no claim, and the silent agent would go untold.
+	t.Run("the silent list reads the claim of a keyed checker's step", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 2)
+		admission.UseWorkerSilence(silenceBound, backgroundBound)
+		registerController(t, pool)
+		const key = "LEGION-721"
+		working := seedQuietRoot(t, pool, key, "A", phase.Step)
+		runAtCheckerStep(t, pool, key, working.Generation)
+		keyed := putWorkerClaim(t, pool, key, key, claim.RoleImplementer, working.Generation, supervise.StateReady, "")
+		if _, err := pool.Exec(context.Background(), `update claims set role = $2 where token = $1`, string(keyed), string(checker)); err != nil {
+			t.Fatal(err)
+		}
+		inTx(t, pool, func(tx pgx.Tx) {
+			if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: checker, Claim: keyed,
+				StepTask: "a", StepPlace: 2}); err != nil {
+				t.Fatalf("seed the checker's row naming %s: %v", keyed, err)
+			}
+		})
+		silentStep := fixedNow.Add(-2 * time.Hour)
+		steppedAt(t, pool, keyed, silentStep)
+
+		tick(t, pool, admission, "tick-1")
+
+		silent := tickNotice(t, pool).Silent
+		if len(silent) != 1 || silent[0].Issue != key || silent[0].Role != checker || !silent[0].LastStep.Equal(silentStep) {
+			t.Fatalf("the tick names %#v as silent, want %s's checker, last stepped at %s: the run of %s, the claim of its step", silent, key, silentStep, keyed)
 		}
 	})
 

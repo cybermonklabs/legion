@@ -482,8 +482,8 @@ func TestTheMoveCancelsThePodsOpenBackstops(t *testing.T) {
 	t.Run("with the pod tables", func(t *testing.T) {
 		rig := newWakeRig(t)
 		seedMirrorChild(t, rig.pool, cwChild, "todo", cwParent)
-		armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(time.Hour))
-		armBackstop(t, rig.pool, claim.RoleTester, wakeAt.Add(2*time.Hour))
+		armBackstop(t, rig.pool, wakeToken(t, claim.RoleImplementer), claim.RoleImplementer, wakeAt.Add(time.Hour))
+		armBackstop(t, rig.pool, wakeToken(t, claim.RoleTester), claim.RoleTester, wakeAt.Add(2*time.Hour))
 
 		rig.apply("back", back)
 
@@ -499,7 +499,7 @@ func TestTheMoveCancelsThePodsOpenBackstops(t *testing.T) {
 		pool := migratedPool(t)
 		cwSeedParent(t, pool, cwParent, phase.Implementing, 42)
 		seedMirrorChild(t, pool, cwChild, "todo", cwParent)
-		armBackstop(t, pool, claim.RoleImplementer, wakeAt.Add(time.Hour))
+		armBackstop(t, pool, wakeToken(t, claim.RoleImplementer), claim.RoleImplementer, wakeAt.Add(time.Hour))
 
 		applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("back", back)
 

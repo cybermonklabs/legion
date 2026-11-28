@@ -333,7 +333,7 @@ func ownersPart(task string) (before, text, round string, ok bool) {
 // start names its working copy (WorkingCopy). An issue with no plan rows names nothing else, so it
 // is told today's task with that one line, and the prompts read a task with no `Task:` line as
 // such an issue's. An issue with plan rows names its one task: a step's worker is told
-// ` Task: <id>. Step <i> of <n>: <role>.`, the task's steps (stepsLine) and the report of each step
+// ` Task: <id>. Step <i> of <n>: <step>.`, the task's steps (stepsLine) and the report of each step
 // before its own (reportsBefore), and, last of its task, the text of the task's block inside a
 // fence (ownersText). The retro and the merge run no step of the task, so their worker is told
 // ` Task: <id>.` and the task's steps: the merger reads from them whether the task has a review
@@ -382,7 +382,7 @@ func standingText(issue record.Issue, dir func(key string, repo ghrepo.Repositor
 	return Standing{workingCopy: at.workingCopy, lines: lines, owners: ownersText(strings.TrimSpace(w.Text))}, nil
 }
 
-// stepsLine is ` Steps: 1 <role>, 2 <role>, … then Legion's retro and merge.`: each step of a
+// stepsLine is ` Steps: 1 <step>, 2 <step>, … then Legion's retro and merge.`: each step of a
 // task by its place, words, the steps as its plan writes them (plan.Words), in the order they run,
 // each at its place from 1 (Walk.Steps), then the retro and the merge Legion runs after them.
 func stepsLine(words []string) string {
@@ -393,7 +393,7 @@ func stepsLine(words []string) string {
 	return fmt.Sprintf(" %s: %s then Legion's retro and merge.", stepsLabel, strings.Join(named, ", "))
 }
 
-// reportsBefore is one ` Step <j> (<role>) reported: <word> version <v>.` for each step of w's
+// reportsBefore is one ` Step <j> (<step>) reported: <word> version <v>.` for each step of w's
 // task before the step at place whose role's phases row holds a handoff record: the record that
 // role's completion of that step named, which `dispatch handoff-read --phase <word> --version <v>`
 // reads. Each step is named as its plan writes it, its word of words (plan.Words). A role runs at

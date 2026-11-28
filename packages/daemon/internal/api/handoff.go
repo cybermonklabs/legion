@@ -200,8 +200,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	// A role the deployment defines reports its step as a tester does: with the verdict pass or
 	// fail and the commit it read, and with no handoff record (the phase step ends with none). The
-	// rules read the role, never the settings: a role outside Legion's six is a role of the
-	// deployment, and the claim's token was derived for it.
+	// rules read the role the grant's claim holds, never the settings: a role outside Legion's six
+	// is a role of the deployment, whichever agent's claim, named for that role or keyed and on a
+	// step of it, holds it.
 	deploymentRole := claim.IsDeploymentRole(grant.Role)
 	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger || deploymentRole) && !s.requireFailureFields(w, r, field{"commit", req.Commit}) {
 		return
@@ -385,6 +386,13 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
 	// may not name (RETURN_REFUSED) as processed, so the same fail naming another step must be a
 	// fact of its own. A completion naming none keeps the key it had before returnTo existed.
+	//
+	// Who completed is in the key by its role, and by its claim's agent where that is not the role
+	// (completionWho): two claims of one issue can hold one role — the agent of a key on a step of
+	// another role, beside that role's own claim of an earlier version of the plan — and the same
+	// report from each is a fact of its own, so the workflow's refusal of the one recorded under the
+	// key never answers the other's completion as its duplicate. A role's own claim keeps the key
+	// it had.
 	reported, received := req.Commit, "at commit "+req.Commit
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
@@ -393,7 +401,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if position.task != "" {
 		counted = position.task + ":" + counted
 	}
-	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, req.Verdict)
+	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, completionWho(grant), issue.Phase, counted, reported, req.Verdict)
 	returnTo := 0
 	if req.ReturnTo != nil {
 		returnTo = *req.ReturnTo
@@ -437,6 +445,17 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	s.writeAnswer(w, r, AnswerHandoffComplete, http.StatusOK, HandoffCompleteResponse{})
 	return
+}
+
+// completionWho is who completed, as a completion's key names it (answerCompletion): the grant's
+// role, and `@<agent>` after it where the grant's claim is an agent of another name than the role,
+// a keyed agent on that role's step.
+func completionWho(grant credential.Grant) string {
+	who := string(grant.Role)
+	if _, agent, ok := grant.Claim.Cut(); ok && string(agent) != string(grant.Role) {
+		who += "@" + string(agent)
+	}
+	return who
 }
 
 // returnToRefusal holds a completion's returnTo to its rule, and is nil when the completion
@@ -601,7 +620,8 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 }
 
 // implementationPullRequest is the implementer's completion's read of GitHub: in implementing, a
-// completion moves its issue to its task's next step (testing, in the default steps) only on a
+// completion moves its issue to its task's next step (testing, in the default steps), or to its
+// retro where the implementer's step is the task's last, only on a
 // pull request recorded open or merged for it (workflow's TriggerImplementationReady), and only
 // the opened webhook, or the daemon's per-issue read standing in for one that webhook lost
 // (readIssuePullRequest), records one open. So before
@@ -613,10 +633,11 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 //   - one open: when the record does not already hold it open, the intake.PullRequestOpened its
 //     webhook would have carried is applied first, a reopen when the record holds the same pull
 //     request closed, under the read's stable id (intake.OpenedRead). The completion then
-//     moves the issue to its task's next step. A failure to apply it is FACT_APPLY_FAILED, with
-//     the completion not applied.
+//     moves the issue to its task's next step, or to its retro. A failure to apply it is
+//     FACT_APPLY_FAILED, with the completion not applied.
 //   - none, with the record holding the pull request merged: the completion is applied and moves
-//     the issue to its task's next step. The work landed, its merge told the architect
+//     the issue to its task's next step, or to its retro. The work landed, its merge told the
+//     architect
 //     (pr-merged), and the workflow runs on.
 //   - none otherwise: HANDOFF_NO_PULL_REQUEST, 409, and nothing is applied, so the completion at
 //     the same commit is applied once the pull request is open. When the record holds the pull

@@ -529,7 +529,7 @@ func leftPodCloseUnknown(t *testing.T) {
 	rig.fault.Refuse(false)
 	rig.later()
 	rig.drain(t)
-	if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
+	if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Token{rig.token}) {
 		t.Errorf("the workspace was read through %v, want the close's one read through the planner", read)
 	}
 	if rig.declined(t) {

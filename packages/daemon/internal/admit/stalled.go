@@ -382,14 +382,16 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 // working states are never read; and a tree another claim keeps at work is at work whatever its
 // worker in ready is, so that worker is not judged either.
 //
-// What it costs: at most one batched read of the runs of those claims' issues' phase workers
-// (phaseWorkers, record.Store.RoleRuns, the read the tick's silent list makes for the same
-// rule), made only where some claim is left to judge, and walks of the pass's own records and
-// of the claims quietTrees already read. It makes no read per tree or per issue, and the caller
-// builds it at most once per pass, at the first of its two readers the pass reaches. The run is
-// read inside the pass's own transaction, as the claims were. It reads no phase row
-// (workflow.PhaseWorkerOwedTurn), which the tick's list adds to leave out a worker owed no turn:
-// such a worker is stopped all the more, and R6 names SilentPhaseWorker alone.
+// What it costs: at most two batched reads, made only where some claim is left to judge: the
+// phases rows of those claims' issues, which name the claim of the worker on each phase's step
+// (phaseWorkers, workerEntries, record.WorkerClaimOf), and the runs of those workers
+// (record.Store.RoleRuns), the reads the tick's silent list makes for the same rule; and walks of
+// the pass's own records and of the claims quietTrees already read. It makes no read per tree or
+// per issue, and the caller builds it at most once per pass, at the first of its two readers the
+// pass reaches. Both are read inside the pass's own transaction, as the claims were. It reads no
+// phase row for the owed turn (workflow.PhaseWorkerOwedTurn), which the tick's list adds to leave
+// out a worker owed no turn: such a worker is stopped all the more, and R6 names
+// SilentPhaseWorker alone.
 func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts,
 	claims []record.TreeClaim, now time.Time,
 ) (map[string]struct{}, error) {

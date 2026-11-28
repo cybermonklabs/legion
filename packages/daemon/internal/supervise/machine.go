@@ -1,4 +1,4 @@
-// Package supervise is process supervision: one state machine per role claim, and the only place
+// Package supervise is process supervision: one state machine per claim, and the only place
 // the runtime's process facts, the worker stream's agent facts, the machine's own timers, and the
 // API's requests meet.
 //
@@ -190,7 +190,8 @@ const (
 	SessionLossClaudeNoFile SessionLoss = "claude-no-file"
 )
 
-// Claim is one role claim as the supervisor holds and persists it.
+// Claim is one claim, one agent of an issue under its token whatever role its step is on now, as
+// the supervisor holds and persists it.
 type Claim struct {
 	Token      claim.Token
 	Project    string
@@ -226,6 +227,11 @@ type Claim struct {
 	// let-go replaces it — as the union of the two while it is still untold (joined). A claim
 	// whose let-gos ended nothing worth telling records none.
 	EndedWork EndedWork
+	// RoleChange is the record that the claim took another role (Rerole) and that its agent has
+	// still to be told so, which the first prompt its agent takes in the new role tells
+	// (roleChangedTask). It is persisted, since that prompt is a relaunch and can be a daemon
+	// restart away. A claim that never took another role records none.
+	RoleChange RoleChange
 	// ServingGeneration is the issue generation of the last confirmed delivery this claim retired:
 	// the run it goes on working until another delivery of a run replaces it. It is the second of
 	// the three sources ServingRun reads (serving): the pending delivery whose turn is running,
@@ -529,6 +535,17 @@ type Claim struct {
 	// it with the process it is about, and the claim written there records no process for a
 	// later report to be about.
 	DeathCharged bool
+	// UnrecordedRefusal is the oldest fact of a launch of this claim its issue's pod refused that
+	// the store has not taken yet: the refusal's report to the workflow, or a re-check at the end
+	// of a start row (Machine.RefusalNotRecorded). The daemon tries each such fact again on a
+	// backoff for as long as it fails and the refusal it names stands; where the failing fact is
+	// the report, the issue and the controller are told nothing until it is taken, and no start that
+	// only that fact would queue is queued. Nil while no such fact fails, and from the moment the
+	// machine drops or replaces the refusal a fact names, which ends that fact's tries. It is memory
+	// only, as Compacting is: Machine.Claim and Machine.View report it, and the store never writes
+	// it, so the operator's listing, which reads the live machine, is the one surface that carries
+	// it (`legion claims list` prints it as the cause word `refusal-unrecorded`).
+	UnrecordedRefusal *UnrecordedRefusal
 	// MessageMarkAt is the moment a wake for a waiting Envoy message marked the claim, and the
 	// zero time for none. The store holds it (claims.message_mark_at) and no write of this
 	// package's reaches it there: the daemon stores the mark in the transaction of the listener's
@@ -788,7 +805,7 @@ type StepRecord struct {
 }
 
 // The two kinds of round Claim.UpdateRound spells, each with what identifies it: a pod's, which
-// every role claim of one issue shares, and one claim's own plugin round. They are here, beside
+// every claim of one issue shares, and one claim's own plugin round. They are here, beside
 // the field, because a round is matched in this package and written in internal/daemon's sweep
 // (openPodUpdate), which recognises the rounds it must carry by them.
 //
@@ -1333,7 +1350,7 @@ type Deps struct {
 	// and never charged for its stale registration (staleRegistration): the relaunch would keep
 	// the pod, bring the same plugin back and charge the claim toward failed, and a failed claim
 	// cannot push its work. Such a claim is left running, and the update round over its pod is
-	// what carries it: its role is asked the steps of UpdateTask like any other, on its own Envoy
+	// what carries it: it is asked the steps of UpdateTask like any other claim, on its own Envoy
 	// topic (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
 	// (internal/daemon's refreshStalePlugins).
 	NoPluginInstall func(c Claim) bool
@@ -1357,6 +1374,18 @@ type Deps struct {
 	// one. Both are called inside the machine's decision, as TaskConfirmed is, so both return at
 	// once.
 	SessionStoreFault func(c Claim, detail string)
+	// PodRefused is told when a launch is refused because the claim's issue pod cannot run it
+	// until that pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate), at
+	// the first such refusal and hourly while that pod stands (podRefused): the claim is suspended,
+	// charged nothing, and runs nothing until another pod stands. pod is the refusing pod's uid.
+	// Whether a start of the claim must be queued so that whatever replaces the pod resumes it is
+	// the daemon's to read from its outbox, not the machine's: the machine cannot tell whether the
+	// outbox start that raised a launch still stands, since a launch the wake pacing held, or a
+	// retry of one whose write failed, runs after that start's row has finished. m is the claim's
+	// own machine, which the daemon's tries of the fact read and mark (Machine.RefusedPod,
+	// Machine.RefusalNotRecorded). Nil tells no one. It is called inside the machine's decision and
+	// returns at once.
+	PodRefused func(m *Machine, c Claim, pod, detail string)
 	// SessionGone is told the Envoy session a claim recorded once no process stands behind it,
 	// once per process end (sessionGone says where and when, and why then). It is the daemon's
 	// clean stop of that session's registration, which makes the listener read it `gone` at once
@@ -1442,12 +1471,13 @@ type Deps struct {
 	// waiting launch now, whose let-out is the request's now (runParkedLaunchNow,
 	// runDroppedLaunchForRetry). It is also the end of a wait the daemon was told of (WakeQueued)
 	// that no let-out ended, told at that decision's now (tellWakeQueue). at is never after the
-	// decision's now. The daemon sets the stuck clock of the role's open resume to it and starts
-	// that clock (store.Store.SetResumeClock on pod_resumes.clock_at, which never moves a clock
-	// back), so a launch that waits its turn in a long queue is not warned stuck for the wait. It
-	// is called inside the machine's decision, so it returns at once and does its write on a
-	// goroutine of its own, as the durable-state report's podResume does in internal/daemon. nil
-	// stamps nothing.
+	// decision's now. The daemon sets the stuck clock of the claim's own open resume to it, one
+	// that names the claim or names none, and starts that clock (store.Store.SetResumeClock on
+	// pod_resumes.clock_at, which never moves a clock back), so a launch that waits its turn in a
+	// long queue is not warned stuck for the wait, and another claim of the same role keeps its
+	// clock. It is called inside the machine's decision, so it returns at once and does its write
+	// on a goroutine of its own, as the durable-state report's podResume does in internal/daemon.
+	// nil stamps nothing.
 	WakeLetOut func(token claim.Token, issue string, role claim.Role, at time.Time)
 	// WakeQueued is told when a paced launch of the claim token (of issue's role) begins to wait in
 	// the pacing's queue, at the end of the decision that left it waiting there (tellWakeQueue). It
@@ -1900,16 +1930,17 @@ type Machine struct {
 	// EndedWork.TaskTurn). letGo clears it with the process. It is memory only: a daemon
 	// restarted inside such a park records the end without it, from what the claim still holds.
 	cutTurnOf string
-	// carried is which of the claim's two untold records a prompt this machine sent to the claim's
-	// current process carried the sentence of (sentences, Delivery.message): the session the claim
-	// abandoned, and what its last let-go ended, each marked only where the prompt's text carries
-	// that record's own sentence. It is what confirmCarrying reads to mark each record told, so a
-	// turn whose prompt went out before a record existed — the takeover of a process another
-	// runtime still runs, whose relaunch the pacing parks — tells nothing of it. It is set where
-	// the send goes out (startSend), and goes with the process (letGo) and, for the record of the
-	// let-go, with that record (recordEnd), since a newer record is words no earlier prompt
-	// carried. It is memory only: a daemon restarted inside the turn of such a prompt reads none
-	// (confirmCarrying).
+	// carried is which of the claim's three untold records a prompt this machine sent to the
+	// claim's current process carried the sentence of (sentences, Delivery.message): the session
+	// the claim abandoned, what its last let-go ended, and the other role it took, each marked only
+	// where the prompt's text carries that record's own sentence. It is what confirmCarrying reads
+	// to mark each record told, so a turn whose prompt went out before a record existed — the
+	// takeover of a process another runtime still runs, whose relaunch the pacing parks — tells
+	// nothing of it. It is set where the send goes out (startSend), and goes with the process
+	// (letGo) and, for the record of the let-go, with that record (recordEnd), since a newer record
+	// is words no earlier prompt carried. A role change needs no such clearing: only a claim that
+	// runs nothing takes one (Rerole), and its process took its marks with it. It is memory only: a
+	// daemon restarted inside the turn of such a prompt reads none (confirmCarrying).
 	carried sentences
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —
@@ -2006,6 +2037,25 @@ type Machine struct {
 	cancelStart    context.CancelFunc
 	startStopped   bool
 	storeFaultTold time.Time
+	// refusedPod is the uid of the issue pod the claim's last launch was refused on because that
+	// pod cannot run it until its update round or its release replaces it (podRefused), and
+	// podRefusedTold when the issue and the controller were last told of it (tellPodRefused).
+	// While that pod is the issue's pod, no launch is tried and nothing of the claim is written
+	// (podStillRefuses). Memory only: a daemon that restarts makes one more refused launch, which
+	// writes the claim once and records the pod again.
+	refusedPod     string
+	podRefusedTold time.Time
+	// unrecorded is each fact of a refused launch of the claim that the store has not taken, by the
+	// fact's event id, with the pod whose refusal it reports (Claim.UnrecordedRefusal shows the
+	// oldest). It is guarded by unrecordedMu and not by mu, so View reads it without waiting on a
+	// decision; but a mark is set under mu too, only while refusedPod names its pod
+	// (RefusalNotRecorded), and each write of refusedPod drops the marks of every other pod under
+	// mu (setRefusedPod), so a mark stands only while the refusal it names does.
+	unrecordedMu sync.Mutex
+	unrecorded   map[string]unrecordedFact
+	// reporting is the pod of each refusal whose report is being tried now
+	// (BeginRefusalReport), under unrecordedMu.
+	reporting map[string]bool
 	// podRoundWaiting is whether the retry relaunchLater has armed is one of a start the runtime
 	// refused for want of its pod's update round (startWaitsForPodRound): the wait is logged once,
 	// at the refusal that begins it, and not at each minute's retry of it. letGo clears it, so
@@ -2385,6 +2435,13 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func(), launched ch
 	// returns ev itself when nothing in it changes, and leaves its bytes as they are.
 	ev = storetext.Strings(ev)
 	if request, suspending := ev.(RequestSuspend); suspending && !m.pauseStopEnded(request) && m.View().HeldAgainst(request.By) == nil {
+		// A suspension cancels the start in flight before it takes the lock, so a request made on
+		// a reading of the record judges it first (Standing): a start is never cancelled for a
+		// suspension the record no longer asks for. The judgment that decides is the one under
+		// the lock below.
+		if err := judgeStanding(ctx, claimOf(ev), false); err != nil {
+			return err
+		}
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
 	m.mu.Lock()
@@ -2411,6 +2468,9 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func(), launched ch
 	m.decide(ev)
 	if token := claimOf(ev); token != m.claim.Token {
 		return fmt.Errorf("supervise: %T for claim %s reached the machine of %s", ev, token, m.claim.Token)
+	}
+	if err := judgeStanding(ctx, m.claim.Token, true); err != nil {
+		return err
 	}
 	// The write a decision owes is made before anything reads or writes the claim again: settle
 	// can retire a delivery, and the repair must write what the failed decision left.
@@ -2522,7 +2582,7 @@ type UpdateAskOutcome int
 const (
 	// UpdateAskDelivered is a publish that reached a session: the claim is marked asked.
 	UpdateAskDelivered UpdateAskOutcome = iota + 1
-	// UpdateAskUndelivered is a publish no live session took, the role's topic having no holder
+	// UpdateAskUndelivered is a publish no live session took, the claim's topic having no holder
 	// (notify.ErrNoHolder): nothing is marked, so the sweep asks the claim again.
 	UpdateAskUndelivered
 	// UpdateAskAlreadyDelivered is an ask of a round an earlier ask of which reached a session:
@@ -2887,15 +2947,141 @@ func (m *Machine) Claim() Claim {
 	return m.current()
 }
 
+// RefusedPod is the uid of the issue pod the claim's last launch was refused on, for want of that
+// pod's update round or its release (podRefused), and "" where no launch was refused since the one
+// tried last (podStillRefuses drops it once another pod stands). It waits for the decision in
+// flight, as Claim does, so a refusal is read either whole or not yet made: the outbox reads it once
+// a start row of the claim has finished (internal/daemon's startRowEnded), and each try of a fact
+// about the refusal reads it before it applies (internal/daemon's applyRefusalFact). A refusal the
+// row's end does not read is one whose own report reads the outbox after that finish.
+func (m *Machine) RefusedPod() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.refusedPod
+}
+
+// UnrecordedRefusal is a refused launch's fact the store has not taken (Claim.UnrecordedRefusal):
+// Since is when the first failed try of it failed, Attempts how many tries of it have failed, and
+// Error the last failed try's error, kept as a far side's text is (storetext.FarSideError).
+type UnrecordedRefusal struct {
+	Since    time.Time
+	Attempts int
+	Error    string
+}
+
+// unrecordedFact is one fact of a refused launch the store has not taken (Machine.unrecorded): the
+// pod whose refusal it reports, and the mark the claim shows for it.
+type unrecordedFact struct {
+	pod string
+	UnrecordedRefusal
+}
+
+// RefusalNotRecorded marks the fact id about the refusal of the claim's launch by the issue pod pod
+// as one the store did not take, err being the failed try's error (Claim.UnrecordedRefusal): the
+// fact's first failed try sets when, and each failed try of it counts one more attempt. Each fact
+// has a mark of its own, the refusal's report and each re-check at the end of a start row alike, so
+// a try of one fact that is taken clears that fact's mark alone (RefusalRecorded). Where the
+// machine no longer reports pod's refusal nothing is marked, since that fact will not be applied
+// (internal/daemon's applyRefusalFact). It waits for the decision in flight, as RefusedPod does,
+// so a mark is never set after the refusal it names was dropped (setRefusedPod). It publishes
+// nothing: the claim reads the marks where it is reported (current, View).
+func (m *Machine) RefusalNotRecorded(id, pod string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.refusedPod != pod {
+		return
+	}
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	mark := unrecordedFact{pod: pod, UnrecordedRefusal: UnrecordedRefusal{Since: m.deps.Clock.Now(), Attempts: 1}}
+	if held, ok := m.unrecorded[id]; ok {
+		mark.Since, mark.Attempts = held.Since, held.Attempts+1
+	}
+	mark.Error = storetext.FarSideError(err.Error())
+	if m.unrecorded == nil {
+		m.unrecorded = map[string]unrecordedFact{}
+	}
+	m.unrecorded[id] = mark
+}
+
+// RefusalRecorded clears the mark of the fact id that RefusalNotRecorded set: a try of that fact
+// was taken, or the fact was dropped because the machine no longer reports the refusal it names.
+// Every other fact keeps its mark.
+func (m *Machine) RefusalRecorded(id string) {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	delete(m.unrecorded, id)
+}
+
+// BeginRefusalReport records that a report of pod's refusal of the claim's launch is being tried,
+// and is false where one already is: the daemon then starts no second report of the same refusal,
+// whose tries would each tell the issue and the controller again once the store took them
+// (internal/daemon's podRefused). Its caller ends the record when its tries end (EndRefusalReport).
+func (m *Machine) BeginRefusalReport(pod string) bool {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	if m.reporting[pod] {
+		return false
+	}
+	if m.reporting == nil {
+		m.reporting = map[string]bool{}
+	}
+	m.reporting[pod] = true
+	return true
+}
+
+// EndRefusalReport ends the record BeginRefusalReport made: the report of pod's refusal was taken,
+// dropped or stopped, so the next report of it may start.
+func (m *Machine) EndRefusalReport(pod string) {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	delete(m.reporting, pod)
+}
+
+// setRefusedPod records pod as the issue pod that refuses the claim's launches, "" for none, and
+// drops the mark of every unrecorded fact about another pod's refusal (Claim.UnrecordedRefusal):
+// such a fact will not be applied, so the claim no longer waits on it. It runs under mu, as every
+// write of refusedPod does.
+func (m *Machine) setRefusedPod(pod string) {
+	m.refusedPod = pod
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	for id, mark := range m.unrecorded {
+		if mark.pod != pod {
+			delete(m.unrecorded, id)
+		}
+	}
+}
+
+// unrecordedRefusal is a copy of the mark of the oldest fact RefusalNotRecorded marked, the one
+// whose first failed try failed first (the smaller event id between two of one moment), nil while
+// none stands.
+func (m *Machine) unrecordedRefusal() *UnrecordedRefusal {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	var oldest *UnrecordedRefusal
+	var oldestID string
+	for id, mark := range m.unrecorded {
+		if oldest == nil || mark.Since.Before(oldest.Since) || (mark.Since.Equal(oldest.Since) && id < oldestID) {
+			held := mark.UnrecordedRefusal
+			oldest, oldestID = &held, id
+		}
+	}
+	return oldest
+}
+
 // View is a copy of the claim as the machine last published it: as its latest decision left it, or
 // as the decision in flight last tried to write it to the store. It never waits, where Claim waits
 // out a decision that holds the machine through its runtime call — a Sandbox relaunch waits minutes
-// for its pods — so a reader of every claim, like the operator's listing, reads View. The waiting
-// wake's moment is the pacer's estimate for its place as of this read (publishedView.due).
+// for its pods — so a reader of every claim, like the operator's listing, reads View. The refused
+// launch's fact the store has not taken is read as it stands now (Claim.UnrecordedRefusal): it is
+// marked on no decision, so nothing publishes it. The waiting wake's moment is the pacer's
+// estimate for its place as of this read (publishedView.due).
 func (m *Machine) View() ClaimView {
 	p := m.view.Load()
 	v := p.ClaimView
 	v.Claim = copyClaim(v.Claim)
+	v.UnrecordedRefusal = m.unrecordedRefusal()
 	if p.WakeWaiting != nil {
 		v.WakeWaiting = &WakeWaiting{Kind: p.WakeWaiting.Kind, At: p.due()}
 	}
@@ -2979,6 +3165,7 @@ func (m *Machine) current() Claim {
 	}
 	c.Compacting = m.compacting != nil
 	c.ProcessGone = m.processGone
+	c.UnrecordedRefusal = m.unrecordedRefusal()
 	c.AwaitsPod = cloneLocator(m.awaitsPod)
 	c.RegisteredPods = m.registeredPods.clone()
 	return c
@@ -2987,11 +3174,12 @@ func (m *Machine) current() Claim {
 // StoredClaim is c in the form a claim write hands the store. A pending delivery has a table of
 // its own, and the store holds none of the fields current overlays on the claim the machine
 // reports: a suspension held for its turn (SuspensionHeld, SuspensionHeldBy), a compaction in
-// flight (Compacting), a process the runtime reported gone (ProcessGone), the pod a launch waits
-// on (AwaitsPod) and the pods an agent of the claim registered in (RegisteredPods). Only the
-// machine holds them, in memory, and internal/store writes none of them, so the one statement
-// below clears every one, and no stored claim, nor a claim compared with one, carries any of
-// them. A field that current comes to overlay belongs in that statement too.
+// flight (Compacting), a process the runtime reported gone (ProcessGone), the oldest fact of a
+// refused launch the store has not taken (UnrecordedRefusal), the pod a launch waits on
+// (AwaitsPod) and the pods an agent of the claim registered in (RegisteredPods). Only the machine
+// holds them, in memory, and internal/store writes none of them, so the one statement below
+// clears every one, and no stored claim, nor a claim compared with one, carries any of them. A
+// field that current comes to overlay belongs in that statement too.
 //
 // No caller needs one of them on the claim it hands the store: the machine's own writes hand it
 // the claim the machine holds, which carries none of them (stored); the boot's repair hands it a
@@ -2999,8 +3187,8 @@ func (m *Machine) current() Claim {
 // hands it the claim one of those writes built (internal/daemon's projectPause.stopTx). Call
 // NormalizeClaim before this when c will also construct a machine.
 func StoredClaim(c Claim) Claim {
-	c.Pending, c.SuspensionHeld, c.SuspensionHeldBy, c.Compacting, c.ProcessGone, c.AwaitsPod, c.RegisteredPods =
-		nil, false, "", false, false, nil, RegisteredPods{}
+	c.Pending, c.SuspensionHeld, c.SuspensionHeldBy, c.Compacting, c.ProcessGone, c.UnrecordedRefusal, c.AwaitsPod, c.RegisteredPods =
+		nil, false, "", false, false, nil, nil, RegisteredPods{}
 	return c
 }
 
@@ -3456,7 +3644,11 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // (runtime.PromptTooLarge, promptRefused) is no launch failure: the claim fails at once, charged
 // nothing, and a start the session store could not answer is charged nothing and tried again
 // (startWaitsForStore), as is one the runtime refused for want of its pod's update round
-// (startWaitsForPodRound). A launch that fails stops the process it
+// (startWaitsForPodRound). Nor is a launch the runtime refuses because the claim's issue pod cannot
+// run it until the pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate): it
+// is charged nothing, keeps its refusal as the claim's last start failure, and leaves the claim
+// suspended for the daemon, no launch of it tried while that pod stands, until a start resumes it
+// once another pod stands (podRefused, podStillRefuses). A launch that fails stops the process it
 // let go (stopPrevious), whichever step failed. A launch the tree lifecycle refuses (checkLaunch)
 // starts nothing and is charged nothing (relaunchRefused), and so is one whose context ended under
 // it — the daemon's stop. A runtime waits out a cluster that answers a launch's requests overloaded
@@ -3479,6 +3671,10 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // between the lifecycle check and letGo, because a launch the tree lifecycle refuses charges no
 // budget and so takes no token either, while a launch that waits its turn keeps the process it
 // still runs until that turn comes.
+//
+// The fence of a claim whose last launch its issue pod refused (podStillRefuses) comes first,
+// before the lifecycle check, the wake gate and the pod's start gate (askPod): while that pod
+// stands, a launch of the claim writes nothing, takes no token and waits at no gate.
 //
 // Which lane the wake it reserves waits under is no part of what this path says: it is every
 // launch's, raised by a death, a resume, a retry, a repoint or the stale-plugin lane alike, so
@@ -3534,6 +3730,9 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, place *wakepace.Place, cause string, start StartWork) error {
 	again := func(ctx context.Context) error {
 		return m.launchAfter(ctx, charged, exempt, false, nil, cause, start)
+	}
+	if err := m.podStillRefuses(); err != nil {
+		return err
 	}
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, m.pluginRelaunch.waitsUnder(), again, err)
@@ -3809,6 +4008,9 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, l.charged, l.exempt, l.start)
 		}
+		if errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+			return m.podRefused(starting, err)
+		}
 		if errors.Is(err, runtime.ErrAwaitingPodRound) {
 			return m.startWaitsForPodRound(starting, err, l.charged, l.exempt, l.waiting, l.start)
 		}
@@ -3828,6 +4030,85 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 		// a new one.
 		l.waiting = false
 	}
+}
+
+// podRefusedReport is how often the issue and the controller are told, while the pod a claim's
+// launch was refused on still stands, that the claim cannot start (tellPodRefused).
+const podRefusedReport = time.Hour
+
+// podRefused is a launch the runtime refused because the claim's issue pod cannot run it until
+// that pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate). Nothing of the
+// claim failed, so nothing is charged. A claim left launching would be live, which keeps both
+// release rules off the pod (workflow's IdleRelease and UnownedPodRelease), and its retries would
+// write it at every try, so the pod would never be quiet. So the process the launch let go is
+// stopped, the claim is suspended as the daemon's, in one write, and the pod the refusal names
+// (runtime.AwaitsPodUpdate) is remembered: while it stands, no launch is tried and nothing is
+// written (podStillRefuses). The issue and the controller are told at once and hourly after, and
+// the daemon, told, queues a start of the claim wherever its outbox holds none that brings the
+// claim back (workflow's podRefusedLaunch), so that whatever replaces the pod resumes it through
+// the outbox's start. Which way the launch came is no part of that: an outbox start's own launch,
+// whose row then waits for the pod, or one that runs after its start's row has finished — the turn
+// of a launch the wake pacing held, the retry of a launch whose write failed — or one no start
+// raised, the machine's own relaunch or an operator's resume.
+func (m *Machine) podRefused(ctx context.Context, cause error) error {
+	err := errors.Join(cause, m.stopPrevious(ctx))
+	var awaits runtime.AwaitsPodUpdate
+	if errors.As(cause, &awaits) {
+		m.setRefusedPod(awaits.Pod)
+	}
+	m.logFarSideError(ctx, slog.LevelWarn, "supervise: the claim's pod cannot run this launch until its update round or its release replaces it; the claim is suspended, charged nothing, until another pod stands",
+		err, "generation", m.claim.Generation, "pod", m.refusedPod)
+	m.podRefusedTold = time.Time{}
+	m.tellPodRefused(cause)
+	return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
+}
+
+// podStillRefuses is the fence of every launch and resume of a claim whose last launch was refused
+// on refusedPod (podRefused): while that pod is still the issue's pod (runtime.IssuePodReader), it
+// answers that refusal again (runtime.AwaitsPodUpdate), before anything of the claim is written,
+// and the issue and the controller are told at most hourly. A runtime that cannot say which pod
+// the issue's Sandbox holds now (read false) has not said that pod is gone, so no answer is read
+// as the pod still standing, as an update round over a pod reads it (runtime.IssuePodReader):
+// forgetting the pod would launch into it at each try, be refused there again, write the claim
+// and tell the issue and the controller every time. Once another pod stands, or none, the record
+// is dropped and the launch goes on, and so it does for a runtime whose processes run in no pod,
+// which reads none.
+func (m *Machine) podStillRefuses() error {
+	if m.refusedPod == "" {
+		return nil
+	}
+	if reader, ok := m.deps.Runtime.(runtime.IssuePodReader); ok {
+		pod, read := reader.IssuePod(m.claim.Issue)
+		if !read {
+			err := runtime.AwaitsPodUpdate{Pod: m.refusedPod, Reason: fmt.Sprintf("launch %s: the pod %s of %s refused its last launch, and which pod the issue holds now cannot be read",
+				m.claim.Token, m.refusedPod, m.claim.Issue)}
+			m.tellPodRefused(err)
+			return err
+		}
+		if pod == m.refusedPod {
+			err := runtime.AwaitsPodUpdate{Pod: pod, Reason: fmt.Sprintf("launch %s: the pod %s of %s, which refused its last launch, still stands",
+				m.claim.Token, pod, m.claim.Issue)}
+			m.tellPodRefused(err)
+			return err
+		}
+	}
+	m.setRefusedPod("")
+	return nil
+}
+
+// tellPodRefused tells the issue and the controller that the claim cannot start until its pod is
+// replaced (Deps.PodRefused), at the first refusal and at most once an hour after it, as
+// tellStoreFault reports a store fault.
+func (m *Machine) tellPodRefused(cause error) {
+	if m.deps.PodRefused == nil {
+		return
+	}
+	now := m.deps.Clock.Now()
+	if !m.podRefusedTold.IsZero() && now.Sub(m.podRefusedTold) < podRefusedReport {
+		return
+	}
+	m.podRefusedTold = now
+	m.deps.PodRefused(m, m.current(), m.refusedPod, storetext.FarSideError(cause.Error()))
 }
 
 // heldTryWake is the wake that holds a try of launch l the wake gate let past, so it has had its
@@ -4781,6 +5062,29 @@ type AbandonedSession struct {
 // Tells is whether a prompt to this claim's agent must still name the session the claim
 // abandoned: one was abandoned and it has not been told yet.
 func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
+
+// RoleChange is the record that a claim took another role (Machine.Rerole) while its agent has
+// not yet been told so. The claim keeps its session, so the transcript its next generation resumes
+// can hold a GitHub token of the earlier role's App that the agent printed, which GitHub accepts
+// for up to an hour; the first prompt the agent takes in its new role says that every such token
+// is no longer its to use and that its gh and git now act as the new role's App (roleChangedTask),
+// and a claim that holds no task is given a delivery of the daemon's own to say it
+// (queueRelaunch). From is the role the claim held before the first change not yet told, kept for
+// the log: a second change before that prompt leaves it, since the sentence names only the role
+// the claim holds then.
+type RoleChange struct {
+	From claim.Role `json:"from"`
+	// Told is whether a turn of the agent took a prompt that told it, and ToldBy the delivery whose
+	// confirmation told it, as confirmCarrying states, the way AbandonedSession's are: told twice is
+	// the harmless way round, where a sentence lost leaves the agent free to use a token of a role
+	// it no longer holds.
+	Told   bool   `json:"told,omitempty"`
+	ToldBy string `json:"toldBy,omitempty"`
+}
+
+// Tells is whether a prompt to this claim's agent must still say that the claim took another role:
+// it took one and no turn has taken a prompt that said so.
+func (r RoleChange) Tells() bool { return r.From != "" && !r.Told }
 
 // sessionGone tells the daemon to stop the Envoy session this claim recorded, now that no process
 // stands behind it. Three decisions tell it, each only once the process has ended: a death a probe
@@ -5931,6 +6235,10 @@ func copyClaim(c Claim) Claim {
 	c.CapabilityHash = bytes.Clone(c.CapabilityHash)
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
 	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
+	if c.UnrecordedRefusal != nil {
+		held := *c.UnrecordedRefusal
+		c.UnrecordedRefusal = &held
+	}
 	c.SessionRun.Endings = slices.Clone(c.SessionRun.Endings)
 	return c
 }

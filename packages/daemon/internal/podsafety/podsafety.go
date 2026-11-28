@@ -27,12 +27,12 @@
 // an extension from (EnsureGhExtensions). Apply, the baseline
 // alone, runs only in a pod, for a worker's shim (`legion worker-shim
 // --pod-safety`) and for the image probe (`legion probe-image --pod-safety`), which certifies the
-// baseline a worker's Oh My Pi starts on. The directories are the shim's alone: every role the
-// shim starts is told a state home of its own (sandbox.roleStateHome), which in an issue pod keeps
-// a role's browser broker lock apart from its siblings', and the issue's scratch on the issue's
-// volume, which holds all of those but the two Go caches beside it and which every role of the
-// pod is told the same of, while the probe pod runs one container, on the image's own
-// directories, and is told neither.
+// baseline a worker's Oh My Pi starts on. The directories are the shim's alone: every slot the
+// shim starts, one for each claim's agent, is told a state home of its own (sandbox.roleStateHome),
+// which in an issue pod keeps a slot's browser broker lock apart from its siblings', and the
+// issue's scratch on the issue's volume, which holds all of those but the two Go caches beside it
+// and which every slot of the pod is told the same of, while the probe pod runs one container, on
+// the image's own directories, and is told neither.
 //
 // Legion writes no settings overlay of its own. A role's PI_CONFIG_FILES is the operator's own
 // overlays with the role's own after them, composed by the runtime that starts the role
@@ -145,15 +145,15 @@ func CheckOverlay(file string) error {
 // default one, but only when that directory already exists when Oh My Pi starts; otherwise they
 // fall back to the config root's `profiles/<profile>` (`$OMP_CONFIG_ROOT` when it names an
 // absolute directory, else `$HOME/$PI_CONFIG_DIR`, as ompdirs.StateRoot ports it), and a state
-// home the pod set to keep one role's browser broker lock apart from its siblings'
-// (sandbox.roleStateHome) changes nothing. The directory is the one ompdirs answers
-// (ompdirs.StateRootCandidate), so the shim and the port cannot drift: the profile is OMP_PROFILE
-// where environ defines it, else PI_PROFILE, as Oh My Pi reads them, and a name Oh My Pi would
-// refuse is refused here. With XDG_STATE_HOME unset or empty nothing is made: Oh My Pi reads no
-// state home then. Once made, ompdirs.StateRoot over environ, in the working directory the shim's
-// Oh My Pi inherits, must answer that directory; where it answers another — an honoured
+// home the pod set to keep one slot's browser broker lock apart from its siblings', a slot being
+// a claim's agent's (sandbox.roleStateHome), changes nothing. The directory is the one ompdirs
+// answers (ompdirs.StateRootCandidate), so the shim and the port cannot drift: the profile is
+// OMP_PROFILE where environ defines it, else PI_PROFILE, as Oh My Pi reads them, and a name Oh My
+// Pi would refuse is refused here. With XDG_STATE_HOME unset or empty nothing is made: Oh My Pi
+// reads no state home then. Once made, ompdirs.StateRoot over environ, in the working directory
+// the shim's Oh My Pi inherits, must answer that directory; where it answers another — an honoured
 // PI_CODING_AGENT_DIR elsewhere turns Oh My Pi's XDG lookup off — this refuses, naming both,
-// rather than let the shim make a directory Oh My Pi ignores while every role's broker takes one
+// rather than let the shim make a directory Oh My Pi ignores while every slot's broker takes one
 // lock name.
 func EnsureStateHome(environ []string) error {
 	env := lookup(environ)
@@ -185,11 +185,11 @@ func EnsureStateHome(environ []string) error {
 // them: what sandbox.roleEnvironment tells a role to write in without being told where,
 // wherever on the issue's volume the runtime puts them — the issue's scratch for the temporary
 // directory, the cache and data homes and bun's install cache, the pair beside it for the two Go
-// caches, every one of them the same for every role of the pod — less XDG_STATE_HOME, which is
-// the role's own and EnsureStateHome's. The runtime is held to this list rather than to a copy
-// of it (sandbox.TestTheRuntimeTellsTheShimEveryScratchDirectoryItMakes), so a directory the
-// runtime starts naming that the shim would never make is a test failure, not a role whose
-// temporary directory does not exist.
+// caches, every one of them the same for every slot of the pod — less XDG_STATE_HOME, which is
+// the slot's own, its claim's agent's, and EnsureStateHome's. The runtime is held to this list
+// rather than to a copy of it (sandbox.TestTheRuntimeTellsTheShimEveryScratchDirectoryItMakes), so
+// a directory the runtime starts naming that the shim would never make is a test failure, not a
+// role whose temporary directory does not exist.
 var ScratchVariables = []string{"TMPDIR", "XDG_CACHE_HOME", "XDG_DATA_HOME", "GOCACHE", "GOMODCACHE", "BUN_INSTALL_CACHE_DIR"}
 
 // EnsureScratch makes every directory environ names in ScratchVariables — TMPDIR, XDG_CACHE_HOME,

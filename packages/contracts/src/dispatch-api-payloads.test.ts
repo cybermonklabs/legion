@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import {
+  IssueRoleHolderRecordSchema,
+  IssueRoleHoldersChangedEventPayloadSchema,
+} from "./dispatch-api-issues";
 
 /**
  * Every event payload is written once. Before this, each lived twice in `dispatch-api.ts` - a
@@ -230,5 +234,30 @@ describe("every event payload is z.output of its own schema", () => {
   test(`the contract derives ${SCHEMA_DERIVATIONS} types from a schema`, () => {
     const derived = SOURCES.match(/export type [A-Za-z0-9_]+ = z\.output</g) ?? [];
     expect(derived).toHaveLength(SCHEMA_DERIVATIONS);
+  });
+});
+
+// The role-holders routes answer each holder with its `claim` and `works_step`, and an
+// `issue.role_holders_changed` event this release writes carries them too. An event a Dispatch
+// before them stored names neither, and the log keeps it as written, so the event's holder reads
+// a holder of either kind while the route's record still requires both fields.
+describe("issue.role_holders_changed reads a holder stored before claim and works_step", () => {
+  const named = {
+    role: "tester",
+    session: "ses-keyed",
+    claim: "legion-acme-acme-7-implementer",
+    works_step: true,
+    recorded_at: "2026-11-28T10:00:00Z",
+  };
+  const before = { role: "architect", session: "ses-a", recorded_at: "2026-11-25T00:34:14Z" };
+
+  test("the event reads both holders", () => {
+    const payload = { key: "ACME-7", holders: [named, before], previous_holders: [before] };
+    expect(IssueRoleHoldersChangedEventPayloadSchema.parse(payload)).toEqual(payload);
+  });
+
+  test("the route's record takes the holder that names both and refuses the one before", () => {
+    expect(IssueRoleHolderRecordSchema.safeParse(named).success).toBeTrue();
+    expect(IssueRoleHolderRecordSchema.safeParse(before).success).toBeFalse();
   });
 });

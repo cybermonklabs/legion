@@ -120,6 +120,28 @@ func TestSpawnCreatesTheClaimQueuesItsTaskAndLaunchesIt(t *testing.T) {
 	}
 }
 
+// A daemon built with no record refuses a spawn, as every route of the server that reads the record
+// refuses without one ("record dependencies are unavailable"): the claim of an issue's role is the
+// worker on that role's step, which only the record names, so the route creates and launches
+// nothing rather than reaching the role's own token, which may be the wrong agent.
+func TestASpawnWithoutTheRecordIsRefusedAndLaunchesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject,
+		OperatorToken: testOperatorToken, Controller: h.store, Releaser: h.runtime, Trees: h.store,
+		Steps: config.DesignGateRootIssues.Steps()}).Handler
+
+	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), "record dependencies are unavailable") {
+		t.Fatalf("spawn with no record = %d %s, want 500 naming the record dependencies", recorder.Code, recorder.Body)
+	}
+	if calls := h.runtime.Calls(); len(calls) != 0 {
+		t.Fatalf("the refused spawn reached the runtime: %v", h.runtime.Methods())
+	}
+	if _, found := h.supervisor.Machine(architectToken); found {
+		t.Fatalf("the refused spawn created the claim %s", architectToken)
+	}
+}
+
 // The operator's spawn never waits for the wake pacing, whatever the daemon's wake queue holds: a
 // person is waiting on this answer, and the route answers with the claim launched rather than
 // with one parked launching for a turn minutes out (supervise's reserveWake, RequestSpawn.Exempt).

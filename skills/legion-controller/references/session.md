@@ -21,9 +21,11 @@ The start procedure (`skill://legion-controller/SKILL.md`, *What happened before
 
 ## The `legion` tool
 
-- `read_state` with no field: a summary in lines, its first line naming what the others are (the project and its pause, the admission lines, one `<KEY> <phase> <status>` line for every issue the daemon records, and under each issue Legion still runs its slot, hold, gate and claims). With `issue`, `issues`, `phase` or `settings: true`: the full records it names, such as `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `tree`, `waitingOn`) and `settings`, the resolved `legion.yaml`. The tool's output reaches you cut at about 41 KB, so read records ten keys at a time.
+- `read_state` with no field: a summary of the daemon's whole state, one line per fact: the project, the pause that stands or the last one, admission (`cap`, `active`, `waiting`, `blocked`), the wakes the pacing holds, each capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's state with its last turn times.
+  With `issue`, `issues` or `phase` it returns those issues' full records, `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `otherClaims`, `tree`, `waitingOn`), and with `settings: true` the resolved `legion.yaml`; it takes one of these at a time. The tool's output reaches you cut at about 41 KB, so read records ten keys at a time.
 - `set_status` (`issue`, `status`: `todo`, `backlog` or `icebox`). Each call mints its grant from the secret the session registered with. You cannot set `done`.
 - `stop`, `retry`, `suspend`, `resume_agent`, `compact` and `fresh_session` (`issue`, `role`): the actions on an agent, each naming one agent by its issue and role, and `replace_pod` (`issue`): the update round over one issue's pod (`skill://legion-controller/references/operations.md`).
+- `issue` and `role` reach the agent that works the role's step. Two claims of one issue can hold one role; when a notice names a claim by its token, pass that token to `compact` or `fresh_session`, which take it as `claim` (`issue`, `role`, optional `claim`), so the call reaches that claim. Both refuse a token of another issue (`INVALID_CLAIM`) and a claim that holds another role (`CLAIM_NOT_OF_ROLE`).
 
 ## `gh`
 

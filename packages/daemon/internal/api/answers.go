@@ -539,6 +539,20 @@ func valuesFrom[V ~string](since int, values ...V) []EnumeratedValue {
 	return recorded
 }
 
+// arrivedWith is values as a field that arrived at contract carries them: each value recorded at
+// the later of its own arrival and the field's, since a field carries no value older than itself
+// (EnumeratedFields says why the earliest arrival of a list is its field's own). It is how a later
+// key path of a field already enumerated elsewhere takes that field's list. contract may be an
+// entry's id: the lists it takes are frozen rows, each value of which arrived at or below
+// LastNumberedContract, so the entry is the later, and the registry resolves its id to its number.
+func arrivedWith(contract int, values []EnumeratedValue) []EnumeratedValue {
+	recorded := slices.Clone(values)
+	for i := range recorded {
+		recorded[i].Since = max(recorded[i].Since, contract)
+	}
+	return recorded
+}
+
 // waitAnswers is every value of `answeredBy`, which the two rows above share because they are
 // one field of the daemon's own `record.Answer` read through two answers. The eight values of
 // the eight acts that answered a root's wait before this daemon's floor are recorded from the

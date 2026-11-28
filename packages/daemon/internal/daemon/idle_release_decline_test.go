@@ -396,7 +396,7 @@ func TestACleanReadForgetsTheDecline(t *testing.T) {
 		endedDecline(t, rig, claim.RolePlanner)
 		idlePasses(rig)
 		rig.drain(t)
-		if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
+		if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Token{rig.token}) {
 			t.Fatalf("the workspace was read through %v, want one clean read through the planner", read)
 		}
 		if got := rig.machine.Claim(); got.State != supervise.StateSuspended {
@@ -415,9 +415,9 @@ type readClockRuntime struct {
 	reading func()
 }
 
-func (r *readClockRuntime) WorkspaceWork(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+func (r *readClockRuntime) WorkspaceWork(ctx context.Context, issue string, token claim.Token) (runtime.WorkspaceWork, error) {
 	r.reading()
-	return r.releaseRuntime.WorkspaceWork(ctx, issue, role)
+	return r.releaseRuntime.WorkspaceWork(ctx, issue, token)
 }
 
 // A decline is stamped with the moment its read began, not the moment the read answered: a turn

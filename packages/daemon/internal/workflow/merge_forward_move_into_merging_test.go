@@ -91,7 +91,7 @@ func mergerAskedInMerging(t *testing.T, state supervise.ClaimState) *pgxpool.Poo
 		mergerClaimAt(t, pool, 1, state)
 	}
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
-	mergeForwardQueued(t, pool, "after the confirmed conflict", []record.MergeForwardMessage{mergerAsked()})
+	mergeForwardQueued(t, pool, "after the confirmed conflict", []record.MergeForwardMessage{mergerAsked(t)})
 	mergerTold(t, pool, "after the confirmed conflict", 0)
 	return pool
 }
@@ -165,7 +165,7 @@ func movesIntoMerging(t *testing.T, pool *pgxpool.Pool, want []record.MergeForwa
 // before the move out is told nothing at the move.
 func TestAMergersAskWhoseRowEndedOutsideMergingIsToldOnceAtTheMoveBack(t *testing.T) {
 	t.Parallel()
-	asked := []record.MergeForwardMessage{sentAgain(mergerAsked(), 1)}
+	asked := []record.MergeForwardMessage{sentAgain(mergerAsked(t), 1)}
 	for _, to := range []phase.Phase{phase.Accepting, phase.Retro} {
 		t.Run("the row ended in "+string(to), func(t *testing.T) {
 			t.Parallel()
@@ -188,7 +188,7 @@ func TestAMergersAskWhoseRowEndedOutsideMergingIsToldOnceAtTheMoveBack(t *testin
 		t.Parallel()
 		pool := mergerAskedInMerging(t, supervise.StateReady)
 		mergerMovesOutOfMerging(t, pool, 2*time.Minute, phase.Accepting)
-		movesIntoMerging(t, pool, []record.MergeForwardMessage{mergerAsked()})
+		movesIntoMerging(t, pool, []record.MergeForwardMessage{mergerAsked(t)})
 		askRowEnds(t, pool, readsAfter(7*time.Minute), true, 1, 1)
 		mergeForwardQueued(t, pool, "after the row's delivery to launch 1, one ask in all,", []record.MergeForwardMessage{})
 	})
@@ -215,7 +215,7 @@ func TestTheMoveIntoMergingTellsEachLaunchOfTheMergerOnce(t *testing.T) {
 	t.Parallel()
 	none := []record.MergeForwardMessage{}
 	atLaunch := func(launch uint64) []record.MergeForwardMessage {
-		return []record.MergeForwardMessage{sentAgain(mergerAsked(), launch)}
+		return []record.MergeForwardMessage{sentAgain(mergerAsked(t), launch)}
 	}
 	// relaunchedAfterTheMove is the merger's claim relaunched at 2 while the move's row for launch 1
 	// is queued: its ready leaves the ask to the row, which is delivered to launch 2.
@@ -244,7 +244,7 @@ func TestTheMoveIntoMergingTellsEachLaunchOfTheMergerOnce(t *testing.T) {
 		after   func(t *testing.T, pool *pgxpool.Pool)
 	}{
 		{name: "a row the executor read as left ends after the move", state: supervise.StateReady,
-			atMove: []record.MergeForwardMessage{mergerAsked()}, after: func(t *testing.T, pool *pgxpool.Pool) {
+			atMove: []record.MergeForwardMessage{mergerAsked(t)}, after: func(t *testing.T, pool *pgxpool.Pool) {
 				askRowEnds(t, pool, readsAfter(7*time.Minute), false, 0, 1)
 				mergeForwardQueued(t, pool, "after the row's undelivered end in merging", atLaunch(1))
 			}},

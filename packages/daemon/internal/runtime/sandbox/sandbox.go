@@ -126,14 +126,27 @@ type Runtime struct {
 	adoptTimeout            time.Duration
 	tokens                  ProvisionTokens
 	gitHubCredential        runtime.GitHubCredential
-	controllerCredential    runtime.ControllerCredential
-	gitHubDirs              func(repo ghrepo.Repository, roles []appauth.AppRole) []string
-	store                   Store
-	conns                   runtime.Conns
-	launchers               *launchers
-	launcherAuth            launcherCredentials
-	now                     func() time.Time
-	log                     *slog.Logger
+	actsAs                  runtime.ActsAs
+	// launchedApp is, for each slot of each pod (by its Sandbox's name), the App of the last
+	// start this runtime made in it (writeLaunchCredential), which says whether a start's slot gh
+	// files may not hold its credential yet. A runtime that restarted holds it empty. launching
+	// counts, for each such slot, the launches into it in flight, from just before a launch into a
+	// pod it keeps writes the slot's credential to the end of its start (markSlotLaunch), and
+	// updating is the refresher's write of the slot on its way to the API server, if one is
+	// (refreshUpdate): no refresh writes a slot a launch is in flight in, so the slot holds the
+	// token the start names until the start ends. All three are guarded by launchedMu.
+	launchedApp          map[slotKey]string
+	launching            map[slotKey]int
+	updating             map[slotKey]chan struct{}
+	launchedMu           sync.Mutex
+	controllerCredential runtime.ControllerCredential
+	gitHubDirs           func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	store                Store
+	conns                runtime.Conns
+	launchers            *launchers
+	launcherAuth         launcherCredentials
+	now                  func() time.Time
+	log                  *slog.Logger
 	// controllerWatchedWorkflows is Options.ControllerWatchedWorkflows as the controller's address
 	// record holds it (watchedWorkflowsValue), computed once; no variable carries it.
 	controllerWatchedWorkflows string
@@ -509,11 +522,12 @@ func configureProber(opts Options) (*Runtime, error) {
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
 		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds, launchTakes: opts.LaunchTakes, launchTook: opts.LaunchTook,
 		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
-		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
+		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, actsAs: opts.ActsAs, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
 		taken: map[string]sandboxTaken{}, sessions: map[claim.Token]launchedSession{}, dispatchTokenClaims: map[claim.Token]string{},
+		launchedApp: map[slotKey]string{}, launching: map[slotKey]int{}, updating: map[slotKey]chan struct{}{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}
@@ -1013,6 +1027,13 @@ func podContainer(role claim.Role) string {
 	return runtime.IssuePodContainer
 }
 
+// launcherOf is the role of the pod's launcher that serves slot, the slot a claim's process runs in
+// (claim.Token.Slot): a pod runs one launcher of each role of its kind (podKind.roles), and the
+// launcher of a role serves the slot of that role's name, with that role's Secret, volumes and
+// address record. A slot no role of the pod is named for is one the pod was built without
+// (runtime.PodLacks).
+func launcherOf(slot claim.Agent) claim.Role { return claim.Role(slot) }
+
 // checkLocator refuses a locator this runtime did not mint.
 func (r *Runtime) checkLocator(loc runtime.Locator) error {
 	if err := loc.Validate(); err != nil {
@@ -1196,13 +1217,15 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 
 var _ runtime.WorkspaceWorkReader = (*Runtime)(nil)
 
-// WorkspaceWork has role's shim read whether the issue workspace every role of the issue shares
-// holds work that no branch or tag on origin holds, over that claim's connection. The role named
-// must be one whose process runs in the issue's own running pod (runningRoleConn), since its shim
-// reads the workspace it already works in, so a claim with no locator, one whose pod is not the
-// recorded one, and one with no connection are each a refusal rather than an answer of no work.
-func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
-	conn, token, err := r.runningRoleConn(ctx, issue, role)
+// WorkspaceWork has the shim of the claim token names read whether the issue workspace every claim
+// of the issue shares holds work that no branch or tag on origin holds, over that claim's
+// connection. The claim must be one whose process runs in the issue's own running pod
+// (runningClaimConn). A claim with no locator, one whose pod is not the recorded one, and one
+// with no connection are each a refusal rather than an answer of no work. A role does not name
+// the claim of a keyed agent working that role's step, so the release names the claim on its row
+// (record.IssueWorkspaceCheck.Claim).
+func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, token claim.Token) (runtime.WorkspaceWork, error) {
+	conn, err := r.runningClaimConn(ctx, issue, token)
 	if err != nil {
 		return runtime.WorkspaceWork{}, err
 	}
@@ -1213,33 +1236,27 @@ func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, role claim.Ro
 	return work, nil
 }
 
-// runningRoleConn finds role's process for the workspace read its shim answers in the issue's
-// workspace (WorkspaceWork), and makes the one rule for such a request (runningProcessConn) of it.
-// It answers the connection to that role's shim and the role's claim, read from the store. A claim
-// with no locator is a refusal, and so is each refusal of the rule. Every refusal opens with
-// "read <issue>'s workspace: ", and a claim with no locator holds "no role process to read it".
-func (r *Runtime) runningRoleConn(ctx context.Context, issue string, role claim.Role) (runtime.Conn, claim.Token, error) {
-	token, err := claim.NewToken(r.project, issue, role)
-	if err != nil {
-		return nil, "", fmt.Errorf("read %s's workspace: %w", issue, err)
-	}
+// runningClaimConn finds the process of the named claim for its workspace read (WorkspaceWork),
+// applying runningProcessConn's rule. A missing locator or a refusal of that rule is an error,
+// never an answer that the workspace holds no work.
+func (r *Runtime) runningClaimConn(ctx context.Context, issue string, token claim.Token) (runtime.Conn, error) {
 	claims, err := r.store.Claims(ctx)
 	if err != nil {
-		return nil, "", fmt.Errorf("read %s's workspace: %w", issue, err)
+		return nil, fmt.Errorf("read %s's workspace: %w", issue, err)
 	}
 	index := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == token })
 	if index < 0 || claims[index].Locator == nil {
-		return nil, "", fmt.Errorf("read %s's workspace: %s holds no role process to read it", issue, token)
+		return nil, fmt.Errorf("read %s's workspace: %s holds no role process to read it", issue, token)
 	}
 	conn, err := r.runningProcessConn(*claims[index].Locator)
 	if err != nil {
-		return nil, "", fmt.Errorf("read %s's workspace: %w", issue, err)
+		return nil, fmt.Errorf("read %s's workspace: %w", issue, err)
 	}
-	return conn, token, nil
+	return conn, nil
 }
 
 // runningProcessConn is the one rule for a request a role's shim answers in the issue's workspace
-// (AdoptWorkingCopy, and WorkspaceWork through runningRoleConn): the process
+// (AdoptWorkingCopy, and WorkspaceWork through runningClaimConn): the process
 // loc records must run in the issue's own running pod, since the shim of loc's claim works in that
 // workspace. It answers the connection to that claim's shim. A locator this runtime did not mint,
 // a pod that is not the recorded one or not running, and a claim with no connection are each a
@@ -1306,7 +1323,7 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 	// controllers are the Sandboxes of the known controller claims, which the sweep keeps.
 	controllers := map[string]bool{}
 	for _, k := range known {
-		if role, ok := k.Claim.Role(); ok && role == claim.RoleController {
+		if k.Claim.IsController() {
 			controllers[SandboxName(k.Claim)] = true
 		}
 		if err := k.Validate(); err != nil {

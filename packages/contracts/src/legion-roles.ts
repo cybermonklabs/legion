@@ -56,9 +56,10 @@ const ENVOY_ROLE_TOKEN = /^[a-z0-9][a-z0-9_-]*$/;
 const PROJECT_TOKEN = /^[a-z0-9]+$/;
 /** A Dispatch issue key: uppercase project, then a numeric suffix — `IssueKey`'s sole shape. */
 export const DISPATCH_KEY_PATTERN = /^([A-Z][A-Z0-9]*)-([0-9]+)$/;
-/** The issue part of a role token, `<issue project>-<number>`, and its role after it. Neither part
- * of the issue holds a `-`, so the role is everything after the second one, and may hold a `-` of
- * its own (`code-checker`); the Go daemon's `claim.Token.Cut` reads it by the same fields. */
+/** The issue part of a claim token, `<issue project>-<number>`, and the agent's name after it, the
+ * role of the agent's first step. Neither part of the issue holds a `-`, so the name is everything
+ * after the second one, and may hold a `-` of its own (`code-checker`); the Go daemon's
+ * `claim.Token.Cut` reads it by the same fields. */
 const DISPATCH_ROLE_PART = /^([a-z0-9]+)-([0-9]+)-(.+)$/;
 /** The role grammar of Dispatch's step record, which each of Legion's six matches; the Go daemon's
  * `claim.IsRole` reads the same. */
@@ -98,9 +99,11 @@ export function assertLegionProjectToken(project: string): void {
   }
 }
 
-/** The token of the claim on `role` of `issue`, byte for byte the Go daemon's `claim.NewToken`; a
- * role outside the step grammar (`isStepRole`), the controller's among them, is refused as Go
- * refuses it. */
+/** The claim token of the agent named for `role` on `issue`, byte for byte the Go daemon's
+ * `claim.NewToken`: the role's own claim, which a step of no key runs in. A keyed agent's token
+ * ends in its own name, the role of its first step, whatever role its step is on now. A role
+ * outside the step grammar (`isStepRole`), the controller's among them, is refused as Go refuses
+ * it. */
 export function roleToken(project: string, issue: IssueKey, role: LegionStepRole): string {
   assertLegionProjectToken(project);
 
@@ -129,9 +132,10 @@ export function roleTopic(token: string): string {
   return `${ROLE_TOPIC_PREFIX}${token}`;
 }
 
-/** A Dispatch issue key encodes as `<project>-<number>-<role>`; its project component is already
- * `[A-Z][A-Z0-9]*`, so lowercasing it needs no further escaping. The role is read by its fields
- * (`DISPATCH_ROLE_PART`), and a role outside the step grammar parses as no claim's. */
+/** A claim token of an issue ends `<issue project>-<number>-<agent>`; its project component is
+ * already `[A-Z][A-Z0-9]*`, so lowercasing it needs no further escaping. The agent's name, which
+ * the answer's `role` holds, is read by its fields (`DISPATCH_ROLE_PART`), and a name outside the
+ * step grammar parses as no claim's. */
 export function parseRoleToken(
   project: string,
   token: string

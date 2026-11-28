@@ -1,7 +1,7 @@
 // Package daemon runs one legion: it opens the store its configuration names, brings the schema
-// forward, records the boot, supervises every role claim — the worker stream the shims dial, the
-// runtime their processes run under, one machine per claim — serves the API, and stops in the
-// order the durable record needs.
+// forward, records the boot, supervises every claim, one agent of an issue or the controller —
+// the worker stream the shims dial, the runtime their processes run under, one machine per claim —
+// serves the API, and stops in the order the durable record needs.
 package daemon
 
 import (
@@ -587,6 +587,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.enqueue = workflow.enqueueOutbox
 		plan.ensureWorkspace = workflow.ensureWorkspace
 		plan.owner = workflow.owningArchitect
+		plan.stepWorkers = workflow.stepWorkers
 		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
 		// from here: the operator's spawn draws a tree's experiments with no workflow
 		// configured, and the launch that follows it must honour the draw it made.
@@ -599,6 +600,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.rootTask, plan.designNews, plan.taskText, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.taskText, workflow.workingCopy
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
+		plan.podRefused = workflow.podRefused
 		// The run's boot event, and from it on the state event of every write the run makes. The
 		// boot row is queued in a transaction of its own, which commits before either switch below
 		// is on, so it takes the project's next state sequence before any state row this run
@@ -1281,6 +1283,10 @@ type plan struct {
 	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the
 	// launch's addressing names; nil without a workflow.
 	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
+	// stepWorkers is the agent of each step of the plan of a claim's issue, read from the plan rows
+	// the store records at each launch (workflowRuntime.stepWorkers), which the launch's addressing
+	// names; nil without a workflow.
+	stepWorkers func(ctx context.Context, project string, c supervise.Claim) ([]stepWorker, error)
 	// repositories is the repository state the workflow fills, empty until its preparations read
 	// GitHub: the rename rule every gh bundle resolves a configured pair against
 	// (repositories.servesRepository, appauth.GitHubCredential) and, under the Kubernetes runtime,
@@ -1346,6 +1352,11 @@ type plan struct {
 	// workflow, where neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
+	// podRefused tells the workflow that a claim's launch was refused because its issue pod cannot
+	// run it until that pod is replaced, and the workflow queues a start of the claim wherever its
+	// outbox holds none that brings the claim back; nil without a workflow, where nobody is told and
+	// nothing is queued.
+	podRefused func(m *supervise.Machine, c supervise.Claim, pod, detail string)
 	// providerErrorRunReached tells of a claim whose turns keep ending in a provider error, to the
 	// roles its own doc comment names; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
@@ -1827,6 +1838,7 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, deploymentApps(cfg.Roles), log), gh
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, served, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
+			opts.ClaimRole = st.ClaimRole
 		}
 		rt, err := tmux.New(opts)
 		if err != nil {
@@ -2292,7 +2304,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, secrets: p.secrets, prompts: p.prompts,
 			roles:    cfg.Roles,
-			identity: p.identity, knownIdentity: p.knownIdentity, repository: p.launchRepository, owner: p.owner, log: log,
+			identity: p.identity, knownIdentity: p.knownIdentity, repository: p.launchRepository, owner: p.owner, stepWorkers: p.stepWorkers, log: log,
 			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
 			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels, watchedWorkflows: cfg.Projects[cfg.Project].WatchedWorkflows,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
@@ -2316,6 +2328,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		TaskConfirmed:           p.taskConfirmed,
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
+		PodRefused:              p.podRefused,
 		ProviderErrorRunReached: p.providerErrorRunReached,
 		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
@@ -2806,7 +2819,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // contract is as unreachable by an install as one below it, and the next bump would walk exactly
 // that claim to failed. Nothing here can move such a worker's plugin; a new image can, which is
 // what the pod round replaces the pod for. So it is left running and is asked its round like any
-// other worker, on its role's own Envoy topic (supervision.openPodUpdate). staleRegistration
+// other worker, on the Envoy topic of its claim (supervision.openPodUpdate). staleRegistration
 // accepts such a registration and charges it nothing, for the same reason
 // (supervise.Deps.NoPluginInstall).
 //

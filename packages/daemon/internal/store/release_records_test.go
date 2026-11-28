@@ -149,7 +149,7 @@ func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
 		t.Helper()
 		if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 			_, _, err := RecordPodWakeTx(ctx, tx, PodResume{Release: release, Project: "legion", Issue: rootIssue,
-				Role: role, Kind: pods.WakeDelivery, At: when})
+				Role: role, Claim: "legion-legion-legion-208-" + role, Kind: pods.WakeDelivery, At: when})
 			return err
 		}); err != nil {
 			t.Fatalf("record the wake of %s: %v", role, err)
@@ -220,10 +220,10 @@ func TestAnUnrecordedReleaseSettlesTheWakeUnderItsMarkUnlessARecordNamesIt(t *te
 				if err != nil {
 					t.Fatal(err)
 				}
-				if taken, err := store.TakePodWake(ctx, "legion", rootIssue, token, pods.WakeAgentMessage, at.Add(-10*time.Minute), 0); err != nil || !taken {
+				if taken, err := store.TakePodWake(ctx, "legion", rootIssue, token, role, pods.WakeAgentMessage, at.Add(-10*time.Minute), 0); err != nil || !taken {
 					t.Fatalf("take the %s's wake = %t, %v; want it taken", role, taken, err)
 				}
-				id, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, role)
+				id, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, token)
 				if err != nil || !found {
 					t.Fatalf("the %s's open resume = %t, %v; want the one its wake recorded", role, found, err)
 				}

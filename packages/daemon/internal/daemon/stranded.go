@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -55,14 +56,17 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 	}
 	wakes := make([]workflow.ReleasedWake, 0, len(resumes))
 	for _, resume := range resumes {
-		wakes = append(wakes, workflow.ReleasedWake{Issue: resume.Issue, Role: resume.Role, ClockAt: resume.ClockAt, Stuck: resume.Stuck})
+		wakes = append(wakes, workflow.ReleasedWake{Claim: claim.Token(resume.Claim),
+			ClockAt: resume.ClockAt, Stuck: resume.Stuck})
 	}
 	return wakes, nil
 }
 
 // reportStranded logs, once the boot has re-adopted every claim and replayed the failed ones to
 // the workflow, the claims nothing will wake (workflow.Stranded), read from records as the state
-// route reads them: one error line, however many there are, naming each claim as `<issue> <role>`
+// route reads them: one error line, however many there are, naming each claim by its name
+// (api.StrandedClaim.Name: `<issue> <role>`, with the token beside them for an agent named for
+// another role, so two claims of one role on one issue read apart)
 // under the move that brings it back, keyed by that move's value (api.StrandedClaim.Move, the one
 // statement of which move each claim takes, which `legion state` groups by too). A fleet a restart
 // did not bring back otherwise looks healthy — its controller registers, the state shows its trees

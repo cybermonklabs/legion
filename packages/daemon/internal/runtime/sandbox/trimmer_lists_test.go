@@ -304,7 +304,7 @@ func cacheHomeInstalls(script, cacheHome string, protected map[string]bool) (ren
 // against is the one the pod sets.
 func roleCacheHome(t *testing.T, role claim.Role) string {
 	t.Helper()
-	for _, env := range roleEnvironment(role) {
+	for _, env := range roleEnvironment(claim.Agent(role)) {
 		if env.Name == "XDG_CACHE_HOME" {
 			return env.Value
 		}
@@ -315,14 +315,14 @@ func roleCacheHome(t *testing.T, role claim.Role) string {
 }
 
 // renderedStartWrapper is the start script a launch of this pod renders, built as launcherCommand
-// builds it (launcher.go): the role's own state home and generation, the plugin pair's install
+// builds it (launcher.go): the slot's own state home and generation, the plugin pair's install
 // block and Claude Code's — the one that writes under the cache home today — so a cache path added
 // to either is in the text this test reads. An Oh My Pi launch renders no Claude block, which is
 // why the launch rendered here is a Claude one.
 func renderedStartWrapper(t *testing.T, role claim.Role) string {
 	t.Helper()
 	r := sandboxRuntime(t, SandboxConfig{})
-	return startScript(roleStateHome(role), 3, testPlugins(), claudeConfigDir(role),
+	return startScript(roleStateHome(claim.Agent(role)), 3, testPlugins(), claudeConfigDir(claim.Agent(role)),
 		installLockWait(r.bootTimeout, r.registrationIntervals))
 }
 

@@ -734,7 +734,8 @@ func (r *freshSessionRig) relaunchSendsTheOwedAskOnce(ended string) {
 	r.register(oldSession, oldSessionFile)
 	launch := r.machine.Claim().Generation
 
-	want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",
+	// The ask sent again names the claim of the implementer's step, whose launch it was sent at.
+	want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Claim: r.implementer, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",
 		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen, SentLaunch: launch}}
 	if asks := r.queuedMergeForwards(); !slices.Equal(asks, want) {
 		r.t.Errorf("after the ready of the implementer's launch %d the outbox holds the merge-forward messages %+v, want %+v", launch, asks, want)
@@ -797,7 +798,8 @@ func (r *freshSessionRig) testerHeld(when string) {
 	r.t.Helper()
 	var left string
 	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) (err error) {
-		_, _, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.runner.deployment, r.issue.Key, claim.RoleTester, record.MergeForwardHold, owedAskHead)
+		_, _, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.runner.deployment, r.issue.Key, claim.RoleTester,
+			mustClaimToken(r.t, r.issue.Key, claim.RoleTester), record.MergeForwardHold, owedAskHead)
 		return err
 	}); err != nil {
 		r.t.Fatalf("read the rule of the tester's hold: %v", err)

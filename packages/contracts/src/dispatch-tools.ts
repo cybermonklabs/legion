@@ -3494,16 +3494,17 @@ export const dispatchToolSpecs = [
       "<step> <kind> <role> <type> attempt <attempt> <agent> <model> <started_at> <ended_at> " +
       "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
       "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +
-      "from 1. agent is the claim of the role that ran the step, and model is the model that " +
-      "answered last, as provider/model. result is passed, failed or stopped. After the result " +
-      "each line prints set and the model the role was set to, or - for none. Then it prints " +
-      "answered and each model with its calls and its share of the step's calls in whole " +
-      "percent, as anthropic/claude-opus-5-5=41(93%). It prints running for a run not yet " +
-      "ended, unknown where Legion does not know the counts, and none for a step with no call. " +
-      "A field with no value prints -, and a run that has not ended prints running for its end " +
-      "and its result. A closed issue's steps read too. An issue that no step ran on and that " +
-      "has no plan prints 0 steps in 0 tasks, and a key Dispatch does not hold fails as dispatch " +
-      `read fails for it, NOT_FOUND: not found. ${ISSUE_REFERENCE}`,
+      "from 1. agent is the claim token of the agent that ran the step, which names that agent " +
+      "and not always the step's role, and model is the model that answered last, as " +
+      "provider/model. result is passed, failed or stopped. After the result each line prints " +
+      "set and the model the role was set to, or - for none. Then it prints answered and each " +
+      "model with its calls and its share of the step's calls in whole percent, as " +
+      "anthropic/claude-opus-5-5=41(93%). It prints running for a run not yet ended, unknown " +
+      "where Legion does not know the counts, and none for a step with no call. A field with " +
+      "no value prints -, and a run that has not ended prints running for its end and its " +
+      "result. A closed issue's steps read too. An issue that no step ran on and that has no " +
+      "plan prints 0 steps in 0 tasks, and a key Dispatch does not hold fails as dispatch read " +
+      `fails for it, NOT_FOUND: not found. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
     }),

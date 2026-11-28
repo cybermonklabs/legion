@@ -18,8 +18,9 @@ import (
 )
 
 // countedClaim is the implementer's claim of the issue these tests count, on its phases row and
-// live in the state they project, so the state shows the implementer's view.
-const countedClaim = "implement-claim"
+// live in the state they project, so the state shows the implementer's view. It is the claim each
+// implementer entry writes on that row (Engine.stepToken): the implementer's own token.
+const countedClaim = "legion-legion-legion-208-implementer"
 
 // countedReturns is what three reviews that requested changes and two failed tests count, at
 // review_round_cap 3 (stepEngine): five passes, three rounds, the cap told at 3, and each move

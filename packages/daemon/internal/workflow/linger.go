@@ -374,29 +374,6 @@ func InWorkflow(issue record.Issue) bool {
 	return issue.Standing().InWorkflow(record.OutOfWorkflow)
 }
 
-// runningTree is issue's tree's root, and whether the daemon is running that tree: the root is
-// recorded, holds an admission slot, and does not linger. byKey and slotted are one read of the
-// issues and one of the slots, indexed (indexIssues). The boot's resume and the status repair both
-// ask it, so the rule is stated once: a root waiting for a slot can carry a workflow phase of its
-// own, and a lingering tree runs nothing.
-func runningTree(byKey map[string]record.Issue, slotted map[string]bool, issue record.Issue) (record.Issue, bool) {
-	root, ok := byKey[issue.Tree]
-	return root, ok && slotted[root.Key] && !root.Lingers()
-}
-
-// indexIssues is issues by key and the keys slots holds, the pair runningTree reads.
-func indexIssues(issues []record.Issue, slots []record.Slot) (map[string]record.Issue, map[string]bool) {
-	byKey := make(map[string]record.Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
-	slotted := make(map[string]bool, len(slots))
-	for _, slot := range slots {
-		slotted[slot.Issue] = true
-	}
-	return byKey, slotted
-}
-
 // beginLinger suspends the root's whole tree and arms its linger deadline, ending the root's hold
 // if it has one, as a child's leave does, and its task with the state its leave at status gives it
 // (leaveState). Its one caller (leave) calls it once per close: a root that already lingers leaves
@@ -481,7 +458,8 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // most.
 //
 // What the close does around the hand-over, for a member handed over under either rule: the same
-// expiry still queues a tree_close for every role of every member and a workspace removal for
+// expiry still queues a tree_close for each claim of every member — one for each stored claim, and
+// one by role for each role whose worker claim is none of those — and a workspace removal for
 // every member, handed over or not (lingerExpired), so a handed member's claims are retired, their
 // sessions kept, and its workspace removed here with the rest of the tree. Its workspace comes
 // back when the first start of its new generation reaches one of those retired claims (the
@@ -495,9 +473,10 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 //
 // The non-done clause reads the member's phase itself rather than a predicate written over a
 // hold, because the phase is the spec's own rule and a hold from the merge phase is a state no
-// live daemon writes: a hold is written only where the role that works issue.WorkingPhase() is
-// the role whose claim died (claimFailed), and the merger holds that phase, so its own death leaves
-// the issue held from merging with its claim failed rather than held from a phase nobody works.
+// live daemon writes: a hold is written only where the claim that died works the step of the role
+// that works issue.WorkingPhase() (claimFailed), and the merger holds that phase, so its own death
+// leaves the issue held from merging with its claim failed rather than held from a phase nobody
+// works.
 func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue) ([]record.Issue, error) {
 	done := root.Status == "done"
 	var handed []record.Issue
@@ -564,14 +543,19 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 		return intake.Result{}, err
 	}
 	// Each row names the root generation whose linger it expires: a member keeps its own generation
-	// across re-admission, so only that tells this linger's rows from a later one's.
+	// across re-admission, so only that tells this linger's rows from a later one's. The rows reach
+	// the claims every request of every claim of a member reaches (claimTargets): each stored claim
+	// by its token, so a claim of a role a keyed agent took over gets its close too, and each role
+	// whose step's claim is none of those by the role alone, so a claim that comes up after this read
+	// gets its close when the row runs. The tree's cleanup waits for every claim these rows reach.
 	for _, member := range members {
-		roles, err := record.IssueRoles(ctx, tx, e.store, member.Key)
+		targets, err := e.claimTargets(ctx, tx, member, "")
 		if err != nil {
 			return intake.Result{}, err
 		}
-		for _, role := range roles {
-			closeRow := record.SuperviseRequest{Op: "tree_close", Tree: member.Tree, Role: role, Generation: member.Generation, Linger: issue.Generation}
+		for _, target := range targets {
+			closeRow := record.SuperviseRequest{Op: "tree_close", Tree: member.Tree, Role: target.role, Claim: target.token,
+				Generation: member.Generation, Linger: issue.Generation}
 			if err := e.enqueue(ctx, tx, member.Key, closeRow); err != nil {
 				return intake.Result{}, err
 			}

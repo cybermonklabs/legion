@@ -125,6 +125,8 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
+		UnrecordedRefusal: &supervise.UnrecordedRefusal{Since: at.Add(-2 * time.Hour), Attempts: 4,
+			Error: "apply fact supervise/pod-refused:legion-legion-legion-500-implementer:1: the database did not answer"},
 		MessageMarkAt: at.Add(-90 * time.Second),
 		AwaitsPod: &runtime.Locator{
 			Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(podUID, 6),
@@ -157,6 +159,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 			TurnFinished: true},
 		EndedWork: supervise.EndedWork{At: at.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
 			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
+		RoleChange:  supervise.RoleChange{From: claim.RoleTester},
 		SessionLost: supervise.SessionLossGone,
 		Step: supervise.StepRecord{
 			At: at.Add(-time.Minute), TurnStartedAt: at.Add(-2 * time.Minute),

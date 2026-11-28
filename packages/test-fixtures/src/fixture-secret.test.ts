@@ -135,7 +135,7 @@ describe("wordBuiltFixtureSecrets", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: source text the scanner reads
     ["a random call", "const token = `${crypto.randomUUID()}`;"],
     // biome-ignore lint/suspicious/noTemplateCurlyInString: source text the scanner reads
-    ["a claim token, which names a role", "const claimToken = `legion-${name}-implementer`;"],
+    ["a claim token, which names an agent", "const claimToken = `legion-${name}-implementer`;"],
     [
       "a refused value, exempted",
       'ENVOY_TOKEN: "S3CRET\\nnotes", // fixture-secret: refused for its newline, never held',

@@ -837,7 +837,7 @@ type Config struct {
 	// be live on the broker before the deployment moves its pods to the new account: until then
 	// each live role's new pod is refused its own session name (403 SESSION_HELD), and the role's
 	// grants, pending requests and withheld secrets stay behind. While a pair stands, a pod of
-	// either account can claim any name the other holds, not only its own role's, so remove the
+	// either account can claim any name the other holds, not only its own claim's, so remove the
 	// pair once no live pod runs as the old account. Unset, no account is paired.
 	SessionAccountPairs [][2]string
 	// BROKER_K8S_OIDC_ISSUER: the issuer of the Kubernetes service-account tokens pods enroll

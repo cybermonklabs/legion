@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/legionrole"
+	"github.com/sjawhar/envoy/internal/legionclaim"
 )
 
 // Assignees answers the person a Dispatch issue is assigned to, "" for an issue nobody is. The
@@ -37,11 +37,12 @@ const assigneeBound = 3 * time.Second
 const AssigneeUnreadMessage = "broker: the assignee of a Legion pod's issue could not be read; its request is listed for everyone"
 
 // issueKeyOfClaim is the Dispatch issue key a pod's claim (enrollments.claim) names, such as
-// ACME-7 for legion-acme-acme-7-planner (packages/daemon/internal/claim.NewToken), and "" for a
-// claim that is no Legion role claim token. A role the deployment defines names its issue as one
-// of Legion's six does, and the controller's token names none (legionrole.ParseToken).
+// ACME-7 for legion-acme-acme-7-planner, and "" for a claim that is no Legion claim token of an
+// issue: a token split as the daemon's claim.Token.Cut splits it, whose agent's name is any name
+// of the role grammar but controller (legionclaim.CutClaimToken, Envoy's one split of a claim
+// token, which depends on nothing but the standard library).
 func issueKeyOfClaim(claim string) string {
-	issue, _, ok := legionrole.ParseToken(claim)
+	_, issue, _, ok := legionclaim.CutClaimToken(claim)
 	if !ok {
 		return ""
 	}

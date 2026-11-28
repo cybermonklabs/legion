@@ -270,7 +270,8 @@ func (r *claimCompactionLive) pane(token claim.Token) *compactPane {
 	return held
 }
 
-// token is the claim token of role on key, as the daemon spells it.
+// token is the claim token of the agent named for role on key, the role's own claim
+// (claim.NewToken), as the daemon spells it.
 func (r *claimCompactionLive) token(key string, role claim.Role) claim.Token {
 	r.t.Helper()
 	token, err := claim.NewToken(r.project, key, role)
@@ -798,8 +799,9 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 		r.token(r.ladder, r.onClaude), r.ladder, r.onClaude,
 		http.StatusConflict, "CLAIM_NOT_ON_OMP", runtime.Backends[runtime.BackendClaude].Name, compactNamesFreshSession)
 
-	// The project's controller is no role a claim token is built from, so the controller's own
-	// door — the only one that names a role at all — refuses it by name, for both operations.
+	// `controller` is no role of an issue (claim.IsRole), and the controller's claim belongs to no
+	// issue, so the controller's own door — the only one that names a role at all — refuses it by
+	// name, for both operations.
 	r.refusedByController("compact naming role controller", "/legion/v1/claims/compact",
 		api.ClaimRequest{Issue: r.refusing, Role: string(claim.RoleController)},
 		http.StatusBadRequest, "INVALID_ROLE", "the project's controller is none of them")

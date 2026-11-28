@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -84,9 +86,10 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 // (keptPodReadDue). A turn that started after read.at owes that read anyway (the Legion
 // reviewer's point 1).
 //
-// The open phase's worker (workflow.OpenRoleAt of issuePhase and stepRole, the role of the running
-// step at step) is told, where its claim has a process in the pod and is not gone, and the read
-// could read: by a role message that the pod waits for the push of the work (podKeptMessage). Otherwise the issue's architect is told, by the
+// The open phase's worker (openPhaseWorker: the claim the record gives the step of the open
+// phase's role, workflow.OpenRoleAt of issuePhase and stepRole) is told, where that claim has a
+// process in the pod and is not gone, and the read could read: by a role message that the pod
+// waits for the push of the work (podKeptMessage). Otherwise the issue's architect is told, by the
 // workspace-kept notice (record.WorkspaceKeptNotice, roundKeptMessage) on the decline a launcher's
 // read records too (keptNoticeDecline), with each claim's state and what the read found or why it
 // failed. Each is told once: the store queues a role's message only where the decline names other
@@ -100,12 +103,17 @@ func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reas
 		return false, fmt.Errorf("read the claims of %s once the read of its pod is made: %w", issue, err)
 	}
 	at := keptMoment(read.at, append(slices.Clone(group), s.noticeGroup(claimsOf(after, issue))...))
-	if worker, live := openPhaseWorker(group, round, issuePhase, stepRole); live && read.err == nil {
+	worker, live, err := s.openPhaseWorker(ctx, issue, group, round, issuePhase, stepRole)
+	if err != nil {
+		return false, err
+	}
+	if live && read.err == nil {
 		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(worker.Token), Body: podKeptMessage(issue, pod, reasons, read.work, again)}, at)
 		if err != nil {
 			return false, fmt.Errorf("encode the message of %s's kept pod: %w", issue, err)
 		}
 		decline := declineOf(worker.Role, pod, at, read.work, read.err)
+		decline.Claim = worker.Token
 		decline.Message = &store.IdleReleaseRow{Kind: string(message.Kind), Payload: message.Payload}
 		return s.supervisor.store.DeclinePodReplacement(ctx, s.plan.project, issue, decline)
 	}
@@ -137,18 +145,31 @@ func keptMoment(readAt time.Time, group []supervise.Claim) time.Time {
 
 // openPhaseWorker is the claim of the open phase's worker of an issue in issuePhase whose running
 // step's role is stepRole (workflow.OpenRoleAt), where that claim records a process in round's pod
-// and is not gone: the one role a round's keep tells by a message of its own (recordPodKept).
-func openPhaseWorker(group []supervise.Claim, round string, issuePhase phase.Phase, stepRole claim.Role) (supervise.Claim, bool) {
+// and is not gone: the one claim a round's keep tells by a message of its own (recordPodKept). The
+// worker is a claim, not a role: two claims of one issue can hold the role — the agent of a key on
+// its step, beside the role's own claim of an earlier version of the plan — and only the claim the
+// record gives the role's step works the phase (record.ReadWorkerClaim, read in a transaction of
+// its own).
+func (s *supervision) openPhaseWorker(ctx context.Context, issue string, group []supervise.Claim, round string, issuePhase phase.Phase,
+	stepRole claim.Role) (supervise.Claim, bool, error) {
 	role := workflow.OpenRoleAt(issuePhase, stepRole)
 	if role == "" {
-		return supervise.Claim{}, false
+		return supervise.Claim{}, false, nil
+	}
+	var worker claim.Token
+	if err := store.TransactWith(ctx, s.supervisor.store.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		worker, err = record.ReadWorkerClaim(ctx, record.NewStore(), tx, s.plan.project, issue, role)
+		return err
+	}); err != nil {
+		return supervise.Claim{}, false, fmt.Errorf("read the worker of %s's open phase: %w", issue, err)
 	}
 	for _, c := range group {
-		if c.Role == role && inRoundPod(c, round) && !c.Gone() {
-			return c, true
+		if c.Token == worker && inRoundPod(c, round) && !c.Gone() {
+			return c, true, nil
 		}
 	}
-	return supervise.Claim{}, false
+	return supervise.Claim{}, false, nil
 }
 
 // podKeptForWork is whether an earlier round's keep of pod, the pod the issue's claims record, still
@@ -221,7 +242,7 @@ type keptPodRead struct {
 // found due (podKeptForWork), made after the walk. The moment the read records is taken first,
 // then the claims are read again as their machines hold them now, and the read is made only where
 // it is still due over them (keptPodReadDue): a turn that started since the walk's snapshot runs
-// now, and its read comes once it has ended. The read goes through a live role in the pod where
+// now, and its read comes once it has ended. The read goes through a live claim in the pod where
 // one runs, else through the pod's launcher (readPodWorkspace). A read that finds nothing that
 // origin does not hold forgets the row (store.Store.ForgetIdleDecline), and the next sweep may
 // open a round over the pod. A read that finds work, or that cannot be made, writes the row again
@@ -276,9 +297,10 @@ func (s *supervision) readKeptPod(ctx context.Context, step keptPodRead) {
 	}
 	// A claim whose launch waits on the pod runs no process there to read through (podProcess,
 	// awaitsRoundPod), so the pod's launcher reads, as where no claim reaches the pod.
-	process, by := runtime.Known{}, viaIssue
+	var process *supervise.Claim
+	by := viaIssue
 	if through, reached := podProcess(group, inPod); reached && !awaitsRoundPod(through, inPod) {
-		process, by = podKnown(through), viaProcess
+		process, by = &through, viaProcess
 	}
 	read := s.readPodWorkspace(ctx, issue, inPod, process, by, at)
 	if read.clean() {
@@ -452,19 +474,21 @@ func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.
 // the pod's launcher found before the replacement, or why no read could be made. The notice
 // directs roles to the replaced pod's repository, not to the origin of a later workspace.
 func launchTakenMessage(taken runtime.TakenPod) string {
-	role := string(taken.Claim)
-	if named, ok := taken.Claim.Role(); ok {
-		role = string(named)
+	// The claim is named by its slot, its agent's name, which is its role's name for the role's own
+	// claim (claim.Token.Slot); a token that names no slot is named by the token itself.
+	agent := string(taken.Claim)
+	if slot, ok := taken.Claim.Slot(); ok {
+		agent = string(slot)
 	}
 	why := taken.Why
 	if why == "" {
 		why = "the launch could not start the role in that pod"
 	}
 	took := fmt.Sprintf("A launch of the %s replaced the pod of %s (pod %s) on its own account, because %s. The pod and its disk are gone.",
-		role, taken.Issue, taken.PodUID, why)
+		agent, taken.Issue, taken.PodUID, why)
 	if taken.Act.Takes == runtime.TakesVolume {
 		took = fmt.Sprintf("A launch of the %s deleted the Sandbox of %s (uid %s) and the kept volume it owned, which was the disk of the issue's pods, on its own account, because %s.",
-			role, taken.Issue, taken.Act.Target, why)
+			agent, taken.Issue, taken.Act.Target, why)
 		switch {
 		case taken.WithPod:
 			took += fmt.Sprintf(" The Sandbox ran pod %s, and the pod went with it.", taken.PodUID)

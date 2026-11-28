@@ -67,7 +67,7 @@ func (r *mainPathRig) wakeByRoleMessage(report string) string {
 // cancel's transaction. It returns that row as the outbox holds it.
 func (r *mainPathRig) queueReleaseResume() entryStartRow {
 	r.t.Helper()
-	row, err := r.runner.releaseResume(r.key, r.key)(claim.RoleArchitect, r.issue().Generation, store.DroppedWake{})
+	row, err := r.runner.releaseResume(r.key, r.key)(r.token, claim.RoleArchitect, r.issue().Generation, store.DroppedWake{})
 	if err != nil {
 		r.t.Fatalf("build the release's resume: %v", err)
 	}

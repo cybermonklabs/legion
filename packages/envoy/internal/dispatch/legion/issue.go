@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/legionagents"
+	"github.com/sjawhar/envoy/internal/legionclaim"
 )
 
 // claimWorking is the claim state of a role in a turn (the daemon's supervise.ClaimState), the one
@@ -104,20 +104,20 @@ func (s *IssueState) Working() []string {
 	return working
 }
 
-// Roles is every claim of the issue with its state: the roles legionagents.Roles names first, in
+// Roles is every claim of the issue with its state: the roles legionclaim.Roles names first, in
 // that order, which is the order of the default steps and the one an issue's agents are listed in,
 // then every other role by name, so a role a later daemon adds is shown after the ones Dispatch
 // knows rather than dropped. It is never nil.
 func (s *IssueState) Roles() []RoleClaim {
 	roles := make([]RoleClaim, 0, len(s.claims))
-	for _, role := range legionagents.Roles {
+	for _, role := range legionclaim.Roles {
 		if state, held := s.claims[role]; held {
 			roles = append(roles, RoleClaim{Role: role, State: state})
 		}
 	}
 	known := len(roles)
 	for role, state := range s.claims {
-		if !slices.Contains(legionagents.Roles, role) {
+		if !slices.Contains(legionclaim.Roles, role) {
 			roles = append(roles, RoleClaim{Role: role, State: state})
 		}
 	}

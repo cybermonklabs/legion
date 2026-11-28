@@ -1796,8 +1796,8 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 // and a made-up user name, password and signature in a private tarball URL's userinfo and query
 // are not printed. When worker_backends runs any role on Claude Code, the line gains one sentence
 // naming those roles, whose plugin is the worker image's and never an install: Legion's phase
-// workers in the order the workflow reaches them, then each role of the deployment in the file's
-// order.
+// workers in claim.Roles' order, the order of the default steps, then each role of the deployment
+// in the file's order.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState); it sets the package variables piEnvoyVersion and piLegionVersion.
 	legionState(t)
@@ -3088,38 +3088,58 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"pendingStatusWrites":[]`
 	// recorded is one claim of the record a case serves: its issue, the phase that issue stands
-	// in, its role and state, and who suspended it, which the operator claim routes serve and the
-	// state does not. Each issue is its own tree's root, so its architect is its tree's.
-	type recorded struct{ issue, at, role, state, by string }
+	// in, its role and state, who suspended it, which the operator claim routes serve and the
+	// state does not, and its token, "" for the token of the agent named for its role. Each issue
+	// is its own tree's root, so its architect is its tree's.
+	type recorded struct{ issue, at, role, state, by, token string }
+	tokenOf := func(c recorded) string {
+		if c.token != "" {
+			return c.token
+		}
+		return "legion-legion-" + strings.ToLower(c.issue) + "-" + c.role
+	}
 	status := map[string]string{"implementing": "in_progress", "testing": "testing", "reviewing": "needs_review"}
 	// issuesOf is the issues block over claims: each claim on its issue's view where the
-	// projection puts it, a tree's architect under `architect` and a phase worker under
-	// `workers`, and each issue at the status its phase writes (workflow.PhaseStatus).
+	// projection puts it, a tree's architect under `architect`, a phase worker under `workers`,
+	// and a second claim of a role a worker already shows under `otherClaims` with its role
+	// (projection's listIssues), and each issue at the status its phase writes
+	// (workflow.PhaseStatus).
 	issuesOf := func(claims []recorded) string {
 		var keys []string
-		phases, architects, workers := map[string]string{}, map[string]string{}, map[string][]string{}
+		phases, architects := map[string]string{}, map[string]string{}
+		workers, others := map[string][]string{}, map[string][]string{}
+		shown := map[string]map[string]bool{}
 		for _, c := range claims {
 			if _, seen := phases[c.issue]; !seen {
 				keys = append(keys, c.issue)
+				shown[c.issue] = map[string]bool{}
 			}
 			phases[c.issue] = c.at
-			view := `{"session":"ses_` + strings.ToLower(c.issue) + `_` + c.role + `","state":"` + c.state + `","pluginContract":48}`
-			if c.role == "architect" {
+			view := `{"token":"` + tokenOf(c) + `","session":"ses_` + strings.ToLower(c.issue) + `_` + c.role + `","state":"` + c.state + `","pluginContract":48}`
+			switch {
+			case c.role == "architect":
 				architects[c.issue] = view
-				continue
+			case shown[c.issue][c.role]:
+				others[c.issue] = append(others[c.issue], `{"role":"`+c.role+`","claim":`+view+`}`)
+			default:
+				shown[c.issue][c.role] = true
+				workers[c.issue] = append(workers[c.issue], `"`+c.role+`":{"claim":`+view+`}`)
 			}
-			workers[c.issue] = append(workers[c.issue], `"`+c.role+`":{"claim":`+view+`}`)
 		}
 		records := make([]string, len(keys))
 		for i, key := range keys {
+			other := ""
+			if len(others[key]) > 0 {
+				other = `,"otherClaims":[` + strings.Join(others[key], ",") + `]`
+			}
 			records[i] = `"` + key + `":{"key":"` + key + `","generation":1,"phase":"` + phases[key] + `","status":"` + status[phases[key]] +
-				`","tree":"` + key + `","architect":` + architects[key] + `,"workers":{` + strings.Join(workers[key], ",") + `}}`
+				`","tree":"` + key + `","architect":` + architects[key] + `,"workers":{` + strings.Join(workers[key], ",") + `}` + other + `}`
 		}
 		return `{` + strings.Join(records, ",") + `}`
 	}
 	// listOf is the operator claim list over the same claims, the one surface that names a
-	// suspender. A claim released and then retired keeps `suspendedBy: released`
-	// (api.StrandedClaim.Move).
+	// suspender, each claim by its token. A claim released and then retired keeps `suspendedBy:
+	// released` (api.StrandedClaim.Move).
 	listOf := func(claims []recorded) string {
 		entries := make([]string, len(claims))
 		for i, c := range claims {
@@ -3127,7 +3147,7 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 			if c.by != "" {
 				by = `,"suspendedBy":"` + c.by + `"`
 			}
-			entries[i] = `{"token":"legion-legion-` + strings.ToLower(c.issue) + `-` + c.role + `","issue":"` + c.issue +
+			entries[i] = `{"token":"` + tokenOf(c) + `","issue":"` + c.issue +
 				`","role":"` + c.role + `","state":"` + c.state + `"` + by + `,"pluginContract":48}`
 		}
 		return `{"claims":[` + strings.Join(entries, ",") + `]}`
@@ -3136,16 +3156,25 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 	// is one whose idle pod the daemon released, LEGION-209's tester one an operator suspended,
 	// and LEGION-210's reviewer failed.
 	releasedClaims := []recorded{
-		{"LEGION-208", "implementing", "architect", "ready", ""},
-		{"LEGION-208", "implementing", "implementer", "suspended", "released"},
-		{"LEGION-209", "testing", "architect", "ready", ""},
-		{"LEGION-209", "testing", "tester", "suspended", "operator"},
-		{"LEGION-210", "reviewing", "architect", "ready", ""},
-		{"LEGION-210", "reviewing", "reviewer", "failed", ""},
+		{"LEGION-208", "implementing", "architect", "ready", "", ""},
+		{"LEGION-208", "implementing", "implementer", "suspended", "released", ""},
+		{"LEGION-209", "testing", "architect", "ready", "", ""},
+		{"LEGION-209", "testing", "tester", "suspended", "operator", ""},
+		{"LEGION-210", "reviewing", "architect", "ready", "", ""},
+		{"LEGION-210", "reviewing", "reviewer", "failed", "", ""},
 	}
-	released := `[{"issue":"LEGION-208","role":"implementer","state":"suspended"},` +
-		`{"issue":"LEGION-209","role":"tester","state":"suspended"},` +
-		`{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`
+	released := `[{"issue":"LEGION-208","role":"implementer","state":"suspended","token":"legion-legion-legion-208-implementer"},` +
+		`{"issue":"LEGION-209","role":"tester","state":"suspended","token":"legion-legion-legion-209-tester"},` +
+		`{"issue":"LEGION-210","role":"reviewer","state":"failed","token":"legion-legion-legion-210-reviewer"}]`
+	// The record of LEGION-212, whose two claims hold the role tester: key a's, named implementer,
+	// which works the tester step and which the release suspended, and so shows under
+	// `workers.tester`; and the tester's own, which an operator suspended, under `otherClaims`
+	// (issuesOf). The command reads each suspender by the claim's token.
+	twoTesters := []recorded{
+		{"LEGION-212", "testing", "architect", "ready", "", ""},
+		{"LEGION-212", "testing", "tester", "suspended", "released", "legion-legion-legion-212-implementer"},
+		{"LEGION-212", "testing", "tester", "suspended", "operator", ""},
+	}
 	// The phrase `legion state` puts before the claims a workflow start brings back
 	// (main.go's strandedPhrases), which names a retired claim beside a failed one and the acts
 	// that queue such a start (INFRA-1480).
@@ -3161,12 +3190,12 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 		{
 			name: "every move",
 			claims: []recorded{
-				{"LEGION-208", "implementing", "architect", "suspended", "operator"},
-				{"LEGION-208", "implementing", "implementer", "suspended", "operator"},
-				{"LEGION-210", "implementing", "architect", "failed", ""},
-				{"LEGION-210", "implementing", "implementer", "working", ""},
-				{"LEGION-211", "reviewing", "architect", "ready", ""},
-				{"LEGION-211", "reviewing", "reviewer", "failed", ""},
+				{"LEGION-208", "implementing", "architect", "suspended", "operator", ""},
+				{"LEGION-208", "implementing", "implementer", "suspended", "operator", ""},
+				{"LEGION-210", "implementing", "architect", "failed", "", ""},
+				{"LEGION-210", "implementing", "implementer", "working", "", ""},
+				{"LEGION-211", "reviewing", "architect", "ready", "", ""},
+				{"LEGION-211", "reviewing", "reviewer", "failed", "", ""},
 			},
 			stranded: `[{"issue":"LEGION-208","role":"architect","state":"suspended"},{"issue":"LEGION-208","role":"implementer","state":"suspended"},` +
 				`{"issue":"LEGION-210","role":"architect","state":"failed"},{"issue":"LEGION-211","role":"reviewer","state":"failed"}]`,
@@ -3176,8 +3205,8 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 		{
 			name: "only failed",
 			claims: []recorded{
-				{"LEGION-210", "reviewing", "architect", "ready", ""},
-				{"LEGION-210", "reviewing", "reviewer", "failed", ""},
+				{"LEGION-210", "reviewing", "architect", "ready", "", ""},
+				{"LEGION-210", "reviewing", "reviewer", "failed", "", ""},
 			},
 			stranded: `[{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`,
 			want:     "claims nothing will wake: 1 — " + workflowStart + " LEGION-210 reviewer\n",
@@ -3196,16 +3225,34 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 			want: "claims nothing will wake: 3 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-208 implementer, LEGION-209 tester; " +
 				workflowStart + " LEGION-210 reviewer\n",
 		},
+		// Two claims of one role on one issue: each takes the move its own suspender calls for,
+		// read by its token, and neither takes the other's. The role's own claim is named by its
+		// issue and role, and key a's agent, named for another role, by its token beside them.
+		{
+			name: "two claims of one role on one issue", bearer: true, claims: twoTesters,
+			stranded: `[{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-tester"},` +
+				`{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-implementer"}]`,
+			want: "claims nothing will wake: 2 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-212 tester; " +
+				"released, woken over ten minutes ago and the pod never came back LEGION-212 tester (claim legion-legion-legion-212-implementer)\n",
+		},
+		// Without a bearer both read as suspended workers, one move, and the two are named apart.
+		{
+			name: "two claims of one role on one issue in one move", claims: twoTesters,
+			stranded: `[{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-tester"},` +
+				`{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-implementer"}]`,
+			want: "claims nothing will wake: 2 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) " +
+				"LEGION-212 tester, LEGION-212 tester (claim legion-legion-legion-212-implementer)\n",
+		},
 		// INFRA-1480: a retired claim needs the same workflow start a failed worker does, and the
 		// operator claim list still names the one a release suspended before its close retired it
 		// as released: the line names it under the workflow start, never as a pod coming back.
 		{
 			name: "a retired claim beside a failed one", bearer: true,
 			claims: []recorded{
-				{"LEGION-208", "implementing", "architect", "ready", ""},
-				{"LEGION-208", "implementing", "implementer", "retired", "released"},
-				{"LEGION-210", "reviewing", "architect", "ready", ""},
-				{"LEGION-210", "reviewing", "reviewer", "failed", ""},
+				{"LEGION-208", "implementing", "architect", "ready", "", ""},
+				{"LEGION-208", "implementing", "implementer", "retired", "released", ""},
+				{"LEGION-210", "reviewing", "architect", "ready", "", ""},
+				{"LEGION-210", "reviewing", "reviewer", "failed", "", ""},
 			},
 			stranded: `[{"issue":"LEGION-208","role":"implementer","state":"retired"},` +
 				`{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`,

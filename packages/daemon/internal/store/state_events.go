@@ -1,9 +1,11 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -77,20 +79,38 @@ func statesClaim(c supervise.Claim) bool {
 }
 
 // queueClaimState queues, in tx, the state event of the write of claim c over stored, the row the
-// write replaced (lockedClaim), and answers whether it queued one. The event names the claim with
-// its role when the write moved its state, from the stored state, null where the store held no
-// row yet, to c's; and it names the phase, from null to unrecorded, when the write is the first to
-// list an issue the daemon holds no record of (storedClaim.unlisted), which the route serves at
-// unrecorded from then on. A write that moved neither queues nothing; so a later claim write of
-// that issue names the claim alone, since the route served its phase at unrecorded already. The
-// row is due at once, as the role-holder publication beside it is (putClaim).
+// write replaced (lockedClaim), and answers whether it queued one. The event names the claim's
+// state under each role whose step c works (workedRoles), from the stored state, null where the
+// store held no row yet, to c's, when the write moved its state or its role; and it names the
+// phase, from null to unrecorded, when the write is the first to list an issue the daemon holds no
+// record of (storedClaim.unlisted), which the route serves at unrecorded from then on. A write that
+// moved none of them queues nothing; so a later claim write of that issue names the claim alone,
+// since the route served its phase at unrecorded already. The row is due at once, as the
+// role-holder publication beside it is (putClaim).
+//
+// The state route shows, as the claim of each role of an issue, the claim of the worker on that
+// role's step (projection's listIssues, record.WorkerClaim), and Dispatch observes each role's
+// claim from it (`claim.<role>`, from `workers` and `architect`): two claims of one issue can hold
+// one role - the agent of a key on a step of another role, beside that role's own claim of an
+// earlier version of the plan, which the route shows among `otherClaims` - so the event of a claim
+// that works no step of its role would overwrite what Dispatch observes of the claim that does. A
+// claim that works no role's step names no role. The agent of a key takes the role of its next
+// step with its state unchanged (supervise's Rerole), after the phases row of that step names it,
+// so the write that moves its role names its state under each role it works then, the new one
+// among them, though its state did not move.
 func queueClaimState(ctx context.Context, tx pgx.Tx, state *statePublication, c supervise.Claim, stored storedClaim) (bool, error) {
 	var changes []stateevent.FieldChange
 	if stored.unlisted {
 		changes = append(changes, stateevent.FieldChange{Field: stateevent.FieldPhase, Old: stateevent.Null, New: encodedString(string(stateevent.Unrecorded))})
 	}
-	if c.State != stored.state {
-		changes = append(changes, stateevent.FieldChange{Field: stateevent.FieldClaim, Role: c.Role, Old: claimStateValue(stored.state), New: claimStateValue(c.State)})
+	if c.State != stored.state || c.Role != stored.role {
+		roles, err := workedRoles(ctx, tx, c)
+		if err != nil {
+			return false, err
+		}
+		for _, role := range roles {
+			changes = append(changes, stateevent.FieldChange{Field: stateevent.FieldClaim, Role: role, Old: claimStateValue(stored.state), New: claimStateValue(c.State)})
+		}
 	}
 	if len(changes) == 0 {
 		return false, nil
@@ -100,6 +120,45 @@ func queueClaimState(ctx context.Context, tx pgx.Tx, state *statePublication, c 
 		return false, fmt.Errorf("queue the state change of %s: %w", c.Issue, err)
 	}
 	return true, nil
+}
+
+// workedRoles is each role of c's issue whose step c works, by record.WorkerClaim's rule over the
+// issue's phases rows as tx reads them: a role whose row names c while it runs a step of the
+// issue's plan (step_task set), and the role c is named for (claim.Token.Slot: the role of its
+// agent's first step, whose own token is c's), unless that role's row runs a step, whose agent it
+// then names. This package sits below record (package stateevent's comment says why), so it
+// restates the rule over the rows phasesOf reads, which the idle view carries too
+// (pods.IdleView.Phases). A token that names no role is read as the role c holds. The roles are in
+// claim.Roles' order, a role of the deployment after them by name.
+func workedRoles(ctx context.Context, tx pgx.Tx, c supervise.Claim) ([]claim.Role, error) {
+	phases, err := phasesOf(ctx, tx, c.Issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the phases rows of %s for the state of %s: %w", c.Issue, c.Token, err)
+	}
+	named := c.Role
+	if slot, ok := c.Token.Slot(); ok && claim.IsRole(claim.Role(slot)) {
+		named = claim.Role(slot)
+	}
+	var roles []claim.Role
+	namedRunsAStep := false
+	for role, row := range phases {
+		if row.StepTask == "" || row.Claim == "" {
+			continue
+		}
+		if role == named {
+			namedRunsAStep = true
+		}
+		if row.Claim == c.Token {
+			roles = append(roles, role)
+		}
+	}
+	if !namedRunsAStep {
+		roles = append(roles, named)
+	}
+	slices.SortFunc(roles, func(a, b claim.Role) int {
+		return cmp.Or(cmp.Compare(claim.RoleRank(a), claim.RoleRank(b)), cmp.Compare(a, b))
+	})
+	return roles, nil
 }
 
 // claimStateValue is a claim's state as a state event carries it: the state string the route

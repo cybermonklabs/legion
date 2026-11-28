@@ -324,6 +324,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
     role: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
+    claim: { type: "string" },
     giveUp: { type: "number" },
     consumer: { type: "string" },
     throughSeq: { type: "number" },
@@ -355,6 +356,7 @@ const DESCRIBED_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
     "rerun_child",
     "issue",
   ],
+  claim: ["fresh_session", "compact"],
   giveUp: ["replay_give_up", "discard_give_up", "consumer", "throughSeq"],
   consumer: ["replay_give_up", "discard_give_up", "read_state", "throughSeq"],
   throughSeq: ["consumer", "replay_give_up", "discard_give_up", "read_state"],
@@ -1843,8 +1845,9 @@ test("a completion once the issue moved on posts the role's own newest record of
   const recorded = { commit: TIP, handoffId: RECORD.id, handoffVersion: RECORD.version };
   for (const [phase, role, issue, read, report] of [
     // A review ends its round on its own: a request for changes moves the issue to implementing at
-    // once, an approval to its task's next step (accepting, in the default steps) once the pull
-    // request is mergeable, and the reviewer completes after it.
+    // once, an approval to its task's next step (accepting, in the default steps), or to its retro
+    // where the review is the task's last step, once the pull request is mergeable, and the
+    // reviewer completes after it.
     ["implementing", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["accepting", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["reviewing", "tester", "LEGION-208", ["LEGION-208 test"], recorded],
@@ -2444,6 +2447,38 @@ test("the controller reads the state without a grant and sets an issue's status 
     "freshSession",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "checker" },
   ]);
+  // A claim named by its token (the stranded token's contract entry), another claim of the role
+  // than the step's worker, is sent as named, and only when named; compact takes it the same way.
+  await run({
+    op: "fresh_session",
+    issue: "LEGION-209",
+    role: "tester",
+    claim: "legion-legion-legion-209-tester",
+  });
+  expect(calls.at(-1)).toEqual([
+    "freshSession",
+    {
+      grantId: "controller-grant-1",
+      issue: "LEGION-209",
+      role: "tester",
+      claim: "legion-legion-legion-209-tester",
+    },
+  ]);
+  await run({
+    op: "compact",
+    issue: "LEGION-209",
+    role: "tester",
+    claim: "legion-legion-legion-209-tester",
+  });
+  expect(calls.at(-1)).toEqual([
+    "compact",
+    {
+      grantId: "controller-grant-1",
+      issue: "LEGION-209",
+      role: "tester",
+      claim: "legion-legion-legion-209-tester",
+    },
+  ]);
   // Refused before any mint: a status the board does not have, a missing issue, a role no claim
   // is on — the controller's own among them — and every operation of a claim.
   const before = calls.length;
@@ -2458,7 +2493,11 @@ test("the controller reads the state without a grant and sets an issue's status 
     [{ op: "fresh_session", role: "implementer" }, "fresh_session requires issue"],
     [
       { op: "fresh_session", issue: "LEGION-209", role: "implementer", status: "todo" },
-      'fresh_session does not accept field "status"; it takes issue, role',
+      'fresh_session does not accept field "status"; it takes issue, role, claim',
+    ],
+    [
+      { op: "fresh_session", issue: "LEGION-209", role: "tester", claim: " " },
+      "fresh_session's claim is a claim token",
     ],
     [
       { op: "read_state", to: "planning" },
@@ -2490,7 +2529,14 @@ test("the controller reads the state without a grant and sets an issue's status 
     isError: true,
   });
   expect(calls).toHaveLength(before);
-  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller", "ses_controller"]);
+  expect(minted).toEqual([
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+  ]);
 });
 
 // The summary lists each worker of an issue's map, a role of the deployment's after Legion's own in
@@ -2528,6 +2574,37 @@ test("read_state's summary lists the claim of a role of the deployment under its
     "merger",
     "checker",
   ]);
+});
+
+// The stranded token's contract entry: two claims of one issue can hold one role, and `workers`
+// shows one of them, so the summary lists each of the issue's `otherClaims` after the workers,
+// with its role, its state,
+// both turn times and its token, marks it as another claim of that role, and names the token
+// because fresh_session and compact reach that claim only by it (their `claim`).
+test("read_state's summary lists another claim of a role after the workers of its issue", async () => {
+  const state = stateOf92Issues(1);
+  const running = state.issues["INFRA-100"];
+  const tester = running?.workers?.tester?.claim;
+  if (running === undefined || tester === undefined) {
+    throw new Error("INFRA-100 lacks its tester");
+  }
+  const claimToken = "legion-acme-infra-100-tester";
+  running.otherClaims = [
+    { role: "tester", claim: { ...tester, token: claimToken, state: "suspended" } },
+  ];
+  const { daemon } = recordingDaemon({ state });
+  const summary = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const text = summary.content[0]?.type === "text" ? summary.content[0].text : "";
+  const under = text.split("\n").filter((line) => line.startsWith("  "));
+  expect(under.at(-1)).toBe(
+    `  tester (another claim) suspended ${tester.lastTurnStart ?? "-"} ${tester.lastTurnEnd ?? "-"} claim ${claimToken}`
+  );
 });
 
 test("the controller stops, retries, suspends and resumes an agent it names by issue and role", async () => {

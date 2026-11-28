@@ -33,12 +33,16 @@ import (
 // transaction, and finishes the row undelivered, with one log line naming why, once the message is
 // no longer to be delivered by the workflow's rule for these rows (workflow.MergeForwardAt, whose
 // leftMergeForwardAt lists each case). The rule reads the roles the deployment this daemon booted
-// with defines (r.deployment): a row to a role a restart since it was queued dropped is no longer
-// delivered, since a wake would resume a claim whose launch then fails. Role-message rows run in no
-// order of the issue's, so a hold still queued behind its landed would otherwise tell the worker to
-// wait for a head that already came.
+// with defines (r.deployment): a row to a role, or to a claim whose slot is a role, that a restart
+// since it was queued dropped is no longer delivered, since a wake would resume a claim whose
+// launch then fails or waits for a pod with that slot. Role-message rows run in no order of the
+// issue's, so a hold still queued behind its landed would otherwise tell the worker to wait for a
+// head that already came.
 // What follows - a claim that failed or retired, the design gate, the wake and the publish - is
-// deliverHeld's, as it is a merge-queue removal's.
+// deliverHeld's, as it is a merge-queue removal's. The message reaches the claim it names
+// (record.MergeForwardMessage.Claim), the worker of its role's step when the workflow wrote it; a
+// row the release before wrote names none and reaches the claim the record gives that step when it
+// runs (workerToken).
 //
 // A row of an ask ends in a transaction of its own that holds the fact lock (endMergeForwardAsk),
 // whether it ends undelivered or delivered, because the ready of a launch of the asked role sends
@@ -47,9 +51,10 @@ import (
 // rule above, the claim deliverHeld reads failed, the launch the publish reached - and the role
 // can be relaunched and its new launch come ready in between. So the end reads the claim again
 // under that lock, and the workflow sends the ask to a launch the row did not reach
-// (workflow.MergeForwardAskEnded). The row is the workflow's, and the executor writes no row of
-// the ask and no launch of the record's ask: it deletes its own row and hands the workflow what
-// it read. The other steps end as they always did: no ready leaves anything to them.
+// (workflow.MergeForwardAskEnded), naming the claim the row reached. The row is the workflow's,
+// and the executor writes no row of the ask and no launch of the record's ask: it deletes its own
+// row and hands the workflow what it read. The other steps end as they always did: no ready
+// leaves anything to them.
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
 	if r.notices == nil {
 		return errors.New("merge-forward message executor has no Envoy publisher")
@@ -57,7 +62,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	if r.supervisor == nil {
 		return errors.New("merge-forward message executor has no claim supervisor")
 	}
-	token, err := roleToken(r.project, row, payload.Role)
+	token, err := r.workerToken(ctx, row.Issue, payload.Role, payload.Claim)
 	if err != nil {
 		return err
 	}
@@ -66,7 +71,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	var left string
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.deployment, row.Issue, payload.Role, payload.Step, payload.Head)
+		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.deployment, row.Issue, payload.Role, token, payload.Step, payload.Head)
 		return err
 	}); err != nil {
 		return fmt.Errorf("read the issue and the pull request of %s: %w", row.Issue, err)
@@ -97,15 +102,15 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 
 // endMergeForwardAsk ends row, a row of payload's ask, in one transaction that holds the fact lock
 // (intake.SerializeFacts): it deletes the row under the lease this attempt holds
-// (record.Store.FinishLeasedOutbox), reads the asked role's claim there, and hands the workflow
-// the row's payload, whether the row was delivered, told, the launch the delivery reached (0 for
-// a row that ends undelivered, and for a delivery the listener named no holder of), and the
-// claim's launch as read under the lock, 0 where the claim has failed or retired or the daemon
-// supervises none (workflow.MergeForwardAskEnded). A ready applied before the lock was taken is
-// one the claim read shows the launch of, since a launch's ready comes after the decision that
-// relaunched the claim published that launch (supervise.Machine.View); one applied after it finds
-// the row gone. The settle that follows finds the row finished. A lease another attempt took since
-// is record.ErrOutboxLeaseLost, and that attempt ends the row.
+// (record.Store.FinishLeasedOutbox), reads there the claim of token, the claim the row reached,
+// and hands the workflow the row's payload, token, whether the row was delivered, told, the launch
+// the delivery reached (0 for a row that ends undelivered, and for a delivery the listener named no
+// holder of), and the claim's launch as read under the lock, 0 where the claim has failed or
+// retired or the daemon supervises none (workflow.MergeForwardAskEnded). A ready applied before the
+// lock was taken is one the claim read shows the launch of, since a launch's ready comes after the
+// decision that relaunched the claim published that launch (supervise.Machine.View); one applied
+// after it finds the row gone. The settle that follows finds the row finished. A lease another
+// attempt took since is record.ErrOutboxLeaseLost, and that attempt ends the row.
 func (r *outbox) endMergeForwardAsk(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage, token claim.Token, delivered bool, told uint64, attributes []any) error {
 	var launch uint64
 	var asked bool
@@ -121,7 +126,7 @@ func (r *outbox) endMergeForwardAsk(ctx context.Context, row record.OutboxRow, p
 			launch = held.Generation
 		}
 		var err error
-		asked, err = workflow.MergeForwardAskEnded(ctx, r.records, tx, row.Issue, payload, delivered, told, launch, r.now().UTC())
+		asked, err = workflow.MergeForwardAskEnded(ctx, r.records, tx, r.deployment, row.Issue, payload, token, delivered, told, launch, r.now().UTC())
 		return err
 	}); err != nil {
 		return fmt.Errorf("end the merge-forward ask of %s to its %s: %w", row.Issue, payload.Role, err)

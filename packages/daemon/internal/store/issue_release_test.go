@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -41,8 +42,9 @@ func openRunningTree(t *testing.T, store *Store) {
 
 // markRelease is the mark ReleaseIdleIssue leaves, written by hand so a fence can be tested on
 // its own: the ids of the release's first row, of its boundary and of its last, the newest
-// start row the pod's claims held when the release was marked, and the roles whose claims the
-// release's own stops have suspended so far.
+// start row the pod's claims held when the release was marked, and the claims the release's own
+// stops have suspended so far, each named by the role whose own claim it is (its token,
+// issue_releases.suspended).
 func markRelease(t *testing.T, store *Store, first, boundary, last, started int64, suspended ...claim.Role) {
 	t.Helper()
 	markReleaseOf(t, store, rootIssue, first, boundary, last, started, suspended...)
@@ -51,13 +53,17 @@ func markRelease(t *testing.T, store *Store, first, boundary, last, started int6
 // markReleaseOf is markRelease for the pod of issue.
 func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, last, started int64, suspended ...claim.Role) {
 	t.Helper()
-	roles := make([]string, 0, len(suspended))
+	tokens := make([]string, 0, len(suspended))
 	for _, role := range suspended {
-		roles = append(roles, string(role))
+		token, err := claim.NewToken("legion", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens = append(tokens, string(token))
 	}
 	_, err := store.Pool().Exec(context.Background(), `insert into issue_releases
 		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
-		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, now())`, issue, first, boundary, last, started, roles)
+		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, now())`, issue, first, boundary, last, started, tokens)
 	if err != nil {
 		t.Fatalf("mark the release of %s: %v", issue, err)
 	}
@@ -246,12 +252,13 @@ func TestTheTeardownIsCancelledByAPhaseStartQueuedAfterTheReleaseAndNotByAStartO
 	}
 }
 
-// A start that waits because the issue's pod was built before its role, queued above the
-// release's rows, does not cancel the teardown either: the pod cannot run it, and the release is
-// one of the two things that let it start (idleWaitingRow, pods.StartWaitsForPodPrefix). A
-// teardown that read it as the pod being used again would cancel the very release it waits for,
-// and the start would wait on until the pod's update round. The control is the same start before
-// its first try, its last error empty: it is the pod being used again, and cancels the release.
+// A start that waits because the issue's pod lacks the slot of its claim or the role of its step,
+// queued above the release's rows, does not cancel the teardown either: the pod cannot run it, and
+// the release is one of the two things that let it start (idleWaitingRow,
+// pods.StartWaitsForPodPrefix). A teardown that read it as the pod being used again would cancel
+// the very release it waits for, and the start would wait on until the pod's update round. The
+// control is the same start before its first try, its last error empty: it is the pod being used
+// again, and cancels the release.
 func TestTheTeardownIsNotCancelledByAStartThatWaitsForItsPod(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -674,11 +681,11 @@ func releaseMarked(t *testing.T, st *Store) bool {
 }
 
 // resumeRow is the row a cancel queues to bring one claim back, as the daemon's own builder
-// writes it (outbox.releaseResume) for a role whose wake the cancel did not drop: the `start` of
-// that role at the generation the cancel read, with no task.
-func resumeRow(role claim.Role, generation uint64, _ DroppedWake) (IdleReleaseRow, error) {
+// writes it (outbox.releaseResume) for a claim whose wake the cancel did not drop: the `start` of
+// that claim at the generation the cancel read, with no task.
+func resumeRow(token claim.Token, role claim.Role, generation uint64, _ DroppedWake) (IdleReleaseRow, error) {
 	return IdleReleaseRow{Kind: "supervise", Payload: []byte(fmt.Sprintf(
-		`{"op":"start","tree":%q,"role":%q,"generation":%d}`, rootIssue, role, generation))}, nil
+		`{"op":"start","tree":%q,"role":%q,"claim":%q,"generation":%d}`, rootIssue, role, token, generation))}, nil
 }
 
 // releasedClaim is one claim of the root issue the daemon's release left suspended as
@@ -686,7 +693,7 @@ func resumeRow(role claim.Role, generation uint64, _ DroppedWake) (IdleReleaseRo
 func releasedClaim(t *testing.T, st *Store, role claim.Role) {
 	t.Helper()
 	if err := st.PutClaim(context.Background(), supervise.Claim{
-		Token: claim.Token("legion-legion-legion-208-" + string(role)), Project: "legion", Tree: rootIssue,
+		Token: rootToken(role), Project: "legion", Tree: rootIssue,
 		Issue: rootIssue, Role: role, TreeEpoch: 1, Generation: 1, State: supervise.StateSuspended,
 		SuspendedBy: supervise.SuspendedByReleased}); err != nil {
 		t.Fatalf("seed the released %s: %v", role, err)
@@ -750,7 +757,7 @@ func TestADeclineWritesItsRowAndItsMessageOnceWithTheCancel(t *testing.T) {
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, err := st.DeclineIssueRelease(ctx, "legion", rootIssue, decline, func(claim.Role, uint64, DroppedWake) (IdleReleaseRow, error) {
+	if _, err := st.DeclineIssueRelease(ctx, "legion", rootIssue, decline, func(claim.Token, claim.Role, uint64, DroppedWake) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
 	}, record.OutOfWorkflow, ReleaseCancelPause{At: at}); !errors.Is(err, refused) {
 		t.Fatalf("a decline whose resume could not be built = %v, want %v", err, refused)
@@ -1154,27 +1161,42 @@ func TestAReleasesMarkRecordsTheClaimsItsStopsSuspended(t *testing.T) {
 	openRunningTree(t, st)
 	markRelease(t, st, first, boundary, last, 0)
 
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleArchitect, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", boundary); err != nil {
 		t.Fatalf("record the architect's suspension: %v", err)
 	}
 	// The row ran twice: one claim, one entry.
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleArchitect, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", boundary); err != nil {
 		t.Fatalf("record the architect's suspension again: %v", err)
 	}
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleImplementer, boundary+1); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", boundary+1); err != nil {
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
+	// A second claim of the implementer's role, the agent of a key on its step: a claim of its
+	// own, which the set names beside the role's own claim.
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-tester", boundary+2); err != nil {
+		t.Fatalf("record the keyed agent's suspension: %v", err)
+	}
 	// A row of a release this mark is not records nothing.
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleTester, last+5); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-reviewer", last+5); err != nil {
 		t.Fatalf("record a stale row's suspension: %v", err)
+	}
+	releasedClaim(t, st, claim.RoleArchitect)
+	releasedClaim(t, st, claim.RoleImplementer)
+	if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-legion-208-tester", Project: "legion", Tree: rootIssue,
+		Issue: rootIssue, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, State: supervise.StateSuspended,
+		SuspendedBy: supervise.SuspendedByReleased}); err != nil {
+		t.Fatalf("seed the keyed agent's claim: %v", err)
 	}
 
 	decision, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
 	if err != nil {
 		t.Fatalf("read the release's mark through its workspace check: %v", err)
 	}
-	if len(decision.Suspended) != 2 || decision.Suspended[0] != claim.RoleArchitect || decision.Suspended[1] != claim.RoleImplementer {
-		t.Fatalf("the mark's suspended roles = %v, want the architect and the implementer in the order their stops ran", decision.Suspended)
+	want := []ReleasedClaim{{Token: "legion-legion-legion-208-architect", Role: claim.RoleArchitect},
+		{Token: "legion-legion-legion-208-implementer", Role: claim.RoleImplementer},
+		{Token: "legion-legion-legion-208-tester", Role: claim.RoleImplementer}}
+	if !slices.Equal(decision.Suspended, want) {
+		t.Fatalf("the mark's suspended claims = %v, want %v: each claim by its token, in the order their stops ran", decision.Suspended, want)
 	}
 	if decision.Release <= 0 {
 		t.Fatalf("the decision's release id = %d, want the id the mark carries", decision.Release)
@@ -1238,7 +1260,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 			// records its own row as the lane does (outbox.recordPodRelease), because a resume
 			// is recorded against the release it ends and a wake reads the newest one.
 			recordRelease(t, st, at.Add(-2*time.Hour))
-			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect",
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect,
 				pods.WakeDelivery, at.Add(-time.Hour), 0); err != nil || !taken {
 				t.Fatalf("take the wake before the mark = %t, %v; want it taken", taken, err)
 			}
@@ -1247,11 +1269,11 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 			if !tc.late && !tc.unrecorded {
 				recordRelease(t, st, at)
 			}
-			if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleImplementer, boundary); err != nil {
+			if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", boundary); err != nil {
 				t.Fatalf("record the implementer's suspension: %v", err)
 			}
 			if tc.woken {
-				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect",
+				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect,
 					pods.WakeDelivery, at, 0); err != nil || !taken {
 					t.Fatalf("take the wake after the mark = %t, %v; want it taken", taken, err)
 				}
@@ -1300,7 +1322,7 @@ func recordRelease(t *testing.T, st *Store, at time.Time) {
 func rootClaim(t *testing.T, st *Store, role claim.Role, state supervise.ClaimState, by supervise.SuspendSource) {
 	t.Helper()
 	if err := st.PutClaim(context.Background(), supervise.Claim{
-		Token: claim.Token("legion-legion-legion-208-" + string(role)), Project: "legion", Tree: rootIssue,
+		Token: rootToken(role), Project: "legion", Tree: rootIssue,
 		Issue: rootIssue, Role: role, TreeEpoch: 1, Generation: 1, State: state, SuspendedBy: by}); err != nil {
 		t.Fatalf("seed the %s %s: %v", state, role, err)
 	}
@@ -1317,8 +1339,8 @@ func releaseTwoRolesThroughTheStore(t *testing.T, st *Store) (boundary, stop, la
 	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: 1, Role: claim.RoleImplementer, Rows: []IdleReleaseRow{
 			{Kind: "issue_bundle", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"implementer"}`)},
-			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"implementer","generation":1}`), Boundary: true},
-			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"architect","generation":1}`)},
+			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"implementer","claim":"legion-legion-legion-208-implementer","generation":1}`), Boundary: true},
+			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"architect","claim":"legion-legion-legion-208-architect","generation":1}`)},
 			{Kind: "issue_release", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1}`)},
 		}}, nil
 	})
@@ -1339,13 +1361,13 @@ func releaseTwoRolesThroughTheStore(t *testing.T, st *Store) (boundary, stop, la
 	return boundary, stop, last
 }
 
-// stoppedByTheRelease is one role stop of the release run to its end: the claim of role suspended
-// as `released`, the stop's record of it on the mark, and its row gone from the outbox.
+// stoppedByTheRelease is one claim stop of the release run to its end: the claim of role suspended
+// as `released`, the stop's record of it on the mark by its token, and its row gone from the outbox.
 func stoppedByTheRelease(t *testing.T, st *Store, role claim.Role, row int64) {
 	t.Helper()
 	ctx := context.Background()
 	releasedClaim(t, st, role)
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, role, row); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, rootToken(role), row); err != nil {
 		t.Fatalf("record the %s's suspension: %v", role, err)
 	}
 	if _, err := st.Pool().Exec(ctx, `delete from outbox where id = $1`, row); err != nil {
@@ -1353,22 +1375,28 @@ func stoppedByTheRelease(t *testing.T, st *Store, role claim.Role, row int64) {
 	}
 }
 
+// rootToken is the claim token of the agent named for role on the root issue, the claim each
+// helper here seeds (releasedClaim, rootClaim).
+func rootToken(role claim.Role) claim.Token {
+	return claim.Token("legion-legion-legion-208-" + string(role))
+}
+
 // queueStart queues a phase's `start` of the root's role above the release's rows, as a fact's
-// transaction does: a start that names phase and carries the phase's task.
+// transaction does: a start that names phase, the claim of the role's agent and the phase's task.
 func queueStart(t *testing.T, st *Store, role claim.Role, phase string) {
 	t.Helper()
-	queueStartPayload(t, st, role, fmt.Sprintf(`{"op":"start","tree":%q,"role":%q,"generation":1,"phase":%q,"task":"the phase's task"}`,
-		rootIssue, role, phase))
+	queueStartPayload(t, st, role, fmt.Sprintf(`{"op":"start","tree":%q,"role":%q,"claim":%q,"generation":1,"phase":%q,"task":"the phase's task"}`,
+		rootIssue, role, rootToken(role), phase))
 }
 
 // queueWakeStart queues a wake's own `start` of the root's role above the release's rows, as the
 // workflow's wake queues it in a fact's transaction (workflow's wakeRow): a start that names no
-// phase, carries the wake's task and carries kind, the kind of the resume the wake took, with the
-// wake's detail beside it.
+// phase, names the claim it brings back, carries the wake's task and carries kind, the kind of the
+// resume the wake took, with the wake's detail beside it.
 func queueWakeStart(t *testing.T, st *Store, role claim.Role, kind string) {
 	t.Helper()
-	queueStartPayload(t, st, role, fmt.Sprintf(`{"op":"start","tree":%q,"role":%q,"generation":1,"task":"the wake's task","wakeKind":%q,"wakeDetail":"the wake's detail"}`,
-		rootIssue, role, kind))
+	queueStartPayload(t, st, role, fmt.Sprintf(`{"op":"start","tree":%q,"role":%q,"claim":%q,"generation":1,"task":"the wake's task","wakeKind":%q,"wakeDetail":"the wake's detail"}`,
+		rootIssue, role, rootToken(role), kind))
 }
 
 // queueStartPayload queues payload, a `start` of the root's role, as a supervise row of the outbox.
@@ -1403,19 +1431,23 @@ func queueSupervise(t *testing.T, st *Store, req record.SuperviseRequest) int64 
 // starts the role in the pod that comes back. A phase's start of the same role names its phase
 // and is the pod given work, so it still cancels the release. Here the implementer's stop is the
 // boundary and has recorded its claim, an agent message wakes the implementer, and the
-// architect's stop comes after the wake.
+// architect's stop comes after the wake. A wake's start the release before queued names no claim
+// (record.SuperviseRequest.Claim), and the teardown reads it by its role, as it reached the claim
+// of that role (startNamesClaim): it cancels the teardown no more than a start naming the claim.
 func TestAWakeOfARoleTheReleaseRecordedCancelsNeitherAStopNorTheTeardown(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// woken is a wake of the implementer taken after its stop recorded it, with the start
-		// the wake queued; phase is a phase's start of the implementer queued beside them.
-		woken, phase bool
-		want         ReleaseAct
-		cause        ReleaseCause
+		// the wake queued; unnamed is that start naming no claim, as the release before queued
+		// it; phase is a phase's start of the implementer queued beside them.
+		woken, unnamed, phase bool
+		want                  ReleaseAct
+		cause                 ReleaseCause
 	}{
 		{name: "no wake since the record", want: ReleaseActs},
 		{name: "a wake of the role the release recorded", woken: true, want: ReleaseActs},
+		{name: "a wake of the role the release recorded, whose start names no claim", woken: true, unnamed: true, want: ReleaseActs},
 		{name: "that wake and a phase's start of the same role", woken: true, phase: true,
 			want: ReleaseCancel, cause: ReleaseCauseOvertaken},
 	} {
@@ -1431,11 +1463,16 @@ func TestAWakeOfARoleTheReleaseRecordedCancelsNeitherAStopNorTheTeardown(t *test
 			boundary, stop, last := releaseTwoRolesThroughTheStore(t, st)
 			stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
 			if tc.woken {
-				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken,
+				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, claim.RoleImplementer,
 					pods.WakeAgentMessage, at, 0); err != nil || !taken {
 					t.Fatalf("take the wake after the record = %t, %v; want it taken", taken, err)
 				}
-				queueWakeStart(t, st, claim.RoleImplementer, pods.WakeAgentMessage)
+				if tc.unnamed {
+					queueStartPayload(t, st, claim.RoleImplementer, fmt.Sprintf(`{"op":"start","tree":%q,"role":%q,"generation":1,"task":"the wake's task","wakeKind":%q,"wakeDetail":"the wake's detail"}`,
+						rootIssue, claim.RoleImplementer, pods.WakeAgentMessage))
+				} else {
+					queueWakeStart(t, st, claim.RoleImplementer, pods.WakeAgentMessage)
+				}
 			}
 			if tc.phase {
 				queueStart(t, st, claim.RoleImplementer, "implementing")

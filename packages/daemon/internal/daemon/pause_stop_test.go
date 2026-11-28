@@ -371,7 +371,7 @@ func TestAPauseStopAtStepArmsTheBackstopOfTheRoleOfTheStep(t *testing.T) {
 func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
 	t.Parallel()
 	r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
-	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, mustClaimToken(t, pauseIssue, claim.RoleTester),
+	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, mustClaimToken(t, pauseIssue, claim.RoleTester), claim.RoleTester,
 		pods.WakeChecks, time.Now(), 0); err != nil || !taken {
 		t.Fatalf("take the tester's wake = %t, %v", taken, err)
 	}
@@ -1014,7 +1014,7 @@ func TestAWakeStartOfARoleTheDaemonTookOverFinishesWithoutActing(t *testing.T) {
 	released := releasedClaim(t, sup, claim.RoleTester)
 	issue := record.Issue{Key: pauseIssue, Tree: pauseIssue, Generation: 1}
 	wake := func(role claim.Role) record.OutboxRow {
-		return mustOutboxRow(t, pauseIssue, workflow.PauseWakeRow(issue, role, 7), time.Now())
+		return mustOutboxRow(t, pauseIssue, workflow.PauseWakeRow(issue, role, mustClaimToken(t, pauseIssue, role), 7), time.Now())
 	}
 
 	if err := runner.execute(ctx, wake(claim.RoleImplementer)); err != nil {
@@ -1041,8 +1041,8 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 	releasedClaim(t, sup, claim.RoleImplementer)
 	releasedClaim(t, sup, claim.RoleArchitect)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleArchitect} {
-		if _, err := pool.Exec(ctx, `insert into pod_wake_backstops (project, issue, role, due_at)
-			values ('legion', $1, $2, now() + interval '1 hour')`, pauseIssue, string(role)); err != nil {
+		if _, err := pool.Exec(ctx, `insert into pod_wake_backstops (project, issue, claim, role, due_at)
+			values ('legion', $1, $2, $3, now() + interval '1 hour')`, pauseIssue, string(mustClaimToken(t, pauseIssue, role)), string(role)); err != nil {
 			t.Fatalf("arm the %s's backstop: %v", role, err)
 		}
 	}
@@ -1080,5 +1080,187 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 	}
 	if got := armed(); len(got) != 0 {
 		t.Fatalf("backstops armed after the issue's close = %v, want none", got)
+	}
+}
+
+// stepPauseChecker is the role of step 2 of the plan seedStepStartPlan gives LEGION-208.
+const stepPauseChecker claim.Role = "checker"
+
+// atTheCheckersStep moves the rig's LEGION-208 to step 2 of `implementer checker linter` at
+// generation 2, the checker's step, worked by the agent of a key: the implementer's claim, re-roled
+// to the checker, which the checker's phases row names (record.WorkerClaim). The checker's own
+// claim, of an earlier version of the plan, stands beside it on the same role. It answers the two
+// claims, the step's worker first, each suspended as released and serving generation 2.
+func (r *pauseRig) atTheCheckersStep() (worker, other supervise.Claim) {
+	r.t.Helper()
+	if _, err := r.pool.Exec(r.ctx, `update issues set phase = 'step', generation = 2 where key = $1`, pauseIssue); err != nil {
+		r.t.Fatalf("move %s to step: %v", pauseIssue, err)
+	}
+	seedStepStartPlan(r.t, r.pool, record.NewStore(), 2)
+	worker = r.claim(claim.RoleImplementer, supervise.StateSuspended)
+	other = r.claim(stepPauseChecker, supervise.StateSuspended)
+	if _, err := r.pool.Exec(r.ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, pass, verdict, summary,
+		step_task, step_place) values ($1, $2, $3, '', 0, 0, '', '', 'a', 2)`, pauseIssue, string(stepPauseChecker), string(worker.Token)); err != nil {
+		r.t.Fatalf("name the keyed agent on the checker's step: %v", err)
+	}
+	for _, c := range []*supervise.Claim{&worker, &other} {
+		c.Role, c.Generation, c.ServingGeneration = stepPauseChecker, 2, 2
+		if err := r.st.PutClaim(r.ctx, *c); err != nil {
+			r.t.Fatalf("seed the released claim %s: %v", c.Token, err)
+		}
+	}
+	return worker, other
+}
+
+// backstopsDue is the claim of each open backstop of LEGION-208, by claim. Both claims of
+// atTheCheckersStep hold the checker's role, so only the claim tells which one a backstop wakes.
+func (r *pauseRig) backstopsDue() []string {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select claim from pod_wake_backstops where issue = $1 and not fired order by claim`, pauseIssue)
+	if err != nil {
+		r.t.Fatalf("read the backstops of %s: %v", pauseIssue, err)
+	}
+	armed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		r.t.Fatalf("read the backstops of %s: %v", pauseIssue, err)
+	}
+	return armed
+}
+
+// The worker of an issue's open phase gets a backstop when a pause stops it, and at step that
+// worker is the claim the record gives the running step (workflow.OpenWorker): here the agent of a
+// key, on the checker's step, whose token names the implementer. The pause's stop of that claim
+// arms its backstop; the stop of the checker's own claim beside it, which works no step, arms none.
+func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
+	t.Parallel()
+	r := newPauseRig(t)
+	worker, other := r.atTheCheckersStep()
+	held := r.pauseLegion()
+
+	r.mustStop(other, supervise.PauseStop{Pause: held.ID})
+	if got := r.backstopsDue(); len(got) != 0 {
+		t.Fatalf("backstops after the stop of the checker's own claim = %v, want none: it works no step", got)
+	}
+	r.mustStop(worker, supervise.PauseStop{Pause: held.ID})
+	if got := r.backstopsDue(); len(got) != 1 || got[0] != string(worker.Token) {
+		t.Fatalf("backstops after the stop of the step's worker = %v, want the step's worker %s's one", got, worker.Token)
+	}
+}
+
+// A cancel of a release made while the project is paused records the claims the release stopped as
+// stopped by the pause, and arms the backstop of the open phase's worker as the stop transaction
+// does: at step, the claim the record gives the running step (workflow.OpenWorker), here the agent
+// of a key, and not the checker's own claim beside it. The release's mark names both claims by
+// their tokens, as its stops record them (store.ReleaseSuspendedClaim).
+func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
+	t.Parallel()
+	r := newPauseRig(t)
+	worker, other := r.atTheCheckersStep()
+	if _, err := r.pool.Exec(r.ctx, `insert into issue_releases
+		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
+		values ('legion', $1, 2, 18, 20, 22, 0, 'architect', $2, now())`, pauseIssue,
+		[]string{string(worker.Token), string(other.Token)}); err != nil {
+		t.Fatalf("mark the release of %s: %v", pauseIssue, err)
+	}
+	held := r.pauseLegion()
+	runner := &outbox{pool: r.pool, records: record.NewStore(), project: "legion", dispatchProject: "LEGION", trees: r.st,
+		backstop: time.Hour, log: quietLogger(), now: time.Now}
+
+	if err := runner.cancelRelease(r.ctx, pauseIssue, pauseIssue, workflow.IdleHoldWorkspaceUnread, "the workspace read failed"); err != nil {
+		t.Fatalf("cancel the release while paused: %v", err)
+	}
+	if got := r.count(`select count(*) from project_pause_stops where pause_id = $1 and issue = $2`, held.ID, pauseIssue); got != 2 {
+		t.Fatalf("stops the cancel recorded = %d, want both claims of the checker", got)
+	}
+	if got := r.backstopsDue(); len(got) != 1 || got[0] != string(worker.Token) {
+		t.Fatalf("backstops after the paused cancel = %v, want the step's worker %s's one, not the checker's own claim %s's", got, worker.Token, other.Token)
+	}
+}
+
+// A pause asks the stop of every live claim, and two claims of one issue can hold one role: here
+// the agent of a key on the checker's step, beside the checker's own claim. Each `pause_stop` row
+// names the claim it stops (pause.StopRow), and the executor stops that claim, so the stop of
+// each ends and the pause waits on neither. Both claims are queued, so each stop ends `stopped`
+// with nothing to stop. Read by the role, both rows would reach the checker's own claim, and the
+// worker's stop would stay open for as long as the pause stands.
+func TestAPauseStopStopsTheClaimItsRowNames(t *testing.T) {
+	t.Parallel()
+	r := newPauseRig(t)
+	worker, other := r.atTheCheckersStep()
+	sup, _ := r.supervisor()
+	for _, c := range []*supervise.Claim{&worker, &other} {
+		c.State, c.SuspendedBy = supervise.StateQueued, ""
+		if err := r.st.PutClaim(r.ctx, *c); err != nil {
+			t.Fatalf("seed the queued claim %s: %v", c.Token, err)
+		}
+		if _, _, err := sup.Create(r.ctx, *c, ""); err != nil {
+			t.Fatalf("create the machine of %s: %v", c.Token, err)
+		}
+	}
+	held := r.pauseLegion()
+	now := time.Now()
+	runner := &outbox{pool: r.pool, records: record.NewStore(), supervisor: sup, trees: r.st, project: "legion",
+		dispatchProject: "LEGION", log: quietLogger(), now: func() time.Time { return now }}
+
+	rows, err := r.pool.Query(r.ctx, `select id, issue, payload from outbox
+		where kind = 'supervise' and payload->>'op' = 'pause_stop' order by id`)
+	if err != nil {
+		t.Fatalf("read the pause's stop rows: %v", err)
+	}
+	stops, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (record.OutboxRow, error) {
+		stop := record.OutboxRow{Kind: record.OutboxKindSupervise}
+		return stop, row.Scan(&stop.ID, &stop.Issue, &stop.Payload)
+	})
+	if err != nil || len(stops) != 2 {
+		t.Fatalf("the pause's stop rows = %d, %v; want one for each claim of the checker", len(stops), err)
+	}
+	for _, stop := range stops {
+		if err := runner.execute(r.ctx, stop); err != nil {
+			t.Fatalf("run the stop row %d: %v", stop.ID, err)
+		}
+	}
+
+	for role, c := range map[claim.Role]supervise.Claim{claim.RoleImplementer: worker, stepPauseChecker: other} {
+		if got := r.stops(held.ID, role); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped}) {
+			t.Fatalf("the stops of %s = %+v, want one ended %s: its row names it", c.Token, got, store.PauseStopStopped)
+		}
+	}
+}
+
+// A `pause_stop` row the release before wrote names no claim, and it stops the claim of the worker
+// on its role's step (the outbox's workerToken, record.WorkerClaim), as every other executor reaches
+// the claim of a row that names a role alone: here the agent of a key on the checker's step, whose
+// stop row ends, and not the checker's own claim beside it, which works no step and whose stop row
+// stays open. Both claims are queued, so the stop ends `stopped` with nothing to stop.
+func TestAPauseStopNamingNoClaimStopsTheStepsWorker(t *testing.T) {
+	t.Parallel()
+	r := newPauseRig(t)
+	worker, other := r.atTheCheckersStep()
+	sup, _ := r.supervisor()
+	for _, c := range []*supervise.Claim{&worker, &other} {
+		c.State, c.SuspendedBy = supervise.StateQueued, ""
+		if err := r.st.PutClaim(r.ctx, *c); err != nil {
+			t.Fatalf("seed the queued claim %s: %v", c.Token, err)
+		}
+		if _, _, err := sup.Create(r.ctx, *c, ""); err != nil {
+			t.Fatalf("create the machine of %s: %v", c.Token, err)
+		}
+	}
+	held := r.pauseLegion()
+	now := time.Now()
+	runner := &outbox{pool: r.pool, records: record.NewStore(), supervisor: sup, trees: r.st, project: "legion",
+		dispatchProject: "LEGION", log: quietLogger(), now: func() time.Time { return now }}
+
+	stop := mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "pause_stop", Tree: pauseIssue, Role: stepPauseChecker,
+		Generation: 2, Pause: held.ID, Reason: "project LEGION is paused"}, now)
+	if err := runner.execute(r.ctx, stop); err != nil {
+		t.Fatalf("run the stop row that names no claim: %v", err)
+	}
+
+	if got := r.stops(held.ID, claim.RoleImplementer); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped}) {
+		t.Fatalf("the stops of %s = %+v, want one ended %s: it works the checker's step", worker.Token, got, store.PauseStopStopped)
+	}
+	if got := r.stops(held.ID, stepPauseChecker); len(got) != 1 || got[0].end != "" {
+		t.Fatalf("the stops of %s = %+v, want one still open: it works no step", other.Token, got)
 	}
 }

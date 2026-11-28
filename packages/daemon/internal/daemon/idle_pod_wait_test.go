@@ -11,9 +11,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// startWaitsForPod queues a start of role on the rig's issue as a try of the outbox leaves it when
-// the issue's pod was built before role (the outbox's roleWaitsForItsPod): its last error begins
-// with pods.StartWaitsForPodPrefix, and it is due again in an hour.
+// startWaitsForPod queues a start of role on the rig's issue, the role's own claim's, as a try of
+// the outbox leaves it when the issue's pod lacks the slot of the start's claim or the role of its
+// step, here one name (the outbox's roleWaitsForItsPod): its last error begins with
+// pods.StartWaitsForPodPrefix, and it is due again in an hour.
 func (r *idleRig) startWaitsForPod(t *testing.T, role claim.Role) {
 	t.Helper()
 	if _, err := r.pool.Exec(context.Background(), `insert into outbox (kind, issue, payload, attempts, next_at, last_error)

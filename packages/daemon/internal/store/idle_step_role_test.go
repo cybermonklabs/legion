@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"maps"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -41,10 +43,10 @@ func TestTheIdleViewAndTheIssueReadOneRunningRole(t *testing.T) {
 		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact",
 			Source: record.PlanSourceOwner, GivenBy: owner, GivenAt: givenAt}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := []record.PlanStep{
+		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "checker", Type: "testing"},
-		}
+		}, nil)
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
@@ -78,6 +80,43 @@ func TestTheIdleViewAndTheIssueReadOneRunningRole(t *testing.T) {
 		if !view.Found || view.StepRole != recorded.StepRole || view.StepRole != role {
 			t.Errorf("%s: the idle view reads the running role %q and the issue's record %q, want both %q",
 				key, view.StepRole, recorded.StepRole, role)
+		}
+	}
+}
+
+// The idle view carries each role's phases row as the record holds it (pods.IdleView.Phases), the
+// claim it names and the task of the step it runs, and the project it was read under, so the worker
+// of a role is read from it by record.WorkerClaim, the one rule: here the tester's row names key
+// a's agent on step 2, which works the tester's step, and the implementer's names another agent
+// with no step, so the implementer's worker is the role's own token.
+func TestTheIdleViewCarriesEachRolesPhasesRow(t *testing.T) {
+	t.Parallel()
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := record.NewStore()
+	const keyed, stepless = claim.Token("legion-legion-legion-208-implementer"), claim.Token("legion-legion-legion-208-implementer-2")
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing,
+			Generation: 1, Status: "testing", Rank: "A", LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
+			return err
+		}
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: keyed, StepTask: "a", StepPlace: 2, Entry: 1}); err != nil {
+			return err
+		}
+		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: stepless})
+	}); err != nil {
+		t.Fatalf("seed the issue and its rows: %v", err)
+	}
+	view := idleViewOf(t, st, "LEGION-208")
+	want := map[claim.Role]pods.IdlePhase{claim.RoleTester: {Claim: keyed, StepTask: "a"}, claim.RoleImplementer: {Claim: stepless}}
+	if !view.Found || view.Project != "legion" || !maps.Equal(view.Phases, want) {
+		t.Fatalf("the idle view of project %q carries the phases rows %v, want %v under legion", view.Project, view.Phases, want)
+	}
+	for role, worker := range map[claim.Role]claim.Token{claim.RoleTester: keyed, claim.RoleImplementer: "legion-legion-legion-208-implementer"} {
+		row := view.Phases[role]
+		got, err := record.WorkerClaim(view.Project, view.Issue, role, []record.PhaseRow{{Issue: view.Issue, Role: role, Claim: row.Claim, StepTask: row.StepTask}})
+		if err != nil || got != worker {
+			t.Errorf("the %s's worker read from the idle view = %q, %v; want %s", role, got, err, worker)
 		}
 	}
 }

@@ -172,7 +172,7 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 		secret := g.secret(roleSecretName(loc.Sandbox.Name, role))
 		_, holdsAcme := secret.Data[GitHubHostsKey("acme")]
 		if want := appOf(t, role) == appauth.Implement; holdsAcme != want {
-			t.Errorf("%s's Secret holds acme's gh files %v, want %v: each role's Secret holds its own bundle", role, holdsAcme, want)
+			t.Errorf("%s's Secret holds acme's gh files %v, want %v: at the pod's build each slot no claim was launched in holds its own name's App's bundle", role, holdsAcme, want)
 		}
 	}
 }

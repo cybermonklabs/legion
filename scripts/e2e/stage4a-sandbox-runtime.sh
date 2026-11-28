@@ -27,7 +27,8 @@
 #     running a chisel reverse-tunnel server, and a reverse tunnel from the devbox through
 #     `kubectl port-forward` plus a chisel client built from pinned source; pods dial the Service,
 #     which proxies back to the devbox's loopback. A dropped port-forward is recovered, not fatal
-#     (lib/bridge-tunnel.sh's watchdog restarts it on the same local port, up to 60s); only a
+#     (lib/bridge-tunnel.sh's watchdog restarts it on a new local port the kernel chooses, up to
+#     60s, and a chisel client against that port); only a
 #     restart that cannot land in time, or the chisel client exhausting its own bounded reconnect
 #     budget, fails the whole run loudly.
 #

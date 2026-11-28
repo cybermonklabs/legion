@@ -341,7 +341,7 @@ export const PHASE_OP_SENTENCES = {
     "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
     "The two numbers can differ, and the answer shows both. " +
     "Report the version this call answers, never the one at the plugin's path on the image. " +
-    "In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, " +
+    "In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under its agent's own state home, " +
     "and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. " +
     "read_build reads no project state. ",
 } as const;
@@ -405,7 +405,8 @@ export function legionToolDescription(host: {
     "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
-    "write this phase's handoff), " +
+    "write this phase's handoff), HANDOFF_NOT_THE_STEPS_WORKER (another claim of your role works the step: end this turn without " +
+    "completing), " +
     "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
     `again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}), the implementer's completion of implementing with no open ` +
     "pull request on `legion/<issue>` and none recorded " +
@@ -433,9 +434,9 @@ export function legionToolDescription(host: {
  * `legion.daemonApiVersion` a pack writes, which the client states on every request as
  * `pluginContract` and `read_build` answers beside the daemon's own). It is the host's manifest
  * and never a path on the image: an Oh My Pi role's relaunch onto the daemon's contract installs
- * the plugin pair fresh under the role's state home, so the build at `/opt/legion/pi-legion` is
- * another one. A Claude Code role in a pod installs no plugin, and its build is its image's own
- * claude-envoy. */
+ * the plugin pair fresh under the state home of its claim's agent, which is the same whatever role
+ * the agent's step is on, so the build at `/opt/legion/pi-legion` is another one. A Claude Code
+ * role in a pod installs no plugin, and its build is its image's own claude-envoy. */
 export interface PluginBuild {
   readonly name: string;
   readonly version: string;

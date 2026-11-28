@@ -128,8 +128,9 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 //     parkedWakeBound on, whichever comes first (parkedWait). The daemon's own wake brings the pod
 //     back whatever the listener does with the publish; the listener's own report of a publish to
 //     a role with no live holder meets the role's open resume, and the pod starts once.
-//   - The publish, with keep, to the Envoy topic of the role's claim (notify.RoleTopicPrefix and
-//     the claim's token), under the row's own key, through the gate every publish of the outbox
+//   - The publish, with keep, to the Envoy topic of one claim (the claim the row names, else the
+//     claim of the worker on the row's role's step: workerToken) (notify.RoleTopicPrefix and the
+//     claim's token), under the row's own key, through the gate every publish of the outbox
 //     goes through (publishKept). A retry of the row while its copy is still on the role's kept
 //     lane stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's answers and
 //     what a repeat after the copy's hand-over does.
@@ -158,11 +159,12 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 // session than the one it was written for: for a role nobody claims, the listener hands a kept
 // copy to the first session that claims the role inside the hour, and a waiting row reaches the
 // first session that holds the role inside the hour after the row was made
-// (keptRoleMessageHoldBound), which can be a later round's. That is intended — the role's topic
-// names the issue's role, not one session of it — and the hour bounds it: the listener drops a
-// copy no live holder took inside its hour (roleKeepWindow, packages/envoy/cmd/listener/
-// role_keep.go), and a row ends at its own, so no session is handed a message older than that,
-// and each message names its move back or its phases, so its reader judges which round it was for.
+// (keptRoleMessageHoldBound), which can be a later round's. That is intended — the topic names the
+// claim, the agent of one or more of the issue's steps, not one session of it — and the hour
+// bounds it: the listener drops a copy no live holder took inside its hour (roleKeepWindow,
+// packages/envoy/cmd/listener/role_keep.go), and a row ends at its own, so no session is handed a
+// message older than that, and each message names its move back or its phases, so its reader
+// judges which round it was for.
 //
 // Seven other executors publish to a role's topic, each with its own rules for what the publisher
 // answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries

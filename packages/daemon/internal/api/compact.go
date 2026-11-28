@@ -128,7 +128,7 @@ func (s *server) claimCompact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	answer, ok := s.compact(w, r, target.machine, target.token, target.by)
+	answer, ok := s.compact(w, target.request, target.machine, target.token, target.by)
 	if !ok {
 		return
 	}
@@ -224,8 +224,9 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // own, not an oversight: a fresh session stops the controller's process and starts it again, which
 // is the daemon's controller keeper's to do in every state the controller is in, and a compaction
 // stops nothing — the session, its process and everything the controller holds stay, and only
-// the transcript gets shorter. The controller's own door still cannot name it, since
-// `controller` is no role a claim token is built from (claimCompact).
+// the transcript gets shorter. The controller's own door still cannot name it, since that door
+// names a claim by an issue and a role of it, or by the token of an agent of that issue, and the
+// controller's claim belongs to no issue (agentDoor).
 //
 // So what the refusals of this door name as starting a controller claim again is never the fresh
 // session: it is that keeper for a controller suspended, failed or retired, the operator's retry

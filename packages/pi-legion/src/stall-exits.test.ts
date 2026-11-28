@@ -14,7 +14,6 @@ import {
   type StallWatchdogLog,
   type StallWatchdogTeller,
 } from "@legion/pi-shared/stall-watchdog";
-import type { LegionSessionKind } from "./classify";
 import { createStallTeller } from "./stall-evidence";
 // The import below is this file's merge-base check: on the merge base there is no `./stall-exits`,
 // so every test here fails to resolve rather than passing vacuously.
@@ -24,12 +23,9 @@ const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
 const START = 1_793_000_000_000;
 
-const WORKER: LegionSessionKind = {
-  kind: "phase-worker",
-  role: "implementer",
-  tree: "INFRA-1200",
-  issue: "INFRA-1274",
-};
+/** The claim of the implementer of INFRA-1274, whose token names its counter file. */
+const TOKEN = "legion-legion-infra-1274-implementer";
+const CLAIM = (): { readonly claimToken: string } => ({ claimToken: TOKEN });
 
 const directories: string[] = [];
 
@@ -58,29 +54,26 @@ function warnings(): Warnings {
 // The file: whose count it is, what it holds, and what it answers when it cannot be read.
 // ---------------------------------------------------------------------------------------------
 
-test("the counter file is the claim's own, so panes sharing a state directory keep their own counts", () => {
+test("the counter file is the claim's own, by its token, so panes sharing a state directory keep their own counts", () => {
   const directory = stateDir();
-  expect(stallExitsFile(directory, WORKER)).toBe(
-    path.join(directory, "legion-stall-exits-infra-1274-implementer.json")
+  expect(stallExitsFile(directory, TOKEN)).toBe(
+    path.join(directory, "legion-stall-exits-legion-legion-infra-1274-implementer.json")
   );
-  expect(stallExitsFile(directory, { kind: "root-architect", tree: "INFRA-1200" })).toBe(
-    path.join(directory, "legion-stall-exits-infra-1200-architect.json")
-  );
-  expect(stallExitsFile(directory, { kind: "controller" })).toBe(
-    path.join(directory, "legion-stall-exits-controller.json")
+  expect(stallExitsFile(directory, "legion-legion-controller")).toBe(
+    path.join(directory, "legion-stall-exits-legion-legion-controller.json")
   );
 
   // Two panes of one pod: the tester's exit is not the implementer's.
   const log = warnings();
   const implementer = createStallExits({
     stateDir: directory,
-    session: WORKER,
+    claim: CLAIM,
     now: () => START,
     log,
   });
   const tester = createStallExits({
     stateDir: directory,
-    session: { ...WORKER, role: "tester" },
+    claim: () => ({ claimToken: "legion-legion-infra-1274-tester" }),
     now: () => START,
     log,
   });
@@ -89,10 +82,52 @@ test("the counter file is the claim's own, so panes sharing a state directory ke
   expect(tester.read()).toBe(0);
 });
 
+test("the count is the claim's by its token: two claims of one role keep two, and one claim keeps one across its roles", () => {
+  const directory = stateDir();
+  const log = warnings();
+  // Two claims of one issue holding the implementer's role in one pod: the role's own claim and
+  // the agent of a key on the implementer's step, the claim it started on an earlier step.
+  const own = createStallExits({ stateDir: directory, claim: CLAIM, now: () => START, log });
+  const keyedClaim = (): { readonly claimToken: string } => ({
+    claimToken: "legion-legion-infra-1274-tester",
+  });
+  const keyed = createStallExits({ stateDir: directory, claim: keyedClaim, now: () => START, log });
+  expect(keyed.write(1)).toBe(true);
+  expect(own.read()).toBe(0);
+  expect(keyed.read()).toBe(1);
+
+  // The keyed agent relaunched on the tester's step is still one claim under one token, so it
+  // reads the exits it made on the implementer's step.
+  const reRoled = createStallExits({
+    stateDir: directory,
+    claim: keyedClaim,
+    now: () => START,
+    log,
+  });
+  expect(reRoled.read()).toBe(1);
+  expect(log.lines).toEqual([]);
+});
+
+test("a session whose claim is not registered yet counts nothing and ends nothing", () => {
+  const log = warnings();
+  const exits = createStallExits({
+    stateDir: stateDir(),
+    claim: () => undefined,
+    now: () => START,
+    log,
+  });
+  expect(exits.read()).toBeUndefined();
+  expect(exits.write(1)).toBe(false);
+  expect(log.lines).toEqual([
+    "legion: the stall watch has no registered claim to count its exits under",
+    "legion: the stall watch has no registered claim to count its exits under",
+  ]);
+});
+
 test("a worker that has ended itself no times reads zero, and the count it wrote survives a relaunch", () => {
   const directory = stateDir();
   const log = warnings();
-  const deps = { stateDir: directory, session: WORKER, now: () => START, log };
+  const deps = { stateDir: directory, claim: CLAIM, now: () => START, log };
   const exits = createStallExits(deps);
 
   // No file at all is a worker that has never ended itself in this pod, which is every first
@@ -101,12 +136,12 @@ test("a worker that has ended itself no times reads zero, and the count it wrote
   expect(exits.write(1)).toBe(true);
 
   const written = JSON.parse(
-    readFileSync(stallExitsFile(directory, WORKER), "utf8")
+    readFileSync(stallExitsFile(directory, TOKEN), "utf8")
   ) as StallExitsRecord;
   expect(written).toEqual({
     exits: 1,
     at: new Date(START).toISOString(),
-    who: "infra-1274-implementer",
+    who: TOKEN,
   });
 
   // The relaunch the daemon makes after this worker's exit is a new process of the same pod: it
@@ -119,7 +154,7 @@ test("a state directory the worker has yet to make is made by the write", () => 
   const directory = path.join(stateDir(), "state", "nested");
   const exits = createStallExits({
     stateDir: directory,
-    session: WORKER,
+    claim: CLAIM,
     now: () => START,
     log: warnings(),
   });
@@ -131,11 +166,11 @@ test("a file that cannot be read, and one that cannot be written, answer so and 
   // Unreadable: a directory stands where the counter file belongs, which is a state directory a
   // person or another tool has left in a shape this worker cannot use.
   const unreadableDir = stateDir();
-  mkdirSync(stallExitsFile(unreadableDir, WORKER));
+  mkdirSync(stallExitsFile(unreadableDir, TOKEN));
   const unreadableLog = warnings();
   const unreadable = createStallExits({
     stateDir: unreadableDir,
-    session: WORKER,
+    claim: CLAIM,
     now: () => START,
     log: unreadableLog,
   });
@@ -149,14 +184,11 @@ test("a file that cannot be read, and one that cannot be written, answer so and 
   // Unwritable: the counter file is a link to a path that cannot be opened for writing, so the
   // count reads as zero and the write that would carry it fails.
   const unwritableDir = stateDir();
-  symlinkSync(
-    path.join(unwritableDir, "gone", "count.json"),
-    stallExitsFile(unwritableDir, WORKER)
-  );
+  symlinkSync(path.join(unwritableDir, "gone", "count.json"), stallExitsFile(unwritableDir, TOKEN));
   const unwritableLog = warnings();
   const unwritable = createStallExits({
     stateDir: unwritableDir,
-    session: WORKER,
+    claim: CLAIM,
     now: () => START,
     log: unwritableLog,
   });
@@ -178,11 +210,11 @@ test("a file holding anything this module did not write is a count the worker wi
     "x",
   ]) {
     const directory = stateDir();
-    writeFileSync(stallExitsFile(directory, WORKER), content);
+    writeFileSync(stallExitsFile(directory, TOKEN), content);
     const log = warnings();
     const exits = createStallExits({
       stateDir: directory,
-      session: WORKER,
+      claim: CLAIM,
       now: () => START,
       log,
     });
@@ -268,7 +300,7 @@ function closed(rig: LadderRig, toolCallId: string): void {
 test("the process is ended at most twice, and a third stuck call in one session ends nothing", async () => {
   const directory = stateDir();
   const log = warnings();
-  const exits = createStallExits({ stateDir: directory, session: WORKER, now: () => START, log });
+  const exits = createStallExits({ stateDir: directory, claim: CLAIM, now: () => START, log });
   const rig = ladder(exits);
 
   await stall(rig, "toolu_1");
@@ -295,7 +327,7 @@ test("the process is ended at most twice, and a third stuck call in one session 
 
 test("the count survives the relaunch the exit earns, in the same pod's state directory", async () => {
   const directory = stateDir();
-  const deps = { stateDir: directory, session: WORKER, now: () => START, log: warnings() };
+  const deps = { stateDir: directory, claim: CLAIM, now: () => START, log: warnings() };
 
   // The worker that stalls, ends itself, and is relaunched by the daemon on the same claim.
   const first = ladder(createStallExits(deps));
@@ -319,9 +351,9 @@ test("the count survives the relaunch the exit earns, in the same pod's state di
 
 test("a counter file that cannot be read ends no process and tells the owner", async () => {
   const directory = stateDir();
-  mkdirSync(stallExitsFile(directory, WORKER));
+  mkdirSync(stallExitsFile(directory, TOKEN));
   const rig = ladder(
-    createStallExits({ stateDir: directory, session: WORKER, now: () => START, log: warnings() })
+    createStallExits({ stateDir: directory, claim: CLAIM, now: () => START, log: warnings() })
   );
 
   await stall(rig, "toolu_1");
@@ -337,9 +369,9 @@ test("a counter file that cannot be read ends no process and tells the owner", a
 
 test("a counter file that cannot be written ends no process and tells the owner", async () => {
   const directory = stateDir();
-  symlinkSync(path.join(directory, "gone", "count.json"), stallExitsFile(directory, WORKER));
+  symlinkSync(path.join(directory, "gone", "count.json"), stallExitsFile(directory, TOKEN));
   const rig = ladder(
-    createStallExits({ stateDir: directory, session: WORKER, now: () => START, log: warnings() })
+    createStallExits({ stateDir: directory, claim: CLAIM, now: () => START, log: warnings() })
   );
 
   await stall(rig, "toolu_1");
@@ -351,7 +383,7 @@ test("a counter file that cannot be written ends no process and tells the owner"
 test("a run whose evidence and owner's notice were not written does not reach the exit", async () => {
   const directory = stateDir();
   const log = warnings();
-  const exits = createStallExits({ stateDir: directory, session: WORKER, now: () => START, log });
+  const exits = createStallExits({ stateDir: directory, claim: CLAIM, now: () => START, log });
   const steps: StallStepRecord[] = [];
 
   // The real teller, with a transcript that refuses the record and no owner to publish to: the

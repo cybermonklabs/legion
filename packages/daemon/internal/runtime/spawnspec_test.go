@@ -44,13 +44,13 @@ func TestValidateSpawnSpecRefusesWhatNoRuntimeCouldHonour(t *testing.T) {
 		{"a role outside the role grammar", func(s *SpawnSpec) { s.Role = "Operator" }, `spawn legion-omp-legion-43-tester: "Operator" is not a role`},
 		{"the controller's role on an issue", func(s *SpawnSpec) { s.Role = claim.RoleController },
 			`spawn legion-omp-legion-43-tester: the controller's claim is on no issue and no tree (issue "LEGION-43", tree "LEGION-42")`},
-		// The token is derived from the project, issue and role, and every runtime names the
-		// agent's workspace, Secret and pod after it. A spec whose token is another claim's would
-		// run this claim's work under that one's name, with that one's credentials beside it.
+		// The token is the agent's claim on the issue, and every runtime names the agent's
+		// workspace, Secret and pod after it. A spec whose token is another issue's would run this
+		// issue's work under that one's name, with that one's credentials beside it.
 		{"a claim token of another issue", func(s *SpawnSpec) { s.Claim = "legion-omp-legion-99-tester" },
 			`spawn legion-omp-legion-99-tester: the claim token of omp/LEGION-43/tester is legion-omp-legion-43-tester`},
-		{"a claim token of another role", func(s *SpawnSpec) { s.Claim = "legion-omp-legion-43-planner" },
-			`spawn legion-omp-legion-43-planner: the claim token of omp/LEGION-43/tester is legion-omp-legion-43-tester`},
+		{"a token that names no agent of an issue", func(s *SpawnSpec) { s.Claim = claim.ControllerToken("omp") },
+			`spawn legion-omp-controller: the claim token names no agent of an issue`},
 		{"no role prompt", func(s *SpawnSpec) { s.Prompt.RolePromptPaths = nil }, "spawn legion-omp-legion-43-tester: no role prompt"},
 		{"an Env name that is not a variable name", func(s *SpawnSpec) { s.Env["BAD NAME"] = "x" }, `spawn legion-omp-legion-43-tester: Env name "BAD NAME" is not an environment variable name`},
 		{"a variable the runtime sets", func(s *SpawnSpec) { s.Env["LEGION_TREE"] = "OTHER-1" }, "spawn legion-omp-legion-43-tester: Env sets LEGION_TREE, which the runtime sets itself"},
@@ -95,6 +95,32 @@ func TestValidateSpawnSpecRefusesWhatNoRuntimeCouldHonour(t *testing.T) {
 		if err := ValidateSpawnSpec(spec, owned); err != nil {
 			t.Errorf("a well-formed spec %s was refused: %v", name, err)
 		}
+	}
+}
+
+// A claim is one agent of an issue, and the agent can run a step of another role than the one it
+// is named for: the spec of its generation carries the step's role and the agent's own token. So
+// a token of any agent of the spec's issue is taken, whatever role the spec runs, and a token of
+// another issue is still refused.
+func TestASpecOfAnAgentOnItsSecondRoleIsValid(t *testing.T) {
+	owned := map[string]bool{"LEGION_BOOT_TOKEN_FILE": true}
+	for _, token := range []claim.Token{"legion-omp-legion-43-implementer", "legion-omp-legion-43-reviewer", "legion-omp-legion-43-implementer-2"} {
+		spec := spawnSpec()
+		spec.Claim = token
+		if err := ValidateSpawnSpec(spec, owned); err != nil {
+			t.Errorf("the spec of %s on the role tester was refused: %v", token, err)
+		}
+	}
+	spec := spawnSpec()
+	spec.Claim = "legion-omp-infra-13-implementer"
+	want := `spawn legion-omp-infra-13-implementer: the claim token of omp/LEGION-43/implementer is legion-omp-legion-43-implementer`
+	if err := ValidateSpawnSpec(spec, owned); err == nil || err.Error() != want {
+		t.Errorf("the spec of an agent of another issue = %v, want %q", err, want)
+	}
+	spec = spawnSpec()
+	spec.Claim, spec.Role = "legion-omp-legion-43-tester", "Operator"
+	if err := ValidateSpawnSpec(spec, owned); err == nil || err.Error() != `spawn legion-omp-legion-43-tester: "Operator" is not a role` {
+		t.Errorf("the spec of a role no claim is on = %v, want the refusal of a name outside the role grammar", err)
 	}
 }
 

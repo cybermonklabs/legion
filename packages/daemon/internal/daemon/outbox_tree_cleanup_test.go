@@ -250,11 +250,13 @@ func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
 }
 
 // A root that leaves admission's waiting line before a slot opens its tree (labelled and todo, then
-// set to backlog) lingers like any root, and its linger's expiry queues a close row per role. Its
-// tree never had a lifecycle, so it holds nothing a cleanup releases: each close reserves nothing
-// and finishes at the ordinary fences, with no claim to close. Before, the reservation refused the
-// absent lifecycle, and every close row retried on its backoff forever, logged as a failure each
-// time.
+// set to backlog) lingers like any root. Its tree never had a lifecycle, so no claim of it was ever
+// stored, and its linger's expiry queues one close row naming no claim for each role (the close
+// reaches the claims workflow's claimTargets names, and a claim that comes up after the expiry is
+// reached by its role's row). A close row of such a tree — those, or one an earlier release wrote
+// for a role — reserves nothing and finishes at the ordinary fences, with no claim to close.
+// Before, the reservation refused the absent lifecycle, and every close row retried on its backoff
+// forever, logged as a failure each time.
 func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -295,12 +297,27 @@ func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
 		}
 		return closes, all
 	}
-	// The first run expires the linger, which queues the tree's close rows; the second runs them.
+	// The first run expires the linger, which queues close rows that name no claim: the tree holds
+	// none.
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the linger: %v", err)
 	}
-	if closes, _ := rows(); closes != len(claim.Roles) {
-		t.Fatalf("the linger's expiry queued %d close rows, want one per role (%d)", closes, len(claim.Roles))
+	var named int
+	if err := pool.QueryRow(ctx, `select count(*) from outbox where kind = 'supervise' and payload->>'op' = 'tree_close'
+		and coalesce(payload->>'claim', '') <> ''`).Scan(&named); err != nil {
+		t.Fatal(err)
+	}
+	if named != 0 {
+		t.Fatalf("the linger's expiry queued %d close rows naming a claim, want none: the never-opened tree holds no claim", named)
+	}
+	queued, _ := rows()
+	closeRow := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "tree_close", Tree: root.Key, Role: claim.RoleArchitect, Generation: 1, Linger: 1}, time.Now())
+	if _, err := pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+		values ($1, $2, $3, 0, now(), '', '')`, string(closeRow.Kind), closeRow.Issue, string(closeRow.Payload)); err != nil {
+		t.Fatalf("queue a close row an earlier release wrote: %v", err)
+	}
+	if closes, _ := rows(); closes != queued+1 {
+		t.Fatalf("the outbox holds %d close rows, want the %d the expiry queued and the one queued after", closes, queued)
 	}
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the close rows: %v", err)
@@ -706,6 +723,12 @@ func movedCarriedRole(t *testing.T, afterMove bool) {
 		var suspendRow int64
 		if err := pool.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'supervise'`, childKey).Scan(&suspendRow); err != nil {
 			t.Fatalf("read the linger's suspend row: %v", err)
+		}
+		// The look's start is the row right after the linger's suspend. Its id is taken from the
+		// outbox's sequence, as the start's own row takes it, so no later row reuses it: the move's
+		// stop rows come after the start, as they do in a deployment.
+		if _, err := pool.Exec(ctx, `select setval(pg_get_serial_sequence('outbox', 'id'), $1)`, suspendRow+1); err != nil {
+			t.Fatalf("take the look's start id: %v", err)
 		}
 		if err := machine.StartedBy(ctx, suspendRow+1, nil); err != nil {
 			t.Fatalf("record the look's start: %v", err)

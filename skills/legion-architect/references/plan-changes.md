@@ -14,6 +14,8 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
 - A later version that changes only the text of a running task is taken, and the task goes on at its step.
   Any other change of a running task needs `stop_task` first.
 
+- Each agent is named for the role of its first step, so a later version that needs a fresh agent of a role whose name another agent of the plan holds is refused (`PLAN_REFUSED`).
+
 ## A decision for an agent
 
 Your role prompt holds the rules for a decision for an agent: where the decision goes, when you also send it by message, which block holds the text of the task `default`, and when a comment and a message take the place of the text.
@@ -25,6 +27,7 @@ Follow them there. This reference does not repeat them.
   Either a step failed and no earlier step of the type implementation can take the work back, and the reason names the task and the step: read the failed step's report.
   Or another architect of your tree stopped it with `stop_task`, and the reason names that architect and the notice carries `stoppedBy`: no step failed.
   Or the deployment no longer defines the role of a step the task had still to run, and the reason reads "step <i> names the role <role>, which the deployment no longer defines": give a later version that changes the task, or the operator defines the role again and a person's todo restarts the task.
+  Or the deployment no longer defines the role an agent of the task's remaining work is named for, the role whose slot it runs in, and the reason reads "step <i> is the work of the agent <agent>, which runs in the slot of the role <agent>, which the deployment no longer defines" (for the retro, "the retro is the work of the agent <agent>, …"): the same two ways, but a later version ends it only where it gives that work an agent of another name, a step with another key or with none, since a key keeps the name an earlier version gave its agent.
   A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.
   Then give a later version that changes the task, or end the work: for a child under your own issue, your own status write in Dispatch, by the rules for ending a child in your role prompt; `dispatch ask` on the root for a root.
   When the stopped task is your own issue's, as a child's architect, send the end of that work to the architect above you with `envoy_publish`: the daemon sets back your status write on your own issue.

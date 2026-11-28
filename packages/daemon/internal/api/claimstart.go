@@ -119,9 +119,12 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 		return 0, "", nil, false
 	}
 	working := recorded.WorkingPhase()
-	fact := intake.Fact(intake.RestartPhase{Issue: c.Issue, Role: c.Role, FreshSession: fresh})
+	// The fact names the claim it restarts the phase for, which the workflow holds to the claim
+	// on the role's step when it applies (workflow's stepMovedRefusal): a step entered for another
+	// claim since this route read it is that claim's, and is not restarted here.
+	fact := intake.Fact(intake.RestartPhase{Issue: c.Issue, Role: c.Role, FreshSession: fresh, Claim: token})
 	if recorded.Phase == phase.Held {
-		fact = intake.RetryOrEscalate{Issue: c.Issue, Decision: intake.RetryDecision}
+		fact = intake.RetryOrEscalate{Issue: c.Issue, Decision: intake.RetryDecision, Claim: token}
 	}
 	result, err := s.apply(r.Context(), "api", requestFactID("operator/retry"), fact)
 	if err != nil {

@@ -170,7 +170,8 @@ func (w *workflowRuntime) tickIdle(ctx context.Context) {
 
 // releaseIdlePods decides each pod of the project in turn. One issue's failure is logged and the
 // rest are decided: a release is a saving and never a correctness step, and the one start that
-// waits on it, a start whose pod was built before its role, is served by the update round too.
+// waits on it, a start whose pod lacks the slot of its claim or the role of its step, is served by
+// the update round too.
 func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 	if !w.listenerLive(ctx) {
 		return
@@ -241,10 +242,10 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		if decision.Close {
 			return w.closedLeftPod(ctx, issue, decision, holding)
 		}
-		roles := len(decision.Roles)
+		claims := len(decision.Claims)
 		store.OnCommit(ctx, func() {
 			w.log.Info("idle release: releasing an issue's pod, which has had no turn in progress and no turn due for the idle period",
-				"issue", issue, "idle", w.idlePeriod.String(), "roles", roles)
+				"issue", issue, "idle", w.idlePeriod.String(), "claims", claims)
 			w.wakeOutbox(issue, record.OutboxKindSupervise)
 		})
 		return nil
@@ -265,7 +266,8 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 // in, and the pod's reservation with it (2 CPU and 8 GiB at the defaults), and this is the pass
 // that releases it. One issue's failure is logged and the rest are decided, as the idle pass has
 // it: a release is a saving and never a correctness step, and the one start that waits on it, a
-// start whose pod was built before its role, is served by the update round too.
+// start whose pod lacks the slot of its claim or the role of its step, is served by the update
+// round too.
 //
 // It writes one line saying what the whole pass did — how many issues it decided, how many it
 // released and how many it held under each reason — whenever it decided at least one. That line
@@ -474,10 +476,10 @@ func podWaitHeldWords(issue string, waiting []claim.Role, byOperator, byControll
 	if len(byController) > 0 {
 		held += fmt.Sprintf("The controller suspended %s. ", strings.Join(byController, ", "))
 	}
-	return fmt.Sprintf("%s of %s cannot start. The pod of %s was made before the deployment defined %s, and no role runs in it. "+
+	return fmt.Sprintf("%s of %s cannot start. The pod of %s was made before the deployment defined the slot or the role that each of those starts needs, and no role runs in it. "+
 		"The daemon removes such a pod when it has had no activity for %d minutes, but not while the operator or the controller holds a claim of it. "+
 		"%sResume or stop that claim. Then the daemon replaces or removes the pod, and %s start in a new pod.",
-		roles, issue, issue, roles, int(idle.Minutes()), held, roles)
+		roles, issue, issue, int(idle.Minutes()), held, roles)
 }
 
 // closeLeftPods finishes the close of each pod whose issue left the workflow while its tree runs
@@ -564,14 +566,14 @@ func (w *workflowRuntime) closedLeftPod(ctx context.Context, issue string, decis
 			return err
 		}
 	}
-	roles := len(decision.Roles)
+	claims := len(decision.Claims)
 	store.OnCommit(ctx, func() {
-		if roles > 0 {
+		if claims > 0 {
 			w.log.Info("left pod close: reading the workspace of the pod of an issue that left the workflow while its tree runs on, before its close stops a live role",
-				"issue", issue, "idle", w.idlePeriod.String(), "roles", roles)
+				"issue", issue, "idle", w.idlePeriod.String(), "claims", claims)
 		} else {
 			w.log.Info("left pod close: reading the workspace of the pod of an issue that left the workflow while its tree runs on through the pod's launcher, before its close deletes the disk; no role process runs there",
-				"issue", issue, "idle", w.idlePeriod.String(), "roles", roles)
+				"issue", issue, "idle", w.idlePeriod.String(), "claims", claims)
 		}
 		w.wakeOutbox(issue, record.OutboxKindIssueSuspend)
 	})
@@ -709,15 +711,16 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 	}
 }
 
-// recordPodRelease writes the record of one completed release: the run it released, the roles
-// whose claims it suspended as released and the moment it completed. It is called from the
-// teardown (releaseIssue), the one place the fact that the release finished is known.
+// recordPodRelease writes the record of one completed release: the run it released, the claims
+// it suspended as released and the roles those claims held, and the moment it completed. It is
+// called from the teardown (releaseIssue), the one place the fact that the release finished is
+// known.
 //
-// The roles are the ones this release's own stops suspended, as its mark recorded them
-// (store.ReleaseSuspendedClaim), and never every released claim of the issue: a claim an earlier
-// release left `released` and no wake has brought back is still released now, and counting it
-// here would charge this release with a role it never touched and the hours that role's pod was
-// gone a second time.
+// The claims are the ones this release's own stops suspended, as its mark recorded them by their
+// tokens (store.ReleaseSuspendedClaim), and never every released claim of the issue: a claim an
+// earlier release left `released` and no wake has brought back is still released now, and
+// counting it here would charge this release with a claim it never touched and the hours that
+// claim's pod was gone a second time. Two claims of one role are two claims and one role.
 //
 // The record also retells the start of each wake taken under the release's mark that a
 // project's pause told in its words: that start's task becomes the task of the same wake in the
@@ -739,17 +742,22 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 //
 // It answers whether this call wrote the record. The release line follows the record's first
 // write, so a retry whose record was already written logs no second line.
-func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int64, generation uint64, suspended []claim.Role) (bool, error) {
+func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int64, generation uint64, suspended []store.ReleasedClaim) (bool, error) {
 	if r.supervisor == nil || r.supervisor.store == nil {
 		return true, nil
 	}
 	roles := make([]string, 0, len(suspended))
-	for _, role := range suspended {
-		roles = append(roles, string(role))
+	claims := make([]string, 0, len(suspended))
+	for _, c := range suspended {
+		if c.Role != "" && !slices.Contains(roles, string(c.Role)) {
+			roles = append(roles, string(c.Role))
+		}
+		claims = append(claims, string(c.Token))
 	}
 	slices.Sort(roles)
+	slices.Sort(claims)
 	_, wrote, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
-		Project: r.project, Issue: issue, Generation: generation, Roles: roles,
+		Project: r.project, Issue: issue, Generation: generation, Roles: roles, Claims: claims,
 		At: time.Now().UTC(), Release: release, WakeTask: workflow.ReleasedWakeTask,
 	})
 	return wrote, err
@@ -836,31 +844,34 @@ func releaseHold(cause store.ReleaseCause) (workflow.IdleHold, string) {
 // idleReleaseRows is the release as outbox rows, in the order the issue's lifecycle lane runs
 // them — three acts, each one row a reader can name:
 //
-//  1. the workspace check (record.IssueWorkspaceCheck): the shim of a live role reads whether the
+//  1. the workspace check (record.IssueWorkspaceCheck): the shim of a live claim reads whether the
 //     workspace every role shares holds work that no branch or tag on origin holds. It runs first
-//     because only a shim can read it and a shim dies with its role's process, which act 2
+//     because only a shim can read it and a shim dies with its claim's process, which act 2
 //     stops. It stops nothing itself, so a release it declines leaves the pod as it was;
-//  2. the role stops: one `release` supervise row per live role, each stopping that role's
-//     process and keeping its session. The first of them is the release's boundary — the stop of
-//     the first role process of the pod — which is what R4's cancel is read against, so a
-//     delivery queued while the check ran is still below it and cancels the whole release, save a
-//     start that waits for its pod, which the next pod serves;
+//  2. the claim stops: one `release` supervise row per live claim, each naming that claim
+//     (record.SuperviseRequest.Claim), stopping its process and keeping its session. Two claims
+//     can hold one role — a keyed agent on a step of another role, beside that role's own claim
+//     from an earlier version of the plan — so a stop names its claim rather than a role. The
+//     first of them is the release's boundary — the stop of the first claim process of the pod —
+//     which is what R4's cancel is read against, so a delivery queued while the check ran is still
+//     below it and cancels the whole release, save a start that waits for its pod, which the next
+//     pod serves;
 //  3. the teardown (record.IssueRelease): it deletes the pod, its disk and its Sandbox, and
 //     records the release. A Sandbox that owns the issue's kept volume stays, Suspended, with
 //     that volume: its pod and its Secrets go (runtime.IssueReleaser).
 //
 // The role the check reads through, which the mark names, is the role told when the check
-// declines (declineRelease): checkRole's.
+// declines (declineRelease): checkClaim's.
 func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
-	told := checkRole(view, decision.Roles)
-	mark := store.IdleReleaseMark{Generation: view.Generation, Role: told}
-	rows := markRows{issue: view.Issue, act: "release", now: now, rows: make([]store.IdleReleaseRow, 0, len(decision.Roles)+2)}
+	told := checkClaim(view, decision.Claims)
+	mark := store.IdleReleaseMark{Generation: view.Generation, Role: told.Role}
+	rows := markRows{issue: view.Issue, act: "release", now: now, rows: make([]store.IdleReleaseRow, 0, len(decision.Claims)+2)}
 	if err := rows.add(record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation, Role: mark.Role}, false); err != nil {
+		TreeGeneration: view.Root.Generation, Role: told.Role, Claim: told.Token}, false); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
-	for i, role := range decision.Roles {
-		if err := rows.add(record.SuperviseRequest{Op: "release", Tree: view.Tree, Role: role,
+	for i, c := range decision.Claims {
+		if err := rows.add(record.SuperviseRequest{Op: "release", Tree: view.Tree, Role: c.Role, Claim: c.Token,
 			Generation: view.Generation, Reason: "the issue's pod has been idle for the release period"}, i == 0); err != nil {
 			return store.IdleReleaseMark{}, err
 		}
@@ -873,14 +884,17 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 	return mark, nil
 }
 
-// checkRole is the role a workspace check of view's pod reads through, and the one its decline
-// tells: the worker of the issue's open phase where it is live (workflow.OpenRoleAt, which for step
-// is the role of the running step, view.StepRole), since that is the role whose work the phase is,
-// and otherwise the first of live. Every role of the issue shares the one workspace, so any of them
-// reads the same answer.
-func checkRole(view pods.IdleView, live []claim.Role) claim.Role {
-	if open := workflow.OpenRoleAt(view.Phase, view.StepRole); slices.Contains(live, open) {
-		return open
+// checkClaim is the claim a workspace check reads through and tells of unpushed work: the open
+// phase's worker (record.WorkerClaim over view.Phases), if live, else the first live claim. Two
+// live claims may hold one role, but only the phases row's worker is doing its current step.
+func checkClaim(view pods.IdleView, live []store.ReleasedClaim) store.ReleasedClaim {
+	if open := workflow.OpenRoleAt(view.Phase, view.StepRole); open != "" {
+		row := view.Phases[open]
+		worker, err := record.WorkerClaim(view.Project, view.Issue, open,
+			[]record.PhaseRow{{Issue: view.Issue, Role: open, Claim: row.Claim, StepTask: row.StepTask}})
+		if i := slices.IndexFunc(live, func(c store.ReleasedClaim) bool { return c.Token == worker }); err == nil && i >= 0 {
+			return live[i]
+		}
 	}
 	return live[0]
 }
@@ -910,17 +924,25 @@ func (m *markRows) add(payload record.OutboxPayload, boundary bool) error {
 // which queues the stops and the suspension only where its read finds nothing that origin does not
 // hold (checkLeftPodWorkspace), since those delete the disk. A close that is Read runs no role to
 // read through, so its pod's launcher reads the pod (launcherCheck, with Close: R6 of
-// #5285); any other close names its live roles, and is read through the open
-// phase's worker where it is live, else the first live role (checkRole, CloseRoles). The rows carry no
-// release and the store writes them with no mark (store.IdleReleaseMark.Close).
+// #5285); any other close names its live claims, and is read through checkClaim's claim (the open
+// phase's worker if live, else the first live claim), with the roles those claims hold as its
+// CloseRoles. The rows carry no release and the store writes them with no mark
+// (store.IdleReleaseMark.Close).
 func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
 	var check record.IssueWorkspaceCheck
 	if decision.Read {
 		check = launcherCheck(view)
 		check.Close = true
 	} else {
+		told := checkClaim(view, decision.Claims)
+		roles := make([]claim.Role, 0, len(decision.Claims))
+		for _, c := range decision.Claims {
+			if !slices.Contains(roles, c.Role) {
+				roles = append(roles, c.Role)
+			}
+		}
 		check = record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
-			TreeGeneration: view.Root.Generation, Role: checkRole(view, decision.Roles), CloseRoles: decision.Roles}
+			TreeGeneration: view.Root.Generation, Role: told.Role, Claim: told.Token, CloseRoles: roles}
 	}
 	check.TurnStart = view.NewestTurnStart()
 	rows := markRows{issue: view.Issue, act: "close", now: now}
@@ -959,24 +981,24 @@ func leftPodStopsAfterCheck(now, turnStart time.Time, pod string) func(pods.Idle
 }
 
 // leftPodStopRows is the close itself, the rows that issue's departure wrote (the workflow's leave):
-// one `suspend` supervise row per live role, at the issue's generation, which suspends the claim
-// for the daemon with its session kept, and then the issue's Sandbox suspension
-// (record.IssueSuspend), which deletes the Sandbox, the pod and the disk once every role has
+// one `suspend` supervise row per live claim, at the issue's generation, which names the claim
+// and suspends it for the daemon with its session kept, and then the issue's Sandbox suspension
+// (record.IssueSuspend), which deletes the Sandbox, the pod and the disk once every claim has
 // stopped (store.IssueSuspension). Every close reaches it only through its workspace check
 // (leftPodCloseRows, checkLeftPodWorkspace), and every row of it is fenced on turnStart, the turn
 // start that check read (record.SuperviseRequest.TurnStart, record.IssueSuspend.TurnStart): a
-// turn after the read, of a role the close stops or of one that started since in a pod no role
+// turn after the read, of a claim the close stops or of one that started since in a pod no role
 // ran in, voids the read, and the suspension finishes without acting.
 //
 // pod, for a close whose launcher read the workspace, is the pod that read found clean
 // (record.IssueWorkspaceCheck.PodUID): the suspension takes that pod or nothing
-// (record.IssueSuspend.PodUID). A close of live roles binds none ("").
+// (record.IssueSuspend.PodUID). A close of live claims binds none ("").
 func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now, turnStart time.Time, pod string) (store.IdleReleaseMark, error) {
 	rows := markRows{issue: view.Issue, act: "close", now: now}
 	fence := &turnStart
 	reason := fmt.Sprintf("%s left the workflow, and its pod has been idle for the release period", view.Issue)
-	for _, role := range decision.Roles {
-		if err := rows.add(record.SuperviseRequest{Op: "suspend", Tree: view.Tree, Role: role,
+	for _, c := range decision.Claims {
+		if err := rows.add(record.SuperviseRequest{Op: "suspend", Tree: view.Tree, Role: c.Role, Claim: c.Token,
 			Generation: view.Generation, Reason: reason, TurnStart: fence}, false); err != nil {
 			return store.IdleReleaseMark{}, err
 		}

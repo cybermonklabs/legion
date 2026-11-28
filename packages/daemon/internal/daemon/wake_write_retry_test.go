@@ -152,7 +152,7 @@ func TestARefusedStopOfAStuckClockIsRetriedAndLandsBeforeTheLetOutsStart(t *test
 		t.Fatalf("record the pod's release: %v", err)
 	}
 	resume := recordPodWake(t, w.idleStore, store.PodResume{Release: release, Project: "legion", Issue: issue,
-		Role: string(role), Kind: pods.WakeDelivery, At: woke})
+		Role: string(role), Claim: string(token), Kind: pods.WakeDelivery, At: woke})
 	released := supervise.Claim{Token: token, Project: "legion", Tree: issue, Issue: issue, Role: role,
 		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased}
 	recordResumeClockWrites(t, pool)
@@ -202,7 +202,7 @@ func TestARefusedStopOfAStuckClockIsRetriedAndLandsBeforeTheLetOutsStart(t *test
 		t.Fatalf("the stranded read a minute before the let-out = %+v; want none: the resume's clock runs from the let-out", wakes)
 	}
 	due := letOut.Add(workflow.StrandedReleaseWake)
-	if wakes := stranded(due); len(wakes) != 1 || wakes[0].Issue != issue || wakes[0].Role != string(role) || !wakes[0].ClockAt.Equal(letOut) {
+	if wakes := stranded(due); len(wakes) != 1 || wakes[0].Claim != token || !wakes[0].ClockAt.Equal(letOut) {
 		t.Fatalf("the stranded read ten minutes after the let-out = %+v; want the %s's resume of %s with its clock at %s", wakes, role, issue, letOut)
 	}
 	const stuckLine = "has had no first turn"

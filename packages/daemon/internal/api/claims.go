@@ -483,30 +483,38 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 }
 
 // ReleaseRecord is one release of an issue pod as a reader of the records sees it: the run it
-// released, the roles whose claims it suspended, when it completed, and how many bytes of
-// unpushed work it saved as a bundle (zero when the workspace held none).
+// released, the roles of the claims it suspended, each once, the tokens of those claims, when it
+// completed, and how many bytes of unpushed work it saved as a bundle (zero when the workspace
+// held none). Two claims of one issue can hold one role, so `claims` names what `roles` cannot.
+// `claims` is absent on a release that suspended no claim, on a record the release before
+// 20261128145836 wrote, and below the stranded token's entry (strandedTokenContract,
+// withoutRecordClaims).
 type ReleaseRecord struct {
 	ID          int64    `json:"id"`
 	Issue       string   `json:"issue"`
 	Generation  uint64   `json:"generation"`
 	Roles       []string `json:"roles"`
+	Claims      []string `json:"claims,omitempty"`
 	At          string   `json:"at"`
 	BundleBytes int      `json:"bundleBytes"`
 }
 
 // ResumeRecord is one wake of a released pod and what it cost: the release it ended (0 when no
-// release row is recorded for it), the role the wake was for and what woke it, when the daemon
-// took the wake, when the replacement pod was Ready and when the woken role took its first
-// turn — each absent until it is observed — and whether the wake went ten minutes with no turn.
-// Pause is the project pause that held the wake (store.PodResume.Pause), absent for a wake no
-// pause held: a held wake pairs with no release, and its wait to the first turn measures the
-// pause, so a reader of the release measurements counts it apart (decision 15 of
-// dispatch://INFRA-3759).
+// release row is recorded for it), the role the wake was for, the claim it brought back and what
+// woke it, when the daemon took the wake, when the replacement pod was Ready and when the woken
+// claim took its first turn — each absent until it is observed — and whether the wake went ten
+// minutes with no turn. Claim is the claim's token (store.PodResume.Claim): two claims of one
+// issue can hold one role, and each can be woken, so the role does not say which came back. It is
+// absent below the stranded token's entry (strandedTokenContract, withoutRecordClaims). Pause is
+// the project pause that held the wake (store.PodResume.Pause), absent for a wake no pause held: a
+// held wake pairs with no release, and its wait to the first turn measures the pause, so a reader
+// of the release measurements counts it apart (decision 15 of dispatch://INFRA-3759).
 type ResumeRecord struct {
 	ID          int64  `json:"id"`
 	Release     int64  `json:"release"`
 	Issue       string `json:"issue"`
 	Role        string `json:"role"`
+	Claim       string `json:"claim,omitempty"`
 	Kind        string `json:"kind"`
 	At          string `json:"at"`
 	PodReadyAt  string `json:"podReadyAt,omitempty"`
@@ -616,12 +624,14 @@ func releaseRecordsBody(records store.PodReleaseRecords) ReleaseRecordsResponse 
 			roles = []string{}
 		}
 		body.Releases = append(body.Releases, ReleaseRecord{ID: release.ID, Issue: release.Issue,
-			Generation: release.Generation, Roles: roles, At: recordedAt(release.At), BundleBytes: release.BundleBytes})
+			Generation: release.Generation, Roles: roles, Claims: release.Claims, At: recordedAt(release.At),
+			BundleBytes: release.BundleBytes})
 	}
 	for _, resume := range records.Resumes {
 		body.Resumes = append(body.Resumes, ResumeRecord{ID: resume.ID, Release: resume.Release, Issue: resume.Issue,
-			Role: resume.Role, Kind: resume.Kind, At: recordedAt(resume.At), PodReadyAt: recordedAt(resume.PodReadyAt),
-			FirstTurnAt: recordedAt(resume.FirstTurnAt), Stuck: resume.Stuck, Pause: resume.Pause})
+			Role: resume.Role, Claim: resume.Claim, Kind: resume.Kind, At: recordedAt(resume.At),
+			PodReadyAt: recordedAt(resume.PodReadyAt), FirstTurnAt: recordedAt(resume.FirstTurnAt), Stuck: resume.Stuck,
+			Pause: resume.Pause})
 	}
 	for _, hold := range records.Holds {
 		body.Holds = append(body.Holds, HoldRecord{ID: hold.ID, Issue: hold.Issue, Reason: hold.Reason,

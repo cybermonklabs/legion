@@ -746,6 +746,177 @@ func TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *t
 	}
 }
 
+// A kept row names the claim it is for by its token (record.HookPrompt.Claim,
+// record.PhaseEnded.Claim), and two claims of one issue can hold one role: the agent of a key
+// works a step of another role beside that role's own claim. So the claim the row names and the
+// claim of the row's role are different claims, and only the one the row names decides whether the
+// pod is held (heldMessageForNoClaimThisPodAnswers). This is the case the token match exists for,
+// and the role fallback is what it replaced. The two cases below are each other's control: a
+// predicate that read the role alone would hold the pod in the second and release it in the first,
+// which is the pair of faults the token match stops. A predicate that read the token alone would
+// still pass both, and the row with no claim in
+// TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers is what holds the
+// fallback.
+func TestAKeptRowNamingAClaimIsDecidedByThatClaimAndNotByItsRole(t *testing.T) {
+	t.Parallel()
+	for _, message := range keptRoleMessageRows {
+		for _, tc := range []struct {
+			name   string
+			named  supervise.ClaimState
+			byRole supervise.ClaimState
+			holds  bool
+		}{
+			{name: "the claim it names runs and the role's own claim is retired", named: supervise.StateIdle,
+				byRole: supervise.StateRetired, holds: true},
+			{name: "the claim it names is retired and the role's own claim runs", named: supervise.StateRetired,
+				byRole: supervise.StateIdle},
+		} {
+			t.Run(message.kind+" where "+tc.name, func(t *testing.T) {
+				st := migratedStore(t)
+				ctx := context.Background()
+				openRunningTree(t, st)
+				// Both claims below hold message.role, which is the case the token match exists for:
+				// two claims of one issue holding one role (record.WorkerClaim). The role fallback
+				// would match either of them, so only the claim the row names by its token decides.
+				// named is the key's agent, whose name carries the -2 its second claim takes.
+				named := claim.Token("legion-legion-legion-208-" + string(message.role) + "-2")
+				for _, c := range []supervise.Claim{
+					{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue, Issue: rootIssue,
+						Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: supervise.StateIdle},
+					{Token: named, Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: message.role,
+						TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: tc.named},
+					{Token: claim.Token("legion-legion-legion-208-" + string(message.role)), Project: "legion", Tree: rootIssue,
+						Issue: rootIssue, Role: message.role, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: tc.byRole},
+				} {
+					if err := st.PutClaim(ctx, c); err != nil {
+						t.Fatal(err)
+					}
+				}
+				queueWaitingKeptRow(t, st, namedClaimOf(t, message.payload, named))
+
+				if view := idleViewOf(t, st, rootIssue); view.Waiting != tc.holds {
+					t.Fatalf("the view reads a row waiting for a role of the pod = %t, with %s where %s, want %t",
+						view.Waiting, message.kind, tc.name, tc.holds)
+				}
+				_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+				decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+				if err != nil {
+					t.Fatalf("IssueReleaseStop: %v", err)
+				}
+				want := ReleaseActs
+				if tc.holds {
+					want = ReleaseCancel
+				}
+				if decision.Act != want {
+					t.Fatalf("the boundary = %s for %s, with %s where %s, want %s", decision.Act, decision.Cause, message.kind, tc.name, want)
+				}
+			})
+		}
+	}
+}
+
+// A hook prompt or a phase-ended message that names no claim reaches the claim record.WorkerClaim
+// gives its role, as its executor sends it: the claim of the role's phases row while that row runs
+// a step of the plan, else the role's own claim, whose token is the role's own (claim.NewToken),
+// whatever role that claim is on now. Two claims can hold one role - a keyed agent on a step of
+// that role beside the role's own claim from an earlier version of the plan - and a claim takes
+// the role of each step its agent runs. So the row holds the pod, and cancels a release at its
+// boundary, only while the claim it reaches is one this pod answers
+// (heldMessageForNoClaimThisPodAnswers), whichever other claim holds its role. A phases row a new
+// generation cleared (its step_task empty, its claim kept) gives no claim, as WorkerClaim reads it.
+//
+// The cases are each other's control. A predicate that matched any claim on the row's role, as the
+// predicate before this one did, holds the pod where the claim the row reaches failed while another
+// claim of its role is idle (the first, the second and the last case), and holds nothing where the
+// role's own claim is idle on another role's step (the third). The last two turn on the phases row
+// of the role's step: a predicate that read the role's own token alone fails both.
+func TestAKeptRowNamingNoClaimIsDecidedByTheWorkerClaimOfItsRole(t *testing.T) {
+	t.Parallel()
+	for _, message := range keptRoleMessageRows {
+		own := claim.Token("legion-legion-legion-208-" + string(message.role))
+		keyed := claim.Token("legion-legion-legion-208-" + string(message.role) + "-2")
+		for _, tc := range []struct {
+			name     string
+			ownRole  claim.Role
+			ownState supervise.ClaimState
+			keyed    supervise.ClaimState
+			// stepTask is the step_task of the role's phases row naming the keyed agent; "" with
+			// phased set is a row a new generation cleared, and no row stands without phased.
+			phased   bool
+			stepTask string
+			holds    bool
+		}{
+			{name: "the role's own claim failed and a keyed agent's claim on the role is idle",
+				ownRole: message.role, ownState: supervise.StateFailed, keyed: supervise.StateIdle},
+			{name: "the same, with the phases row a new generation cleared naming the keyed agent",
+				ownRole: message.role, ownState: supervise.StateFailed, keyed: supervise.StateIdle, phased: true},
+			{name: "the role's own claim is idle on a reviewer's step and the keyed agent's claim on the role failed",
+				ownRole: claim.RoleReviewer, ownState: supervise.StateIdle, keyed: supervise.StateFailed, holds: true},
+			{name: "the role's step is the keyed agent's, whose claim is idle, and the role's own claim failed",
+				ownRole: message.role, ownState: supervise.StateFailed, keyed: supervise.StateIdle, phased: true, stepTask: "a", holds: true},
+			{name: "the role's step is the keyed agent's, whose claim failed, and the role's own claim is idle",
+				ownRole: message.role, ownState: supervise.StateIdle, keyed: supervise.StateFailed, phased: true, stepTask: "a"},
+		} {
+			t.Run(message.kind+": "+tc.name, func(t *testing.T) {
+				st := migratedStore(t)
+				ctx := context.Background()
+				openRunningTree(t, st)
+				for _, c := range []supervise.Claim{
+					{Token: claim.Token("legion-legion-legion-208-architect"), Role: claim.RoleArchitect, State: supervise.StateIdle},
+					{Token: own, Role: tc.ownRole, State: tc.ownState},
+					{Token: keyed, Role: message.role, State: tc.keyed},
+				} {
+					c.Project, c.Tree, c.Issue, c.TreeEpoch, c.Generation, c.ServingGeneration = "legion", rootIssue, rootIssue, 1, 1, 1
+					if err := st.PutClaim(ctx, c); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.phased {
+					if _, err := st.Pool().Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, step_task)
+						values ($1, $2, $3, '', 0, '', $4)`, rootIssue, string(message.role), string(keyed), tc.stepTask); err != nil {
+						t.Fatal(err)
+					}
+				}
+				queueWaitingKeptRow(t, st, message.payload)
+
+				if view := idleViewOf(t, st, rootIssue); view.Waiting != tc.holds {
+					t.Fatalf("the view reads a row waiting for a role of the pod = %t, with %s to a %s where %s, want %t", view.Waiting, message.kind, message.role, tc.name, tc.holds)
+				}
+				_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+				decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+				if err != nil {
+					t.Fatalf("IssueReleaseStop: %v", err)
+				}
+				want := ReleaseActs
+				if tc.holds {
+					want = ReleaseCancel
+				}
+				if decision.Act != want {
+					t.Fatalf("the boundary = %s for %s, with %s to a %s where %s queued before the mark, want %s", decision.Act, decision.Cause, message.kind, message.role, tc.name, want)
+				}
+			})
+		}
+	}
+}
+
+// namedClaimOf is payload with the claim it is for named by its token. A payload of a kind this
+// test does not know stops the test rather than passing with no claim named, which would read the
+// role and prove nothing.
+func namedClaimOf(t *testing.T, payload record.OutboxPayload, token claim.Token) record.OutboxPayload {
+	t.Helper()
+	switch p := payload.(type) {
+	case record.HookPrompt:
+		p.Claim = token
+		return p
+	case record.PhaseEnded:
+		p.Claim = token
+		return p
+	default:
+		t.Fatalf("namedClaimOf has no case for %T, so the row would name no claim and the test would read the role", payload)
+		return nil
+	}
+}
+
 // The idle rule's two exemptions meet on one role: a tester owed a start of its phase that waits for
 // its issue's admission slot (slotWaitingStart), and a phase-ended message to that tester waiting
 // for a session to hold its role (heldMessageForNoClaimThisPodAnswers). Each term decides its own

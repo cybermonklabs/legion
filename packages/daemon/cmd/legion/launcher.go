@@ -38,7 +38,7 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	// A repeated --role: an issue pod's container names every resident role, the controller's
 	// pod exactly one.
 	roles := flags.StringArray("role", nil, "a role this launcher serves; repeated with --roles-dir for an issue pod's roles")
-	rolesDir := flags.String("roles-dir", "", "an issue pod's container-level per-role root: each role's launcher token, gh bundle and private, state and agent-secrets directories under <dir>/<role>")
+	rolesDir := flags.String("roles-dir", "", "an issue pod's container-level per-slot root: each slot's launcher token, gh bundle and private, state and agent-secrets directories under <dir>/<slot>, a slot being named for the agent that runs in it")
 	podUID := flags.String("pod-uid", os.Getenv("POD_UID"), "the current Kubernetes pod UID (POD_UID by default)")
 	privateDir := flags.String("private-dir", "", "the controller container's own memory-backed directory for each generation's credentials")
 	stopGrace := flags.Duration("stop-grace", 0, "container shutdown grace (30s when unset)")

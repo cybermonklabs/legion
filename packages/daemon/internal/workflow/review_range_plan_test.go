@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -59,7 +60,9 @@ func TestAReviewStepOfAnOwnersPlanIsToldTheCommitTheReviewBeforeItRead(t *testin
 					t.Fatalf("remove the reviewed commit: %v", err)
 				}
 			}
-			backToReviewing(t, apply, 2)
+			backToReviewingAs(t, apply, 2, func(role claim.Role) claim.Token {
+				return workerOr(t, pool, "LEGION-208", role, claim.Token(string(role)+"-claim"))
+			})
 			assertWalksAt(t, pool, engine, "LEGION-208", phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
 			second := reviewerRow(t, pool)
 			if second.Entry <= first.Entry {

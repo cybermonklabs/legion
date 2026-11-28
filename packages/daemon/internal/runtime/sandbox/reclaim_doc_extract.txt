@@ -16,7 +16,7 @@
 # rendered directory neither list accounts for fails the product half.
 #
 # A line that is blank or opens with # is a comment; a line ending in a colon opens one of the
-# two lists; every other line is one path on the list last opened. A per-role or per-issue
+# two lists; every other line is one path on the list last opened. A per-agent or per-issue
 # directory is written with the placeholder the guide writes it with.
 
 delete:
@@ -27,7 +27,7 @@ delete:
 /legion/uv/cache
 
 exempt:
-/legion/scratch/state/<role>
+/legion/scratch/state/<agent>
 /legion/scratch/leak-check
 /legion/scratch/data
 /legion/uv/python/<issue>

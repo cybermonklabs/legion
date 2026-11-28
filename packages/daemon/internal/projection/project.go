@@ -147,8 +147,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
-	// The roles whose start waits because their issue's pod was built before the deployment
-	// defined them, by issue: a start waiting on its backoff, and a role with no claim to show.
+	// The roles of the starts that wait because their issue's pod lacks the slot of the start's
+	// claim or the role of its step, by issue: a start waiting on its backoff, which may have no
+	// claim to show yet.
 	waitingForPod, err := in.Store.StartsWaitingForPod(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err
@@ -174,10 +175,11 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// (record.Store.AllPhases beside Phases, PullRequestsOf beside PullRequest, Gates beside
 	// GatesOf), and leaves the rest out: the phase rows are read for the issues of project alone,
 	// as the assignments above are, with only the columns this state reads of them
-	// (record.Store.AllPhases), and PullRequestsOf loads none of what each pull request remembers
-	// of its settled heads, since the state shows none of it and writes no record back. An issue
-	// holding no row has no entry, which reads as the empty list, the nil pull request and the
-	// empty gates.
+	// (record.Store.AllPhases), the claim and the step's task among them, which name the worker on
+	// each role's step (record.WorkerClaim, below), and PullRequestsOf loads none of what each
+	// pull request remembers of its settled heads, since the state shows none of it and writes no
+	// record back. An issue holding no row has no entry, which reads as the empty list, the nil
+	// pull request and the empty gates.
 	phases, err := in.Store.AllPhases(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err
@@ -194,18 +196,23 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// The wake each claim's own view names, read from the one list the state names under
 	// `wakesWaiting`, so a claim view and that list report the same wake (api.ClaimWakes).
 	claimWakes := api.ClaimWakes(in.Wakes)
-	// The entry each claim was last queued a task of, by the issue and role the claim holds
-	// (supervise.Claim.GivenEntry), and beside it the claim's handshake of the last entry it was
-	// queued a task of (supervise.Claim.Handshake): the numbers and the two times an issue's view
-	// shows beside the entry its phases row names. They are keyed by issue and role rather than by
-	// claim token because the token on the phases row can be empty, for a role no claim was ever
-	// created for, or stale, from a claim an earlier run retired, where the claim of this issue and
-	// this role is the one the admission pass weighs (admit's resumeSlottedWorkers). One claim
-	// stands per issue and role (claim.NewToken), so one entry holds both readings of it.
-	entries := make(map[issueRole]roleEntry, len(in.Claims))
+	// The entry each claim was last queued a task of, by its token (supervise.Claim.GivenEntry),
+	// and beside it the claim's handshake of the last entry it was queued a task of
+	// (supervise.Claim.Handshake): the numbers and the two times an issue's view shows beside the
+	// entry its phases row names. An issue's view reads them off the claim of the worker on the
+	// role's step (record.WorkerClaim over the issue's phases rows): the claim the role's row names
+	// while that row runs a step of the issue's plan, and otherwise the role's own claim, which is
+	// the claim the admission pass weighs. Two claims can hold one role — the agent of a key on a
+	// step of another role, beside that role's own claim of an earlier version of the plan — so
+	// the issue and the role do not name the claim, and the worker's token does.
+	entries := make(map[claim.Token]claimEntry, len(in.Claims))
 	for _, current := range in.Claims {
-		entries[issueRole{issue: current.Issue, role: current.Role}] = roleEntry{given: current.GivenEntry, handshake: current.Handshake}
+		entries[current.Token] = claimEntry{given: current.GivenEntry, handshake: current.Handshake}
 	}
+	// The project's token, as the claims of its issues spell it (claim.ProjectToken of the
+	// Dispatch project key); "" for a key that spells none, whose worker lookup then reaches no
+	// claim and reads as given nothing.
+	projectToken, _ := claim.ProjectToken(in.Project)
 
 	claimViews := make(map[claim.Token]api.ClaimView, len(in.Claims))
 	for _, current := range in.Claims {
@@ -336,8 +343,15 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// transition has ever handed work on, which is the number admit's owedEntryRoles weighs
 		// the same role's claim against, so the state shows what the admission pass weighs.
 		role := issue.RoleAt(issue.Phase)
+		workerEntry := func(role claim.Role) claimEntry {
+			token, err := record.WorkerClaim(projectToken, issue.Key, role, rows)
+			if err != nil {
+				return claimEntry{}
+			}
+			return entries[token]
+		}
 		if role != "" {
-			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(rows, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
+			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(rows, role).Entry, workerEntry(role).given
 		}
 		// Beside them the two times of a handshake: when a task of an entry was first queued to a
 		// claim and when a turn of its worker first confirmed one (api.Issue.EntryQueuedAt and
@@ -354,8 +368,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			handshakeRole = claim.RoleArchitect
 		}
 		if handshakeRole != "" {
-			view.EntryQueuedAt, view.EntryConfirmedAt =
-				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
+			view.EntryQueuedAt, view.EntryConfirmedAt = handshakeTimes(workerEntry(handshakeRole).handshake, issue.Generation)
 		}
 
 		var pr *record.PullRequest
@@ -655,6 +668,11 @@ type listedIssue struct {
 	// workers is the claim each role of the issue's `workers` shows, by role; nil where it shows
 	// none.
 	workers map[claim.Role]shownWorker
+	// others are the claims of the issue neither `architect` nor `workers` shows, in claims'
+	// order: two claims of one issue can hold one role — the agent of a key on a step of another
+	// role, beside that role's own claim — and the state names every claim of the issue by its
+	// token (api.Issue.OtherClaims).
+	others []*supervise.Claim
 }
 
 // shownWorker is the claim one role of an issue's `workers` shows, and the phases row the claim was
@@ -681,7 +699,8 @@ type shownWorker struct {
 //     that role's entry of `workers`. A row whose claim is not among claims shows nothing, so a
 //     worker's view, and the counts its row carries, exist only while its claim does;
 //   - then each claim, in claims' order, that no row showed: on its issue's `architect` where that
-//     is empty, and on its role's entry of `workers` where that is empty. The daemon's own
+//     is empty, and on its role's entry of `workers` where that is empty, and otherwise, where
+//     neither shows it already, among the issue's `otherClaims`. The daemon's own
 //     controller (`controller: daemon`) holds a claim on no issue and is skipped: the state shows it
 //     as the project's controller, never as an issue's worker, since an issue keyed "" refuses the
 //     whole document at every client;
@@ -729,12 +748,14 @@ func listIssues(issues []record.Issue, phases map[string][]record.PhaseRow, slot
 			unrecorded = append(unrecorded, current.Issue)
 			entry = listedIssue{observed: record.IssueObservation{Phase: api.Unrecorded}}
 		}
-		if current.Role == claim.RoleArchitect {
-			if entry.architect == nil {
-				entry.architect = current
-			}
-		} else if _, shown := entry.workers[current.Role]; !shown {
+		_, workerShown := entry.workers[current.Role]
+		switch {
+		case current.Role == claim.RoleArchitect && entry.architect == nil:
+			entry.architect = current
+		case current.Role != claim.RoleArchitect && !workerShown:
 			entry.showWorker(current.Role, shownWorker{claim: current})
+		case !entry.shows(current.Token):
+			entry.others = append(entry.others, current)
 		}
 		listed[current.Issue] = entry
 	}
@@ -747,6 +768,20 @@ func (l *listedIssue) showWorker(role claim.Role, worker shownWorker) {
 		l.workers = make(map[claim.Role]shownWorker, 1)
 	}
 	l.workers[role] = worker
+}
+
+// shows is whether l already shows the claim token: as its architect or as the claim of one of its
+// workers.
+func (l listedIssue) shows(token claim.Token) bool {
+	if l.architect != nil && l.architect.Token == token {
+		return true
+	}
+	for _, worker := range l.workers {
+		if worker.claim.Token == token {
+			return true
+		}
+	}
+	return false
 }
 
 // putListed puts onto view, an issue of either view of the state (Project, Observe), what
@@ -769,11 +804,12 @@ func (l listedIssue) putListed(view *api.Issue, views map[claim.Token]api.ClaimV
 }
 
 // putClaims puts the claims l shows onto view, each as its claim view (views, by token): the
-// architect as `architect`, and each worker with the counts of the phases row it was found through,
-// its handoff, its pass, its rounds and its counts of the moves back. Those counts ride with the
-// claim: a role whose claim has gone shows none of them, and the record keeps them for the role's
-// next claim. The architect's own row is read all the same by Project, for the entry of a root at
-// admitted (record.Issue.RoleAt). view's `workers` is made here where it is nil and a worker is shown.
+// architect as `architect`, each worker with the counts of the phases row it was found through,
+// its handoff, its pass, its rounds and its counts of the moves back, and each other claim of the
+// issue, with its role, as `otherClaims`, in token order. Those counts ride with the claim: a role
+// whose claim has gone shows none of them, and the record keeps them for the role's next claim.
+// The architect's own row is read all the same by Project, for the entry of a root at admitted
+// (record.Issue.RoleAt). view's `workers` is made here where it is nil and a worker is shown.
 func (l listedIssue) putClaims(view *api.Issue, views map[claim.Token]api.ClaimView) {
 	if l.architect != nil {
 		architect := views[l.architect.Token]
@@ -792,6 +828,10 @@ func (l listedIssue) putClaims(view *api.Issue, views map[claim.Token]api.ClaimV
 		}
 		view.Workers[role] = shown
 	}
+	for _, other := range l.others {
+		view.OtherClaims = append(view.OtherClaims, api.OtherClaimView{Role: other.Role, Claim: views[other.Token]})
+	}
+	slices.SortFunc(view.OtherClaims, func(a, b api.OtherClaimView) int { return cmp.Compare(a.Claim.Token, b.Claim.Token) })
 }
 
 // stateNewestGiveUps is how many open give-ups the state lists (api.IntakeGiveUpsView.Newest).
@@ -969,17 +1009,12 @@ func quietTrees(own []record.Issue, claims []supervise.Claim, now time.Time) map
 	return record.QuietTrees(own, record.TreeClaimsOf(claims), now)
 }
 
-// issueRole is one issue and one of its roles, the pair a claim is held under (supervise.Claim's
-// Issue and Role): the key of the lookup that answers what each role was last given.
-type issueRole struct {
-	issue string
-	role  claim.Role
-}
-
-// roleEntry is what the claim of one issue and role says of its entry: the entry it was last
-// queued a task of (supervise.Claim.GivenEntry), and its handshake of the last entry it was
-// queued a task of (supervise.Claim.Handshake), the zero handshake where it was queued none.
-type roleEntry struct {
+// claimEntry is what one claim says of its entry: the entry it was last queued a task of
+// (supervise.Claim.GivenEntry), and its handshake of the last entry it was queued a task of
+// (supervise.Claim.Handshake), the zero handshake where it was queued none. The projection holds
+// one per claim, by its token, and reads the one of the claim that works a role's step
+// (record.WorkerClaim).
+type claimEntry struct {
 	given     int64
 	handshake supervise.EntryHandshake
 }

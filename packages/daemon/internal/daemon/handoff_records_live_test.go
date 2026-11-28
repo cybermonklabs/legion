@@ -649,7 +649,8 @@ func (r *handoffRecordsLive) waitPhase(key string, want phase.Phase) api.Issue {
 	return last
 }
 
-// token is the claim token of role on issue, as the daemon spells it.
+// token is the claim token of the agent named for role on issue, the role's own claim
+// (claim.NewToken), as the daemon spells it.
 func (r *handoffRecordsLive) token(issue string, role claim.Role) claim.Token {
 	r.t.Helper()
 	token, err := claim.NewToken(r.project, issue, role)

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -34,10 +36,32 @@ import (
 // role back and hands it nothing (BringsBack, record.SuperviseRequest.BringsBack) is judged by its
 // phase and run alone, never by the role of the step, since at the phase step the role it brings
 // back ran another step of the task (record.BroughtBackHolds).
+//
+// LeaveSession is the session the start's claim must not resume (record.SuperviseRequest's
+// LeaveSession): the session of a key's agent, recorded by the claim of a name that agent held,
+// which a step's agent of a later generation took (workflow's leaveKeySessions). The claim leaves
+// it where it still records it, so that agent starts in a session of its own (revive); a claim
+// that records another session has left it already, and resumes that one.
 type StartWork struct {
-	Phase      phase.Phase
-	Generation uint64
-	BringsBack bool
+	Phase        phase.Phase
+	Generation   uint64
+	BringsBack   bool
+	LeaveSession string
+}
+
+// Leaves is whether start asks the claim to leave the session it records now (StartWork's
+// LeaveSession): the one test of it, which the machine's own resume and retry ask before they
+// refuse a session the claim does not hold (resumeByRule, retry) and the outbox's start asks
+// before it suspends a claim that still runs that session (internal/daemon's suspendToLeave).
+func (m *Machine) Leaves(start StartWork) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.leaves(start)
+}
+
+// leaves is Leaves under the machine's lock, which every caller inside the machine already holds.
+func (m *Machine) leaves(start StartWork) bool {
+	return start.LeaveSession != "" && m.claim.Session == start.LeaveSession
 }
 
 // ErrStartLeft is a start the machine judged no longer the work of its claim's issue
@@ -70,6 +94,14 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // for, which its caller has judged already (startHolds) and the launch judges again where a park
 // it waits in ends (startLeftWhileParked).
 //
+// A start that leaves the session the claim records (leaves, StartWork's LeaveSession) forgets it
+// once the admission has bound the claim, so the launch spawns a fresh agent, as retry's fresh
+// session does: no agent but the key whose session it is resumes it. Whether the claim may clear
+// it is asked first (mayForget), and a refusal there, as a refused admission, leaves the claim
+// exactly as it was. Every caller reaches it with a claim that runs nothing — queued, suspended,
+// failed or retired — since the outbox suspends a running claim first (internal/daemon's
+// suspendToLeave), so the forget writes no record of a process that still runs.
+//
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
 // that is being run again, since an admission the lifecycle refuses leaves the claim exactly as
@@ -80,6 +112,12 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // request, which the pod's start gate puts first among the starts waiting in the claim's pod
 // (launchAfter's requested, podQueue.next).
 func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, start StartWork, admitted func()) error {
+	leave := m.leaves(start)
+	if leave {
+		if err := m.mayForget(ctx, "start"); err != nil {
+			return err
+		}
+	}
 	// The admission writes the claim row alone, so a take-back the claim must carry goes first
 	// (carryPending, writeCarried).
 	if err := m.writeCarried(ctx); err != nil {
@@ -92,6 +130,12 @@ func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place
 	m.claim.TreeEpoch = bound.TreeEpoch
 	if admitted != nil {
 		admitted()
+	}
+	// A retry in a new session has forgotten the session in admitted already (retry), so the start
+	// has nothing left to leave.
+	if leave && m.leaves(start) {
+		m.log.Info("supervise: the start leaves the session a key's agent ran in, so it spawns a fresh agent", "session", m.claim.Session)
+		m.forgetSession("its step's agent took a name a key's agent held in an earlier generation, so it starts in a session of its own: this session was that key's")
 	}
 	return m.launchAfter(ctx, false, exempt, true, place, noEnd, start)
 }
@@ -335,5 +379,101 @@ func (m *Machine) Retree(ctx context.Context, tree string) error {
 	}
 	m.log.Info("supervise: the claim's issue moved to another tree", "from", m.claim.Tree, "to", tree)
 	m.claim.Tree, m.claim.TreeEpoch = tree, 0
+	return m.persist(ctx)
+}
+
+// ErrRunsAProcess is Rerole's refusal of a claim that still runs a process: that process was
+// started with the claim's role's prompt and App, so the role it holds is the one it runs.
+var ErrRunsAProcess = errors.New("the claim still runs a process")
+
+// ErrStepLeft is a machine's refusal of a request whose reading of the record no longer holds
+// under the machine's lock (Standing): the claim it read as the worker on a role's step works it no
+// more, or the step a start is for is one its issue has left. Nothing of the claim changed.
+var ErrStepLeft = errors.New("the record no longer asks this claim for the step the request was made for")
+
+// standingKey is the context key Standing puts a request's standing under.
+type standingKey struct{}
+
+// standing is a request's reading of the record (Standing), and whether an act of the request has
+// passed it under a machine's lock.
+type standing struct {
+	stands func(context.Context) (bool, error)
+	mu     sync.Mutex
+	passed bool
+}
+
+// Standing is ctx carrying stands, the reading of the record a request on a claim was made on: the
+// claim a route read as the worker on a role's step (api's workerToken), the step a start is for
+// (the daemon's outbox). The request reads the record before any lock its acts take, so each act a
+// machine decides for it under its lock — Handle, and so Compact, and Rerole — judges that reading
+// again there, before anything acts, and refuses with ErrStepLeft where it no longer holds.
+//
+// A request is the record's from the first act that passes: stands is asked until it first answers
+// true under a machine's lock, and every later act of the same request reads nothing again. Its
+// acts are several decisions under several takings of the lock, so a move that commits after the
+// first finds the request under way, as it would had the whole request run before it, and no
+// request is left half done by a move after it began. A request whose first act is refused did
+// nothing at all. The judgment a suspension makes before it cancels a start in flight (Handle) is
+// a filter, and passes nothing: the one that counts is under the lock.
+func Standing(ctx context.Context, stands func(context.Context) (bool, error)) context.Context {
+	return context.WithValue(ctx, standingKey{}, &standing{stands: stands})
+}
+
+// judgeStanding judges the standing ctx carries for an act on the claim token (Standing), and
+// answers nil for a ctx that carries none. pass is whether this judgment is one under a machine's
+// lock, which commits the request once it holds.
+func judgeStanding(ctx context.Context, token claim.Token, pass bool) error {
+	s, ok := ctx.Value(standingKey{}).(*standing)
+	if !ok {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.passed {
+		return nil
+	}
+	holds, err := s.stands(ctx)
+	if err != nil {
+		return fmt.Errorf("supervise: read again what the request on %s was made on: %w", token, err)
+	}
+	if !holds {
+		return fmt.Errorf("supervise: claim %s: %w", token, ErrStepLeft)
+	}
+	s.passed = pass
+	return nil
+}
+
+// Rerole gives a claim the role of its agent's next step, which a step of another role than the
+// claim holds asks for (the daemon's outbox, the start of a phase entry): one key is one claim
+// across roles, and its next generation registers, is prompted and acts as the App of the role it
+// holds then. Only a claim that runs nothing takes a new role, so a process keeps the role it was
+// started with; one that still runs is ErrRunsAProcess, and the start suspends it first, keeping
+// its session, and waits for its turn to end. The claim keeps its session, so its next generation
+// resumes it, and that session can hold a GitHub token of the earlier role that the agent printed:
+// the claim records the change (RoleChange), unless one it has not told yet stands, and the first
+// prompt its agent takes says such a token is no longer its to use (roleChangedTask).
+//
+// The start read the step from the record before this lock, so it asks with the step's standing
+// (Standing), judged here under the lock: a step its issue has left since, by a move back or a
+// later entry, is ErrStepLeft, and the claim keeps the role it holds. A role is never stored for
+// a step the record no longer asks for, whatever reaches the claim next.
+func (m *Machine) Rerole(ctx context.Context, role claim.Role) error {
+	m.mu.Lock()
+	defer m.unlock()
+	if m.claim.Role == role {
+		return nil
+	}
+	if !m.claim.RunsNothing() {
+		return fmt.Errorf("give claim %s the role %s for its agent's next step: it is %s as %s: %w",
+			m.claim.Token, role, m.claim.State, m.claim.Role, ErrRunsAProcess)
+	}
+	if err := judgeStanding(ctx, m.claim.Token, true); err != nil {
+		return fmt.Errorf("give claim %s the role %s for its agent's next step: %w", m.claim.Token, role, err)
+	}
+	m.log.Info("supervise: the claim takes the role of its agent's next step", "claim", m.claim.Token, "from", m.claim.Role, "to", role)
+	if !m.claim.RoleChange.Tells() {
+		m.claim.RoleChange = RoleChange{From: m.claim.Role}
+	}
+	m.claim.Role = role
 	return m.persist(ctx)
 }

@@ -194,7 +194,7 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 		if err != nil {
 			return nil, shimwire.LauncherHelloAck{}, "launcher credential does not name this pod's role"
 		}
-		token, err := kind.claimToken(project, credential.issue, role)
+		token, err := kind.claimToken(project, credential.issue, claim.Agent(role))
 		if err != nil || SandboxName(token) != hello.Sandbox {
 			return nil, shimwire.LauncherHelloAck{}, "launcher credential does not name this pod's role"
 		}
