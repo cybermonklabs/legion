@@ -371,12 +371,12 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
  * its first line only, so a chip that no longer fits goes onto a line the box clips away rather
  * than past its edge, and each frame draws a chip whole or not at all.
  *
- * Each reading is one `issue-header-labels` measure (`measured`). The row of `c-header-labels`
- * sums these over a load (`e2e/issue-page-n-header.e2e.ts`).
- * In a reading's frame, each width change uses the box's current width from the observer entry.
- * The check uses the chip extents and count width from that reading, without reading layout.
- * It removes chips that no longer fit and counts them. If the fit drew no count, it restores the
- * count at its measured width. It never adds a chip, so the line settles without a reading loop.
+ * Each full reading and each check that reads the count's place has its own
+ * `issue-header-labels` measure. The row of `c-header-labels` sums these over a load.
+ * After each reading draws its fit, observe the box afresh, even if its width is unchanged.
+ * In that frame, check that the drawn chips fit the reported width and the count stays where
+ * `fitOf` put it. If either check fails, hide the box and count before paint and take one full
+ * reading at the next notification. The check draws no fit of its own.
  */
 function HeaderLabels({
   labels,
@@ -412,8 +412,7 @@ function HeaderLabels({
     let fitting = 0;
     let frameFit: KeyedLabelsFit | null = null;
     let frameEnds: readonly number[] = [];
-    let countWidest: number | undefined;
-    let countRoom = 0;
+    let frameCountPlace: CountPlace | undefined;
     const drawFit = (next: KeyedLabelsFit) => {
       frameFit = next;
       flushSync(() => setFit(next));
@@ -429,41 +428,44 @@ function HeaderLabels({
           setFit(null);
           return;
         }
-        // In the reading's frame, use the reported width and measured chip extents, not layout.
+        // Use the box's reported width to check the chip ends from the reading.
         const entry = entries.find((entry) => entry.target === element);
         if (entry === undefined) return;
         const now = entry.borderBoxSize[0]?.inlineSize ?? entry.contentRect.width;
-        if (now === width) return;
         width = now;
-        if (within(frameEnds, now) >= frameFit.shown) return;
-        // Remove every chip that no longer fits and add none. Restore a missing count at its
-        // measured width. Reserve its room beside the box only if it fits there. Otherwise the
-        // count goes on the next line and the box keeps its width.
-        if (frameFit.countWidth === undefined && now + FIT_SLACK >= countRoom)
-          width = now - countRoom;
-        // When the count returns beside the box, the box narrows by the count's room after its
-        // notification. The browser reports "ResizeObserver loop completed with undelivered
-        // notifications" and delivers the new width next frame. By then the frame callback has
-        // cleared frameFit, and the branch above finds the expected width without a new reading.
-        drawFit({ ...frameFit, shown: within(frameEnds, width), countWidth: countWidest });
+        const chipsFit = within(frameEnds, now) >= frameFit.shown;
+        const countStays =
+          frameCountPlace === undefined ||
+          measured("check", () => {
+            const counter = count.current?.getBoundingClientRect();
+            return (
+              counter !== undefined &&
+              countPlaceOf(element.getBoundingClientRect(), counter) === frameCountPlace
+            );
+          });
+        if (chipsFit && countStays) return;
+        // Hide the chips and count before paint. The next notification reads the full layout.
+        frameFit = null;
+        flushSync(() => setFit(null));
         return;
       }
       owed.current = null;
       observer.unobserve(root);
-      const read = measured(() => fitOf(element, count.current));
+      const read = measured("reading", () => fitOf(element, count.current));
       width = read.width;
       frameEnds = read.ends;
-      countWidest = read.countWidest;
-      countRoom = read.countRoom;
+      frameCountPlace = read.countPlace;
       cancelAnimationFrame(fitting);
       fitting = requestAnimationFrame(() => {
         frameFit = null;
         frameEnds = [];
-        countWidest = undefined;
-        countRoom = 0;
+        frameCountPlace = undefined;
       });
       // Drawn before this frame is painted, so no frame draws the chips as they were read.
       drawFit({ ...read.fit, key: reading });
+      // Check the box after the draw, even if its width did not change.
+      observer.unobserve(element);
+      observer.observe(element);
     });
     sizes.current = observer;
     observer.observe(element);
@@ -478,11 +480,10 @@ function HeaderLabels({
       fonts?.removeEventListener("loadingdone", readAgain);
     };
   }, [hasLabels]);
-  // A commit that lays the chips out for a reading owes one, which the observer takes once the
-  // browser has laid that commit out: the document's root, observed afresh, is notified after the
-  // next layout and before the paint. The root is the shallowest element, so the browser notifies
-  // every size change from the draw in the root's notification in the same frame. The only change
-  // it holds to the next frame is when the count returns beside the box as described above.
+  // Observe the root afresh when a commit lays out the chips for a reading. The browser notifies
+  // the root after layout and before paint. The root is shallowest, so the browser can report
+  // the box's size after the reading's draw in the same frame. If that check hides the labels,
+  // the next notification takes the reading owed for the hidden layout.
   useLayoutEffect(() => {
     const observer = sizes.current;
     if (drawn !== null || observer === null) return;
@@ -551,8 +552,7 @@ interface LabelsFit {
 
 type KeyedLabelsFit = LabelsFit & { readonly key: string };
 
-/** The measure each reading of the labels is (`measured`), which the row of `c-header-labels`
- *  reads off the page (`performance.getEntriesByName`) and the header's unit case reads too. */
+/** The measure name for full label readings and checks that read the count's place. */
 export const LABELS_MEASURE = "issue-header-labels";
 
 /** How far past the room a chip may end and still be read as fitting in it. A box is read as a
@@ -574,24 +574,29 @@ function within(ends: readonly number[], room: number): number {
 
 /** `read`, wrapped whole in an `issue-header-labels` measure, so any layout it forces is inside
  *  the measure too. */
-function measured<T>(read: () => T): T {
+function measured<T>(detail: "reading" | "check", read: () => T): T {
   const start = `${LABELS_MEASURE}:start`;
   performance.mark(start);
   try {
     return read();
   } finally {
-    performance.measure(LABELS_MEASURE, start);
+    performance.measure(LABELS_MEASURE, { start, detail });
     performance.clearMarks(start);
   }
 }
 
+type CountPlace = "beside" | "under";
+
+/** Which row holds the count relative to the box. */
+function countPlaceOf(box: DOMRect, count: DOMRect): CountPlace {
+  return count.top < box.bottom ? "beside" : "under";
+}
+
 /**
- * Reads the labels' box as a reading lays it out - every chip, and the count at its widest - in
- * one run of reads with no write among them: the box's own box, each chip's, the count's and the
- * chips' gap, and the spare room on the line if the box moves to the count's line. It also reads
- * the line's gap where the count stands beside the box. It runs after the browser's own layout,
- * so it forces none. It returns the fit, the box's width, where each chip would end on one line,
- * and the widest count's width and the room it takes beside the box.
+ * Reads every chip and the count at its widest after the browser lays them out. It reads the
+ * box, the chip and count sizes and positions, and the chip gap. If the box moves to the count's
+ * line, it also reads that line's gap and room. It makes no writes. It returns the fit, the box's
+ * width, where each chip would end on one line, and where the fit places a count it draws.
  *
  * The chips the box's first line holds whole beside the count, by the browser's own wrap, are the
  * ones the line draws. Drawn with no count, the box would take the count's room and the gap
@@ -610,8 +615,7 @@ function fitOf(
   readonly fit: LabelsFit;
   readonly width: number;
   readonly ends: readonly number[];
-  readonly countWidest?: number;
-  readonly countRoom: number;
+  readonly countPlace?: CountPlace;
 } {
   const outer = box.getBoundingClientRect();
   const chips = Array.from(box.querySelectorAll<HTMLElement>("[data-header-label]"), (chip) =>
@@ -635,13 +639,11 @@ function fitOf(
     }
     ends.push(from + chip.right - start);
   }
-  if (counter === undefined) return { fit: { shown: chips.length }, width, ends, countRoom: 0 };
-  const beside = counter.top < outer.bottom;
+  if (counter === undefined) return { fit: { shown: chips.length }, width, ends };
+  const beside = countPlaceOf(outer, counter) === "beside";
   const line = box.parentElement;
-  const lineGap = beside && line !== null ? pixels(getComputedStyle(line).columnGap) : 0;
-  const countRoom = beside ? lineGap + counter.width : 0;
   if (within(ends, beside ? counter.right - outer.left : width) === ends.length) {
-    return { fit: { shown: chips.length }, width, ends, countWidest: counter.width, countRoom };
+    return { fit: { shown: chips.length }, width, ends };
   }
   const wrapped = chips.findIndex((chip) => missesFirstLine(chip, outer));
   let shown = wrapped === -1 ? chips.length : wrapped;
@@ -660,13 +662,9 @@ function fitOf(
     shown = within(ends, room);
     boxMinWidth = `min(${least}px, 100%)`;
   }
-  return {
-    fit: { boxMinWidth, countWidth: counter.width, shown },
-    width,
-    ends,
-    countWidest: counter.width,
-    countRoom,
-  };
+  const countPlace =
+    shown === chips.length ? undefined : beside || boxMinWidth !== undefined ? "beside" : "under";
+  return { fit: { boxMinWidth, countWidth: counter.width, shown }, width, ends, countPlace };
 }
 
 /** A computed length in px, and 0 where it is none. */

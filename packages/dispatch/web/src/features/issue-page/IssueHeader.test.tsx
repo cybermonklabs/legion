@@ -3673,14 +3673,16 @@ function layOutLabels(room: { width: number }): {
   };
 }
 
-/** The header's labels as drawn at `room` px of room (`labelsLaidOut`): the chips, by their
- *  words; those of them not wholly on the box's first line and inside its end; and the count's
- *  words, null where no count is drawn. */
-function labelsDrawn(room: number): {
+interface DrawnLabels {
   readonly count: string | null;
   readonly hidden: readonly string[];
   readonly shown: readonly string[];
-} {
+}
+
+/** The header's labels as drawn at `room` px of room (`labelsLaidOut`): the chips, by their
+ *  words; those of them not wholly on the box's first line and inside its end; and the count's
+ *  words, null where no count is drawn. */
+function labelsDrawn(room: number): DrawnLabels {
   const laid = labelsLaidOut(room);
   const box = screen.getByTestId("issue-header-labels");
   const outer = laid.get(box) ?? new DOMRect();
@@ -3760,14 +3762,14 @@ function installLabelResizeObserver() {
   const live = new Set<ObserverStub>();
 
   class ObserverStub implements ResizeObserver {
-    readonly targets = new Set<Element>();
+    readonly targets = new Map<Element, boolean>();
 
     constructor(readonly callback: ResizeObserverCallback) {
       live.add(this);
     }
 
     observe(target: Element): void {
-      this.targets.add(target);
+      if (!this.targets.has(target)) this.targets.set(target, true);
     }
 
     unobserve(target: Element): void {
@@ -3781,6 +3783,9 @@ function installLabelResizeObserver() {
 
   globalThis.ResizeObserver = ObserverStub;
   return {
+    newlyObserved(target: Element) {
+      return [...live].some((observer) => observer.targets.get(target) === true);
+    },
     resize(target: Element) {
       const contentRect = target.getBoundingClientRect();
       const size = [{ inlineSize: contentRect.width, blockSize: contentRect.height }];
@@ -3793,7 +3798,9 @@ function installLabelResizeObserver() {
       };
       act(() => {
         for (const observer of [...live]) {
-          if (observer.targets.has(target)) observer.callback([entry], observer);
+          if (!observer.targets.has(target)) continue;
+          observer.targets.set(target, false);
+          observer.callback([entry], observer);
         }
       });
     },
@@ -3803,165 +3810,200 @@ function installLabelResizeObserver() {
   };
 }
 
+function labelMeasureDetails(): unknown[] {
+  return performance
+    .getEntriesByName(LABELS_MEASURE, "measure")
+    .map((entry) => (entry as PerformanceMeasure).detail);
+}
+
 test("a box that narrows in the frame of a reading draws no chip it hides, and its count names every chip left out", async () => {
-  const measureCount = () => performance.getEntriesByName(LABELS_MEASURE, "measure").length;
+  // The older code used by the controls did not tag its measures. Those were all readings.
+  const measureCount = () => labelMeasureDetails().filter((detail) => detail !== "check").length;
   performance.clearMeasures(LABELS_MEASURE);
   const sizes = installLabelResizeObserver();
-  const room = { width: 480 };
+  const room = { width: 150 };
   const layout = layOutLabels(room);
-  const restore = stubHeader({ ...issue, labels: [...TWENTY_LABELS] });
+  const shortLabels = ["api", "web", "docs"];
+  const restore = stubHeader({ ...issue, labels: shortLabels });
   const queryClient = headerClient();
   const view = renderHeader("/issues/CORE-1", queryClient);
   try {
     const box = await screen.findByTestId("issue-header-labels");
-    sizes.resize(box);
-    expect(labelsDrawn(room.width), "the first reading did not draw five whole chips").toEqual({
-      count: "+15 labels",
-      hidden: [],
-      shown: TWENTY_LABELS.slice(0, 5),
-    });
-    expect(measureCount(), "the first reading did not take exactly one measure").toBe(1);
+    const setRoom = (width: number) => {
+      room.width = width;
+      sizes.resize(box);
+    };
+    const labelsHidden = () =>
+      box.classList.contains("invisible") &&
+      screen.queryByTestId("issue-labels-left")?.classList.contains("invisible") === true;
+    const readFrame = () => {
+      const before = box.getBoundingClientRect().width;
+      // The root notifies first. The box then reports if its width changed or it was reobserved.
+      sizes.resize(document.documentElement);
+      const reobserved = sizes.newlyObserved(box);
+      if (reobserved || box.getBoundingClientRect().width !== before) sizes.resize(box);
+      return reobserved;
+    };
+    const nextReadingFrame = async () => {
+      await act(nextFrame);
+      return readFrame();
+    };
+    const expectAfterTwoFrames = async (readings: number, fit: DrawnLabels) => {
+      await nextReadingFrame();
+      await nextReadingFrame();
+      expect(measureCount(), `another reading followed at ${room.width} px`).toBe(readings);
+      expect(labelsDrawn(room.width), `the fit changed at ${room.width} px`).toEqual(fit);
+    };
 
-    // Notify the narrowing before the next frame starts. Only the fifth chip no longer fits.
-    room.width = 430;
+    const allThree = { count: null, hidden: [], shown: shortLabels };
+    readFrame();
+    expect(labelsDrawn(room.width), "all three chips fit without a count at 150 px").toEqual(
+      allThree
+    );
+    expect(measureCount(), "the first fit takes one reading").toBe(1);
+
+    // At 30 px, the first row cannot hold a chip or the count. The box moves to the next row.
+    setRoom(30);
+    const hiddenAt30 = labelsHidden();
+    await nextReadingFrame();
     expect(
-      labelsDrawn(room.width).hidden,
-      "the narrower box did not clip just the fifth chip"
-    ).toEqual([TWENTY_LABELS[4]]);
-    sizes.resize(box);
-    const narrowed = labelsDrawn(room.width);
-    expect(narrowed.shown, "the box kept drawing a chip that no longer fits").toEqual(
-      TWENTY_LABELS.slice(0, 4)
-    );
-    expect(narrowed.count, "the count did not include the chip removed by the narrowing").toBe(
-      "+16 labels"
-    );
-    expect(narrowed.hidden, "the narrowed box still clips a drawn chip").toEqual([]);
-    const afterNarrowing = measureCount();
-    expect(afterNarrowing, "the narrowing took more than one extra measure").toBeLessThanOrEqual(2);
+      { ...labelsDrawn(room.width), readings: measureCount() },
+      "narrowing to 30 px should take one more reading and move the chips to the count's line"
+    ).toEqual({ ...allThree, readings: 2 });
+    expect(hiddenAt30, "the box and count should be hidden before the reading at 30 px").toBe(true);
+    const expectMovedBox = () => {
+      expect(box.style.minWidth, "the box needs the width of the first chip").toBe(
+        "min(37px, 100%)"
+      );
+      expect(box.getBoundingClientRect().top, "the box should be on the count's line").toBe(
+        LINE.row + 2
+      );
+    };
+    expectMovedBox();
+    await expectAfterTwoFrames(2, allThree);
+    expectMovedBox();
 
-    await act(nextFrame);
-    sizes.resize(box);
-    expect(measureCount(), "another reading followed the narrowing").toBe(afterNarrowing);
+    const readAllThreeAgain = async (readings: number) => {
+      setRoom(150);
+      await nextReadingFrame();
+      expect(labelsDrawn(room.width), "all three chips fit again without a count").toEqual(
+        allThree
+      );
+      expect(measureCount(), "widening outside the reading's frame takes one reading").toBe(
+        readings
+      );
+    };
+    await readAllThreeAgain(3);
 
-    // Outside the first reading's frame, change the width to start a second reading.
-    room.width = 400;
-    sizes.resize(box);
-    await act(nextFrame);
-    sizes.resize(box);
-    const beforeWidening = labelsDrawn(room.width);
-    expect(beforeWidening, "the second reading did not draw four whole chips").toEqual(narrowed);
-    const afterSecondReading = afterNarrowing + 1;
-    expect(measureCount(), "the second reading did not take exactly one measure").toBe(
-      afterSecondReading
+    // At 115 px, only the first chip fits once the count comes back beside the box.
+    setRoom(115);
+    expect(labelsHidden(), "the box and count should be hidden before the reading at 115 px").toBe(
+      true
     );
-
-    // Now five chips would fit, but the line must keep the four drawn by the second reading.
-    room.width = 480;
-    sizes.resize(box);
-    expect(labelsDrawn(room.width), "the widening did not keep the fit").toEqual(beforeWidening);
-    await act(nextFrame);
-    sizes.resize(box);
-    await act(nextFrame);
-    sizes.resize(box);
-    expect(measureCount(), "the widening took another measure instead of keeping the fit").toBe(
-      afterSecondReading
-    );
-    expect(labelsDrawn(room.width), "the fit changed after the line should have settled").toEqual(
-      beforeWidening
-    );
-
-    // At 150 px all three chips fit with no count. At 115 px only two fit without
-    // the count, and only one fits once the count comes back.
-    const shortLabels = ["api", "web", "docs"];
-    room.width = 150;
-    act(() => {
-      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
-        ...issue,
-        labels: shortLabels,
-      });
-    });
-    sizes.resize(box);
-    expect(labelsDrawn(room.width), "all three chips should fit without a count").toEqual({
-      count: null,
-      hidden: [],
-      shown: shortLabels,
-    });
-    const afterAllFit = afterSecondReading + 1;
-    expect(measureCount(), "fitting the three chips should take one reading").toBe(afterAllFit);
-    sizes.resize(box);
-
-    room.width = 115;
-    expect(
-      labelsDrawn(room.width).hidden,
-      "only the last chip should fail to fit without the count"
-    ).toEqual(["docs"]);
-    sizes.resize(box);
-    const withCount = labelsDrawn(room.width);
-    expect(withCount.hidden, "the count clips a chip when it comes back").toEqual([]);
-    expect(withCount.shown, "only the first chip fits beside the count").toEqual(["api"]);
-    expect(withCount.count, "the count should include both chips that no longer fit").toBe(
-      "+2 labels"
+    await nextReadingFrame();
+    const oneChip = { count: "+2 labels", hidden: [], shown: ["api"] };
+    expect(labelsDrawn(room.width), "one whole chip fits beside the count at 115 px").toEqual(
+      oneChip
     );
     expect(
       screen.getByTestId("issue-labels-left").style.minWidth,
-      "the count should keep the width measured for three labels"
+      "the count keeps the width it had for three labels"
     ).toBe("63px");
-    const afterCountReturns = measureCount();
-    expect(
-      afterCountReturns,
-      "bringing back the count took more than one extra reading"
-    ).toBeLessThanOrEqual(afterAllFit + 1);
+    expect(measureCount(), "narrowing to 115 px did not take one more reading").toBe(4);
+    await expectAfterTwoFrames(4, oneChip);
 
-    await act(nextFrame);
-    sizes.resize(box);
-    await act(nextFrame);
-    sizes.resize(box);
-    expect(measureCount(), "another reading followed the return of the count").toBe(
-      afterCountReturns
+    await readAllThreeAgain(5);
+
+    // At 70 px, the first chip still fits, but the count goes below the box.
+    setRoom(70);
+    expect(labelsHidden(), "the box and count should be hidden before the reading at 70 px").toBe(
+      true
     );
-    expect(labelsDrawn(room.width), "the fit changed after the count came back").toEqual(withCount);
-
-    // Read all three chips at 150 px again. Narrow the box to 70 px in the same frame,
-    // where the count must move to the next row and the first chip still fits.
-    room.width = 150;
-    sizes.resize(box);
-    sizes.resize(box);
-    expect(labelsDrawn(room.width), "all three chips should fit again without a count").toEqual({
-      count: null,
-      hidden: [],
-      shown: shortLabels,
-    });
-    const afterNewReading = afterCountReturns + 1;
-    expect(measureCount(), "widening the box should take one reading").toBe(afterNewReading);
-
-    room.width = 70;
-    sizes.resize(box);
-    const belowCountRoom = labelsDrawn(room.width);
-    expect(belowCountRoom.shown, "the first chip should stay when the count wraps").toEqual([
-      "api",
-    ]);
-    expect(belowCountRoom.hidden, "the narrowed box should not clip any drawn chip").toEqual([]);
-    expect(belowCountRoom.count, "the count should include both chips that no longer fit").toBe(
-      "+2 labels"
+    await nextReadingFrame();
+    expect(labelsDrawn(room.width), "one whole chip fits above the count at 70 px").toEqual(
+      oneChip
     );
     expect(
       screen.getByTestId("issue-labels-left").getBoundingClientRect().top,
       "the count should be on the row below the box"
     ).toBeGreaterThan(box.getBoundingClientRect().bottom);
-    expect(measureCount(), "narrowing the box should not take another reading").toBe(
-      afterNewReading
-    );
+    expect(measureCount(), "narrowing to 70 px did not take one more reading").toBe(6);
+    await expectAfterTwoFrames(6, oneChip);
 
-    await act(nextFrame);
-    sizes.resize(box);
-    await act(nextFrame);
-    sizes.resize(box);
-    expect(measureCount(), "no reading should follow the return of the count below the box").toBe(
-      afterNewReading
+    // At 100 px, the count is beside the box but leaves no room for a chip. At 70 px the
+    // count moves below the box. No chip came out, but the count's move still needs a reading.
+    setRoom(100);
+    await nextReadingFrame();
+    expect(labelsDrawn(room.width), "the count leaves no room for a chip at 100 px").toEqual({
+      count: "+3 labels",
+      hidden: [],
+      shown: [],
+    });
+    expect(
+      screen.getByTestId("issue-labels-left").getBoundingClientRect().top,
+      "the count starts beside the box"
+    ).toBeLessThan(box.getBoundingClientRect().bottom);
+    expect(measureCount(), "the fit at 100 px takes one reading").toBe(7);
+
+    setRoom(70);
+    expect(
+      labelsHidden(),
+      "moving the count should hide the box and count before the reading"
+    ).toBe(true);
+    await nextReadingFrame();
+    expect(labelsDrawn(room.width), "a chip fits when the count moves below the box").toEqual(
+      oneChip
     );
-    expect(labelsDrawn(room.width), "the fit should not change after two frames").toEqual(
-      belowCountRoom
+    expect(
+      screen.getByTestId("issue-labels-left").getBoundingClientRect().top,
+      "the count should stay below the box after the reading"
+    ).toBeGreaterThan(box.getBoundingClientRect().bottom);
+    expect(measureCount(), "moving the count without removing a chip takes one reading").toBe(8);
+    await expectAfterTwoFrames(8, oneChip);
+
+    room.width = 480;
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...issue,
+        labels: [...TWENTY_LABELS],
+      });
+    });
+    expect(await nextReadingFrame(), "the box should report again even at the same width").toBe(
+      true
+    );
+    expect(labelsDrawn(room.width), "five whole chips fit beside the count at 480 px").toEqual({
+      count: "+15 labels",
+      hidden: [],
+      shown: TWENTY_LABELS.slice(0, 5),
+    });
+    expect(measureCount(), "changing the labels takes one reading").toBe(9);
+
+    setRoom(430);
+    expect(labelsHidden(), "the box and count should be hidden before the reading at 430 px").toBe(
+      true
+    );
+    await nextReadingFrame();
+    const fourChips = { count: "+16 labels", hidden: [], shown: TWENTY_LABELS.slice(0, 4) };
+    expect(labelsDrawn(room.width), "four whole chips fit beside the count at 430 px").toEqual(
+      fourChips
+    );
+    expect(measureCount(), "narrowing to 430 px did not take one more reading").toBe(10);
+    await expectAfterTwoFrames(10, fourChips);
+
+    setRoom(400);
+    await nextReadingFrame();
+    expect(labelsDrawn(room.width), "four whole chips still fit at 400 px").toEqual(fourChips);
+    expect(measureCount(), "narrowing outside a reading's frame takes one reading").toBe(11);
+
+    // Five chips would fit at 480 px, but a widening in the reading's frame keeps the four.
+    setRoom(480);
+    await nextReadingFrame();
+    await nextReadingFrame();
+    expect(measureCount(), "widening in the reading's frame should not take another reading").toBe(
+      11
+    );
+    expect(labelsDrawn(room.width), "widening in the reading's frame should keep the fit").toEqual(
+      fourChips
     );
   } finally {
     view.unmount();
@@ -3972,16 +4014,11 @@ test("a box that narrows in the frame of a reading draws no chip it hides, and i
   }
 });
 
-// Each reading of the labels is one `issue-header-labels` measure, read off `performance` as the
-// row of `c-header-labels` reads it, in which each chip's box is read once: the first reading,
-// one after the room changes and one after the labels change, each taken in the notification of
-// the frame that laid the chips out for it, and none in the commit that laid them out. A
-// notification that owes no reading takes none: the one the first fit's own move of the box
-// brings in its frame, and one in a frame where nothing changed.
+// Each full reading has one measure and reads each chip once. A notification in that frame can
+// check the count's place in its own measure without taking another full reading.
 test("each reading of the labels is one `issue-header-labels` measure", async () => {
-  const measures = () => performance.getEntriesByName(LABELS_MEASURE, "measure");
   performance.clearMeasures(LABELS_MEASURE);
-  const sizes = installResizeObserver();
+  const sizes = installLabelResizeObserver();
   // A room that holds no chip and not the count either, so the first fit moves the box on to the
   // count's row, where it is 518 px wide.
   const room = { width: 60 };
@@ -3991,21 +4028,32 @@ test("each reading of the labels is one `issue-header-labels` measure", async ()
   const view = renderHeader("/issues/CORE-1", queryClient);
   try {
     const box = await screen.findByTestId("issue-header-labels");
-    expect(measures(), "the commit that laid the chips out read them").toHaveLength(0);
+    expect(labelMeasureDetails(), "the commit that laid the chips out read them").toEqual([]);
     sizes.resize(box);
-    expect(measures(), "the first reading").toHaveLength(1);
+    expect(labelMeasureDetails(), "the first reading has one measure").toEqual(["reading"]);
     expect(layout.chipReads(), "the first reading read each chip's box once").toBe(20);
-    // The same frame notifies the width the fit gave the box, which is no change to read for.
+    // The box moves to the count's row. Check that they still share a row.
     sizes.resize(box);
-    expect(measures(), "the fit's own width was read again").toHaveLength(1);
+    expect(labelMeasureDetails(), "checking the count does not take another full reading").toEqual([
+      "reading",
+      "check",
+    ]);
+    expect(layout.chipReads(), "checking the count does not read the chips again").toBe(20);
     expect(box.querySelectorAll("[data-header-label]"), "the fit was let go").toHaveLength(7);
 
     await act(nextFrame);
     room.width = 480;
     sizes.resize(box);
-    expect(measures(), "the chips were read before they were laid out again").toHaveLength(1);
+    expect(labelMeasureDetails(), "the chips were read before they were laid out again").toEqual([
+      "reading",
+      "check",
+    ]);
     sizes.resize(box);
-    expect(measures(), "the reading after the room changed").toHaveLength(2);
+    expect(labelMeasureDetails(), "the reading after the room changed has one measure").toEqual([
+      "reading",
+      "check",
+      "reading",
+    ]);
     expect(layout.chipReads(), "the second reading read each chip's box once").toBe(40);
 
     await act(nextFrame);
@@ -4015,14 +4063,28 @@ test("each reading of the labels is one `issue-header-labels` measure", async ()
         labels: TWENTY_LABELS.slice(0, 19),
       });
     });
-    expect(measures(), "the commit that laid the new labels out read them").toHaveLength(2);
+    expect(labelMeasureDetails(), "the commit that laid the new labels out read them").toEqual([
+      "reading",
+      "check",
+      "reading",
+    ]);
     sizes.resize(box);
-    expect(measures(), "the reading after the labels changed").toHaveLength(3);
+    expect(labelMeasureDetails(), "the reading after the labels changed has one measure").toEqual([
+      "reading",
+      "check",
+      "reading",
+      "reading",
+    ]);
     expect(layout.chipReads(), "the third reading read each chip's box once").toBe(59);
 
     await act(nextFrame);
     sizes.resize(box);
-    expect(measures(), "a frame where nothing changed read the labels").toHaveLength(3);
+    expect(labelMeasureDetails(), "a frame where nothing changed read the labels").toEqual([
+      "reading",
+      "check",
+      "reading",
+      "reading",
+    ]);
   } finally {
     view.unmount();
     restore();
