@@ -255,8 +255,14 @@ const (
 	txOther     = "background"
 )
 
-// signalsTables are the tables the production signals' loop writes (prodevents/signals).
-var signalsTables = []string{"production_events", "production_deploy_rules", "production_signal_cursors"}
+// signalsTables are the tables the production signals' loop writes (prodevents/signals), one at
+// least in each of its transactions: a check_fail's binding commits beside its production_events
+// row, and a refused failure's refusal (check_fail_refusals, incident_refusals, revert_refusals)
+// alone.
+var signalsTables = []string{
+	"production_events", "production_deploy_rules", "production_signal_cursors",
+	"check_fail_refusals", "incident_refusals", "revert_refusals",
+}
 
 // kindOf is which work a transaction is, inferred from the tables its logged statements write
 // (tablesWritten): the write's own (route), the day-row refresher's and the stored figures' (it

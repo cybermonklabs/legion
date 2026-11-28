@@ -237,8 +237,9 @@ A project's failure measures count each signal where the project has the failure
   It blames the deploy that first shipped the result's commit, of any project but a deploy another project posted, and is written under the project of the issue the result was recorded on, with that issue's pull requests, the result's actor, and the result's time as `detected_at`, only where that deploy counts for that project.
   Its `source_ref` is `check:<check document id>/<check block id>@<deploy id>`: block ids are per document, so two documents' checks of one block id on one deploy write two rows.
   The result route writes it as soon as the result commits, and the production signals loop, which reads the `result.recorded` event, writes it where that write was lost.
-  A result whose commit no deploy row holds yet makes its row when such a deploy row lands, and a result that no deploy ever ships makes none; neither does a result whose first deploy counts for other projects alone.
-  A retraction of the result (`POST /api/v1/results/{id}/retract`) rejects the row with the retraction's reason and actor, unless another `fail` of the same check that is not retracted, whose commit the same deploy first shipped, still stands behind it.
+  A result whose commit no deploy row holds yet makes its row when such a deploy row lands, and a result that no deploy ever ships makes none.
+  A result whose first deploy counts for other projects alone makes none either, and stays refused: no later write makes its row, not even once a source move, a rule change or a default-repository move has made that deploy count for the result's project.
+  A retraction of the result (`POST /api/v1/results/{id}/retract`) rejects the row with the retraction's reason and actor, unless another `fail` of the same check that is neither retracted nor refused, whose commit the same deploy first shipped, still stands behind it.
 
 - `revert` (failure source `reverts`): a merged pull request of a source repository whose body says `Reverts <owner>/<repo>#<n>`, the line GitHub's revert button writes, whoever wrote it.
   The pull-request intake records the revert as it merges, and the reconcile's search records one the intake missed.
@@ -247,12 +248,14 @@ A project's failure measures count each signal where the project has the failure
   It blames the deploy row that shipped the reverted pull request, or else the one whose commits hold that pull request's merge commit, and it is detected when the revert merged.
   The revert's own deploy restores it: `restored_at` is that deploy's finish, and `restored_by_deploy` is that deploy's row.
   Its `source_ref` is `revert:<owner>/<repo>#<n>`, the revert's own pull request.
-  A revert whose reverted pull request no deploy row holds makes no row, and neither does one whose blamed deploy counts for other projects alone or finished after the revert's own deploy, which restores none of that deploy's failures.
+  A revert whose reverted pull request no deploy row holds makes no row, and neither does one whose blamed deploy finished after the revert's own deploy, which restores none of that deploy's failures.
+  A revert whose blamed deploy counts only for projects other than the one whose source reads the repository makes no row either, and stays refused on that deploy: a later pass that blames the same deploy makes none, even once a source move, a rule change or a default-repository move has made that deploy count for the source's project, while a revert that comes to blame another deploy, one that counts for that project, makes its row.
 
 - `incident_issue` (failure source `incident_label`): an issue labelled `incident`, in any case, whose own links name a GitHub pull request page or a workflow run page (`/actions/runs/<id>`).
   It blames the earliest deploy among those its links name, of any project but a deploy another project posted: the deploy that shipped the pull request, or the run's deploy row.
   It is written under the issue's project, only where that deploy counts for that project, with `source_ref` `incident:<issue key>`, and its actor and `detected_at` are those of the event that made the issue an incident or gave it its link.
   An incident whose links name no deployed pull request and no deploy run makes its row when such a link is added.
+  An incident whose blamed deploy counts for other projects alone makes no row, and stays refused on that deploy: a later label or link change that blames the same deploy makes none, even once a move has made that deploy count for the issue's project, while a link that comes to blame another deploy, one that counts for the issue's project, makes its row.
   A `bug` label makes no failure.
 
 - `api` (failure source `events`): a failure a system posts with an agent or service token, naming the deploy it blames by `deploy_id`, by the GitHub run (`cicd.pipeline.run.id` with `repo`), or by a commit the deploy shipped (`commit_sha`).

@@ -25,7 +25,12 @@ import (
 // cite the issue, which are its fix. It is written under the issue's project, keyed by the issue
 // (IncidentSourceRef), its actor and detected time those of the event that made the issue an
 // incident or gave it its link, and only where the deploy it blames counts for the issue's project
-// (deployCountsForRow). A bug label makes none.
+// (deployCountsForRow). An issue whose blamed deploy counts for other projects alone writes no row
+// and stays refused on that deploy: its refusal commits in the transaction that asked
+// (incident_refusals, migration 20261128030142), so no later event of the issue writes a row
+// blaming that deploy, not even once a source move, a rule change or a default-repository move has
+// made it count for the issue's project
+// (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706). A bug label makes none.
 
 // incidentLabel is the label that makes an issue an incident, in any case.
 const incidentLabel = "incident"
@@ -59,9 +64,12 @@ func passIncidents(ctx context.Context, pool *store.Pool, safe int64) error {
 // names it among the pull requests it shipped, else the one whose commits hold its stored merge
 // commit) and a run's (the run's deploy row, the GitHub adapter's). Its pull requests are the pull
 // requests its links name, or the blamed deploy's where they name only runs. An issue whose links
-// name no deployed pull request and no deploy run writes nothing until a link that does is added,
-// and neither does one whose blamed deploy counts for other projects than the issue's alone
-// (countsForRow); a repeat writes nothing, and an incident whose row is made already reads no link.
+// name no deployed pull request and no deploy run writes nothing until a link that does is added.
+// One whose blamed deploy counts for other projects than the issue's alone writes nothing either,
+// and its refusal of that deploy commits in the transaction that asked (writeSignal,
+// incident_refusals): a later event that blames the same deploy writes nothing, and a link that
+// makes another deploy the blamed one, which counts for the issue's project, writes its row. A
+// repeat writes nothing, and an incident whose row is made already reads no link.
 func recordIncident(ctx context.Context, pool *store.Pool, issue string, detected time.Time, actor model.Actor) (bool, error) {
 	var project string
 	if err := pool.QueryRow(ctx, `select project_key from issues where key = $1`, issue).Scan(&project); err != nil {
@@ -103,17 +111,28 @@ func recordIncident(ctx context.Context, pool *store.Pool, issue string, detecte
 	if blamed == nil {
 		return false, nil
 	}
+	var refused bool
+	if err := pool.QueryRow(ctx, `select exists (select from incident_refusals where issue_key = $1 and deploy_id = $2::uuid)`,
+		issue, blamed.ID).Scan(&refused); err != nil {
+		return false, fmt.Errorf("read the refusals of %s's incident_issue: %w", issue, err)
+	}
+	if refused {
+		return false, nil
+	}
 	if len(pulls) == 0 {
 		pulls = blamed.PullRequests
 	}
-	_, created, err := prodevents.Write(ctx, pool, prodevents.Event{
+	created, err := writeSignal(ctx, pool, prodevents.Event{
 		ProjectKey: project, Kind: prodevents.KindFailure, Source: prodevents.SourceIncidentLabel,
 		SourceRef: ref, PullRequests: pulls, Actor: actor,
 		DeployID: new(blamed.ID), Signal: new(prodevents.SignalIncidentIssue), DetectedAt: new(detected.UTC()),
-	}, countsForRow(project, blamed.ID))
-	if refusesBlame(err) {
-		return false, nil
-	}
+	}, blamed.ID, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `insert into incident_refusals (issue_key, deploy_id) values ($1, $2::uuid)
+			on conflict do nothing`, issue, blamed.ID); err != nil {
+			return fmt.Errorf("refuse %s the incident_issue on deploy %s: %w", issue, blamed.ID, err)
+		}
+		return nil
+	})
 	if err != nil {
 		return false, fmt.Errorf("write the incident_issue of %s: %w", issue, err)
 	}

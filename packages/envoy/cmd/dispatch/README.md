@@ -3132,6 +3132,18 @@ It writes `eval_days_updated` again with `sample_keys` among the columns it comp
 Each `add column` of a nullable column with no default writes the catalog alone and rewrites no row, under `ACCESS EXCLUSIVE` for an instant, and the trigger takes `SHARE ROW EXCLUSIVE` on `eval_days` for the migration's short transaction: its statements change the catalog alone, so `eval_days` past `CensusTableLimit` admits it.
 Its census answers `0`.
 
+Migration `20261128030142_signal_refusals` creates `check_fail_refusals`, `incident_refusals` and `revert_refusals`, the record that an automatic failure was refused because the deploy it blamed counted for other projects alone (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706).
+`check_fail_refusals`, keyed by `result_id`, holds each failed after-merge check result refused so, with the deploy it blamed (`deploy_id`) and `refused_at` (`signals.RecordCheckFailure`).
+`incident_refusals`, keyed by `(issue_key, deploy_id)`, holds each incident issue and the deploy its links blamed when it was refused so, with `refused_at` (`signals`' `recordIncident`).
+`revert_refusals`, keyed by `(repo, number, deploy_id)`, holds each merged revert (`delivery_reverts`, by its own key) and the deploy it blamed when it was refused so, with `refused_at` (`signals`' `revertFailures`); its foreign key to `delivery_reverts` follows an update of that key, so the boot's rename pass, which rewrites `delivery_reverts.repo`, moves the refusal with its revert.
+The signal writer commits each refusal in the transaction that judged the deploy, and a deploy row gone since the write's lookup records none.
+No later write makes such a row: not the result route, not the checks or incidents feed, and not the deploys feed, whose derive and revert read run again after a source move, a rule change or a default-repository move that makes the deploy count for the row's project.
+A result whose commit no deploy row held is not refused, and makes its row when a deploy row that holds it lands; an incident or a revert that comes to blame another deploy, one that counts for the row's project, makes its row.
+`check_fail_refusals_deploy`, `incident_refusals_deploy` and `revert_refusals_deploy` index the foreign keys to `production_events`.
+The foreign keys hold `SHARE ROW EXCLUSIVE` on `check_results`, `issues`, `delivery_reverts` and `production_events` during the migration.
+The release before this one has no production event record, so no failure was refused before it and nothing is backfilled; it neither reads nor writes the new tables, and the migration rewrites no row.
+Its census answers `0`.
+
 Migration `20261120222732_block_refs_to_source` creates `block_refs_to_source` on `block_refs (to_kind, to_id, ((artifact_id)::text))`, and `20261120222733_drop_block_refs_to` drops `0121`'s `block_refs_to` on `(to_kind, to_id)` behind it.
 `heldByABlock`'s probe of `block_refs` (`refs/graph.go`) compares all three columns, and through `block_refs_to` it read every block link into the node once for each document that mentions it and filtered the source document: 999,000 rows removed for an issue that 1,000 documents mention in their text and in two blocks each.
 The new index's first two columns are the old one's, so every read `block_refs_to` served it serves, and `block_refs` keeps one index of targets, with the key the target indexes of `comment_block_refs`, `message_block_refs` and `ask_block_refs` already have.
@@ -5848,7 +5860,8 @@ Each item below names a path with its method and identity, then its purpose.
     The failure counts for the route's project alone, a system's where that project's failure sources hold `events` and a person's flag under any failure source (evals' `failureProject.counts`); an automatic signal's failure counts for every project its deploy counts for.
     Its `detected_at` is the server's time where the body names none.
 
-  - The automatic signals blame a deploy of any project but a deploy another project posted (`prodevents.DeployForCommit`, `DeployForPullRequest`), and write their row only where the blamed deploy counts for the row's project, judged from the stored settings' rules, each project's `default_repo` and the issues of the pull requests the deploy ships in the write's own transaction (`prodevents.DeployProjects`), so a row waits on no refresher pass; one whose deploy counts for other projects alone is logged and writes no row, as a commit that matches no deploy is.
+  - The automatic signals blame a deploy of any project but a deploy another project posted (`prodevents.DeployForCommit`, `DeployForPullRequest`), and write their row only where the blamed deploy counts for the row's project, judged from the stored settings' rules, each project's `default_repo` and the issues of the pull requests the deploy ships in the write's own transaction (`prodevents.DeployProjects`), so a row waits on no refresher pass; one whose deploy counts for other projects alone is logged and writes no row.
+    A signal refused so stays refused, its refusal committed with that decision (`check_fail_refusals`, `incident_refusals`, `revert_refusals`): no later write makes its row, not even a derive after a source move, a rule change or a default-repository move has made the deploy count for the row's project, while a result whose commit no deploy row holds yet makes its row when such a deploy row lands.
     A revert whose own deploy finished before the deploy it blames writes no row either, since that deploy restores none of its failures.
 
   - A system's failure is the signal `api`, its actor the session its credential proves or its body names (`bearerSessionActor`), and its `source_ref` is required (`400 PRODUCTION_EVENT_INPUT` naming it).

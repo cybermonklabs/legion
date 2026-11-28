@@ -1,6 +1,8 @@
 package evals
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"math"
@@ -9,9 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The failure measures' histories (failure_days.go): failureDay is their first day, three days
@@ -829,6 +837,133 @@ func TestTheFailureRowsOfAMovedProjectAreWrittenUnderThePublishedDefaults(t *tes
 		"change-fail-rate.failed": new(1.0), "change-fail-rate.total": new(1.0),
 	})
 	expectTruth(t, "after publishing PIER's default move", r.storedFigures(t), r.truthFigures(t))
+}
+
+// deriveDeploys runs the production signals' loop over the rig's database (signals.Run, under its
+// lease, as the server runs it) until repo's GitHub deploy rows stand derived under project's
+// source (production_deploy_rules), which the loop records only once it has written those rows
+// and matched them with the failed after-merge checks that came before them, and then stops it.
+func (r *refresherRig) deriveDeploys(t *testing.T, repo, project string) {
+	t.Helper()
+	pool := r.database.Pool
+	deps := signals.Deps{Pool: pool, Horizon: r.horizon, Leases: storetest.Leases(t, pool)}
+	loop, stop := context.WithCancel(t.Context())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		signals.Run(loop, deps)
+	}()
+	defer func() {
+		stop()
+		<-stopped
+	}()
+	testwait.Eventually(t, "the production signals' loop to derive "+repo+"'s deploy rows under "+project, func() bool {
+		return r.count(t, `select count(*) from production_deploy_rules where repo = lower($1) and project_key = $2`, repo, project) == 1
+	})
+}
+
+// failedAfterMergeCheck records a fail of an after_merge check of issue's Verification document at
+// commit, made at made, as the results route stores one: its result.recorded event, then its row
+// naming that event, and answers the result's id.
+func (r *refresherRig) failedAfterMergeCheck(t *testing.T, issue, commit string, made time.Time) string {
+	t.Helper()
+	ctx, pool := t.Context(), r.database.Pool
+	var artifact string
+	if err := pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+		select key, project_key, 'verification-md', 'verification.md', 'doc', '{"kind":"user","id":"alice"}' from issues where key = $1
+		returning id::text`, issue).Scan(&artifact); err != nil {
+		t.Fatalf("make the Verification document of %s: %v", issue, err)
+	}
+	id := uuid.NewString()
+	payload, err := json.Marshal(model.CheckResultEventPayload{
+		ResultID: id, Issue: issue, CheckIssue: issue, CheckArtifactID: artifact, CheckBlockID: "c1", CheckVersion: 1,
+		When: model.CheckWhenAfterMerge, Verdict: signals.VerdictFail, Role: "tester", CommitSHA: commit,
+	})
+	if err != nil {
+		t.Fatalf("encode the result's event: %v", err)
+	}
+	var seq int64
+	if err := pool.QueryRow(ctx, `
+		insert into events (issue_key, seq, type, actor, payload, notify)
+		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1), 'result.recorded',
+			'{"kind":"session","id":"tester-session"}', $2, false)
+		returning seq`, issue, payload).Scan(&seq); err != nil {
+		t.Fatalf("append result.recorded on %s: %v", issue, err)
+	}
+	r.exec(t, "record the result", `
+		insert into check_results (id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
+			check_sha256, role, commit_sha, verdict, actor, event_seq, created_at)
+		values ($1, $2, $2, $3, 'c1', 1, 'digest', 'tester', $4, 'fail', '{"kind":"session","id":"tester-session"}', $5, $6)`,
+		id, issue, artifact, commit, seq, made)
+	return id
+}
+
+// TestARefusedCheckFailLeavesTheOwnersChangeFailRateAsItWasThroughASourceMoveAndBack (the
+// architect's ruling, dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706, on the
+// tester's S7): acme/fail-app's deploy runs 501 and 502 ship no pull request, so the deploy rows
+// the production signals' loop derives of them count for the project whose source reads the
+// repository. Under FAIL's source, a failing check of FAIL's on 501 is the one failure: FAIL's
+// change fail rate reads 1 of 2. A fail of an after-merge check on FAILB's issue at 502's commit
+// is refused while 502 counts for FAIL alone (ruling 2(a)), and it stays refused. When the source
+// moves to FAILB, the loop's derive moves both rows to FAILB and binds no row to the result, so
+// FAILB, the owner now, reads 1 of 2, FAIL's failure on 501 counting for it (decision 7); when the
+// source moves back, FAIL reads 1 of 2 again. The record holds FAIL's one failure row throughout.
+func TestARefusedCheckFailLeavesTheOwnersChangeFailRateAsItWasThroughASourceMoveAndBack(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	const failApp, failbApp = "acme/fail-app", "acme/failb-app"
+	r.exec(t, "the projects", `insert into projects (key, name, default_assignee, next_number, default_repo)
+		values ('FAIL', 'Fail', 'alice', 1, $1), ('FAILB', 'Fail B', 'alice', 2, $2)`, failApp, failbApp)
+	r.exec(t, "FAILB's issue", `insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
+		values ('FAILB-1', 'FAILB', 1, 'FAILB work', 'in_progress', '00000001', '{"kind":"system","id":"failures-test"}', $1)`,
+		failureDay.AddDate(0, 0, -10))
+	// settings saves project's delivery settings: delivery on, an events source and sources besides,
+	// failing checks counted from failureDay.
+	settings := func(project string, sources ...delivery.SourceInput) {
+		t.Helper()
+		putProjectSettings(t, pool, delivery.ProjectSettingsInput{
+			Project: project, Delivery: true, Sources: append([]delivery.SourceInput{eventsSource}, sources...),
+			PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{},
+			FailureSources: []string{delivery.FailureSourceCheckResults}, FailuresMeasuredSince: &failureDay,
+		})
+	}
+	source := deliveryseed.SourceOf(ruleOfJob(alphaJob), new(failApp))
+	settings("FAIL", source)
+	settings("FAILB")
+	r.deployRun(t, failApp, 501, failureAt(1, 10, 0), alphaJob)
+	r.deployRun(t, failApp, 502, failureAt(1, 14, 0), alphaJob)
+	r.deriveDeploys(t, failApp, "FAIL")
+	own, held, err := prodevents.DeployForRun(ctx, pool, failApp, 501)
+	if err != nil || !held {
+		t.Fatalf("read run 501's deploy row: %t, %v", held, err)
+	}
+	r.failure(t, "FAIL", "check:own", prodevents.SourceCheckResults, prodevents.SignalCheckFail, own, failureAt(1, 11, 0), nil, nil)
+	result := r.failedAfterMergeCheck(t, "FAILB-1", fmt.Sprintf("%040d", 502), failureAt(1, 15, 0))
+	if wrote, err := signals.RecordCheckFailure(ctx, pool, result); err != nil || wrote {
+		t.Fatalf("RecordCheckFailure on FAILB's issue at the commit of FAIL's deploy 502 = %v, %v; want it refused", wrote, err)
+	}
+
+	requireRate := func(step, owner string) {
+		t.Helper()
+		r.settle(t)
+		wantFigures(t, step+", "+owner, r.failureValues(t, owner, threeDays), map[string]*float64{
+			"change-fail-rate.failed": new(1.0), "change-fail-rate.total": new(2.0), "change-fail-rate.rate": new(0.5),
+		})
+		if rows := r.count(t, `select count(*) from production_events where kind = 'failure'`); rows != 1 {
+			t.Errorf("%s, the record holds %d failure rows across every project; want FAIL's own one", step, rows)
+		}
+	}
+	requireRate("under FAIL's source", "FAIL")
+	settings("FAIL")
+	settings("FAILB", source)
+	r.deriveDeploys(t, failApp, "FAILB")
+	requireRate("once the source moved to FAILB", "FAILB")
+	settings("FAILB")
+	settings("FAIL", source)
+	r.deriveDeploys(t, failApp, "FAIL")
+	requireRate("once the source moved back to FAIL", "FAIL")
 }
 
 // TestAPostedDeployWhoseStatusIsDroppedStillCountsAndSoDoesItsFailure: only the GitHub adapter

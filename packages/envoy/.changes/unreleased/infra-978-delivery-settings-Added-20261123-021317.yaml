@@ -36,7 +36,9 @@ body: |-
   `revert`, `incident_issue`) is written only for a deploy that counts for its project, is listed
   by `GET .../production-events` of each project its deploy counts for, and is rejected,
   re-counted and restored through each of their `PUT .../{id}/state` routes; a failure keeps its
-  first restore.
+  first restore. An automatic failure refused because its deploy counted for other projects alone
+  stays refused: no later write makes its row, not even after a source move, a rule change or a
+  default-repository move makes that deploy count for its project.
 time: 2026-11-23T02:13:17Z
 custom:
     Issue: INFRA-978

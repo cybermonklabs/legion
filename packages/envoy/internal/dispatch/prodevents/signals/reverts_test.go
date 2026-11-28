@@ -154,3 +154,62 @@ func TestARevertIsReadWhileItCanMakeItsFailure(t *testing.T) {
 		t.Errorf("once its row is written, the read holds %+v; want the revert no more", ships)
 	}
 }
+
+// TestARefusedRevertStaysRefusedThroughASourceMoveAndBack (the architect's ruling,
+// dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706): acme/widgets#5, BETA-1's pull
+// request, is the one pull request run 410 ships, so 410's deploy counts for BETA alone. The revert
+// of #5, which run 411 ships, blames 410's deploy, and while acme/widgets's one source is ALPHA's
+// its row would be ALPHA's: it is refused on that deploy, and it stays refused. When the source
+// moves to BETA, so the revert's row would be BETA's, for whom 410's deploy counts, the pass reads
+// the revert again and writes no row; when the source moves back, the record holds no failure row
+// of any project.
+func TestARefusedRevertStaysRefusedThroughASourceMoveAndBack(t *testing.T) {
+	r := newRig(t)
+	r.project("BETA", "acme/beta")
+	r.pullRequest(5, at(30), sha("5"), r.issueOf("BETA", 1))
+	r.deployRun(410, at(60), sha("a"), prodJob, success, success)
+	if err := delivery.RecordRevert(r.ctx, r.pool, delivery.Revert{
+		Repo: widgets, Number: 9, RevertsRepo: widgets, RevertsNumber: 5, RevertsMergeCommitSHA: new(sha("5")),
+		MergedAt: at(90), MergeCommitSHA: new(sha("9")),
+	}); err != nil {
+		t.Fatalf("record the revert: %v", err)
+	}
+	r.deployRun(411, at(120), sha("b"), prodJob, success, success)
+	r.passDeploys()
+	blamed := r.deployOf(410)
+	requireRefused := func(step, owner string) {
+		t.Helper()
+		for _, run := range []int64{410, 411} {
+			if row := r.deployOf(run); row.ProjectKey != owner {
+				t.Fatalf("%s, run %d's row is %s's; want %s's", step, run, row.ProjectKey, owner)
+			}
+		}
+		moved := r.deployOf(410)
+		facts, err := storedDeployFacts(r.ctx, r.pool, moved)
+		if err != nil {
+			t.Fatalf("%s, read the facts of run 410's deploy: %v", step, err)
+		}
+		if projects := prodevents.DeployProjects(moved, facts); moved.ID != blamed.ID || !slices.Equal(projects, []string{"BETA"}) {
+			t.Fatalf("%s, run 410's row is %s, counting for %v; want %s, counting for BETA alone", step, moved.ID, projects, blamed.ID)
+		}
+		var refused bool
+		if err := r.pool.QueryRow(r.ctx, `select exists (select from revert_refusals where repo = $1 and number = 9 and deploy_id = $2::uuid)`,
+			widgets, blamed.ID).Scan(&refused); err != nil || !refused {
+			t.Errorf("%s, the revert holds a refusal of run 410's deploy %t (%v); want it held", step, refused, err)
+		}
+		var rows int
+		if err := r.pool.QueryRow(r.ctx, `select count(*) from production_events where kind = 'failure'`).Scan(&rows); err != nil || rows != 0 {
+			t.Errorf("%s, the record holds %d failure rows across every project (%v); want none", step, rows, err)
+		}
+	}
+
+	requireRefused("under ALPHA's source", alpha)
+	r.deliveryOff(alpha)
+	r.saveSource("BETA", new(widgets), revertsSince, prodJob)
+	r.passDeploys()
+	requireRefused("once the source moved to BETA", "BETA")
+	r.deliveryOff("BETA")
+	r.saveRule(prodJob)
+	r.passDeploys()
+	requireRefused("once the source moved back to ALPHA", alpha)
+}

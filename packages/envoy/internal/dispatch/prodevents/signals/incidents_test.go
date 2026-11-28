@@ -191,3 +191,86 @@ func TestAnIncidentBlamesNoDeployAnotherProjectPostedAndNeedsACountingDeploy(t *
 			betaRows, betaOwn, betaPost.ID, betaForeign)
 	}
 }
+
+// TestARefusedIncidentStaysRefusedThroughASourceMoveAndBack (the architect's ruling,
+// dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706): a BETA incident whose link
+// names ALPHA's deploy run 312, which ships no pull request and so counts for ALPHA alone, is
+// refused on that deploy, and it stays refused. When acme/widgets's one source moves from ALPHA to
+// BETA, so run 312's row counts for BETA, a later event of the issue derives the incident again
+// from its links, a label it gains and then a link to the run's job page, and writes no row; when
+// the source moves back, the record holds no failure row of any project. The refusal is the
+// deploy's alone: a link to a pull request whose deploy BETA posted, which finished first and
+// counts for BETA, then writes the incident's row, blaming that deploy.
+func TestARefusedIncidentStaysRefusedThroughASourceMoveAndBack(t *testing.T) {
+	r := newRig(t)
+	r.project("BETA", "acme/beta")
+	r.deployRun(312, at(60), sha("a"), prodJob, success, success)
+	r.passDeploys()
+	deploy := r.deployOf(312)
+	const runLink = "https://github.com/acme/widgets/actions/runs/312"
+	const jobLink = "https://github.com/acme/widgets/actions/runs/312/job/9"
+	incident := r.issueOf("BETA", 1, "incident")
+	r.link(incident, runLink)
+	r.issueEvent(incident, "issue.created", []string{"incident"}, []string{runLink}, nil)
+	pass := func() {
+		t.Helper()
+		r.passDeploys()
+		r.passEvents()
+	}
+	failureRows := func() int {
+		t.Helper()
+		var rows int
+		if err := r.pool.QueryRow(r.ctx, `select count(*) from production_events where kind = 'failure'`).Scan(&rows); err != nil {
+			t.Fatalf("count the failure rows: %v", err)
+		}
+		return rows
+	}
+	requireRefused := func(step, owner string) {
+		t.Helper()
+		if moved := r.deployOf(312); moved.ID != deploy.ID || moved.ProjectKey != owner {
+			t.Fatalf("%s, run 312's row is %s of %s; want %s of %s", step, moved.ID, moved.ProjectKey, deploy.ID, owner)
+		}
+		var refused bool
+		if err := r.pool.QueryRow(r.ctx, `select exists (select from incident_refusals where issue_key = $1 and deploy_id = $2::uuid)`,
+			incident, deploy.ID).Scan(&refused); err != nil || !refused {
+			t.Errorf("%s, %s holds a refusal of run 312's deploy %t (%v); want it held", step, incident, refused, err)
+		}
+		if rows := failureRows(); rows != 0 {
+			t.Errorf("%s, the record holds %d failure rows across every project; want none", step, rows)
+		}
+	}
+
+	pass()
+	requireRefused("under ALPHA's source", alpha)
+	r.deliveryOff(alpha)
+	r.saveSource("BETA", new(widgets), revertsSince, prodJob)
+	pass()
+	requireRefused("once the source moved to BETA", "BETA")
+	r.issueEvent(incident, "issue.updated", []string{"incident", "sev1"}, []string{runLink}, []string{"labels"})
+	pass()
+	requireRefused("once the incident gained a label under BETA's source", "BETA")
+	r.link(incident, jobLink)
+	r.issueEvent(incident, "issue.updated", []string{"incident", "sev1"}, []string{runLink, jobLink}, []string{"external_links"})
+	pass()
+	requireRefused("once the incident gained a link to the run's job under BETA's source", "BETA")
+	r.deliveryOff("BETA")
+	r.saveRule(prodJob)
+	pass()
+	requireRefused("once the source moved back to ALPHA", alpha)
+
+	const pullLink = "https://github.com/acme/widgets/pull/13"
+	betaPost := r.postDeploy("BETA", "ci:beta-13", at(30), nil, []string{"acme/widgets#13"})
+	r.link(incident, pullLink)
+	r.issueEvent(incident, "issue.updated", []string{"incident", "sev1"}, []string{runLink, jobLink, pullLink}, []string{"external_links"})
+	pass()
+	rows, _, err := prodevents.List(r.ctx, r.pool, prodevents.ListQuery{
+		Project: "BETA", From: base.Add(-365 * 24 * time.Hour), To: time.Now().Add(24 * time.Hour), Kind: prodevents.KindFailure, Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("read BETA's failures: %v", err)
+	}
+	if len(rows) != 1 || rows[0].SourceRef != IncidentSourceRef(incident) || *rows[0].DeployID != betaPost.ID || failureRows() != 1 {
+		t.Fatalf("once the incident linked a pull request of BETA's post, BETA's failure rows = %+v; want the one incident row blaming %s",
+			rows, betaPost.ID)
+	}
+}
