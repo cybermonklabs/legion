@@ -87,8 +87,8 @@ const DockerPluginVersion = "$docker_plugin"
 GO
 }
 
-# fixture <name>: a green tree — six rows, one of each shape the manifest holds, the pins they
-# agree with, and a workflow and an action that fetch a tool through the helper and name no URL
+# fixture <name> [self-pinned row name]: a green tree with six rows, the pins they agree with,
+# and a workflow and an action that fetch a tool through the helper and name no URL
 # of their own. Echoes the fixture root. Each case names its own tree: two cases sharing a name
 # would share a tree, so a repeated name is refused here rather than surfacing as the `ln -s`
 # below failing.
@@ -111,7 +111,7 @@ fixture() {
 registry: $REGISTRY
 
 tools:
-  - name: tool
+  - name: ${2:-tool}
     version: 1.0.0
     digest: $TOOL
     digest_of: the release tarball, whole
@@ -425,21 +425,21 @@ arm64_row() {
 YAML
 }
 
-echo "case: rule 2 — an -aarch64 row at its base row's version"
-root=$(fixture pin-arm64-agrees)
-arm64_row "$root" tool-aarch64 1.0.0
+echo "case: rule 2 — gotestsum is its own pin and its arm64 row agrees"
+root=$(fixture pin-arm64-agrees gotestsum)
+arm64_row "$root" gotestsum-aarch64 1.0.0
 run_gate "$root"
 check "exits 0" "$(is "$status" 0)"
 check "and counts the arm64 row with the rest" \
   "$(contains "$out" '^.github/ci-tools.yaml holds 7 row(s), each agreeing with the pin that installs it')"
 
-echo "case: rule 2 — an -aarch64 row at another version than its base row"
-root=$(fixture pin-arm64-version)
-arm64_row "$root" tool-aarch64 2.0.0
+echo "case: rule 2 — the gotestsum-aarch64 row is at another version than its base row"
+root=$(fixture pin-arm64-version gotestsum)
+arm64_row "$root" gotestsum-aarch64 2.0.0
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names both rows and both versions" \
-  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the tool-aarch64 row's version is 2.0.0 and the tool row's is 1.0.0.")"
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the gotestsum-aarch64 row's version is 2.0.0 and the gotestsum row's is 1.0.0.")"
 check "and says the two move together" "$(contains "$out" 'move the two rows together')"
 
 echo "case: rule 2 — an -aarch64 row whose base row the manifest does not hold"
