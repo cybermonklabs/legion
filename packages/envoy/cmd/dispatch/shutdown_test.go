@@ -118,25 +118,31 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 }
 
 // inFlightSettleDelay is the settle delay (DISPATCH_TEST_SETTLE_DELAY) of the row below. It is
-// longer than the row's steps from the edit to taking the issue's lock, so the edit's own timer
-// fires behind that lock, and the row waits for the timer's settlement to queue there before it
-// signals: Shutdown then finds that settlement in flight rather than an armed timer it can stop.
-// At the service's own two seconds the timer could fire before the row took the lock and settle
-// the document before the signal, leaving nothing owed at shutdown.
-const inFlightSettleDelay = 4 * time.Second
+// longer than the row's steps from the edit to taking the issue's lock and seeing the title change
+// queued behind it, so the edit's own timer fires behind that lock, and the row waits for the
+// timer's settlement to queue there before it signals: Shutdown then finds that settlement in
+// flight rather than an armed timer it can stop. A timer that fired before the row took the lock
+// would settle the document before the signal, leaving nothing owed at shutdown, and the row fails
+// at its wait for that settlement. The row waits the delay out before it signals, so the delay is
+// as short as that rule lets it be: a build-cluster Job runs the row 20 times and reads, from the
+// row's line "the title change queued behind the issue lock ... after the edit", the largest time
+// from the edit to that point, and the delay is at least five times that largest value, 400 ms
+// while it is at most 80 ms.
+const inFlightSettleDelay = 400 * time.Millisecond
 
 // A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
 // queued behind another writer's lock on the issue for the drain (quickHTTPDrain). The edit's
-// own settlement timer fires four seconds in (inFlightSettleDelay), and its settlement waits behind
+// own settlement timer fires inFlightSettleDelay after the edit, and its settlement waits behind
 // the same lock before the signal. The document service starts once the drain's share ends and
 // finds that timer already fired, so it has no timer to stop: it runs its own settlement of the
 // document beside the timer's, joins the timer's, and reports the document settled. The lock is
 // released once Shutdown's settlement is queued behind it too, or two seconds after the document
 // service started, which is ample for it to read what is owed; a release before that read could
-// let the timer's settlement commit first.
+// let the timer's settlement commit first. The row logs the time from the edit to the title change
+// queued behind the lock, which sizes inFlightSettleDelay.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
-	// Not parallel: the test must take the issue's lock before the edit's timer fires, four seconds
-	// after the edit, and load could stretch the steps between past that.
+	// Not parallel: the test must take the issue's lock before the edit's timer fires,
+	// inFlightSettleDelay after the edit, and load could stretch the steps between past that.
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		SettleDelay: inFlightSettleDelay,
@@ -152,11 +158,13 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 		// Its answer is not this test's.
 		_, _ = process.renameIssue(key, "Renamed")
 	}()
-	// The edit's settlement queues behind the same lock four seconds in, so a count of waiters
-	// could pass with the title change still on its way: watch the title change's own backend.
+	// The edit's settlement queues behind the same lock inFlightSettleDelay after the edit, so a
+	// count of waiters could pass with the title change still on its way: watch the title change's
+	// own backend.
 	if pid := waitForRenameBehind(t, database, holder, 10*time.Second); pid == 0 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
+	t.Logf("the title change queued behind the issue lock %v after the edit", time.Since(edited))
 	// The title change is one waiter and the settlement the edit's timer starts is the second. The
 	// wait ends ten seconds past the moment the timer is due rather than at the test binary's
 	// deadline, so a timer that does not fire then fails the row here instead of being waited out.
