@@ -1,6 +1,6 @@
 // heads-scenarios.txt, the catalog of the heads scenarios' worlds, and the readers that take each
-// world from it: rig.sh's batch and run, heads-world.ts's validation, seed.ts's usage and
-// score.ts's run names.
+// world from it: rig.sh's batch and run, heads-world.ts's validation, seed.ts's usage,
+// run-names.ts's reading of run names, and score.ts's check of each row's scenario.
 //
 //   bun test heads-scenarios.test.ts
 
@@ -40,10 +40,10 @@ test("the heads scenarios have one canonical membership", () => {
 
 // Catches: a reader that keeps a list of the worlds of its own, so a world added to the catalog
 // alone is missing from rig.sh's batch, refused by its run, by heads-world.ts or by seed.ts's
-// usage, or read by score.ts as another world's run. The added case's name begins another case's
-// of its scenario (no-verdict, no-verdict-fail), so a pattern that tries the shorter name first
-// reads no-verdict-fail's runs as no-verdict's.
-test("a world added to the catalog alone reaches rig.sh, heads-world.ts, seed.ts and score.ts", () => {
+// usage, or read by run-names.ts, which score.ts reads run names through, as another world's run.
+// The added case's name begins another case's of its scenario (no-verdict, no-verdict-fail), so a
+// pattern that tries the shorter name first reads no-verdict-fail's runs as no-verdict's.
+test("a world added to the catalog alone reaches rig.sh, heads-world.ts, seed.ts and run-names.ts", () => {
   const copy = copyOfThisDirectory(makeDirectory("tree"));
   const tree = path.resolve(copy, "../../../..");
   appendFileSync(path.join(copy, "heads-scenarios.txt"), "architect-pass-and-fail no-verdict\n");

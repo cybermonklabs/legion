@@ -1,5 +1,5 @@
 // run-names.ts: the grammar of a run's name, the one place every reader of a run's name takes it
-// from: score.ts, heads-world.ts, visible-world.ts and owner-walk.ts. rig.sh's cmd_run names each
+// from: score.ts, visible-world.ts and owner-walk.ts. rig.sh's cmd_run names each
 // run `<scenario>[-<case>]-<label>-<n>`, and its link in the map carries that name (rig.sh's
 // header, "the map"). A scenario, a case and a label may each hold a hyphen, so a name is read
 // from the front: the longest scenario it starts with, then, for a scenario of RUN_CASES, the

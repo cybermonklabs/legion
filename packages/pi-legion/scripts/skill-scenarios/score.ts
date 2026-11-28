@@ -3904,7 +3904,8 @@ function scoreScoredRun(runsDir: string, name: string): void {
 type Scorer = (dir: string, run: string, label: string, runCase: string) => Scored;
 
 /** The entry of `table` for `key`, a case runFields read from a run's name: run-names.ts lists the
- * cases, and `table`'s type holds an entry for each, so a case with no entry is a defect here. */
+ * cases, and scoreRuns refuses a catalog case with no entry before it scores any run (its noEntry
+ * check), so a case with no entry is a defect here. */
 function entryOf<K extends string, V>(table: Readonly<Record<K, V>>, key: string): V {
   if (!Object.hasOwn(table, key)) throw new Error(`score.ts has no entry for the case ${key}`);
   return table[key as K];

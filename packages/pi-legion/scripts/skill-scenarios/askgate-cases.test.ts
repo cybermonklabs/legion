@@ -1,5 +1,5 @@
 // askgate-cases.txt, the catalog of the askgate scenario's cases, and the readers that take each
-// case from it: rig.sh's batch and run, and score.ts's run names.
+// case from it: rig.sh's batch and run, run-names.ts's reading of run names, and score.ts's rules.
 //
 //   bun test askgate-cases.test.ts
 
@@ -18,10 +18,11 @@ setDefaultTimeout(fileRowLimit(RIG_STEP, RIG_STEP, SCRIPT_RUN));
 const makeDirectory = temporaryDirectories("askgate-catalog");
 
 // Catches: a reader that keeps a list of the askgate cases of its own, so a case added to the
-// catalog alone is refused by rig.sh's batch or run, or read by score.ts as another case's run.
-// The added case's name begins with another case's (upload), so a pattern that tries the shorter
-// name first reads its run as upload's, of the label twice-head.
-test("a case added to the askgate catalog alone reaches rig.sh and score.ts", () => {
+// catalog alone is refused by rig.sh's batch or run, or read by run-names.ts, which score.ts reads
+// run names through, as another case's run. The added case's name begins with another case's
+// (upload), so a pattern that tries the shorter name first reads its run as upload's, of the label
+// twice-head.
+test("a case added to the askgate catalog alone reaches rig.sh and run-names.ts", () => {
   const copy = copyOfThisDirectory(makeDirectory("tree"));
   const tree = path.resolve(copy, "../../../..");
   appendFileSync(path.join(copy, "askgate-cases.txt"), "upload-twice\n");
@@ -113,8 +114,9 @@ test("a case added to the askgate catalog alone reaches rig.sh and score.ts", ()
 
 // Catches: an askgate case the catalog lists and score.ts has no rule for, which it read by
 // another case's rule: a run of the case constructor by the rules check's, since
-// RULE_REFUSED_CASES["constructor"] is what every object inherits, and a run of any other such case
-// by upload's, the scorer's last. The case upload is the control: its run is scored by its rule.
+// RULE_REFUSED_CASES was an ordinary object, whose "constructor" every object inherits, and a run
+// of any other such case by upload's, the scorer's last. The case upload is the control: its run
+// is scored by its rule.
 test("score.ts reads an askgate run of a case it has no rule for as a rig error, constructor among them", () => {
   const read: [string, string][] = [];
   for (const which of ["upload", "constructor", "upload-twice"]) {
