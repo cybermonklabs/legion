@@ -206,11 +206,11 @@ func newRoomReleaseService(t *testing.T) (*Service, *store.Store) {
 	t.Helper()
 	database := storetest.Open(t)
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
-		ServerURL: "https://dispatch.example",
-		Settle:    20 * time.Millisecond,
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
+		Origins:  testOrigins,
+		Settle:   20 * time.Millisecond,
 	})
 	// ygo's idle sweeper reads it when the first room starts it, so it is set before any room.
 	service.srv.RoomIdleTimeout = time.Second

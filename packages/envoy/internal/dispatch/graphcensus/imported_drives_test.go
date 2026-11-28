@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // This file is the package's external test: its drives reach the API and the document service,
@@ -137,7 +138,7 @@ func newWritersRig(t *testing.T) *writersRig {
 	// document's room is admitted by the same header the API reads (emptyAskQuestion).
 	caller := identity.HeaderIdentity{People: people}
 	broker := events.NewBroker()
-	rig.documents = docs.New(docs.Deps{Store: rig.database, Events: broker, Identity: caller, ServerURL: writersServerURL, Settle: time.Hour})
+	rig.documents = docs.New(docs.Deps{Store: rig.database, Events: broker, Identity: caller, Origins: text.NewOrigins(writersServerURL), Settle: time.Hour})
 	t.Cleanup(func() {
 		if err := rig.documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut down the document service: %v", err)

@@ -525,7 +525,7 @@ func (s *Service) followVersion(ctx context.Context, tx pgx.Tx, latest ClosedIss
 	// a closed issue's version. No stored version says which wrote it, so the move reads it as a
 	// settlement's and keeps the person's turn where that settlement's own version write would
 	// have kept it.
-	if err := MoveApprovalAsk(ctx, tx, s.events, latest.artifactID, latest.version, latest.markdown, latest.mover, true, s.serverURL); err != nil {
+	if err := MoveApprovalAsk(ctx, tx, s.events, latest.artifactID, latest.version, latest.markdown, latest.mover, true, s.origins); err != nil {
 		return err
 	}
 	if err := refuseSecondCarry(ctx, tx, latest.artifactID); err != nil {

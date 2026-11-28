@@ -260,6 +260,40 @@ func TestThePullRequestLineDropsPrivateReferencesFromTheReading(t *testing.T) {
 	}
 }
 
+// TestAResultLineDropsAWordHoldingAServedOrFormerHost: the pull-request body line drops a word
+// holding a host of any address of this Dispatch, written without a scheme, in any case: its
+// canonical address's, a served address's (DISPATCH_SERVED_ORIGINS) and a former address's
+// (DISPATCH_FORMER_ORIGINS), which still names this Dispatch in every link written before the
+// address stopped serving. A host that is no address of this Dispatch stays, which is the control.
+func TestAResultLineDropsAWordHoldingAServedOrFormerHost(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := newTestServer(t, testServerOptions{
+		servedOrigins: []string{"https://b.example.test"}, formerOrigins: []string{"https://old.example.test"},
+	})
+	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+
+	for _, row := range []struct{ name, observed, want string }{
+		{"the canonical address's host", "Opened dispatch.example/runs/7 again.", "Opened again."},
+		{"a served address's host", "Opened b.example.test/runs/7 again.", "Opened again."},
+		{"a served address's host in upper case", "Opened B.EXAMPLE.TEST/runs/7 again.", "Opened again."},
+		{"a former address's host", "Opened old.example.test/runs/7 again.", "Opened again."},
+		{"a former address's host in mixed case", "Opened Old.Example.Test/runs/7 again.", "Opened again."},
+		{"a host that is no address of this Dispatch", "Opened other.example.test/runs/7 again.", "Opened other.example.test/runs/7 again."},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, map[string]any{"observed": row.observed}))
+			if recorded.Code != http.StatusCreated {
+				t.Fatalf("record a result: status=%d body=%s", recorded.Code, recorded.Body.String())
+			}
+			line := decodeBody[recordedResult](t, recorded).Line
+			if want := "- Check k1 (before_merge): pass at " + headCommit + ", recorded by implementer. " + row.want; line != want {
+				t.Fatalf("line = %q, want %q", line, want)
+			}
+		})
+	}
+}
+
 // The line never carries the command a result ran or its negative control, so an issue key in
 // either reaches no pull request through it.
 func TestThePullRequestLineCarriesNoRunAndNoNegativeControl(t *testing.T) {
@@ -454,7 +488,7 @@ func TestTheCIVerdictLineNamesTheRunOnlyWhenItKeepsEveryWordOfIt(t *testing.T) {
 // lower stops at its sixteenth (79 runes), which the cut then leaves whole.
 func TestTheLineStopsJudgingOnceItsKeptTextPassesTheCut(t *testing.T) {
 	t.Parallel()
-	words := lineWordsFor([]string{"ACME"}, testServerURL)
+	words := lineWordsFor([]string{"ACME"}, testOrigins)
 	lineOf := func(body string, budget int) string { return words.cut(words.keepThrough(body, budget)) }
 	for _, row := range []struct{ name, body string }{
 		{
@@ -507,7 +541,7 @@ func keptKeyFormingWords(words lineWords) []string {
 // zero-width space, back into the set: the property then fails, and names that rune.
 func TestEveryRuneOutsidePlainWordsDropsAKeyFormingWord(t *testing.T) {
 	t.Parallel()
-	words := lineWordsFor([]string{"ACME"}, testServerURL)
+	words := lineWordsFor([]string{"ACME"}, testOrigins)
 	if kept := keptKeyFormingWords(words); len(kept) != 0 {
 		t.Fatalf("the rule keeps %d key-forming words, the first %v", len(kept), kept[:min(len(kept), 5)])
 	}
@@ -612,7 +646,7 @@ func TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt(t *testing.T) {
 			{"recorded", "unparsed", recordedLine(host.text), recordedPrefix + host.text},
 			{"recorded", "parsed", recordedLine(check.Text), recordedPrefix + host.parsed},
 			{"CI", "parsed", check.CI.Line, ciPrefix + host.parsed},
-			{"CI", "unparsed", ciVerdictLine(raw, ciCheckRun, "pass", headCommit, lineWordsFor(nil, testServerURL)), ciPrefix + host.text},
+			{"CI", "unparsed", ciVerdictLine(raw, ciCheckRun, "pass", headCommit, lineWordsFor(nil, testOrigins)), ciPrefix + host.text},
 		} {
 			t.Logf("%s | %s line | %s -> %q", host.name, pairing.line, pairing.parse, pairing.got)
 			if pairing.got != pairing.want {
@@ -683,7 +717,7 @@ const earlyStopBodies = 50000
 // differ from the whole text's on some body, which shows the comparison can fail.
 func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 	t.Parallel()
-	words := lineWordsFor([]string{"ACME", "RESK"}, testServerURL)
+	words := lineWordsFor([]string{"ACME", "RESK"}, testOrigins)
 	r := rand.New(rand.NewPCG(4517, 50))
 	var stopped, cut, mismatches, controlMismatches int
 	for range earlyStopBodies {
@@ -723,7 +757,7 @@ func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 // no key is printed cut, which is the control.
 func TestTheCILineEndsAtTheRunWhenTheCutKeepsNothing(t *testing.T) {
 	t.Parallel()
-	words := lineWordsFor([]string{"ACME"}, testServerURL)
+	words := lineWordsFor([]string{"ACME"}, testOrigins)
 	prefix := "- Check c1 (before_merge): pass at " + headCommit + ", from CI run " + ciCheckRun + "."
 	for _, row := range []struct{ name, text, want string }{
 		{"a cut that would leave an issue key", strings.Repeat("/", 73) + "ACME-12xyz tail words", prefix},

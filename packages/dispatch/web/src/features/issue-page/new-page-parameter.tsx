@@ -9,6 +9,7 @@ import {
   useLocation,
 } from "react-router-dom";
 
+import { dispatchOrigins } from "../../api/origins";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { parseIssuePath } from "../refs/routes";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
@@ -68,13 +69,16 @@ function keepNewPage(key: string, to: To): Partial<Path> {
  * document, after every handler of the page: a plain click on one to an address of the issue
  * that names no `issue_page`, which no handler has taken (a `Link`, a row's words that follow
  * their own in place), is followed through the same push, so the document is not loaded again at
- * the address without the parameter. Inside a modal dialog the page draws over itself, the click
- * loads the kept address instead, the parameter on it, so the dialog goes with the document
- * rather than stand over the page a move in place would draw under it. A click with a key held or
- * with another button, and a link to a download, to another window, to another origin or inside
- * an SVG, are the browser's; a link inside an editable text, by the nearest element that names
- * `contenteditable`, is the editor's. A load of an address is not seen here. With no parameter in
- * the address the router's own navigator is handed on unchanged, and no click is heard. No
+ * the address without the parameter. Such a link at any origin of this Dispatch
+ * (`dispatchOrigins`: the page's own, each other address the server serves, each it served
+ * before) is followed on the page's own origin, with its path, query and fragment. Inside a modal
+ * dialog the page draws over itself, the click loads the kept address instead, the parameter on
+ * it, so the dialog goes with the document rather than stand over the page a move in place would
+ * draw under it. A click with a key held or with another button, and a link to a download, to
+ * another window, to an origin Dispatch does not name or inside an SVG, are the browser's; a link
+ * inside an editable text, by the nearest element that names `contenteditable`, is the editor's.
+ * A load of an address is not seen here. With no parameter in the address the router's own
+ * navigator is handed on unchanged, and no click is heard. No
  * `<Router>` may stand inside another, so this provides the router's own navigation context
  * again, its navigator alone replaced.
  */
@@ -123,7 +127,7 @@ export function KeepNewIssuePage({ children }: { children: ReactNode }): ReactNo
       if (!(anchor instanceof HTMLAnchorElement) || anchor.isContentEditable) return;
       if (anchor.hasAttribute("download") || anchor.hasAttribute("target")) return;
       const url = new URL(anchor.href, window.location.href);
-      if (url.origin !== window.location.origin) return;
+      if (!dispatchOrigins().includes(url.origin)) return;
       // A link that names the parameter itself, a hash link among them (its `href` is resolved
       // against the address, which carries it), is the browser's.
       if (!keeps(key, url.pathname, url.search)) return;

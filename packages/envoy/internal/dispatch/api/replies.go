@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // GET /api/v1/me/replies is the Inbox's thread read, of two kinds of row. A Reply row is a thread
@@ -744,7 +745,7 @@ func (s *server) readMyReplyRows(
 		row.Project = &projectKey
 		row.ReadThrough = &readThrough
 		row.Version = &version
-		row.Subject = refs.FirstLine(subject, s.deps.ServerURL)
+		row.Subject = refs.FirstLine(subject, s.deps.Origins)
 		if replyID != nil {
 			row.Reply.ID = *replyID
 		}
@@ -766,14 +767,14 @@ func (s *server) readMyReplyRows(
 			}
 			row.Anchor = &value
 		}
-		row.Reply.FirstLine = refs.FirstLine(body, s.deps.ServerURL)
+		row.Reply.FirstLine = refs.FirstLine(body, s.deps.Origins)
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list my replies: %w", err)
 	}
 	rows.Close()
-	if err := answerReplyRows(ctx, tx, read, answered, s.deps.ServerURL); err != nil {
+	if err := answerReplyRows(ctx, tx, read, answered, s.deps.Origins); err != nil {
 		return nil, err
 	}
 	return read, nil
@@ -790,7 +791,7 @@ func (s *server) readMyReplyRows(
 // (asks.NodeAnswerTuples), whose relations and values no one index orders, and the page's plan is
 // held to sorting nothing (TestMyRepliesQueriesReadTheirStatesIndex). It runs in the page's
 // transaction, so it reads the snapshot the page read.
-func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, answered []int, serverURL string) error {
+func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, answered []int, origins text.Origins) error {
 	if len(answered) == 0 {
 		return nil
 	}
@@ -828,7 +829,7 @@ func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, an
 		if ask.Answer.Text != nil && *ask.Answer.Text != "" {
 			line = append(line, *ask.Answer.Text)
 		}
-		reply.FirstLine = refs.FirstLine(strings.Join(line, " - "), serverURL)
+		reply.FirstLine = refs.FirstLine(strings.Join(line, " - "), origins)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the answers of my replies: %w", err)

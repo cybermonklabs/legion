@@ -65,25 +65,26 @@ const (
 const actRead specform.Act = "read"
 
 // SpecForm is the form of The Spec that a process judges with: the roots that DISPATCH_SPEC_ROOTS
-// names, and the server's address, which a judgment reads (contextFor). The zero SpecForm names
-// no root, so only the read route judges anything with it.
+// names, and the server's origins, against which a judgment reads links (contextFor). The zero
+// SpecForm names no root, so only the read route judges anything with it.
 type SpecForm struct {
-	roots     []string
-	serverURL string
+	roots   []string
+	origins text.Origins
 }
 
 // NewSpecForm builds the form of The Spec from specRoots, as DISPATCH_SPEC_ROOTS writes them, and
-// the server's address, and sets its gate on documents (carryBreaksForm): each carry of an
-// approval that service writes is then judged as the person's own Approve is. It is the one setter
-// of a document service's gate. The server builds its form once, before the boot's restoration
-// schedules a settlement, and builds its API with it; each backfill command builds one for the
-// service it writes through. A value that is no list of issue keys refuses startup.
-func NewSpecForm(specRoots, serverURL string, documents docs.API) (SpecForm, error) {
+// the server's origins (text.ServerOrigins), and sets its gate on documents (carryBreaksForm):
+// each carry of an approval that service writes is then judged as the person's own Approve is. It
+// is the one setter of a document service's gate. The server builds its form once, before the
+// boot's restoration schedules a settlement, and builds its API with it; each backfill command
+// builds one for the service it writes through. A value that is no list of issue keys refuses
+// startup.
+func NewSpecForm(specRoots string, origins text.Origins, documents docs.API) (SpecForm, error) {
 	roots, err := parseSpecRoots(specRoots)
 	if err != nil {
 		return SpecForm{}, err
 	}
-	form := SpecForm{roots: roots, serverURL: strings.TrimSuffix(serverURL, "/")}
+	form := SpecForm{roots: roots, origins: origins}
 	documents.SetFormGate(form.carryBreaksForm)
 	return form, nil
 }
@@ -566,7 +567,7 @@ func (j *specFormJudge) contextFor(ctx context.Context, root *string) (specform.
 		j.base = &specform.Context{
 			IsProjectKey: func(key string) bool { return slices.Contains(projects, key) },
 			PersonNames:  people,
-			ServerURL:    j.form.serverURL,
+			Origins:      j.form.origins,
 		}
 	}
 	context := *j.base
