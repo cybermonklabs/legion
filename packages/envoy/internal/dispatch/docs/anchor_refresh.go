@@ -393,24 +393,25 @@ func stateRefreshedAnchoredIn(b *store.WriteBatch, tuples []graphstore.Tuple) {
 }
 
 // CommentAnchorInBlock is a comment's document anchor whose occurrence a read asks for
-// (AnchorOccurrences): the id of the mark it names, the block its occurrence is counted within,
-// and its quote as stored. The block is the caller's: the tree read names the block of the node it
-// hangs the comment under, the anchor's own block or the typed block that holds it (api's
-// occurrenceBlock).
+// (AnchorOccurrences): the id of the mark it names, the block over whose plain text its occurrence
+// is counted, and its quote as stored. The block is the caller's: the tree read names the block of
+// the node it hangs the comment under, the anchor's own block or the typed block that holds it
+// (api's occurrenceBlock).
 type CommentAnchorInBlock struct {
 	MarkID, BlockID, Quote string
 }
 
 // AnchorOccurrences is, by index into anchors, the zero-based occurrence of each comment's anchor
-// on artifactID's document within the block each names (this issue's spec R31): the number of that
-// block's matches of its quote that start before its mark, the occurrence
-// pmdoc.QuoteFinder.FindInBlock takes for the mark (QuoteFinder.OccurrenceInBlock). The document is
-// read as a read of its blocks reads it (anchoredTree), with no lock taken and no room loaded, and
-// every mark is found in one walk of it (pmdoc.FindMarks). A comment's mark is a comment mark or,
-// for a suggestion, a suggestion mark (commentMarkType), and an anchor names its id alone, so each
-// is looked up as either. An anchor whose mark the document no longer holds, or holds outside the
-// block it names, has no occurrence, nor has any anchor on a document with no state or with no
-// comment's mark.
+// on artifactID's document within the block each names (this issue's spec R31), counted over that
+// block's plain text: its words as pmdoc.QuoteFinder.FindInBlock reads them, without a directive
+// line, its attributes or inline Markdown syntax. It is the number of that block's matches of its
+// quote that start before its mark, the occurrence FindInBlock takes for the mark
+// (QuoteFinder.OccurrenceInBlock). The document is read as a read of its blocks reads it
+// (anchoredTree), with no lock taken and no room loaded, and every mark is found in one walk of it
+// (pmdoc.FindMarks). A comment's mark is a comment mark or, for a suggestion, a suggestion mark
+// (commentMarkType), and an anchor names its id alone, so each is looked up as either. An anchor
+// whose mark the document no longer holds, or holds outside the block it names, has no
+// occurrence, nor has any anchor on a document with no state or with no comment's mark.
 func (s *Service) AnchorOccurrences(ctx context.Context, artifactID string, anchors []CommentAnchorInBlock) (map[int]int, error) {
 	tree, err := s.anchoredTree(ctx, artifactID)
 	if err != nil || tree == nil {

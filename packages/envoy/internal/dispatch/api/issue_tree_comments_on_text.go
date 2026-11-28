@@ -929,15 +929,18 @@ func commentAnchorOf(document, node []byte, state string) (*model.IssueTreeAncho
 }
 
 // anchorOccurrences gives each document anchor the read holds (anchors) that is not orphaned and
-// names a block its zero-based occurrence (R31), counted over the text of the node the read hangs
-// its comment under (occurrenceBlock): the number of that node's block's matches of its quote that
-// start before its mark, the count pmdoc.QuoteFinder.FindInBlock takes, read off each document once
-// (docs.Service.AnchorOccurrences), but each document documentPositions read them off already
-// (anchorsRead). It runs after the read's transaction has closed, as documentPositions does, since
-// a document's marks are its room's. An anchor whose document no longer holds its mark inside that
-// block answers none, as an orphaned one does: a read-only page, which renders the document's
-// Markdown without its marks, places a thread on the second of two identical quotes in one node's
-// text only by this occurrence.
+// names a block its zero-based occurrence (R31), counted over the plain text of the node the read
+// hangs its comment under (occurrenceBlock): the node's words as pmdoc.QuoteFinder.FindInBlock
+// reads them, without a directive line, its attributes or inline Markdown syntax, so the number of
+// the matches of its quote in that node's block that start before its mark, the count FindInBlock
+// takes. A client counts the quote in the rendered words of the node's text, never in its raw
+// Markdown, where an attribute such as a check's run can hold the quote too. The occurrences are
+// read off each document once (docs.Service.AnchorOccurrences), but each document
+// documentPositions read them off already (anchorsRead). It runs after the read's transaction has
+// closed, as documentPositions does, since a document's marks are its room's. An anchor whose
+// document no longer holds its mark inside that block answers none, as an orphaned one does: a
+// read-only page, which renders the document's Markdown without its marks, places a thread on the
+// second of two identical quotes in one node's words only by this occurrence.
 func (b *issueTreeBuilder) anchorOccurrences(s *server) error {
 	asked, held := b.anchorsByDocument()
 	for document, anchors := range asked {
@@ -969,13 +972,14 @@ func (b *issueTreeBuilder) anchorsByDocument() (asked map[string][]docs.CommentA
 	return asked, held
 }
 
-// occurrenceBlock is the block of its document whose text the read counts the occurrence of the
-// document anchor of comment over (R31): the block of the node the read hangs the comment under
-// (effective), where that node is a block of the anchor's document. That is the anchor's own block
-// where its node stands for it, and for an anchor in a paragraph of a typed block of more than one
-// paragraph, such as a requirement, a check or a decision, the typed block: no node stands for that
-// paragraph, whose comment stands under the typed block's node (keep, typedOwnText), and a client
-// places the quote in that node's text alone. Where the comment hangs under no block of the
+// occurrenceBlock is the block of its document over whose plain text, its words as
+// pmdoc.QuoteFinder.FindInBlock reads them, the read counts the occurrence of the document anchor
+// of comment (R31): the block of the node the read hangs the comment under (effective), where that
+// node is a block of the anchor's document. That is the anchor's own block where its node stands
+// for it, and for an anchor in a paragraph of a typed block of more than one paragraph, such as a
+// requirement, a check or a decision, the typed block: no node stands for that paragraph, whose
+// comment stands under the typed block's node (keep, typedOwnText), and a client places the quote
+// in the rendered words of that node's text alone. Where the comment hangs under no block of the
 // anchor's document, as a comment on a block of a role document's prose hangs under the issue, it
 // is the anchor's own block.
 func (b *issueTreeBuilder) occurrenceBlock(comment string, anchor *model.IssueTreeAnchor) string {

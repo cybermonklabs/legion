@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,19 +16,21 @@ import (
 
 // occurrenceTreeNode is what TestADocumentAnchorsOccurrenceCountsOverTheTextOfTheNodeItsCommentHangsUnder
 // reads of a node of the tree read: what c-node-anchor reads of it (nodeAnchorTreeNode) and its
-// text, in which a client places the quote of each comment that stands under it.
+// text, in whose rendered words a client places the quote of each comment that stands under it.
 type occurrenceTreeNode struct {
 	nodeAnchorTreeNode
 	Text string `json:"text"`
 }
 
 // TestADocumentAnchorsOccurrenceCountsOverTheTextOfTheNodeItsCommentHangsUnder holds the tree
-// read's occurrence of a document anchor to the text of the node the read hangs the comment under
-// (R31 of the issue-tree spec, v256), so that a client places the quote from that node's text
-// alone: the occurrence-th match of the quote in the text the read answers of that node is the
-// words the comment was written on. No node stands for a paragraph of a typed block, so a comment
-// anchored in one stands under the typed block. Each typed block below holds two paragraphs, each
-// holding limit once, written each after words of its own, which the test places the quote by:
+// read's occurrence of a document anchor to the plain text of the node the read hangs the comment
+// under (R31 of the issue-tree spec, v258): its words as pmdoc.QuoteFinder.FindInBlock reads them,
+// without a directive line or its attributes. So a client places the quote from that node's text
+// alone: the occurrence-th match of the quote in the rendered words of the text the read answers of
+// that node is the words the comment was written on. No node stands for a paragraph of a typed
+// block, so a comment anchored in one stands under the typed block. Each typed block below holds
+// two paragraphs, each holding limit once, written each after words of its own, which the test
+// places the quote by:
 //   - the requirement r1 of the spec. alice comments on the limit of its second paragraph and on
 //     that of its first, each anchored by the spec and the paragraph's block_id, and an agent
 //     comments on the second's, a thread no person wrote in, which the read adds beside the walk's
@@ -38,21 +41,25 @@ type occurrenceTreeNode struct {
 //     in its own words is one the decision's text leaves out. alice comments on the limit of its
 //     second paragraph, and on the limit of g1, a node of its own, under which that comment stands;
 //   - the check c1 of the issue's Verification document. alice comments on the limit of its second
-//     paragraph.
+//     paragraph;
+//   - the check c2 of that document, whose run attribute holds limit too, so the text the read
+//     answers of c2 holds limit in its directive line, before its words. alice comments on the
+//     limit of its second paragraph: the attribute is no word of c2, and counts for nothing.
 //
 // The issue's own fragment holds a paragraph, a node of its own, that holds limit twice, and alice
 // comments on its second limit: its occurrence is the count within its block_id, as before.
 //
 // The read with no view and each view that answers the typed block - ?view=spec for r1,
-// ?view=decisions for d1, ?view=verification for c1 - each through the route, which reads the
-// issue's head rows, and through the un-cut walk (readUncutIssueTree), the issue's mark taken away
-// for its length, answer each comment under its typed block, its anchor's block_id the paragraph
-// it was written on as stored, and its occurrence counted over that block's text: 1 for each
-// comment on a second paragraph, where the count within that paragraph answered 0, and 0 for the
-// one on r1's first. The read with no view answers the comment on g1 under g1 at occurrence 0, and
-// the comment in the fragment under its paragraph's own block at occurrence 1. In each of them the
-// occurrence-th match of limit in the text the read answers of the node the comment stands under
-// follows the words written before the limit the comment was written on.
+// ?view=decisions for d1, ?view=verification for c1 and c2 - each through the route, which reads
+// the issue's head rows, and through the un-cut walk (readUncutIssueTree), the issue's mark taken
+// away for its length, answer each comment under its typed block, its anchor's block_id the
+// paragraph it was written on as stored, and its occurrence counted over that block's words: 1 for
+// each comment on a second paragraph, where the count within that paragraph answered 0, and 0 for
+// the one on r1's first. The read with no view answers the comment on g1 under g1 at occurrence 0,
+// and the comment in the fragment under its paragraph's own block at occurrence 1. In each of them
+// the occurrence-th match of limit in the rendered words of the text the read answers of the node
+// the comment stands under - that text without its directive lines - follows the words written
+// before the limit the comment was written on.
 func TestADocumentAnchorsOccurrenceCountsOverTheTextOfTheNodeItsCommentHangsUnder(t *testing.T) {
 	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
@@ -64,16 +71,21 @@ func TestADocumentAnchorsOccurrenceCountsOverTheTextOfTheNodeItsCommentHangsUnde
 		readingWords = "The agent reads the limit as a bound."
 		probeWords   = "A check probes a limit."
 		proveWords   = "A check proves a limit."
+		boundWords   = "A check bounds a limit."
+		capWords     = "A check caps a limit."
 		noteWords    = "A note takes a limit, and a list takes a limit too."
 	)
 	key := createInteractionIssue(t, handler, "OCC", "Occurrences over a node's text",
 		"An opening paragraph.\n\n:::requirement{#r1}\n"+readWords+"\n\n"+writeWords+"\n:::\n").Key
 	commentsOnTextAgentEdits(t, handler, key,
 		"::::decision{#d1}\n"+weighWords+"\n\n"+settleWords+"\n\n:::reading{#g1}\n"+readingWords+"\n:::\n::::\n")
+	serves := "dispatch://" + key + "/spec#b-r1"
 	uploadDocument(t, handler, "/api/v1/issues/"+key, "verification.md",
-		":::check{#c1 serves=\"dispatch://"+key+"/spec#b-r1\" surface=\"cli\" run=\"go test ./...\"}\n"+probeWords+"\n\n"+proveWords+"\n:::\n")
+		":::check{#c1 serves=\""+serves+"\" surface=\"cli\" run=\"go test ./...\"}\n"+probeWords+"\n\n"+proveWords+"\n:::\n\n"+
+			":::check{#c2 serves=\""+serves+"\" surface=\"cli\" run=\"go test -run limit ./...\"}\n"+boundWords+"\n\n"+capWords+"\n:::\n")
 	spec, verification := readDecisionDocument(t, database, key, "spec"), readDecisionDocument(t, database, key, model.ArtifactSlugVerification)
-	requirement, decision, reading, check := spec.address("r1"), spec.address("d1"), spec.address("g1"), verification.address("c1")
+	requirement, decision, reading := spec.address("r1"), spec.address("d1"), spec.address("g1")
+	check, capped := verification.address("c1"), verification.address("c2")
 	// blockHolding is the id of the one block of blocks, a document's blocks by their Markdown, whose
 	// text trimmed is words.
 	blockHolding := func(blocks map[string]string, words string) string {
@@ -114,11 +126,12 @@ func TestADocumentAnchorsOccurrenceCountsOverTheTextOfTheNodeItsCommentHangsUnde
 
 	// onText is one comment anchored by a document and a block_id on a limit: what the test names it,
 	// its id, the block it was written on, the node the read hangs it under, the words that stand
-	// right before the limit it was written on, and the occurrence the read counts over that node's
-	// text.
+	// right before the limit it was written on, the occurrence the read counts over that node's
+	// words, and whether that node's text holds limit in a directive line too, before its words.
 	type onText struct {
 		name, id, block, under, before string
 		occurrence                     int
+		inAttributes                   bool
 	}
 	anchored := func(document, block string, occurrence int) map[string]any {
 		return map[string]any{"artifact": document, "block_id": block, "quote": "limit", "occurrence": occurrence}
@@ -147,6 +160,9 @@ func TestADocumentAnchorsOccurrenceCountsOverTheTextOfTheNodeItsCommentHangsUnde
 	checked := onText{name: "alice's comment on the limit of c1's second paragraph", block: blockHolding(verificationBlocks, proveWords),
 		under: check, before: "A check proves a ", occurrence: 1}
 	person(&checked, verification.id, 0)
+	cappedCheck := onText{name: "alice's comment on the limit of c2's second paragraph, after the limit of its run", block: blockHolding(verificationBlocks, capWords),
+		under: capped, before: "A check caps a ", occurrence: 1, inAttributes: true}
+	person(&cappedCheck, verification.id, 0)
 	note := onText{name: "alice's comment on the second limit of the fragment's paragraph", block: noteBlock,
 		under: anchoredBlockAddress(t, database, tree, noteBlock), before: "a list takes a ", occurrence: 1}
 	person(&note, tree, 1)
@@ -192,11 +208,32 @@ func TestADocumentAnchorsOccurrenceCountsOverTheTextOfTheNodeItsCommentHangsUnde
 		})
 		return nodesOf(what, status, body)
 	}
+	// renderedWords is text, a node's text as the read answers it, with each line that opens or
+	// closes a directive left out - its opening line with its attributes, and its closing fence - as
+	// a client that renders the text reads its words (spec v258). The test's texts hold no inline
+	// Markdown syntax, which a rendering leaves out too.
+	renderedWords := func(text string) string {
+		return strings.Join(slices.DeleteFunc(strings.Split(text, "\n"), func(line string) bool {
+			return strings.HasPrefix(strings.TrimSpace(line), ":::")
+		}), "\n")
+	}
+	// limits is where each match of limit in text starts, in text's order.
+	limits := func(text string) []int {
+		var matches []int
+		for from := 0; ; {
+			at := strings.Index(text[from:], "limit")
+			if at < 0 {
+				return matches
+			}
+			matches = append(matches, from+at)
+			from += at + 1
+		}
+	}
 	// requireOccurrence fails t unless read, which the test names what, answers comment under the
 	// node it hangs under, with its anchor's block_id the block it was written on, the quote limit,
-	// not orphaned, and the occurrence counted over that node's text; and unless the occurrence-th
-	// match of limit in the text read answers of that node follows the words written before the
-	// limit the comment was written on, where a client places the quote.
+	// not orphaned, and the occurrence counted over that node's words; and unless the occurrence-th
+	// match of limit in the rendered words of the text read answers of that node follows the words
+	// written before the limit the comment was written on, where a client places the quote.
 	requireOccurrence := func(what string, read map[string]occurrenceTreeNode, comment onText) {
 		t.Helper()
 		anchors := make(map[string]nodeAnchorTreeNode, len(read))
@@ -217,11 +254,11 @@ func TestADocumentAnchorsOccurrenceCountsOverTheTextOfTheNodeItsCommentHangsUnde
 			t.Errorf("%s answers the anchor of %s %s as %s, want the block %s it was written on, the quote limit and not orphaned",
 				what, comment.name, comment.id, encoded, comment.block)
 		case anchor.Occurrence == nil:
-			t.Errorf("%s answers the anchor of %s %s with no occurrence, want %d, counted over the text of %s",
+			t.Errorf("%s answers the anchor of %s %s with no occurrence, want %d, counted over the words of %s",
 				what, comment.name, comment.id, comment.occurrence, comment.under)
 			return
 		case *anchor.Occurrence != comment.occurrence:
-			t.Errorf("%s answers the anchor of %s %s with occurrence %d, want %d, counted over the text of %s",
+			t.Errorf("%s answers the anchor of %s %s with occurrence %d, want %d, counted over the words of %s",
 				what, comment.name, comment.id, *anchor.Occurrence, comment.occurrence, comment.under)
 		}
 		host, held := read[refs.BlockNodeKind+":"+comment.under]
@@ -229,22 +266,19 @@ func TestADocumentAnchorsOccurrenceCountsOverTheTextOfTheNodeItsCommentHangsUnde
 			t.Errorf("%s answers no node %s, which %s %s stands under", what, comment.under, comment.name, comment.id)
 			return
 		}
-		var matches []int
-		for from := 0; ; {
-			at := strings.Index(host.Text[from:], "limit")
-			if at < 0 {
-				break
-			}
-			matches = append(matches, from+at)
-			from += at + 1
+		words := renderedWords(host.Text)
+		matches := limits(words)
+		if inText := len(limits(host.Text)); comment.inAttributes && inText <= len(matches) {
+			t.Errorf("%s answers the text of %s holding limit %d times and its words %d times, want more in the text, whose directive line holds it too, else this case proves nothing: %q",
+				what, comment.under, inText, len(matches), host.Text)
 		}
 		switch occurrence := *anchor.Occurrence; {
 		case occurrence >= len(matches):
-			t.Errorf("%s answers the anchor of %s %s with occurrence %d, and the text it answers of %s holds limit %d times: %q",
-				what, comment.name, comment.id, occurrence, comment.under, len(matches), host.Text)
-		case !strings.HasSuffix(host.Text[:matches[occurrence]], comment.before):
-			t.Errorf("%s answers the anchor of %s %s with occurrence %d, which places it in the text it answers of %s at %q, want the limit after %q: %q",
-				what, comment.name, comment.id, occurrence, comment.under, host.Text[max(0, matches[occurrence]-len(comment.before)):matches[occurrence]+len("limit")],
+			t.Errorf("%s answers the anchor of %s %s with occurrence %d, and the words of the text it answers of %s hold limit %d times: %q",
+				what, comment.name, comment.id, occurrence, comment.under, len(matches), words)
+		case !strings.HasSuffix(words[:matches[occurrence]], comment.before):
+			t.Errorf("%s answers the anchor of %s %s with occurrence %d, which places it in the words of the text it answers of %s at %q, want the limit after %q: %q",
+				what, comment.name, comment.id, occurrence, comment.under, words[max(0, matches[occurrence]-len(comment.before)):matches[occurrence]+len("limit")],
 				comment.before, host.Text)
 		}
 	}
@@ -252,10 +286,10 @@ func TestADocumentAnchorsOccurrenceCountsOverTheTextOfTheNodeItsCommentHangsUnde
 		name, query string
 		comments    []onText
 	}{
-		{"read with no view", "", []onText{second, first, agent, decided, onReading, checked, note}},
+		{"read with no view", "", []onText{second, first, agent, decided, onReading, checked, cappedCheck, note}},
 		{"?view=spec read", "?view=" + graphstore.QuerySpec, []onText{second, first, agent}},
 		{"?view=decisions read", "?view=" + graphstore.QueryDecisions, []onText{decided}},
-		{"?view=verification read", "?view=" + graphstore.QueryVerification, []onText{checked}},
+		{"?view=verification read", "?view=" + graphstore.QueryVerification, []onText{checked, cappedCheck}},
 	} {
 		for what, read := range map[string]map[string]occurrenceTreeNode{
 			"the route's " + form.name:       routeRead("the route's "+form.name, form.query),
