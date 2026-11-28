@@ -188,3 +188,58 @@ func TestWakeOnSettlementOfAnEarlyHeadWakesNobody(t *testing.T) {
 		})
 	}
 }
+
+// Every review starts a Large PR lanes run whose three jobs skip on all but a trusted approval of a
+// large pull request, and a settlement whose only change is those check runs, new to the head and
+// skipped, wakes nobody, as it tells nobody (dispatch://INFRA-6293 R6), on the wake rig (LEGION-208
+// implementing, its pull request #42 at head1, its implementer released):
+//
+//   - a settlement of head1 wakes the implementer once;
+//   - with the pod back and released again after that wake, a later settlement of head1 that adds
+//     only lead, approval and the hold, each skipped, queues no start row, records no resume and
+//     queues no role message;
+//   - and a settlement of head1 after it in which build failed wakes the implementer a second
+//     time, with a task naming head1 and build, so the release did let a wake through and the
+//     skipped runs were turned away by the rule alone.
+//
+// Negative control: without the rule in wakeOnSettlement, the settlement of the skipped runs wakes
+// the implementer a second time.
+func TestASettlementThatOnlyAddsSkippedChecksWakesNobody(t *testing.T) {
+	t.Parallel()
+	rig := newWakeRig(t)
+	rig.apply("head", settlement("head1"))
+	oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, "head1")
+
+	// The pod comes back and is released again, as in TestWakeOnSettlementOfAnOldHeadWakesNobody,
+	// which says why: the wake's start runs, a release suspends the implementer after the wake's
+	// resume, and the claim is released once more. ran is that start.
+	ran := wakeStarts(t, rig.pool)
+	outboxRan(t, rig.pool)
+	seedRelease(t, rig.pool, "implementer", wakeAt.Add(time.Minute))
+	claimSuspendedBy(t, rig.pool, claim.RoleImplementer, "released")
+	told := roleMessageCount(t, rig.pool)
+
+	lanes := laterSettlement("head1", 2)
+	lanes.CheckRuns = append(lanes.CheckRuns, lanesSkipped(2)...)
+	rig.apply("lanes", lanes)
+	if starts := wakeStarts(t, rig.pool); len(starts) != 0 {
+		t.Fatalf("supervise start rows after a settlement that only adds skipped runs = %+v, want none", starts)
+	}
+	if resumes := wakeResumes(t, rig.pool); len(resumes) != 1 {
+		t.Fatalf("pod resumes after a settlement that only adds skipped runs = %v, want the first wake's alone", resumes)
+	}
+	if got := roleMessageCount(t, rig.pool); got != told {
+		t.Fatalf("a settlement that only adds skipped runs queued %d role messages, want none", got-told)
+	}
+
+	failed := laterSettlement("head1", 3, "build")
+	failed.CheckRuns = append([]record.AttemptRun{{Name: "build", ID: 5}}, lanesSkipped(2)...)
+	rig.apply("failed", failed)
+	if starts := append(ran, wakeStarts(t, rig.pool)...); len(starts) != 2 || starts[1].Role != claim.RoleImplementer ||
+		!strings.Contains(starts[1].Task, "head1") || !strings.Contains(starts[1].Task, "build") {
+		t.Fatalf("supervise start rows after build failed = %+v, want the first wake's and a second of the implementer naming head1 and build", starts)
+	}
+	if resumes := wakeResumes(t, rig.pool); len(resumes) != 2 || resumes[1] != [2]string{string(claim.RoleImplementer), pods.WakeChecks} {
+		t.Fatalf("pod resumes after build failed = %v, want the first wake's and a second %s wake of the implementer", resumes, pods.WakeChecks)
+	}
+}

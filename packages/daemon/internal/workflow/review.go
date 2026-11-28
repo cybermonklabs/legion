@@ -55,7 +55,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	// context and a context it leaves out stays as it is kept (classify.ApplySettlement,
 	// intake.PullRequestChecks.StatusesUnread).
 	candidate := settlementCandidate(fact)
-	told := settledChecks(*pr)
+	told := settledViewOf(*pr)
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {
 		e.logUnappliedSettlement(ctx, fact, *pr, candidate)
@@ -386,8 +386,25 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 // its own kind, apart from the check runs: a context that shares a check run's name is named in
 // both places.
 func settledChecks(pr record.PullRequest) string {
+	return settledViewOf(pr).line()
+}
+
+// settledView is what the CI settlement standing for a pull request's head says, in the three
+// parts settledChecks spells into its line: the head it settled on, "" while no settlement stands;
+// each check it reports with the word the line names it by; and the commit statuses it names for
+// that head, as the line names them. Each part is read from the record once, so the line and the
+// test of what a settlement adds to the one standing before it (addsOnlySkipped) read the same
+// words and cannot drift apart.
+type settledView struct {
+	head     string
+	shown    map[string]string
+	statuses string
+}
+
+// settledViewOf is the settledView of pr, each part read as settledChecks says.
+func settledViewOf(pr record.PullRequest) settledView {
 	if pr.CheckedHead == "" {
-		return ""
+		return settledView{}
 	}
 	conclusions := make(map[string]record.RunConclusion, len(pr.CheckRuns)+len(pr.Failing)+len(pr.Cancelled))
 	for _, run := range pr.CheckRuns {
@@ -410,11 +427,43 @@ func settledChecks(pr record.PullRequest) string {
 	for _, run := range pr.CheckRuns {
 		shown[run.Name] = shownAs(run, conclusions[run.Name])
 	}
-	statuses := namedStatuses(keptStatuses(pr, pr.CheckedHead))
-	if len(shown) == 0 {
-		return "CI settled at " + pr.CheckedHead + " reporting no check" + statuses
+	return settledView{head: pr.CheckedHead, shown: shown, statuses: namedStatuses(keptStatuses(pr, pr.CheckedHead))}
+}
+
+// line is the view spelled as settledChecks says: "" while no settlement stands.
+func (v settledView) line() string {
+	if v.head == "" {
+		return ""
 	}
-	return "CI settled at " + pr.CheckedHead + ": " + namedConclusions(shown) + statuses + skippedClause(shown)
+	if len(v.shown) == 0 {
+		return "CI settled at " + v.head + " reporting no check" + v.statuses
+	}
+	return "CI settled at " + v.head + ": " + namedConclusions(v.shown) + v.statuses + skippedClause(v.shown)
+}
+
+// addsOnlySkipped says whether v, the settlement now standing for the head, says nothing that
+// told, the one that stood before it applied, did not say but checks new to the head that it names
+// skipped: the two stand for the same head, each check told names keeps the word told names it by,
+// the two name the same commit statuses alike, and each check v adds is named skipped, by GitHub's
+// word or by the daemon's conclusion, the two being spelled alike (record.RunSkipped). A head's
+// first settlement, where none stood before it (told.head "") or the one that stood is another
+// head's, adds the head itself and is never this; nor is one in which a skipped run replaces a run
+// told by another word, since that check's word changed.
+func (v settledView) addsOnlySkipped(told settledView) bool {
+	if told.head == "" || v.head != told.head || v.statuses != told.statuses {
+		return false
+	}
+	for name, word := range told.shown {
+		if now, kept := v.shown[name]; !kept || now != word {
+			return false
+		}
+	}
+	for name, word := range v.shown {
+		if _, said := told.shown[name]; !said && word != string(record.RunSkipped) {
+			return false
+		}
+	}
+	return true
 }
 
 // headChecks is every check run GitHub reported on the pull request's current head with what that
@@ -544,15 +593,27 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // it are the merger's to decide, and the merger asks the implementer when it needs it
 // (cybermonklabs/legion#4979). A held issue keeps the worker of Hold.From (record.StandsAt).
 // A role named twice, the implementer holding the phase, is told once, and a phase no worker holds
-// names none (addressRoles). told is what the settlement
-// standing for the head said before this one, so a second settlement of the same head that leaves
-// the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
-// holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
-// suspended there, so the settlement is recorded and nobody is told. A parent waiting in
-// awaiting_children is told nothing either, and neither is the architect that owns it: no role
-// works the parent while it waits, and its next testing round runs the checks on its head merged
-// with the base's tip (dispatch://INFRA-3320 R11, R12), so the settlement is recorded and no
-// message goes out.
+// names none (addressRoles). told is what the settlement standing for the head said before this
+// one (settledView), so a second settlement of the same head that leaves the same conclusions
+// tells nobody again, and so does a settlement that stands for no head. Linger holds a member of a
+// closed tree where it stood (record.TreeLingers): every role of the tree is suspended there, so
+// the settlement is recorded and nobody is told. A parent waiting in awaiting_children is told
+// nothing either, and neither is the architect that owns it: no role works the parent while it
+// waits, and its next testing round runs the checks on its head merged with the base's tip
+// (dispatch://INFRA-3320 R11, R12), so the settlement is recorded and no message goes out.
+//
+// Nor is a settlement of the same head told whose only change since told is check runs new to the
+// head that it names skipped (settledView.addsOnlySkipped, dispatch://INFRA-6293 R6). Every review
+// of a pull request in cybermonklabs/legion starts a Large PR lanes run
+// (.github/workflows/large-pr-lanes.yaml), whose three jobs skip on every review but a trusted
+// approval of a large pull request: each is a check name new to the head, so the head settles
+// again, and telling it would send three roles a message at every review that says nothing new of
+// the head's CI. Such a settlement wakes no released pod either (wakeOnSettlement). It is still
+// recorded (checks), so the next one told names those checks with the rest. Each settlement is
+// weighed against the one standing before it, which after such a settlement is that one rather
+// than the one last told; the two decide alike, since the settlement not told adds skipped new
+// checks alone. A skipped run that replaces a run told by another word changes that check and is
+// told, and so is a head's first settlement, whatever it names skipped.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
@@ -563,9 +624,10 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // A holder this daemon cannot name is an error here, and with it the settlement's whole
 // transaction: the settlement moves no issue, so there is nothing kept by telling the rest, and
 // the next settlement of the head asks again.
-func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told string, woken claim.Role) error {
-	settled := settledChecks(*pr)
-	if settled == "" || settled == told {
+func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told settledView, woken claim.Role) error {
+	now := settledViewOf(*pr)
+	settled := now.line()
+	if settled == "" || settled == told.line() || now.addsOnlySkipped(told) {
 		return nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)

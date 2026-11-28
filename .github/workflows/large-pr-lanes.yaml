@@ -9,8 +9,11 @@ name: Large PR lanes
 # nothing. Every review of every pull request starts a run. Its jobs run only on an approval, of a
 # pull request that is no draft and is labelled large-pr, by a reviewer this repository trusts;
 # every other review's run is decided by the `if:`s, from the event alone, so it starts no runner
-# and leaves no check named ci-ok. large-pr-label.yaml puts the label on at every push of a large
-# pull request (.github/scripts/large-pr-lanes.sh label).
+# and leaves three skipped check runs, `lead`, `approval` and the hold named by its expression's
+# text, none named ci-ok. The Legion daemon tells no role of a settlement whose only change is
+# such new skipped runs (`packages/daemon/internal/workflow/review.go#tellChecks`).
+# large-pr-label.yaml puts the label on at every push of a large pull request and at its retarget
+# to another base (.github/scripts/large-pr-lanes.sh label).
 #
 # Who is trusted: an approval whose author_association is OWNER, MEMBER or COLLABORATOR, which is
 # this repository's owner, a member of its organization or an invited collaborator (a member's

@@ -516,7 +516,12 @@ func (e *Engine) listenerWakeInRelease(ctx context.Context, tx pgx.Tx, held supe
 // has not arrived), and checks' drop line names it (logUnappliedSettlement); and a redelivery of a
 // settlement already applied wakes nobody either, since it applies nothing (dispatch://INFRA-4135
 // R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
-// issue's pull request).
+// issue's pull request). Nor does a settlement that applies and whose only change is check runs
+// new to the head that it names skipped (settledView.addsOnlySkipped, dispatch://INFRA-6293 R6):
+// every review starts a Large PR lanes run whose jobs skip on all but a trusted approval of a large
+// pull request, checks tells no role of such a settlement (tellChecks), and a wake whose task
+// named it would be that CI message by another road, bringing a pod back for checks that ran
+// nothing.
 //
 // Only the worker of the pod's open phase is woken: the settlement is that worker's business and
 // no one else's, and an architect reads it from its own notices. A head that settles again as each
@@ -539,7 +544,8 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 		return "", err
 	}
 	if settled, applied := classify.ApplyCheckSettlement(*pr, settlementCandidate(fact)); !applied ||
-		settled.CheckedHead != fact.HeadSHA || settled.HeadSHA != fact.HeadSHA {
+		settled.CheckedHead != fact.HeadSHA || settled.HeadSHA != fact.HeadSHA ||
+		settledViewOf(settled).addsOnlySkipped(settledViewOf(*pr)) {
 		return "", nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
