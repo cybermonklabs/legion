@@ -66,14 +66,24 @@ func TestOpenFollowsTheFile(t *testing.T) {
 }
 
 // TestOpenRefusesKMSKeyID: the file the memory store replaced named each secret's KMS key; a file
-// that still does is refused naming the field and what replaces it, never quoting the file.
+// that still has the field is refused naming the field and what replaces it, never quoting the
+// file, whatever its value, null included.
+//
+// The named revert: decode the field as a pointer, and the null row's file is opened.
 func TestOpenRefusesKMSKeyID(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "memory-secrets.json")
-	writeFile(t, path, `{"secrets": [{"name": "example/agent-secrets/deel-api-key", "kms_key_id": "arn:aws:kms:us-east-1:111122223333:key/k", "tags": {}, "value": "hunter2"}]}`)
-	_, err := memory.Open(path)
-	want := path + ": kms_key_id is a field of the fake secrets file the memory store replaced; take it out (off_key: true marks a secret off the agent-secrets key)"
-	if err == nil || err.Error() != want {
-		t.Fatalf("Open = %v, want %q", err, want)
+	for _, row := range []struct{ name, value string }{
+		{"a key", `"arn:aws:kms:us-east-1:111122223333:key/k"`},
+		{"null", `null`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "memory-secrets.json")
+			writeFile(t, path, `{"secrets": [{"name": "example/agent-secrets/deel-api-key", "kms_key_id": `+row.value+`, "tags": {}, "value": "hunter2"}]}`)
+			_, err := memory.Open(path)
+			want := path + ": kms_key_id is a field of the fake secrets file the memory store replaced; take it out (off_key: true marks a secret off the agent-secrets key)"
+			if err == nil || err.Error() != want {
+				t.Fatalf("Open = %v, want %q", err, want)
+			}
+		})
 	}
 }
 

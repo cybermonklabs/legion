@@ -16,10 +16,11 @@ type file struct {
 }
 
 // fileSecret is one entry of the file: a Secret, and kms_key_id, a field of the fake secrets file
-// the memory store replaced, which the decoder reads so that parseFile can refuse it by name.
+// the memory store replaced, which the decoder reads so that parseFile can refuse it by name. It is
+// a json.RawMessage, not a pointer, so that a literal null is held too: any kms_key_id is refused.
 type fileSecret struct {
 	Secret
-	KMSKeyID *json.RawMessage `json:"kms_key_id,omitempty"`
+	KMSKeyID json.RawMessage `json:"kms_key_id,omitempty"`
 }
 
 // Open reads path, a memory secrets file, into a store that follows it: each call reads the file
@@ -63,7 +64,7 @@ func parseFile(path string, data []byte) ([]Secret, error) {
 	}
 	secrets := make([]Secret, 0, len(f.Secrets))
 	for i, s := range f.Secrets {
-		if s.KMSKeyID != nil {
+		if len(s.KMSKeyID) != 0 {
 			return nil, fmt.Errorf("%s: kms_key_id is a field of the fake secrets file the memory store replaced; take it out (off_key: true marks a secret off the agent-secrets key)", path)
 		}
 		if s.Name == "" {
