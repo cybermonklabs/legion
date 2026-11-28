@@ -352,11 +352,11 @@ export function standsAt(
  *  is the one the body asked for (`node-writes.ts`' `movedIn`), held once the parent's children
  *  that stand before it are: where the parent's children cannot go on past the loaded pages
  *  (`Walk.open`), or where `held` holds a ranked child other than `node` that the server stands
- *  after them all. Where the body's `after` was null, the place is the first of `node`'s band, and
- *  that child is one of that band or a later one. Where the body named no `after`, the place is
- *  the last of `node`'s band, and that child is one of a later band (`incomplete`, which never
- *  counts `node`, a child of its own band). Where the body named an `after`, it is held as that
- *  last place is: no next page holds that sibling then, which is gone. */
+ *  after them all: one of band `start` or a later one. Where the body's `after` was null, the
+ *  place is the first of `node`'s band, and `start` is that band. Where the body named no
+ *  `after`, the place is the last of `node`'s band, and `start` is the next band. Where the body
+ *  named an `after`, it is held as that last place is: no next page holds that sibling then,
+ *  which is gone. */
 export function holdsPlace(
   held: TreeAnswer,
   node: TreeAnswerNode,
@@ -369,10 +369,10 @@ export function holdsPlace(
   if (after === null || nodes.some((each) => names(each, after))) return true;
   const walk = walkOf(held);
   const band = bandOf(node);
-  if (body.after !== null) return !incomplete(walk, under.id, band);
+  const start = body.after === null ? band : band + 1;
   return (
     !walk.open.has(under.id) ||
-    rankedChildren(walk, under.id).some((child) => child.id !== node.id && bandOf(child) >= band)
+    rankedChildren(walk, under.id).some((child) => child.id !== node.id && bandOf(child) >= start)
   );
 }
 

@@ -166,6 +166,12 @@ function answerTreeReads(pages: readonly unknown[] = [fixture.tree.converted.per
   return { cursors };
 }
 
+/** Answers no read of the issue's tree: R7's re-read is held out, so the case reads the held read
+ *  the answers were written into. */
+function holdRereadOut(): void {
+  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+}
+
 /** The page's query client and router, over `client`, as a hook's wrapper. */
 function pageWrapper(client: QueryClient) {
   return ({ children }: { children: ReactNode }) =>
@@ -1813,7 +1819,7 @@ test("a taken move after a block whose subtree goes on to the next page stands a
     "the second page starts with no child of the criterion"
   ).toEqual({ id: UNDER_CRITERION, parent: "<criterion>" });
   // R7's re-read is held out, so the case reads the held read the answer was written into.
-  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  holdRereadOut();
   const parent = "ask/<question>";
   const patches = answerPatches({
     body: { after: "<criterion>", parent, placement_seq: "<seq:statement-3>@2" },
@@ -1853,7 +1859,7 @@ const CRITERION_SUBTREE = [
 // page with its block of the issue's own fragment, which moves with it: the whole subtree stands
 // right after the decision's reading, and no child of the criterion is left behind.
 test("a taken move of a block whose children go on to the next page takes all of them along", async () => {
-  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  holdRereadOut();
   const parent = `issue/${KEY}`;
   const patches = answerPatches({
     body: { after: "<decision>", parent, placement_seq: "<seq:criterion>@2" },
@@ -1894,7 +1900,7 @@ const commentOnText: TreeAnswer = {
 // part of the statement's subtree, so they move with it, right after the criterion's last block
 // on the second page; only the context nodes that end the first page stay where they stand.
 test("a taken move takes along the context nodes under the moved block, such as a comment on its text", async () => {
-  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  holdRereadOut();
   const parent = "ask/<question>";
   const patches = answerPatches({
     body: { after: "<criterion>", parent, placement_seq: "<seq:statement-3>@2" },
@@ -2045,7 +2051,7 @@ const headingFirst: Exchange = {
 // heading stands first in its band, right before the paragraph, after the decision's reading, and
 // not last under the issue, where a move key would be judged on an order the server never had.
 test("a taken move whose answer names a gone after is written at the place its body asked for", async () => {
-  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  holdRereadOut();
   expect(
     twoPages.nodes?.some((node) => node.id === GONE_SPEC),
     "a page holds the gone block"
@@ -2112,7 +2118,7 @@ test("a gone after under the issue reads no page past the place the body asked f
 // criterion's whole subtree stands last in its band, right before the paragraph, after the
 // decision's reading, and not last under the issue.
 test("a taken move whose body names no after and whose answer names a gone after stands last in its band", async () => {
-  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  holdRereadOut();
   const parent = `issue/${KEY}`;
   const patches = answerPatches({
     body: { after: GONE_SPEC, parent, placement_seq: "<seq:criterion>@2" },
@@ -2145,7 +2151,7 @@ const GONE_UNDER_CRITERION = "<gone-under-criterion>";
 // the criterion: right after the criterion's whole subtree, which goes on past the first page's
 // context nodes to its block of the issue's own fragment on the second page.
 test("a body after that no loaded page holds puts the node last under its parent, after its subtree on both pages", async () => {
-  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  holdRereadOut();
   const body = { after: GONE_UNDER_CRITERION, parent: "<criterion>" };
   const patches = answerPatches({
     body: { ...body, placement_seq: "<seq:tree/paragraph>@2" },

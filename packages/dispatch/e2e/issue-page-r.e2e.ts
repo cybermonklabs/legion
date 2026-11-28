@@ -669,25 +669,9 @@ test("a new row under a parent whose ranked child is gone is placed @phone", asy
     const traffic = watchApiRequests(page);
 
     await landOn(page, key, ids.criterion, "the criterion");
-    // R7's re-read is held from the placing's answer on (`holdReread`), which names the new node
-    // by the id its PATCH goes to: that PATCH waits at the node route until the hold is in place,
-    // so the hold stands before the answer comes. The route stays installed for the page's life,
-    // as `holdReread`'s does, and passes every other request of the node routes through.
-    const holding = Promise.withResolvers<{ readonly held: () => Route | undefined }>();
-    let routed = false;
-    const nodes = `/api/v1/issues/${encodeURIComponent(key)}/nodes/`;
-    await page.route(
-      (url) => url.pathname.startsWith(nodes),
-      async (route) => {
-        const request = route.request();
-        if (!routed && request.method() === "PATCH") {
-          routed = true;
-          const id = decodeURIComponent(new URL(request.url()).pathname.slice(nodes.length));
-          holding.resolve(await holdReread(page, key, id));
-        }
-        await route.continue();
-      }
-    );
+    // R7's re-read is held from the answer of the issue's first node `PATCH`: the placing's, whose
+    // node has no id the row knows before it goes.
+    const reread = await holdReread(page, key);
     const from = nodeWrites(sent).length;
     const what = "the new row under the criterion";
     const made = await newRowUnder(page, sent, TYPED.underCriterion, "the criterion");
@@ -702,7 +686,6 @@ test("a new row under a parent whose ranked child is gone is placed @phone", asy
     ).toBe(statement3);
 
     // R7's re-read is the first read of the outline from its first page after the answer.
-    const reread = await holding.promise;
     await expect
       .poll(() => reread.held() !== undefined, {
         message: "no read of the tree from its first page follows the placing",
@@ -1293,15 +1276,16 @@ function graphReadPage(request: Request, key: string): GraphRead["page"] | undef
   return searchParams.has("cursor") ? "next" : "first";
 }
 
-/** Whether `request` is a `PATCH` of node `id`'s own route of issue `key`: its move, which the
- *  reads after its answer are counted and held from. */
-function isMoveOf(request: Request, key: string, id: string): boolean {
+/** Whether `request` is a `PATCH` of node `id`'s own route of issue `key`, or of any node's of
+ *  that issue where no `id` is given: its move, which the reads after its answer are counted and
+ *  held from. */
+function isMoveOf(request: Request, key: string, id?: string): boolean {
   const nodes = `/api/v1/issues/${encodeURIComponent(key)}/nodes/`;
   const { pathname } = new URL(request.url());
   return (
     request.method() === "PATCH" &&
     pathname.startsWith(nodes) &&
-    decodeURIComponent(pathname.slice(nodes.length)) === id
+    (id === undefined || decodeURIComponent(pathname.slice(nodes.length)) === id)
   );
 }
 
@@ -1339,18 +1323,19 @@ function watchGraphReads(
 }
 
 /**
- * Holds R7's re-read of issue `key`'s Graph outline after the move of node `id`: the first read
- * of the outline from its first page (`graphReadPage`) sent after the answer of a `PATCH` of that
- * node came, which the flag is set for in the browser's own order of events, as
- * `watchGraphReads` counts. `held` answers its route once the page has sent it, undefined until
- * then, for the row to continue it. Every other request of the tree route goes through. Install
- * it before the move. The route stays installed for the page's life on purpose, as
- * `holdFirstRequest`'s does (`e2e/editor.ts` says why).
+ * Holds R7's re-read of issue `key`'s Graph outline after the move of node `id`, or after the
+ * first move of any node of the issue where no `id` is given: the first read of the outline from
+ * its first page (`graphReadPage`) sent after the answer of such a `PATCH` came, which the flag
+ * is set for in the browser's own order of events, as `watchGraphReads` counts. `held` answers
+ * its route once the page has sent it, undefined until then, for the row to continue it.
+ * Every other request of the tree route goes through. Install it before the move. The route stays
+ * installed for the page's life on purpose, as `holdFirstRequest`'s does (`e2e/editor.ts` says
+ * why).
  */
 async function holdReread(
   page: Page,
   key: string,
-  id: string
+  id?: string
 ): Promise<{ readonly held: () => Route | undefined }> {
   let answered = false;
   let held: Route | undefined;
