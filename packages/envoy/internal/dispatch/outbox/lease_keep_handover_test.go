@@ -79,7 +79,8 @@ func startKeepHandoverRow(t *testing.T, name string, kept int) *keepHandoverRow 
 	claimed := make(chan error, 1)
 	row.held = startProcessWith(t, name, rig.database, row.proxy.URL(), counter, func(client *bus.Client, deps *Deps) {
 		row.client = client
-		holders := roles.NewBuckets(client, roles.Windows{})
+		// The rig dates its registrations on roleRigNow, so held judges them on that clock too.
+		holders := roles.NewBuckets(client, roles.Windows{Now: roleRigNow})
 		deps.RoleClaims, deps.Sessions = holders, holders
 		deps.KeptLanes = gatedLanes{KeptLaneReader: client, subject: bus.KeptRoleSubject(keepHandoverRole), gate: row.gate}
 		row.keeps = claimedUnderTheKeep(deps.Publisher, func() {

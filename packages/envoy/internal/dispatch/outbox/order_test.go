@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -299,7 +300,8 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 	topicAck := make(chan error, 1)
 	publisher := reportTopicAck{Publisher: rig.client, result: topicAck}
-	stop, retryNow := stageBlockedRetry(t, wiredOutbox(t, rig.database, rig.client, publisher, rig.broker), first.ID, func() {
+	outbox := wiredOutboxJudgedBy(t, rig.database, rig.client, publisher, rig.broker, roles.Windows{Now: roleRigNow})
+	stop, retryNow := stageBlockedRetry(t, outbox, first.ID, func() {
 		awaitTopicAck(t, topicAck)
 		expireForwardAck(t, ack)
 	})

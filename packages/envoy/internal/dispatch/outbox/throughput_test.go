@@ -743,11 +743,18 @@ func runOutbox(t *testing.T, database *store.Store, client *bus.Client, broker *
 // wiredOutbox builds an outbox without running it, so a test can set its clock or wrap its publisher.
 func wiredOutbox(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) *Outbox {
 	t.Helper()
+	return wiredOutboxJudgedBy(t, database, client, publisher, broker, roles.Windows{})
+}
+
+// wiredOutboxJudgedBy is wiredOutbox whose role holders are judged by windows. A roleRig dates its
+// registrations on roleRigNow, so a row on one passes roles.Windows{Now: roleRigNow}.
+func wiredOutboxJudgedBy(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker, windows roles.Windows) *Outbox {
+	t.Helper()
 	pool, err := database.Pool.Outbox()
 	if err != nil {
 		t.Fatalf("open the outbox's pool: %v", err)
 	}
-	holders := roles.NewBuckets(client, roles.Windows{})
+	holders := roles.NewBuckets(client, windows)
 	return New(Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
 		RoleClaims: holders, Sessions: holders})
 }
