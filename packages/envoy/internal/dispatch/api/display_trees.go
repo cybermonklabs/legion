@@ -521,21 +521,16 @@ type graphNodeRead struct {
 // stood in at the pinned version, so the tree is the one the block's document draws for it, or,
 // where the read does not learn those blocks, from a typed block's closing fence, as the coverage
 // and the results reads learn it (documentBlockPrefix). The footnotes are read from the texts as
-// stored, which call the same labels. Every other node's texts are registered as they stand.
+// stored, which call the same labels. Every other node's prefixes are empty (readGraphPrefixes),
+// and withoutPrefix answers a text with no prefix as it stands, so its texts are registered as
+// they stand.
 func (n *graphNodeRead) shape(reader *displayTreeReader, footnotes graphFootnotes, prefixes graphPrefixes) {
-	_, ofDocument := graphDocumentBlock(n.GraphNode, "")
-	drawn := func(text, prefix string) string {
-		if ofDocument {
-			return withoutPrefix(text, prefix)
-		}
-		return text
-	}
 	n.Pin = nil
 	if pin := n.GraphNode.Pin; pin != nil {
 		n.Pin = &blockPinRead{BlockPin: *pin}
-		registerBlockTree(reader, &n.Pin.TextTree, drawn(pin.Text, prefixes.pin), footnotes.pin)
+		registerBlockTree(reader, &n.Pin.TextTree, withoutPrefix(pin.Text, prefixes.pin), footnotes.pin)
 	}
-	registerBlockTree(reader, &n.TextTree, drawn(n.GraphNode.Text, prefixes.node), footnotes.node)
+	registerBlockTree(reader, &n.TextTree, withoutPrefix(n.GraphNode.Text, prefixes.node), footnotes.node)
 }
 
 // graphExcerptRead is the excerpt an edge shows, with the tree of its text. Every excerpt that

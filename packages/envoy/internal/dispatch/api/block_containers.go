@@ -389,22 +389,22 @@ func withoutPrefix(whole, prefix string) string {
 	written.Grow(len(whole))
 	written.WriteString(whole[:len(first)+1])
 	for line := range strings.Lines(rest) {
-		_, on := carriedSegments(prefix, line)
-		written.WriteString(line[on:])
+		written.WriteString(line[carriedSegments(prefix, line):])
 	}
 	return written.String()
 }
 
-// carriedSegments walks prefix, a run of spaces and `>`, and line from their starts, segment by
-// segment as withoutPrefix takes them off, while line carries each segment of prefix: a `>` where
+// carriedSegments is how many bytes of line the segments of prefix that it carries span, where
+// prefix is a run of spaces and `>`: prefix and line are walked from their starts, segment by
+// segment as withoutPrefix takes them off, while line carries each segment of prefix, a `>` where
 // prefix has one, taken with the one space after it in each where it has one, and at least as
-// many spaces as a run of prefix holds, of which that many are taken. at is how many bytes of
-// prefix line carries, and on how many bytes of line those segments span.
-func carriedSegments(prefix, line string) (at, on int) {
+// many spaces as a run of prefix holds, of which that many are taken.
+func carriedSegments(prefix, line string) int {
+	at, on := 0, 0
 	for at < len(prefix) {
 		if prefix[at] == '>' {
 			if on == len(line) || line[on] != '>' {
-				return at, on
+				return on
 			}
 			at, on = at+1, on+1
 			if at < len(prefix) && prefix[at] == ' ' {
@@ -417,11 +417,11 @@ func carriedSegments(prefix, line string) (at, on int) {
 		}
 		spaces := spacesAt(prefix, at)
 		if spacesAt(line, on) < spaces {
-			return at, on
+			return on
 		}
 		at, on = at+spaces, on+spaces
 	}
-	return at, on
+	return on
 }
 
 // spacesAt is how many spaces text holds from at on.
