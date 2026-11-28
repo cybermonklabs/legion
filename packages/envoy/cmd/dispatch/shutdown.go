@@ -59,16 +59,19 @@ const silentProbes = 3
 const drainPollInterval = 250 * time.Millisecond
 
 // outboxStopBudget is how long after shutdown starts it waits, at most, for the events outbox to
-// stop before it closes the pool: until the document service's budget would end, 5 s inside
-// stopGrace. The outbox stops with the process context, which is cancelled before shutdown
-// starts, once it has recorded its batch in flight and released the publisher hold, each a
-// statement bounded by the outbox's own record timeout, so it is done well inside the budget
-// unless its database has stopped answering.
+// stop before it closes the pool: until the latest the document service's budget can end, 5 s
+// inside stopGrace, since the drain before that budget is never longer than
+// httpDrainBeforeDocuments (resolveBootConfig refuses a longer DISPATCH_TEST_HTTP_DRAIN). The
+// outbox stops with the process context, which is cancelled before shutdown starts, once it has
+// recorded its batch in flight and released the publisher hold, each a statement bounded by the
+// outbox's own record timeout, so it is done well inside the budget unless its database has
+// stopped answering.
 const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 
-// serveUntilStopped serves on listener until ctx ends, then stops Dispatch (shutdown), deregistering
-// it once HTTP has drained. It logs the address listener is bound to, whether main bound it or
-// inherited it (DISPATCH_LISTEN_FD), so the line names the port a kernel chose. Two things end
+// serveUntilStopped serves on listener until ctx ends, then stops Dispatch (shutdown, with
+// httpDrain as its drain before the document service), deregistering it once HTTP has drained. It
+// logs the address listener is bound to, whether main bound it or inherited it
+// (DISPATCH_LISTEN_FD), so the line names the port a kernel chose. Two things end
 // serving before the signal does, each logged at ERROR and returned once shutdown has run, so main
 // exits 1 and a supervisor never reads either as a clean stop: serving failed, or the registry
 // refused to count this process as live again beside a live process whose signing keys it does not
@@ -76,7 +79,7 @@ const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 // makes: the listener closes at once, the requests in flight are answered, the intakes stop, and
 // the registry's row is deleted.
 func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *http.Server, listener net.Listener,
-	documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), lost <-chan error, outboxStopped <-chan struct{}) error {
+	documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), lost <-chan error, outboxStopped <-chan struct{}, httpDrain time.Duration) error {
 	serveErr := make(chan error, 1)
 	go func() {
 		slog.Info("dispatch: listening", "addr", listener.Addr().String())
@@ -94,7 +97,7 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 		cancel()
 	}
 	slog.Info("dispatch: shutting down")
-	shutdown(clock.Real(), server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped)
+	shutdown(clock.Real(), server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped, httpDrain)
 	select {
 	case err := <-serveErr:
 		return err
@@ -106,9 +109,11 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // shutdown stops Dispatch once its process context is cancelled. HTTP drains the requests in flight
 // first, with no deadline of its own: a message send among them finishes, bounded by the listener
 // client's receipt timeout. The document service settles the documents owed within
-// documentShutdownTimeout once those requests are done, or httpDrainBeforeDocuments after the
-// signal with some still running. waitBackground then waits for the delivery hub, every live socket
-// and the subscriptions they ran to finish their Lifetime-driven shutdown, and waitIntakes for the
+// documentShutdownTimeout once those requests are done, or httpDrain after the signal with some
+// still running: httpDrainBeforeDocuments in a deployment, and no longer in a test process
+// (bootConfig.HTTPDrain, which resolveBootConfig refuses past httpDrainBeforeDocuments).
+// waitBackground then waits for the delivery hub, every live socket and the subscriptions they ran
+// to finish their Lifetime-driven shutdown, and waitIntakes for the
 // intakes to finish their stop (the GitHub intakes' delivery.StartIntakes stop and the Legion state
 // intake's legion.StartIntake stop, both held durables), which began at the signal beside the HTTP
 // drain and document shutdown. A message in its handler finishes and is acknowledged, or is
@@ -140,11 +145,11 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // that has stopped answering (silentProbes) holds its connections forever, so Dispatch exits
 // without them, and the database rolls back whatever they held open; it deregisters nothing then,
 // since the delete would wait on that database too, and its row's heartbeat stops with the process
-// instead. The HTTP drain's share, the document service's timeout and the wait for the outbox run
-// on c, the wall clock in production (serveUntilStopped), so a test moves a fake clock through them
-// (TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget); the health probes and the pauses
-// between them (waitUntilIdle, closePool) run on the wall clock.
-func shutdown(c clock.Clock, server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), outboxStopped <-chan struct{}) {
+// instead. The HTTP drain's share (httpDrain), the document service's timeout and the wait for
+// the outbox run on c, the wall clock in production (serveUntilStopped), so a test moves a fake
+// clock through them (TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget); the health probes
+// and the pauses between them (waitUntilIdle, closePool) run on the wall clock.
+func shutdown(c clock.Clock, server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), outboxStopped <-chan struct{}, httpDrain time.Duration) {
 	started := c.Now()
 	drained := make(chan struct{})
 	go func() {
@@ -155,7 +160,7 @@ func shutdown(c clock.Clock, server *http.Server, documentService *docs.Service,
 	}()
 	select {
 	case <-drained:
-	case <-c.After(httpDrainBeforeDocuments):
+	case <-c.After(httpDrain):
 		slog.Warn("dispatch: settle documents with requests still in flight")
 	}
 	documentCtx, cancelDocuments := c.WithTimeout(context.Background(), documentShutdownTimeout)

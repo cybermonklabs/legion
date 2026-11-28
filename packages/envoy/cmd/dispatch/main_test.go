@@ -46,7 +46,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
-	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -790,6 +789,7 @@ func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *t
 // Unset, DISPATCH_SERVER_URL's origin is the only one. An entry with a path, and one with another
 // scheme, each refuse the start naming it.
 func TestDispatchReadsItsProofOrigins(t *testing.T) {
+	t.Parallel()
 	const (
 		public    = "https://dispatch.example"
 		inCluster = "http://dispatch.internal.example:8766"
@@ -1744,6 +1744,7 @@ func dispatchCopyRefusal() error {
 // memoryTestServeEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test
 // is what holds the refusal.
 func TestAProcessStartedAsTheServerStartsNoCopy(t *testing.T) {
+	// Not parallel: it sets environment variables for the whole process.
 	fixtureenv.Unset(t, memoryTestServeEnv)
 	if err := dispatchCopyRefusal(); err != nil {
 		t.Fatalf("with %s unset: %v, want no refusal", memoryTestServeEnv, err)
@@ -2548,16 +2549,24 @@ const (
 	keywordFillDeferredLine = `msg="dispatch: the keyword fill is deferred; this process fills no keyword table" setting=DISPATCH_SEARCH_FILL value=off`
 )
 
+// quickProcessHeartbeat is the registry pace (DISPATCH_TEST_PROCESS_HEARTBEAT) of a test process
+// that waits for the registry to admit or refuse it, in place of production's five seconds: the
+// live window stays three beats of it (cmd/dispatch/main.go), so a refused process waits four
+// seconds for its refuser to lapse where a deployment's waits twenty, and a killed process's row
+// lapses three seconds after its last beat where a deployment's lapses fifteen. A test at this
+// pace waits no production period out, and the order of the registry's steps is the same at
+// either pace.
+const quickProcessHeartbeat = time.Second
+
 // A process that the registry of live server processes refuses writes no keyword version. A live
 // peer does not share the signing keys of the process, so the process waits for admission
-// (processes.Register: until a live window and a heartbeat after its first refusal), serves
-// nothing and exits 1. Its keyword fill starts only after the registry admits it: the pause of the
-// fill reads the answers reads that this process serves, and a process that is not admitted serves
-// none. So for the whole wait, and after the exit, the fill has no hold, no row and no cursor,
-// although 200 events wait for their rows.
+// (processes.Register: until a live window and a heartbeat after its first refusal, at
+// quickProcessHeartbeat's pace), serves nothing and exits 1. Its keyword fill starts only after
+// the registry admits it: the pause of the fill reads the answers reads that this process serves,
+// and a process that is not admitted serves none. So for the whole wait, and after the exit, the
+// fill has no hold, no row and no cursor, although 200 events wait for their rows.
 func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (the boot's wait of
-	// LiveWindow + HeartbeatInterval + 30 s past the refusing row).
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	writeKeywordFillComments(t, database, 200)
@@ -2572,32 +2581,44 @@ func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
 		t.Fatalf("add a live peer that does not share the keys of the process: %v", err)
 	}
 
-	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{SigningKey: "a-key-the-peer-does-not-share"})
-	process.waitForLog(t, 30*time.Second, "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse")
-	refused := time.Now()
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{
+		SigningKey: "a-key-the-peer-does-not-share",
+		Env:        map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": quickProcessHeartbeat.String()},
+	})
+	process.waitForLog(t, 30*time.Second, registryRefusalLine)
+	observed := time.Now()
+	// The process's live window and its whole wait (processes.Register), at its own pace.
+	liveWindow := 3 * quickProcessHeartbeat
+	wait := liveWindow + quickProcessHeartbeat
 	// The test reads the database every 250 ms until the process exits, so it sees each moment of
 	// the wait in which a fill could take the hold and write.
-	stillRunning := refused.Add(processes.LiveWindow + processes.HeartbeatInterval + 30*time.Second)
+	stillRunning := observed.Add(wait + 30*time.Second)
 	for waiting := true; waiting; {
-		requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v into the wait for admission", time.Since(refused).Round(time.Millisecond)))
+		requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v into the wait for admission", time.Since(observed).Round(time.Millisecond)))
 		select {
 		case <-process.Exited:
 			waiting = false
 		case <-time.After(250 * time.Millisecond):
 			if time.Now().After(stillRunning) {
-				t.Fatalf("the refused process still runs %v after its first refusal:\n%s", time.Since(refused).Round(time.Millisecond), process.Output.String())
+				t.Fatalf("the refused process still runs %v after the test read its first refusal:\n%s", time.Since(observed).Round(time.Millisecond), process.Output.String())
 			}
 		}
 	}
-	if waited := time.Since(refused); waited < processes.LiveWindow {
-		t.Fatalf("the refused process exited %v after its first refusal; the test needs the whole wait of %v:\n%s",
-			waited.Round(time.Millisecond), processes.LiveWindow+processes.HeartbeatInterval, process.Output.String())
-	}
-
-	if code := process.Cmd.ProcessState.ExitCode(); code != 1 ||
-		!process.logged(`msg="dispatch: register this server process"`, "signing key set does not match a live server process") {
+	gaveUpLine := []string{`msg="dispatch: register this server process"`, "signing key set does not match a live server process"}
+	if code := process.Cmd.ProcessState.ExitCode(); code != 1 || !process.logged(gaveUpLine...) {
 		t.Fatalf("the refused process exited %d; want 1, with the refusal of the registry logged:\n%s", code, process.Output.String())
 	}
+	// How long the process waited, by its own clock: the moment it logged its first refusal and
+	// the moment it logged the refusal it gave up on. The test's own reads of the output are a
+	// hang guard above and no part of this reading, since a loaded runner stretches them either
+	// way: late, a whole wait would read as a short one, and a stalled read would let an exit
+	// after one heartbeat read as a whole wait.
+	gaveUpAt := process.loggedAt(t, gaveUpLine...)
+	if waited := gaveUpAt.Sub(process.loggedAt(t, registryRefusalLine)); waited < liveWindow {
+		t.Fatalf("the refused process gave up %v after its first refusal; the wait is a live window and a heartbeat, %v, and the test needs at least the window, %v:\n%s",
+			waited.Round(time.Millisecond), wait, liveWindow, process.Output.String())
+	}
+
 	requireNoKeywordFillWrite(t, database, "after the refused process exited")
 	for _, line := range []string{keywordFillTookLine, keywordFillStandbyLine} {
 		if process.logged(line) {
@@ -2756,7 +2777,7 @@ func TestTheKeywordFillDeferralSaysWhetherEachTableHoldsARow(t *testing.T) {
 				t.Fatalf("%s: %s: %v", step.name, statement, err)
 			}
 		}
-		if got := deferralFields(searchFillTableRows(ctx, database.Pool, clock.Real(), searchFillTableReadTimeout)); got != step.want {
+		if got := deferralFields(searchFillTableRows(ctx, database.Pool, clock.Real(), searchFillBounds(0))); got != step.want {
 			t.Errorf("%s: the deferral's fields are\n  %s\nwant\n  %s", step.name, got, step.want)
 		}
 	}
@@ -2787,6 +2808,25 @@ func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) 
 	}
 }
 
+// quickSearchFillLockTimeout is the lock timeout of the keyword fill's deferral reads in the two
+// rows below (DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT), in place of a deployment's five seconds: each
+// row waits a lock or a statement out three times, in the test's own reads and in the boot, and the
+// bounds' margins are a deployment's at either length (searchFillBounds), which is what each row
+// is about. quickSearchFill is the bounds the test's own reads take.
+const quickSearchFillLockTimeout = 500 * time.Millisecond
+
+var quickSearchFill = searchFillBounds(quickSearchFillLockTimeout)
+
+// quickSearchFillEnv is the environment of a process booted with the keyword fill off and
+// quickSearchFill's lock and statement timeouts, with the client's deadline on each read of its
+// deferral line staged past the run (DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT), so only Postgres's own
+// timeouts end those reads however slowly a loaded machine dials.
+var quickSearchFillEnv = map[string]string{
+	"DISPATCH_SEARCH_FILL":                   "off",
+	"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": quickSearchFillLockTimeout.String(),
+	"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": stagedPastTheRun.String(),
+}
+
 // A lock on a table the keyword fill writes ends the read at the server, and the boot goes on.
 // Another connection holds ACCESS EXCLUSIVE on search_text_versions_fill in a transaction it keeps
 // open for the whole test. searchFillTableRows then gives the cursor's table unknown with
@@ -2795,8 +2835,9 @@ func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) 
 // returned, no backend of the database waits for a lock on the cursor's table, though the lock is
 // still held. A process booted with DISPATCH_SEARCH_FILL=off under the same lock logs the same
 // fields once, then serves: it answers its health check and the registry of live server processes
-// admits it, and still no backend waits for the lock. The client's deadline of each read here is
-// on a fake clock the row never moves, and the process's is staged past the run
+// admits it, and still no backend waits for the lock. Every read here, the process's included,
+// runs at quickSearchFill's lock and statement timeouts. The client's deadline of each read here
+// is on a fake clock the row never moves, and the process's is staged past the run
 // (DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT), so only Postgres's own timeout can end a read.
 func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testing.T) {
 	t.Parallel()
@@ -2812,13 +2853,13 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 	}
 	const fields = `search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error=ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)`
 
-	if got := deferralFields(searchFillTableRows(testwait.Context(t), database.Pool, clocktest.New(time.Now()), searchFillTableReadTimeout)); got != fields {
+	if got := deferralFields(searchFillTableRows(testwait.Context(t), database.Pool, clocktest.New(time.Now()), quickSearchFill)); got != fields {
 		t.Errorf("under the lock, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
 	}
-	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "55P03", "lock timeout")
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "55P03", "lock timeout", quickSearchFill)
 	requireNoKeywordFillCursorLockWait(t, database, "after the reads returned")
 
-	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: searchFillOffStagedEnv()})
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: quickSearchFillEnv})
 	process.waitHealthy(t)
 	awaitRegistryAdmission(t, database, process)
 	want := keywordFillDeferredLine + ` search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error="ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)"`
@@ -2835,7 +2876,8 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 // and a read of that table alone ends with 57014 under a statement timeout shorter than the
 // client's deadline. A process booted with DISPATCH_SEARCH_FILL=off on that database logs the same
 // fields once, then serves: it answers its health check and the registry of live server processes
-// admits it. The client's deadline of each read here is on a fake clock the row never moves, and
+// admits it. Every read here, the process's included, runs at quickSearchFill's lock and statement
+// timeouts. The client's deadline of each read here is on a fake clock the row never moves, and
 // the process's is staged past the run (DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT), so only
 // Postgres's own timeout can end a read.
 func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) {
@@ -2851,12 +2893,12 @@ func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) 
 		}
 	}
 	const fields = `search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error=ERROR: canceling statement due to statement timeout (SQLSTATE 57014)`
-	if got := deferralFields(searchFillTableRows(testwait.Context(t), database.Pool, clocktest.New(time.Now()), searchFillTableReadTimeout)); got != fields {
+	if got := deferralFields(searchFillTableRows(testwait.Context(t), database.Pool, clocktest.New(time.Now()), quickSearchFill)); got != fields {
 		t.Errorf("with a read that runs on, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
 	}
-	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "57014", "statement timeout")
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "57014", "statement timeout", quickSearchFill)
 
-	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: searchFillOffStagedEnv()})
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: quickSearchFillEnv})
 	process.waitHealthy(t)
 	awaitRegistryAdmission(t, database, process)
 	want := keywordFillDeferredLine + ` search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error="ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"`
@@ -2865,36 +2907,28 @@ func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) 
 	}
 }
 
-// searchFillOffStagedEnv is the environment of a process the two rows above boot with the keyword
-// fill off: DISPATCH_SEARCH_FILL=off, and the client's deadline on each read of its deferral line
-// staged past the run (DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT), so only Postgres's own timeouts
-// end those reads however slowly a loaded machine dials.
-func searchFillOffStagedEnv() map[string]string {
-	return map[string]string{"DISPATCH_SEARCH_FILL": "off", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": stagedPastTheRun.String()}
-}
-
-// requireTheServerEndsTheRead reads table alone, as searchFillTableRows reads each table, on a
-// store of the database's own that traces the read (readBounds), and fails the test unless
+// requireTheServerEndsTheRead reads table alone at bounds, as searchFillTableRows reads each table,
+// on a store of the database's own that traces the read (readBounds), and fails the test unless
 // Postgres itself ends the read. The client's deadline is on a fake clock the row never moves, so
 // nothing but the server or the shared wait's end (testwait.Context) can end the read here; two
-// facts say that the server's bound comes first in production too. The setting of that timeout
-// (lock_timeout, statement_timeout) the read runs under, read in the read's own session as the
-// read begins, is set and shorter than the client's deadline (searchFillTableReadTimeout). And the
-// read ends with an error of the SQLSTATE code whose message cancels the statement due to that
-// timeout (lock timeout, statement timeout): a cancel from the client is one Postgres reports as
-// due to user request, or the context's own error, and fails it.
-func requireTheServerEndsTheRead(t *testing.T, database *store.Store, table, code, timeout string) {
+// facts say that the server's bound comes first wherever the client's deadline runs. The setting of
+// that timeout (lock_timeout, statement_timeout) the read runs under, read in the read's own session
+// as the read begins, is set and shorter than bounds' client deadline. And the read ends with an
+// error of the SQLSTATE code whose message cancels the statement due to that timeout (lock timeout,
+// statement timeout): a cancel from the client is one Postgres reports as due to user request, or
+// the context's own error, and fails it.
+func requireTheServerEndsTheRead(t *testing.T, database *store.Store, table, code, timeout string, bounds searchFillReadBounds) {
 	t.Helper()
-	bounds := &readBounds{read: "select exists(select 1 from public." + table + ")", setting: strings.ReplaceAll(timeout, " ", "_")}
-	_, err := searchFillTableHoldsRow(testwait.Context(t), storetest.TracedStore(t, database, bounds).Pool, clocktest.New(time.Now()), searchFillTableReadTimeout, table)
+	traced := &readBounds{read: "select exists(select 1 from public." + table + ")", setting: strings.ReplaceAll(timeout, " ", "_")}
+	_, err := searchFillTableHoldsRow(testwait.Context(t), storetest.TracedStore(t, database, traced).Pool, clocktest.New(time.Now()), table, bounds)
 	switch {
-	case !bounds.seen:
-		t.Errorf("the read of %s never sent %q; want the read searchFillTableHoldsRow sends", table, bounds.read)
-	case bounds.err != nil:
-		t.Errorf("read %s in the session of the read of %s: %v", bounds.setting, table, bounds.err)
-	case bounds.bound <= 0 || bounds.bound >= searchFillTableReadTimeout:
+	case !traced.seen:
+		t.Errorf("the read of %s never sent %q; want the read searchFillTableHoldsRow sends", table, traced.read)
+	case traced.err != nil:
+		t.Errorf("read %s in the session of the read of %s: %v", traced.setting, table, traced.err)
+	case traced.bound <= 0 || traced.bound >= bounds.client:
 		t.Errorf("the read of %s ran under %s = %q; want a bound above 0 and shorter than the client's deadline, %v, so that the server ends the read first",
-			table, bounds.setting, bounds.value, searchFillTableReadTimeout)
+			table, traced.setting, traced.value, bounds.client)
 	}
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != code || !strings.Contains(pgErr.Message, "due to "+timeout) {

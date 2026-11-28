@@ -14,6 +14,7 @@ import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
 import { DispatchNoRouteError } from "../dispatch-http";
+import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // `dispatch steps --issue <KEY>`: the tasks of an issue and the steps that ran on it, as Dispatch's
 // `GET /api/v1/issues/{key}/steps` answers them: one header line; where the records of the
@@ -848,10 +849,14 @@ describe("dispatch steps on the command line", () => {
   // never reads as an issue Legion never ran.
   test("a key Dispatch does not hold fails as dispatch read fails for it, and prints no steps", async () => {
     /** What each command prints and exits with against a Dispatch answering every request as it
-     *  answers a read of an issue it does not hold, and the paths the command read. */
+     *  answers a read of an issue it does not hold, and the paths the command read. Whoami, which
+     *  every read command reads first, answers as a token with no cut (`whoami-stand-in.ts`). */
     async function runUnknown(argv: readonly string[]) {
       const server = dispatchServing({
-        handler: () => Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 }),
+        handler: (call) =>
+          asksWhoami(call.url.pathname)
+            ? Response.json(WHOAMI_NO_CUT)
+            : Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 }),
       });
       const { code, stdout } = await run(server, argv);
       return { code, stdout, reads: server.reads.map((url) => url.pathname) };

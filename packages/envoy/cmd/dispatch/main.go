@@ -109,8 +109,12 @@ type bootConfig struct {
 	// conversation is started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	EnvoyURL        string
-	GitHubAPIBase   string
+	// SpecRoots is DISPATCH_SPEC_ROOTS: the issue keys of the roots of The Spec, separated by
+	// commas (specRootsSetting), which main builds the form of The Spec from (api.NewSpecForm).
+	// Empty names no root.
+	SpecRoots     string
+	EnvoyURL      string
+	GitHubAPIBase string
 	// ReviewerAppID is DISPATCH_REVIEWER_APP_ID, the id of the App whose `tester` and `architect`
 	// check runs are Legion's verdicts, as the text of the number GitHub's own objects carry it
 	// as. Empty means the CI reconcile pass records no verdict check at all.
@@ -198,11 +202,25 @@ type bootConfig struct {
 	// and a heartbeat for a refusal to stand.
 	ProcessHeartbeat time.Duration
 	// SearchFillReadTimeout is the client's own deadline on each read of the keyword fill's
-	// deferral line (searchFillTableHoldsRow), zero for searchFillTableReadTimeout's ten seconds;
-	// only DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT, under the test hooks, sets it, so an end-to-end
-	// test can stage it past its run and leave each read to Postgres's own timeouts, however slowly
-	// a loaded machine dials.
+	// deferral line (searchFillTableHoldsRow), zero for the one searchFillBounds gives, four seconds
+	// past the statement timeout; only DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT, under the test hooks,
+	// sets it, so an end-to-end test can stage it past its run and leave each read to Postgres's own
+	// timeouts, however slowly a loaded machine dials. resolveBootConfig refuses one that is not
+	// past the statement timeout, so no setting orders the client's deadline before Postgres's.
 	SearchFillReadTimeout time.Duration
+	// SearchFillLockTimeout is the lock timeout of each read the keyword fill's deferral line makes
+	// at boot (searchFillTableRows), zero for searchFillTableLockTimeout's five seconds; the
+	// statement timeout and the client's deadline keep their margins past it (searchFillBounds).
+	// Only DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT, under the test hooks, sets it, since a test whose
+	// boot meets a locked or a slow table waits each bound out; resolveBootConfig refuses one below
+	// searchFillTableLockTimeoutFloor.
+	SearchFillLockTimeout time.Duration
+	// HTTPDrain is how long shutdown waits for the requests in flight before the document service
+	// settles the documents owed with requests still running, zero for httpDrainBeforeDocuments'
+	// eleven seconds; only DISPATCH_TEST_HTTP_DRAIN, under the test hooks, sets it, since a test
+	// whose request holds the drain waits all of it out; resolveBootConfig refuses one longer than
+	// httpDrainBeforeDocuments (outboxStopBudget).
+	HTTPDrain time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
@@ -590,13 +608,16 @@ func main() {
 		ServerURL:   serverURL,
 		BuildCommit: buildCommit,
 	})
+	// The restoration below schedules settlements, whose version writes carry approvals, before
+	// the API is built: the form of The Spec is built first, and sets its gate on the service, so
+	// no carry passes it (api.NewSpecForm). The API judges with this same form.
+	specForm, err := api.NewSpecForm(boot.SpecRoots, serverURL, documentService)
+	if err != nil {
+		slog.Error("dispatch: read the roots of The Spec", "error", err)
+		os.Exit(1)
+	}
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
-	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
-	// interval below. It appends events and takes no copy lock, so it runs after
-	// restoreDecidedWordings, which takes the copy lock (see below).
-	issueAskRepairDeps := api.Deps{Store: database, Docs: documentService, Events: broker}
-	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
 	renameRepositories(ctx, database.Pool, renamePairs, renamesErr, repoRenamePassTimeout)
 
@@ -656,6 +677,7 @@ func main() {
 		Store:          database,
 		ServerURL:      serverURL,
 		Docs:           documentService,
+		SpecForm:       &specForm,
 		Embedder:       embedder,
 		Events:         broker,
 		Renames:        renames,
@@ -787,9 +809,9 @@ func main() {
 	//     (runRateReading: the own calls it reports are this process's, and its lines name the
 	//     process).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
-	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and
-	//     renameRepositories above, and the embedding coverage pass (two processes' passes at
-	//     once leave what one leaves).
+	//     retirePlainRefreshTokens, restoreDecidedWordings and renameRepositories above,
+	//     repairIssueAsks after the parent status fix below, and the embedding coverage pass (two
+	//     processes' passes at once leave what one leaves).
 	leaseCallers, err := database.Pool.Leases()
 	if err != nil {
 		slog.Error("dispatch: open the lease pool for the maintenance loops", "error", err)
@@ -922,6 +944,13 @@ func main() {
 		slog.Error("dispatch: build app context", "error", err)
 		os.Exit(1)
 	}
+	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
+	// interval below. The pass restores an approval request as a reopen does, so it runs on the
+	// API's own dependencies (appCtx.APIDeps), which the routes run on, and never on a set built
+	// here beside them that could leave a field out. It appends events and takes no copy lock, so
+	// it runs after restoreDecidedWordings, which takes the copy lock (see above), and after the
+	// parent status fix, before which nothing writes.
+	repairIssueAsks(ctx, appCtx.APIDeps(), issueAskRepairBootTimeout)
 
 	// The outbox runs only with NATS, so a process with NATS disabled never publishes
 	// (outboxPublisher stays nil, and /healthz reports outbox_publisher false). outboxStopped is
@@ -1146,7 +1175,7 @@ func main() {
 	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
-	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
+	go api.RunIssueAskRepair(ctx, appCtx.APIDeps(), issueAskRepairLeases)
 
 	// Each of the four loops below that reads GitHub under a lease records its newest attempt in
 	// the record of GitHub reads (githubreads, store.GitHubReadAttempts) when its pass ends, and
@@ -1360,12 +1389,12 @@ func main() {
 	fillStopped := make(chan struct{})
 	if boot.SearchFillOff {
 		close(fillStopped)
-		readTimeout := searchFillTableReadTimeout
+		bounds := searchFillBounds(boot.SearchFillLockTimeout)
 		if boot.SearchFillReadTimeout > 0 {
-			readTimeout = boot.SearchFillReadTimeout
+			bounds.client = boot.SearchFillReadTimeout
 		}
 		slog.Info(searchFillDeferredLine, append([]any{"setting", "DISPATCH_SEARCH_FILL", "value", "off"},
-			searchFillTableRows(ctx, database.Pool, clock.Real(), readTimeout)...)...)
+			searchFillTableRows(ctx, database.Pool, clock.Real(), bounds)...)...)
 	} else {
 		go func() {
 			defer close(fillStopped)
@@ -1487,8 +1516,12 @@ func main() {
 		appCtx.Architecture().Close()
 		waitFill()
 	}
+	httpDrain := httpDrainBeforeDocuments
+	if boot.HTTPDrain > 0 {
+		httpDrain = boot.HTTPDrain
+	}
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
-		deregisterAfterDrain(registration), registration.Lost(), outboxStopped); err != nil {
+		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
 	}
@@ -1683,6 +1716,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		ProjectOwnerFallback:  strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
+		SpecRoots:             specRootsSetting(env),
 		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
 		SignInIssuer:          strings.TrimSpace(env.get("DISPATCH_SIGNIN_ISSUER")),
 		SignInClientID:        strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_ID")),
@@ -1778,11 +1812,25 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", &boot.SearchFillLockTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT", &boot.SearchFillReadTimeout},
+		{"DISPATCH_TEST_HTTP_DRAIN", &boot.HTTPDrain},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	if lock := boot.SearchFillLockTimeout; lock > 0 && lock < searchFillTableLockTimeoutFloor {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT=%q (expected at least %s: the reads send their lock timeout to Postgres in whole milliseconds, and Postgres reads 0ms as no lock timeout)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT")), searchFillTableLockTimeoutFloor)
+	}
+	if read, statement := boot.SearchFillReadTimeout, searchFillBounds(boot.SearchFillLockTimeout).statement; read > 0 && read <= statement {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=%q (expected longer than %s, the reads' statement timeout, so that Postgres's own timeouts still end a read before the client's deadline)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT")), statement)
+	}
+	if boot.HTTPDrain > httpDrainBeforeDocuments {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_HTTP_DRAIN=%q (expected at most %s, a deployment's drain: what the %s stop grace leaves after the document service's %s budget and a 5s reserve)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_HTTP_DRAIN")), httpDrainBeforeDocuments, stopGrace, documentShutdownTimeout)
 	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
@@ -1925,6 +1973,12 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		boot.DevSignIn = true
 	}
 	return boot, nil
+}
+
+// specRootsSetting is DISPATCH_SPEC_ROOTS as the server and the backfill commands read it: the
+// issue keys of the roots of The Spec, trimmed, which api.NewSpecForm parses.
+func specRootsSetting(env settingValues) string {
+	return strings.TrimSpace(env.get("DISPATCH_SPEC_ROOTS"))
 }
 
 // devSignInFence is the dev sign-in fence over the environment; devSignInLoadedFence covers what
@@ -2345,35 +2399,59 @@ const searchFillDeferredLine = "dispatch: the keyword fill is deferred; this pro
 // SQL, so they are fixed here and never read from input.
 var searchFillTables = [...]string{"search_text_versions", "search_text_versions_fill"}
 
-// The three bounds of each read of searchFillTableRows. Each read sets lock_timeout and
-// statement_timeout in a transaction of its own, so Postgres itself ends a read that waits for a
-// lock on its table (55P03, after searchFillTableLockTimeout) or that runs on for any reason
-// (57014, after searchFillTableStatementTimeout), and no read is left running at the server once
-// the boot moves on. searchFillTableReadTimeout is the client's own deadline for each table, for a
-// server that answers nothing: pgx then closes the connection and asks the server to cancel the
-// statement. It also covers taking a connection from the pool, a dial or a wait for a free one
-// included, so it sits 4 s past the statement timeout: a slow dial still leaves the server's own
-// errors to end the read. The two reads run one after the other before the server listens, so
-// they delay the boot by at most twice searchFillTableReadTimeout in all; a lock on a table alone
-// delays it by about searchFillTableLockTimeout for that table. A test process stages the
-// client's deadline past its run instead (bootConfig.SearchFillReadTimeout).
+// searchFillReadBounds are the three bounds of each read of searchFillTableRows. Each read sets
+// lock_timeout and statement_timeout in a transaction of its own, so Postgres itself ends a read
+// that waits for a lock on its table (55P03, after lock) or that runs on for any reason (57014,
+// after statement), and no read is left running at the server once the boot moves on. client is
+// the client's own deadline for each table, for a server that answers nothing: pgx then closes the
+// connection and asks the server to cancel the statement. The two reads run one after the other
+// before the server listens, so they delay the boot by at most twice client in all; a lock on a
+// table alone delays it by about lock for that table. A test process may stage client past its run
+// instead (bootConfig.SearchFillReadTimeout).
+type searchFillReadBounds struct{ lock, statement, client time.Duration }
+
+// A deployment's lock timeout of the reads, and the margins the other two bounds keep past it. The
+// statement timeout sits searchFillTableStatementMargin past the lock timeout, so a read that waits
+// for a lock ends with 55P03 and never 57014. The client's deadline also covers taking a connection
+// from the pool, a dial or a wait for a free one included, so it sits searchFillTableClientMargin
+// past the statement timeout: a slow dial still leaves the server's own errors to end the read.
+// A deployment's bounds are 5, 6 and 10 s.
 const (
-	searchFillTableLockTimeout      = 5 * time.Second
-	searchFillTableStatementTimeout = 6 * time.Second
-	searchFillTableReadTimeout      = 10 * time.Second
+	searchFillTableLockTimeout     = 5 * time.Second
+	searchFillTableStatementMargin = time.Second
+	searchFillTableClientMargin    = 4 * time.Second
 )
 
+// searchFillTableLockTimeoutFloor is the shortest lock timeout resolveBootConfig takes from
+// DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT. searchFillTableHoldsRow sends each timeout to Postgres in
+// whole milliseconds, and Postgres reads a lock_timeout of 0 as no lock timeout, so a shorter one
+// would leave a read that waits for a lock to end at the statement timeout, with 57014 and not
+// 55P03.
+const searchFillTableLockTimeoutFloor = time.Millisecond
+
+// searchFillBounds are the read bounds with lock as the lock timeout, and zero is a deployment's,
+// searchFillTableLockTimeout (bootConfig.SearchFillLockTimeout, which only a test process sets,
+// and never below searchFillTableLockTimeoutFloor). The other two bounds keep their margins past
+// it whatever lock is, so no setting can order them otherwise.
+func searchFillBounds(lock time.Duration) searchFillReadBounds {
+	if lock <= 0 {
+		lock = searchFillTableLockTimeout
+	}
+	statement := lock + searchFillTableStatementMargin
+	return searchFillReadBounds{lock: lock, statement: statement, client: statement + searchFillTableClientMargin}
+}
+
 // searchFillTableRows answers the deferral line's fields that say whether each of
-// searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow under
-// the client's deadline timeout on clk. A read that fails, a timeout included, gives
+// searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow within
+// bounds, the client's deadline armed on clk. A read that fails, a timeout included, gives
 // <table>_rows=unknown and the error in <table>_rows_error, and the boot goes on: the line reports
 // the tables and never decides whether the process starts. The line is how a deployment learns,
 // from the boot log alone, that a process booted with the fill off found both tables empty.
-func searchFillTableRows(ctx context.Context, pool *store.Pool, clk bootClock, timeout time.Duration) []any {
+func searchFillTableRows(ctx context.Context, pool *store.Pool, clk bootClock, bounds searchFillReadBounds) []any {
 	fields := make([]any, 0, 4*len(searchFillTables))
 	for _, table := range searchFillTables {
 		key := table + "_rows"
-		holdsRow, err := searchFillTableHoldsRow(ctx, pool, clk, timeout, table)
+		holdsRow, err := searchFillTableHoldsRow(ctx, pool, clk, table, bounds)
 		switch {
 		case err != nil:
 			fields = append(fields, key, "unknown", key+"_error", err.Error())
@@ -2388,16 +2466,16 @@ func searchFillTableRows(ctx context.Context, pool *store.Pool, clk bootClock, t
 
 // searchFillTableHoldsRow reads whether table holds a row by
 // `select exists(select 1 from public.<table>)`, which reads no column and stops at the first
-// visible row; it may scan dead rows before that one, which searchFillTableStatementTimeout bounds.
-// It reads in a read-only transaction of its own that first sets the bounds above, local to that
-// transaction, under the client's deadline timeout armed on clk: searchFillTableReadTimeout on
-// clock.Real in main, and a test's clocktest.Fake that the test never moves, so only Postgres's
-// own timeouts end the read. The read takes ACCESS SHARE on the table and holds it until that
-// transaction rolls back (the deferred Rollback) or its connection ends, normally milliseconds
-// after the read; no statement timeout bounds how long it holds it. Row writes go on beside it,
-// but a TRUNCATE or another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
-func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, clk bootClock, timeout time.Duration, table string) (bool, error) {
-	ctx, cancel := clk.WithTimeout(ctx, timeout)
+// visible row; it may scan dead rows before that one, which the statement timeout bounds. It reads
+// in a read-only transaction of its own that first sets bounds' lock and statement timeouts, local
+// to that transaction, under bounds' client deadline armed on clk: clock.Real in main, and a test's
+// clocktest.Fake that the test never moves, so only Postgres's own timeouts end the read. The read
+// takes ACCESS SHARE on the table and holds it until that transaction rolls back (the deferred
+// Rollback) or its connection ends, normally milliseconds after the read; no statement timeout
+// bounds how long it holds it. Row writes go on beside it, but a TRUNCATE or another statement that
+// wants ACCESS EXCLUSIVE waits behind it for that long.
+func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, clk bootClock, table string, bounds searchFillReadBounds) (bool, error) {
+	ctx, cancel := clk.WithTimeout(ctx, bounds.client)
 	defer cancel()
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -2405,8 +2483,8 @@ func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, clk bootCloc
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true)`,
-		fmt.Sprintf("%dms", searchFillTableLockTimeout.Milliseconds()),
-		fmt.Sprintf("%dms", searchFillTableStatementTimeout.Milliseconds())); err != nil {
+		fmt.Sprintf("%dms", bounds.lock.Milliseconds()),
+		fmt.Sprintf("%dms", bounds.statement.Milliseconds())); err != nil {
 		return false, err
 	}
 	var holdsRow bool
@@ -2463,13 +2541,33 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
+//
+// The handler it returns is the server's root handler, so refuseContentSniffing around it holds
+// every answer the process writes.
 func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
-	return mux
+	return refuseContentSniffing(mux)
+}
+
+// refuseContentSniffing writes `X-Content-Type-Options: nosniff` on every answer, before the
+// handler below it runs, so the header is set whoever writes the answer and whatever it answers:
+// a probe, a route of the API table, the 404 of a path no route answers, a sign-in route, the
+// GitHub proxy, or a refusal the router gives before any route. A browser that reads a body as a
+// type it guessed from the bytes, rather than the type the answer names, can run text a person
+// wrote as a page of Dispatch's own origin.
+//
+// The API table sets the same header on its own answers (api.compressAnswers), for the entry
+// points that serve that table without this wrapper; setting the same value twice changes
+// nothing.
+func refuseContentSniffing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // issuers are the two OIDC issuers the process discovers in the background, as /healthz reports

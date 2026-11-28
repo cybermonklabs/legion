@@ -1,0 +1,5 @@
+kind: Added
+body: Dispatch has a Go port of the hard rules of the ASD-STE100 program, ste-lint, for the form of The Spec. A test holds it equal to the Python program on a corpus. The notices of a Go program that compiles it in carry its MIT license.
+time: 2026-11-16T08:36:11.142365612Z
+custom:
+    Issue: pr4179
