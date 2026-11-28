@@ -107,8 +107,52 @@ jobs:
         # deadline falls inside the job's 30 min.
         run: ../../.github/scripts/harness-pool.sh start --minutes 15 loadtest/cluster/cluster.test.sh bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh'
         working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start loadtest/vm/vm.test.sh bash loadtest/vm/vm.test.sh
+      # The vm harness runs as fourteen parts, `vm.test.sh <part>`, each a pool entry of its own with
+      # a temporary directory of its own, so they run beside the other harnesses and beside each
+      # other. Part series is queued first: its one case had the widest spread at main, 18.3 to
+      # 72.2 s over 11 green merge-group runs of 2026-11-27 and 2026-11-28. The rest follow, longest
+      # first by the forecast of dispatch://INFRA-6358's plan.
+      - name: Test loadtest/vm/vm.sh, part series (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh series' bash loadtest/vm/vm.test.sh series
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part step (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh step' bash loadtest/vm/vm.test.sh step
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part check-reset (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh check-reset' bash loadtest/vm/vm.test.sh check-reset
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part defects-credentials (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh defects-credentials' bash loadtest/vm/vm.test.sh defects-credentials
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part sessions (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh sessions' bash loadtest/vm/vm.test.sh sessions
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part oslogin (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh oslogin' bash loadtest/vm/vm.test.sh oslogin
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part example (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh example' bash loadtest/vm/vm.test.sh example
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part pg-interrupt (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh pg-interrupt' bash loadtest/vm/vm.test.sh pg-interrupt
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part mounts (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh mounts' bash loadtest/vm/vm.test.sh mounts
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part discard-seed-collect (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh discard-seed-collect' bash loadtest/vm/vm.test.sh discard-seed-collect
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part tunnel (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh tunnel' bash loadtest/vm/vm.test.sh tunnel
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part placement (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh placement' bash loadtest/vm/vm.test.sh placement
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part up (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh up' bash loadtest/vm/vm.test.sh up
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part modes-store (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh modes-store' bash loadtest/vm/vm.test.sh modes-store
         working-directory: packages/envoy
       - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
         run: ../../.github/scripts/harness-pool.sh start scripts/daemon-release-gate.test.sh bash scripts/daemon-release-gate.test.sh

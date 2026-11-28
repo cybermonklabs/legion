@@ -148,11 +148,53 @@
 # of the deployment file with what a jq of its own answers -- the value or the default, the status
 # and the refusal -- takes a new reading when the file's text changes, and an up runs no jq per
 # value.
+#
+# It runs one part at a time, from packages/envoy: `bash loadtest/vm/vm.test.sh <part>` runs the
+# shared setup and that part's cases in a temporary directory of its own, so parts run beside each
+# other. A part is a run of whole groups in this file's order, a group being the cases from one
+# top-level reset_fake to the next, and its function part_<name> holds them; no part reads anything
+# another part made, only the shared setup. `vm.test.sh --parts` prints the parts, one a line; no
+# argument, or a name that is no part, exits 2 before the setup. This loop runs every part, each
+# alone, and fails when any part fails (in a subshell or a script, since it exits), which is what
+# CI's fourteen pool entries do (.github/workflows/ci-job-envoy-go-checks.yaml):
+#
+#   rc=0; for p in $(bash loadtest/vm/vm.test.sh --parts); do bash loadtest/vm/vm.test.sh "$p" || rc=1; done; exit "$rc"
 set -euo pipefail
 # Nothing here is read from this test's own standard input, and the fake ssh reads a pipe it is
 # given as ssh does, so the suite runs with /dev/null under it: whatever the caller's standard
 # input is, no ssh of a case waits on it.
 exec </dev/null
+
+# The parts, in the order --parts prints them: each is a run of whole groups below, in the file's
+# order, held by its function part_<name> (each - an _), which runs after the shared setup.
+readonly -a parts=(up check-reset sessions step series discard-seed-collect tunnel mounts placement
+  oslogin example defects-credentials modes-store pg-interrupt)
+
+# refuse_command_line WHY: the command line names no part of this harness. It says WHY, names every
+# part and the loop that runs them all, and exits 2 before the setup below has made anything.
+refuse_command_line() {
+  {
+    printf 'vm.test.sh: %s\n' "$1"
+    printf 'Run one part, from packages/envoy: bash loadtest/vm/vm.test.sh <part>. The parts:\n'
+    printf '  %s\n' "${parts[@]}"
+    printf 'Run every part, each alone, failing when any part fails (in a subshell or a script):\n'
+    # shellcheck disable=SC2016 # the loop is printed for the reader's shell to expand
+    printf '  %s\n' 'rc=0; for p in $(bash loadtest/vm/vm.test.sh --parts); do bash loadtest/vm/vm.test.sh "$p" || rc=1; done; exit "$rc"'
+  } >&2
+  exit 2
+}
+if (($# == 1)) && [ "$1" = --parts ]; then
+  printf '%s\n' "${parts[@]}"
+  exit 0
+fi
+(($# > 0)) || refuse_command_line 'name the part to run'
+(($# == 1)) || refuse_command_line "name one part, not $# arguments"
+part=
+for known in "${parts[@]}"; do
+  [ "$known" != "$1" ] || part=$1
+done
+[ -n "$part" ] || refuse_command_line "no part is named '$1'"
+readonly part
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly vm=$here/vm.sh
@@ -1122,6 +1164,14 @@ seeded_run() {
   : >"$fake/db/dispatch_seed"
 }
 
+# credential_read CMD FLAG: the path, the mode and the content of the file the loadgen
+# subcommand CMD read FLAG from, as they were at the moment it read them (credentials.log).
+credential_read() {
+  awk -F'\t' -v c="$1" -v f="$2" '$1 == c && $2 == f { print $3 "\t" $4 "\t" $5; exit }' "$fake/credentials.log"
+}
+
+# Part up: groups 1 to 3, sections (a), (b) and (c), and the harness's own command line.
+part_up() {
 # ---- (a) every subcommand refuses a missing or unreadable --config --------------------------------
 
 reset_fake
@@ -1208,6 +1258,50 @@ run_vm up --config "$tmp/tagged.json"
 grep -q 'never by a tag' "$tmp/out" || fail "up's refusal of a tag does not say why"
 pass "up refuses an image named by a tag rather than a digest"
 
+# ---- the harness's own command line ---------------------------------------------------------------
+
+# The harness runs the one part its command line names. --parts prints the parts; a command line
+# that names none of them -- no argument, or a name that is no part -- exits 2 before the setup,
+# naming every part and the loop that runs them all. Each refused run below has a TMPDIR of its
+# own, made for it empty and not writable, so a setup that began would end at its mktemp with 1,
+# not 2, and the TMPDIR is still empty after it.
+set +e
+bash "$here/vm.test.sh" --parts >"$tmp/out" 2>&1
+RC=$?
+set -e
+((RC == 0)) || fail "vm.test.sh --parts exited $RC"
+listed=$(cat "$tmp/out")
+[ "$listed" = "$(printf '%s\n' "${parts[@]}")" ] ||
+  fail "vm.test.sh --parts did not print the ${#parts[@]} parts, one a line, in their order"
+
+# cli_refused WHAT DIR [ARG...]: this harness, run with ARG... under a TMPDIR of DIR, which is made
+# here, exits 2, names every part --parts printed and the loop of every part over --parts, and
+# leaves DIR empty.
+cli_refused() {
+  local what=$1 dir=$2 name
+  shift 2
+  mkdir -m 500 -- "$dir"
+  set +e
+  TMPDIR=$dir bash "$here/vm.test.sh" "$@" >"$tmp/out" 2>&1
+  RC=$?
+  set -e
+  ((RC == 2)) || fail "vm.test.sh with $what exited $RC, not 2"
+  while IFS= read -r name; do
+    grep -qxF -- "  $name" "$tmp/out" || fail "vm.test.sh with $what does not name the part $name"
+  done <<<"$listed"
+  # shellcheck disable=SC2016 # the loop's own text, which the harness prints unexpanded
+  grep -qF -- 'for p in $(bash loadtest/vm/vm.test.sh --parts); do' "$tmp/out" ||
+    fail "vm.test.sh with $what does not give the loop that runs every part over --parts"
+  [ -z "$(ls -A -- "$dir")" ] ||
+    fail "vm.test.sh with $what made $(ls -A -- "$dir" | tr '\n' ' ')in its TMPDIR, so its setup ran"
+}
+cli_refused 'no part' "$tmp/tmpdir-none"
+cli_refused 'the unknown part no-such-part' "$tmp/tmpdir-unknown" no-such-part
+pass "vm.test.sh with no part, or with an unknown one, exits 2 before its setup, naming every part that --parts prints"
+}
+
+# Part check-reset: groups 4 to 7, sections (d), (e) and (f).
+part_check_reset() {
 # ---- (d) and (e) check ----------------------------------------------------------------------------
 
 reset_fake
@@ -1307,7 +1401,10 @@ run_vm reset --config "$config"
 ((RC != 0)) || fail "reset ran without the template database"
 grep -q 'has no template database dispatch_seed' "$tmp/out" || fail "reset's refusal does not name the template"
 pass "reset refuses an instance that holds no template database"
+}
 
+# Part sessions: groups 8 to 11, sections (bb) and (cc).
+part_sessions() {
 # ---- (bb) a reset over the sessions a stopped container left behind -------------------------
 
 # What ended this issue's series at its 3x step: the reset stops the containers, the sessions
@@ -1451,7 +1548,10 @@ creates=$(grep -c '^psql	create database "dispatch"$' "$fake/actions.log" || tru
   fail "up ran $creates create database statements for the database the instance answered it holds none of, not 1"
 [ -e "$fake/db/dispatch" ] || fail "up left no database dispatch on an instance that holds none"
 pass "a psql that answers with no row is an absent database still: up makes it, once"
+}
 
+# Part step: groups 12 and 13, sections (g), (h) and (x).
+part_step() {
 # ---- (g) and (h) step -----------------------------------------------------------------------------
 
 # run_flag FLAG LINE: the value `loadgen run` was given for FLAG on LINE, empty when it was
@@ -1675,7 +1775,10 @@ sampler_left=$(pgrep -af -- "vm-sample -out $(run_dir)/cgroup.jsonl" | tr '\n' '
 [ -z "$sampler_left" ] ||
   fail "the step left its sampler running: $sampler_left. It goes on reading every machine and appending to the run's cgroup.jsonl, so a later step's window holds the rows of several samplers and cgroup-merge reads duplicated per-container CPU for it"
 pass "a step ends the sampler it started, leaving no vm-sample of the run behind"
+}
 
+# Part series: group 14, section (i).
+part_series() {
 # ---- (i) series -----------------------------------------------------------------------------------
 
 reset_fake
@@ -1703,7 +1806,10 @@ warmed=$(grep -- '-duration 60m' "$fake/loadgen-run.log" | grep -- '-warmup 5m' 
 [ "$(grep -c -- '-duration 60m' "$fake/loadgen-run.log")" = 3 ] ||
   fail "series ran $(grep -c -- '-duration 60m' "$fake/loadgen-run.log") long steps, not the baseline, 1x and 2x"
 pass "series runs the baseline, 1x and 2x long, stops the grid at the first failing step, and follows refine.txt until it is empty"
+}
 
+# Part discard-seed-collect: groups 15 to 17, sections (j), (k), (y) and (l).
+part_discard_seed_collect() {
 # ---- (j) a stopped VM discards the step -------------------------------------------------------------
 
 reset_fake
@@ -1943,7 +2049,10 @@ started=$(actions || true)
 grep -q '^start ' <<<"$started" && fail "down started something"
 grep -q 'left as they are' "$tmp/out" || fail "down does not say that the VMs and the instance are left alone"
 pass "down stops every container and leaves the VMs and the Cloud SQL instance alone"
+}
 
+# Part tunnel: groups 18 and 19, section (m).
+part_tunnel() {
 # ---- (m) the step's profiling tunnel ---------------------------------------------------------
 
 reset_fake
@@ -2080,7 +2189,10 @@ run_vm down --config "$config"
 [ ! -e "$run_secrets" ] ||
   fail "down left the run's own directory on the load machine: $(ls -A "$run_secrets" | tr '\n' ' ')"
 pass "the step's tunnel presents the run's own OS Login key, put on the load machine at mode 600 before the tunnel started and removed from it by down, and takes the host key into the run's own known_hosts there"
+}
 
+# Part mounts: groups 20 to 24, section (n).
+part_mounts() {
 # ---- (n) the remote root is a directory loadgen can be executed from -----------------------------
 
 # The VMs are Container-Optimized OS, where /var is mounted noexec: without this mount up copies
@@ -2171,7 +2283,10 @@ for target in "$app_target" "$gen_target" "$nats_target"; do
     fail "paths.stateful_dir is not the backing directory on $target: $sudo_lines"
 done
 pass "the deployment file names the backing directory under the stateful partition"
+}
 
+# Part placement: groups 25 to 27, section (r).
+part_placement() {
 # ---- (r) the deployment file says which machine each container runs on ---------------------------
 
 # The deployment this test's file describes has three machines, as INFRA-1051's has: an
@@ -2289,7 +2404,10 @@ grep -q '^| nats name cpu memory image (app VM) | .* | yes |$' "$tmp/out" ||
   fail "check does not read NATS back from the application machine of the two-machine deployment"
 grep -q 'nats VM' "$tmp/out" && fail "check read a machine the two-machine deployment file does not name"
 pass "a deployment file that keeps NATS on the application machine works, two machines and all"
+}
 
+# Part oslogin: groups 28 to 30, section (s).
+part_oslogin() {
 # ---- (s) every ssh is OS Login's ------------------------------------------------------------
 
 # The machines carry enable-oslogin and block-project-ssh-keys and this pod's identity has no
@@ -2445,7 +2563,10 @@ run_fn RUN="$renew_run" RUN_DIR="$renew_dir" SSH_KEY="$key" CGROUP_JSONL="$renew
 [ -f "$renew_dir/steps/fresh-key/meta.json" ] ||
   fail "the step of the fresh-key case left no meta.json, so the work it does over ssh never finished"
 pass "a step started with a fresh key imports nothing"
+}
 
+# Part example: groups 31 and 32, sections (o), (p), (q) and (kk).
+part_example() {
 # ---- (o) the example deployment file is one vm.sh runs on ---------------------------------------
 
 # deployment.example.json is the file a reader copies. These three cases hold it to vm.sh itself
@@ -2792,7 +2913,10 @@ done <"$fake/config-jq"
 [ "$(grep -c . "$fake/config-readings")" = 2 ] ||
   fail "an up and a step took $(grep -c . "$fake/config-readings") readings of a deployment file that did not change, not one each"
 pass "cfg answers every value out of a reading of the deployment file as a jq of its own answers it at that read, and an up and a step run no jq per value"
+}
 
+# Part defects-credentials: groups 33 and 34, sections (t) and (u).
+part_defects_credentials() {
 # ---- (t) the eleven the deployment itself found --------------------------------------------
 
 # Driving this script against the deployment of INFRA-1051 found eleven defects that every case
@@ -3092,12 +3216,6 @@ passfile=$(awk 'NR == 1 {print $1}' "$fake/psql.passfile")
 [ ! -e "$passfile" ] || fail "the passfile $passfile is still on this pod after the call that read it"
 pass "psql takes the instance's password from a passfile of mode 600, written for the call and removed with it"
 
-# credential_read CMD FLAG: the path, the mode and the content of the file the loadgen
-# subcommand CMD read FLAG from, as they were at the moment it read them (credentials.log).
-credential_read() {
-  awk -F'\t' -v c="$1" -v f="$2" '$1 == c && $2 == f { print $3 "\t" $4 "\t" $5; exit }' "$fake/credentials.log"
-}
-
 # The embedder's key has a file form now, so the stub embedder takes it like every other
 # credential of the load machine: a key given as -key would be in the stub's argv, and in the
 # ssh's, for as long as the deployment stands.
@@ -3147,7 +3265,10 @@ while IFS=$'\t' read -r name value; do
     fail "down left the deployment's $name on the load machine: $(grep_first -rlF -- "$value" "$remote/work")"
 done < <(credentials)
 pass "down removes the run's credential files from the load machine, leaving none of its credentials there, and says it did"
+}
 
+# Part modes-store: groups 35 and 36, sections (v) and (w).
+part_modes_store() {
 # ---- (v) every file up puts on a machine is at the mode its own reader needs ----------------
 
 # dispatch://INFRA-988. put_file wrote every file at mode 600, which is what a credential needs
@@ -3331,7 +3452,10 @@ reset_actions=$(actions || true)
 grep -qx wipe-jetstream <<<"$reset_actions" ||
   fail "reset's own record of the emptied store is gone from the action log: $reset_actions"
 pass "reset empties a JetStream store the NATS container wrote in as root -- the removal with sudo, the store made again as the ssh user -- and leaves it there, empty, at the owner and mode up leaves it at"
+}
 
+# Part pg-interrupt: groups 37 and 38, sections (z) and (aa).
+part_pg_interrupt() {
 # ---- (z) a step records what R6 asks of Postgres ---------------------------------------------
 
 # R6 asks each step for Postgres's slowest statements, its lock waits and the database's size at
@@ -3506,7 +3630,9 @@ for signal in TERM INT; do
     fail "SIG$signal left the local ssh that carries the step's load running: $left"
   # And nothing of the step's own is left reading Dispatch: this driver asks that machine for
   # nothing, so an ssh of this pod to it would be a fetch brought back (case (g) above).
-  left=$(pgrep -af -- "timeout .*debug/pprof" | tr '\n' ';' || true)
+  # Each ssh of this part names -i $tmp/root/<run>/oslogin (vm.sh ssh_cmd), and in CI a sibling part's
+  # tunnel probe beside it, timeout 300 ssh ... /debug/pprof/goroutine?debug=1, would match unscoped.
+  left=$(pgrep -af -- "timeout .*$tmp/.*debug/pprof" | tr '\n' ';' || true)
   [ -z "$left" ] ||
     fail "SIG$signal left an ssh of this pod reading Dispatch's profiling port: $left. The driver reads nothing of that port, and a read it does make falls inside the window loadgen is measuring"
   # And the stop reads as a stop: the status a shell killed by that signal has, and a line
@@ -3520,5 +3646,10 @@ for signal in TERM INT; do
 done
 rm -f "$fake/run-hangs"
 pass "a step stopped by SIGTERM or SIGINT takes its remote work with it: no loadgen run on the load machine, no profiling tunnel, no sampler and no collector left, and no pid file of any of them"
+}
+
+# The part the command line named. It is called plainly, outside any if, && or ||, so the set -e
+# above holds inside it as it holds at the top level.
+"part_${part//-/_}"
 
 printf 'PASS: packages/envoy/loadtest/vm/vm.test.sh\n'
