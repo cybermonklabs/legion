@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -179,37 +178,11 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	ledger := newRaceLedger()
 	publishAsAnEarlierBuild(t, s)
 
-	// Each build's writers have a stop and a join of their own: the earlier build's stop, and
-	// their writes in flight end, before the mark is aged; this build's once one of them has
-	// committed in the advisory mode. Each stop and join also runs as a cleanup, so no writer
-	// outlives the test however it ends. A join is the shared wait's (testwait.Returns), outside
-	// the once that closes its stop, since a give-up inside a sync.OnceFunc becomes a panic with a
-	// nil argument; a second call closes nothing and finds the writers already joined.
-	earlierStop := make(chan struct{})
-	var earlier sync.WaitGroup
-	closeEarlierStop := sync.OnceFunc(func() { close(earlierStop) })
-	stopEarlier := func() {
-		closeEarlierStop()
-		testwait.Returns(t, "the earlier build's writers to end their writes in flight once stopped", earlier.Wait)
-	}
-	t.Cleanup(stopEarlier)
-	stop := make(chan struct{})
-	var writers sync.WaitGroup
-	closeStop := sync.OnceFunc(func() { close(stop) })
-	stopThisBuild := func() {
-		closeStop()
-		testwait.Returns(t, "this build's writers to end their writes in flight once stopped", writers.Wait)
-	}
-	t.Cleanup(stopThisBuild)
-	// earlierCommits is how many commits of the earlier build's writers the ledger has counted.
-	earlierCommits := func() int {
-		ledger.mu.Lock()
-		defer ledger.mu.Unlock()
-		if tally := ledger.tallies[string(rowFirstWriter)]; tally != nil {
-			return tally.commits
-		}
-		return 0
-	}
+	// Each build's writers have a stop and a join of their own (raceStop): the earlier build's stop,
+	// and their writes in flight end, before the mark is aged; this build's once one of them has
+	// committed in the advisory mode.
+	earlierStop, earlier, stopEarlier := raceStop(t, "the earlier build's writers to end their writes in flight once stopped")
+	stop, writers, stopThisBuild := raceStop(t, "this build's writers to end their writes in flight once stopped")
 
 	for range gateRaceWriters {
 		writers.Go(func() {
@@ -239,12 +212,12 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	// and then a writer of this build commits beside it, in a transaction begun once the earlier
 	// build's commit was counted (raceLedger.committedSince).
 	testwait.Until(t, "a writer of the earlier build to commit", func() (string, bool) {
-		return fmt.Sprintf("%d commits of this build beside an earlier build so far", ledger.commitsIn(true)), earlierCommits() > 0
+		return fmt.Sprintf("%d commits of this build beside an earlier build so far", ledger.commitsIn(true)), ledger.commitsOf(rowFirstWriter) > 0
 	})
 	overlapped := ledger.mark()
 	testwait.Until(t, "a writer of this build to commit beside the earlier build after a writer of the earlier build committed", func() (string, bool) {
 		return fmt.Sprintf("%d commits of the earlier build; %d of this build beside it, none begun after the earlier build's first was counted",
-			earlierCommits(), ledger.commitsIn(true)), ledger.committedSince(true, overlapped)
+			ledger.commitsOf(rowFirstWriter), ledger.commitsIn(true)), ledger.committedSince(true, overlapped)
 	})
 	stopEarlier()
 	ageLegacyMark(t, s, OwnerLockMarkWindow+time.Second)

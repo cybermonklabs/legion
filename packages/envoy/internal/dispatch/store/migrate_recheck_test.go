@@ -119,7 +119,7 @@ func TestARunJudgesTheVersionsAnotherBootRecordsBetweenTwoOfItsMigrations(t *tes
 					} else if err != nil {
 						t.Fatalf("migrate: %v", err)
 					}
-					if got := recheckedVersions(t, store); !slices.Equal(got, wantVersions) {
+					if got := recordedVersions(t, store); !slices.Equal(got, wantVersions) {
 						t.Errorf("schema_migrations records %v; want %v", got, wantVersions)
 					}
 					var secondApplied bool
@@ -151,18 +151,4 @@ func TestARunJudgesTheVersionsAnotherBootRecordsBetweenTwoOfItsMigrations(t *tes
 			}
 		}
 	}
-}
-
-// recheckedVersions is every version schema_migrations records, in order.
-func recheckedVersions(t *testing.T, store *Store) []int {
-	t.Helper()
-	rows, err := store.Pool.Query(context.Background(), "select version from schema_migrations order by version")
-	if err != nil {
-		t.Fatalf("read schema_migrations: %v", err)
-	}
-	versions, err := pgx.CollectRows(rows, pgx.RowTo[int])
-	if err != nil {
-		t.Fatalf("read schema_migrations: %v", err)
-	}
-	return versions
 }

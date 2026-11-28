@@ -326,6 +326,15 @@ func (m ownerLockMode) String() string {
 	return "unknown"
 }
 
+// ownerLockModeOf is the mode an owner lock takes by its fleet read: ownerLockAdvisoryAndRow
+// where an earlier build is in the fleet (legacy), ownerLockAdvisory where none is.
+func ownerLockModeOf(legacy bool) ownerLockMode {
+	if legacy {
+		return ownerLockAdvisoryAndRow
+	}
+	return ownerLockAdvisory
+}
+
 // latestOwnerLockMode is the mode the latest read-phase owner lock of this process took, which
 // noteOwnerLockMode compares with each new one so that it logs only a change.
 var latestOwnerLockMode atomic.Int32
@@ -334,10 +343,7 @@ var latestOwnerLockMode atomic.Int32
 // process's mode changes, not once per write. The common case, an unchanged mode, is one atomic
 // load.
 func noteOwnerLockMode(legacy bool) {
-	mode := ownerLockAdvisory
-	if legacy {
-		mode = ownerLockAdvisoryAndRow
-	}
+	mode := ownerLockModeOf(legacy)
 	previous := ownerLockMode(latestOwnerLockMode.Load())
 	if previous == mode || !latestOwnerLockMode.CompareAndSwap(int32(previous), int32(mode)) {
 		return

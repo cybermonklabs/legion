@@ -9,6 +9,7 @@
 # Modelled leg time, serial tests' sum plus parallel tests' sum over 8: group 1 295 s, group 2 295 s.
 1:
   - TestABootCancelledWaitingForTheKeyClosesItsConnectionOutOfThePool  # 0.1 s
+  - TestACancelAfterTheRunnersLockWaitEndedIsNoLockTimeout  # 0.0 s
   - TestAClaimedMachineLoginRevocationIsSendableWithinItsWindow  # 4.4 s
   - TestAConcurrentWorkerKeepsAMarkOfItsOwn  # 0.0 s
   - TestADeletedProjectTakesItsSessionRowsWithIt  # 4.5 s
@@ -16,8 +17,10 @@
   - TestALadderAskWaitsForNoBuildItDoesNotStartFrom  # 0.0 s
   - TestAMultiVersionInsertReVectorsItsIssueOnce  # 4.7 s
   - TestARowInsertedAsTheReleaseBeforeThisOneInsertsItCarriesItsProject  # 10.9 s
+  - TestARunJudgesTheVersionsAnotherBootRecordsBetweenTwoOfItsMigrations  # 0.0 s
   - TestASecondRenamePassOnAWrittenDatabaseRunsNoLine  # 4.5 s
   - TestAStoreOpenReturnsKeepsTheRealClock  # 0.0 s
+  - TestAStoreOpenReturnsRunsProductionsLockDiscipline  # 0.0 s
   - TestATextCutToFitIsIndexedByWholeWords  # 0.7 s
   - TestAWritePhasePastTheSendBoundRunsEveryStatementInOrder  # 0.5 s
   - TestAWriteThatClearsTheOwnerIsRefused  # 4.6 s
@@ -53,6 +56,7 @@
   - TestGraphEdgesCarryBlockMentionsAndPartOf  # 0.3 s
   - TestGraphEdgesUnionsMentionsWithEveryStructuralRelation  # 0.5 s
   - TestHealthyAnswersWhileCloseWaitsForAConnectionInUse  # 1.6 s
+  - TestHealthyOnEndsItsProbeAtTheBoundArmedOnItsClock  # 0.0 s
   - TestIssuesSearchSpecMigrationReindexesTheIssuesStoredBeforeIt  # 15.6 s
   - TestItemBlockArmsAreGraphEdges  # 0.3 s
   - TestListenerIsServedWhileTheSharedPoolIsFullyAcquired  # 0.1 s
@@ -167,6 +171,7 @@
   - TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds  # 1.3 s
 2:
   - TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild  # 0.3 s
+  - TestABootJudgesOnlyTheMigrationsItsPrepareDidNotReadAsRecorded  # 0.0 s
   - TestACancelledMigrationEndsTheKeyWithItsSessionAndLogsNoError  # 0.2 s
   - TestAClaimOfAnEarlierGenerationIsNotSettledAfterTheClockStepsBack  # 4.5 s
   - TestAClaimTooSoonAfterItsRemovalIsNotSettled  # 4.5 s
@@ -183,6 +188,7 @@
   - TestAnInsertWithNoOwnerTakesTheDefaultAssignee  # 4.5 s
   - TestAnOlderBuildsWriteLeavesTheAskBlocksOwed  # 0.2 s
   - TestAnUnlockThatDoesNotLandLogsAtErrorAndEndsItsConnection  # 0.1 s
+  - TestAnXidWindowIsOpenFromItsHookToTheEndOfItsTransaction  # 0.0 s
   - TestAskReplyBackfillsMoveOnlyTheRepliesTheyOwn  # 3.9 s
   - TestAskReplyBackfillsTerminateOnACyclicReplyChain  # 2.2 s
   - TestBlockRefListedFindsItsTargetByTheNodeIDIndex  # 1.4 s
@@ -256,6 +262,7 @@
   - TestMigrationRefusesAnIssueMoreThan32LinksBelowItsRoot  # 3.5 s
   - TestMigrationSetTakesNumbersThenTimestamps  # 0.5 s
   - TestMigrationTurnsTheProductionJobIntoAList  # 2.5 s
+  - TestMomentOnHandsNoMomentWithoutAClockAndTheClocksReadingWithOne  # 0.0 s
   - TestPgPeopleStoreConfirmKeepsTheRowOfAnotherGoogleAccount  # 12.0 s
   - TestPgPeopleStoreEndsTheSessionsOfAnAddressAnotherGoogleAccountSignsInTo  # 4.6 s
   - TestPgPeopleStoreReadsARefreshTokenThatDoesNotOpenAsNone  # 2.4 s
@@ -270,6 +277,7 @@
   - TestRoomAppendsIsAPoolOfItsOwnThatUseCounts  # 0.1 s
   - TestSearchTextMigrationKeepsEveryRowShapesVector  # 14.0 s
   - TestSearchVectorRunsInAQueryPostgresWouldRunInParallel  # 0.3 s
+  - TestStatementTimeoutSettingWritesWholeMilliseconds  # 0.0 s
   - TestTextPastTheSearchVectorLimitIsWrittenAndIndexedFromItsOpening  # 2.4 s
   - TestTheBlockIndexTriggersOweWhatAnyBuildWrites  # 0.3 s
   - TestTheBlockRefsTargetIndexDropWaitsOutAReaderPastTheRunnersAttempts  # 31.4 s

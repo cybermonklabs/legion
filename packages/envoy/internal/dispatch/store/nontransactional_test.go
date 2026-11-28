@@ -622,11 +622,10 @@ func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
 // applyMigrationOnce's wait made blocking again: one run in three, one in eight and one in
 // sixteen caught it, so twenty runs catch it in better than nine cases out of ten.
 //
-// The races run one at a time on purpose. Forty pools and twenty migration sets at once are a
-// load of their own on a server the rest of this package shares, and the migration tests beside
-// this one measure lock waits against a five-second bound. The package still has tests whose
-// verdict needs a step to land inside production's five-second lock_timeout (watchReadsTheWait in
-// lock_discipline_test.go names them), so that reason still holds.
+// The races run one at a time because forty pools and twenty migration sets at once are a load of
+// their own on a server the rest of the package shares, and tests beside this one need a step to
+// land inside production's five-second lock_timeout (the callers of watchReadsTheWait in
+// lock_discipline_test.go).
 const bootRaces = 20
 
 // Two Dispatch processes booting at once over the INVALID leftover INFRA-1973 reports. One of

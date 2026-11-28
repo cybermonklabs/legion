@@ -84,7 +84,7 @@ func readWhileTheRunnerWaits(t *testing.T, store *Store, read string) int {
 // (runnerHoldsWhileItWaits). That reading must land inside the runner's wait, so the Timeout is
 // production's, which no slowed step outlasts
 // (dispatch://INFRA-3149/comment/44861a24-bbec-4ee1-8530-54bf97c7427e). The runner's pauses between
-// its attempts run on the fake clock, which the test moves past each (movePastThePause), and its
+// its attempts run on the fake clock, which the test moves past each (movePastEveryPause), and its
 // give-up is the error it returns after the last.
 func TestSearchMigrationsLockOneTableAtATime(t *testing.T) {
 	t.Parallel()
@@ -111,9 +111,7 @@ func TestSearchMigrationsLockOneTableAtATime(t *testing.T) {
 		t.Errorf("while the runner waited for messages, schema_migrations was at %d, want 60 (0056-0060 committed one by one)", version)
 	}
 
-	for attempt := 1; attempt < pgmigrate.LockTimeoutAttempts; attempt++ {
-		movePastThePause(t, fake, attempt)
-	}
+	movePastEveryPause(t, fake)
 	err = testwait.Receive(t, "the runner to give up on 0061 after its last attempt", migrated)
 	var lockTimeout *pgmigrate.LockTimeoutError
 	if err == nil || !errors.As(err, &lockTimeout) || !strings.Contains(lockTimeout.Migration, "0061_messages_search_trigger") {

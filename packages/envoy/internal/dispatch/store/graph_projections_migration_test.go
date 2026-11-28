@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // graphProjectionsVersion is the migration that gives document_blocks, block_refs and comments
@@ -18,10 +20,15 @@ const graphProjectionsVersion = 20261109022248
 // nothing, before Postgres's deadlock check runs on either side: the write commits, and the
 // runner's next attempt applies the migration. Under the runner's five-second bound that cycle
 // aborts one side with 40P01, which the runner does not retry.
+//
+// The store runs under production's Timeout on a fake clock: 20261109022248 sets its own 500 ms,
+// and the runner's pause before its next attempt runs on the store's clock, which the test moves
+// past once the runner has armed it (movePastThePause) and the write has committed.
 func TestMigrateGraphProjectionsGivesUpBeforeACommentWriteThatWritesBlocksDeadlocks(t *testing.T) {
 	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the line pgmigrate logs when 20261109022248 gives up its first attempt.
 	ctx := context.Background()
 	store := openMigratedTestStore(t, graphStoreVersion)
+	fake := underLocking(store, 0)
 	logs := captureLogs(t)
 	var comment, artifact string
 	if _, err := store.Pool.Exec(ctx, `
@@ -74,7 +81,8 @@ func TestMigrateGraphProjectionsGivesUpBeforeACommentWriteThatWritesBlocksDeadlo
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the comment write: %v", err)
 	}
-	if err := <-migrated; err != nil {
+	movePastThePause(t, fake, 1)
+	if err := testwait.Receive(t, "the runner to return once the comment write ended", migrated); err != nil {
 		t.Fatalf("the runner should have applied 20261109022248 on a later attempt once the comment write ended, got: %v", err)
 	}
 	if out := logs.String(); !strings.Contains(out, "the runner tries it again") ||

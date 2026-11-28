@@ -1084,16 +1084,17 @@ tests of the runner itself do.
 
 Every top-level test of the store package calls `t.Parallel()` as its first statement, or says on
 its first line, in a `// Not parallel:` comment, why it cannot: the default logger it swaps, a
-package variable it writes, the process's heap it measures, or a wall-clock bound it holds. Eight
-run at once (`storeTestParallelism`). A timer of the store's own code that a test waits past runs
-on the store's clock (`Store.clock`, read through `clk()`), which the test sets to a
-`clocktest.Fake` and moves. The store's runner and its census run under one lock discipline
-(`Store.locking`, a `pgmigrate.Locking` of the store's clock and its lock timeout), whose zero
-value every store `Open` returns keeps; a test gives the one store it runs a shorter lock timeout
-only where no verdict depends on how short it is. A time the database judges, such as an expiry
-or a stamp of `now()`, is read off the database's clock (`select clock_timestamp()`), never off
-the test process's. Nothing checks the marker: a new test with neither the call nor the comment
-runs alone for no reason.
+package variable it writes, the process's heap it measures, or a wall-clock bound it holds. Nothing
+checks the marker: a new test with neither the call nor the comment runs alone for no reason. Eight
+run at once (`storeTestParallelism`).
+
+A timer of the store's own code that a test waits past runs on the store's clock (`Store.clock`,
+read through `clk()`), which the test sets to a `clocktest.Fake` and moves. The store's runner and
+its census run under one lock discipline (`Store.locking`, a `pgmigrate.Locking` of the store's
+clock and its lock timeout), whose zero value every store `Open` returns keeps; a test gives the
+one store it runs a shorter lock timeout only where no verdict depends on how short it is. A time
+the database judges, such as an expiry or a stamp of `now()`, is read off the database's clock
+(`select clock_timestamp()`), never off the test process's.
 
 A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
 its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater

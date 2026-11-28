@@ -450,7 +450,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		where connamespace = current_schema()::regnamespace
 	`, []string{"artifacts_issue_key_slug_key"})
 
-	assertRecordsEveryVersion(t, ctx, store)
+	assertRecordsEveryVersion(t, store)
 }
 
 // Dispatch's set hands its identifiers out the way the repository requires: its numbered
@@ -672,7 +672,7 @@ func TestMigrateSkipsVersionRecordedOutsideTheRunner(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate past a hand-recorded version: %v", err)
 	}
-	assertRecordsEveryVersion(t, ctx, store)
+	assertRecordsEveryVersion(t, store)
 	var appliedAt time.Time
 	if err := store.Pool.QueryRow(ctx, `select applied_at from schema_migrations where version = 8`).Scan(&appliedAt); err != nil {
 		t.Fatalf("read version 8 after migrate: %v", err)
@@ -980,9 +980,7 @@ func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 				}
 				return
 			}
-			for attempt := 1; attempt < pgmigrate.LockTimeoutAttempts; attempt++ {
-				movePastThePause(t, fake, attempt)
-			}
+			movePastEveryPause(t, fake)
 			err := testwait.Receive(t, "prepareVersionTable to give up after its last attempt", prepared)
 			var pgErr *pgconn.PgError
 			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" || !strings.Contains(err.Error(), fmt.Sprintf("after %d attempts", pgmigrate.LockTimeoutAttempts)) {
@@ -997,20 +995,13 @@ func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 
 // assertRecordsEveryVersion checks that schema_migrations holds exactly the versions of the
 // embedded set.
-func assertRecordsEveryVersion(t *testing.T, ctx context.Context, store *Store) {
+func assertRecordsEveryVersion(t *testing.T, store *Store) {
 	t.Helper()
 	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
 	}
-	rows, err := store.Pool.Query(ctx, "select version from schema_migrations order by version")
-	if err != nil {
-		t.Fatalf("list recorded migrations: %v", err)
-	}
-	recorded, err := pgx.CollectRows(rows, pgx.RowTo[int])
-	if err != nil {
-		t.Fatalf("read recorded migrations: %v", err)
-	}
+	recorded := recordedVersions(t, store)
 	want := make([]int, len(migrations))
 	for i, migration := range migrations {
 		want[i] = migration.Version
@@ -1018,6 +1009,20 @@ func assertRecordsEveryVersion(t *testing.T, ctx context.Context, store *Store) 
 	if !reflect.DeepEqual(recorded, want) {
 		t.Errorf("recorded versions = %v, want every embedded version %v", recorded, want)
 	}
+}
+
+// recordedVersions is every version schema_migrations records, in order.
+func recordedVersions(t *testing.T, store *Store) []int {
+	t.Helper()
+	rows, err := store.Pool.Query(context.Background(), "select version from schema_migrations order by version")
+	if err != nil {
+		t.Fatalf("read schema_migrations: %v", err)
+	}
+	versions, err := pgx.CollectRows(rows, pgx.RowTo[int])
+	if err != nil {
+		t.Fatalf("read schema_migrations: %v", err)
+	}
+	return versions
 }
 
 func assertDatabaseObjects(t *testing.T, ctx context.Context, pool *Pool, query string, expected []string) {

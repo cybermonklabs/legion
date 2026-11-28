@@ -462,14 +462,22 @@ func ReconcileRecorded(ctx context.Context, q versionTable, table string, migrat
 	if err != nil {
 		return nil, nil, err
 	}
-	fixes, err := Reconcile(migrations, recorded)
+	fixes, err := reconcileRows(ctx, q, table, migrations, recorded)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := writeFixes(ctx, q, table, fixes); err != nil {
-		return nil, nil, err
-	}
 	return recorded, fixes, nil
+}
+
+// reconcileRows judges recorded, rows of table, against migrations (Reconcile) and, where it
+// refuses none, writes each fix (writeFixes). It answers no fix when Reconcile refuses, and the
+// fixes it judged with the write's error otherwise.
+func reconcileRows(ctx context.Context, q versionTable, table string, migrations []Migration, recorded []Recorded) ([]Fix, error) {
+	fixes, err := Reconcile(migrations, recorded)
+	if err != nil {
+		return nil, err
+	}
+	return fixes, writeFixes(ctx, q, table, fixes)
 }
 
 // RecheckRecorded is a runner's judgment, on q, of its version table before it applies migration,
@@ -508,19 +516,14 @@ func RecheckRecorded(ctx context.Context, q versionTable, table string, migratio
 		if recorded, err = readRecorded(ctx, q, table, IdentityColumnNames); err != nil {
 			return false, nil, err
 		}
-		if fixes, err = Reconcile(migrations, recorded); err != nil {
-			return false, nil, err
-		}
-		return false, fixes, writeFixes(ctx, q, table, fixes)
+		fixes, err = reconcileRows(ctx, q, table, migrations, recorded)
+		return false, fixes, err
 	}
 	if err != nil {
 		return false, nil, fmt.Errorf("read what %s records of migration %s: %w", table, migration.Name, err)
 	}
-	fixes, err = Reconcile([]Migration{migration}, []Recorded{recordedRow(migration.Version, name, checksum, text)})
-	if err != nil {
-		return true, nil, err
-	}
-	return true, fixes, writeFixes(ctx, q, table, fixes)
+	fixes, err = reconcileRows(ctx, q, table, []Migration{migration}, []Recorded{recordedRow(migration.Version, name, checksum, text)})
+	return true, fixes, err
 }
 
 // writeFixes records each fix's identity in its row of table, each update sent as RecheckRecorded

@@ -38,6 +38,11 @@ func censusUnder(ctx context.Context, locking pgmigrate.Locking, databaseURL str
 	if err != nil {
 		return nil, fmt.Errorf("migrations refused: %w", err)
 	}
+	return censusOf(ctx, locking, databaseURL, migrations, options)
+}
+
+// censusOf is censusUnder of migrations, a set Load has already read.
+func censusOf(ctx context.Context, locking pgmigrate.Locking, databaseURL string, migrations []pgmigrate.Migration, options pgmigrate.CensusOptions) (*pgmigrate.Report, error) {
 	if err := pgdsn.Refusal(DSNSetting, databaseURL); err != nil {
 		return nil, err
 	}

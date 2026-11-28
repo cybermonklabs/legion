@@ -147,18 +147,9 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 	start := ownerSeqs(t, s, all)
 	ledger := newRaceLedger()
 
-	// This build's writers and heartbeat stop and are joined however the row ends, so none outlives
-	// the test, as ownerlock_fleet_mark_test.go's writers do. The join is the shared wait's, outside
-	// the once that closes the stop, since a give-up inside a sync.OnceFunc becomes a panic with a
-	// nil argument; a second call closes nothing and finds the writers already joined.
-	stop := make(chan struct{})
-	var thisBuild sync.WaitGroup
-	closeStop := sync.OnceFunc(func() { close(stop) })
-	stopThisBuild := func() {
-		closeStop()
-		testwait.Returns(t, "this build's writers and its heartbeat to stop once told", thisBuild.Wait)
-	}
-	t.Cleanup(stopThisBuild)
+	// This build's writers and heartbeat stop and are joined however the row ends (raceStop), so
+	// none outlives the test, as ownerlock_fleet_mark_test.go's writers do.
+	stop, thisBuild, stopThisBuild := raceStop(t, "this build's writers and its heartbeat to stop once told")
 	for range gateRaceWriters {
 		thisBuild.Go(func() {
 			for {

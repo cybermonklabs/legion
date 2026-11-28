@@ -1777,30 +1777,41 @@ func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testi
 // a database carrying exactly the shipped migrations below its own. Every census is in exactly one
 // run, and a run applies each migration once.
 //
-// Each run holds as many censuses as the others, but the last, which holds the rest. Alone, in an
-// issue pod under -race, a step (a census and the migrations a run applies before it) took 139 ms
-// plus 1.09 ms per shipped migration through the census's version, which the census loads
-// (pgmigrate.Load); with the runs at once it took 1.9 s at about the 70th migration and 2.4 s at
-// about the 350th, so runs of as many censuses take about as long.
+// Each census takes the shipped set as the test binary loaded it once (shippedMigrations), cut
+// after the census's own migration (censusOf). Load reads each file alone and orders the set by
+// version, so a load of the files through that version, what a binary built then carries
+// (migrationsThrough), is exactly that cut; loaded again for each census, as a load of those files,
+// it cost 1.09 ms per shipped migration through the census's version under -race, about 75 s of
+// CPU over the walk.
+//
+// Each run holds as many censuses as the others, but the last, which holds the rest. With the runs
+// at once, in an issue pod under -race, a step (a census and the migrations a run applies before
+// it) took about a second at any version, so runs of as many censuses take about as long: the
+// eight ended between 37 s and 43 s.
 //
 // Each run asks the ladder for its template before it waits for the others (t.Parallel), so the
 // asks come in version order and each template is built from the one of the run before; asked
 // once the runs start, in whatever order they start, a template could be built from an empty
-// database, applying the history again. answered counts the censuses of every run, and is read
-// once they have all ended: when no run failed, it is every census the set declares, so a census
-// no run took fails the test.
+// database, applying the history again. A set that declares no census fails before any run starts.
+// answered counts the censuses of every run, and is read once they have all ended: when no run
+// failed, it is every census the set declares, so a census no run took fails the test.
 func TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration(t *testing.T) {
 	t.Parallel()
-	var censused []pgmigrate.Migration
-	for _, migration := range shippedMigrations(t) {
+	shipped := shippedMigrations(t)
+	// censused is the index in shipped of each migration that declares a census.
+	var censused []int
+	for i, migration := range shipped {
 		if migration.Census != "" {
-			censused = append(censused, migration)
+			censused = append(censused, i)
 		}
+	}
+	if len(censused) == 0 {
+		t.Fatal("the set declares no census")
 	}
 	var answered atomic.Int64
 	t.Run("runs", func(t *testing.T) {
 		for run := range slices.Chunk(censused, max(1, (len(censused)+storeTestParallelism-1)/storeTestParallelism)) {
-			first, last := run[0], run[len(run)-1]
+			first, last := shipped[run[0]], shipped[run[len(run)-1]]
 			t.Run(fmt.Sprintf("%d-%d", first.Version, last.Version), func(t *testing.T) {
 				migratedTemplates.template(t, adminDatabaseURL(t), first.Version-1)
 				t.Parallel()
@@ -1808,10 +1819,11 @@ func TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration(t *testing.T) {
 				store := openMigratedTestStore(t, first.Version-1)
 				url := store.Pool.Config().ConnString()
 				through := first.Version - 1
-				for _, migration := range run {
+				for _, i := range run {
+					migration := shipped[i]
 					migrateAbove(t, store, through, migration.Version-1)
 					through = migration.Version - 1
-					report, err := census(ctx, url, migrationsThrough(t, migration.Version), pgmigrate.CensusOptions{})
+					report, err := censusOf(ctx, pgmigrate.Locking{}, url, shipped[:i+1:i+1], pgmigrate.CensusOptions{})
 					if err != nil {
 						t.Fatalf("census of %s: %v", migration.CensusName, err)
 					}
@@ -1825,9 +1837,6 @@ func TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration(t *testing.T) {
 	})
 	if got := answered.Load(); !t.Failed() && got != int64(len(censused)) {
 		t.Fatalf("the runs answered %d censuses, but the set declares %d", got, len(censused))
-	}
-	if answered.Load() == 0 {
-		t.Fatal("the set declares no census")
 	}
 }
 

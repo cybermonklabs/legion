@@ -284,20 +284,19 @@ var earlierBuildArrivals = []earlierBuildArrival{
 }
 
 // setFleetLockTimeout bounds tx's lock waits by the moment every wait of the test gives up
-// (testwait.GiveUpAt), so a lock wait that is merely slow is never refused by a span of the clock,
-// and one that never ends still fails rather than hangs. Postgres counts lock_timeout from the
-// start of each lock wait, which comes after this call, so no lock wait ends before the shared wait
-// gives up: a wait of the test that waits on such a transaction gives up first and names what it
-// waited for, and a transaction no wait of the test watches still ends before Go's alarm panics the
-// binary. Under -timeout 0 the shared wait has no end, and the lock waits no bound. A moment
+// (testwait.GiveUpAt), rounded up to the whole milliseconds lock_timeout takes
+// (lockTimeoutPastTheGiveUp), so a lock wait that is merely slow is never refused by a span of the
+// clock, and one that never ends still fails rather than hangs. Postgres counts lock_timeout from
+// the start of each lock wait, which comes after this call, so no lock wait ends before the shared
+// wait gives up: a wait of the test that waits on such a transaction gives up first and names what
+// it waited for, and a transaction no wait of the test watches still ends before Go's alarm panics
+// the binary. Under -timeout 0 the shared wait has no end, and the lock waits no bound. A moment
 // already passed leaves a bound of 1 ms, since 0 would turn the bound off.
 func setFleetLockTimeout(ctx context.Context, t *testing.T, tx pgx.Tx) error {
-	end, bounded := testwait.GiveUpAt(t)
-	if !bounded {
+	if _, bounded := testwait.GiveUpAt(t); !bounded {
 		return nil
 	}
-	left := max(time.Until(end), time.Millisecond)
-	_, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", left.Milliseconds()))
+	_, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", lockTimeoutPastTheGiveUp(t).Milliseconds()))
 	return err
 }
 
@@ -484,6 +483,24 @@ func raceWriter(ctx context.Context, t *testing.T, s *Store, shape writerShape, 
 // one across its mark's expiry (ownerlock_fleet_mark_test.go).
 const gateRaceWriters = 4
 
+// raceStop is a stop for goroutines a race runs on group, each of which checks stop before each
+// of its transactions, and end, which closes stop and joins them, the shared wait's join
+// (testwait.Returns) waiting for what. end also runs as a cleanup, so none of them outlives the
+// test however it ends. The join is outside the once that closes stop, since a give-up inside a
+// sync.OnceFunc becomes a panic with a nil argument; a second call closes nothing and finds the
+// goroutines already joined.
+func raceStop(t *testing.T, what string) (stop <-chan struct{}, group *sync.WaitGroup, end func()) {
+	stopped := make(chan struct{})
+	group = new(sync.WaitGroup)
+	closeStop := sync.OnceFunc(func() { close(stopped) })
+	end = func() {
+		closeStop()
+		testwait.Returns(t, what, group.Wait)
+	}
+	t.Cleanup(end)
+	return stopped, group, end
+}
+
 // gateRaceTally is what one role of the races came to.
 type gateRaceTally struct {
 	commits, deadlocks, failures int
@@ -532,6 +549,16 @@ func (l *raceLedger) commitsIn(besideAnEarlierBuild bool) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.modes[besideAnEarlierBuild]
+}
+
+// commitsOf is how many commits of role's writers the ledger has counted.
+func (l *raceLedger) commitsOf(role writerShape) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if tally := l.tallies[string(role)]; tally != nil {
+		return tally.commits
+	}
+	return 0
 }
 
 // record counts one transaction of role that touched touched: its commit, or its failure, a
@@ -679,10 +706,7 @@ func (m *modeTx) mode() ownerLockMode {
 func (m *modeTx) note(legacy bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.taken = ownerLockAdvisory
-	if legacy {
-		m.taken = ownerLockAdvisoryAndRow
-	}
+	m.taken = ownerLockModeOf(legacy)
 }
 
 // readPhaseOwnerLock reports whether sql is a read-phase owner lock statement: that of one of the

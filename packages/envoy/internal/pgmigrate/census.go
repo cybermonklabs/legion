@@ -497,8 +497,9 @@ func (l Locking) Census(ctx context.Context, conn *pgx.Conn, migrations []Migrat
 			clock_timestamp() - a.xact_start, coalesce(a.backend_type = 'autovacuum worker', false)
 		from pg_stat_activity a
 		where a.datname = current_database() and a.pid <> pg_backend_pid()
-			and (a.state is distinct from 'idle' and clock_timestamp() - a.xact_start >= $1::interval
-				or a.xact_start is null and a.state is distinct from 'idle'
+			and a.state is distinct from 'idle'
+			and (clock_timestamp() - a.xact_start >= $1::interval
+				or a.xact_start is null
 					and exists (select from pg_locks l where l.pid = a.pid and l.locktype = 'virtualxid'))
 		order by a.xact_start, a.pid`, options.LongTransaction)
 	if err != nil {

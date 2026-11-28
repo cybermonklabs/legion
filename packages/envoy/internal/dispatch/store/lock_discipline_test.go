@@ -63,6 +63,15 @@ func movePastThePause(t *testing.T, fake *clocktest.Fake, attempt int) {
 	fake.Advance(pgmigrate.LockTimeoutRetryPause)
 }
 
+// movePastEveryPause moves fake past the runner's pause after each attempt but the last
+// (movePastThePause), so the runner makes every attempt pgmigrate.LockTimeoutAttempts allows.
+func movePastEveryPause(t *testing.T, fake *clocktest.Fake) {
+	t.Helper()
+	for attempt := 1; attempt < pgmigrate.LockTimeoutAttempts; attempt++ {
+		movePastThePause(t, fake, attempt)
+	}
+}
+
 // watchReadsTheWait has the runner's lock watch, which runs on the store's fake clock, take a
 // reading while the runner waits for mode on relation. The watch reads only at a tick the test
 // moves the fake to, and arms its first tick as the attempt starts (pgmigrate.Locking), so this

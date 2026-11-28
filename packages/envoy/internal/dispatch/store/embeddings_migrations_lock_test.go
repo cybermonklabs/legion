@@ -49,9 +49,7 @@ func TestEmbeddingsMigrationsLockOneTableAtATime(t *testing.T) {
 		t.Errorf("while the runner waited for messages, schema_migrations was at %d, want 76 (0073-0076 committed one by one)", version)
 	}
 
-	for attempt := 1; attempt < pgmigrate.LockTimeoutAttempts; attempt++ {
-		movePastThePause(t, fake, attempt)
-	}
+	movePastEveryPause(t, fake)
 	err = testwait.Receive(t, "the runner to give up on 0077 after its last attempt", migrated)
 	var lockTimeout *pgmigrate.LockTimeoutError
 	if err == nil || !errors.As(err, &lockTimeout) || !strings.Contains(lockTimeout.Migration, "0077_messages_embeddings_trigger") {

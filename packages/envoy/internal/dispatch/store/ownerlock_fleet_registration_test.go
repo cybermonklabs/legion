@@ -121,17 +121,17 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 		}
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) || pgErr.Code != "55P03" || !strings.Contains(pgErr.Where, "owner_lock_legacy_registration") {
-			t.Fatalf("%s behind a transaction holding the gate past the bound ended with %v, want 55P03 lock_not_available inside owner_lock_legacy_registration", registration.name, err)
+			t.Fatalf("%s behind a transaction holding the gate past the bound ended with %v, want 55P03 lock_not_available inside owner_lock_legacy_registration", which, err)
 		}
 		t.Logf("%s was refused: %s (%s)", which, pgErr.Message, pgErr.Where)
 		if gate, granted := gateLock(t, s, holder.Conn().PgConn().PID()); gate != "ShareLock" || !granted {
-			t.Fatalf("when %s was refused the transaction it waited for holds the gate as %q (granted %t), want it still held shared: only the function's bound can have refused it", registration.name, gate, granted)
+			t.Fatalf("when %s was refused the transaction it waited for holds the gate as %q (granted %t), want it still held shared: only the function's bound can have refused it", which, gate, granted)
 		}
 		if err := testwait.Receive(t, "this build's heartbeat to go through once "+which+" was refused", beat); err != nil {
-			t.Fatalf("this build's heartbeat after %s was refused: %v", registration.name, err)
+			t.Fatalf("this build's heartbeat after %s was refused: %v", which, err)
 		}
 		if hasLegacyMark(t, s) {
-			t.Errorf("%s was refused and the earlier build's mark is stamped, want none", registration.name)
+			t.Errorf("%s was refused and the earlier build's mark is stamped, want none", which)
 		}
 	}
 

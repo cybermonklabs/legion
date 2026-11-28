@@ -33,11 +33,13 @@ type Store struct {
 	// whether it held a transaction around it. Nil, which every Store Open makes leaves it,
 	// runs nothing.
 	afterNonTransactionalStatement func(ctx context.Context, conn *pgx.Conn) error
-	// clock is what the timers of the store's own code run on, read through clk: each timer
-	// moves onto it together with the test that depends on it, and a timer not moved yet reads the
-	// time package itself. Nil, which every Store Open makes leaves it, is the real clock. Only a
-	// test sets it, to a clocktest.Fake that it moves past the timer it waits out, so how long the
-	// machine takes decides nothing.
+	// clock is the clock of the store's lock discipline (locking), read through clk: the runner's
+	// pause between two attempts, its lock watch and the bounds of a holder's diagnosis run on it.
+	// The store's other timers do not read it and run on the time package, among them
+	// lockMigrations' pause between two tries of the advisory key and closeBounded's bound. Nil,
+	// which every Store Open makes leaves it, is the real clock. Only a test sets it, to a
+	// clocktest.Fake that it moves past the timer it waits out, so how long the machine takes
+	// decides nothing.
 	clock clock.Clock
 	// lockTimeout is the Timeout of the store's lock discipline (locking): the lock_timeout each
 	// lock wait of the runner and of the store's census runs under. Zero, which every Store Open
@@ -47,8 +49,8 @@ type Store struct {
 	lockTimeout time.Duration
 }
 
-// clk is the clock the store's own timers run on: the clock a test set, or clock.Real where none
-// is set, as in every Store Open returns.
+// clk is the clock the store's lock discipline runs on (clock): the clock a test set, or
+// clock.Real where none is set, as in every Store Open returns.
 func (s *Store) clk() clock.Clock {
 	if s.clock == nil {
 		return clock.Real()
@@ -59,10 +61,10 @@ func (s *Store) clk() clock.Clock {
 // locking is the store's one lock discipline: lockTimeout as its Timeout and the store's clock
 // (clk) as its Clock, on which the runner's pause between two attempts, its lock watch and the
 // bounds of a holder's diagnosis run. Every step of the runner reads it (prepareVersionTable,
-// applyMigration, applyMigrationOnce, applyNonTransactionalMigration), and so do the bound on the
-// close of a connection the runner ends (closeBounded) and a test's census of the store's database
-// (censusUnder), so none of them runs under another timeout. A Store Open returns runs the zero
-// Locking's discipline, production's: pgmigrate.LockTimeout on clock.Real().
+// applyMigration, applyMigrationOnce, applyNonTransactionalMigration), and so does a test's census
+// of the store's database (censusUnder), and the bound on the close of a connection the runner ends
+// (closeBounded) is its Timeout, so none of them runs under another timeout. A Store Open returns
+// runs the zero Locking's discipline, production's: pgmigrate.LockTimeout on clock.Real().
 func (s *Store) locking() pgmigrate.Locking {
 	return pgmigrate.Locking{Timeout: s.lockTimeout, Clock: s.clk()}
 }
@@ -416,7 +418,7 @@ func unlockMigrations(conn *pgxpool.Conn) {
 // of its own connection. Its two callers are this runner's own: the failed lock, which hands over
 // the connection it hijacks out of the pool, and the concurrent build, which owns its connection.
 func (s *Store) closeBounded(ctx context.Context, conn *pgx.Conn) {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(s.locking().Timeout, pgmigrate.LockTimeout))
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(s.lockTimeout, pgmigrate.LockTimeout))
 	defer cancel()
 	_ = conn.Close(cleanup)
 }
