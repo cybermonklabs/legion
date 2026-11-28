@@ -9,7 +9,9 @@
 // DISPATCH_E2E_NATS_BIN (e2e/harness-nats.ts), so the feed reads its own stack's
 // (`stackValue`): a feed on another stack's bus would publish to a server whose intake holds no
 // setting of the row's project. A run that names none has no intake, and `requireNats` fails the
-// row by that name.
+// row by that name. A spec whose rows call `requireNats` is listed in `natsSpecNames`
+// (e2e/configurations.ts), which puts it in the `chromium-nats` project, the one CI runs with the
+// bus; e2e/__tests__/nats-specs.test.ts fails on a spec that calls it and is not listed.
 //
 // Each message is the daemon's shape, read from packages/contracts/fixtures/daemon-api/
 // state-events.json and the intake's decoder (packages/envoy/internal/dispatch/legion/

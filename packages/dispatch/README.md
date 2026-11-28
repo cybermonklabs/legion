@@ -1235,8 +1235,9 @@ every recording no row writes any more.
 
 ## Projects
 
-The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
+The suite has sixteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
+three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`), the one
+`chromium-nats` takes and the
 stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
 test's or its `test.describe`'s title). A phone width is one under 768 px. A test takes the tag
@@ -1287,6 +1288,16 @@ upstream once a page has closed. `chromium-plain-http-sign-out` runs the sign-ou
 `e2e/keyed-writes.e2e.ts` on that same origin, where the browser has no `navigator.locks`, so a
 tab holds the person's writes for another tab's sign-out on a renewed lease rather than on that
 tab's lock.
+`chromium-nats` runs every row of the specs whose rows feed Dispatch's Legion intake over NATS,
+`e2e/evals-admission.e2e.ts` today (`natsSpecNames` in `e2e/configurations.ts`, which
+`e2e/__tests__/nats-specs.test.ts` holds to the specs that call `requireNats`), in Chromium. A
+run's bus is every stack's or none, and the other projects' rows run on a server with NATS
+disabled, so these rows are a project of their own. A run of it names a nats-server in
+`DISPATCH_E2E_NATS_BIN`, which the harness starts one of for each stack (stacks, above):
+`go build -o <path> github.com/nats-io/nats-server/v2` in `packages/envoy`, then
+`DISPATCH_E2E_NATS_BIN=<path> bun run e2e -- --project=chromium-nats`. It is in the default
+selection, where its rows fail by `requireNats`'s message without that variable. CI runs it on the
+full lane, on a leg of the alone job of its own.
 The last three projects run the rows whose claim is a wall-clock time, with the machine to
 themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
 (a card draws without holding the main thread for a second)

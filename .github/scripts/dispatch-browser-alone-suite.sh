@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# One `-alone` leg of the Dispatch browser suite: the stack's binaries, the Playwright run of
+# One leg of the Dispatch browser suite's alone job: the stack's binaries, the Playwright run of
 # one unsharded project one row at a time, the row count the merge job reads, and the memory and
-# CPU sampler this leg starts and reads back.
+# CPU sampler this leg starts and reads back. Three legs are the `-alone` projects, whose rows are
+# read from the wall clock; the fourth is `chromium-nats`, whose rows need a NATS that no shard
+# leg starts, and it is the one leg that starts one (below).
 #
 # Who runs it, and what it takes:
 #
 #   .github/scripts/dispatch-browser-alone-suite.sh <project> <connections>
 #
 # <project> is this leg's Playwright project, the alone job's `${{ matrix.project }}`, one of
-# the three `-alone` ones: it is the `--project` the run takes, and it names the blob report
-# this leg writes, the row count file beside it and the title of the sampler's readings.
+# the three `-alone` ones or `chromium-nats`: it is the `--project` the run takes, and it names
+# the blob report this leg writes, the row count file beside it and the title of the sampler's
+# readings.
 # <connections> is the connection limit the stack's Postgres must allow, which the binaries job
 # reads and hands on as `${{ needs.binaries.outputs.connections }}`, because this job's container
 # has no Go to compute it with; it becomes DISPATCH_E2E_PG_CONNECTIONS below.
@@ -71,6 +74,15 @@ export DISPATCH_E2E_PG_CONNECTIONS=$connections
 # directory that holds them.
 export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
 export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
+# The bus, on the one leg whose rows need it: `chromium-nats` (`natsProjectName`,
+# packages/dispatch/e2e/configurations.ts, which says why those rows are a project of their own).
+# The stack pool starts a NATS with JetStream for the stack from the nats-server the binaries job
+# built beside the binaries above, and hands the stack's processes its URL as
+# DISPATCH_E2E_NATS_URLS (packages/dispatch/e2e/harness-nats.ts). No wall-clock leg starts one:
+# their rows need none, and a server and its intakes on the bus would be in their readings.
+if [ "$project" = chromium-nats ]; then
+  export DISPATCH_E2E_NATS_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/nats-server"
+fi
 # The blob report this leg hands the merge job. Its name carries the leg, so the legs'
 # reports keep their own names when the merge job downloads them into one directory.
 export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
@@ -89,7 +101,8 @@ export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-alone-$project.zip"
 # ever moves. A wider count is refused rather than measured: `packages/dispatch/e2e/main-thread-hold.ts#refuseASharedRun` fails every row that calls `measureDraw` when
 # `config.workers` is above one, printing the one-worker command that fixes it. So the
 # guard is what makes the reading honest, and this line is what says what the run is:
-# one project, one row at a time, on a machine with nothing else on it.
+# one project, one row at a time, on a machine with nothing else on it. `chromium-nats` runs
+# one worker too, which its two rows were measured at; one stack is one NATS.
 #
 # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
 # read from the list reporter's `Running N tests using M workers` line, which the merge

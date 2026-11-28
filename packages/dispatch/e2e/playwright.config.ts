@@ -5,6 +5,8 @@ import {
   clockFileOnCommandLine,
   clockProjectNames,
   clockSpecPattern,
+  natsProjectName,
+  natsSpecPattern,
   stubProjectNames,
   tagged,
 } from "./configurations";
@@ -297,13 +299,27 @@ const parallelProjects = [
   // `delivery-live.e2e.ts` that `webkit-iphone` owns has none either.
   {
     name: "chromium",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      natsSpecPattern,
+      visualSpecs,
+      stubSpecs,
+    ],
     grepInvert: [phoneOnlyTagged, webkitPhoneDeliveryRow],
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      natsSpecPattern,
+      visualSpecs,
+      stubSpecs,
+    ],
     grep: phoneRowTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
@@ -351,14 +367,21 @@ const parallelProjects = [
   // rule and which the target must take with `preventDefault` for a drop to land: `priorities`'
   // one drag row, which drags a row of the priorities table by its grip and reads the order back.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
-  // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
-  // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
-  // what keeps the three clock-read files to the `-alone` projects at the end of this list and
-  // out of every project above them (sjawhar/legion#2612), here and in the three other projects
-  // that name it.
+  // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess,
+  // clock-read or NATS spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That
+  // ignore is what keeps the three clock-read files to the `-alone` projects at the end of this
+  // list and out of every project above them (sjawhar/legion#2612), and the NATS specs to
+  // `chromium-nats`, here and in the three other projects that name it.
   {
     name: "webkit",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      natsSpecPattern,
+      visualSpecs,
+      stubSpecs,
+    ],
     grep: webkitTagged,
     use: { ...devices["Desktop Safari"] },
   },
@@ -428,7 +451,14 @@ const parallelProjects = [
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      natsSpecPattern,
+      visualSpecs,
+      stubSpecs,
+    ],
     grep: firefoxTagged,
     use: { ...devices["Desktop Firefox"] },
   },
@@ -464,6 +494,21 @@ const parallelProjects = [
       baseURL: plainHttpOrigin,
       launchOptions: { args: [`--host-resolver-rules=MAP ${plainHttpHost} 127.0.0.1`] },
     },
+  },
+  // The rows that feed Dispatch's Legion intake over NATS (`natsSpecNames`,
+  // e2e/configurations.ts, which says why they are a project of their own): every row of those
+  // files, in Chromium, as `chromium` ran them before they moved here, and in no other project,
+  // since the four above that name a `testIgnore` ignore them. A run of this project needs the
+  // bus: `DISPATCH_E2E_NATS_BIN` naming a nats-server (`go build -o <path>
+  // github.com/nats-io/nats-server/v2` in packages/envoy), or for one worker
+  // `DISPATCH_E2E_NATS_URLS`, which its rows' `requireNats` names where neither is set. It stays
+  // in the default selection, as those rows were in `chromium`'s; the shard legs name their
+  // projects and leave it out, and CI runs it in the alone job
+  // (.github/scripts/dispatch-browser-alone-suite.sh), the one leg that starts the bus.
+  {
+    name: natsProjectName,
+    testMatch: natsSpecPattern,
+    use: { ...devices["Desktop Chrome"] },
   },
 ] satisfies Project[];
 

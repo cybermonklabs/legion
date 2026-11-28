@@ -544,8 +544,8 @@ them.
 
 ## The go-browser-binaries family
 
-What dispatch-browser.yaml's binaries job compiles, and nothing else: the two `CGO_ENABLED=0`
-builds (four binaries) of its "Build the binaries the browser suite runs" step and the `go run` of
+What dispatch-browser.yaml's binaries job compiles, and nothing else: the three `CGO_ENABLED=0`
+builds (five binaries, the nats-server the last of them) of its "Build the binaries the browser suite runs" step and the `go run` of
 its connections step. The job runs for every caller of that file - ci.yaml's dispatch-browser,
 dispatch-browser-pr and dispatch-references jobs and dispatch-browser-nightly.yaml - and on
 every lane. Each of the fill's two steps runs the text of the job's step whose name it starts
