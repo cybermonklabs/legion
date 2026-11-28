@@ -2225,8 +2225,9 @@ A document out of scope first says why Dispatch refuses nothing for it, by its s
 With no `--artifact`, it reads the spec and the Verification document of the issue, and names a document that has no version yet.
 It reads them from the issue's own read, so for a key that names no issue it prints what `dispatch read` prints (`NOT_FOUND: not found`) and exits 1.
 After those lines, a document that holds a text of The Spec has one more part: `Dispatch read these texts in <document> version <N>, each by its kind and its node:`, then one line `<kind> <node>` for each text, in the order of the document, and one line `definition <term>` for each term that the version itself defines.
-The part comes from the answer's `nodes` and `definitions`, which the judgment of the version read once, so a reviewer of the request reads the texts that Dispatch read and needs no second reader of the form.
-An answer about a covered document ends with `Before you request approval, have a fresh reviewer read it with skill://spec-statement-review.`, once for the issue when it reads more than one: a program decides the form, and that skill tells a reviewer what no program decides.
+The part comes from the answer's `nodes` and `definitions`, which the judgment of the version read once, so a reviewer of the request finds each statement, check and term by its node and needs no second reader of the form.
+The reviewer still reads the prose that the form check does not judge, and the forms that its rules do not read.
+An answer about a covered document ends with `Before you request approval, have a fresh reviewer read it with skill://spec-statement-review.`, once for the issue when it reads more than one, and an answer about a root's `terms.md` does not: a program decides the form, and that skill tells a reviewer what no program decides.
 `dispatch spec-form --root <KEY>` walks every issue under KEY with the issue list, one parent at a time, and prints one line for each issue and one for each spec and Verification document, with its version, its scope, the count of each kind of text and its findings.
 It ends with the count of issues and documents it read.
 

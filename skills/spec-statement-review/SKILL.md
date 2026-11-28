@@ -8,14 +8,17 @@ description: "Use when you review a change request of The Spec, even one that `d
 You review a change request of The Spec: the spec of an issue that proposes statements, checks and terms.
 Review only a change request that you did not write, because an author reads its own words with the meaning it intended.
 
-The form check of Dispatch decides the count of sentences and words, the ASD-STE100 rules and the links to records of Dispatch.
-It also decides the name of an incident, a pull request or a person.
-You judge what no program decides, and nothing else, so that one rule never gets two answers.
+The form check of Dispatch reads the statements, the checks, the purposes of components and the definitions of terms.
+In them it decides the count of sentences and words, the hard findings of the ASD-STE100 program `ste-lint` and the instructions of a procedure.
+It also decides a link to a record of Dispatch, and the name of an incident, a pull request or a person.
+It decides each rule only in the forms that the rule reads, so a text that the check passes can still break the rule.
+Step 6 names those forms, and you read them.
+You also judge what no program decides, in steps 3 to 5.
 
 ## Steps
 
 1. Run `dispatch spec-form --issue <KEY> --artifact <document>`.
-   It prints the findings of the form check, one line for each: `- <kind> <node>: <detail>.`
+   It prints the findings of the form check, one line for each: `- <kind> <node> in <document> version <n>: <detail>.`
    Dispatch decided each finding already, so do not report it again.
    After them it prints each text that Dispatch read, one line for each: `<kind> <node>`.
    Then run the same command with `--terms`, which prints the list of terms in place of the findings.
@@ -91,18 +94,32 @@ You judge what no program decides, and nothing else, so that one rule never gets
 
    - An agent check whose claim needs a judgement of meaning, such as whether a text states a principle.
 
-6. Print one line for each finding, and no other text:
+6. Read each text of step 1 and the prose of the document outside them.
+   Name a break of the form that the form check does not read.
+
+   - `form-limit`: name a text in one of these forms, which the form check passes:
+     - Prose outside the texts of step 1 that links to a record of Dispatch, or names an incident, a pull request or a person.
+       Prose is a paragraph, a heading, a table or the title of a callout.
+     - A sentence of a procedure with a second instruction after a relative clause, as in `Read each request that Dispatch opens and record its version`.
+     - A sentence of a procedure with a second instruction whose verb the check does not know, as in `Seed the database and run the test`.
+     - A name of a person with a letter such as `é`, which the check finds only in the Unicode form of the person's email.
+     - A name of an incident, a pull request or a person beside the letters of a script with no spaces, as in `见#12`.
+
+     Its node is the id of the statement or of the check, `terms` for a definition, or `prose`.
+     Its subject is the rule that the text breaks: `instructions`, `dispatch-link`, `incident`, `pull-request` or `person`.
+
+7. Print one line for each finding, and no other text:
 
    ```text
    FINDING <kind> <node> <subject>: <one sentence>
    ```
 
-   - `<kind>` is one of the seven kinds.
-     The lines come in this order of kinds: `principle`, `undefined-noun`, `other-meaning`, `repeated-meaning`, `wide-claim`, `agent-choice`, `agent-where-program`.
+   - `<kind>` is one of the eight kinds.
+     The lines come in this order of kinds: `principle`, `undefined-noun`, `other-meaning`, `repeated-meaning`, `wide-claim`, `agent-choice`, `agent-where-program`, `form-limit`.
 
-   - `<node>` is the id of the statement or of the check, with no `#`, or `terms`.
+   - `<node>` is the id of the statement or of the check, with no `#`, or `terms`, or `prose`.
 
-   - `<subject>` is the noun or the term as the text writes it, for the three kinds of step 4.
+   - `<subject>` is the noun or the term as the text writes it, for the three kinds of step 4, and the rule for `form-limit`.
      It is `-` for the other four kinds.
 
    - The sentence says what is wrong.
@@ -119,6 +136,7 @@ You judge what no program decides, and nothing else, so that one rule never gets
    FINDING wide-claim v-lease-expiry -: The claim holds the lease of each role, and its statement holds only the lease of a planner.
    FINDING agent-choice planner-reads-goals -: Only the choice of the planner can make it true.
    FINDING agent-where-program v-claim-refused -: An agent reads an exit status, which a program can compare with 1.
+   FINDING form-limit prose pull-request: The paragraph under the title names a pull request as 见#12.
    NO FINDING
    NOT REVIEWED: dispatch spec-form --issue ACME-4 --artifact spec.md --terms failed: Dispatch did not answer
    ```
