@@ -530,17 +530,22 @@ func (r headRig) begin() (pgx.Tx, int32) {
 // may not see; a result and its retraction; an untitled document with a lens on it and its
 // removal, and a document the release before removed and the block index's orphan and stale-lens
 // sweeps over it; a document above the block index's deferral bound, whose upload writes its typed
-// nodes and whose tick writes its blocks; and the read-cost corpus, one document of 2,000 blocks.
-// Each is read with no view and with each view, as the issue's author and as another person, and
-// each answer is held to the same read with the mark taken away. After each the mark still stands,
-// a read of the marked issue sent no statement of the walk, and the census kind issue_head_node
-// reads no difference.
+// nodes and whose tick writes its blocks; and the read-cost corpus, one document of 2,000 blocks at
+// depth 6, other than a role document, of whose blocks the read with no view answers none
+// (requireTreeReadShape). Each is read with no view and with each view, as the issue's author and
+// as another person, and each answer is held to the same read with the mark taken away. After each
+// the mark still stands, a read of the marked issue sent no statement of the walk, and the census
+// kind issue_head_node reads no difference. On a server of its own, a plan of 2,000 plan_task
+// blocks, written through its upload and the block index's tick, is held the same way page by page,
+// and the read with no view answers each of its blocks, typed role blocks
+// (requireHeadProjectionPlan).
 //
 // Four writes of the release before, by plain SQL with no head row and no setting - a tuple out of
 // a node of the tree, a new node with its part_of into the tree, a node row updated in place and a
 // comment's body rewritten - each take the mark away, the comment's inside the statement that
-// writes it, before its transaction commits, so the read walks the tuples and answers the new state;
-// the fill then marks the issue again. A fill and a write of the release before do not interleave,
+// writes it, before its transaction commits, so the read walks the tuples and answers the new
+// state - an answer the write moved, which the head read answers once the fill marks the issue
+// again (headProjectionWatch). A fill and a write of the release before do not interleave,
 // in either order: a write after the fill waits for the fill's head-fill lock, then takes away the
 // mark it committed; a fill after the write waits for the write to commit, then fills and marks the
 // issue. Two writes of the release before on one unmarked issue do not wait on each other, since the
@@ -550,12 +555,16 @@ func (r headRig) begin() (pgx.Tx, int32) {
 // update while a write of the release before holds it for share and appends a part_of into the
 // tree.
 func TestTheHeadProjectionAnswersAsTheWalk(t *testing.T) {
-	requireHeadProjectionStates(t, nil)
+	watch := newHeadProjectionWatch()
+	requireHeadProjectionStates(t, watch.observe)
+	watch.requireSeen(t)
+	requireHeadProjectionPlan(t)
 }
 
 // requireHeadProjectionStates writes, on a server of its own, each state of the store
 // TestTheHeadProjectionAnswersAsTheWalk names, holds every read of each to the walk, and hands each
-// state, once it is held, to observe where it is set (TestTheTwoCutsAnswerAsTheUncutWalk).
+// state, once it is held, to observe where it is set (TestTheTwoCutsAnswerAsTheUncutWalk's replay,
+// and TestTheHeadProjectionAnswersAsTheWalk's headProjectionWatch).
 func requireHeadProjectionStates(t *testing.T, observe func(r headRig, class, key string, logins []string)) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -789,6 +798,9 @@ func requireHeadProjectionStates(t *testing.T, observe func(r headRig, class, ke
 		written <- err
 	}()
 	ended, err := r.awaitWaiting(backendWaits, writer, written)
+	if ended {
+		t.Errorf("the write of the release before on %s did not wait for the fill's head-fill lock: it ended (%v) while the fill held its mark uncommitted", key, err)
+	}
 	if commitErr := fill.Commit(ctx); commitErr != nil {
 		t.Fatalf("the fill commits the mark of %s: %v", key, commitErr)
 	}

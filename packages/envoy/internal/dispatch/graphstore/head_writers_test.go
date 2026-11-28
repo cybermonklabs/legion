@@ -112,7 +112,10 @@ func headVerdicts(found map[string][]string, heads map[string]bool) (failures []
 	return failures, passing
 }
 
-// headWriteSitesIn is every function of one file that names a head write, by its site key.
+// headWriteSitesIn is every function of one file that calls a head write, by its site key: a call
+// whose function is a head write (headWriteFunctions), qualified by this file's name for graphstore,
+// or bare in graphstore itself. A head write the function names and does not call - a function
+// value, say - writes nothing, and is no head write of the function's.
 func headWriteSitesIn(relative string, files *token.FileSet, file *ast.File) map[string]bool {
 	bare := filepath.ToSlash(filepath.Dir(relative)) == graphstoreDirectory && file.Name.Name == "graphstore"
 	qualifier := ""
@@ -140,24 +143,23 @@ func headWriteSitesIn(relative string, files *token.FileSet, file *ast.File) map
 			continue
 		}
 		site := siteKey(relative, decl.Name.Name)
-		var visit func(node ast.Node) bool
-		visit = func(node ast.Node) bool {
-			switch node := node.(type) {
+		ast.Inspect(decl.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch fun := call.Fun.(type) {
 			case *ast.SelectorExpr:
-				if x, ok := node.X.(*ast.Ident); ok && qualifier != "" && x.Name == qualifier && slices.Contains(headWriteFunctions, node.Sel.Name) {
+				if x, ok := fun.X.(*ast.Ident); ok && qualifier != "" && x.Name == qualifier && slices.Contains(headWriteFunctions, fun.Sel.Name) {
 					sites[site] = true
-					return false
 				}
-				ast.Inspect(node.X, visit)
-				return false
 			case *ast.Ident:
-				if bare && slices.Contains(headWriteFunctions, node.Name) {
+				if bare && slices.Contains(headWriteFunctions, fun.Name) {
 					sites[site] = true
 				}
 			}
 			return true
-		}
-		ast.Inspect(decl.Body, visit)
+		})
 	}
 	return sites
 }
@@ -263,13 +265,14 @@ func (scan headScan) with(relative string, reading headFileReading) headScan {
 // printing `<site> leaves its head row to <cause site>, which writes none`. A list entry the source
 // holds no store writer at, or that names a head write after all, fails too.
 //
-// The same verdict over two copies goes into the log: one file with two writers planted, one that
-// queues a write and no head row, which the verdict finds, and one that writes through Write
-// alone, which writes its own head rows and which the verdict passes; and one named cause site
-// with its head write taken out, which the verdict names beside the writer that leaves its head
-// row to it. A writer that names no head write leaves a node's rows behind the store under the
-// mark its own build keeps, since every statement of this build that writes the store sets
-// dispatch.head_rows, and the head read would answer the stale rows.
+// The same verdict over two copies goes into the log: one file with three writers planted, one that
+// queues a write and no head row, which the verdict finds, one that queues the same write and names
+// QueueHeads without calling it, which the verdict finds too, since only a call writes a head row,
+// and one that writes through Write alone, which writes its own head rows and which the verdict
+// passes; and one named cause site with its head write taken out, which the verdict names beside
+// the writer that leaves its head row to it. A writer that names no head write leaves a node's rows
+// behind the store under the mark its own build keeps, since every statement of this build that
+// writes the store sets dispatch.head_rows, and the head read would answer the stale rows.
 func TestEveryWriterOfAHeadFactWritesTheHeadRow(t *testing.T) {
 	scan := readHeadScan(t)
 	if len(scan.found) == 0 {
@@ -291,8 +294,9 @@ func TestEveryWriterOfAHeadFactWritesTheHeadRow(t *testing.T) {
 	t.Logf("read %d store writers: %d name a head write, %d write no tree node, %d are wrappers, %d leave their head row to a cause site",
 		len(scan.found), passing, len(headNoTree), len(headWrappers), len(headLeftTo))
 
-	// Two writers planted in a copy of one file: one queues a node write and no head row, and one
-	// writes through Write, whose own batch writes the head rows.
+	// Three writers planted in a copy of one file: one queues a node write and no head row, one
+	// queues it and names QueueHeads without calling it, and one writes through Write, whose own
+	// batch writes the head rows.
 	const plantedFile = "internal/dispatch/api/results_retract.go"
 	source, err := os.ReadFile(filepath.Join(moduleRoot, plantedFile))
 	if err != nil {
@@ -300,13 +304,19 @@ func TestEveryWriterOfAHeadFactWritesTheHeadRow(t *testing.T) {
 	}
 	planted := append(slices.Clone(source), []byte("\nfunc plantedHeadlessWriter(ctx context.Context, tx pgx.Tx) error {\n"+
 		"\treturn store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {\n\t\tgraphstore.QueueWrite(b, nil, nil)\n\t\treturn nil\n\t})\n}\n"+
+		"\nfunc plantedUncalledHeadWriter(ctx context.Context, tx pgx.Tx) error {\n\theads := graphstore.QueueHeads\n\t_ = heads\n"+
+		"\treturn store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {\n\t\tgraphstore.QueueWrite(b, nil, nil)\n\t\treturn nil\n\t})\n}\n"+
 		"\nfunc plantedWriteCaller(ctx context.Context, tx pgx.Tx) error {\n\treturn graphstore.Write(ctx, tx, nil, nil)\n}\n")...)
 	plantedScan := scan.with(plantedFile, readHeadFile(t, plantedFile, planted))
 	plantedFailures, _ := headVerdicts(plantedScan.found, plantedScan.heads)
-	want := "api/results_retract.go#plantedHeadlessWriter writes a value or a relation out of a tree node and no head row"
-	t.Logf("the copy of %s with two writers planted reads: %s", plantedFile, strings.Join(plantedFailures, "; "))
-	if !slices.Contains(plantedFailures, want) {
-		t.Errorf("the copy of %s with a writer planted that writes no head row reads %q, want %q among it", plantedFile, plantedFailures, want)
+	t.Logf("the copy of %s with three writers planted reads: %s", plantedFile, strings.Join(plantedFailures, "; "))
+	for _, want := range []string{
+		"api/results_retract.go#plantedHeadlessWriter writes a value or a relation out of a tree node and no head row",
+		"api/results_retract.go#plantedUncalledHeadWriter writes a value or a relation out of a tree node and no head row",
+	} {
+		if !slices.Contains(plantedFailures, want) {
+			t.Errorf("the copy of %s with a writer planted that calls no head write reads %q, want %q among it", plantedFile, plantedFailures, want)
+		}
 	}
 	if _, found := plantedScan.found["api/results_retract.go#plantedWriteCaller"]; !found || !plantedScan.heads["api/results_retract.go#plantedWriteCaller"] {
 		t.Errorf("the copy of %s with a writer planted that writes through Write reads it a store writer %t and a head writer %t, want both: Write writes the head rows of what it wrote",
@@ -325,7 +335,7 @@ func TestEveryWriterOfAHeadFactWritesTheHeadRow(t *testing.T) {
 	}
 	causeScan := scan.with(causeFile, readHeadFile(t, causeFile, bytes.Replace(source, headWrite, nil, 1)))
 	causeFailures, _ := headVerdicts(causeScan.found, causeScan.heads)
-	want = "api/broadcasts.go#writeBroadcast leaves its head row to api/server.go#appendCausingEvent, which writes none"
+	want := "api/broadcasts.go#writeBroadcast leaves its head row to api/server.go#appendCausingEvent, which writes none"
 	t.Logf("the copy of %s with the head write of appendCausingEvent taken out reads: %s", causeFile, strings.Join(causeFailures, "; "))
 	if !slices.Contains(causeFailures, want) {
 		t.Errorf("the copy of %s with the head write taken out of appendCausingEvent reads %q, want %q among it", causeFile, causeFailures, want)

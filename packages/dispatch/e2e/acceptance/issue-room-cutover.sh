@@ -16,19 +16,25 @@
 # Verification preamble states it.
 #
 # The conversion. Before it runs `envoy-dispatch convert-issues --project PROJECT` it creates a
-# trigger on document_rooms that raises for B's spec, and it holds a socket on R's spec. It then
-# reads A converted: A's room holds a fragment for each document, each document's text equals its
-# capture character for character, the first part_of the conversion wrote for each document's
-# nodes rises verification-md, plan-md, spec (R21), the tree's walk answers the spec's blocks
-# first, and the room's first update, version 1, is the conversion's. Every doc_updates,
-# doc_snapshots and doc_checkpoints row of A's three old rooms is still stored, and the three
-# document_rooms rows name A's tree. The run names the trigger for B; once the trigger is dropped
-# no document_rooms row and no doc_updates row of a tree of B stands. R's held socket is closed,
-# a write through it reaches nothing, and its reconnection with the state vector it held is
-# admitted to R's room and reads the converted tree. The reconnection then sends the room what the
-# room lacks of the document it kept, the whole of the old room's, as a browser's provider answers
-# the room's sync step 1: the room refuses it and closes the socket (4205), and no block of its
-# old state lands there.
+# trigger on document_rooms that raises for B's spec, and it holds a socket on R's spec, which it
+# reads open just before the run. It then reads A converted: A's room holds a fragment for each
+# document, each document's text equals its capture character for character, the first part_of the
+# conversion wrote for each document's nodes rises verification-md, plan-md, spec (R21), the tree's
+# walk answers the spec's blocks first, and the room's first update, version 1, is the conversion's.
+# Every doc_updates, doc_snapshots and doc_checkpoints row of A's three old rooms is still stored,
+# and the three document_rooms rows name A's tree. The line the run prints for B names B, the
+# trigger and B's spec; once the trigger is dropped no document_rooms row and no doc_updates row of
+# a tree of B stands. R's held socket, open until the run, is closed once the conversion has moved
+# R's spec into R's room: the conversion's transaction announces the move (docs.
+# AnnounceDocumentRooms), and each process closes its room of the moved document
+# (documentRoomsMoved, closeMovedRoom). A write through it reaches nothing, and its reconnection
+# with the state vector it held is admitted to R's room and reads the converted tree. The
+# reconnection then sends the room what the room lacks of the document it kept, the whole of the
+# old room's, as a browser's provider answers the room's sync step 1: the room refuses it and
+# closes the socket (4205), and no block of its old state lands there. A fresh client then reads
+# R's spec again (GET /api/v1/artifacts/{id}, which names R's room and the spec's fragment of it),
+# opens a socket of a document of its own on the spec, as the page's editor does, is admitted to
+# R's room, draws the spec's fragment as the room holds it, and its socket stays open.
 # Two sockets on A, through the spec and through the Verification document, each write a block, and
 # each reads the other's: one room.
 #
@@ -48,12 +54,13 @@
 # admitted to the spec's own room; once the baseline stops, the conversion converts it.
 #
 # Third pass, over an emptied database: the deferral. The driver takes the block index's lease and
-# the reference forms drain's (lib.sh's hold_index_leases: pg_advisory_lock(1280266064,
-# hashtext('block-index')) and the same of 'refs-forms', as duty.Exclusive takes each) on psql
-# sessions of its own and keeps them, since the drain indexes a document through the block index's
-# own index and would index what the block index left owed. Through the earlier release it writes
-# X1, whose Verification document of more than 2,000 blocks that write leaves to the
-# reconciliation (document_block_versions.version reads null), and X2, of a few blocks a document.
+# the reference forms drain's (issue_room_cutover_hold_leases: pg_try_advisory_lock(1280266064,
+# hashtext('block-index')) and the same of 'refs-forms', as duty.Exclusive takes each before a
+# pass, tried again while a pass holds it) on psql sessions of its own and keeps them, since the
+# drain indexes a document through the block index's own index and would index what the block
+# index left owed. Through the earlier release it writes X1, whose Verification document of more
+# than 2,000 blocks that write leaves to the reconciliation (document_block_versions.version reads
+# null), and X2, of a few blocks a document.
 # It boots this head without the hold and with no wait for the backfill. While the leases are
 # held, the dry run and the real run each print X1 and X2 deferred, each naming a document of its
 # issue that owes its block index, the server's log holds the step's deferred line for each, and
@@ -330,6 +337,51 @@ issue_room_cutover_names_document() {
   return 1
 }
 
+# issue_room_cutover_hold_leases SECTION: lib.sh's hold_index_leases, with each lease of
+# index_leases taken as duty.Exclusive takes it before each pass of its loop: `select
+# pg_try_advisory_lock(1280266064, hashtext('<lease>'))`, which answers at once. A session that
+# finds the lease held by a pass ends, and another tries again until it takes it, within
+# index_lease_wait seconds, or SECTION fails. The session that takes it holds it outside any
+# transaction on the same session, files and pids hold_index_leases uses, so lib.sh's
+# give_index_lease and drop_index_leases give it back.
+issue_room_cutover_hold_leases() {
+  local section="$1" name deadline=$((SECONDS + index_lease_wait))
+  require_commands mkfifo timeout
+  for name in "${index_leases[@]}"; do
+    rm -f "$work/lease-$name.hold"
+    mkfifo "$work/lease-$name.hold" || fail "$section" "hold the $name lease" "mkfifo could not make $work/lease-$name.hold"
+    while :; do
+      : >"$work/lease-$name"
+      PGAPPNAME="$(index_lease_session "$name")" env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE \
+        psql "$database_url" -X -Atq -v ON_ERROR_STOP=1 -o /dev/null >/dev/null 2>"$work/lease-$name" <<SQL &
+select pg_try_advisory_lock($index_lease_namespace, hashtext('$name')) as taken \\gset
+\\if :taken
+\\warn the $name lease is held
+\\! timeout $index_lease_seconds sh -c 'read -r line <"\$0"' '$work/lease-$name.hold'
+\\else
+\\warn the $name lease is taken by a pass
+\\endif
+SQL
+      index_lease_pids[$name]=$!
+      until grep -q -E "the $name lease is (held|taken by a pass)" "$work/lease-$name"; do
+        kill -0 "${index_lease_pids[$name]}" 2>/dev/null || break
+        sleep 0.2
+      done
+      if grep -q "the $name lease is held" "$work/lease-$name"; then
+        break
+      fi
+      wait "${index_lease_pids[$name]}" 2>/dev/null || true
+      unset 'index_lease_pids[$name]'
+      grep -q "the $name lease is taken by a pass" "$work/lease-$name" ||
+        fail "$section" "take the $name lease with pg_try_advisory_lock" "psql stopped: $(head -c 300 "$work/lease-$name")"
+      ((SECONDS < deadline)) ||
+        fail "$section" "take the $name lease with pg_try_advisory_lock" "a pass still held it after ${index_lease_wait}s"
+      sleep 0.2
+    done
+  done
+  pass "$section" "this driver took the ${index_leases[*]} leases with pg_try_advisory_lock($index_lease_namespace, hashtext(…)), as duty.Exclusive takes each, and holds them, so neither this head's block index nor its forms drain runs a pass"
+}
+
 # --- setup: the earlier release over an emptied database --------------------------------------
 
 section=setup
@@ -421,6 +473,9 @@ query "$section" "read the store's last seq before the conversion" "select coale
 seq_before="$answer"
 readonly converted_after seq_before
 tree_wait_announcement "$section"
+tree_peer "$section" "read that the socket held on $held_issue's spec is open before the conversion" wait-close held 1
+[[ "$reply" == "open held" ]] ||
+  fail "$section" "the socket held on $held_issue's spec stays open until the conversion runs" "before the conversion the peer answered: $reply"
 issue_room_cutover_run "$section" first
 issue_room_cutover_outcome "$work/first.out" "$whole"
 [[ "$outcome" == converted ]] ||
@@ -482,9 +537,19 @@ for document in "$whole_spec" "$whole_verification" "$whole_plan"; do
       "it held $(<"$work/capture/$document.rows") before the upgrade and holds $rows"
 done
 pass "$section" "every doc_updates, doc_snapshots and doc_checkpoints row of $whole's three old rooms is still stored"
-grep -qF issue_room_cutover_refuse "$work/first.out" ||
-  fail "$section" "the conversion's error names the trigger that refused $second" "its output: $(tail -n 20 "$work/first.out")"
-pass "$section" "the conversion's error for $second names the trigger issue_room_cutover_refuse"
+# The line the run prints for B: it names B, the trigger that raised and B's spec, the row the
+# trigger refused.
+refused_line=""
+refused_pattern="(^|[^A-Za-z0-9-])${second}([^0-9]|\$)"
+while IFS= read -r line; do
+  [[ "$line" =~ $refused_pattern && "$line" == *issue_room_cutover_refuse* ]] || continue
+  refused_line="$line"
+  break
+done <"$work/first.out"
+[[ -n "$refused_line" && "$refused_line" == *"$second_spec"* ]] ||
+  fail "$section" "the conversion's line for $second names the trigger that refused its spec $second_spec" \
+    "it prints ${refused_line:-no line naming $second and issue_room_cutover_refuse}: $(tail -n 20 "$work/first.out")"
+pass "$section" "the conversion's line for $second names the trigger issue_room_cutover_refuse and its spec: $refused_line"
 psql_run "$section" "drop the trigger" <<'SQL'
 drop trigger issue_room_cutover_refuse on document_rooms;
 drop function issue_room_cutover_refuse();
@@ -498,7 +563,10 @@ tree_converted "$section" "$second"
 tree_peer "$section" "wait for the held socket to close" wait-close held 60
 [[ "$reply" == "closed held "* ]] ||
   fail "$section" "the conversion closes the socket held on $held_issue's spec" "the peer answered: $reply"
-pass "$section" "the conversion closed the socket held on $held_issue's spec (${reply#closed held })"
+want_value "$section" "the conversion that closed the held socket moved $held_issue's spec into $held_issue's room" 1 "
+    select count(*) from document_rooms d join issue_trees t on t.artifact_id = d.room
+    where d.artifact_id = '$held_spec' and t.issue_key = '$held_issue'"
+pass "$section" "the socket held on $held_issue's spec, open until the conversion ran, closed (${reply#closed held }) once the conversion moved the spec into $held_issue's room"
 tree_peer "$section" "write through the closed socket" append held prosemirror \
   "$(jq -cn '{type: "paragraph", id: "p-after-close", text: "Written through the held socket after its close."}')"
 [[ "$reply" == "unsent held" ]] || fail "$section" "no write of the held socket reaches a document after the close" "the peer answered: $reply"
@@ -536,6 +604,34 @@ landed="$(jq -r --slurpfile before "$work/held-before.json" \
   '[.[] | .id] as $now | [$before[0][] | .id | select(. as $id | $now | index($id))] | join(", ")' <<<"${reply#blocks probe-held }")"
 [[ -z "$landed" ]] ||
   fail "$section" "no write of the held socket reaches a document after the close" "blocks of its old room landed in $held_issue's tree fragment: $landed"
+# A fresh client: a page that reads the spec again (GET /api/v1/artifacts/{id}, which names the
+# room the document is edited in and its fragment there) and opens a socket of a document of its
+# own on the spec, as the page's editor does, keeping nothing of the old room.
+tree_send GET "/api/v1/artifacts/$held_spec"
+tree_want 200 "$section" "a fresh client reads $held_issue's spec again"
+tree_field "$section" "the room the artifact read names for $held_spec" '.room'
+[[ "$tree_value" == "$held_tree" ]] ||
+  fail "$section" "the artifact read of $held_spec names $held_issue's room $held_tree" "it names the room $tree_value"
+tree_field "$section" "the fragment the artifact read names for $held_spec" '.fragment'
+[[ "$tree_value" == "$held_spec" ]] ||
+  fail "$section" "the artifact read of $held_spec names the spec's own fragment of $held_issue's room" "it names the fragment $tree_value"
+tree_peer_open "$section" fresh "$held_spec"
+for document in "$held_spec" "$held_verification" "$held_plan"; do
+  [[ ",$fragments," == *",$document,"* ]] ||
+    fail "$section" "a fresh client that reads $held_spec again is admitted to $held_issue's room" "its fragments: $fragments, not $document"
+done
+tree_peer "$section" "read the converted spec the fresh client draws" blocks fresh "$held_spec"
+fresh_blocks="${reply#blocks fresh }"
+tree_peer "$section" "read the spec's fragment of $held_issue's room" blocks probe-held "$held_spec"
+room_blocks="${reply#blocks probe-held }"
+[[ "$(jq 'length' <<<"$fresh_blocks")" -gt 0 && "$fresh_blocks" == "$room_blocks" ]] ||
+  fail "$section" "a fresh client that reads $held_spec again reads the converted tree" \
+    "it draws $fresh_blocks, and $held_issue's room holds $room_blocks in the spec's fragment"
+tree_peer "$section" "read that the room keeps the fresh client's socket" wait-close fresh 5
+[[ "$reply" == "open fresh" ]] ||
+  fail "$section" "the room keeps the socket of a fresh client, which sends nothing of an old room" "the peer answered: $reply"
+tree_peer "$section" "close the fresh client's socket" close fresh
+pass "$section" "a fresh client that read $held_spec again was admitted to $held_issue's room, draws the converted spec as the room holds it ($(jq 'length' <<<"$fresh_blocks") blocks), and its socket stays open"
 tree_peer "$section" "close the probe" close probe-held
 tree_peer "$section" "close the held socket" close held
 corpus_wait_settled "$section"
@@ -676,6 +772,16 @@ sections=$((sections + 1))
 # --- dryrun: a dry run names what the real run converts, and changes nothing --------------------
 
 section=dryrun
+# Every document settles while this head is the only process live, before the earlier release
+# boots beside it. The gate's conversion ran with no server up, so the tree of each issue it
+# converted owes its settlement (its version 1, docs' doc_settlements_pending), which only a
+# server's resumption arms: a pass a minute for the whole fleet, under one lease
+# (docs.RunSettlementResumption, "settlement-resumption"), and only for a row a minute old. The
+# earlier release, once live, takes that lease whenever its pass falls earlier in the minute than
+# this head's, and cannot settle an issue's tree (its room load fails `check document issue: no
+# rows in result set`), so the row stood past the wait below for the earlier release's own writes
+# and the run failed there, in about one run in three.
+corpus_wait_settled "$section"
 issue_room_cutover_boot_beside base-dry "$baseline_binary" plain
 beside_pid="$beside_boot_pid"
 base="$beside_boot_url"
@@ -777,7 +883,7 @@ beside_pid="$beside_boot_pid"
 base="$beside_boot_url"
 tree_sign_in "$section" "$person_login"
 tree_create_project "$section" "$project" "The deferral of an issue's conversion"
-hold_index_leases "$section"
+issue_room_cutover_hold_leases "$section"
 issue_room_cutover_write_issue "$section" "An issue whose Verification document is left to the reconciliation" deferred-large "$deferred_blocks"
 large="$written" large_verification="$written_verification"
 issue_room_cutover_write_issue "$section" "An issue of a few blocks a document" deferred-small
