@@ -3464,7 +3464,9 @@ type TableField = "description" | "title";
 
 /** One write of the field the page sent, with its answer once it came. */
 interface LoggedWrite {
-  readonly expected: string | undefined;
+  /** The texts the write named as the ones it may go over: its `expected`, one string or a list
+   *  of them, as a list; empty where it named none. */
+  readonly expected: readonly string[];
   readonly text: string | undefined;
   /** Whether the reader's press of Use my text made it. */
   readonly use: boolean;
@@ -3526,9 +3528,9 @@ async function tableCell(page: Page, field: TableField, title: string): Promise<
     if (request.method() !== "PATCH" || !request.url().endsWith(`/api/v1/priorities/${made.id}`))
       return;
     const body = request.postDataJSON() as Record<string, unknown>;
-    const expected = (body.expected as Record<string, string> | undefined)?.[field];
+    const named = (body.expected as Record<string, string | string[]> | undefined)?.[field];
     const write: LoggedWrite = {
-      expected,
+      expected: named === undefined ? [] : typeof named === "string" ? [named] : named,
       text: body[field] as string | undefined,
       use: cell.using,
     };
@@ -3616,7 +3618,7 @@ async function useMyText(cell: TableCell): Promise<void> {
 }
 
 /** Rule 1 and rule 5 over every write the page sent: a write the server took that named another
- *  person's text as the one it replaced was Use my text's, or named a text the field had taken as
+ *  person's text as one it may replace was Use my text's, or named a text the field had taken as
  *  its start, and no write carries the escapes a reading written back as markdown leaves. */
 function checkWrites(cell: TableCell): void {
   const soft = expect.configure({ soft: true });
@@ -3624,9 +3626,7 @@ function checkWrites(cell: TableCell): void {
     (write) =>
       write.status === 200 &&
       !write.use &&
-      write.expected !== undefined &&
-      cell.others.includes(write.expected) &&
-      !cell.taken.includes(write.expected)
+      write.expected.some((text) => cell.others.includes(text) && !cell.taken.includes(text))
   );
   soft(overwrote, "no write of hers but Use my text replaced another person's text").toEqual([]);
   soft(
@@ -3777,22 +3777,26 @@ async function holdTableWrites(cell: TableCell) {
 
 /** Answers each write of the field 503, with a second's Retry-After, until `stop` presses the
  *  shell's Stop trying for it: the write ends with no answer. Where `reaches` is set, the first
- *  try reaches the server, which takes it, and only its answer is lost. Set before she types. */
+ *  try reaches the server, which takes it, and only its answer is lost. Set before she types. A
+ *  try is counted (`tried`) once its 503 is sent: `stop` goes on, and unroutes, only then. An
+ *  unroute while a try's handler still waits on the server's answer hands that route on
+ *  (Playwright continues a route in flight whose handler is removed), and the handler's
+ *  `route.fulfill` then throws "Route is already handled!". */
 async function refuseTableWrites(cell: TableCell, reaches: boolean) {
   let first = true;
   let tried = 0;
   await cell.page.route(`**/api/v1/priorities/${cell.id}`, async (route) => {
     if (route.request().method() !== "PATCH") return route.fallback();
-    tried += 1;
     if (first && reaches) {
       first = false;
       await route.fetch();
     }
-    return route.fulfill({
+    await route.fulfill({
       headers: { "Retry-After": "1" },
       json: { code: "DATABASE_BUSY", error: "the database is too busy to take this request" },
       status: 503,
     });
+    tried += 1;
   });
   return {
     stop: async () => {
