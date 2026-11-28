@@ -87,11 +87,11 @@ export type ConversationKind = (typeof CONVERSATION_KINDS)[number];
 export interface NodeThreads {
   /** The node's kind as Conversation's read names it, in its `kind` filter's names
    *  (`CONVERSATION_KINDS`, `conversationKindOf`), which are not the tree read's supertags: a
-   *  finding (a `block` or a `lens_block` under its lens) is `finding`, a plain block (`block`)
-   *  is `prose`, and any other node is its supertag where the filter names that kind. Undefined
-   *  for a node of a kind that read does not return, a result or a plan task among them: the
-   *  Contents list gives no entry to a thread on such a node where its tree holds no such node
-   *  (`withThreadEntries`). */
+   *  finding (a block whose id names its lens, or under its lens, whatever its supertag) is
+   *  `finding`, a plain block (`block`) is `prose`, and any other node is its supertag where the
+   *  filter names that kind. Undefined for a node of a kind that read does not return, a result
+   *  or a plan task among them: the Contents list gives no entry to a thread on such a node where
+   *  its tree holds no such node (`withThreadEntries`). */
   readonly conversationKind: ConversationKind | undefined;
   /** The tree id of the node's stored parent (its read parent, else its nearest drawn ancestor,
    *  else the issue): a node drawn under several parents - a check or a plan task also under each
@@ -102,30 +102,36 @@ export interface NodeThreads {
 
 /**
  * `node`'s kind as Conversation's read names it (`NodeThreads.conversationKind`), read as the
- * page reads the kinds that the tree read answers under another supertag. A block (`block` or
- * `lens_block`) is a finding where its id names its lens (`lens/<uuid>#<block id>`) or its read
- * parent is a lens, as `lensTypeOf` and `subjectOf` read one; else a plain block (`block`, of the
+ * page reads the kinds that the tree read answers under another supertag. The finding test comes
+ * first, whatever the node's supertag, as the server's `nodeKind` tests `ParseFindingID` before it
+ * reads a block's typed block: a node is a finding where its id names its lens
+ * (`lens/<uuid>#<block id>`), or where it is a block (of the store kind `block`, or of the
+ * supertag `block` or `lens_block`) whose read parent is a lens, as `lensTypeOf` and `subjectOf`
+ * read one. So a finding whose text opens a typed block such as `:::plan_task`, which the tree
+ * read answers under that block's supertag, is a finding. Else a plain block (`block`, of the
  * store kind `block`) is prose, which the filter takes by the server's kind rule
- * (`isPlainBlock`); else it is of no kind the filter names. Every other node is its supertag
- * where the filter names that kind, and of none otherwise.
+ * (`isPlainBlock`); else a block (`block` or `lens_block`) is of no kind the filter names. Every
+ * other node is its supertag where the filter names that kind, and of none otherwise.
  */
 function conversationKindOf(
   node: TreeAnswerNode,
   onText: OnTextReads
 ): ConversationKind | undefined {
-  if (node.supertag === "block" || node.supertag === "lens_block") {
-    const parent = node.parent;
-    if (
-      node.id.startsWith("lens/") ||
-      (parent !== null &&
-        (parent.kind === "lens" ||
-          parent.supertag === "lens" ||
-          onText.nodes.get(parent.id)?.supertag === "lens"))
-    ) {
-      return "finding";
-    }
-    return node.kind === "block" && node.supertag === "block" ? "prose" : undefined;
+  const parent = node.parent;
+  const block =
+    node.kind === "block" || node.supertag === "block" || node.supertag === "lens_block";
+  if (
+    node.id.startsWith("lens/") ||
+    (block &&
+      parent !== null &&
+      (parent.kind === "lens" ||
+        parent.supertag === "lens" ||
+        onText.nodes.get(parent.id)?.supertag === "lens"))
+  ) {
+    return "finding";
   }
+  if (node.kind === "block" && node.supertag === "block") return "prose";
+  if (node.supertag === "block" || node.supertag === "lens_block") return undefined;
   return CONVERSATION_KINDS.find((kind) => kind === node.supertag);
 }
 

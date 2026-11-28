@@ -415,6 +415,43 @@ test("the reader's comment on a finding the list's tree does not hold has its en
   expect([...kinds.keys()], "what each entry opens").toEqual(entries);
 });
 
+// R8: the server's `nodeKind` names a block node a finding by its id, which names its lens
+// (`ParseFindingID`), before it reads the block's typed block (`refs.TreeNodeType`), so a finding
+// whose text opens `:::plan_task` is a finding, though the tree read answers it as a plan task - a
+// kind Conversation's read returns no node of - of the store kind `block`. The words filter
+// "verdict" keeps the lens and leaves out the finding, so the reader's comment on the finding's
+// words has its entry under the lens. A list that read a block's supertag before its id gives the
+// comment no entry.
+test("the reader's comment on a finding whose text opens a plan task, which the list's tree does not hold, has its entry under the finding's lens", () => {
+  const lens = treeNode("lens-1", "lens", KEY, {
+    attributes: { verdict: "The verdict keeps its source." },
+    text: "The verdict keeps its source.",
+  });
+  const task = {
+    ...treeNode("f3", "plan_task", "lens-1", { text: "A finding names the task that ends it." }),
+    id: "lens/lens-1#f3",
+  };
+  const onTask = onNode("on-f3", 7, task.id, "block", "names");
+  const tree = treeOf([...seededNodes([]), lens, task, onTask.node], SERVES);
+  const { list, threads } = listAndThreads(tree, [onTask.comment], "verdict");
+  const held = threads.get("f3");
+  const entries = [onTask.comment.id];
+
+  expect(
+    held?.conversationKind,
+    "a finding read as `plan_task` is not the read's kind of a finding"
+  ).toBe("finding");
+  expect(held?.parent, "the finding's thread does not hang from its lens").toBe("lens-1");
+  const ids = idsIn(list);
+  expect(ids, "the words filter leaves out the lens").toContain("lens-1");
+  expect(ids, "the list's tree holds the finding read as `plan_task`").not.toContain("f3");
+  const { kinds, root } = withThreadEntries(list, threads, "alice", KEY);
+  expect(childrenOf(root, "lens-1"), "the entries under the lens").toEqual(entries);
+  const listed = shape(contentsOf(root, "alice", producingMessages(root)));
+  expect(listed, "the list's entries").toEqual(entries);
+  expect([...kinds.keys()], "what each entry opens").toEqual(entries);
+});
+
 // R8: a block of a converted document is a node Conversation's read returns, as prose, though
 // the tree read answers it as a plain block (`block`) and Conversation, with no filter on, draws
 // no row of it (root R1: the conversation's own blocks are the ones written in it). The reader's
