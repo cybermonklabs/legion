@@ -24,19 +24,36 @@ import (
 const poolHoldEnv = "STORETEST_POOL_HOLD"
 
 // stopsOnFatal is t with its Fatal and Fatalf recorded rather than failing t, for a call the row
-// runs in a goroutine of its own and whose failure it reads: each sends its message and ends that
-// goroutine. Every other method is t's, Deadline among them, so testdb.ConnectEnd reads t's.
+// runs in a goroutine of its own and whose failure it reads: until returned is closed, which the
+// row does when that call returns, each sends its message and ends that goroutine. Every other
+// method is t's, Deadline among them, so testdb.ConnectEnd reads t's. A cleanup the call
+// registered through it runs once t ends, after the call returned and its failure was read, so a
+// Fatal or Fatalf after returned is closed fails t itself, by name: recorded, it would be read by
+// no one, and the cleanup's failure lost.
 type stopsOnFatal struct {
 	*testing.T
-	failed chan<- string
+	failed   chan<- string
+	returned <-chan struct{}
 }
 
 func (s stopsOnFatal) Fatalf(format string, args ...any) {
+	select {
+	case <-s.returned:
+		s.T.Helper()
+		s.T.Fatalf(format, args...)
+	default:
+	}
 	s.failed <- fmt.Sprintf(format, args...)
 	runtime.Goexit()
 }
 
 func (s stopsOnFatal) Fatal(args ...any) {
+	select {
+	case <-s.returned:
+		s.T.Helper()
+		s.T.Fatal(args...)
+	default:
+	}
 	s.failed <- fmt.Sprint(args...)
 	runtime.Goexit()
 }
@@ -49,7 +66,7 @@ func fatalOf(t *testing.T, call func(t testing.TB)) string {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		call(stopsOnFatal{T: t, failed: failed})
+		call(stopsOnFatal{T: t, failed: failed, returned: done})
 	}()
 	<-done
 	select {
@@ -148,8 +165,10 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool(t *testing
 	began := time.Now()
 	go func() {
 		defer close(done)
-		Empty(stopsOnFatal{T: t, failed: failed})
+		Empty(stopsOnFatal{T: t, failed: failed, returned: done})
 	}()
+	// The bound this row proves, past the product's own: a shared wait gives up at the connect end
+	// itself, where the statement's wait, whole seconds rounded down, ends up to a second before.
 	giveUp := time.NewTimer(time.Until(end.Add(testwait.Margin / 2)))
 	defer giveUp.Stop()
 	select {
@@ -167,7 +186,9 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool(t *testing
 	case <-giveUp.C:
 		t.Errorf("Empty's statement had not ended %s after it began, %s past the connect end: its wait for one of the admin pool's connections outlasts that end", time.Since(began).Round(time.Second), time.Since(end).Round(time.Second))
 		// The verdict is given; the statement returns once a held login is let go, which this
-		// waits for so it does not register a cleanup on a finished test. A hang guard only.
+		// waits for so it does not register a cleanup on a finished test. A hang guard only, past
+		// the connect end, where every shared wait gives up, and before go test's alarm, so the
+		// cleanups still drop the hold.
 		guard := time.NewTimer(time.Until(end.Add(testwait.Margin - 5*time.Second)))
 		defer guard.Stop()
 		select {
@@ -275,8 +296,10 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileEveryAdminConnectionIsHeldC
 	began := time.Now()
 	go func() {
 		defer close(done)
-		Empty(stopsOnFatal{T: t, failed: failure})
+		Empty(stopsOnFatal{T: t, failed: failure, returned: done})
 	}()
+	// The bound this row proves, past the product's own: a shared wait gives up at the connect end
+	// itself, where Empty's wait, whole seconds rounded down, ends up to a second before.
 	giveUp := time.NewTimer(time.Until(end.Add(testwait.Margin / 2)))
 	defer giveUp.Stop()
 	select {
@@ -293,7 +316,8 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileEveryAdminConnectionIsHeldC
 	case <-giveUp.C:
 		t.Errorf("Empty had not ended %s after it began, %s past the connect end: its wait for one of the admin pool's connections outlasts that end", time.Since(began).Round(time.Second), time.Since(end).Round(time.Second))
 		// The verdict is given. The held connections are let go so the wait ends, and the row waits
-		// for Empty so it does not register a cleanup on a finished test. A hang guard only.
+		// for Empty so it does not register a cleanup on a finished test. A hang guard only, past
+		// the connect end, where every shared wait gives up, and before go test's alarm.
 		letGo()
 		guard := time.NewTimer(time.Until(end.Add(testwait.Margin - 5*time.Second)))
 		defer guard.Stop()

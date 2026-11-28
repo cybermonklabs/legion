@@ -158,9 +158,34 @@ func clone(t testing.TB, template string) *store.Store {
 // failed, or the defect it caught, can leave the code under test holding one for good, parked on a
 // fake clock no one moves or a gate no one opens. The wait then fails naming what, the pool, where
 // Close alone would hang the test binary to its timeout.
+//
+// The shared wait gives up at the connect end (testdb.ConnectEnd and testwait.GiveUpAt name the
+// same moment), and past it asks once and fails, so in a cleanup that runs past that end, as the
+// cleanups of a test that makes its statements past it do
+// (TestATestsAdminStatementPastTheConnectEndStillRuns), it would give up on a Close still
+// destroying the pool's idle connections. Where the shared wait leaves Close less than
+// testdb.TimeoutUntil gives, the bound adminExec's wait for a connection takes, a second at or past
+// the end, Close waits under that bound instead, and one still waiting at it fails t by name.
 func closeThroughTheSharedWait(t testing.TB, what string, pool *store.Pool) {
 	testcleanup.Add(t, func() {
-		testwait.Returns(t, "every connection of "+what+" to come back, so the pool closes", pool.Close)
+		end, bounded := testdb.ConnectEnd(t)
+		if !bounded || testdb.TimeoutUntil(end) <= time.Until(end) {
+			testwait.Returns(t, "every connection of "+what+" to come back, so the pool closes", pool.Close)
+			return
+		}
+		bound := testdb.TimeoutUntil(end)
+		closed := make(chan struct{})
+		go func() {
+			defer close(closed)
+			pool.Close()
+		}()
+		timer := time.NewTimer(bound)
+		defer timer.Stop()
+		select {
+		case <-closed:
+		case <-timer.C:
+			t.Fatalf("storetest: every connection of %s had not come back %s after its cleanup began, the bound testdb.TimeoutUntil gives a wait at or past the connect end, as adminExec's, so the pool did not close", what, bound)
+		}
 	})
 }
 

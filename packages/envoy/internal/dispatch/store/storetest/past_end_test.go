@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -27,18 +29,22 @@ const pastEndChildTimeout = 60 * time.Second
 
 // TestATestsAdminStatementPastTheConnectEndStillRuns: a test may make its admin statements after
 // its connect end, on a server that answers, and they run. The child, under -timeout 60s, makes
-// one statement before its connect end (Empty), so the admin pool holds an idle connection and
-// the statements after the end need no new connect; it waits until a second past that end, then
-// asks for an empty database (Empty) and a store cloned from a template it makes (OpenFrom: the
-// template's create, its alter and the clone). docs' leak-check child does this under load, its
-// template still being made 5 s past its connect end. A deadline on the statement itself, rather
-// than on its wait for one of the admin pool's connections, fails each of them on an expired
-// context, at once.
+// one statement first (Empty), begun 30 s before its connect end, so the admin pool holds an idle
+// connection and the statements after the end need no new connect; it waits until a second past
+// that end, then asks for an empty database (Empty) and a store cloned from a template it makes
+// (OpenFrom: the template's create, its alter and the clone). docs' leak-check child does this
+// under load, its template still being made 5 s past its connect end. A deadline on the statement
+// itself, rather than on its wait for one of the admin pool's connections, fails each of them on
+// an expired context, at once. The clone's pool, which its cleanup closes once the child's test
+// ends, past the connect end, under the bound adminExec's wait takes there
+// (closeThroughTheSharedWait), must then be closed, which the child reads in a cleanup that runs
+// after the clone's, whatever that close's own wait reported.
 //
-// The row says nothing on a machine too slow for its windows, and skips there, by name: where the
-// child's first statement ends past its connect end, or where a statement past the end fails on
-// one of the two waits that past the end have a second each, judged by the wait itself and not by
-// how long its step took (pastEndWait). The child skips, and this row skips on the child's skip.
+// The row says nothing on a machine too slow for its windows, and skips there, by name: where a
+// statement fails on a wait the connect end bounds that ran out, judged by the wait itself and not
+// by how long its step took (pastEndWait): before the end, the first statement's wait for the
+// admin pool, whose bound is the seconds left until the end; past it, one of the two waits that
+// past the end have a second each. The child skips, and this row skips on the child's skip.
 func TestATestsAdminStatementPastTheConnectEndStillRuns(t *testing.T) {
 	if os.Getenv(pastEndChildEnv) != "" {
 		t.Skip("this is the child's binary")
@@ -74,60 +80,88 @@ func TestATestsAdminStatementPastTheConnectEndStillRunsChild(t *testing.T) {
 	if !bounded {
 		t.Fatal("the child runs with no -test.timeout, so it has no connect end to be past")
 	}
-	began := time.Now()
-	failure := fatalOf(t, func(t testing.TB) { Empty(t) })
-	if past := time.Since(end); past >= 0 {
-		t.Skipf("the child's first statement (Empty) ended %s past its connect end, %s after it began (it answered %q): this machine is too slow for the row to say anything", past.Round(time.Millisecond), time.Since(began).Round(time.Millisecond), failure)
-	}
-	if failure != "" {
-		t.Fatalf("the child's first statement (Empty), before its connect end, failed: %s", failure)
-	}
+	// The clone's store, whose pool its cleanup closes once this test ends, past the connect end.
+	// Registered before the steps, this runs after their cleanups: that close must have finished,
+	// every connection of the pool destroyed, whatever its own wait reported.
+	var cloned *store.Store
+	testcleanup.Add(t, func() {
+		if cloned == nil {
+			return
+		}
+		if open := cloned.Pool.Stat().TotalConns(); open != 0 {
+			t.Fatalf("the clone's pool still had %d connections once its cleanup had run, past the connect end: its close did not finish", open)
+		}
+		t.Log("the clone's pool closed in its cleanup, past the connect end")
+	})
+	// One statement first, so the admin pool holds an idle connection. Whenever it ends, the
+	// statements after it run past the connect end: a failure of it skips only as pastEndWait
+	// judges the failure itself, never on the moment it ended.
+	stepRan(t, "the child's first statement (Empty)", fatalOf(t, func(t testing.TB) { Empty(t) }))
+	// The row's subject is a statement made past the connect end, which is the moment this
+	// binary's shared waits give up (testwait.GiveUpAt), so no shared wait can wait past it.
 	time.Sleep(time.Until(end.Add(time.Second)))
 	for _, step := range []struct {
 		name string
 		call func(t testing.TB)
 	}{
 		{"Empty", func(t testing.TB) { Empty(t) }},
-		{"OpenFrom", func(t testing.TB) { OpenFrom(t, "past-the-connect-end", func(string) error { return nil }) }},
+		{"OpenFrom", func(t testing.TB) { cloned = OpenFrom(t, "past-the-connect-end", func(string) error { return nil }) }},
 	} {
 		began := time.Now()
 		failure := fatalOf(t, step.call)
 		took := time.Since(began)
-		if failure == "" {
-			continue
-		}
-		if why, skip := pastEndWait(t, failure); skip {
-			t.Skipf("%s, begun %s past the connect end, failed after %s because %s: this machine is too slow for the row to say anything: %s", step.name, began.Sub(end).Round(time.Millisecond), took.Round(time.Millisecond), why, failure)
-		} else if why != "" {
-			t.Fatalf("%s, begun %s past the connect end, failed after %s, and %s: %s", step.name, began.Sub(end).Round(time.Millisecond), took.Round(time.Millisecond), why, failure)
-		}
-		t.Fatalf("%s, begun %s past the connect end, failed after %s: %s", step.name, began.Sub(end).Round(time.Millisecond), took.Round(time.Millisecond), failure)
+		stepRan(t, fmt.Sprintf("%s, begun %s past the connect end and ended %s later,", step.name, began.Sub(end).Round(time.Millisecond), took.Round(time.Millisecond)), failure)
 	}
 	t.Logf("Empty and OpenFrom ran %s past the connect end", time.Since(end).Round(time.Millisecond))
 }
 
-// pastEndWait judges failure, a fatal of Empty or OpenFrom that the child made past its connect
-// end. Past the end two waits have a second each: adminExec's wait for one of the admin pool's
-// connections (its semaphore, pgxpool's ping of a connection idle more than a second, or a new
-// connection's connect), and the connect of the store a clone opens, whose connect_timeout is
-// then a second (testdb.WithConnectDeadline). A failure of either is the machine's, and skips,
-// only as the wait itself shows it, whatever the step's other statements took before it:
+// stepRan ends the child where what, a step of it, failed (failure, its fatal, is not ""): a skip
+// where pastEndWait judges the failure the machine's, a fatal otherwise. A step that returned must
+// leave every connection of the admin pool let go: adminExec releases its connection before it
+// returns, the child makes its statements one at a time, and no drop is in flight, so a connection
+// still held is one a statement never let go.
+func stepRan(t *testing.T, what, failure string) {
+	t.Helper()
+	if failure == "" {
+		if held := shared.admin.Stat().AcquiredConns(); held != 0 {
+			t.Fatalf("%s returned with %d of the admin pool's connections still held: a statement never let its connection go", what, held)
+		}
+		return
+	}
+	why, skip := pastEndWait(failure)
+	if skip {
+		t.Skipf("%s failed because %s: this machine is too slow for the row to say anything: %s", what, why, failure)
+	}
+	if why != "" {
+		t.Fatalf("%s failed, and %s: %s", what, why, failure)
+	}
+	t.Fatalf("%s failed: %s", what, failure)
+}
+
+// pastEndWait judges failure, a fatal of Empty or OpenFrom. A failure is the machine's, and skips,
+// only where a wait the connect end bounds ran out, as the wait itself shows it, whatever the
+// step's other statements took before it. Before the end that is adminExec's wait for one of the
+// admin pool's connections, whose bound is the seconds left until the end. Past the end two waits
+// have a second each: adminExec's wait (its semaphore, pgxpool's ping of a connection idle more
+// than a second, or a new connection's connect), and the connect of the store a clone opens, whose
+// connect_timeout is then a second (testdb.WithConnectDeadline):
 //   - the store's: a connect that timed out ("failed to connect to" with pgconn's "timeout: "). A
 //     deadline on store.Open's context, which past the end has passed, fails its ping at once on
 //     the context's bare error, which says neither.
-//   - the acquire's: a wait that ran its whole bound, a second past the end, and then failed with
-//     no admin connection held. adminExec's error says how long it waited and its bound
-//     ("waited 1.001s of a 1s bound"); an acquire that failed at once, as one whose deadline is
-//     the connect end itself does past that end, says it waited less, and fails the row, as does
-//     an error that does not say. The child makes its statements one at a time with no drop in
-//     flight, so a connection still held is one never let go. A ping that ran out holds its
-//     connection a moment past the wait (pgxpool's Acquire lets the ping end under the same
-//     deadline, then destroys it: pool.go:660-698 at v5.13.0), so the count is read again until
-//     it is 0, or until 5 s before the child's alarm.
+//   - the acquire's: a wait that ran its whole bound and then failed with no admin connection held
+//     but the one a ping that ran out holds. adminExec's error says how long it waited and its
+//     bound ("waited 1.001s of a 1s bound"); an acquire that failed at once, as one whose deadline
+//     is the connect end itself does past that end, says it waited less, and fails the row, as
+//     does an error that does not say. The child makes its statements one at a time with no drop
+//     in flight, and each step that returned let every connection go (stepRan), so a connection
+//     held as the step failed is one of its statements, or the ping its wait abandoned: pgxpool's
+//     Acquire lets that ping end under the same deadline, then destroys its connection
+//     (pool.go:660-698 at v5.13.0). So more than one held is a connection never let go, read once:
+//     past the connect end no shared wait can wait for the ping's.
 //
 // It answers skip and the reason, or no skip and why the failure is the row's ("" where nothing
 // more is to be said).
-func pastEndWait(t *testing.T, failure string) (why string, skip bool) {
+func pastEndWait(failure string) (why string, skip bool) {
 	switch {
 	case strings.HasPrefix(failure, "open isolated database: "):
 		if strings.Contains(failure, "failed to connect to ") && strings.Contains(failure, "timeout: ") {
@@ -147,14 +181,10 @@ func pastEndWait(t *testing.T, failure string) (why string, skip bool) {
 		if waited < bound {
 			return fmt.Sprintf("its wait for an admin connection failed after %s of its %s bound, so it did not wait for one: the wait's deadline had passed before it began", waited, bound), false
 		}
-		began := time.Now()
-		released := testwait.Holds(testwait.Bounded(t, time.Minute, 5*time.Second), testwait.Poll, func() bool {
-			return shared.admin.Stat().AcquiredConns() == 0
-		})
-		if !released {
-			return fmt.Sprintf("%d of the admin pool's connections were still held %s later: a connection was never let go", shared.admin.Stat().AcquiredConns(), time.Since(began).Round(time.Second)), false
+		if held := shared.admin.Stat().AcquiredConns(); held > 1 {
+			return fmt.Sprintf("%d of the admin pool's connections were held as it failed, more than the one a ping that ran out holds: a connection was never let go", held), false
 		}
-		return fmt.Sprintf("its wait for an admin connection ran its %s bound with no connection held", bound), true
+		return fmt.Sprintf("its wait for an admin connection ran its %s bound with no connection held but, at most, the one its abandoned ping holds", bound), true
 	}
 	return "", false
 }

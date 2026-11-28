@@ -66,6 +66,8 @@ func TestALaterAdminConnectionEndsByTheConnectEnd(t *testing.T) {
 		}
 	}
 	t.Logf("every login of this binary's admin pool held 900 s from %s", time.Now().UTC().Format(time.RFC3339))
+	// The stage of the row's subject, not a wait for a fact: only wall time between the pool's first
+	// connection and this one tells a bound taken as a connection is made from one fixed at the first.
 	time.Sleep(wait)
 	shared.admin.Reset()
 	began := time.Now()
@@ -74,6 +76,8 @@ func TestALaterAdminConnectionEndsByTheConnectEnd(t *testing.T) {
 		_, err := shared.admin.Exec(ctx, "select 1")
 		answered <- err
 	}()
+	// The bound this row proves, past the product's own: a shared wait gives up at the connect end
+	// itself, where the connect's own timeout, whole seconds rounded down, comes up to a second before.
 	giveUp := time.NewTimer(time.Until(end.Add(testwait.Margin / 2)))
 	defer giveUp.Stop()
 	select {

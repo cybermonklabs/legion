@@ -3,7 +3,6 @@ package storetest
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -37,6 +36,11 @@ const teardownEndChildTimeout = 60 * time.Second
 // drop it whatever the child's Run did with it.
 var teardownEndTemplate = regexp.MustCompile(`the child made the template (dispatch_template_[0-9a-f]+)`)
 
+// teardownEndBound is the line in which the child's Run names a database whose drop was still
+// waiting at the teardown's bound, with Run's own record of when that bound came: how long after
+// the child's tests began (awaitDrops).
+var teardownEndBound = regexp.MustCompile(`storetest: drop database (\S+): still waiting at the teardown's bound, (\S+) after the tests began`)
+
 // TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered is Tester5486's finding at f358579ae6 on
 // cybermonklabs/legion#5189, made a row: a drop whose statement the server never answers held Run,
 // and with it the test binary, until cmd/go's kill ("ran too long", naming no drop and no
@@ -45,14 +49,17 @@ var teardownEndTemplate = regexp.MustCompile(`the child made the template (dispa
 // each drop's statement (holdDrops): the clone's drop, which its test's cleanup starts, and the
 // template's, which Run starts once the tests return. Run must then end at its bound,
 // testdb.TeardownGrace past the child's -timeout, with a line naming each of the two databases,
-// and exit with its tests' code. A Run whose wait for the drops has no bound never ends, and this
-// row kills the child and fails by name testwait.Margin past that bound. A Run that starts the
-// template's drop only after the clones' drops have ended never sends it once a clone's drop
-// reaches the bound, and leaves the template unnamed: the relay then holds no template's drop, and
-// the row fails by name (review 6067498217 at 5d0efe15a1). The row fails, too, where the child
-// ended before its bound: then nothing held its teardown, and the run proves nothing. It drops the
-// child's databases itself, on the server directly. The child skips, and this row on its skip,
-// where its OpenFrom failed past its connect end, too slow for the row to say anything.
+// and exit with its tests' code. When the bound came is Run's own record, the time its lines say
+// it came after the child's tests began, not a span this row measures. A Run whose wait for the
+// drops has no bound never ends: this row's wait for the child, on the shared wait's context,
+// gives up where every shared wait of the binary does, kills the child and fails by name. A Run
+// that starts the template's drop only after the clones' drops have ended never sends it once a
+// clone's drop reaches the bound, and leaves the template unnamed: the relay then holds no
+// template's drop, and the row fails by name (review 6067498217 at 5d0efe15a1). The row fails,
+// too, where Run's lines say its bound came before TeardownGrace past the child's -timeout. It
+// drops the child's databases itself, on the server directly. The child skips, and this row on its
+// skip, where its OpenFrom failed on a wait its connect end bounds that ran out (pastEndWait), too
+// slow for the row to say anything.
 //
 // It waits about 90 s, to the child's bound, and only on its child, so it runs beside this
 // package's other rows that only wait on a child (t.Parallel), which Go starts once the package's
@@ -92,23 +99,19 @@ func TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered(t *testing.T) {
 	})
 
 	bound := teardownEndChildTimeout + testdb.TeardownGrace
-	giveUp := bound + testwait.Margin
-	ctx, cancel := context.WithTimeout(testwait.Context(t), giveUp)
-	defer cancel()
+	ctx := testwait.Context(t)
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestTheTeardownEndsAtItsBoundChild$", "-test.timeout="+teardownEndChildTimeout.String(), "-test.v")
 	child.Env = append(os.Environ(), DatabaseURLEnv+"="+server.String(), teardownEndChildEnv+"=1")
 	child.Stdout, child.Stderr = &output, &output
-	began := time.Now()
 	err := child.Run()
-	took := time.Since(began)
 	for _, hold := range relay.holds() {
 		t.Logf("the relay held %s", hold)
 	}
 	if ctx.Err() != nil {
-		t.Fatalf("the child was still running %s after it began, %s past its teardown's bound, so it was killed: Run waits for a drop the server never answers with no bound:\n%s", took.Round(time.Second), (took - bound).Round(time.Second), &output)
+		t.Fatalf("the child was still running where this test's waits give up, so it was killed: Run waits for a drop the server never answers with no bound:\n%s", &output)
 	}
 	if err != nil {
-		t.Fatalf("the child exited %v after %s: Run did not end at its bound with its tests' code:\n%s", err, took.Round(time.Second), &output)
+		t.Fatalf("the child exited %v: Run did not end at its bound with its tests' code:\n%s", err, &output)
 	}
 	if strings.Contains(output.String(), "--- SKIP: TestTheTeardownEndsAtItsBoundChild (") {
 		t.Skipf("the child skipped, so this machine was too slow for the row to say anything:\n%s", &output)
@@ -131,16 +134,25 @@ func TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered(t *testing.T) {
 	if len(templateDrops) == 0 {
 		t.Fatalf("the relay held no template's drop: Run sent none by its bound, so the template stays on the server, named by no line:\n%s", &output)
 	}
+	came := map[string]string{}
+	for _, match := range teardownEndBound.FindAllStringSubmatch(output.String(), -1) {
+		came[match[1]] = match[2]
+	}
 	named := append(clones, templateDrops...)
 	for _, name := range named {
-		if line := "storetest: drop database " + name + ": still waiting at the teardown's bound"; !strings.Contains(output.String(), line) {
-			t.Fatalf("the child ended without the line %q, so its teardown did not end at its bound naming that database:\n%s", line, &output)
+		after, ok := came[name]
+		if !ok {
+			t.Fatalf("the child ended without the line %q, so its teardown did not end at its bound naming that database:\n%s", "storetest: drop database "+name+": still waiting at the teardown's bound", &output)
+		}
+		at, err := time.ParseDuration(after)
+		if err != nil {
+			t.Fatalf("Run names %s at its teardown's bound %q after the child's tests began, which does not read as a duration:\n%s", name, after, &output)
+		}
+		if at < bound {
+			t.Fatalf("Run names %s at its teardown's bound %s after the child's tests began, before that bound, %s in (testdb.TeardownGrace past the child's -timeout): its wait for the drops ended early:\n%s", name, at, bound, &output)
 		}
 	}
-	if took < bound {
-		t.Fatalf("the child ended %s after it began, before its teardown's bound %s in: nothing held its drops, so this run proves nothing:\n%s", took.Round(time.Millisecond), bound, &output)
-	}
-	t.Logf("the child ended %s after it began, at its teardown's bound (%s in), naming %s", took.Round(time.Second), bound, strings.Join(named, " and "))
+	t.Logf("the child's Run named %s at its teardown's bound, which its lines say came %s after its tests began (the bound: %s)", strings.Join(named, " and "), came[named[0]], bound)
 }
 
 // TestTheTeardownEndsAtItsBoundChild is the child of
@@ -151,7 +163,7 @@ func TestTheTeardownEndsAtItsBoundChild(t *testing.T) {
 		t.Skip(teardownEndChildEnv + " is not set: this test is the child of TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered")
 	}
 	ready(t)
-	end, bounded := testdb.ConnectEnd(t)
+	_, bounded := testdb.ConnectEnd(t)
 	if !bounded {
 		t.Fatal("the child runs with no -test.timeout, so its teardown has no bound")
 	}
@@ -163,10 +175,14 @@ func TestTheTeardownEndsAtItsBoundChild(t *testing.T) {
 	}
 	templates.Unlock()
 	if failure != "" {
-		if past := time.Since(end); past >= 0 {
-			t.Skipf("the child's OpenFrom failed %s past its connect end, too slow for the row to say anything: %s", past.Round(time.Millisecond), failure)
+		why, skip := pastEndWait(failure)
+		if skip {
+			t.Skipf("the child's OpenFrom failed because %s, too slow for the row to say anything: %s", why, failure)
 		}
-		t.Fatalf("the child's OpenFrom, before its connect end, failed: %s", failure)
+		if why != "" {
+			t.Fatalf("the child's OpenFrom failed, and %s: %s", why, failure)
+		}
+		t.Fatalf("the child's OpenFrom failed: %s", failure)
 	}
 }
 
