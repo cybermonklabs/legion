@@ -198,6 +198,8 @@ var settings = []setting{
 		Description: "The model each request names."},
 	{Name: "DISPATCH_WEB_DIST", Default: "the `packages/dispatch/web/dist` directory found from the binary's location", Required: "no",
 		Description: "Directory of the built dashboard the server serves."},
+	{Name: "DISPATCH_WEB_DIST_REQUIRED", Required: "no",
+		Description: "Set to `1` to refuse startup when the web dist holds no `index.html`, rather than serve no dashboard."},
 	{Name: "DISPATCH_DEV_SIGNIN", Required: "no",
 		Description: "Set to `1` on a loopback-only local server to sign anyone in by email at `/auth/_dev/signin` without the sign-in issuer; refused alongside any `DISPATCH_SIGNIN_*` setting, `DISPATCH_SIGNIN_DOMAIN` included."},
 	{Name: "DISPATCH_DEV_SIGNIN_SHARED_KEY", Default: "a key generated for each process", Required: "no",

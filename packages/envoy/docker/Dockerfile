@@ -176,6 +176,7 @@ ARG LEGION_COMMIT=
 LABEL org.opencontainers.image.revision=${LEGION_COMMIT}
 
 ENV DISPATCH_WEB_DIST=/srv/dispatch-web
+ENV DISPATCH_WEB_DIST_REQUIRED=1
 
 USER envoy
 

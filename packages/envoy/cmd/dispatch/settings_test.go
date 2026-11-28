@@ -1830,6 +1830,17 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("web dist = %q, %v", dir, err)
 			}
 		},
+		"DISPATCH_WEB_DIST_REQUIRED": func(t *testing.T) {
+			empty, built := t.TempDir(), filepath.Dir(writeFile(t, "index.html", "<!doctype html>"))
+			resolveWith(t, map[string]string{"DISPATCH_WEB_DIST": empty})
+			resolveWith(t, map[string]string{"DISPATCH_WEB_DIST": built, "DISPATCH_WEB_DIST_REQUIRED": "1"})
+			refusedWith(t, map[string]string{"DISPATCH_WEB_DIST": empty, "DISPATCH_WEB_DIST_REQUIRED": "1"},
+				"DISPATCH_WEB_DIST_REQUIRED=1, but "+empty+" holds no index.html")
+			for _, value := range []string{"0", "true"} {
+				refusedWith(t, map[string]string{"DISPATCH_WEB_DIST": built, "DISPATCH_WEB_DIST_REQUIRED": value},
+					`DISPATCH_WEB_DIST_REQUIRED="`+value+`" (expected 1 or unset)`)
+			}
+		},
 		"DISPATCH_FILE_STORE_BUCKET": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_FILE_STORE_BUCKET": " example-files-bucket "}); boot.FileStoreBucket != "example-files-bucket" {
 				t.Errorf("FileStoreBucket = %q, want the trimmed bucket name", boot.FileStoreBucket)

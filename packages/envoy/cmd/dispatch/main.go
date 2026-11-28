@@ -2065,6 +2065,19 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if !devSignIn && boot.Embedder.Place == embed.PlaceDev {
 		return bootConfig{}, errors.New("DISPATCH_DEV_EMBEDDER is read only with DISPATCH_DEV_SIGNIN=1, by the processes of one local harness; unset it, and set DISPATCH_EMBEDDER to embed a deployment's text at a model service")
 	}
+	switch flag := env.get("DISPATCH_WEB_DIST_REQUIRED"); flag {
+	case "":
+	case "1":
+		dir, err := defaultWebDistDir(boot.WebDist)
+		if err != nil {
+			return bootConfig{}, err
+		}
+		if _, _, err := dashboard.BuildID(dir); errors.Is(err, dashboard.ErrNoBuild) {
+			return bootConfig{}, fmt.Errorf("DISPATCH_WEB_DIST_REQUIRED=1, but %s holds no index.html", dir)
+		}
+	default:
+		return bootConfig{}, fmt.Errorf("DISPATCH_WEB_DIST_REQUIRED=%q (expected 1 or unset)", flag)
+	}
 
 	if devSignIn {
 		if err := devSignInFence(boot, env); err != nil {
