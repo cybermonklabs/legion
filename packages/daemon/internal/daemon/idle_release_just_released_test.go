@@ -150,17 +150,18 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 // session reads gone, and the daemon then queues its role two hook prompts, each a row of the
 // role-message lane, as two hooks of the deployment firing on one move back queue them. No
 // sender tries either again. The first row's first attempt wakes the pod (wakeForDelivery) and
-// waits on its backoff, and each row's attempts after that resume has launched publish, with
-// keep, while the woken session has not claimed the role yet: its process is held before it
-// registers with the listener (idleRigPlan.HoldsBeforeEnvoy), as a woken Oh My Pi is still
-// starting then. No live session holds the role, and the publish names no source session, so the
-// listener refuses it with nothing kept (404, its request line's outcome role_no_source_session),
-// and each row waits on its backoff (publishKeptToRole). The process is held until the listener has
-// refused each prompt twice, past two of the row's backoff steps. Once the process goes on, its
-// registration and its claim of the role give the role a live holder, and each row's next attempt
-// delivers its prompt to the woken session. A refused publish stores nothing, so each prompt
-// reaches that session once. A row that ended at the refusal, as the daemon's rows did when the
-// listener kept such a publish, would leave the woken session with no prompt at all.
+// waits on its backoff. Once the woken launch has registered with the daemon each row publishes
+// to it once, with keep, while the woken session has not claimed the role yet: its process is
+// held before it registers with the listener (idleRigPlan.HoldsBeforeEnvoy), as a woken Oh My Pi
+// is still starting then, and the gate publishes at most once to a launch that has not said it is
+// ready (roleWaitGate). No live session holds the role, and the publish names no source session,
+// so the listener refuses it with nothing kept (404, its request line's outcome
+// role_no_source_session), and each row waits (publishKeptToRole). The process is held until the
+// listener has refused each prompt. Once the process goes on, its registration and its claim of
+// the role give the role a live holder, its ready makes each row due at once, and each row's next
+// attempt delivers its prompt to the woken session. A refused publish stores nothing, so each
+// prompt reaches that session once. A row that ended at the refusal, as the daemon's rows did
+// when the listener kept such a publish, would leave the woken session with no prompt at all.
 func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 	t.Helper()
 	issue := rig.issue(idleRigJustReleasedOutbox)
@@ -187,19 +188,20 @@ func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 	enqueueOutbox(t, rig.pool, rig.records, mustOutboxRow(t, issue.key, hook, now))
 	enqueueOutbox(t, rig.pool, rig.records, mustOutboxRow(t, issue.key, loop, now))
 
-	// 3. The woken process registers with the daemon and holds. Each publish meets a role no live
-	//    session holds, which the listener refuses, and both rows wait: the process holds until
-	//    the listener has refused each prompt twice, and both rows are still in the outbox then.
+	// 3. The woken process registers with the daemon and holds. Each row's publish to that launch
+	//    meets a role no live session holds, which the listener refuses, and both rows wait: the
+	//    process holds until the listener has refused each prompt, and both rows are still in the
+	//    outbox then.
 	idleRigEventually(t, "the woken process of "+issue.key+" registered with the daemon", func() bool {
 		return rig.agents.role(issue.key, string(issue.role)).Registered > registered
 	})
 	for _, prompt := range []record.HookPrompt{hook, loop} {
-		idleRigEventually(t, "the listener refusing the "+prompt.Hook+" prompt to "+issue.key+" twice", func() bool {
-			return idleRigNoSessionRefusals(rig, "Legion hook "+prompt.Hook+" on "+issue.key+":") >= 2
+		idleRigEventually(t, "the listener refusing the "+prompt.Hook+" prompt to "+issue.key, func() bool {
+			return idleRigNoSessionRefusals(rig, "Legion hook "+prompt.Hook+" on "+issue.key+":") >= 1
 		})
 	}
 	if left := idleRigHookRows(t, rig, issue); left != 2 {
-		t.Fatalf("after two refusals of each prompt, %d hook-prompt rows of %s are left, want both waiting for a session to hold the role", left, issue.key)
+		t.Fatalf("after a refusal of each prompt, %d hook-prompt rows of %s are left, want both waiting for a session to hold the role", left, issue.key)
 	}
 	rig.agents.setPlan(issue.key, string(issue.role), idleRigPlan{TakeTurn: true, ExitsAsReleasedInProduction: true})
 	idleRigEventually(t, "the two hook-prompt rows of "+issue.key+" finished", func() bool {

@@ -2967,16 +2967,6 @@ func (r *outbox) controllerHolds(ctx context.Context, row record.OutboxRow, role
 	return nil
 }
 
-// topicClaim is the claim a publish to topic is held to (heldTopic) as this daemon supervises it,
-// and the zero view where topic is held to no claim of this daemon or the outbox supervises none.
-func (r *outbox) topicClaim(topic string) supervise.ClaimView {
-	token, held := r.heldTopic(topic)
-	if !held || r.supervisor == nil {
-		return supervise.ClaimView{}
-	}
-	return r.supervisedClaim(token)
-}
-
 // holderNamed is how a wait names the holder the listener answered for a role: the session and
 // its state, or no holder at all.
 func holderNamed(holder, state string) string {

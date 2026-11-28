@@ -287,7 +287,6 @@ on:
       - 'packages/envoy/pgdsn/**'
       - 'packages/envoy/roleholder/**'
       - 'packages/envoy/scripts/lib/pg-url.sh'
-      - 'packages/envoy/sessiontiming/**'
       - 'packages/envoy/steprecord/**'
       - 'packages/envoy/subjectforms/**'
       - 'packages/envoy-client/package.json'

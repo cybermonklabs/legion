@@ -396,10 +396,12 @@ func TestSilentPhaseWorkerGetsItsTaskAgainWithNoUpdateRound(t *testing.T) {
 // one silence writes it one notice, and the notice carries the whole record the daemon read:
 // which issue and role, the phase, the moment of the last step, how long the silence has stood,
 // and what the daemon did about it. An operator reads the other half, so the same record goes to
-// the daemon's log beside the notice.
+// the daemon's log beside the notice. The architect stands ready beside the worker, so the notice
+// has a session to reach: a notice to an architect with no claim ends without its publish
+// (roleWaitGate).
 func TestSilentPhaseWorkerIsToldToItsArchitect(t *testing.T) {
 	t.Parallel()
-	rig := aSilentPhaseWorker(t)
+	rig := aSilentPhaseWorker(t, readyWorker(claim.RoleArchitect))
 	worker := claim.RoleImplementer
 	last := rig.clock.Now().UTC()
 	rig.goesQuiet(worker)
@@ -853,10 +855,12 @@ func (r *podUpdateRig) reportsNothingRunning(role claim.Role) {
 // A second sweep adds neither notice nor row: the fact's identity is the claim token, its launch
 // and the moment of the report (workerBackgroundEventID), a session whose report reached the
 // daemon sends none of a later moment until it takes a turn or its reading changes, and a
-// duplicate applies nothing. That is R6 of dispatch://INFRA-3163.
+// duplicate applies nothing. That is R6 of dispatch://INFRA-3163. The architect stands ready
+// beside the worker, so the notice has a session to reach: a notice to an architect with no claim
+// ends without its publish (roleWaitGate).
 func TestWorkerBackgroundStalledIsToldToItsArchitectOnceAndSentNothing(t *testing.T) {
 	t.Parallel()
-	rig := aBackgroundStalledWorker(t)
+	rig := aBackgroundStalledWorker(t, readyWorker(claim.RoleArchitect))
 	worker := claim.RoleImplementer
 	rig.goesQuiet(worker)
 	conn := rig.workers[worker]

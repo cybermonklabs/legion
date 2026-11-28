@@ -71,7 +71,8 @@ func waitingParentRunner(t *testing.T, publisher outboxNotices) (*outbox, *super
 // The implementer's role message is a role message as the outbox delivers every one
 // (outbox.roleMessage): to a released implementer it ends with no publish and no wake, as
 // TestOutboxRoleMessageToAReleasedRoleEndsWithoutAWake reads of any role message, and to a claim
-// not released it is published to the implementer's role topic with its body whole. The
+// not released that has said it is ready it is published to the implementer's role topic with its
+// body whole (roleWaitGate publishes nothing to a launch that has not registered). The
 // phase-ended message to a released role takes its delivery wake as the plain one does
 // (TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession): the implementer's plain form,
 // and the tester's words for a worker other than the implementer. The ask a confirmed conflict
@@ -111,7 +112,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		ctx := context.Background()
 		publisher := &outboxPublisher{}
 		runner, sup, pool := hookRunner(t, publisher)
-		startedClaim(t, sup, claim.RoleImplementer)
+		readyOutboxClaim(t, sup, "LEGION-208", claim.RoleImplementer)
 		token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208",
 			record.RoleMessage{Role: string(token), Body: droppedForwardBody}, time.Now().Add(-time.Minute)))

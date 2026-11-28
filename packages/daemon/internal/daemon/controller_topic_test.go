@@ -33,15 +33,18 @@ import (
 // architect's role topic takes the held and worker-died notices once each, the held one carrying
 // the failure that held the issue, and the controller's role topic takes neither, because the
 // controller's skill does nothing for a hold its architect has not escalated
-// (#4065).
+// (#4065). The architect runs and has said it is ready, so the notices have a session to reach: a
+// notice to an architect with no claim ends without its publish (roleWaitGate,
+// dispatch://INFRA-4131/spec#b-r-wait-ready).
 //
 // A tree architect whose own launches run out is the case the controller still hears, from an
 // outbox row of its own (workflow's noticeWithController), once the registered controller session
 // holds the controller's role live. Here the listener refuses the controller's role topic twice
-// first, as a stream outage answers: only the controller's row retries, so the architect's topic
-// is sent the worker-died once however long the controller's topic keeps failing, and every try
-// carries the one key the controller's subscriber dedupes on. The controller reads the notice the
-// architect is sent, without the row's routing.
+// first, as a stream outage answers: only the controller's row retries, and every try carries the
+// one key the controller's subscriber dedupes on. The architect's own row ends undelivered at its
+// first attempt, since its claim failed (roleWaitGate), so the architect's topic is sent nothing
+// however long the controller's topic keeps failing. The controller reads the notice written for
+// the architect, without the row's routing.
 func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResendTheArchitects(t *testing.T) {
 	t.Parallel()
 	listener := newNoticeListener()
@@ -51,8 +54,8 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	cfg.EnvoyURL = server.URL
 	cfg.LaunchFailureLimit = 1
 	rt := fake.NewRuntime()
-	rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("pane launch failed")}, fake.SpawnResult{Err: errors.New("pane launch failed")})
-	o := fakeRuntime(rt, &built{})
+	var launched built
+	o := fakeRuntime(rt, &launched)
 	o.workflowTokens = &workflowTokenRecorder{}
 	d := startDaemon(t, cfg, o)
 
@@ -131,21 +134,51 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 		return rows
 	}
 
-	// The planner's one launch the limit allows fails, and the operator is answered with it; the
-	// claim is failed, and the workflow holds the issue.
+	// The held tree's architect is the operator's start, so the tree holds its lifecycle under the
+	// operator's authority. The architect is launched and comes up: its shim dials the launch's
+	// stream, its agent registers and it says it is ready.
 	held := cfg.Project + "-1"
-	runningTree(held, treelifecycle.AuthorityWorkflow)
+	runningTree(held, treelifecycle.AuthorityOperator)
+	architect := d.spawn(api.SpawnRequest{Tree: held, Issue: held, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
+	launch := lastLaunch(t, rt, architect)
+	dialShim(t, launched.address, launch.BootToken)
+	testwait.Eventually(t, "the hello to reach the architect's machine", func() bool {
+		return d.claim(architect).State == string(supervise.StateShimConnected)
+	})
+	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
+		BootToken: launch.BootToken, SessionID: "ses-architect", OmpSessionFile: "/sessions/architect.jsonl",
+		AgentID: "ses-architect", PluginContract: api.DaemonAPIVersion(),
+	}, false)
+	if status != http.StatusOK {
+		t.Fatalf("register the architect = %d %s, want 200", status, body)
+	}
+	var registered claim.RegisterResponse
+	if err := json.Unmarshal(body, &registered); err != nil {
+		t.Fatalf("decode the architect's registration %s: %v", body, err)
+	}
+	if status, body := d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: architect, SessionID: "ses-architect", Secret: registered.Secret, Generation: launch.Generation,
+	}, false); status != http.StatusNoContent {
+		t.Fatalf("ready the architect = %d %s, want 204", status, body)
+	}
+
+	// The planner's one launch the limit allows fails, and the operator is answered with it; the
+	// claim is failed, and the workflow holds the issue. The next launch, the other tree's
+	// architect's below, fails too.
+	rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("pane launch failed")}, fake.SpawnResult{Err: errors.New("pane launch failed")})
 	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims", api.SpawnRequest{Tree: held, Issue: held, Role: claim.RolePlanner, Prompt: "Plan it."}, true); status != http.StatusInternalServerError || !strings.Contains(string(body), "pane launch failed") {
 		t.Fatalf("spawn the planner = %d %s, want its one launch refused", status, body)
 	}
+	// The architect's ready queues its catch-up, which its topic takes too, so its topic is read
+	// for the hold's two notices alone.
+	heldNotices := []string{"held on " + held, "worker-died on " + held}
 	testwait.Eventually(t, "every notice row of the hold finished and its architect told twice", func() bool {
-		return rowsOf(held) == 0 && len(listener.acceptedOn(architectTopic(held))) == 2
+		return rowsOf(held) == 0 && len(named(listener.acceptedOn(architectTopic(held)), heldNotices...)) == 2
 	})
-	onArchitect := listener.acceptedOn(architectTopic(held))
+	onArchitect := named(listener.acceptedOn(architectTopic(held)), heldNotices...)
 	if onArchitect[0].Message != "held on "+held || onArchitect[1].Message != "worker-died on "+held {
 		t.Fatalf("the architect's role topic took %+v, want held then worker-died, once each", onArchitect)
 	}
-	heldNotices := []string{"held on " + held, "worker-died on " + held}
 	if told, tried := named(listener.acceptedOn(controllerTopic), heldNotices...), named(listener.refusedOn(controllerTopic), heldNotices...); len(told) != 0 || len(tried) != 0 {
 		t.Fatalf("the controller's role topic took %+v and refused %+v, want nothing of %s published to it: a hold its architect has not escalated is the architect's", told, tried, held)
 	}
@@ -186,8 +219,8 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	testwait.Eventually(t, "every notice row of the failed architect finished and the controller's copy taken", func() bool {
 		return rowsOf(failed) == 0 && len(named(listener.acceptedOn(controllerTopic), died)) == 1
 	})
-	if onArchitect := listener.acceptedOn(architectTopic(failed)); len(onArchitect) != 1 || onArchitect[0].Message != "worker-died on "+failed {
-		t.Fatalf("the architect's role topic took %+v, want the worker-died once however often the controller's topic refused", onArchitect)
+	if onArchitect := listener.acceptedOn(architectTopic(failed)); len(onArchitect) != 0 {
+		t.Fatalf("the architect's role topic took %+v, want nothing however often the controller's topic refused: the failed architect's own row ends unpublished", onArchitect)
 	}
 	refused, taken := named(listener.refusedOn(controllerTopic), died), named(listener.acceptedOn(controllerTopic), died)[0]
 	if len(refused) != 2 {

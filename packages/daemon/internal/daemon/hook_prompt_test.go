@@ -453,15 +453,22 @@ func releasedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Ma
 	return machine
 }
 
-// readyOutboxClaim creates a ready claim for role on issue so roleWaitGate admits the publish.
+// readyOutboxClaim creates a ready claim for role on issue so roleWaitGate admits the publish: it
+// said it was ready a minute ago (readyOutboxClaimSince).
 func readyOutboxClaim(t *testing.T, sup *supervisor, issue string, role claim.Role) *supervise.Machine {
 	t.Helper()
+	return readyOutboxClaimSince(t, sup, issue, role, time.Now().UTC().Add(-time.Minute))
+}
+
+// readyOutboxClaimSince creates a claim for role on issue that said it was ready at ready and
+// started a turn 30 seconds after, so roleWaitGate admits the publish.
+func readyOutboxClaimSince(t *testing.T, sup *supervisor, issue string, role claim.Role, ready time.Time) *supervise.Machine {
+	t.Helper()
 	token := mustClaimToken(t, issue, role)
-	now := time.Now().UTC()
 	return roleWaitClaim(t, sup, supervise.Claim{
 		Token: token, Tree: issue, Issue: issue, Role: role, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateReady, Session: "ses-" + string(token), SessionFile: t.TempDir() + "/" + string(token) + ".jsonl",
-		LastReady: now.Add(-time.Minute), LastTurnStart: now.Add(-30 * time.Second),
+		LastReady: ready, LastTurnStart: ready.Add(30 * time.Second),
 	})
 }
 
