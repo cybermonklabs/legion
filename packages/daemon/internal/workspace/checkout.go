@@ -98,8 +98,8 @@ func removeCheckoutMarker(dir string) error {
 //     provision resets again.
 //   - The directory is renamed aside, in one atomic rename, so a kill partway through the delete,
 //     whose time follows what the checkout wrote, leaves no half-deleted workspace at its own path:
-//     a kill after the rename leaves the registered-but-missing workspace that createWorkspace
-//     forgets and adds again.
+//     a kill after the rename leaves the registered-but-missing workspace that the next provision
+//     adds again, deleting the directory left aside before createWorkspace forgets and adds it.
 //   - The workspace is forgotten in the shared clone, which abandons its working-copy commit, empty,
 //     undescribed and carrying no bookmark.
 //   - Its git worktree entry, which jj's forget leaves for a directory already gone, is removed.

@@ -33,7 +33,9 @@ import (
 // returns. So it is removed (resetUnfinishedWorkspace, step workspace-reset) and provisioned again
 // from nothing, as a workspace that was never there: its bookmark, creation record, marker and
 // checkout (createWorkspace). Where it carries no marker (an agent cleared its patterns, or an
-// earlier release registered it), it keeps its files and is checked out where it stands.
+// earlier release registered it), it keeps its files and is checked out where it stands. Before
+// any add, the directory a stopped workspace-reset or Remove left renamed aside (removingPath) is
+// deleted, so what a cut-short checkout wrote does not stay on the volume until the issue's removal.
 func Provision(ctx context.Context, run Runner, request Request) (Workspace, error) {
 	workspace, err := Location(request.StateDir, request.Repo, request.Issue)
 	if err != nil {
@@ -126,6 +128,12 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 			return Workspace{}, err
 		}
 	} else {
+		// A workspace-reset or Remove stopped after its rename aside and before that directory's
+		// delete ended leaves it at removingPath and no workspace here. After a workspace-reset
+		// just above, it is already gone.
+		if err := rolefile.RemoveTree(removingPath(workspace.Dir)); err != nil {
+			return Workspace{}, fmt.Errorf("add workspace %s: clear a stale removal-in-progress directory: %w", workspace.Dir, err)
+		}
 		// createWorkspace marks the workspace (checkoutMarkerFile) as soon as its `jj workspace
 		// add` has registered it with no file, so a provision stopped anywhere from there to the
 		// checkout's end leaves it marked.

@@ -7170,6 +7170,7 @@ No role has started in such a workspace, since the roles start only once `worksp
 So `workspace-reset` removes it under the store lock: it deletes the issue's bookmark `legion/<KEY>` where the stopped provision set it on the workspace's working-copy commit, renames the workspace directory aside, forgets the workspace in the shared clone, removes its git worktree entry and deletes the directory without following a link.
 `workspace-registration` then adds the workspace again from nothing, as a first provision does: at `origin`'s `legion/<KEY>` as GitHub has it then, or at the default branch with `legion/<KEY>` set on its working-copy commit, with a new creation record and marker, before `checkout` checks out the whole tree.
 Whatever the stopped provision left goes with the old workspace: a creation record that is missing, empty, unreadable or no regular file, a bookmark it never set, and a half-written checkout.
+A provision stopped after `workspace-reset`'s rename and before its delete ended leaves the directory aside and no workspace: the next provision runs no `checkout-check` or `workspace-reset`, and its `workspace-registration` deletes the directory left aside, without following a link, before it adds the workspace again.
 Where a workspace holds no sparse pattern and no marker (an agent cleared its patterns, or an earlier release registered the workspace, as on a microVM pod's kept volume), `workspace-reset` does not run and `checkout` writes no marker, so the workspace's untracked files stay.
 
 ### The repository cache

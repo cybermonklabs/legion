@@ -463,7 +463,8 @@ func removingPath(dir string) string { return dir + removingSuffix }
 // git worktree entry's removal, and lets it go before it deletes the aside directory: that delete's
 // time follows the workspace's size, and it touches nothing of the clone's, so the provisions of the
 // repository's other issues do not wait for it. An aside directory a crash left before its delete
-// is cleared by the issue's next Remove, before it takes the lock.
+// is cleared by the issue's next provision, before it adds the workspace, or by its next Remove,
+// before it takes the lock.
 func Remove(ctx context.Context, run Runner, workspace Workspace, store sync.Locker) error {
 	if !located(workspace) {
 		return fmt.Errorf("workspace to remove (%#v) is not a workspace Location names", workspace)
