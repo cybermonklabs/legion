@@ -3184,7 +3184,7 @@ The controller's claim and the release of an unowned pod, which names no role, p
 
 **A queued outbox row that names a role of the deployment, and a queued hook prompt of a move that leaves or reaches `step`, must be cleared before the earlier image is pinned.**
 Finishing or stopping an issue does not take back a row queued for it before the finish.
-An earlier release decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), refuses a controller notice of a kind it does not know, holds the role a row names to Legion's six (its `claim.IsRole`), and holds the move a hook prompt names to two different phases of its own line, which has no `step` (its `phase.IsMovePair` over `phase.Order`), so each row below fails its decode at every attempt, logs the failure each time and never finishes.
+An earlier release decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), refuses a controller notice of a kind it does not know, holds the role a row names to Legion's six (its `claim.IsRole`), holds the move a hook prompt names to two different phases of its own line, which has no `step` (its `phase.IsMovePair` over `phase.Order`), and runs a `supervise` row by deriving the claim of the row's role (its `claim.NewToken`, which holds the six alone), so each row below fails its decode or its run at every attempt, logs the failure each time and never finishes: its `permanentRefusal` ends none of them.
 The block below clears those rows of one project, a statement for each kind of row.
 
 Its first statement deletes each `pod-wait-held` notice to the controller, a kind the earlier release does not know, which tells of a start that waits for its pod: the start of a role that release does not have.
@@ -3192,8 +3192,10 @@ Its second takes `stepRole`, the role of an issue's running step, off each issue
 A notice row that fails its decode costs more than its own delivery: while it waits on its backoff, `record.Store.WaitingNotices` returns it, `daemon.pacedCatchUps` returns its decode error, and `GET /legion/v1/state` answers an error for the whole project.
 The delivery replaces the issues of a catch-up with its own read of the tree, so the notice loses nothing.
 Its third takes `worker` off each queued merge-forward review, the role of the running step that the reviewer tells beside the architect, so the earlier release sends the review and the reviewer tells the architect alone.
-Its fourth deletes each queued pause's stop (a `supervise` row whose `op` is `pause_stop`), `phase_ended` message, hook prompt, update ask, and merge-forward hold or landed whose `role` is none of Legion's six.
-Each is work for a role the earlier release has no claim of: the way back in the migration's header refuses while an issue stands at such a role's step or a claim of such a role remains, so deleting the row loses nothing that release could do.
+Its fourth deletes each queued `phase_ended` message, hook prompt, update ask, merge-forward hold or landed, and `supervise` row other than a start that names a phase, whose `role` is none of Legion's six.
+Of the `supervise` rows it deletes, the earlier release's decode refuses a pause's stop (`op` is `pause_stop`), and its outbox fails, where it derives the claim of the row's role, a task's stop (`step_stop`), a suspension (`suspend`), an idle release (`release`), a tree's close (`tree_close`), an issue's close (`issue_close`), a stopped task's retirement (`retire_task`) and a start that names no phase, such as a wake's or the resume of a cancelled release.
+A start that names a phase, such as a phase start at `step`, stays: the earlier release finishes it without acting, since the issue it serves has left that phase once it is finished or stopped.
+Each row the statement deletes is work for a role the earlier release has no claim of: the way back in the migration's header refuses while an issue stands at such a role's step or a claim of such a role remains, so deleting the row loses nothing that release could do.
 Its fifth deletes each queued hook prompt whose move leaves or reaches `step` (its `from` or its `to` is `step`), whatever role it goes to.
 A step of a role of the deployment that fails moves the issue back from `step`, and a move back can reach such a step, so a hook fires on such a move and prompts each role it names, Legion's own among them: the hook a deployment runs when it writes no `hooks:` key prompts the implementer, the tester and the reviewer on every fifth move back of any kind.
 Only an issue whose plan names a role of the deployment makes such a move, and it is finished or stopped before the rollback, so deleting the prompt loses nothing the earlier release could act on.
@@ -3229,7 +3231,7 @@ where kind = 'merge_forward' and payload ? 'worker'
 -- The work one project still has queued for a role of the deployment.
 delete from outbox
 where (kind in ('phase_ended', 'hook_prompt', 'update_ask')
-    or (kind = 'supervise' and payload->>'op' = 'pause_stop')
+    or (kind = 'supervise' and (payload->>'op' <> 'start' or coalesce(payload->>'phase', '') = ''))
     or (kind = 'merge_forward' and payload->>'step' in ('hold', 'landed')))
   and payload->>'role' not in ('architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger')
   and split_part(issue, '-', 1) = '<PROJECT>';
@@ -3249,7 +3251,7 @@ where kind = 'state_change' and exists (
 ```
 
 This block is the one source of its statements.
-`internal/store`'s `TestTheDeploymentRolesWayBackLeavesWhatTheReleaseBeforeReads` runs it over queued rows of two projects, from the copy `internal/store/deployment_roles_way_back_extract.txt`, reads each row of the project that rolls back with `refusedBeforeTheRoles`, a model written from the code of the release before this one that refuses a row this release queues wherever that release's decode refuses it, and reads each of the other project's as this release left it; `internal/textcheck`'s `TestTheDeploymentRolesWayBackExtractIsTheGuidesBlock` holds that copy to this block, so change the two in one commit.
+`internal/store`'s `TestTheDeploymentRolesWayBackLeavesWhatTheReleaseBeforeReads` runs it over queued rows of two projects, from the copy `internal/store/deployment_roles_way_back_extract.txt`, reads each row of the project that rolls back with `refusedBeforeTheRoles`, a model written from the code of the release before this one that refuses a row this release queues wherever that release's decode refuses it or its outbox fails it at every attempt, and reads each of the other project's as this release left it; `internal/textcheck`'s `TestTheDeploymentRolesWayBackExtractIsTheGuidesBlock` holds that copy to this block, so change the two in one commit.
 Each statement names the project, so a daemon of another project left on this release keeps its rows.
 
 #### Rolling back the release that names the variant on each step record
