@@ -783,10 +783,11 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				($1 <> '' and a.author->>'kind' = 'session' and a.author->>'id' = $1)
 				or ($3 <> '' and coalesce(i.project_key, ar.project_key) = $3)
 		), subjects as (
-			-- The issues of the scope's open asks, which the priority walk climbs from once for
-			-- the whole answer.
+			-- The issues of the scope's asks that are open as the listing below tests it, by their
+			-- row and their node (askOpenOf), which the priority walk climbs from once for the
+			-- whole answer.
 			select distinct a.issue_key as key from mine a
-			where a.state = 'open' and a.issue_key is not null
+			where `+askOpenOf("a")+` and a.issue_key is not null
 		), `+refs.IssuePriorityTerms+`, active as (
 			select
 				a.id::text,

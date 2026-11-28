@@ -190,10 +190,11 @@ func TestADocumentReadAtACutIsTheVersionThen(t *testing.T) {
 // TestAVersionThisBuildCannotReadIsReadAtACutAsItsBlocksAre: the text route reads at a cut a
 // version this build cannot read back, here one holding an element only a newer build knows
 // (docs.UnknownElementForTest), and answers it as it did before it read asks at a cut, never 500.
-// A version that holds no ask block is served its stored markdown as it is, and with ?blocks=true
-// it answers 409 DOC_NEWER_CONTENT, as its blocks answer on every route. A version that holds an
-// ask block answers 409 DOC_NEWER_CONTENT with blocks and without: its stored bytes hold the
-// block's server-owned attributes, an answer's words among them, which the text routes take off,
+// A version that holds no ask block is served its stored markdown as it is, a plan's version
+// among them, whose `:::plan_task{` opener holds `ask{`; with ?blocks=true it answers 409
+// DOC_NEWER_CONTENT, as its blocks answer on every route. A version that holds an ask block
+// answers 409 DOC_NEWER_CONTENT with blocks and without: its stored bytes hold the block's
+// server-owned attributes, an answer's words among them, which the text routes take off,
 // so none of them is served. Each answers so to a reader of asks and to every other reader.
 func TestAVersionThisBuildCannotReadIsReadAtACutAsItsBlocksAre(t *testing.T) {
 	_, handler, database, served := browserDocumentServer(t)
@@ -205,6 +206,7 @@ func TestAVersionThisBuildCannotReadIsReadAtACutAsItsBlocksAre(t *testing.T) {
 		holdsAsk       bool
 	}{
 		{name: "plain", markdown: newer},
+		{name: "planned", markdown: newer + "\n:::plan_task{#t1}\nRead the version.\n:::\n"},
 		{name: "asked", holdsAsk: true, markdown: newer + "\n" +
 			`:::ask{#count urgency="low" multiple="false" state="answered" answered_by="alice" selected="[&#x22;Heron&#x22;]" answer="The ` +
 			answerWord + ` count."}` + "\nWhich count goes first?\n\n- Heron: The first.\n- Egret: The second.\n:::\n"},

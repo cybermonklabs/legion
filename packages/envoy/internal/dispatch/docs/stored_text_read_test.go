@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -74,6 +75,69 @@ func TestStoredTextReadCountsTheRendersOfAReadOfAVersionedDocument(t *testing.T)
 	}
 	if counted != storedTextReadRenders {
 		t.Fatalf("the read rendered the document %d times, want %d", counted, storedTextReadRenders)
+	}
+}
+
+// The text routes serve a document whose room holds the state its latest version was written from
+// as that version stored it, rendering it storedTextReadRenders times, where the version's text
+// holds no ask block's opener (holdsAskOpener): a plan document, whose `:::plan_task{` opener
+// holds `ask{` and which holds no ask block, is served so. A document that holds an ask block is
+// read through the room and rendered once, so its asks are read off its tree (textAsks). Each
+// answers the version's markdown and the live document's token, in both forms the text routes
+// serve.
+func TestStoredTextReadServesAPlanDocumentToTheTextRoutesWithNoRender(t *testing.T) {
+	// Not parallel: it records every document render the process makes in the package variable
+	// documentRenders (countRenders), which refuses a second recorder and would count the renders of
+	// the tests beside it.
+	for _, document := range []struct {
+		name, markdown string
+		renders        int
+		asks           []string
+	}{
+		{name: "a plan document", markdown: ":::plan_task{#t1}\nRead the version.\n:::\n", renders: storedTextReadRenders},
+		{
+			name: "a document holding an ask block", markdown: ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nShip it?\n:::\n",
+			renders: storedTextReadRendersUnserved, asks: []string{"a1"},
+		},
+	} {
+		t.Run(document.name, func(t *testing.T) {
+			service, artifactID := newTestService(t)
+			service.settle = time.Hour
+			seedSettledDocument(t, service, artifactID, document.markdown)
+			live, err := nodeToken(liveTree(t, service, artifactID))
+			if err != nil {
+				t.Fatalf("take the live document's token: %v", err)
+			}
+			renders := countRenders(t)
+			for _, form := range []struct {
+				name string
+				read func(context.Context, string, bool) (AskedText, error)
+			}{
+				{"the text a reader of asks reads", service.TextWithAsks},
+				{"the kept form", service.KeptText},
+			} {
+				before := len(renders())
+				text, err := form.read(context.Background(), artifactID, false)
+				counted := len(renders()) - before
+				if err != nil {
+					t.Fatalf("%s: read the document's text: %v", form.name, err)
+				}
+				if text.Markdown != document.markdown || text.Token != live {
+					t.Errorf("%s: the read answered %q with token %q, want the version's markdown %q and the live document's token %q",
+						form.name, text.Markdown, text.Token, document.markdown, live)
+				}
+				var asks []string
+				for _, entry := range text.Asks {
+					asks = append(asks, entry.BlockID)
+				}
+				if !slices.Equal(asks, document.asks) {
+					t.Errorf("%s: the read answered asks for the blocks %q, want %q", form.name, asks, document.asks)
+				}
+				if counted != document.renders {
+					t.Errorf("%s: the read rendered the document %d times, want %d", form.name, counted, document.renders)
+				}
+			}
+		})
 	}
 }
 

@@ -47,10 +47,10 @@ type AskedText struct {
 // holding an ask block (documentRead.tree), so a read of a stored state the cache holds decodes
 // nothing, and the cached rendering is served as it is where no ask block of it holds a
 // server-owned attribute. A document a room of this process holds at its latest version is served
-// that version's text without a rendering (storedText) where it holds no ask block; one that holds
-// an ask block is read through the room, and where the history the room stands behind does not
-// decode, the version's text is read back into a tree and served from it (storedAskedText) rather
-// than failing the read.
+// that version's text without a rendering (storedText) where that text holds no ask block's
+// opener (holdsAskOpener); any other is read through the room, and where the history the room
+// stands behind does not decode, the version's text is read back into a tree and served from it
+// (storedAskedText) rather than failing the read.
 func (s *Service) TextWithAsks(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error) {
 	return s.askedText(ctx, artifactID, withBlocks, false)
 }
@@ -97,7 +97,7 @@ func (s *Service) askedText(ctx context.Context, artifactID string, withBlocks, 
 			return AskedText{}, err
 		}
 		if served {
-			if !strings.Contains(markdown, "ask{") {
+			if !holdsAskOpener(markdown) {
 				return AskedText{Markdown: markdown, Token: token}, nil
 			}
 			stored = &AskedText{Markdown: markdown, Token: token}
@@ -153,6 +153,21 @@ func (s *Service) askedText(ctx context.Context, artifactID string, withBlocks, 
 	return answer, nil
 }
 
+// holdsAskOpener reports whether markdown holds the opening line of an ask block, as far as one
+// search of it can tell: whether it holds `:ask{`. The renderer writes the opening line of every
+// typed block as a fence of three colons or more, the block's type and the brace of its
+// attributes, with nothing between them (pmdoc's renderer.block), and the parser opens a typed
+// block on that spelling alone (pmdoc.ParseTypedDirectiveOpen). Whatever stands before the fence -
+// a list item's marker or indentation, a blockquote's `>`, the indentation of a block the ask
+// block is nested in - and however many colons the fence takes where it nests, the colon right
+// before `ask{` is the fence's last. `ask{` alone would also match the opener of every other typed
+// block whose type ends in ask, `:::plan_task{` among them, and read every plan document as one
+// that holds an ask block. A markdown that holds `:ask{` outside an opener, in a code block or a
+// sentence, is read back into a tree all the same, as one that holds an ask block is.
+func holdsAskOpener(markdown string) bool {
+	return strings.Contains(markdown, ":ask{")
+}
+
 // storedAskedText is askedText for stored, the markdown and the token of the document's latest
 // version, which a room of this process holds, where the history the room stands behind does not
 // decode (unloadable, the read's error): the version's markdown read back into a tree
@@ -164,43 +179,43 @@ func (s *Service) storedAskedText(ctx context.Context, artifactID string, stored
 	if err != nil {
 		return AskedText{}, unloadable
 	}
-	return s.servedText(ctx, artifactID, stored, tree, kept)
+	return s.servedText(ctx, artifactID, stored, tree, false, kept)
 }
 
 // VersionAskedText is markdown, the text of a version of document artifactID, as the text routes
 // serve a document (TextWithAsks, or KeptText where kept), with its blocks beside it when
-// withBlocks. A markdown that holds no ask block is served as it is stored, with no parse, as
-// askedText serves such a document; with blocks it is the version's rendering and its blocks
-// (VersionRenderingBlocks). One that holds an ask block is read back into a tree
-// (pmdoc.ParseRendering) once and served from that tree: rendered again where withBlocks, with its
-// blocks, or where an ask block of it held an attribute the read takes off (servedAskTree), and
-// with the asks of the tree it serves (textAsks). Such a version that this build cannot read back
-// is refused as its blocks are (documentSchemaError): a NewerContentError for an element this
-// build does not know, an OutsideSchemaError for any other schema refusal. Its stored bytes are
-// never served in its place, since they can hold an answer's words and selection, which the text
-// routes take off. The token is the caller's. The text route reads a version so at a cut (api's
-// artifactTextAtTheCut), where every statement reads the asks as the shadows give them at the
-// cut, so each ask reads its answer as the ask's newest state event at the cut carries it.
+// withBlocks. A markdown that holds no ask block's opener (holdsAskOpener) is served without
+// blocks as it is stored, with no parse, as askedText serves such a document. Every other read
+// reads the markdown back into a tree (pmdoc.ParseRendering) once and serves it from that tree
+// (servedText): rendered again where withBlocks, with its blocks, which for a version that holds
+// no ask block are the version's rendering and its blocks (VersionRenderingBlocks), or where an
+// ask block of it held an attribute the read takes off (servedAskTree), and with the asks of the
+// tree it serves (textAsks). A version that this read cannot read back is refused as its blocks
+// are (documentSchemaError): a NewerContentError for an element this build does not know, an
+// OutsideSchemaError for any other schema refusal. A version that holds an ask block is never
+// served its stored bytes in place of that refusal, since they can hold an answer's words and
+// selection, which the text routes take off. The token is the caller's. The text route reads a
+// version so at a cut (api's artifactTextAtTheCut), where every statement reads the asks as the
+// shadows give them at the cut, so each ask reads its answer as the ask's newest state event at
+// the cut carries it.
 func (s *Service) VersionAskedText(ctx context.Context, artifactID, markdown string, withBlocks, kept bool) (AskedText, error) {
-	if !strings.Contains(markdown, "ask{") {
-		if !withBlocks {
-			return AskedText{Markdown: markdown}, nil
-		}
-		rendered, blocks, err := VersionRenderingBlocks(markdown)
-		if err != nil {
-			return AskedText{}, err
-		}
-		return AskedText{Markdown: rendered, Blocks: blocks}, nil
+	if !withBlocks && !holdsAskOpener(markdown) {
+		return AskedText{Markdown: markdown}, nil
 	}
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
 		return AskedText{}, fmt.Errorf("read a version of document %s back into a tree: %w", artifactID, documentSchemaError(err))
 	}
+	return s.servedText(ctx, artifactID, AskedText{Markdown: markdown}, tree, withBlocks, kept)
+}
+
+// servedText is text, whose markdown tree was read back from, as the text routes serve it, from
+// the tree the read serves (servedAskTree): where withBlocks, that tree's rendering and its
+// blocks; else its markdown, rendered from that tree again only where an ask block of it held an
+// attribute the read takes off; and the asks of that tree (textAsks). The token is text's.
+func (s *Service) servedText(ctx context.Context, artifactID string, text AskedText, tree *pmdoc.Node, withBlocks, kept bool) (AskedText, error) {
 	served, took := servedAskTree(tree, kept)
-	text := AskedText{Markdown: markdown}
-	if text.Asks, err = s.textAsks(ctx, artifactID, served); err != nil {
-		return AskedText{}, err
-	}
+	var err error
 	switch {
 	case withBlocks:
 		text.Markdown, text.Blocks, err = documentBlocks(served)
@@ -209,20 +224,6 @@ func (s *Service) VersionAskedText(ctx context.Context, artifactID, markdown str
 	}
 	if err != nil {
 		return AskedText{}, err
-	}
-	return text, nil
-}
-
-// servedText is text, whose markdown tree was read back from, as the text routes serve it: its
-// markdown rendered from tree again only where an ask block of it held an attribute the read
-// takes off (servedAskTree), and the asks of the tree it serves.
-func (s *Service) servedText(ctx context.Context, artifactID string, text AskedText, tree *pmdoc.Node, kept bool) (AskedText, error) {
-	served, took := servedAskTree(tree, kept)
-	var err error
-	if took {
-		if text.Markdown, err = documentMarkdown(served); err != nil {
-			return AskedText{}, err
-		}
 	}
 	if text.Asks, err = s.textAsks(ctx, artifactID, served); err != nil {
 		return AskedText{}, err

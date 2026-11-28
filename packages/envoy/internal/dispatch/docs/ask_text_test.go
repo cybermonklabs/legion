@@ -147,3 +147,43 @@ func TestTheTextAnAgentReadsHoldsNoServerOwnedAskAttributeWhileAnotherBuildServe
 	read("the cold read")
 	read("the cached read")
 }
+
+// The test the text routes make of a stored text for an ask block (holdsAskOpener) finds one in the
+// rendering of every tree that holds one, wherever the renderer writes it: at the top, in a list
+// item, in a blockquote, and in a typed block, whose own fence the renderer writes one colon
+// longer. It finds none in a plan document's, whose `:::plan_task{` opener holds `ask{`.
+func TestAskedTextFindsAnAskOpenerWhereverTheRendererWritesOne(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, markdown string
+		holdsAsk       bool
+	}{
+		{name: "an ask block at the top", markdown: ":::ask{#a1}\nShip it?\n:::\n", holdsAsk: true},
+		{name: "an ask block in a list item", markdown: "- Context\n\n  :::ask{#a1}\n  Ship it?\n  :::\n", holdsAsk: true},
+		{name: "an ask block in a blockquote", markdown: "> :::ask{#a1}\n> Ship it?\n> :::\n", holdsAsk: true},
+		{
+			name:     "an ask block in a callout",
+			markdown: "::::callout{#c1 kind=\"note\" title=\"T\"}\nA note.\n\n:::ask{#a1}\nShip it?\n:::\n::::\n",
+			holdsAsk: true,
+		},
+		{name: "a plan document", markdown: ":::plan_task{#t1}\nRead the version.\n:::\n"},
+		{name: "a plan task beside an ask block", markdown: ":::plan_task{#t1}\nRead the version.\n:::\n\n:::ask{#a1}\nShip it?\n:::\n", holdsAsk: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := pmdoc.Parse(test.markdown)
+			if err != nil {
+				t.Fatalf("parse %q: %v", test.markdown, err)
+			}
+			if held := pmdoc.HoldsAskBlock(tree); held != test.holdsAsk {
+				t.Fatalf("the tree of %q holds an ask block: %t, want %t", test.markdown, held, test.holdsAsk)
+			}
+			rendered, err := pmdoc.Render(tree)
+			if err != nil {
+				t.Fatalf("render %q: %v", test.markdown, err)
+			}
+			if found := holdsAskOpener(rendered); found != test.holdsAsk {
+				t.Errorf("holdsAskOpener of the rendering %q = %t, want %t, as its tree holds an ask block or not", rendered, found, test.holdsAsk)
+			}
+		})
+	}
+}
