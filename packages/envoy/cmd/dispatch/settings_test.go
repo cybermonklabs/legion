@@ -421,6 +421,22 @@ func errorCode(response *httptest.ResponseRecorder) string {
 	return body.Code
 }
 
+// natsConnect connects to url with the environment values holds, read through the settings table
+// alone (bus.WithEnvironment), and closes the client when the connect succeeds: a case reads only
+// its error.
+func natsConnect(values map[string]string, url string) error {
+	client, err := bus.Connect([]string{url}, bus.WithEnvironment(envGetter(values).lookup))
+	if err == nil {
+		client.Close()
+	}
+	return err
+}
+
+// localNATS is a NATS URL nothing listens on. Each of TestEverySettingReachesItsReader's cases
+// that connects to it fails before it dials, on the setting it names;
+// TestTheNATSSOCKS5ProxyCarriesTheConnect hands it to a proxy that refuses the connect.
+const localNATS = "nats://127.0.0.1:1"
+
 // Every setting reaches its reader through the table, as it resolved before the table existed:
 // each case hands its variable to the reader main hands it to, through the settings read alone,
 // never the process environment, so a reader that reads around the table fails its case.
@@ -442,16 +458,6 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		t.Helper()
 		return loadEnvoyConfig(envGetter(values), config.LoadOptions{CWD: t.TempDir(), HomeDir: envoyJSONHome(t)})
 	}
-	natsConnect := func(values map[string]string, url string) error {
-		client, err := bus.Connect([]string{url}, bus.WithEnvironment(envGetter(values).lookup))
-		if err == nil {
-			client.Close()
-		}
-		return err
-	}
-	// A URL nothing listens on: every case below fails before it dials, on the setting it names.
-	const localNATS = "nats://127.0.0.1:1"
-
 	// brokerReceived is the call the secrets broker DISPATCH_AGENT_SECRETS_URL names receives, as
 	// "<method> <request URI> <Authorization>", when a signed-in human lists the credential
 	// requests awaiting them, with token in the file DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE
@@ -2199,6 +2205,13 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": invalid},
 					fmt.Sprintf("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT=%q (expected a positive Go duration)", invalid))
 			}
+			// The floor: a millisecond is taken, and anything shorter would reach Postgres as 0ms,
+			// no lock timeout at all.
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "1ms"}); boot.SearchFillLockTimeout != time.Millisecond {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT=1ms: SearchFillLockTimeout = %v, want 1ms", boot.SearchFillLockTimeout)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "999us"},
+				`DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT="999us" (expected at least 1ms`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_HTTP_DRAIN": func(t *testing.T) {
@@ -2213,6 +2226,13 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HTTP_DRAIN": invalid},
 					fmt.Sprintf("DISPATCH_TEST_HTTP_DRAIN=%q (expected a positive Go duration)", invalid))
 			}
+			// The ceiling: a deployment's drain is taken, and anything longer would end the
+			// document service's budget past the outbox's wait (outboxStopBudget).
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HTTP_DRAIN": "11s"}); boot.HTTPDrain != 11*time.Second {
+				t.Errorf("DISPATCH_TEST_HTTP_DRAIN=11s: HTTPDrain = %v, want 11s", boot.HTTPDrain)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HTTP_DRAIN": "11.001s"},
+				`DISPATCH_TEST_HTTP_DRAIN="11.001s" (expected at most 11s`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HTTP_DRAIN": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
@@ -2406,15 +2426,14 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 // the proxy and hands it the NATS server's address. This proxy refuses every request (connection
 // refused), so the connect makes the bus's ten attempts a second apart, about ten seconds, and
 // fails; every request the proxy received is for 127.0.0.1:1 as an IPv4 address. It is
-// TestEverySettingReachesItsReader's case for the setting, apart so that it runs beside the other
-// tests: it reads no process environment and no log.
+// TestEverySettingReachesItsReader's case for the setting, connecting through the same
+// natsConnect, apart so that it runs beside the other tests: it reads no process environment and
+// no log.
 func TestTheNATSSOCKS5ProxyCarriesTheConnect(t *testing.T) {
 	t.Parallel()
 	proxy := testsocks5.StartRefusing(t, 0x05)
 	values := map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": proxy.Addr}
-	client, err := bus.Connect([]string{"nats://127.0.0.1:1"}, bus.WithEnvironment(envGetter(values).lookup))
-	if err == nil {
-		client.Close()
+	if err := natsConnect(values, localNATS); err == nil {
 		t.Errorf("ENVOY_NATS_SOCKS5_PROXY=%s: a connect through a proxy that refuses it succeeded", proxy.Addr)
 	}
 	got := proxy.Requests()

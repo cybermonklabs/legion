@@ -31,12 +31,16 @@ const restartProcessHeartbeat = 2 * quickProcessHeartbeat
 // the dead row is a live window and a heartbeat, 8 s, and not production's 20 s. The row's
 // heartbeat is set an hour ahead once the kill lands, so the restart meets a live dead row
 // however long its boot and its wait for a process slot take. Once the restart has logged that it
-// was refused, the row is given the heartbeat of a process last seen one beat ago, so it lapses
-// two beats later: the restart's next try, at most one beat away, still finds it live and is
-// refused again, and the try after that is admitted. So the row reads the whole order it is
-// about - refused, refused again, admitted once the row lapsed - and a build that gave up at its
-// first try after the refusal would exit instead. It leaves the test 4 s of the 8 s wait for its
-// own read of the output and its one statement.
+// was refused, the row is given the heartbeat of a process last seen one beat ago, so it stays
+// live (processes.Live: a heartbeat within the live window, three beats, of the database's now())
+// until two beats after that update. The restart tries again a beat after each refusal, so its
+// next two tries normally still find the row live and are refused, and the first try more than
+// two beats after the update is admitted. Only the first refusal is in the log: a refusal is
+// logged only when its text changes, and each one names the same row. A build that gave up at its
+// first try after the refusal would exit instead. The restart's last try comes once 8 s have
+// passed since its first refusal, so the admission comes in time when the update lands within
+// 4 s of that refusal: it leaves the test 4 s of the 8 s wait for its own read of the output and
+// its one statement.
 func TestADevSignInServerRestartedAfterAKillStarts(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

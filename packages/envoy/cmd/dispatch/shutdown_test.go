@@ -62,9 +62,7 @@ const promptShutdown = 3 * time.Second
 
 // quickHTTPDrain is the HTTP drain (DISPATCH_TEST_HTTP_DRAIN) of a process whose request in flight
 // holds the drain for its whole share, in place of httpDrainBeforeDocuments' eleven seconds: the
-// order of the shutdown's steps is the same at either length, and it stays longer than a
-// document's settle delay (docs.Deps.Settle's two seconds), so an edit's own settlement timer still
-// fires inside the drain.
+// order of the shutdown's steps is the same at either length.
 const quickHTTPDrain = 3 * time.Second
 
 // streamedSessionID is the session whose conversation the test's agent view watches; an agent

@@ -199,13 +199,14 @@ type bootConfig struct {
 	// SearchFillLockTimeout is the lock timeout of each read the keyword fill's deferral line makes
 	// at boot (searchFillTableRows), zero for searchFillTableLockTimeout's five seconds; the
 	// statement timeout and the client's deadline keep their margins past it (searchFillBounds).
-	// Only DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT, under the test hooks, sets it, since a test whose
-	// boot meets a locked or a slow table waits each bound out.
+	// Only DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT, under the test hooks, sets it, never below
+	// searchFillTableLockTimeoutFloor, since a test whose boot meets a locked or a slow table waits
+	// each bound out.
 	SearchFillLockTimeout time.Duration
 	// HTTPDrain is how long shutdown waits for the requests in flight before the document service
 	// settles the documents owed with requests still running, zero for httpDrainBeforeDocuments'
-	// eleven seconds; only DISPATCH_TEST_HTTP_DRAIN, under the test hooks, sets it, since a test
-	// whose request holds the drain waits all of it out.
+	// eleven seconds; only DISPATCH_TEST_HTTP_DRAIN, under the test hooks, sets it, never longer
+	// than httpDrainBeforeDocuments, since a test whose request holds the drain waits all of it out.
 	HTTPDrain time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
@@ -1789,6 +1790,14 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 	}
+	if lock := boot.SearchFillLockTimeout; lock > 0 && lock < searchFillTableLockTimeoutFloor {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT=%q (expected at least %s: the reads send their lock timeout to Postgres in whole milliseconds, and Postgres reads 0ms as no lock timeout)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT")), searchFillTableLockTimeoutFloor)
+	}
+	if boot.HTTPDrain > httpDrainBeforeDocuments {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_HTTP_DRAIN=%q (expected at most %s, a deployment's drain: what the %s stop grace leaves after the document service's %s budget and a 5s reserve)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_HTTP_DRAIN")), httpDrainBeforeDocuments, stopGrace, documentShutdownTimeout)
+	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
@@ -2365,10 +2374,17 @@ const (
 	searchFillTableClientMargin    = 4 * time.Second
 )
 
+// searchFillTableLockTimeoutFloor is the shortest lock timeout resolveBootConfig takes from
+// DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT. searchFillTableHoldsRow sends each timeout to Postgres in
+// whole milliseconds, and Postgres reads a lock_timeout of 0 as no lock timeout, so a shorter one
+// would leave a read that waits for a lock to end at the statement timeout, with 57014 and not
+// 55P03.
+const searchFillTableLockTimeoutFloor = time.Millisecond
+
 // searchFillBounds are the read bounds with lock as the lock timeout, and zero is a deployment's,
-// searchFillTableLockTimeout (bootConfig.SearchFillLockTimeout, which only a test process sets).
-// The other two bounds keep their margins past it whatever lock is, so no setting can order them
-// otherwise.
+// searchFillTableLockTimeout (bootConfig.SearchFillLockTimeout, which only a test process sets,
+// and never below searchFillTableLockTimeoutFloor). The other two bounds keep their margins past
+// it whatever lock is, so no setting can order them otherwise.
 func searchFillBounds(lock time.Duration) searchFillReadBounds {
 	if lock <= 0 {
 		lock = searchFillTableLockTimeout

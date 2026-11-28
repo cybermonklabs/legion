@@ -54,11 +54,13 @@ const silentProbes = 3
 const drainPollInterval = 250 * time.Millisecond
 
 // outboxStopBudget is how long after shutdown starts it waits, at most, for the events outbox to
-// stop before it closes the pool: until the document service's budget would end, 5 s inside
-// stopGrace. The outbox stops with the process context, which is cancelled before shutdown
-// starts, once it has recorded its batch in flight and released the publisher hold, each a
-// statement bounded by the outbox's own record timeout, so it is done well inside the budget
-// unless its database has stopped answering.
+// stop before it closes the pool: until the latest the document service's budget can end, 5 s
+// inside stopGrace, since the drain before that budget is never longer than
+// httpDrainBeforeDocuments (resolveBootConfig refuses a longer DISPATCH_TEST_HTTP_DRAIN). The
+// outbox stops with the process context, which is cancelled before shutdown starts, once it has
+// recorded its batch in flight and released the publisher hold, each a statement bounded by the
+// outbox's own record timeout, so it is done well inside the budget unless its database has
+// stopped answering.
 const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 
 // serveUntilStopped serves on listener until ctx ends, then stops Dispatch (shutdown, with
@@ -103,9 +105,10 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // first, with no deadline of its own: a message send among them finishes, bounded by the listener
 // client's receipt timeout. The document service settles the documents owed within
 // documentShutdownTimeout once those requests are done, or httpDrain after the signal with some
-// still running: httpDrainBeforeDocuments in a deployment, and shorter only in a test process
-// (bootConfig.HTTPDrain). waitBackground then waits for the delivery hub, every live socket
-// and the subscriptions they ran to finish their Lifetime-driven shutdown, and waitIntakes for the
+// still running: httpDrainBeforeDocuments in a deployment, and no longer in a test process
+// (bootConfig.HTTPDrain, which resolveBootConfig refuses past httpDrainBeforeDocuments).
+// waitBackground then waits for the delivery hub, every live socket and the subscriptions they ran
+// to finish their Lifetime-driven shutdown, and waitIntakes for the
 // intakes to finish their stop (the GitHub intakes' delivery.StartIntakes stop and the Legion state
 // intake's legion.StartIntake stop, both held durables), which began at the signal beside the HTTP
 // drain and document shutdown. A message in its handler finishes and is acknowledged, or is

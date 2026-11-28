@@ -2599,21 +2599,21 @@ func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
 			}
 		}
 	}
+	registryRefusal := []string{`msg="dispatch: register this server process"`, "signing key set does not match a live server process"}
+	if code := process.Cmd.ProcessState.ExitCode(); code != 1 || !process.logged(registryRefusal...) {
+		t.Fatalf("the refused process exited %d; want 1, with the refusal of the registry logged:\n%s", code, process.Output.String())
+	}
 	// How long the process waited, by its own clock: the moment it logged its first refusal and
 	// the moment it logged the refusal it gave up on. The test's own reads of the output are a
 	// hang guard above and no part of this reading, since a loaded runner stretches them either
 	// way: late, a whole wait would read as a short one, and a stalled read would let an exit
 	// after one heartbeat read as a whole wait.
-	gaveUpAt := process.loggedAt(t, `msg="dispatch: register this server process"`, "signing key set does not match a live server process")
+	gaveUpAt := process.loggedAt(t, registryRefusal...)
 	if waited := gaveUpAt.Sub(process.loggedAt(t, registryRefusalLine)); waited < liveWindow {
 		t.Fatalf("the refused process gave up %v after its first refusal; the wait is a live window and a heartbeat, %v, and the test needs at least the window, %v:\n%s",
 			waited.Round(time.Millisecond), wait, liveWindow, process.Output.String())
 	}
 
-	if code := process.Cmd.ProcessState.ExitCode(); code != 1 ||
-		!process.logged(`msg="dispatch: register this server process"`, "signing key set does not match a live server process") {
-		t.Fatalf("the refused process exited %d; want 1, with the refusal of the registry logged:\n%s", code, process.Output.String())
-	}
 	requireNoKeywordFillWrite(t, database, "after the refused process exited")
 	for _, line := range []string{keywordFillTookLine, keywordFillStandbyLine} {
 		if process.logged(line) {
