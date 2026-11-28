@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -35,12 +36,15 @@ var joins = []string{`\`, "&&", "||", "|", "if", "while", "until", "!"}
 // script one-collection.sh. It reads lines, not shell: a line test is all these few lines need.
 func storeStepFindings(workflow, wait, script string) []string {
 	var findings []string
+	// Every job's steps are parsed, so timeout-minutes is read as text: another job's may be an
+	// expression (the alone job's `${{ matrix.step_minutes }}`), and only the shard job's two
+	// file-store steps are held to a number of minutes.
 	var parsed struct {
 		Jobs map[string]struct {
 			Steps []struct {
 				Name    string `yaml:"name"`
 				Run     string `yaml:"run"`
-				Timeout int    `yaml:"timeout-minutes"`
+				Timeout string `yaml:"timeout-minutes"`
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
@@ -57,7 +61,7 @@ func storeStepFindings(workflow, wait, script string) []string {
 			if run := strings.TrimSpace(step.Run); run != want.run {
 				findings = append(findings, fmt.Sprintf("step %q runs %q, not %q", want.name, run, want.run))
 			}
-			if step.Timeout <= 0 {
+			if minutes, err := strconv.Atoi(step.Timeout); err != nil || minutes <= 0 {
 				findings = append(findings, fmt.Sprintf("step %q has no timeout-minutes, so a store that stops answering holds it to the job's", want.name))
 			}
 		}
