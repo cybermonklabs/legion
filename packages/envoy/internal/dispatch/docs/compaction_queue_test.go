@@ -97,7 +97,7 @@ func TestTheCompactionQueueFoldsTheOldRowsOfADocumentItsWritesNoted(t *testing.T
 func TestTheCompactionQueueCompactsALoadedDocumentOnlyWhenItIsDue(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Origins: testOrigins, Settle: time.Hour})
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	steps := quickCompactionQueue(service, 50*time.Millisecond)
 	loads := map[string]func(t *testing.T, artifactID string){
