@@ -5806,7 +5806,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       cites: true,
     });
     const cStored = bash(
-      `${defs("note", "fail", "store_scored_run")}\nwork=$1\nstore_scored_run "$2"`,
+      `${defs("note", "fail", "store_scored_run")}\nwork=$1 maps=$1/maps\nstore_scored_run "$2"`,
       [cPod, cName],
       { RT_STORE: cStore.bin }
     );
