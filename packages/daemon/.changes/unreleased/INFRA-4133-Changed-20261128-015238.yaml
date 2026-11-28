@@ -6,10 +6,10 @@ body: |-
   with its mode and read and write files across the process's available CPUs with bounded bytes in
   flight, symlink-safe bounded directory opens and empty-parent clean-ups, serialized paths a file
   system may alias beyond ASCII case, and preserved `AccessDenied` skips. In the gVisor issue-pod
-  end-to-end proof on `rust-lang/crates.io-index` (389,633 files, 4 CPUs), `workspace-init` fell
-  from 151 s at the base to 66 s at the head (ratio 0.44), with the `checkout` step taking 48.3 s
-  (against 180.0 s on the unpinned build with step timing); on `tmux/tmux`, `workspace-init`
-  stayed at 3 s against 3 s at the base.
+  end-to-end proof on `rust-lang/crates.io-index` (389,633 files, 4 CPUs; run 46145818837 at this
+  pin), `workspace-init` fell from 154 s at the base to 67 s at the head (ratio 0.44), with the
+  `checkout` step taking 48.9 s (against 180.0 s on the unpinned build with step timing); on
+  `tmux/tmux` (run 46145821892), `workspace-init` stayed at 3 s against 3 s at the base.
 time: 2026-11-28T01:52:38Z
 custom:
     Issue: INFRA-4133

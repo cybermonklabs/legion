@@ -101,8 +101,8 @@ ARG MISE_VERSION=v2026.8.12
 # command reports a good signature from release key 24853EC9F655CE80B48E6C3A8B81C9D17413A06D
 # (published at https://mise.jdx.dev/gpg-key.pub, and at keys.openpgp.org by the same fingerprint).
 ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
-# Sami's jj fork, at a release built from sjawhar/jj#8 on top of sjawhar/jj#7, sjawhar/jj#6,
-# sjawhar/jj#5, sjawhar/jj#4 and sjawhar/jj#3.
+# Sami's jj fork, at a release built from sjawhar/jj#9 on top of sjawhar/jj#8, sjawhar/jj#7,
+# sjawhar/jj#6, sjawhar/jj#5, sjawhar/jj#4 and sjawhar/jj#3.
 # sjawhar/jj#3 gives jj 0.46 a gix-pack that maps each pack, index and multi-pack-index in 8 MiB
 # chunks and keeps the chunks reads mark within 512 MiB (JJ_PACK_MAPPED_LIMIT sets another
 # budget): under gVisor a whole mapping counts as the pod's memory once one page of it is read.
