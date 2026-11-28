@@ -81,11 +81,14 @@
 # readiness bound that is no whole number of seconds from 1 to 9999 (t2), naming the variable; (u)
 # every broker a run starts, the --callout run's second among them, lists the run's registrar as
 # the registrar of the pod's account and of nothing else (BROKER_POD_REGISTRARS), without which the
-# one registration the run makes is refused; and (v) a run on a PATH that holds a version manager's
+# one registration the run makes is refused; (v) a run on a PATH that holds a version manager's
 # python3 shim after the fakes, as a developer's box does (mise's), reaches ready and stops: the
 # fake python3 runs the real interpreter by the path that interpreter names for itself, never
-# through the shim, which would hand the call back to the fake. (q) and (r) run after (h), and (s)
-# and (t) after (i).
+# through the shim, which would hand the call back to the fake; and (w) await, which every start
+# waits on, reads again after 0.05, 0.1 and 0.2 s and then every 0.25 s, returns at the first read
+# that finds its value, fails at once when its process is gone, and gives up 60 s after it began,
+# held by the driver's own await under a clock of its own shell, as the stop's grace is. (q) and
+# (r) run after (h), and (s) and (t) after (i).
 #
 # The fake docker is scripts/lib/dev-stack-test-docker.sh's, and assert_project_access and the
 # --project-access cases are scripts/lib/dev-stack-test-project-access.sh's; this file sources
@@ -1555,6 +1558,90 @@ exit 0' _ "${temporary_dir}/stop-grace-clock.ready" "$child_file" >"$out" 2>&1 |
 grace_by_clock "$stop_grace_default"
 grace_by_clock 3 3
 printf "PASS: the stop killed a child that ignores SIGTERM exactly when its grace ran out by its own clock: %s s with no grace set, 3 s when given 3\n" "$stop_grace_default"
+
+# (w) await, which every start waits on, held by what it does: the driver's own await and its
+# awaited="" line are read out of it, as (e10) reads the stop's helpers, and run in a shell of
+# their own, under the driver's set -euo pipefail and a clock of that shell's own. No stub shows
+# await's naps, since each reports within milliseconds of its start, and no row waits out its
+# 60 s. SECONDS, once unset, is a plain variable, here 0, and `sleep` is a function that records
+# the nap asked of it and moves a count of microseconds on by it, putting SECONDS at that count's
+# whole seconds, so the deadline passes in await's own naps, with no real wait. The record and the
+# count are named apart from await's locals, which `sleep`, called from await, would otherwise
+# write in their place. The reader counts its reads in a file, since it runs in await's command
+# substitution, where a variable would not keep the count, and prints ready from its Nth read on.
+# A reader that prints at its first read is returned at once, with no nap; one that prints at its
+# fourth, its process alive, after naps of exactly 0.05, 0.1 and 0.2 s. One that never prints, its
+# process alive, is read after naps of 0.05, 0.1 and 0.2 s and then every 0.25 s, and await fails,
+# naming what it waited for, with its log, once the naps add up to 60 s: no sooner, and not a nap
+# later (before 60.25 s). One whose process has exited and been reaped fails at once, saying so,
+# with its log and no nap. The shell kills its live process on any way out, a timeout's TERM
+# included; a timeout reads as status 124.
+awaiter="$(sed -n -e '/^awaited=""$/p' -e '/^await() {$/,/^}$/p' "$driver")"
+grep -qx 'awaited=""' <<<"$awaiter" || fail 'dev-stack.sh defines no awaited="" at the start of a line'
+grep -qx 'await() {' <<<"$awaiter" || fail 'dev-stack.sh defines no await() at the start of a line'
+await_by_clock() { # <the read that first prints ready, 0 for none> <live|reaped>
+  local out="${temporary_dir}/await-clock.out" err="${temporary_dir}/await-clock.err"
+  local reads="${temporary_dir}/await-clock.reads" log="${temporary_dir}/await-clock.log"
+  local -a report
+  await_status=0
+  rm -f "$reads"
+  printf 'the log of a stub\n' >"$log"
+  # shellcheck disable=SC2016 # await's shell expands these, not this one
+  timeout -k 5 15 bash -c "$awaiter"$'\n''
+set -euo pipefail
+first="$1" which="$2" reads="$3" log="$4"
+slept=()
+clock_us=0
+command sleep 600 &
+live=$!
+report() {
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  printf "%s\n" "${slept[*]}" "$clock_us" "$awaited"
+}
+trap report EXIT
+trap "exit 1" TERM
+command sleep 0 &
+reaped=$!
+wait "$reaped"
+pid="$live"
+if [ "$which" = reaped ]; then pid="$reaped"; fi
+unset SECONDS
+SECONDS=0
+sleep() {
+  slept+=("$1")
+  local whole="${1%%.*}" fraction
+  fraction="${1#"$whole"}"
+  fraction="${fraction#.}000000"
+  clock_us=$((clock_us + 10#${whole:-0} * 1000000 + 10#${fraction:0:6}))
+  SECONDS=$((clock_us / 1000000))
+}
+ready_from() {
+  local -a marks
+  echo read >>"$2"
+  mapfile -t marks <"$2"
+  if (($1 > 0 && ${#marks[@]} >= $1)); then echo ready; fi
+}
+await "a stub" "$pid" "$log" "$reads" "its value" ready_from "$first"' _ "$1" "$2" "$reads" "$log" >"$out" 2>"$err" || await_status=$?
+  mapfile -t report <"$out"
+  await_naps="${report[0]:-}" await_clock="${report[1]:-}" await_value="${report[2]:-}" await_err="$(<"$err")"
+  await_got="status ${await_status}, naps '${await_naps}', clock ${await_clock} us, awaited '${await_value}', stderr '${await_err}'"
+}
+naps_settled='^0\.05 0\.1 0\.2( 0\.25)+$'
+await_by_clock 1 live
+[[ "$await_status" -eq 0 && -z "$await_naps" && "$await_value" == ready && -z "$await_err" ]] ||
+  fail "await on a reader that prints at its first read did not return 0 with ready at once: $await_got"
+await_by_clock 4 live
+[[ "$await_status" -eq 0 && "$await_naps" == '0.05 0.1 0.2' && "$await_value" == ready && -z "$await_err" ]] ||
+  fail "await on a reader that prints at its fourth read, its process alive, did not return 0 with ready after naps of exactly 0.05, 0.1 and 0.2 s: $await_got"
+await_by_clock 0 live
+[[ "$await_status" -eq 1 && "$await_naps" =~ $naps_settled && "$await_clock" -ge 60000000 && "$await_clock" -lt 60250000 &&
+  -z "$await_value" && "$await_err" == $'dev-stack: a stub did not report its value within 60s\nthe log of a stub' ]] ||
+  fail "await on a reader that never prints, its process alive, did not nap 0.05, 0.1 and 0.2 s and then 0.25 s and fail, naming its value, with its log, 60 s after it began by its own clock: $await_got"
+await_by_clock 0 reaped
+[[ "$await_status" -eq 1 && -z "$await_naps" && -z "$await_value" && "$await_err" == $'dev-stack: a stub exited during startup\nthe log of a stub' ]] ||
+  fail "await on a reader that prints nothing, its process gone, did not fail at once, saying so, with its log and no nap: $await_got"
+printf 'PASS: await reads again after 0.05, 0.1 and 0.2 s and then every 0.25 s, returns at the first read that finds its value, fails at once when its process is gone, and gives up 60 s after it began by its own clock\n'
 
 # (f) No database URL at all: the refusal names all three sources and exits 2, before anything is
 # created.

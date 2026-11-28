@@ -764,14 +764,18 @@ fi
 
 # --- Each process's readiness is read from its own log, or from its answer at the port it reported
 # there, never from a port this script chose: await runs one reader until it prints a value, and
-# fails once a read comes back empty and the process it watches is gone. The readers each end in
-# `|| true` territory: under this script's pipefail a grep that has not matched yet is the normal
-# case on every pass before the line is written, not a failure. ---
+# fails once a read comes back empty and the process it watches is gone, or 60 s after it began.
+# Between reads it naps 0.05 s, then 0.1 s, then 0.2 s, and from then on 0.25 s: each process it
+# waits on reports within milliseconds of its start, so a first nap of 0.25 s cost a quarter second
+# per wait, and one still starting after those first three naps is read every 0.25 s. The readers
+# each end in `|| true` territory: under this script's pipefail a grep that has not matched yet is
+# the normal case on every pass before the line is written, not a failure. ---
 awaited=""
 await() {
   local name="$1" pid="$2" log="$3" source="$4" what="$5"
   shift 5
   local deadline=$((SECONDS + 60))
+  local naps=(0.05 0.1 0.2) nap=0
   awaited=""
   while ((SECONDS < deadline)); do
     awaited="$("$@" "$source" 2>/dev/null || true)"
@@ -783,7 +787,8 @@ await() {
       cat "$log" >&2 || true
       return 1
     fi
-    sleep 0.25
+    sleep "${naps[nap]:-0.25}"
+    nap=$((nap + 1))
   done
   echo "dev-stack: $name did not report $what within 60s" >&2
   cat "$log" >&2 || true
