@@ -498,7 +498,7 @@ func (s *Service) followVersion(ctx context.Context, tx pgx.Tx, latest ClosedIss
 	// a closed issue's version. No stored version says which wrote it, so the move reads it as a
 	// settlement's and keeps the person's turn where that settlement's own version write would
 	// have kept it.
-	if err := MoveApprovalAsk(ctx, tx, s.events, latest.artifactID, latest.version, latest.markdown, latest.mover, true, s.serverURL); err != nil {
+	if err := MoveApprovalAsk(ctx, tx, s.events, latest.artifactID, latest.version, latest.markdown, latest.mover, true, s.origins); err != nil {
 		return err
 	}
 	if err := refuseSecondCarry(ctx, tx, latest.artifactID); err != nil {
@@ -772,7 +772,8 @@ const (
 // settlement still short after its last attempt, or once ctx ends or the service stops, which no
 // further attempt would get past, is logged and returned, joined with the others: the document's
 // pending-settlement row keeps the debt, for the room's next load or the resumption
-// (RunSettlementResumption).
+// (RunSettlementResumption). The budget, the pause and each wait for the appends run on the
+// service's clock (Deps.Clock).
 //
 // It opens a transaction of its own for each settlement, which takes the issue's owner lock, so it
 // is refused inside a transaction: a joined context's, or, for a context the pool tracks, any
@@ -785,22 +786,22 @@ func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) err
 	if err != nil {
 		return err
 	}
-	deadline := time.Now().Add(issueSettleBudget)
+	deadline := s.clock.Now().Add(issueSettleBudget)
 	var failures []error
 	for _, room := range rooms {
 		var err error
-		for attempt := 1; attempt <= issueSettleAttempts && (attempt == 1 || time.Now().Before(deadline)); attempt++ {
+		for attempt := 1; attempt <= issueSettleAttempts && (attempt == 1 || s.clock.Now().Before(deadline)); attempt++ {
 			if attempt > 1 && (ctx.Err() != nil || s.stopping.Load()) {
 				break
 			}
 			if err = s.settleOwedNow(ctx, room, deadline); err == nil || attempt == issueSettleAttempts {
 				break
 			}
-			pause := time.NewTimer(min(issueSettleRetryPause, time.Until(deadline)))
+			pause := s.clock.NewTimer(min(issueSettleRetryPause, deadline.Sub(s.clock.Now())))
 			select {
 			case <-ctx.Done():
 				pause.Stop()
-			case <-pause.C:
+			case <-pause.C():
 			}
 		}
 		if err != nil {
@@ -823,7 +824,7 @@ func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) err
 // of its own, so Shutdown joins it as it would the timer's settlement, and holds the room's state
 // across it, so the state the settlement looks up is the one whose generation it runs at.
 func (s *Service) settleOwedNow(ctx context.Context, room string, deadline time.Time) error {
-	waitCtx, cancel := context.WithDeadline(ctx, deadline)
+	waitCtx, cancel := s.clock.WithDeadline(ctx, deadline)
 	err := s.waitForDurableAppends(waitCtx, room)
 	cancel()
 	if err != nil {

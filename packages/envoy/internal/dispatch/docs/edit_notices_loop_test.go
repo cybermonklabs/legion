@@ -20,7 +20,7 @@ import (
 // settlements the test drives through its own service.
 func newEditNoticeSweeper(t *testing.T, database *store.Store) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Origins: testOrigins, Settle: time.Hour})
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }

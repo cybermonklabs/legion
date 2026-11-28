@@ -160,14 +160,20 @@ project_access_binaries_cases() {
   no_docker_bin="${temporary_dir}/bin-without-docker"
   mkdir -p "$no_docker_bin"
   IFS=: read -r -a path_dirs <<<"${fake_bin_dir}:${PATH}"
+  # Each name is linked to the first of it on PATH, as a lookup finds it, and all of them by one
+  # ln, since an ln for each name started a process for each of the hundreds on a PATH.
+  local -A taken=()
+  local -a tools=()
   for dir in "${path_dirs[@]}"; do
     [[ "$dir" == /* && -d "$dir" ]] || continue
     for tool in "$dir"/*; do
       name="${tool##*/}"
-      [[ "$name" != docker && -f "$tool" && -x "$tool" ]] || continue
-      [[ -e "${no_docker_bin}/${name}" || -L "${no_docker_bin}/${name}" ]] || ln -s "$tool" "${no_docker_bin}/${name}"
+      [[ "$name" != docker && -f "$tool" && -x "$tool" && -z "${taken[$name]:-}" ]] || continue
+      taken[$name]=1
+      tools+=("$tool")
     done
   done
+  ln -s -t "$no_docker_bin" -- "${tools[@]}"
   if PATH="$no_docker_bin" command -v docker >/dev/null; then
     fail "the PATH built without docker still finds one, so the refusal below could not be seen"
   fi

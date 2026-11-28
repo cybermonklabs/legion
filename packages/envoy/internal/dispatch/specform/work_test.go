@@ -169,6 +169,12 @@ func workRows(race bool) []workRow {
 // many footnotes", and the statements of the first, hold a word or two each, and the row of
 // purpose lines of one id counts the reader alone (read), since the walk that it is for is the
 // reader's, and the judgment of each line counts several times the statements of its reading.
+//
+// It does work in proportion to its text for each rule of the terms (R50) too: many definitions
+// of two sentences, many definitions of one term, many definitions of terms that the list holds,
+// many term lines outside Terms that name a defined term, many names of terms outside the
+// alphabet, one name of a term of many characters outside the alphabet, and many headings that
+// read as Terms in another form.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -264,6 +270,14 @@ func workTable() []workRow {
 	procedureCheck := func(run string) string {
 		return fmt.Sprintf(":::check{#v run=%q}\nDispatch keeps each record.\n:::\n", run)
 	}
+	// defined judges the definitions that terms makes of n units against the list that it makes.
+	defined := func(terms func(n int) (proposed, list []Term)) workJudgment {
+		return func(_ *testing.T, n int) func() []Finding {
+			proposed, list := terms(n)
+			in := Input{Proposed: proposed, List: list}
+			return func() []Finding { return check(context, in) }
+		}
+	}
 	const requirement, end = ":::requirement{#r}\nDispatch keeps", "\n:::\n"
 	const statementUnit = ":::requirement{#s-%d}\nDispatch keeps record %[1]d[^shared].\n:::\n\n"
 	return []workRow{
@@ -301,7 +315,7 @@ func workTable() []workRow {
 		{"many footnotes", "ste100-semicolon", 1_400, extracted(units("", "[^%[1]d]: It; it.\n\n:::requirement{#s-%[1]d}\nIt[^%[1]d].\n:::\n\n", ""))},
 		{"many statements that refer to one long footnote", "ste100-semicolon", 70,
 			extracted(shared("Dispatch keeps record %d; it waits. ", "", statementUnit))},
-		{"many term lines that refer to one long footnote", "", 50,
+		{"many term lines that refer to one long footnote", ruleDefinitionSentences, 50,
 			extracted(shared("Dispatch keeps the record of answer %d for one year. ", "# Terms\n\n", "- **term %d**: One record of a claim[^shared].\n"))},
 		{"many component rows that refer to one long footnote", "", 52,
 			extracted(shared("Dispatch keeps the record of answer %d for one year. ", "| Id | Kind | Name | Purpose |\n| --- | --- | --- | --- |\n",
@@ -339,6 +353,31 @@ func workTable() []workRow {
 			extracted(func(n int) string {
 				return procedureCheck("If the run fails, " + strings.Repeat("read the log, ", n) + "send the report.")
 			})},
+		{"many definitions of two sentences", ruleDefinitionSentences, 120,
+			extracted(units("# Terms\n\n", "- **term %d**: Dispatch keeps it. It waits.\n", ""))},
+		{"many definitions of one term", ruleTermSecondDefinition, 120,
+			extracted(units("# Terms\n\n", "- **lease**: Dispatch keeps record %d.\n", ""))},
+		{"many definitions of terms that the list holds", ruleTermSecondDefinition, 210, defined(func(n int) (proposed, list []Term) {
+			for index := range n {
+				name := fmt.Sprintf("term %d", index+1)
+				proposed = append(proposed, Term{Name: name, Definition: "Dispatch keeps it.", Where: where})
+				list = append(list, Term{Name: name, Definition: "Dispatch keeps it.", Where: "terms.md version 1 of ACME-1"})
+			}
+			return proposed, list
+		})},
+		{"many term lines outside Terms that name a defined term", ruleTermSecondDefinition, 570,
+			extracted(units("# Terms\n\n- **lease**: Dispatch keeps it.\n\n# Notes\n\n", "- **lease**: Dispatch keeps record %d.\n", ""))},
+		{"many names of terms outside the alphabet", ruleTermName, 120,
+			extracted(units("# Terms\n\n", "- **termé %d**: Dispatch keeps it.\n", ""))},
+		{"one name of a term of many characters outside the alphabet", ruleTermName, 6_400, defined(func(n int) (proposed, list []Term) {
+			var name strings.Builder
+			for index := range n {
+				name.WriteRune(rune(0x20000 + index)) // a letter of another script, each one another
+			}
+			return []Term{{Name: name.String(), Definition: "Dispatch keeps it.", Where: where}}, nil
+		})},
+		{"many headings that read as Terms in another form", ruleTermsHeading, 1_100,
+			extracted(units("", "## terms\n\nDispatch keeps record %d.\n\n", ""))},
 	}
 }
 
