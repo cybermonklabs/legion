@@ -770,10 +770,13 @@ What each part is for:
   its session, and the relaunched controller hears the new list.
   Under the tmux runtime, and under `legion controller start`, the next start of the controller
   takes it: its prompt, its subscriptions and the read of each entry's newest run at its start.
-  The loader refuses, naming the key, the entry's place in the list and the entry: an entry of
-  another shape; an `@` with no event, or an empty event; a name that is not one of GitHub's
-  trigger events, compared with case; an event an entry names twice; and one workflow in two
-  entries, the owner and the repository compared without case and the file with it.
+  The loader refuses, naming the key and the entry's place in the list, and the entry only where
+  it has an entry's shape (each part written as above, and no run of 8 hex digits and no run of
+  10 letters and digits that holds a digit, either read in any case, so a token pasted as an entry
+  is named by its place alone): an entry of another shape; an `@` with no event, or an empty event;
+  a name that is not one of GitHub's trigger events, compared with case; an event an entry names
+  twice; and one workflow in two entries, the owner and the repository compared without case and
+  the file with it.
   `legion config check` prints the project's entries, each with its events, and prints no such
   line for a project that names none.
   A daemon that predates the key refuses it at boot, as it does any key it does not know.

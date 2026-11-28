@@ -9,8 +9,13 @@ import (
 // Rename is one configured pair: the repository as it was, and the one it moved to.
 type Rename struct{ From, To Repository }
 
-// describe is the pair as a refusal names it, `<from> -> <to>`.
-func (r Rename) describe() string { return r.From.String() + " -> " + r.To.String() }
+// side is the pair's from where from is true, and its to otherwise.
+func (r Rename) side(from bool) Repository {
+	if from {
+		return r.From
+	}
+	return r.To
+}
 
 // Renames is the equivalence a deployment configures (`repository_renames`): the pairs it treats
 // as one repository wherever a name is compared, because the repository moved and GitHub's events
@@ -46,7 +51,8 @@ type Renames struct {
 // a chain, where one pair's to is another's from, and one owner's repositories moved to two
 // owners. The map holds one pair per repository, a flat equivalence of two names, so `Same` and
 // `Partner` answer the same from either side. No pair may carry the zero Repository, since that
-// names no repository at all.
+// names no repository at all. A refusal names each repository and owner as written
+// (NewRenamesNamed).
 //
 // The last refusal is the one rule about owners rather than names, and it is here because this is
 // the only place that holds every pair. `OwnerAliases` is keyed by the owner a pair moved a
@@ -61,6 +67,27 @@ type Renames struct {
 // is configured as it is, and several owners moving to one owner key one alias each, so only
 // this shape is refused.
 func NewRenames(pairs []Rename) (Renames, error) {
+	return NewRenamesNamed(pairs, func(index int, from bool) (string, string) {
+		side := pairs[index].side(from)
+		return side.String(), side.Owner()
+	})
+}
+
+// NewRenamesNamed is NewRenames, whose refusal names each repository it names, and each owner, as
+// named answers for the side it belongs to: the pair at index, its from where from is true and its
+// to otherwise. A caller whose refusal may not print a repository as written (a configuration's,
+// where a token can be pasted in a repository's place) names it by its place instead.
+func NewRenamesNamed(pairs []Rename, named func(index int, from bool) (repository, owner string)) (Renames, error) {
+	repository := func(index int, from bool) string {
+		name, _ := named(index, from)
+		return name
+	}
+	owner := func(index int, from bool) string {
+		_, name := named(index, from)
+		return name
+	}
+	// describe is the pair at index as a refusal names it, `<from> -> <to>`.
+	describe := func(index int) string { return repository(index, true) + " -> " + repository(index, false) }
 	for index, pair := range pairs {
 		switch {
 		case pair.From.IsZero():
@@ -68,20 +95,20 @@ func NewRenames(pairs []Rename) (Renames, error) {
 		case pair.To.IsZero():
 			return Renames{}, fmt.Errorf("rename %d names no repository in to: a rename is the repository as it was and the one it moved to", index)
 		case strings.EqualFold(pair.From.String(), pair.To.String()):
-			return Renames{}, fmt.Errorf("rename %d (%s) renames a repository to itself: from and to name two repositories, compared without case", index, pair.describe())
+			return Renames{}, fmt.Errorf("rename %d (%s) renames a repository to itself: from and to name two repositories, compared without case", index, describe(index))
 		}
 		for seen, earlier := range pairs[:index] {
 			switch {
 			case strings.EqualFold(pair.From.String(), earlier.From.String()):
-				return Renames{}, fmt.Errorf("rename %d (%s) and rename %d (%s) both rename %s: a repository moved to one name", index, pair.describe(), seen, earlier.describe(), pair.From)
+				return Renames{}, fmt.Errorf("rename %d (%s) and rename %d (%s) both rename %s: a repository moved to one name", index, describe(index), seen, describe(seen), repository(index, true))
 			case strings.EqualFold(pair.To.String(), earlier.To.String()):
-				return Renames{}, fmt.Errorf("rename %d (%s) and rename %d (%s) both name %s as the repository moved to: a repository moved from one name", index, pair.describe(), seen, earlier.describe(), pair.To)
+				return Renames{}, fmt.Errorf("rename %d (%s) and rename %d (%s) both name %s as the repository moved to: a repository moved from one name", index, describe(index), seen, describe(seen), repository(index, false))
 			case strings.EqualFold(pair.From.String(), earlier.To.String()):
-				return Renames{}, fmt.Errorf("rename %d (%s) chains onto rename %d (%s) through %s: a rename pairs two names, never a chain of three", index, pair.describe(), seen, earlier.describe(), pair.From)
+				return Renames{}, fmt.Errorf("rename %d (%s) chains onto rename %d (%s) through %s: a rename pairs two names, never a chain of three", index, describe(index), seen, describe(seen), repository(index, true))
 			case strings.EqualFold(pair.To.String(), earlier.From.String()):
-				return Renames{}, fmt.Errorf("rename %d (%s) chains onto rename %d (%s) through %s: a rename pairs two names, never a chain of three", index, pair.describe(), seen, earlier.describe(), pair.To)
+				return Renames{}, fmt.Errorf("rename %d (%s) chains onto rename %d (%s) through %s: a rename pairs two names, never a chain of three", index, describe(index), seen, describe(seen), repository(index, false))
 			case strings.EqualFold(pair.From.Owner(), earlier.From.Owner()) && !strings.EqualFold(pair.To.Owner(), earlier.To.Owner()):
-				return Renames{}, fmt.Errorf("rename %d (%s) and rename %d (%s) move repositories of %s to two owners, %s and %s: an owner's repositories moved to one owner, since the daemon keys the owner a pair moved a repository away from to the owner it moved to, one key per owner, so the second pair would overwrite the first with nothing said", index, pair.describe(), seen, earlier.describe(), pair.From.Owner(), pair.To.Owner(), earlier.To.Owner())
+				return Renames{}, fmt.Errorf("rename %d (%s) and rename %d (%s) move repositories of %s to two owners, %s and %s: an owner's repositories moved to one owner, since the daemon keys the owner a pair moved a repository away from to the owner it moved to, one key per owner, so the second pair would overwrite the first with nothing said", index, describe(index), seen, describe(seen), owner(index, true), owner(index, false), owner(seen, false))
 			}
 		}
 	}

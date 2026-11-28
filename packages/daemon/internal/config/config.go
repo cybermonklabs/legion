@@ -714,6 +714,16 @@ func tokenShaped(name string) bool {
 	return false
 }
 
+// tokenShapedInAnyCase reports whether value holds a token's run (tokenShaped) read in lower case:
+// the check for a value a grammar that takes capitals accepted, a repository's (repositoryShape)
+// or an owner's, or a workflow's file (workflowFilePattern). Such a grammar takes a token of mixed
+// case (`ghp_…`, `sk-ant-…`), whose runs tokenShaped, reading lower-case letters and digits alone,
+// rarely finds as written. A real name holding such a run (`Python3Utilities`) is then named by its
+// place too: only the printing narrows, never what the reader takes.
+func tokenShapedInAnyCase(value string) bool {
+	return tokenShaped(strings.ToLower(value))
+}
+
 // roleName reports whether role is a role's name a reader takes: a name of the role grammar
 // (claim.IsRole) that holds no token's run (tokenShaped).
 func roleName(role claim.Role) bool {

@@ -827,6 +827,8 @@ func TestLoadReadsProjectCommitIssueTrailerRepos(t *testing.T) {
 // twice, a repeat differing only in case — GitHub compares a name without case — and a repeat a
 // configured repository_renames pair makes one repository, which readCommitIssueTrailerRepos
 // cannot see because a project is read before the renames settle (checkCommitIssueTrailerRenames).
+// A repository that holds a token's run in any case, as a real name can (`Python3Utilities`), is
+// named by its entry's place alone.
 func TestLoadRefusesProjectCommitIssueTrailerRepos(t *testing.T) {
 	for _, tc := range []struct{ name, repos, renames, want string }{
 		{
@@ -845,11 +847,23 @@ func TestLoadRefusesProjectCommitIssueTrailerRepos(t *testing.T) {
 			want:  "projects.DEMO.commit_issue_trailer_repos names Acme/Widgets twice",
 		},
 		{
+			name:  "one repository twice, holding a token's run in any case",
+			repos: "[acme/Python3Utilities, acme/python3utilities]",
+			want:  "projects.DEMO.commit_issue_trailer_repos[1] names the repository projects.DEMO.commit_issue_trailer_repos[0] names: one repository is named once, compared without case",
+		},
+		{
 			name:    "the two names of a configured rename",
 			repos:   "[acme/widgets, Acme/Gadgets]",
 			renames: "repository_renames: [{from: acme/widgets, to: acme/gadgets}]\n",
 			want: "projects.DEMO.commit_issue_trailer_repos[0] (acme/widgets) and projects.DEMO.commit_issue_trailer_repos[1] (Acme/Gadgets) name one repository: " +
 				"repository_renames makes acme/widgets and Acme/Gadgets one repository, so the list names it twice; name it once",
+		},
+		{
+			name:    "the two names of a configured rename, one holding a token's run in any case",
+			repos:   "[acme/Python3Utilities, acme/gadgets]",
+			renames: "repository_renames: [{from: acme/Python3Utilities, to: acme/gadgets}]\n",
+			want: "projects.DEMO.commit_issue_trailer_repos[0] and projects.DEMO.commit_issue_trailer_repos[1] (acme/gadgets) name one repository: " +
+				"repository_renames makes projects.DEMO.commit_issue_trailer_repos[0] and acme/gadgets one repository, so the list names it twice; name it once",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -915,19 +929,24 @@ func TestLoadReadsProjectWatchedWorkflows(t *testing.T) {
 }
 
 // The loader refuses a watched_workflows entry no topic could be named for, or that names one
-// workflow the list already names, and every refusal names the key, the entry's place in the list
-// and the entry: a repository GitHub serves no repository under; a file that is no file name of
-// .github/workflows; an entry of another shape, a string or not; an "@" with no event or an empty
-// one; a name that is not one of GitHub's trigger events, compared with case, as a workflow's `on:`
-// writes it; one event twice; and one workflow in two entries, the owner and the repository
-// compared without case, as GitHub compares them, and the file with case, as a repository's files
-// are named. Two files that differ in case alone are two workflows, and both load.
+// workflow the list already names, and every refusal names the key and the entry's place in the
+// list, and the entry where it has an entry's shape: a repository GitHub serves no repository
+// under; a file that is no file name of .github/workflows; an entry of another shape, a string or
+// not; an "@" with no event or an empty one; a name that is not one of GitHub's trigger events,
+// compared with case, as a workflow's `on:` writes it; one event twice; and one workflow in two
+// entries, the owner and the repository compared without case, as GitHub compares them, and the
+// file with case, as a repository's files are named. Two files that differ in case alone are two
+// workflows, and both load. An entry of no entry's shape is named by its place, with its
+// repository where that has a repository's shape and an event where that has a key's shape; a
+// value that is no string is named by its kind.
 func TestLoadRefusesProjectWatchedWorkflows(t *testing.T) {
 	const form = `"<owner>/<repo>/<file>", optionally followed by "@" and the trigger events that count, comma-separated`
-	const fileRule = `is not a file name of .github/workflows: letters, digits, ".", "_" and "-", ending in ".yml" or ".yaml"`
+	const fileRule = `the workflow file is not a file name of .github/workflows: letters, digits, ".", "_" and "-", ending in ".yml" or ".yaml"`
 	const emptyEvent = `"@" must be followed by trigger events, comma-separated, none of them empty; an entry with no "@" watches schedule runs alone`
-	const notAnEvent = `is not one of GitHub's trigger events, which a workflow's "on:" names in lower case (https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)`
-	const ownerRule = `has an owner GitHub does not allow: at most 39 ASCII letters, digits, "-" and "_", beginning with a letter or digit`
+	const triggerEvents = `one of GitHub's trigger events, which a workflow's "on:" names in lower case (https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)`
+	const notAnEvent = `is not ` + triggerEvents
+	const repositoryRule = `the repository must be "owner/name": an owner of at most 39 ASCII letters, digits, "-" and "_", beginning with a letter or digit, ` +
+		`and a name of at most 100 ASCII letters, digits, "-", "_" and ".", other than "." and "..", not ending in ".git"`
 	long := strings.Repeat("a", 40)
 	for _, tc := range []struct {
 		name    string
@@ -935,31 +954,33 @@ func TestLoadRefusesProjectWatchedWorkflows(t *testing.T) {
 		want    string
 	}{
 		{"an owner past 39 characters", []string{long + "/widgets/x.yaml"},
-			`projects.DEMO.watched_workflows[0] "` + long + `/widgets/x.yaml": the repository "` + long + `/widgets" ` + ownerRule},
+			`projects.DEMO.watched_workflows[0]: ` + repositoryRule},
 		{"an owner with a dot", []string{"acme/widgets/x.yaml", "ac.me/widgets/x.yaml"},
-			`projects.DEMO.watched_workflows[1] "ac.me/widgets/x.yaml": the repository "ac.me/widgets" ` + ownerRule},
+			`projects.DEMO.watched_workflows[1]: ` + repositoryRule},
 		{"a repository with a slash", []string{"acme/wid/gets/x.yaml"},
-			`projects.DEMO.watched_workflows[0] "acme/wid/gets/x.yaml" is not ` + form},
+			`projects.DEMO.watched_workflows[0] is not ` + form},
 		{"a repository ending in .git", []string{"acme/widgets.git/x.yaml"},
 			`projects.DEMO.watched_workflows[0] "acme/widgets.git/x.yaml": the repository "acme/widgets.git" ends in ".git", which GitHub strips from a repository's name: name it "acme/widgets"`},
+		{"a repository ending in .git, in an entry of no entry's shape", []string{"acme/widgets.git/x.yaml@Push"},
+			`projects.DEMO.watched_workflows[0]: the repository "acme/widgets.git" ends in ".git", which GitHub strips from a repository's name: name it "acme/widgets"`},
 		{"a file with a space", []string{"acme/widgets/x y.yaml"},
-			`projects.DEMO.watched_workflows[0] "acme/widgets/x y.yaml": the workflow file "x y.yaml" ` + fileRule},
+			`projects.DEMO.watched_workflows[0]: ` + fileRule},
 		{"a file with a dollar sign", []string{"acme/widgets/x$.yaml"},
-			`projects.DEMO.watched_workflows[0] "acme/widgets/x$.yaml": the workflow file "x$.yaml" ` + fileRule},
+			`projects.DEMO.watched_workflows[0]: ` + fileRule},
 		{"a JSON file", []string{"acme/widgets/x.json"},
-			`projects.DEMO.watched_workflows[0] "acme/widgets/x.json": the workflow file "x.json" ` + fileRule},
+			`projects.DEMO.watched_workflows[0]: ` + fileRule},
 		{"a file that does not end in its .yaml", []string{"acme/widgets/x.yaml.txt"},
-			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml.txt": the workflow file "x.yaml.txt" ` + fileRule},
+			`projects.DEMO.watched_workflows[0]: ` + fileRule},
 		{"a file with a slash", []string{"acme/widgets/.github/workflows/x.yaml"},
-			`projects.DEMO.watched_workflows[0] "acme/widgets/.github/workflows/x.yaml" is not ` + form},
+			`projects.DEMO.watched_workflows[0] is not ` + form},
 		{"a repository and no file", []string{"acme/widgets"},
-			`projects.DEMO.watched_workflows[0] "acme/widgets" is not ` + form},
+			`projects.DEMO.watched_workflows[0] is not ` + form},
 		{"a file under a directory", []string{"acme/widgets/sub/x.yaml"},
-			`projects.DEMO.watched_workflows[0] "acme/widgets/sub/x.yaml" is not ` + form},
+			`projects.DEMO.watched_workflows[0] is not ` + form},
 		{"an empty string", []string{`""`},
-			`projects.DEMO.watched_workflows[0] "" is not ` + form},
+			`projects.DEMO.watched_workflows[0] is not ` + form},
 		{"a number", []string{"acme/widgets/x.yaml", "42"},
-			`projects.DEMO.watched_workflows[1] is 42, not a string: an entry is ` + form},
+			`projects.DEMO.watched_workflows[1] is a number, not a string: an entry is ` + form},
 		{"a mapping", []string{"{repo: acme/widgets, file: x.yaml}"},
 			`projects.DEMO.watched_workflows[0] is a mapping, not a string: an entry is ` + form},
 		{"an @ with no event", []string{"acme/widgets/x.yaml@"},
@@ -971,7 +992,9 @@ func TestLoadRefusesProjectWatchedWorkflows(t *testing.T) {
 		{"dynamic, an event a run can name that no workflow triggers on", []string{"acme/widgets/x.yaml@schedule,dynamic"},
 			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml@schedule,dynamic": "dynamic" ` + notAnEvent},
 		{"an event in another case", []string{"acme/widgets/x.yaml@Schedule"},
-			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml@Schedule": "Schedule" ` + notAnEvent},
+			`projects.DEMO.watched_workflows[0] event 1 has no key's shape (` + keyShapeWords + `): it must be ` + triggerEvents},
+		{"an event of a key's shape beside one of none", []string{"acme/widgets/x.yaml@pussh,Push"},
+			`projects.DEMO.watched_workflows[0]: "pussh" ` + notAnEvent},
 		{"one event twice", []string{"acme/widgets/x.yaml@push,push"},
 			`projects.DEMO.watched_workflows[0] "acme/widgets/x.yaml@push,push" names the event "push" twice`},
 		{"one workflow twice, the owner and the repository in another case", []string{"acme/widgets/x.yaml", "Acme/Widgets/x.yaml@push"},
@@ -997,12 +1020,19 @@ func TestLoadRefusesProjectWatchedWorkflows(t *testing.T) {
 	}
 }
 
-// A watched_workflows that is no list is refused, naming the key and the value it read.
+// A watched_workflows that is no list is refused, naming the key and the value it read where that
+// has an entry's shape, and the value's kind otherwise.
 func TestLoadRefusesProjectWatchedWorkflowsThatAreNoList(t *testing.T) {
-	body := strings.Replace(minimalFile, "projects:\n  DEMO: {}\n", "projects:\n  DEMO:\n    watched_workflows: acme/widgets/x.yaml\n", 1)
-	const want = `projects.DEMO.watched_workflows is "acme/widgets/x.yaml", not a list of entries, each "<owner>/<repo>/<file>", optionally followed by "@" and the trigger events that count, comma-separated`
-	if _, err := Load(writeConfigFile(t, body), noEnv); err == nil || err.Error() != want {
-		t.Fatalf("Load error = %v, want %q", err, want)
+	const each = `, not a list of entries, each "<owner>/<repo>/<file>", optionally followed by "@" and the trigger events that count, comma-separated`
+	for value, want := range map[string]string{
+		"acme/widgets/x.yaml": `projects.DEMO.watched_workflows is "acme/widgets/x.yaml"` + each,
+		"acme/widgets":        `projects.DEMO.watched_workflows is a string` + each,
+		"{x: y}":              `projects.DEMO.watched_workflows is a mapping` + each,
+	} {
+		body := strings.Replace(minimalFile, "projects:\n  DEMO: {}\n", "projects:\n  DEMO:\n    watched_workflows: "+value+"\n", 1)
+		if _, err := Load(writeConfigFile(t, body), noEnv); err == nil || err.Error() != want {
+			t.Errorf("Load of watched_workflows: %s, error = %v, want %q", value, err, want)
+		}
 	}
 }
 

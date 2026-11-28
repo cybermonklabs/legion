@@ -129,8 +129,20 @@ const WriterAudienceForm = "//iam.googleapis.com/projects/<project number>/locat
 // the token all hold to, as the loader and the proxy hold to ValidInstance for the instance, so
 // `legion config check` accepts no audience the launcher or the proxy would refuse.
 func ValidWriterAudience(audience string) bool {
+	_, _, valid := WriterAudienceIDs(audience)
+	return valid
+}
+
+// WriterAudienceIDs is the pool id and the provider id of audience where it is a workload identity
+// provider's full resource name (ValidWriterAudience), and false where it is none: the two parts a
+// deployment names itself, each of [a-z0-9-], where the project number is Google's. A caller that
+// names the audience in a refusal reads them, since a lower-case token fits either id.
+func WriterAudienceIDs(audience string) (pool, provider string, valid bool) {
 	ids := writerAudience.FindStringSubmatch(audience)
-	return ids != nil && !strings.HasPrefix(ids[1], "gcp-") && !strings.HasPrefix(ids[2], "gcp-")
+	if ids == nil || strings.HasPrefix(ids[1], "gcp-") || strings.HasPrefix(ids[2], "gcp-") {
+		return "", "", false
+	}
+	return ids[1], ids[2], true
 }
 
 // InDatabase is whether a session is a row rather than a file, which both database kinds are: then

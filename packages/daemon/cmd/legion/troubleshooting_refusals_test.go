@@ -181,6 +181,10 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	`projects.<KEY>.experiments.<NAME>.unit must be tree or issue (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {plan-length: {unit: pod, variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
 	},
+	// A word of no key's shape, named by its key and line alone (the capital is no key's).
+	"… at line <n> has no key's shape (…): it must be …": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {plan-length: {mode: Sometimes, variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
+	},
 	`projects.<KEY>.experiments.<NAME>.roles names "…", which is not a Legion issue role (…)`: func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {plan-length: {roles: [controller], variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
 	},
