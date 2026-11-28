@@ -451,6 +451,46 @@ func PlanItemIndex(
 	return planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, serverURL, located, carried))
 }
 
+// NewItemPlan is the index of a body planned for an item that does not exist yet, so carries no
+// id and no time: the blocks the body splits into, their ids, their sums and excerpts, and the
+// links located's mentions write. For binds it to each new item it indexes. A write that makes
+// many items of one body - a broadcast's copies - plans that body once, before its transaction
+// takes a transaction id, rather than once an item after each insert: a write holds its
+// transaction id only for its database statements (INFRA-636).
+type NewItemPlan struct {
+	indexing ItemIndexing
+}
+
+// PlanNewItemIndex is PlanItemIndex of body against the index of an item no index holds yet: the
+// index ReadItemIndex reads of an item whose insert the calling transaction has just made, never
+// indexed, with no block and no block mention. It reads nothing and writes nothing; its document
+// work - the split of body, the excerpts cut around the dashboard URLs of the deployment at
+// serverURL (BlockExcerpt), and the extraction located came from - is all of the index's, so
+// binding the plan does none.
+func PlanNewItemIndex(kind ItemKind, body, serverURL string, located []text.Located) (NewItemPlan, error) {
+	fresh := ItemIndex{state: itemState{nextBlock: 1}, stored: []itemblocks.Stored{}}
+	indexing, err := planItemBlocks(fresh, kind, "", time.Time{}, itemBodySource(kind, body, serverURL, located, nil))
+	if err != nil {
+		return NewItemPlan{}, err
+	}
+	return NewItemPlan{indexing: indexing}, nil
+}
+
+// For is the plan bound to itemID, a new item written at `at`: the ItemIndexing PlanItemIndex
+// plans for that item against the never-indexed index ReadItemIndex reads of it, which Queue
+// writes. Binding sets the item and its time and nothing else: it parses, renders and extracts
+// nothing.
+func (p NewItemPlan) For(itemID string, at time.Time) ItemIndexing {
+	indexing := p.indexing
+	indexing.itemID, indexing.at = itemID, at
+	// The plan's blocks record its own time as their making time (planItemBlocks), which is the
+	// item's here.
+	if indexing.madeAt != nil {
+		indexing.madeAt = &at
+	}
+	return indexing
+}
+
 // planItemBlocks plans the index of source, read at `at`, of item itemID against index, what its
 // block index holds: the blocks, their ids, the maker each records, the links their mentions
 // write and the targets they move. It reads nothing and writes nothing; what it plans is written
