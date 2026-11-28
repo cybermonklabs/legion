@@ -342,11 +342,7 @@
     },
     {
       "script": "check-states.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL carrying pgvector whose role may create databases (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
-    },
-    {
-      "script": "claim-compaction.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules, and about eight minutes of wall clock for its four panes and the compaction it holds"
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which .github/actions/install-omp installs on a GitHub-hosted runner), a loopback PostgreSQL carrying pgvector whose role may create databases (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
     },
     {
       "script": "claude-backend-sandbox.sh",
