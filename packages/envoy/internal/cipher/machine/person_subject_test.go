@@ -68,13 +68,13 @@ func TestAnApprovalAsAReplacedAccountIsRefusedAndRecordsTheHolders(t *testing.T)
 	}
 
 	recordID, code := pendingLoginOf(t, svc, person)
-	if _, _, err := applyDecision(ctx, svc, recordID, true, person, code, replaced, nil); !errors.Is(err, ErrApproverReplaced) {
+	if _, _, err := applyDecision(ctx, svc, recordID, true, person, code, replaced, nil, nil); !errors.Is(err, ErrApproverReplaced) {
 		t.Fatalf("the approval as the replaced account = %v, want %v", err, ErrApproverReplaced)
 	}
 	if state, _, err := svc.recordState(ctx, recordID); err != nil || state != "pending" {
 		t.Fatalf("the login after the refused approval is %q, %v; want pending", state, err)
 	}
-	_, credentialID, err := applyDecision(ctx, svc, recordID, true, person, code, holder, nil)
+	_, credentialID, err := applyDecision(ctx, svc, recordID, true, person, code, holder, nil, nil)
 	if err != nil {
 		t.Fatalf("the approval as the holder: %v", err)
 	}
@@ -85,14 +85,14 @@ func TestAnApprovalAsAReplacedAccountIsRefusedAndRecordsTheHolders(t *testing.T)
 	}
 
 	recordID, code = pendingLoginOf(t, svc, person)
-	if _, _, err := applyDecision(ctx, svc, recordID, true, person, code, store.IssuerSubject{}, nil); !errors.Is(err, ErrApprovalNamesNoAccount) || !errors.Is(err, ErrApproverReplaced) {
+	if _, _, err := applyDecision(ctx, svc, recordID, true, person, code, store.IssuerSubject{}, nil, nil); !errors.Is(err, ErrApprovalNamesNoAccount) || !errors.Is(err, ErrApproverReplaced) {
 		t.Fatalf("an approval relaying no account just after the revoke = %v, want %v", err, ErrApprovalNamesNoAccount)
 	}
 	if state, _, err := svc.recordState(ctx, recordID); err != nil || state != "pending" {
 		t.Fatalf("the login after the refused approval naming no account is %q, %v; want pending", state, err)
 	}
 	ageReplacements(t, svc, person)
-	_, credentialID, err = applyDecision(ctx, svc, recordID, true, person, code, store.IssuerSubject{}, nil)
+	_, credentialID, err = applyDecision(ctx, svc, recordID, true, person, code, store.IssuerSubject{}, nil, nil)
 	if err != nil {
 		t.Fatalf("an approval relaying no account once the window has passed: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestAnApprovalCheckedBeforeAReplacementIsRefusedByItsGeneration(t *testing.
 	}
 	for _, account := range []store.IssuerSubject{{}, holder} {
 		recordID, code := pendingLoginOf(t, svc, person)
-		_, _, err := applyDecision(ctx, svc, recordID, true, person, code, account, new(int64(3)))
+		_, _, err := applyDecision(ctx, svc, recordID, true, person, code, account, new(int64(3)), nil)
 		if !errors.Is(err, ErrApprovalCheckedBeforeReplacement) || !errors.Is(err, ErrApproverReplaced) {
 			t.Fatalf("an approval naming %+v checked at generation 3, before the replacement at 4 = %v, want %v", account, err, ErrApprovalCheckedBeforeReplacement)
 		}
@@ -129,7 +129,7 @@ func TestAnApprovalCheckedBeforeAReplacementIsRefusedByItsGeneration(t *testing.
 	}
 	ageReplacements(t, svc, person)
 	recordID, code := pendingLoginOf(t, svc, person)
-	if _, _, err := applyDecision(ctx, svc, recordID, true, person, code, store.IssuerSubject{}, new(int64(3))); !errors.Is(err, ErrApprovalCheckedBeforeReplacement) {
+	if _, _, err := applyDecision(ctx, svc, recordID, true, person, code, store.IssuerSubject{}, new(int64(3)), nil); !errors.Is(err, ErrApprovalCheckedBeforeReplacement) {
 		t.Fatalf("an approval checked at generation 3, once the window after the replacement at 4 has passed = %v, want %v", err, ErrApprovalCheckedBeforeReplacement)
 	}
 	for _, approval := range []struct {
@@ -137,7 +137,7 @@ func TestAnApprovalCheckedBeforeAReplacementIsRefusedByItsGeneration(t *testing.
 		generation int64
 	}{{store.IssuerSubject{}, 4}, {holder, 5}} {
 		recordID, code := pendingLoginOf(t, svc, person)
-		if _, _, err := applyDecision(ctx, svc, recordID, true, person, code, approval.account, new(approval.generation)); err != nil {
+		if _, _, err := applyDecision(ctx, svc, recordID, true, person, code, approval.account, new(approval.generation), nil); err != nil {
 			t.Fatalf("an approval naming %+v checked at generation %d, at or after the replacement at 4: %v", approval.account, approval.generation, err)
 		}
 		if n := mintedFrom(t, svc, recordID); n != 1 {
@@ -195,7 +195,7 @@ func TestARevokeAndAnApprovalByTheReplacedAccountNeverLeaveItALiveLogin(t *testi
 				go func() {
 					defer wg.Done()
 					<-start
-					_, _, approveErr = applyDecision(ctx, svc, recordID, true, person, code, approver.account(person), approver.checked)
+					_, _, approveErr = applyDecision(ctx, svc, recordID, true, person, code, approver.account(person), approver.checked, nil)
 				}()
 				go func() {
 					defer wg.Done()

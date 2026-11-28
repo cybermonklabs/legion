@@ -1,0 +1,44 @@
+-- pgmigrate:non-transactional
+-- 20261124162630_comments_deleted.up.sql: the index of the deleted comments, through which a
+-- keyword search at a cut leaves out a deleted comment without reading the comment's row, built
+-- concurrently.
+--
+-- Why it exists. A comment that has a present deleted_at gives no hit at any cut (decision 14 of
+-- INFRA-4620's plan). A keyword search at a cut that narrows by no status, author or time, and
+-- whose query has a word to rank by, ranks each kind's matched posts by their rank alone first,
+-- and reads a post's own columns and its issue at the cut only for the posts that can take one of
+-- the kind's places (internal/dispatch/api, searchAsOfBoundedPosts). A deleted comment must take
+-- no place in that ranking, and reading each matched comment's row to test its deleted_at is the
+-- read the ranking exists to avoid: on a copy of production's event log (147,797 comments,
+-- 2026-11-24), the search for `issue` at the copy's newest event matched 38,588 comments, whose
+-- rows took 1.7 s of a first run to read through comments_pkey. This index holds the ids of
+-- deleted comments alone. The anti-join tests `d.deleted_at is not null`, which implies the
+-- predicate, so it can read the deleted ids without fetching the matching comments. The measured
+-- copy had no deleted comments.
+--
+-- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
+-- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
+-- (packages/envoy/infra/README.md). So the build's time is downtime. The build reads the heap of
+-- comments twice. On the measured copy the heap was 230 MB, and one read of it for this predicate
+-- took 0.25 s. Inserting a new comment adds no index entry. A delete adds one and already changes
+-- the comment's indexed search vector. This index does not prevent heap-only updates that leave
+-- id and deleted_at unchanged.
+--
+-- Why it is built concurrently. A plain build takes SHARE on comments for one read of the table,
+-- which blocks every write of a comment. A migration whose first line is
+-- `-- pgmigrate:non-transactional` and that holds exactly one non-unique
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction
+-- (pgmigrate/nontransactional.go, concurrentIndex). The build takes SHARE UPDATE EXCLUSIVE on
+-- comments, which no ordinary read or write of comments waits on. It waits for each older snapshot
+-- between its two reads of the table.
+--
+-- What a failed build leaves. A build that fails, or that is cancelled or killed, leaves an index
+-- of this name that is marked invalid. The planner does not use an invalid index, and PostgreSQL
+-- can go on updating it on each write. A search at a cut stays correct, but its anti-join has
+-- to find the deleted ids without the index. The runner records the version only after
+-- a build that finished. At the next boot it drops the invalid index with DROP INDEX CONCURRENTLY
+-- and builds it again (pgmigrate/nontransactional.go, ExecNonTransactional and dropOwnLeftover).
+-- Do not drop it by hand.
+create index concurrently if not exists comments_deleted
+    on comments (id)
+    where deleted_at is not null;

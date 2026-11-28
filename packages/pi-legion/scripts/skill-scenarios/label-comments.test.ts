@@ -23,7 +23,9 @@ interface CommentFixture {
   readonly id: string;
   readonly author: object;
   readonly created_at: string;
-  readonly body: string;
+  /** Absent on a comment whose body Dispatch left out, as an answer at a cut leaves out the body
+   * of a comment edited or deleted since. */
+  readonly body?: string;
   readonly quote?: string;
   /** Set on a comment its author deleted, which Dispatch serves with an empty body. */
   readonly deleted_at?: string;
@@ -124,8 +126,12 @@ interface Sent {
 }
 
 /** One fake for both ends: Dispatch at dispatch.test and the model at its two hosts. `model`
- * answers a model request, given the comment text in its state and the try's number. */
-function world(model: (comment: string, attempt: number) => Response = answerWith) {
+ * answers a model request, given the comment text in its state and the try's number. `byIssue`
+ * is the comments Dispatch serves for each issue. */
+function world(
+  model: (comment: string, attempt: number) => Response = answerWith,
+  byIssue: Record<string, CommentFixture[]> = COMMENTS
+) {
   const sent: Sent[] = [];
   const attempts = new Map<string, number>();
   const fetch = async (input: string, init: RequestInit): Promise<Response> => {
@@ -134,7 +140,7 @@ function world(model: (comment: string, attempt: number) => Response = answerWit
     if (url.host === "dispatch.test") {
       if (url.pathname === "/api/v1/issues") return json(ISSUES);
       const match = /^\/api\/v1\/issues\/([^/]+)\/comments$/.exec(url.pathname);
-      const comments = match?.[1] === undefined ? undefined : COMMENTS[match[1]];
+      const comments = match?.[1] === undefined ? undefined : byIssue[match[1]];
       if (comments === undefined) return json({ error: "not found", code: "NOT_FOUND" }, 404);
       return json(
         comments.map((comment) => ({
@@ -375,6 +381,42 @@ test("a deleted comment reaches no model call and no row, and stdout counts it a
   expect(run.stdout).toContain(
     "deleted comments left out: 1 (Dispatch serves a deleted comment with no body, so there is nothing of it to label)"
   );
+});
+
+// A token that carries a cut reads Dispatch as of that cut, which leaves out the body of a comment
+// edited or deleted since. There are no words of it to label, and a label of a marker would count
+// as a person's comment that raised none of the eleven complaints, so it reaches no model call and
+// no row, and stdout counts it apart.
+test("a comment whose body Dispatch left out reaches no model call and no row, and stdout counts it", async () => {
+  const out = path.join(dir("left-out"), "labels");
+  const comments = {
+    ...COMMENTS,
+    "ACME-3": [
+      ...(COMMENTS["ACME-3"] ?? []),
+      { id: "c9", author: person("bob@example.com"), created_at: "2026-10-21T10:00:00Z" },
+    ],
+  };
+  const { fetch, sent } = world(answerWith, comments);
+  const run = io(fetch);
+  expect(
+    await main(["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()], run.io)
+  ).toBe(0);
+  expect(run.stderr).toEqual([]);
+  const states = sent
+    .filter(({ url }) => url.host !== "dispatch.test")
+    .map(({ init }) => JSON.parse(String(init.body)).messages[0].content as string);
+  expect(states).toHaveLength(4);
+  expect(states.some((state) => state.includes("<comment>null</comment>"))).toBe(false);
+  const ids = readFileSync(path.join(out, "labels.jsonl"), "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line).comment_id);
+  expect(ids).toEqual(["c1", "c7", "c4", "c6"]);
+  expect(run.stdout).toEqual([
+    ...EXPECTED_SUMMARY.slice(0, 2),
+    "comments whose words Dispatch left out: 1 (Dispatch read as of a past time leaves out the body of a comment edited or deleted since, so there is nothing of it to label)",
+    ...EXPECTED_SUMMARY.slice(2),
+  ]);
 });
 
 test("the gateway route posts to <gateway>/v1/messages with the key the key command prints", async () => {

@@ -1,0 +1,30 @@
+kind: Added
+body: |-
+  A Dispatch sign-in's wire. `DISPATCH_SIGN_IN_SCOPES` (`["person", "p0"]`, type
+  `DispatchSignInScope`) lists the scopes a person may approve for a Dispatch sign-in, `p0` only
+  where its person ticks it, and `BROKER_REQUEST_REASON_MAX` (400) bounds, in code points, the
+  reason of a request to the secrets broker;
+  `scripts/gen-go.ts` emits them as `contracts.DispatchSignInScopes` and
+  `contracts.BrokerRequestReasonMax`. `schemas/dispatch-openapi.json` and
+  `src/dispatch-api.generated.ts` carry a sign-in's fields. `RecordResponse.dispatch_scopes` (the
+  answer of `POST /api/v1/credential-requests/machine-lookup`) and
+  `CredentialPendingRow.dispatch_scopes` (each row of `GET /api/v1/credential-requests`, the
+  broker's `PendingEntry.dispatch_scopes`) are the scopes a Dispatch sign-in asked for, in every
+  state, and null for a machine login and a secret request. `CredentialPendingRow.reason` is the
+  reason the request gave, verbatim, "" for none. `LauncherCredentialResp.dispatch_scopes` (each
+  row of `GET /api/v1/machine-logins`) is the scopes its person approved, null for a machine
+  login, and `LauncherCredentialResp.reason` is the reason its request gave, "" for none. Each is
+  required; `dispatch_scopes` is nullable, and a broker that predates sign-ins sends none, which a
+  client reads as a machine login. `CredentialCapabilities.dispatch_sign_in` (`GET
+  /api/v1/credentials/capabilities`) says whether the broker serves Dispatch sign-ins; an answer
+  that carries none, as an older Dispatch's does not, reads as false. The body of
+  `POST /api/v1/credential-requests/{id}/approve` takes `scopes`, the approved scopes, which a
+  Dispatch sign-in's approval requires and a machine login's refuses. A denial takes no scopes:
+  `POST /api/v1/credential-requests/{id}/deny` shares the body's type, and Dispatch forwards no
+  `scopes` of a denial to the broker. `signInScopes(row)` is the one rule that tells a Dispatch
+  sign-in's credential row from a machine login's, beside `awaitsDecision(row)`: the row's
+  `dispatch_scopes` where that is a list, a list even where it holds no scope, and null for every
+  other row. The web and `dispatch inbox` both read it.
+time: 2026-11-26T11:37:42.000000000Z
+custom:
+  Issue: INFRA-5943

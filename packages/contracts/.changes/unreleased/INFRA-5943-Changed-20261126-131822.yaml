@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The `dispatch_whoami` tool's description names `scopes` among its details: the OAuth scopes the
+  credential holds, `[]` for none, and null where Dispatch names none.
+  `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the same text.
+time: 2026-11-26T13:18:22Z
+custom:
+  Issue: INFRA-5943

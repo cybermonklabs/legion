@@ -40,7 +40,6 @@ import {
   type DispatchToolResult,
   dispatchRefFromUrl,
   dryRunAsksDispatch,
-  executeDispatchTool as executeTool,
   formatOpenAsksSummary,
   linkBaseOf,
   positionText,
@@ -60,12 +59,14 @@ import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
 import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
+import { executeDispatchTool as executeTool } from "./whoami-stand-in";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
 
 /**
- * The executor (`executeDispatchTool` of `dispatch-execute.ts`) against the stand-in of Dispatch
- * a row gives it (`fetchImpl`), put behind Dispatch's keyed layer (`keyedLayer`): each 2xx it
+ * The executor (`executeDispatchTool` of `dispatch-execute.ts`, through `whoami-stand-in.ts`,
+ * which answers the whoami every read command reads first) against the stand-in of Dispatch a
+ * row gives it (`fetchImpl`), put behind Dispatch's keyed layer (`keyedLayer`): each 2xx it
  * gives a write names the write's key back, as Dispatch's own answers do, unless the row's
  * `layer` says otherwise. Every row of this file runs the executor through here.
  */
@@ -1046,6 +1047,35 @@ describe("executeDispatchTool", () => {
       `reply_to_ask 01234567 names 2 open asks of this issue. Write more of the id. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… A third release. When?.`,
     ]);
     expect(failure.message).not.toContain("Allowed flags");
+    expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
+  });
+
+  // Under a token that carries a cut, Dispatch answers the issue read at that cut and leaves out
+  // the question of an ask whose wording the records at the cut cannot give. The refusal still
+  // lists the asks, naming that question as left out, and never throws on it in its place.
+  test("a reply_to_ask refusal names a question the issue's answer left out as left out", async () => {
+    const requests: string[] = [];
+    const unworded = openAsks.map((ask, index) => (index === 2 ? { id: ask.id } : ask));
+    const fetchImpl = (async (url: RequestInfo | URL): Promise<Response> => {
+      const pathname = new URL(String(url)).pathname;
+      requests.push(pathname);
+      if (pathname === "/api/v1/issues/DSP-41") {
+        return response({ key: "DSP-41", open_asks: unworded });
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    }) as typeof fetch;
+
+    const failure = await replyToAsk("deadbeef", fetchImpl).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError))
+      throw new Error(`expected ToolInputError: ${failure}`);
+    expect(failure.problems).toEqual([
+      `reply_to_ask deadbeef names no open ask of this issue. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… left out by Dispatch.`,
+    ]);
     expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
   });
 
@@ -4942,6 +4972,7 @@ describe("executeDispatchTool", () => {
       service: null,
       project: null,
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("alice");
     expect(result.text).not.toContain("which is not this host session");
@@ -4969,6 +5000,7 @@ describe("executeDispatchTool", () => {
       service: null,
       project: null,
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("shared token");
   });
@@ -5001,6 +5033,7 @@ describe("executeDispatchTool", () => {
       service: "system:serviceaccount:legion:legion-worker",
       project: null,
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("runs as service legion/legion-worker");
     expect(result.text).not.toContain("shared token");
@@ -5197,6 +5230,7 @@ describe("executeDispatchTool", () => {
       service: null,
       project: "INFRA",
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("Session session-1 acts for alice");
     expect(result.text).toContain("Its token names project INFRA.");
@@ -5231,6 +5265,7 @@ describe("executeDispatchTool", () => {
       service: null,
       project: null,
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("Session ses_from_the_broker acts for alice");
     expect(result.text).toContain(
@@ -5261,6 +5296,7 @@ describe("executeDispatchTool", () => {
       service: null,
       project: null,
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("Session session-1 acts for alice");
     expect(result.text).not.toContain("which is not this host session");
@@ -5328,7 +5364,7 @@ describe("executeDispatchTool", () => {
       cut,
     });
     expect(person).toBe(
-      `Session session-1 acts for alice with a read-only credential: it may read, and Dispatch refuses every write it makes. Its cut is ${cut}, the past time it reads Dispatch at.`
+      `Session session-1 acts for alice with a read-only credential: it may read, and Dispatch refuses every write it makes. Its cut is ${cut}, the past time it reads Dispatch at. Its credential holds the scopes person, read.`
     );
 
     // A service's read-only token with no cut: no sign-in to name, and no cut either.
@@ -5342,7 +5378,7 @@ describe("executeDispatchTool", () => {
       cut: null,
     });
     expect(service).toBe(
-      "Session session-1 runs as service example-fleet with a read-only credential: it may read, and Dispatch refuses every write it makes."
+      "Session session-1 runs as service example-fleet with a read-only credential: it may read, and Dispatch refuses every write it makes. Its credential holds the scope read."
     );
 
     // An exchange entry's account token narrowed to reading: Dispatch answers it
@@ -5358,7 +5394,7 @@ describe("executeDispatchTool", () => {
       sign_in_required: false,
     });
     expect(account).toBe(
-      "Session session-1 runs as service example-ns/example-public with a read-only credential: it may read, and Dispatch refuses every write it makes."
+      "Session session-1 runs as service example-ns/example-public with a read-only credential: it may read, and Dispatch refuses every write it makes. Its credential holds the scope read."
     );
 
     // A credential that writes is told what a writing credential is told, and nothing of reading.
@@ -5373,6 +5409,52 @@ describe("executeDispatchTool", () => {
     });
     expect(writer).toContain("issues you create without an assignee are assigned to alice");
     expect(writer).not.toContain("read-only");
+  });
+
+  // A Dispatch sign-in's token holds the scopes its person approved, which may be none: whoami
+  // names them in its text, with a word for none, and carries them in its details.
+  test.each([
+    ["a person sign-in", ["person"], "Its credential holds the scope person."],
+    [
+      "a token of two scopes",
+      ["person", "approve"],
+      "Its credential holds the scopes person, approve.",
+    ],
+    ["an empty sign-in", [], "Its credential holds no scope."],
+  ] as const)("dispatch_whoami names the scopes of %s", async (_, scopes, says) => {
+    const result = await executeDispatchTool({
+      tool: "dispatch_whoami",
+      args: {},
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: (async () =>
+        response({
+          kind: "agent",
+          owner: "ada@example.com",
+          service: null,
+          session: "session-1",
+          project: null,
+          project_scope: "consented",
+          scopes,
+          cut: null,
+          sign_in_required: false,
+        })) as unknown as typeof fetch,
+    });
+
+    expect(result.details).toEqual({
+      session: "session-1",
+      owner: "ada@example.com",
+      service: null,
+      project: null,
+      project_scope: "consented",
+      scopes: [...scopes],
+    });
+    expect(result.text).toContain("Session session-1 acts for ada@example.com");
+    expect(result.text).toContain(says);
   });
 
   // A job's token, which the secrets broker mints from a job entry, names a service and no person
@@ -5456,7 +5538,7 @@ describe("executeDispatchTool", () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
 
-    expect(result.details).toEqual({ session: "session-1", owner: null, ...answer });
+    expect(result.details).toEqual({ session: "session-1", owner: null, scopes: [], ...answer });
     for (const sentence of says) expect(result.text).toContain(sentence);
     for (const words of never) expect(result.text).not.toContain(words);
   });
@@ -6917,6 +6999,60 @@ describe("executeDispatchTool", () => {
       ).toEqual([
         "version 1 and ref dispatch://DSP-42/artifact/notes-md@v2 name two versions; name the version once",
       ]);
+    });
+
+    // A tab of an issue's page that is a view of the issue (Verification, Plan, Steps, Artifacts,
+    // Collaborators) names no document. Each tool that takes `ref` as the owner it acts on would
+    // act on the issue, or on the issue's primary document, in the tab's place: doc-read and
+    // doc-edit read or write the spec, a comment writes on the issue, and a suggestion writes on a
+    // document. Each is refused before any request, by the tab's `dispatch://` reference and by the
+    // dashboard's URL alike. The hint names a document for every tool but the comment, which takes
+    // an issue alone.
+    test("the tools that act on a ref's owner refuse a view tab of an issue, by its link and by its reference", async () => {
+      const ops = [{ op: "replace", find: "old line", with: "new line" }];
+      const tools: {
+        tool: string;
+        named: string;
+        hint: string;
+        input: (ref: string) => Record<string, unknown>;
+      }[] = [
+        {
+          tool: "dispatch_doc_read",
+          named: "doc-read",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref }),
+        },
+        {
+          tool: "dispatch_doc_edit",
+          named: "doc-edit",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref, ops }),
+        },
+        {
+          tool: "dispatch_comment",
+          named: "comment",
+          hint: "",
+          input: (ref) => ({ ref, body: "Seen." }),
+        },
+        {
+          tool: "dispatch_suggest",
+          named: "suggest",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref, quote: "old line", replace_with: "new line" }),
+        },
+      ];
+      for (const tab of ["verification", "plan", "steps", "artifacts", "collaborators"]) {
+        for (const ref of [
+          `dispatch://DSP-42/${tab}`,
+          `http://dispatch.test/issues/DSP-42/${tab}`,
+        ]) {
+          for (const { tool, named, hint, input } of tools) {
+            expect(await problemsOf(tool, input(ref))).toEqual([
+              `ref dispatch://DSP-42/${tab} names the ${tab} tab on DSP-42; dispatch ${named} would act on DSP-42 and drop the tab: read it with dispatch read, or name DSP-42 with issue DSP-42${hint}`,
+            ]);
+          }
+        }
+      }
     });
   });
 

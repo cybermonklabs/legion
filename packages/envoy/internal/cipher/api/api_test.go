@@ -400,6 +400,7 @@ type wireRecord struct {
 	ExpiresAt       time.Time           `json:"expires_at"`
 	RequestedAt     time.Time           `json:"requested_at"`
 	Decided         *wireDecided        `json:"decided"`
+	DispatchScopes  *[]string           `json:"dispatch_scopes"`
 }
 
 type wireCreateRequestResponse struct {
@@ -438,6 +439,10 @@ type wirePendingEntry struct {
 	State       string      `json:"state"`
 	// ExpiresAt is nil for a row that carries no expires_at.
 	ExpiresAt *time.Time `json:"expires_at"`
+	// DispatchScopes is what a Dispatch sign-in asks for, nil for every other row.
+	DispatchScopes *[]string `json:"dispatch_scopes"`
+	// Reason is the reason the record's request object signed.
+	Reason string `json:"reason"`
 }
 
 // wirePageRefusal is a refusal naming the record's approval page.
@@ -1430,12 +1435,12 @@ func TestEveryAnswerNamingAPendingSecretRequestLinksItsPage(t *testing.T) {
 	for _, row := range rows {
 		switch row.RecordID {
 		case *pending.RecordID:
-			if row.ApproveURL == nil || *row.ApproveURL != page {
-				t.Errorf("the secret request's row = %+v, want approve_url %s", row, page)
+			if row.ApproveURL == nil || *row.ApproveURL != page || row.DispatchScopes != nil {
+				t.Errorf("the secret request's row = %+v, want approve_url %s and no dispatch_scopes", row, page)
 			}
 		case login:
-			if row.ApproveURL != nil {
-				t.Errorf("the machine login's row has approve_url %q, want none", *row.ApproveURL)
+			if row.ApproveURL != nil || row.DispatchScopes != nil {
+				t.Errorf("the machine login's row = %+v, want no approve_url and no dispatch_scopes", row)
 			}
 		}
 	}
