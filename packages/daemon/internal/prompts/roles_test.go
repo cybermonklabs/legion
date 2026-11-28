@@ -2,9 +2,11 @@ package prompts
 
 //ci:reads packages/pi-legion/agents/*.md TestEveryTaskAgentARolePromptDispatchesIsShipped stats agents/<name>.md for each task agent
 //ci:reads skills/legion-worker/references/tools.md TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI reads the skill the headless fragment sends a role to, by relative path
+//ci:reads .github/private-names.toml TestNoReusablePartNamesARepositoryOrLibrary reads it under ../../../.. and runs its rules over every reusable role part
 
 import (
 	"embed"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -82,33 +84,73 @@ func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 // send a heavy run, and the next hand to write that rule down can spell a deployment's own route
 // out in the architect parts, which this test read nothing of before.
 //
-// Each part is held to two checks: the generic names of repoSpecific, and the rules leakguard
-// ports from .github/scripts/check-private-names.sh's built-in rules. Of a deployment's own names,
-// check-private-names refuses those the deployment's own term list holds, in every file it reads.
+// Each part is held to two checks: the generic names of repoSpecific, and the rules of
+// .github/private-names.toml. That file is this repository's own port of
+// .github/scripts/check-private-names.sh's built-in rules, and the port harness,
+// .github/scripts/check-private-names-port.test.sh, holds the two to one verdict. The test reads
+// the file from the repository, since the legion binary embeds no rule. A finding is reported by
+// its class alone (refusedClasses): a report line holds the matched text, which is a private name,
+// and this repository's CI logs are public. Of a deployment's own names, check-private-names
+// refuses those the deployment's own term list holds, in every file it reads.
 func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
-	// leakguard's rules are embedded in it (private-names.toml) and read no input, so this check
-	// runs the same wherever the test runs.
-	guard := leakguard.New(leakguard.Options{})
+	// The rule half reads .github/private-names.toml at the repository root, four levels above
+	// this package, because the legion binary embeds no rule.
+	rulesPath := filepath.Join("..", "..", "..", "..", ".github", "private-names.toml")
+	content, err := leakguard.ReadRulesContent(rulesPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", rulesPath, err)
+	}
+	rules, err := leakguard.LoadRules(content)
+	if err != nil {
+		t.Fatalf("compile %s: %v", rulesPath, err)
+	}
 	check := func(name, text string) {
 		for _, needle := range repoSpecific {
 			if strings.Contains(text, needle) {
 				t.Errorf("%s contains %q", name, needle)
 			}
 		}
-		if err := guard.Rules(t.Context(), leakguard.Record{Label: name, Text: text}); err != nil {
+		// The record's Path is the part's name, because the rule file's path rules read
+		// Record.Path alone. A refusal is reported by class alone, because its report lines hold
+		// the matched text and CI logs are public. A SetupFailure holds no matched text.
+		err := rules.Check(t.Context(), "the reusable part "+name, leakguard.Record{Label: name, Text: text, Path: name})
+		var refusal *leakguard.Refusal
+		switch {
+		case errors.As(err, &refusal):
+			for _, class := range refusedClasses(name, refusal.Lines) {
+				t.Errorf("%s: %s refuses it: %s", name, rulesPath, class)
+			}
+		case err != nil:
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	for _, file := range reusableParts {
 		check(file, rolePart(t, file))
 	}
-	err := eachPart(goParts, "go", func(name string, body []byte) error {
+	err = eachPart(goParts, "go", func(name string, body []byte) error {
 		check("go/"+name, string(body))
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("read the go parts: %v", err)
 	}
+}
+
+// refusedClasses is the class of each line of a rule pass's report on the record labelled label.
+// A report line is `<label>: <class>: matched …` (leakguard's reportLine). What follows the class
+// holds the matched text, so it is never answered. A line of any other shape is answered as such,
+// and none of it is printed.
+func refusedClasses(label string, lines []string) []string {
+	classes := make([]string, 0, len(lines))
+	for _, line := range lines {
+		rest, labelled := strings.CutPrefix(line, label+": ")
+		class, _, matched := strings.Cut(rest, ": matched ")
+		if !labelled || !matched || class == "" {
+			class = "a line of an unexpected shape"
+		}
+		classes = append(classes, class)
+	}
+	return classes
 }
 
 // Every role a claim can be on has its own part, and none is blank: a blank part boots a worker with
@@ -167,16 +209,17 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 	}
 }
 
-// A finding outside the tree takes one of two paths (skill://legion-worker/references/findings.md):
-// a clear defect goes to the controller, and a finding that needs a decision is an ask. The headless
-// fragment composed into the same planner prompt says the same, so the core may not say "always an ask".
+// A finding outside the tree takes the paths of skill://legion-worker/references/findings.md: the
+// tree fixes a clear defect itself;
+// a finding that needs a decision is an ask. The headless fragment composed into the same planner
+// prompt says the same, so the core may not say "always an ask".
 func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T) {
 	planner := rolePart(t, "core/planner.md")
 	for _, rule := range []string{
 		"Read the repository's `STRATEGY.md` when it has one",
 		"A finding outside the tree is never an issue you file.",
-		"A clear defect in code this tree touches or depends on is fixed in this tree's own pull request.",
-		"Any other clear defect goes to whoever coordinates the project's work, with its evidence, and a finding that needs a decision is an ask.",
+		"A clear defect is this tree's to fix, in its own pull request or a separate one of the tree, in whichever repository it is.",
+		"A defect that needs a person's decision, a deploy window or work much larger than your own, and any other finding that needs a decision, is an ask.",
 		"A to-do only a person can do is always an ask.",
 	} {
 		if !strings.Contains(planner, rule) {
@@ -185,6 +228,9 @@ func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T
 	}
 	if strings.Contains(planner, "A finding outside the tree, and a to-do only a person can do, is always an ask.") {
 		t.Error("core/planner.md still makes every finding outside the tree an ask, which contradicts the headless fragment's clear-defect path")
+	}
+	if strings.Contains(planner, "Any other clear defect goes to whoever coordinates the project's work") {
+		t.Error("core/planner.md still sends a clear defect to the project's coordinator to pass on, which #4065 removes")
 	}
 }
 
@@ -360,8 +406,8 @@ func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testin
 // Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
 // base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
-// before it merges it, may ask the other workers, and sends the issue back only for a change to the
-// change's own logic. Its part says so, and no longer tells it to hand the conflict to the
+// before it merges it, and may ask the other workers.
+// Its part says so, and no longer tells it to hand the conflict to the
 // implementer, to send a failed queue check back as a matter of course, or that it pushes nothing.
 func TestTheMergerResolvesAConflictItself(t *testing.T) {
 	merger := rolePart(t, "merger.md")
@@ -378,8 +424,6 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"so ask each of them, on their role topics, to record their results at the new head",
 		"### A check that failed",
 		"Read its log, and the same check on the base branch, and decide its cause.",
-		"re-run it, or wait for the base's fix",
-		"Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves",
 	} {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)

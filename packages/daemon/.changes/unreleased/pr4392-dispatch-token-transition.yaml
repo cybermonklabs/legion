@@ -1,0 +1,44 @@
+kind: Added
+custom:
+  Issue: pr4392
+body: |-
+  Under `dispatch_token_broker`, a launch into a pod that carries the exchange identity carries no
+  Dispatch token: not in its Secret, not in its launcher's start command, and not in the
+  environment of a role or of the daemon-launched controller. The role is told
+  `DISPATCH_TOKEN_BROKER=1` and no `DISPATCH_TOKEN_FILE`. Its `legion worker-shim` refuses to
+  start, naming the key and its file, when its `--provider-env-dir` holds `DISPATCH_TOKEN` or
+  `DISPATCH_TOKEN_FILE`.
+
+  `dispatch_token_transition_file`, which the loader takes only beside the setting, names a file
+  that holds the shared Dispatch token. The daemon never calls Dispatch with it. A launch into a
+  live pod built before the setting, which carries no exchange identity, gets that token as every
+  launch got it before. With no such file named, that launch is refused, naming the pod and the
+  update round that replaces it. The claim is charged nothing, and the launch is tried again every
+  minute. The update round opens over that pod even when no process of the issue runs in it, and
+  it waits on no answer of the refused claim.
+  Which roles each end of an update round names is a rule of every Kubernetes deployment, the
+  setting on or off, which this release's Changed entry on the update round states. By that
+  rule, a role that never ran an agent and is refused for the pod with no session is named at no
+  end: not the daemon's replacement, not a refused claim's own next try that replaces the pod
+  first, and not the message that the pod went, also where the pod is recreated without the
+  identity and refuses the retry again. Where such a role has since started in a new pod and its
+  agent registered there, it is named only at an end of a round over a pod whose disk holds work
+  from before the pod, an idle release's or a kept volume's, which names every role that had not
+  answered and has a session or a pod in its set, or after a daemon restart, which leaves the set
+  of a stored claim that shows a session unknown.
+  The replacement's log line (`waitingOnThePodNotWaitedFor`) names a refused claim that had not
+  answered by the same rule, whether or not it records the round.
+  Where no claim runs a process in the pod, the daemon replaces the pod through the refused claim,
+  and the next try starts in the new pod. That replacement reads no workspace. Its message on the
+  issue says that no role process ran in the pod.
+  Where the process of another claim runs in the pod, the claim's next try cannot replace the
+  pod, and the daemon replaces it through that process.
+  Before that replacement, the daemon reads the issue workspace for a refused claim that records
+  the round and had not answered, by the same rule, as it does for a claim that the round passed
+  over.
+  The message on the issue names that claim if the read found work or failed.
+  Each launch that carries the transition token is logged at Warn. `legion state --json`
+  gains `dispatchCredential` under the setting: the daemon's session, the launches since the boot
+  that carried the transition token with the time of the last one, and
+  `liveLaunchesWithDispatchToken`. Remove `dispatch_token_transition_file` when that last count is
+  0, and keep `dispatch_token_broker: true`.

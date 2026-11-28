@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The committed `package.json` no longer holds `legion.daemonApiVersion` (dispatch://INFRA-1569).
+  `scripts/build.ts --out` writes it into the manifest it writes, and the release writes it beside
+  the version it sets (`release-claude-envoy-version.sh`). The number written is that of the tree
+  built, the greatest number of `packages/contracts/fixtures/daemon-api/released-contracts.json`
+  plus the count of entry fixtures beside it, which is the number the daemon built from the same
+  commit requires. Every bundle inlines that manifest, so the pane states the number its manifest
+  declares. Code run from a checkout counts the checkout's own fixtures; an installed bundle whose
+  manifest declares no number refuses to load.
+time: 2026-11-24T13:20:00Z
+custom:
+  Issue: INFRA-1569

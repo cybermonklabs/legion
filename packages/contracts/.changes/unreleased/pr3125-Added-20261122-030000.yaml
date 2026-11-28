@@ -1,0 +1,5 @@
+kind: Added
+body: '`IssueReferences`'' `links` and `linked_from` rows (`ReferenceLink`) carry `name_tree`, the tree of the row''s `name`, for a caller that sends `Dispatch-Trees: 1`. `DISPATCH_READING_SURFACES` gains `artifacts-reference-name`, the excluded row for the Artifacts tab''s References and Referenced by rows, which draw a comment''s, an ask''s or a message''s name as its plain-text projection and any other name as written.'
+time: 2026-11-22T03:00:00.000000000Z
+custom:
+    Issue: pr3125

@@ -1,10 +1,17 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import type { PriorityAct } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PriorityMargin } from "./PriorityMargin";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const alice = { id: "alice", kind: "user" };
 const bob = { id: "bob", kind: "user" };
@@ -73,30 +80,23 @@ const HISTORY: PriorityAct[] = [
 const restores: (() => void)[] = [];
 afterEach(() => {
   for (const restore of restores.splice(0)) restore();
-  localStorage.clear();
 });
 
 function margin(acts: PriorityAct[] = HISTORY) {
   const history = spyOn(api, "getPriorityHistory").mockResolvedValue(acts);
-  // The margin's state is the signed-in person's own preference, so the margin is read as a
-  // signed-in person (`features/shell/userPreference.ts`).
-  const viewer = spyOn(api, "whoAmI").mockResolvedValue({
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  // A session's name links to its conversation, so the margin stands inside a router.
   const view = render(
-    <QueryClientProvider client={client}>
-      <PriorityMargin id="rocq-lean" />
-    </QueryClientProvider>
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <PriorityMargin id="rocq-lean" />
+      </QueryClientProvider>
+    </MemoryRouter>
   );
   restores.push(() => {
     view.unmount();
     client.clear();
     history.mockRestore();
-    viewer.mockRestore();
   });
   return { client, history, view };
 }
@@ -117,7 +117,7 @@ function entries(): { at: string; who: string; words: string }[] {
     });
 }
 
-test("everything lists the priority's own history, newest first, with each actor and time", async () => {
+test("the margin lists the priority's own history, newest first, with each actor and time", async () => {
   const { history } = margin();
   await screen.findByText("retracted the relation to the issue CORE-4");
   expect(history).toHaveBeenCalledWith("rocq-lean");
@@ -133,6 +133,31 @@ test("everything lists the priority's own history, newest first, with each actor
     },
     { at: "2026-11-10T09:00:00Z", who: "alice", words: "wrote the description" },
     { at: "2026-11-10T09:00:00Z", who: "alice", words: "wrote this priority" },
+  ]);
+});
+
+// The server writes a priority's visibility with the priority, and no control of these pages
+// writes it, so it is part of "wrote this priority": the margin lists no entry of its own for
+// it, while the history the server answers keeps the act.
+test("the visibility a priority is written with is no entry of the margin", async () => {
+  const visibility: PriorityAct = {
+    actor: alice,
+    asserted: true,
+    at: "2026-11-10T09:00:00Z",
+    field: "visibility",
+    issue: "",
+    value: "everyone",
+  };
+  margin([...HISTORY, visibility]);
+  await screen.findByText("wrote this priority");
+  expect(entries().map(({ words }) => words)).toEqual([
+    "retracted the relation to the issue CORE-4",
+    "related the issue CORE-4",
+    "moved the order",
+    "wrote the owner “INFRA controller”",
+    "wrote the title “Rocq and Lean speed work restarted”",
+    "wrote the description",
+    "wrote this priority",
   ]);
 });
 
@@ -183,30 +208,80 @@ test("a history that cannot be read says so, and lists nothing", async () => {
   expect(screen.queryAllByRole("listitem").length).toBe(0);
 });
 
-test("the other three states each say in one line why nothing of that kind is there", async () => {
-  const { history } = margin();
+test("the margin is the history alone: no control of states and no view that can only be empty", async () => {
+  margin();
   await screen.findByText("moved the order");
-  const state = screen.getByRole("combobox", { name: /Margin/ });
-  for (const [option, line] of [
-    ["words", "A priority carries no comments yet, so nobody has written anything here."],
-    ["questions", "A priority carries no asks yet, so no question has been asked about this one."],
-    ["pinned", "A priority carries nothing a reader can pin yet."],
-  ]) {
-    await userEvent.selectOptions(state, option as string);
-    expect(screen.getByText(line as string)).toBeDefined();
-    expect(screen.queryAllByRole("listitem").length).toBe(0);
-    expect(screen.queryAllByRole("link").length).toBe(0);
+  // A priority carries no comments, questions or pins until dispatch://INFRA-1098 makes its
+  // description a document, so the margin offers no choice of what it shows.
+  const aside = screen.getByRole("complementary", { name: "Margin" });
+  expect(within(aside).queryAllByRole("combobox").length).toBe(0);
+  expect(within(aside).queryAllByRole("listbox").length).toBe(0);
+  expect(within(aside).queryAllByRole("tab").length).toBe(0);
+  expect(aside.querySelectorAll("select")).toHaveLength(0);
+  const text = aside.textContent ?? "";
+  for (const word of ["Words anyone wrote", "Questions", "Pinned"]) {
+    expect(text).not.toContain(word);
   }
-  expect(history).toHaveBeenCalledTimes(1);
+  // Nor does it draw a pin control, or an entry for a document: the description is no document.
+  expect(within(aside).queryAllByRole("button", { name: /pin/i }).length).toBe(0);
+  expect(within(aside).queryAllByRole("link", { name: /pin|document/i }).length).toBe(0);
+  expect(/document/i.test(text)).toBe(false);
+  expect(within(aside).getAllByRole("listitem")).toHaveLength(HISTORY.length);
 });
 
-test("the state the reader chose survives a return to the page", async () => {
-  margin();
-  await screen.findByText("moved the order");
-  await userEvent.selectOptions(screen.getByRole("combobox", { name: /Margin/ }), "pinned");
-  for (const restore of restores.splice(0)) restore();
+// The page saves a field half a second after the typing rests, so one person writing a
+// description writes many acts. The history keeps each; the margin reads a run of them as one.
+test("consecutive writes of one field by one person read as one entry, at the newest", async () => {
+  const write = (at: string, field: string, actor = alice, value = "") => ({
+    actor,
+    asserted: true,
+    at,
+    field,
+    issue: "",
+    value,
+  });
+  margin([
+    write("2026-11-12T10:00:03Z", "description"),
+    write("2026-11-12T10:00:02Z", "description"),
+    write("2026-11-12T10:00:01Z", "description"),
+    // Another field between two runs breaks them.
+    write("2026-11-12T10:00:00Z", "title", alice, "Speedruns"),
+    write("2026-11-12T09:59:59Z", "description"),
+    // And so does another person.
+    write("2026-11-12T09:59:58Z", "description", bob),
+    write("2026-11-12T09:59:57Z", "description"),
+  ]);
+  await screen.findByText("wrote the title “Speedruns”");
+  expect(entries()).toEqual([
+    { at: "2026-11-12T10:00:03Z", who: "alice", words: "wrote the description" },
+    { at: "2026-11-12T10:00:00Z", who: "alice", words: "wrote the title “Speedruns”" },
+    { at: "2026-11-12T09:59:59Z", who: "alice", words: "wrote the description" },
+    { at: "2026-11-12T09:59:58Z", who: "bob", words: "wrote the description" },
+    { at: "2026-11-12T09:59:57Z", who: "alice", words: "wrote the description" },
+  ]);
+});
 
-  margin();
-  expect(screen.getByRole("combobox", { name: /Margin/ })).toHaveValue("pinned");
-  expect(screen.getByText("A priority carries nothing a reader can pin yet.")).toBeDefined();
+// A run is one actor's as the history names it - a login, or a session - and not the person
+// behind it: two sessions of one person are two actors, and their writes stay two entries.
+test("writes of one field by two sessions of one person do not fold together", async () => {
+  const session = (id: string) => ({ id, kind: "session", owner: "alice" });
+  const write = (at: string, actor: { id: string; kind: string; owner: string }) => ({
+    actor,
+    asserted: true,
+    at,
+    field: "description",
+    issue: "",
+    value: "",
+  });
+  margin([
+    write("2026-11-12T10:00:03Z", session("session-one")),
+    write("2026-11-12T10:00:02Z", session("session-one")),
+    write("2026-11-12T10:00:01Z", session("session-two")),
+    write("2026-11-12T10:00:00Z", session("session-two")),
+  ]);
+  await screen.findAllByText("wrote the description");
+  expect(entries().map(({ at, words }) => ({ at, words }))).toEqual([
+    { at: "2026-11-12T10:00:03Z", words: "wrote the description" },
+    { at: "2026-11-12T10:00:01Z", words: "wrote the description" },
+  ]);
 });

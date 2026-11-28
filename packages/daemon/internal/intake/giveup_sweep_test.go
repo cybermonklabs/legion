@@ -65,6 +65,7 @@ func waitAckFloor(t *testing.T, stream jetstream.Stream, consumer string, seq ui
 // message, and made again by OpenConsumers at a stored position later than the message
 // (createConsumer). Run's own sweep then gives up the one left within a few of its passes.
 func TestASweepGivesUpAFailingMessageItsConsumerWasMadeAgainPast(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// deliverNew makes the durable again at the next message; otherwise OpenConsumers makes it
@@ -154,6 +155,7 @@ func TestASweepGivesUpAFailingMessageItsConsumerWasMadeAgainPast(t *testing.T) {
 // the early give-up does not take it first, and the consumers are stopped while the stream
 // deletes it, so no delivery finds it gone.
 func TestASweepGivesUpAFailingMessageTheStreamDeleted(t *testing.T) {
+	// Not parallel: it stops the consumers between the first failure and the 500 ms nak delay, so its one delivery holds only inside a margin the load of tests beside it can eat.
 	pool := migratedPool(t)
 	js := testnats.JetStream(t)
 	stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}, MaxAge: 3 * time.Second})
@@ -186,6 +188,7 @@ func TestASweepGivesUpAFailingMessageTheStreamDeleted(t *testing.T) {
 // so within two of its periods and one floor read of the move: at the production period that is
 // under the 5 minutes R1 of dispatch://INFRA-1575 allows.
 func TestTheSweepGivesUpWithinFiveMinutesOfTheConsumerMovingPast(t *testing.T) {
+	t.Parallel()
 	if within := 2*failureSweepEvery + consumerLagBound; within >= 5*time.Minute {
 		t.Fatalf("the sweep gives up a message the consumer moved past within %s, want under 5m", within)
 	}
@@ -195,6 +198,7 @@ func TestTheSweepGivesUpWithinFiveMinutesOfTheConsumerMovingPast(t *testing.T) {
 // again, and the delivery, which no longer decodes to a fact of a repository GitHub intake hears,
 // acknowledges it and deletes its open failure: nothing is left for the sweep.
 func TestAFilterChangeDeliversAPendingMessageAgainAndLeavesNoOpenFailure(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})

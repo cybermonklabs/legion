@@ -408,7 +408,7 @@ func confirmedAnswer(reason, holder string) error {
 func noticeRowID(t *testing.T, pool *store.Pool) int64 {
 	t.Helper()
 	var id int64
-	if err := pool.QueryRow(context.Background(), "select id from outbox").Scan(&id); err != nil {
+	if err := pool.QueryRow(context.Background(), "select id from outbox where "+notStateRows).Scan(&id); err != nil {
 		t.Fatalf("read the notice row: %v", err)
 	}
 	return id
@@ -675,7 +675,8 @@ func TestANoticeToAnArchitectStoppedWithItsFinishedTreeIsNotSentAgain(t *testing
 
 // A report of a person's undelivered spec decision to a stopped tree relays it once: the first
 // report writes the controller notice, a second report of the same publish and the copy queued
-// before the close write none, and the controller is told once; the architect is told nothing.
+// before the close write none, and the controller is told once, on its role topic; the architect
+// is told nothing.
 func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -685,7 +686,9 @@ func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateSuspended, "ses_arch")
 	var logged bytes.Buffer
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	publisher := &holderPublisher{}
+	publisher.holds(legionController, "ses_controller")
 	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
 		project: "legion", now: time.Now}
 	notice := record.Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"}
@@ -721,10 +724,10 @@ func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the copy queued before the close and the controller row: %v", err)
 	}
-	if relayed() != 1 || to(notify.ControllerTopic("legion")) != 1 || to(architectTopic(t, "LEGION-1")) != 0 ||
+	if relayed() != 1 || to(controllerRoleTopic) != 1 || to(architectTopic(t, "LEGION-1")) != 0 ||
 		!strings.Contains(logged.String(), `msg="outbox parked decision handled before under this key"`) || !strings.Contains(logged.String(), "key=legion-outbox:78") {
 		t.Fatalf("%d relays, %d to the controller, %d to the architect, log %q; want one relay told to the controller once, none to the architect, and the copy logged as handled before",
-			relayed(), to(notify.ControllerTopic("legion")), to(architectTopic(t, "LEGION-1")), logged.String())
+			relayed(), to(controllerRoleTopic), to(architectTopic(t, "LEGION-1")), logged.String())
 	}
 }
 
@@ -927,7 +930,7 @@ func TestAReadyArchitectReleasesOnlyItsOwnNotices(t *testing.T) {
 	if err := runner.releaseWaiting(context.Background(), architectTopicToken(t, "LEGION-1"), architectTopicToken(t, "LEGION-9")); err != nil {
 		t.Fatalf("release: %v", err)
 	}
-	rows, err := pool.Query(context.Background(), "select issue, next_at <= $1 from outbox order by id", now)
+	rows, err := pool.Query(context.Background(), "select issue, next_at <= $1 from outbox where "+notStateRows+" order by id", now)
 	if err != nil {
 		t.Fatalf("read the copies: %v", err)
 	}
@@ -961,7 +964,7 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 	due := func() bool {
 		t.Helper()
 		var due bool
-		if err := pool.QueryRow(context.Background(), "select next_at <= $1 from outbox", time.Now()).Scan(&due); err != nil {
+		if err := pool.QueryRow(context.Background(), "select next_at <= $1 from outbox where "+notStateRows, time.Now()).Scan(&due); err != nil {
 			t.Fatalf("read the waiting notice: %v", err)
 		}
 		return due
@@ -1210,9 +1213,11 @@ func TestACatchUpCopyCommittedAfterTheFreshOneIsNotPublished(t *testing.T) {
 		}
 	}
 	_, delivered := publisher.snapshot()
+	// The delivery states the tree again, its reason with it (deliverNotice), so each catch-up is
+	// told apart by the launch it was written for, which the row keeps.
 	var got []string
 	for _, published := range delivered {
-		got = append(got, published.payload.(record.Notice).Reason)
+		got = append(got, fmt.Sprintf("launch %d", published.payload.(record.Notice).CatchUp.Launch))
 	}
 	if fmt.Sprint(got) != "[launch 3]" || outboxRows(t, pool) != 0 || !strings.Contains(logged.String(), `msg="outbox catch-up finished without publishing: a newer catch-up supersedes it"`) {
 		t.Fatalf("delivered %v with %d rows left, logged:\n%s\nwant the fresh catch-up alone and the stale copy finished", got, outboxRows(t, pool), logged.String())
@@ -1249,8 +1254,9 @@ func TestANoticeIsKeptWhileItsArchitectsSessionIsUnresponsive(t *testing.T) {
 	}))
 	defer server.Close()
 	refused := func() error {
-		return notify.New(server.URL, "").Publish(context.Background(), notify.RoleTopicPrefix+string(architect),
+		_, err := notify.New(server.URL, "").Publish(context.Background(), notify.RoleTopicPrefix+string(architect),
 			noticeSummary(notice.Kind, row.Issue), notice, record.OutboxKey(row.ID))
+		return err
 	}
 
 	kept := runner.noticeAnswered(context.Background(), row, notice, treeSnapshot{}, architect, refused())

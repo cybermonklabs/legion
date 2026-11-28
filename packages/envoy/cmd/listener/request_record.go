@@ -40,6 +40,12 @@ const (
 	// two say different things about the claim behind it.
 	outcomeRoleUnclaimed requestOutcome = "role_unclaimed"
 	outcomeRoleLapsed    requestOutcome = "role_lapsed"
+	// outcomeRoleNoSourceSession belongs to the publish route alone: a role send that names no
+	// source session, to a role with no live holder, answered 404 with nothing kept, because a kept
+	// copy that expired would reach no sender (roleSend.noHolder). It is neither of the two above,
+	// which a send with keep: false or a keep that failed gets, so a log filter counts these
+	// refusals apart; the body's reason still names the state the resolution found.
+	outcomeRoleNoSourceSession requestOutcome = "role_no_source_session"
 	// outcomeRoleClaimUnreadable is the publish route's role claim record that the bus answered
 	// and no read can decode (store.ErrMalformedRoleClaim): a 500, not outcomeBusUnavailable,
 	// since the bus did answer and retrying reads the same record.
@@ -78,6 +84,12 @@ const (
 	// outcomeBusUnavailable, nor a role send's outcomeDeliveryFailed: the bus answered, that the
 	// earlier attempt is in process, and the stream may store it yet.
 	outcomeEarlierAttemptInProcess requestOutcome = "earlier_attempt_in_process"
+	// outcomeSubjectNotDeployed is a send or publish whose message the bus refused before it sent
+	// anything, because the deployed stream does not capture a topic this build stores
+	// (bus.ErrSubjectNotDeployed, notSent), answered 503 under notSentPrefix. It is not
+	// outcomeBusUnavailable: the bus was never asked, so an operator reading the record looks at the
+	// stream's subjects, a hub move's quiesce or an edit of them, not for an outage.
+	outcomeSubjectNotDeployed requestOutcome = "subject_not_deployed"
 )
 
 // requestRecord is this listener's record of one inbound send or publish, and the only way either
@@ -143,6 +155,16 @@ func (rec *requestRecord) refuse(w http.ResponseWriter, status int, outcome requ
 	rec.write(status, outcome)
 }
 
+// refuseBody answers a body the route could not read (readAPIBody) and records it: too_large for a
+// body past apiBodyLimit, and invalid_request for a body that is not JSON.
+func (rec *requestRecord) refuseBody(w http.ResponseWriter, status int, message string) {
+	outcome := outcomeInvalidRequest
+	if status == http.StatusRequestEntityTooLarge {
+		outcome = outcomeTooLarge
+	}
+	rec.refuse(w, status, outcome, message)
+}
+
 // refuseWith writes a refusal whose body says more than writeJSONError's - a confirmed send's 403
 // naming the holder or its 504 naming who did not confirm (confirmed.go) - and records it under
 // outcome.
@@ -155,10 +177,11 @@ func (rec *requestRecord) refuseWith(w http.ResponseWriter, status int, outcome 
 // status it wrote implies: 413 is the caller's own oversized message, 400 the subject or key NATS
 // will not take however often it is sent, 403 the publish this listener's own grant denies, and
 // anything else the bus not answering. The status is read back from the write rather than
-// classified a second time here, so the pair cannot drift, with three exceptions that share their
+// classified a second time here, so the pair cannot drift, with four exceptions that share their
 // 503 with the bus not answering, so the error tells them apart: a full stream (bus.ErrStreamFull),
-// a stored copy that could not be read back (errStoredCopyUnread), and a request that ended while
-// an earlier publish under its message id was still in process (earlierAttemptInProcess).
+// a stored copy that could not be read back (errStoredCopyUnread), a request that ended while an
+// earlier publish under its message id was still in process (earlierAttemptInProcess), and a
+// message the bus refused before it sent anything (notSent).
 func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error) {
 	status := writeBusUnavailable(w, err)
 	outcome := outcomeBusUnavailable
@@ -175,6 +198,8 @@ func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error)
 		outcome = outcomePublishDenied
 	case earlierAttemptInProcess(err):
 		outcome = outcomeEarlierAttemptInProcess
+	case notSent(err):
+		outcome = outcomeSubjectNotDeployed
 	}
 	rec.write(status, outcome)
 }
@@ -199,6 +224,18 @@ func (rec *requestRecord) refuseRoleHolder(w http.ResponseWriter, role string, r
 	}
 	rec.holder = result.Holder
 	rec.write(http.StatusNotFound, outcome)
+}
+
+// refuseRoleNoSourceSession answers a role send that names no source session, to a role with no
+// live holder, with the 404 refuseRoleHolder writes (roleHolderRefusal), whose error also says that
+// nothing was kept and why (noSourceSessionNotKept), and records it under
+// outcomeRoleNoSourceSession, carrying a lapsed holder as refuseRoleHolder does.
+func (rec *requestRecord) refuseRoleNoSourceSession(w http.ResponseWriter, role string, result roles.Resolution) {
+	refusal := roleHolderRefusal(role, result)
+	refusal.Error += noSourceSessionNotKept
+	writeJSON(w, http.StatusNotFound, refusal)
+	rec.holder = result.Holder
+	rec.write(http.StatusNotFound, outcomeRoleNoSourceSession)
 }
 
 // refuseSenderRateLimited answers a message whose sender's count was empty (senderLimit.take)

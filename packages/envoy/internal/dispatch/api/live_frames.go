@@ -254,8 +254,8 @@ const (
 	// (touchedBy), its read holds the delivery settings, its freshness is the hub's one verdict,
 	// and a deployment with no delivery settings is DELIVERY_NOT_CONFIGURED.
 	viewReadsDelivery viewReads = iota + 1
-	// viewReadsLegion is one project's Legion daemon as the sampler recorded it: the view's spec
-	// holds that project, a read of its daemon or a write of its Legion setting marks it
+	// viewReadsLegion is one project's Legion daemon as the Legion intake recorded it: the view's
+	// spec holds that project, each record of its daemon or a write of its Legion setting marks it
 	// (dirtyLegionProject), and so does each connection of the hub's listener (dirtyLegionViews),
 	// since no delivery change touches it; it judges no freshness. A project that names no daemon
 	// is LEGION_NOT_CONFIGURED to the board alone, whose read answers legion.ErrNoSettings for it:
@@ -363,7 +363,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		read:  (*deliveryHub).readPipelineView,
 	},
 	// The Legion board is one project's small, whole picture, so every field of it but its
-	// computed_at is sent whole: its eleven columns are a fixed order rather than a list a page
+	// computed_at is sent whole: its twelve columns are a fixed order rather than a list a page
 	// merges by id (the page's applyDelta sorts each list it knows, which a column order would
 	// have to be taught), and the header and the settings the daemon reports each move as a
 	// block.

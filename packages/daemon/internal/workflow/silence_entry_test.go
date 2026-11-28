@@ -21,6 +21,7 @@ import (
 // silent claim level with its row is sent the phase's resume task at no entry, marked as the
 // resume, since it is on the entry its row names already. Neither start moves the row.
 func TestASilentWorkerIsSentTheWorkOfTheEntryItIsBehind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// given is the entry the silent claim was last given work of (record.RoleClaim.GivenEntry).

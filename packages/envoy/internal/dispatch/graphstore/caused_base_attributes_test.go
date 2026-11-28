@@ -52,20 +52,24 @@ func runInOneTransaction(t *testing.T, database *store.Store, what string, write
 	}
 }
 
-// requireOneCause holds a node and its two base attributes to naming the one event: the node
-// row's source_event is cause, and so is each base attribute tuple's, with exactly one of each
-// attribute and nothing left at the sentinel.
+// requireOneCause holds a node and the base attributes it carries to naming the one event: the
+// node row's source_event is cause, and so is each base attribute tuple's, with exactly one of
+// each attribute the node carries - visibility and state always, and its project or its parties
+// where its row holds one - and none of an attribute it does not carry.
 func requireOneCause(t *testing.T, database *store.Store, kind, id string, cause int64) {
 	t.Helper()
 	ctx := context.Background()
 	var node int64
+	var project, parties bool
 	if err := database.Pool.QueryRow(ctx,
-		`select source_event from graph_nodes where kind = $1 and id = $2`, kind, id).Scan(&node); err != nil {
+		`select source_event, project_key is not null, parties is not null from graph_nodes where kind = $1 and id = $2`,
+		kind, id).Scan(&node, &project, &parties); err != nil {
 		t.Fatalf("read the node %s/%s: %v", kind, id, err)
 	}
 	if node != cause {
 		t.Errorf("the node row of %s/%s names event %d, want the event that caused the write, %d", kind, id, node, cause)
 	}
+	carried := map[string]bool{AttributeVisibility: true, AttributeState: true, AttributeProject: project, AttributeParties: parties}
 	for _, attribute := range baseAttributes {
 		rows, err := database.Pool.Query(ctx, `
 			select source_event from graph_tuples
@@ -79,9 +83,12 @@ func requireOneCause(t *testing.T, database *store.Store, kind, id string, cause
 		if err != nil {
 			t.Fatalf("read the %s tuples of %s/%s: %v", attribute, kind, id, err)
 		}
-		if len(events) != 1 || events[0] != node {
+		switch {
+		case carried[attribute] && (len(events) != 1 || events[0] != node):
 			t.Errorf("%s/%s states %s under the events %v, want exactly one under %d, the event its node row names",
 				kind, id, attribute, events, node)
+		case !carried[attribute] && len(events) != 0:
+			t.Errorf("%s/%s states %s under the events %v, which its row does not carry", kind, id, attribute, events)
 		}
 	}
 }

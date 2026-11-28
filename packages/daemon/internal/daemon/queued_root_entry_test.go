@@ -213,7 +213,7 @@ func TestAQueuedRootWhoseArchitectWasQueuedNoEntryIsSentThatEntrysTask(t *testin
 
 	if held := architectStartCount(t, r.pool, mainPathRoot); held != 0 {
 		t.Fatalf("four more passes wrote %d architect start rows of %s, want none: a task the claim has not confirmed is a start "+
-			"already on its way, and a pass runs on every fact of the project", held, mainPathRoot)
+			"already on its way, and passes run again and again (the pass rule, admit's Admission.Apply)", held, mainPathRoot)
 	}
 	if given := r.machine().Claim().GivenEntry; given != 1 {
 		t.Fatalf("the architect's claim was given entry %d after four more passes, want the 1 it was given once", given)

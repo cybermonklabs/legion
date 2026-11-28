@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -11,9 +11,16 @@ import { api } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
 import { whoAmIQuery } from "../../api/queries";
 import type { Comment, DispatchEvent, MessageWithTrees } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { comment as commentFixture } from "./margin-fixture";
 import { PinnedTab } from "./PinnedTab";
 import { type MarginOwner, type MarkPlacement, useMarginItems } from "./useMarginItems";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const messageEvent: DispatchEvent = {
   actor: { id: "alice", kind: "user" },
@@ -141,7 +148,9 @@ test("a pinned card's agent byline links to its live conversation", () => {
               deleted: null,
               edited: null,
               id: "ask:ask-1",
+              issue: "CORE-1",
               kind: "ask",
+              recordId: "ask-1",
             },
           ]}
           events={[{ ...messageEvent, actor: agent }]}
@@ -181,7 +190,9 @@ test("a pinned conversation whose post was deleted says so in place of its body"
               deleted: { at: "2026-09-10T00:05:00Z", by: { id: "alice", kind: "user" } },
               edited: null,
               id: "comment:comment-1",
+              issue: "CORE-1",
               kind: "comment",
+              recordId: "comment-1",
             },
           ]}
           events={[]}

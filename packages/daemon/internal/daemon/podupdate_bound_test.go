@@ -32,7 +32,7 @@ const (
 	// words the production check reads (R8).
 	podUpdateBoundLine = "supervise pod update replaced at the bound"
 	// podUpdateRefusedNotice is what the sweep logs when the store will not take a notice's row.
-	podUpdateRefusedNotice = "supervise: tell the operator's side that an update round is held past its bound; telling again at the next sweep"
+	podUpdateRefusedNotice = "supervise: tell the controller that an update round is held past its bound; telling again at the next sweep"
 )
 
 // podUpdateBound is the bound of a round the rig opens at its start: the moment the round ends
@@ -271,7 +271,7 @@ func TestPodUpdateBoundIsReadByTheLastWordBeforeTheReplacement(t *testing.T) {
 
 // Two claims; the operator suspends one, and the other answered and still runs a process in the
 // pod. Past the bound nothing but the operator's suspension holds the pod (readReplacement's
-// waitsForOperator), and it does: no ReplacePod is called however long the clock runs. Once the
+// waitsForResume), and it does: no ReplacePod is called however long the clock runs. Once the
 // operator resumes the suspended claim, after the bound, the bound ends the round.
 func TestPodUpdateSuspensionHoldsThePodPastTheBoundUntilTheOperatorResumes(t *testing.T) {
 	t.Parallel()
@@ -671,8 +671,8 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 		if notices := rig.notices(); len(notices) != 0 {
 			t.Fatalf("at the bound %s the controller was told %+v of a round that is over", rig.clock.Now(), notices)
 		}
-		if messages := rig.messages(); len(messages) != 1 {
-			t.Fatalf("the issue was written %d messages after two more sweeps, want the one of the round's end: %q", len(messages), messages)
+		if messages := rig.messages(); len(messages) != 0 {
+			t.Fatalf("the issue was written %q after two more sweeps, want nothing: the pod's launcher read the workspace before the replacement and found nothing", messages)
 		}
 	})
 
@@ -700,7 +700,7 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 		if len(notices) != 1 {
 			t.Fatalf("at the bound %s the controller was told %d times, want once", rig.clock.Now(), len(notices))
 		}
-		for _, want := range []string{"The runtime refused the pod replacement", refused.Error()} {
+		for _, want := range []string{"The pod replacement failed.", "The runtime can fail after it suspended the pod.", refused.Error()} {
 			if !strings.Contains(notices[0].Reason, want) {
 				t.Errorf("the notice says %q, want it to say %q", notices[0].Reason, want)
 			}
@@ -816,8 +816,8 @@ func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
 		rig.rt.FailPodDrift(unread)
 
 		notice := toldOnce(t, rig, claim.RoleImplementer, rig.tick)
-		if notice.Reason != unreadPodReason {
-			t.Errorf("the notice says %q, want %q", notice.Reason, unreadPodReason)
+		if want := unreadPodReason(); notice.Reason != want {
+			t.Errorf("the notice says %q, want %q", notice.Reason, want)
 		}
 		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: true, claim.RoleTester: false})
 	})
@@ -836,8 +836,8 @@ func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
 		rig, sweep := withNoProcess(t, supervise.SuspendedByDaemon)
 
 		notice := toldOnce(t, rig, claim.RoleImplementer, sweep)
-		if notice.Reason != unreadPodReason {
-			t.Errorf("the notice says %q, want %q", notice.Reason, unreadPodReason)
+		if want := unreadPodReason(); notice.Reason != want {
+			t.Errorf("the notice says %q, want %q", notice.Reason, want)
 		}
 		wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: false})
 	})

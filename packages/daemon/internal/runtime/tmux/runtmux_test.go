@@ -108,7 +108,7 @@ func TestTheCommandTimeoutRunsOnTheConfiguredClockAndOnTheWallClockWhenThereIsNo
 	awaitClientStarted(t, started, ran)
 	got := passDeadline(t, fake, fake.Now().Add(time.Minute), "the run on the fake clock", ran)
 	if got.err != nil || got.res.timedOut != time.Minute || got.res.exitCode != -1 {
-		t.Errorf("the run on the fake clock = exit %d, timed out %s, error %v; want exit -1, timed out 1m, no error", got.res.exitCode, got.res.timedOut, got.err)
+		t.Errorf("the run on the fake clock = %v; want exit -1, timed out 1m, no error", got)
 	}
 	if message := "list-panes" + exited(got.res); message != "list-panes timed out after 1m0s" {
 		t.Errorf("exited = %q for the run on the fake clock, want the timeout and no exit", message)
@@ -128,13 +128,13 @@ func TestTheCommandTimeoutRunsOnTheConfiguredClockAndOnTheWallClockWhenThereIsNo
 		res, err := onWall.runTmux(testwait.Context(t), argv)
 		if err != nil && errors.Is(err, context.DeadlineExceeded) && res == (result{}) {
 			t.Logf("run %d with no clock: the 200ms deadline came before the client started (%v); running again", attempt, err)
-			return ranTmux{}, false
+			return ranTmux{err: fmt.Errorf("start error on run %d, the 200ms deadline before the client started: %w", attempt, err)}, false
 		}
-		t.Logf("run %d with no clock: the client started and the run answered exit %d, timed out %s, error %v", attempt, res.exitCode, res.timedOut, err)
+		t.Logf("run %d with no clock: the client started and the run answered %v", attempt, ranTmux{res, err})
 		return ranTmux{res, err}, true
 	})
 	if got.err != nil || got.res.timedOut != 200*time.Millisecond || got.res.exitCode != -1 {
-		t.Errorf("the run with no clock = exit %d, timed out %s, error %v; want the wall clock's own timeout", got.res.exitCode, got.res.timedOut, got.err)
+		t.Errorf("the run with no clock = %v; want the wall clock's own timeout: exit -1, timed out 200ms, no error", got)
 	}
 }
 
@@ -142,6 +142,16 @@ func TestTheCommandTimeoutRunsOnTheConfiguredClockAndOnTheWallClockWhenThereIsNo
 type ranTmux struct {
 	res result
 	err error
+}
+
+// String is the answer as a reader needs it: an error with no result (a start error) says only
+// that, and a result names its exit, its timeout and the signal that ended it, so a client a
+// signal killed reads apart from one that exited or timed out.
+func (r ranTmux) String() string {
+	if r.res == (result{}) && r.err != nil {
+		return "no result, error: " + r.err.Error()
+	}
+	return fmt.Sprintf("exit %d, timed out %s, signal %q, error %v", r.res.exitCode, r.res.timedOut, r.res.signal, r.err)
 }
 
 // startRunTmux runs r.runTmux(argv) on a goroutine of its own (startCall) and answers the channel
@@ -156,8 +166,12 @@ func startRunTmux(t *testing.T, r *Runtime, argv []string) <-chan ranTmux {
 
 // startCall runs call on a goroutine of its own and answers the channel its one answer arrives
 // on. The call is the row's to end on every exit: the row's cleanup cancels the call's context and
-// waits for it, so a row that fails before it moves a fake clock leaves no call waiting on a
-// clock nobody moves, and no client running.
+// waits for it to return, so a row that fails before it moves a fake clock leaves no call waiting
+// on a clock nobody moves, and no client running. That wait is testwait's, bounded by the test
+// binary's deadline: a call that blocks outside its context (a read that never returns) fails the
+// row by name in its cleanup, rather than holding the binary to its alarm with no FAIL line. After
+// an earlier wait of the row gave up, the deadline is spent and the join gives up at once, the
+// second give-up line in time order, as testwait's are.
 func startCall[T any](t *testing.T, call func(context.Context) T) <-chan T {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -168,7 +182,7 @@ func startCall[T any](t *testing.T, call func(context.Context) T) <-chan T {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		<-joined
+		testwait.Receive(t, "the call to return once the row's cleanup cancelled its context", joined)
 	})
 	return answered
 }

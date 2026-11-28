@@ -74,9 +74,12 @@
       "bun": "./src/wire.ts"
     }
   },
+  "//": [
+    "test: --timeout 5000 is at least twice every row or hook without a guard of its own under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job); the slowest, the wire corpus holds this client, read 110.74 ms. The files whose rows main's #4140 gave 20_000 of their own and that now take this guard (broker-code-echo, broker-refusal-echo and refusal-printed.test.ts) read at most 124.34 ms under the same load at 6ca1a534 with #4437's fourth merge (two runs in builds Job d8-bc-moved-8). These rows keep the guard of their own that main gave them: retry-loop.test.ts's rows their 20_000, twice the 10,000 ms of real time its `until` gives `turnsUntil` before it names a hang; device-login-file.test.ts's row on a login file swapped for a named pipe its 10_000, and its row on a login saved over and over its 120_000; device-login-lock.test.ts's row on a named pipe at the lock's path and device-login-tester-path.test.ts's row on an approved login at a named pipe their 10_000. membership-held.test.ts's `wake`, which its two rows that release a hold await, waits up to `turnsUntil`'s default 30,000 ms, longer than this guard, and main's plain `bun test` already ran those rows under Bun's default 5000 ms, so the mismatch is main's and this piece does not change it."
+  ],
   "scripts": {
-    "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
+    "test": "bun test --timeout 5000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/ test/ scripts/"
   },
   "dependencies": {
@@ -85,7 +88,7 @@
     "openid-client": "6.8.7"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.14",
+    "@biomejs/biome": "2.5.15",
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
     "typescript": "^5.3.0"

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -35,7 +36,7 @@ const (
 // publisher and a log — with the claim supervisor the executor reads the round from. Each role in
 // rounds gets a claim on LEGION-208 in the round given, "" for no round; a role not in rounds has
 // no claim this daemon supervises.
-func askRunner(t *testing.T, publisher notify.Publisher, rounds map[claim.Role]string) (*outbox, *syncBuffer) {
+func askRunner(t *testing.T, publisher outboxNotices, rounds map[claim.Role]string) (*outbox, *syncBuffer) {
 	t.Helper()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	for role, round := range rounds {
@@ -180,8 +181,8 @@ func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
 	}
 }
 
-// wakeCountingTrees is the runner's tree store with every pod wake counted: TakePodWake is the
-// step that brings a released pod back for a delivery (wakeForDelivery), and every other call
+// wakeCountingTrees is the runner's tree store with every pod wake counted: TakeDeliveryWake is
+// the step that brings a released pod back for a delivery (wakeForDelivery), and every other call
 // goes to the store it wraps.
 type wakeCountingTrees struct {
 	outboxTrees
@@ -189,11 +190,11 @@ type wakeCountingTrees struct {
 	takes int
 }
 
-func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, token claim.Token, kind string, at time.Time, mark int64) (bool, error) {
+func (w *wakeCountingTrees) TakeDeliveryWake(ctx context.Context, project, issue string, token claim.Token, generation uint64, at time.Time, mark int64) (store.DeliveryWake, error) {
 	w.mu.Lock()
 	w.takes++
 	w.mu.Unlock()
-	return w.outboxTrees.TakePodWake(ctx, project, issue, token, kind, at, mark)
+	return w.outboxTrees.TakeDeliveryWake(ctx, project, issue, token, generation, at, mark)
 }
 
 func (w *wakeCountingTrees) taken() int {

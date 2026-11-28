@@ -41,12 +41,17 @@ var errorLine = regexp.MustCompile(`"level":"ERROR"|level=ERROR|^\d{4}/\d{2}/\d{
 // window runs on the listener's own wall clock, which a loaded machine spends without the listener
 // running, so that failure says how the machine ran and not what the shutdown did. A drain cannot
 // cause it: a forward meets a connection before its publish only in ensureConnWithContext, which
-// serves a draining connection and refuses a stopped client at once, and in SubscribeSync, which
-// refuses a draining connection with an error of its own, counted here. A drain that holds a
-// forward after its publish fails it on its flush or its acknowledgement, with no mark, and is
-// counted. What this cannot see is a shutdown path that holds a forward before its publish, behind
-// a lock say: that forward would carry the mark. A change to the shutdown path or to
-// bus.Client.StartRequestStoredTo is read against this test for that case.
+// serves a draining connection and refuses a stopped client at once, in SubscribeSync, which
+// refuses a draining connection with an error of its own, counted here, and in publishConfirmed's
+// read of the connection's state, which waits for nats.go's connection lock within the window. A
+// drain takes that lock only for short steps, and never while it waits for the server's answer
+// (nats.go's drainConnection, FlushTimeout and close). A reconnect's handshake holds it through
+// its dial: a forward whose read has not answered when its window ends carries the mark, and its
+// error names bus.ErrReconnecting. A drain that holds a forward after its publish fails it on its
+// flush or its acknowledgement, with no mark, and is counted. What this cannot see is a shutdown
+// path that holds a forward before its publish, behind a lock say: that forward would carry the
+// mark. A change to the shutdown path or to bus.Client.StartRequestStoredTo is read against this
+// test for that case.
 func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 	t.Parallel()
 	_, uri := testnats.Start(t)

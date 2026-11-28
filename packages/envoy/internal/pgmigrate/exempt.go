@@ -723,12 +723,7 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 				here, later = true, true
 				continue
 			}
-			// The parser keeps the case of a quoted name (set "Lock_Timeout" = x gives
-			// Lock_Timeout), and Postgres finds a setting by its name without regard to case, so the
-			// name is compared folded to lower case. strings.ToLower folds more letters than
-			// Postgres does, so a name it folds to one of these two can be a name Postgres finds no
-			// setting for, and Postgres refuses to set or reset such a name.
-			if name := strings.ToLower(set.Name); name == "lock_timeout" || name == "statement_timeout" {
+			if timeoutSetting(set.Name) {
 				continue
 			}
 			// A session SET stays on the runner's connection after its migration's transaction
@@ -756,6 +751,19 @@ func (c *classifier) catalogReadsOff(statements []statement) (here, later bool, 
 		}
 	}
 	return here, later, exemptionsOff{}, nil
+}
+
+// timeoutSetting says whether a SET or a RESET that names name sets lock_timeout or
+// statement_timeout, the two settings the census knows to change neither what a name resolves to
+// nor how the server reads a migration's text: each bounds how long a statement waits or runs
+// (catalogReadsOff). The parser keeps the case of a quoted name (set "Lock_Timeout" = x gives
+// Lock_Timeout), and Postgres finds a setting by its name without regard to case, so the name is
+// compared folded to lower case. strings.ToLower folds more letters than Postgres does, so a name
+// it folds to one of these two can be a name Postgres finds no setting for, and Postgres refuses
+// to set or reset such a name.
+func timeoutSetting(name string) bool {
+	name = strings.ToLower(name)
+	return name == "lock_timeout" || name == "statement_timeout"
 }
 
 // keepsReadsOn says whether a statement other than a SET or a RESET is known to leave every type,
@@ -1370,6 +1378,9 @@ type classification struct {
 	// above the limit from.
 	statements []statement
 	readsOff   bool
+	// addsPlainColumns says that the migration only adds plain columns (addsPlainColumns), each of
+	// which catalogOnlyColumn admitted; false wherever exemption is "".
+	addsPlainColumns bool
 }
 
 // tableSizeExemption says why migration sql is exempt from CensusTableLimit, and what it changes
@@ -1435,7 +1446,57 @@ func tableSizeExemption(ctx context.Context, census, catalog pgx.Tx, sql string)
 		}
 	}
 	answer.exemption = strings.Join(kinds, " and ")
+	answer.addsPlainColumns = answer.exemption != "" && addsPlainColumns(statements)
 	return answer, nil
+}
+
+// addsPlainColumns says whether every statement of a migration is an ALTER TABLE of a table
+// (objtype OBJECT_TABLE) whose every subcommand adds a column with no constraint clause at all, or
+// a SET or a RESET of lock_timeout or statement_timeout (timeoutSetting), which changes nothing of
+// a table. NOT NULL, DEFAULT, REFERENCES, CHECK, UNIQUE, PRIMARY KEY, an identity, a generated
+// expression, a DEFERRABLE or INITIALLY clause and an explicit NULL each arrive in the raw tree as
+// an entry of the ColumnDef's constraints, so a plain column has none. tableSizeExemption asks it
+// only of a migration whose every statement is a catalogOnlyStatements kind, so catalogOnlyColumn
+// has admitted each column already. A SET or a RESET of any other setting is not plain: it can
+// change what the migration's names resolve to (catalogReadsOff).
+func addsPlainColumns(statements []statement) bool {
+	for _, s := range statements {
+		switch s.node {
+		case "VariableSetStmt":
+			var set struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(s.body, &set) != nil || !timeoutSetting(set.Name) {
+				return false
+			}
+		case "AlterTableStmt":
+			var alter struct {
+				Objtype string `json:"objtype"`
+				Cmds    []struct {
+					Command struct {
+						Subtype string `json:"subtype"`
+						Def     struct {
+							ColumnDef *struct {
+								Constraints json.RawMessage `json:"constraints"`
+							} `json:"ColumnDef"`
+						} `json:"def"`
+					} `json:"AlterTableCmd"`
+				} `json:"cmds"`
+			}
+			if json.Unmarshal(s.body, &alter) != nil || alter.Objtype != "OBJECT_TABLE" || len(alter.Cmds) == 0 {
+				return false
+			}
+			for _, item := range alter.Cmds {
+				cmd := item.Command
+				if cmd.Subtype != "AT_AddColumn" || cmd.Def.ColumnDef == nil || len(cmd.Def.ColumnDef.Constraints) != 0 {
+					return false
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ddlEventTriggersQuery names, sorted and comma-separated, every enabled event trigger on

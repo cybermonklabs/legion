@@ -105,13 +105,13 @@ func walkBlockRows(t *testing.T, pool *store.Pool, statement, mode string, batch
 		}
 		read := 0
 		for rows.Next() {
-			var artifact, block, address, refKey string
+			var artifact, block, address, refKey, project, session string
 			var created time.Time
 			var event int64
-			if err := rows.Scan(&artifact, &block, &address, &refKey, &created, &event); err != nil {
+			if err := rows.Scan(&artifact, &block, &address, &refKey, &created, &event, &project, &session); err != nil {
 				t.Fatalf("read a row after %q: %v", after, err)
 			}
-			walked = append(walked, fmt.Sprintf("%s %s %s %s %s event=%d", artifact, block, address, refKey, created.UTC().Format(time.RFC3339Nano), event))
+			walked = append(walked, fmt.Sprintf("%s %s %s %s %s project=%s session=%s event=%d", artifact, block, address, refKey, created.UTC().Format(time.RFC3339Nano), project, session, event))
 			after = address
 			read++
 		}

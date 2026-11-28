@@ -152,7 +152,7 @@ bunx biome check --diagnostic-level=warn --max-diagnostics=none <package>/  # on
 (cd packages/<package> && bun run typecheck && bun run test) # the root has no tsconfig.json and no test script
 (cd packages/<package> && bun test <file> -t '<test name>')  # one test
 bun test scripts/<file or directory>                         # scripts/ is no workspace
-bunx tsc --noEmit -p scripts/dispatch                        # likewise each scripts/ directory with a tsconfig.json
+bun run --cwd packages/contracts gen:api && bunx tsc --noEmit -p scripts/dispatch  # likewise each scripts/ directory with a tsconfig.json
 go -C packages/daemon test ./...                             # the Legion daemon
 go -C packages/envoy test ./...                              # Envoy, Dispatch's server and the Secrets Broker
 go -C packages/daemon test ./internal/api -run '^TestName$'  # one test
@@ -161,6 +161,49 @@ gofmt -l packages/daemon packages/envoy
 (cd packages/daemon && go build ./cmd/legion)                # then ./legion <command> --help
 bun run dispatch:local                                       # Dispatch, seeded and signed in
 ```
+
+In a Legion issue pod, the issue's roles share one memory limit, and a whole run can fill it for
+every role. `skills/legion-worker/references/tools.md` keeps in the pod the tests and files a role
+added or changed, run by name, such as
+`go -C packages/daemon test ./internal/api -run '^TestName$'`,
+`(cd packages/<package> && bun test <file> -t '<test name>')` and `bun test scripts/<file>`. It
+also lets a role compile what it touched there, as one package's `bun run typecheck` does, and
+run `go -C packages/daemon vet -tags e2e ./...`. It sends a whole module's test run, such as
+`go -C packages/daemon test ./...` and `go -C packages/envoy test ./...`, and a whole
+Postgres-backed package, such as `bun run test` in `packages/dispatch` with `LEGION_TEST_PG_DSN`
+set, to CI. It names no other whole-package
+`(cd packages/<package> && bun run typecheck && bun run test)`, whose test run is a whole-package
+suite, and no `.github/scripts/check-biome-tree.sh`, which checks the whole tree. It leaves the
+place of those heavy runs to the project's deployment instructions. These whole runs leave the
+pod, and CI runs each of them, on the pull request or, for a slow suite the pull request holds
+back, in the merge queue. CI's run of `packages/dispatch`'s `test` script, whose lanes run in two
+jobs, has no Postgres, so its cases that need `LEGION_TEST_PG_DSN` skip there. A role whose change
+touches what they cover runs them by name, as the comment above the step "Test dispatch harness"
+in `.github/workflows/ci-job-dispatch-ui.yaml` says. Where the project's deployment instructions
+name another place for a heavy run, or send a compile out of the pod, which takes the typecheck
+and the vet out too, those instructions win.
+
+The Bun test scripts that run a package's files side by side name their worker count:
+`--parallel=4` in `packages/pi-legion`, and `--parallel=8` in `packages/dispatch`'s `test:web` and
+`test:harness`. A bare `--parallel` starts one worker per CPU. On a 180-CPU machine whose user may
+run 4,096 tasks, that failed every file of `test:web` (176 workers, each ended by SIGABRT) and 27
+rows of pi-legion's (threads refused with EAGAIN). On CI's 4-CPU runners eight workers take no
+longer than four: `test:web` 100 s against 101 s, `test:harness` 78 s against 113 s (medians of
+three runs on a 4-CPU pod, 2026-11-26). pi-legion keeps four, CI's count. Most of its tasks are
+the Oh My Pi processes its tests start, and Oh My Pi sizes each of its thread pools to the
+machine's CPU count, so the harness that starts it (`packages/pi-shared/test/omp-harness.ts`,
+`ompEnv`) sets each pool to four, the size CI's runners give it: one such omp held 269 threads
+on a 64-CPU machine and holds 40 with the pools set.
+
+pi-legion's `test` script also names `--timings=test-timings.json`, each test file's duration on
+CI's runner, so that its four workers start the slowest files first. Without it Bun hands the
+files out in its own order, and the step lasted as long as the worker that drew a long file last:
+in five runs of 2026-11-27 that gave Bun no durations, the 224 s
+`legion-stall-watchdog-omp.test.ts` started 142 s to 298 s into the step and ended it each time
+(probe run 46049571159). A file the timings do not name still
+runs; the order changes how long the step takes, never what runs. Refresh the file when a file's
+duration changes by minutes, from CI's runner: `bun test --parallel=4 --timings=<a copy>
+--update-timings` writes each file's duration into the copy.
 
 Envoy's Go tests start NATS in Docker, and the tests that need a Postgres read its address from the
 environment (`LEGION_TEST_PG_DSN` for the daemon's). On a host without Docker, the daemon's NATS

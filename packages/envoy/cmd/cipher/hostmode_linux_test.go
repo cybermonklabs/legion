@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
@@ -75,6 +76,7 @@ func fakeHelperWithPids(t *testing.T, canned helper.Response) (string, <-chan pe
 // pins is the very pid the command runs as — and that is unchanged by the launcher ancestor the
 // other forms now name.
 func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
+	t.Parallel()
 	sock, requests := fakeHelperWithPids(t, helper.Response{OK: true, State: "enrolling", RuntimeID: "session-exec"})
 	cmd := exec.Command("go", "run", ".", "register", "--session-id", "exec", "--exec", "--", "sh", "-c", "echo $$")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock)
@@ -99,19 +101,25 @@ func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
 }
 
 // realHelper serves a real helper.Server — the daemon's own registry, pidfd pinning and sign op —
-// on a socket, with a broker that can never enroll anyone (no launcher credential, nothing
-// listening), so every session it registers stays unenrolled.
-func realHelper(t *testing.T) string {
+// on a socket, with a broker that can never enroll anyone (no launcher credential, and a port
+// this test holds that refuses each dial), so every session it registers stays unenrolled. It
+// answers the socket and that broker's address, which the helper signs launcher calls for.
+func realHelper(t *testing.T) (sock, broker string) {
 	t.Helper()
-	_, sock := serveRealHelper(t, "http://127.0.0.1:1", "ada@example.com")
-	return sock
+	broker = "http://" + testport.Refused(t)
+	_, sock = serveRealHelper(t, broker, "ada@example.com")
+	return sock, broker
 }
 
-// serveRealHelper is serveRealHelperWith sending the helper's broker calls through
-// http.DefaultClient.
+// serveRealHelper is serveRealHelperWith sending the helper's broker calls through a client of
+// its own. It is not http.DefaultClient: the helper fires a session's revoke off and that revoke
+// outlives the call it belongs to, so a test that replaces http.DefaultTransport (reachedAs,
+// useGoogleAPIsStandIn) would be writing what the revoke reads.
 func serveRealHelper(t *testing.T, brokerURL, operator string) (*helper.Server, string) {
 	t.Helper()
-	return serveRealHelperWith(t, brokerURL, operator, http.DefaultClient)
+	client := &http.Client{Transport: &http.Transport{}}
+	t.Cleanup(client.CloseIdleConnections)
+	return serveRealHelperWith(t, brokerURL, operator, client)
 }
 
 func helperSessions(t *testing.T, sock string) []helper.SessionInfo {
@@ -129,8 +137,9 @@ func helperSessions(t *testing.T, sock string) []helper.SessionInfo {
 // from an unregistered process is. nocredential_linux_test.go covers identity inside a
 // registered session.
 func TestIdentityAsksARealHelperWithoutRegistering(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
-	sock := realHelper(t)
+	sock, _ := realHelper(t)
 	env := append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=", "XDG_RUNTIME_DIR="+t.TempDir(), "HOME="+t.TempDir())
 
 	before := helperSessions(t, sock)
@@ -162,6 +171,7 @@ type launcherReport struct {
 // `identity` as its own children, reports both, and stays alive until its parent closes its
 // stdin, so the parent can read the helper's sessions while the launcher is still there.
 func TestRegisterLauncherHelper(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("AGENT_SECRETS_LAUNCHER_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}
@@ -192,6 +202,7 @@ func TestRegisterLauncherHelper(t *testing.T) {
 // command itself, which had already exited, and identity answered NOT_A_SESSION while register
 // had printed `enrolled` and exited 0.
 func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -277,8 +288,9 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 // root is the command's own process, with `enrolled` printed for it. The register request does
 // reach the helper: the name, which the verification's check k1 runs, now means no registration.
 func TestRegisterWithoutAnOmpAncestorRefusesAndSendsNothing(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
-	sock := realHelper(t)
+	sock, _ := realHelper(t)
 	code, stdout, stderr := runWithNoLauncherAbove(t, binary,
 		[]string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir()},
 		"register", "--session-id", "s-3890", "--wait", "5")
@@ -302,6 +314,7 @@ func TestRegisterWithoutAnOmpAncestorRefusesAndSendsNothing(t *testing.T) {
 // it, so the register prints the session-scoped runtime id and `enrolled` and exits 0, and
 // identity from the same tree exits 0. `sh` stands for `claude` here.
 func TestRegisterSessionIDInsideAnExecSessionWithNoOmpNamesIt(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -464,6 +477,7 @@ func fixedLauncher(t *testing.T) int {
 // TestRegisterWithoutExecPrintsRuntimeEnrollmentState covers register's contract without
 // --exec: "<runtime_id>\t<enrollment_id>\t<state>" on stdout, exit 0.
 func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_linux_test.go:476); it sets a package variable the package's other tests read (main.fixedLauncher, main.stubLauncher, nearestLauncher set at hostmode_linux_test.go:457).
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -483,6 +497,7 @@ func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
 // checks for the other forms that print an enrollment. It is here because register without
 // --exec takes the helper's answer only for a root above this process, which only Linux can check.
 func TestRegisterPrintsTheBrokersEnrollmentOnOneLine(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_linux_test.go:496); it sets a package variable the package's other tests read (main.fixedLauncher, main.stubLauncher, nearestLauncher set at hostmode_linux_test.go:457).
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelperByOp(t, map[string]helper.Response{"register": {OK: true, RuntimeID: forged, EnrollmentID: forged, State: forged, RootPID: launcher}})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -496,6 +511,7 @@ func TestRegisterPrintsTheBrokersEnrollmentOnOneLine(t *testing.T) {
 // TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero: with no positive --wait, a confirmed root
 // whose session is still enrolling is printed as that state, and the command exits 0.
 func TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_linux_test.go:510); it sets a package variable the package's other tests read (main.fixedLauncher, main.stubLauncher, nearestLauncher set at hostmode_linux_test.go:457).
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -510,6 +526,7 @@ func TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero(t *testing.T) {
 // never pin its own process, which ends with the command) and names the session launcher it found
 // above itself as the root to pin. The fields go on the wire as attach and root_pid.
 func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_linux_test.go:525); it sets a package variable the package's other tests read (main.fixedLauncher, main.stubLauncher, nearestLauncher set at hostmode_linux_test.go:457).
 	launcher := fixedLauncher(t)
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -535,6 +552,7 @@ func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
 // already (one `register --exec -- claude` started, say). Its answer for that session, rooted
 // above this process, is printed, and the command exits 0.
 func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_linux_test.go:552); it sets a package variable the package's other tests read (main.stubLauncher, nearestLauncher set at hostmode_linux_test.go:457).
 	stubLauncher(t, 0, errNoLauncher)
 	root := os.Getppid()
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: root})
@@ -568,6 +586,7 @@ func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
 // the directories it makes go when this test ends, even when a stall kills it before its own
 // cleanup runs.
 func TestRegisterAcceptsARootAboveTheLauncher(t *testing.T) {
+	t.Parallel()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -651,6 +670,7 @@ type rootAboveReport struct {
 // test above builds: it names its parent the launcher, has the helper answer the launcher's
 // parent as the session's root, runs register, and prints a rootAboveReport line.
 func TestRegisterAcceptsARootAboveTheLauncherHelper(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_linux_test.go:673); it sets a package variable the package's other tests read (main.fixedLauncher, main.stubLauncher, nearestLauncher set at hostmode_linux_test.go:457).
 	if os.Getenv("AGENT_SECRETS_ROOT_ABOVE_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}
@@ -671,6 +691,7 @@ func TestRegisterAcceptsARootAboveTheLauncherHelper(t *testing.T) {
 // which ends with the command, and says nothing about the root it pinned. Its `enrolled` is
 // never printed as success: the command refuses, naming the helper and the relaunch.
 func TestRegisterRefusesAHelperThatNamesNoRoot(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_linux_test.go:690); it sets a package variable the package's other tests read (main.fixedLauncher, main.stubLauncher, nearestLauncher set at hostmode_linux_test.go:457).
 	fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled"})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -688,6 +709,7 @@ func TestRegisterRefusesAHelperThatNamesNoRoot(t *testing.T) {
 // above this command — the command's own process, which ends with it, or a child of it — is not
 // this session's root, so its `enrolled` is never printed.
 func TestRegisterRefusesARootThatIsNotAnAncestor(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_linux_test.go:721); it sets a package variable the package's other tests read (main.fixedLauncher, main.stubLauncher, nearestLauncher set at hostmode_linux_test.go:457).
 	fixedLauncher(t)
 	child := exec.Command("sleep", "30")
 	if err := child.Start(); err != nil {
@@ -716,6 +738,7 @@ func TestRegisterRefusesARootThatIsNotAnAncestor(t *testing.T) {
 // TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled covers "exits 1 if --wait was given
 // and state isn't enrolled": the state is printed, and stderr says it is not enrolled yet and why.
 func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_linux_test.go:737); it sets a package variable the package's other tests read (main.fixedLauncher, main.stubLauncher, nearestLauncher set at hostmode_linux_test.go:457).
 	launcher := fixedLauncher(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver", RootPID: launcher})
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -731,6 +754,7 @@ func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
 // register prints the session's line and exits 1 naming the refusal, whether it was asked to wait
 // or not: there is no enrollment to wait for.
 func TestRegisterExitsOneWhenTheBrokerRefusesTheSessionForGood(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_linux_test.go:756); it sets a package variable the package's other tests read (main.fixedLauncher, main.stubLauncher, nearestLauncher set at hostmode_linux_test.go:457).
 	const refusal = "broker 403 RESTRICTED_MEMBER_ENROLLS_NOTHING: a restricted member's machine login enrolls no session"
 	for _, args := range [][]string{nil, {"--wait", "5"}} {
 		t.Run(strings.Join(append([]string{"register"}, args...), " "), func(t *testing.T) {
@@ -752,6 +776,7 @@ func TestRegisterExitsOneWhenTheBrokerRefusesTheSessionForGood(t *testing.T) {
 // (403 RESTRICTED_MEMBER_ENROLLS_NOTHING), the command still runs, and stderr says the broker
 // refuses the session, the helper asks no more, and the session launches with no secrets access.
 func TestRegisterExecLaunchesARefusedSessionWithNoSecretsAccess(t *testing.T) {
+	t.Parallel()
 	const refusal = "broker 403 RESTRICTED_MEMBER_ENROLLS_NOTHING: a restricted member's machine login enrolls no session"
 	binary := buildAgentSecrets(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", State: "refused", Error: refusal})
@@ -774,6 +799,7 @@ func TestRegisterExecLaunchesARefusedSessionWithNoSecretsAccess(t *testing.T) {
 // ($XDG_RUNTIME_DIR/agent-secrets/helper.sock) with AGENT_SECRETS_HELPER_SOCK unset: a machine set
 // up by starting the helper with no settings registers its sessions without exporting the variable.
 func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_linux_test.go:798); it sets a package variable the package's other tests read (main.fixedLauncher, main.stubLauncher, nearestLauncher set at hostmode_linux_test.go:457).
 	launcher := fixedLauncher(t)
 	runtimeDir := shortTempDir(t)
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)

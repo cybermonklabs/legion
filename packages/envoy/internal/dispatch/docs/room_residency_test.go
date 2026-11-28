@@ -19,7 +19,6 @@ import (
 	"time"
 	"weak"
 
-	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
@@ -71,7 +70,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 				return
 			default:
 			}
-			connection, _, err := gws.DefaultDialer.Dial(wsURL, headers)
+			connection, _, err := documentDialer(t).Dial(wsURL, headers)
 			if err != nil {
 				continue
 			}
@@ -165,7 +164,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 				if err := version(); err != nil {
 					refuse("version %d: %v", round, err)
 				}
-				connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+				connection, response, err := documentDialer(t).Dial(wsURL, headers)
 				if err != nil {
 					refuse("socket %d: response=%#v err=%v", round, response, err)
 					continue
@@ -230,7 +229,7 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	testcleanup.Add(t, httpServer.Close)
-	peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
+	peer, response, err := documentDialer(t).Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		t.Fatalf("connect peer: response=%#v err=%v", response, err)
 	}
@@ -434,6 +433,7 @@ func (w *roomLoads) count() int {
 // goroutine and fires the observer there), and a third is the service projecting comment records.
 // Under -race the walk of the live tree is a data race with the other writers.
 func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -545,6 +545,8 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 // document, so a listing that held it past the room would keep that copy for a collection more
 // for every room the server evicts, and one that outlived the room would keep it for good.
 func TestAnEvictedRoomsReplicaGoesWithIt(t *testing.T) {
+	// Not parallel: it forces collections of the whole process (runtime.GC, in its wait for the
+	// evicted room's document to be collected).
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -613,6 +615,8 @@ func listedReplica(t *testing.T, service *Service, artifactID string) (weak.Poin
 // does not take. A running Dispatch process keeps one service for its whole life, so a record
 // the cleanup fails to take is one more for every room the process ever loads.
 func TestAnEvictedRoomsLoadRecordGoesWithIt(t *testing.T) {
+	// Not parallel: it forces collections of the whole process (runtime.GC, in its wait for the
+	// evicted room's document to be collected).
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -810,7 +814,7 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 			if test.peer {
 				httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 				testcleanup.Add(t, httpServer.Close)
-				peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
+				peer, response, err := documentDialer(t).Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 				if err != nil {
 					t.Fatalf("connect peer: response=%#v err=%v", response, err)
 				}
@@ -919,6 +923,9 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 // commit returns either way. The longer the document, the longer its room's update observer
 // renders, and the wider that window.
 func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
+	// Not parallel: each trial orders its issue's close onto the owner lock before the write's
+	// commit by a 30 ms time.Sleep, which the load of the tests beside it could outlast, so a trial
+	// would pass without the interleaving it is for.
 	markdown := func(paragraphs int, tag string) string {
 		var text strings.Builder
 		for index := range paragraphs {
@@ -1156,8 +1163,8 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// template migration and database clone before that, and storetest's drop of that clone
 	// after it: the parked commit's connection is still open on the clone, so the plain drop is
 	// answered 55006 and tried again for dropWindow, 15 s, before the drop is forced
-	// (storetest.go:132, :147-161), and Main waits for that drop before the binary exits
-	// (storetest.go:110). Both measurements take it in: 54.56 s in this package's issue pod
+	// (storetest's dropDatabase), and Main waits for that drop before the binary exits
+	// (storetest.Run). Both measurements take it in: 54.56 s in this package's issue pod
 	// under -race and six busy loops on two CPUs, 47.75 s plain. The deadline is three times
 	// that worst measurement, so a slow runner cannot turn a reporting child into this row's red,
 	// and it is minutes below the deadline of any run that holds this package (the -timeout
@@ -1165,14 +1172,17 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// that truly wedges ends in this row's own failure rather than in the parent run's panic.
 	const childDeadline = 180 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
-	// the deadline above watches none of what the child does after them: storetest.Main's wait for
-	// those drops (storetest.go:110), the admin Exec that drops the template on
-	// context.Background(), the leak report. A child stuck in one of those would hold this row
-	// until the run that holds this package reached its own deadline, which is the end this row
-	// exists to prevent, so the child is bounded from here too. The margin over childDeadline is
-	// what that teardown is worth: the 15 s the plain drop is retried for, the forced drop behind
-	// it and the template drop after that, which a minute covers with room to spare while leaving
-	// this row minutes inside the shortest run that holds the package.
+	// the deadline above watches none of what the child does after them: storetest.Run's drops,
+	// the clone's and its template's, which start together once the tests return and which Run
+	// waits for up to its bound (testdb.TeardownDeadline: testdb.TeardownGrace, 30 s, past the
+	// child's -timeout, counted from the start of its tests), then the leak report. A child stuck
+	// in one of those would hold this row until the run that holds this package reached its own
+	// deadline, which is the end this row exists to prevent, so the child is bounded from here too.
+	// The margin over childDeadline is what that teardown is worth: the 15 s the plain drop is
+	// retried for and the forced drop behind it, with the template's drop beside them, which a
+	// minute covers with room to spare; Run's own bound, 30 s past childDeadline and its read of
+	// what the drops wait on, ends inside it too, while leaving this row minutes inside the
+	// shortest run that holds the package.
 	const childTeardown = time.Minute
 	killing, cancelKilling := context.WithTimeout(context.Background(), childDeadline+childTeardown)
 	defer cancelKilling()

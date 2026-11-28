@@ -80,9 +80,15 @@ type Peer struct {
 	// clocks is the clock of the last state SetAwareness sent for each client.
 	clocks map[uint64]uint64
 	scope  string
-	// endedAt and closeCode are written by the reader before Ended closes, and read after.
+	// endedAt, closeCode, frameCode, readErr and gaveUp are written by the reader before Ended
+	// closes, and read after: frameCode by the close handler DialContext sets, which gorilla calls
+	// in the reader's read. gaveUp is whether the reader stopped on a frame it could not decode or
+	// apply, the socket still open, rather than on a failed read; readErr then names that frame.
 	endedAt   time.Time
 	closeCode int
+	frameCode int
+	readErr   error
+	gaveUp    bool
 }
 
 // AwarenessEntry is one client's state in an awareness update: its client id, its clock, and its
@@ -180,6 +186,14 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 		artifactID: artifactID, connection: connection, auth: make(chan authReply, 4),
 		awareness: make(map[uint64]AwarenessEntry), awarenessChanged: make(chan struct{}), clocks: make(map[uint64]uint64),
 	}
+	// Gorilla calls the close handler with the room's close frame before its read returns that
+	// frame's CloseError, and never for the CloseError it makes up for a connection that dropped
+	// (CloseFrame). The handler then answers the frame as gorilla's own does.
+	answerClose := connection.CloseHandler()
+	connection.SetCloseHandler(func(code int, text string) error {
+		peer.frameCode = code
+		return answerClose(code, text)
+	})
 	go func() {
 		peer.read(answers, awareness)
 		peer.endedAt = time.Now()
@@ -366,21 +380,67 @@ func (p *Peer) EndedAt() time.Time {
 	return p.endedAt
 }
 
-// CloseCode is the websocket close code the connection ended with: the room's close frame's, 1006
-// for a connection that dropped without one, or 0 for one this side closed (Close). It waits for
-// Ended.
+// CloseCode is the websocket close code the connection ended with, as gorilla reports it: the
+// room's close frame's, 1006 for a connection whose stream ended without one, or 0 for one this
+// side closed (Close), one the transport reset, or a reader that stopped without a failed read.
+// CloseFrame reports the code from a received frame. CloseCode waits for Ended.
 func (p *Peer) CloseCode() int {
 	<-p.Ended
 	return p.closeCode
 }
 
+// CloseFrame is the code of the close frame the room sent, 1005 for one that carried no code, or 0
+// when none arrived. Unlike CloseCode it takes no code from gorilla's own reading of a connection
+// that dropped: the end of the stream, which gorilla reports as a 1006 no frame carried, and a
+// reset, which it reports with no code. It waits for Ended.
+func (p *Peer) CloseFrame() int {
+	<-p.Ended
+	return p.frameCode
+}
+
+// DroppedWithoutCloseFrame reports whether the peer received no valid close frame and its read
+// ended on the transport (ReadEndedOnTransport). It returns the last read error for diagnostics.
+// It waits for Ended.
+func (p *Peer) DroppedWithoutCloseFrame() (bool, error) {
+	<-p.Ended
+	return p.frameCode == 0 && ReadEndedOnTransport(p.readErr), p.readErr
+}
+
+// ReaderGaveUp reports whether the reader stopped on a frame it could not decode or apply, with
+// the socket still open, and what it could not do. It waits for Ended. A reader that gave up
+// ended no connection: the peer can still write, and CloseCode and CloseFrame then read 0.
+func (p *Peer) ReaderGaveUp() (bool, error) {
+	<-p.Ended
+	return p.gaveUp, p.readErr
+}
+
+// giveUp stops the reader on a frame it could not handle, the connection left as it is.
+func (p *Peer) giveUp(err error) {
+	p.readErr = err
+	p.gaveUp = true
+}
+
+// ReadEndedOnTransport reports whether err, the error that ended a gorilla read of a websocket,
+// says the connection under it ended: the end of the stream, which gorilla reports as a 1006 no
+// frame carried, or a failed read of the connection, such as a reset. It excludes a timeout, a
+// close this side made, and a protocol or parse error. It reads err alone, so a test of any
+// websocket client can take it.
+func ReadEndedOnTransport(err error) bool {
+	var transport *net.OpError
+	return gws.IsCloseError(err, gws.CloseAbnormalClosure) ||
+		(errors.As(err, &transport) && transport.Op == "read" && !transport.Timeout() && !errors.Is(transport, net.ErrClosed))
+}
+
 // read applies every sync frame the room sends and answers its sync step 1, keeps every awareness
 // update and hands on every auth answer, until the connection closes, handing answers the content
-// of each sync step 2 once it is applied and awareness each awareness update once it is kept.
+// of each sync step 2 once it is applied and awareness each awareness update once it is kept. A
+// frame it cannot decode or apply stops it with the connection still open; readErr then says
+// which, so a test that sees Ended can tell a reader that gave up from a connection that ended.
 func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 	for {
 		_, message, err := p.connection.ReadMessage()
 		if err != nil {
+			p.readErr = err
 			if closed := (*gws.CloseError)(nil); errors.As(err, &closed) {
 				p.closeCode = closed.Code
 			}
@@ -388,6 +448,7 @@ func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 		}
 		decoder := encoding.NewDecoder(message)
 		if _, err := decoder.ReadVarString(); err != nil {
+			p.giveUp(fmt.Errorf("the reader stopped on a frame with no document name: %w", err))
 			return
 		}
 		kind, err := decoder.ReadVarUint()
@@ -397,15 +458,24 @@ func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 		switch kind {
 		case messageSync:
 			if err := p.applySync(decoder.RemainingBytes(), answers); err != nil {
+				if transport := (*net.OpError)(nil); errors.As(err, &transport) || errors.Is(err, gws.ErrCloseSent) {
+					// Its answer to the room's sync step 1 could not be written: the connection
+					// under it has ended, which is no frame the reader gave up on.
+					p.readErr = fmt.Errorf("the reader's answer to the room failed: %w", err)
+					return
+				}
+				p.giveUp(fmt.Errorf("the reader stopped on a sync frame it could not apply: %w", err))
 				return
 			}
 		case messageAwareness:
 			update, err := decoder.ReadVarBytes()
 			if err != nil {
+				p.giveUp(fmt.Errorf("the reader stopped on an awareness frame with no update: %w", err))
 				return
 			}
 			entries, err := decodeAwareness(update)
 			if err != nil {
+				p.giveUp(fmt.Errorf("the reader stopped on an awareness update it could not decode: %w", err))
 				return
 			}
 			p.foldAwareness(entries)

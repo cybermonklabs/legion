@@ -25,6 +25,7 @@ const namespaceHelperEnv = "LEGION_LAUNCHER_NAMESPACE_HELPER"
 
 // This helper runs the real launcher as PID 1, without a Docker daemon or a model process.
 func TestLauncherPIDOneHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	if os.Getenv(namespaceHelperEnv) != "1" {
 		return
 	}
@@ -183,6 +184,7 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 }
 
 func TestPIDOneLauncherCleansDetachedDescendants(t *testing.T) {
+	t.Parallel()
 	for _, end := range []string{"stop", "natural exit"} {
 		t.Run(end, func(t *testing.T) {
 			g := namespaceRig(t, 2*time.Second)
@@ -217,6 +219,7 @@ while [ ! -s "$DETACHED_MARKER" ]; do /bin/sleep 0.01; done
 }
 
 func TestPIDOneLauncherReapsOrphansWhileRoleStaysResident(t *testing.T) {
+	t.Parallel()
 	g := namespaceRig(t, 2*time.Second)
 	marker := filepath.Join(t.TempDir(), "orphan")
 	resultFile := filepath.Join(t.TempDir(), "reaped")
@@ -243,12 +246,17 @@ exec /bin/sleep 600
 }
 
 func TestPIDOneLauncherUsesConfiguredShutdownGrace(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		grace    time.Duration
 		graceful bool
 	}{
-		{"graceful", 2500 * time.Millisecond, true},
+		// The graceful row's trap sleeps 1.2 s and then writes; its grace leaves room for the
+		// signal's delivery and the start of /bin/sleep and printf under parallel tests and the race
+		// step's other packages. The launcher returns once the shell exits, so a passing row spends
+		// none of it.
+		{"graceful", 10 * time.Second, true},
 		{"deadline", 50 * time.Millisecond, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  A parent whose task's last step is not the owner's acceptance, such as an owner's plan
+  `implementer reviewer`, waits before its retro on the same three facts that hold its sign-off
+  (dispatch://INFRA-3320 R8): an issue beneath it still in the workflow, a root of any tree whose
+  design-gate step rests on its approval and is still in the workflow, and a Dispatch child of it
+  still open, a child never released included. Before, the pass of such a last step moved the
+  parent into its retro, which counts as its acceptance, while a root still rested on it or a
+  child of it was still open, and that ended the resting root's waits on its approval. The
+  parent's architect gets one `retro-held` notice for each of the three that holds the parent in
+  a run, naming each issue that holds it, and the hold's refusal of a retry and the state's
+  `heldBy` name the first that holds it. The retro starts by itself, with nobody acting, at the
+  first settle or admission pass where none of the three holds: a resting root's leave and a
+  Dispatch child's close each release it, and the controller's tick reads the Dispatch children of
+  such a parent again, as it does for a started parent.
+custom:
+    Issue: pr4592

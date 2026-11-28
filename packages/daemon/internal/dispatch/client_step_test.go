@@ -1,5 +1,6 @@
-// The client's writes of a step record, of a retro's rating and of a plan (PutStep, PutPlan)
-// against Dispatch's step, rating and plan routes, as the daemon's outbox sends them.
+// The client's writes of a step record, of a retro's rating, of the variant of a record's issue
+// and of a plan (PutStep, PutStepRating, PutStepExperiment, PutPlan) against Dispatch's step,
+// rating, experiment and plan routes, as the daemon's outbox sends them.
 package dispatch
 
 import (
@@ -64,13 +65,46 @@ func TestPutStepRatingWritesTheRatingOnTheRatingRoute(t *testing.T) {
 	}
 }
 
+// The experiment and the variant of a record's issue go to the record's experiment route, PUT
+// /api/v1/issues/{key}/steps/{id}/experiment, never to the step route or the rating route:
+// Dispatch ignores a body member a route does not declare, so a pair sent to either would be
+// answered 200 and dropped by a Dispatch from before the experiment route, which answers that
+// route its router's NOT_FOUND instead. The body is the run's identity and the pair alone: the
+// write handed to the client carries the start's session and moment, which are the record's own
+// write's (the outbox sends that one first), and none of them reaches this route.
+func TestPutStepExperimentWritesTheVariantOnItsOwnRoute(t *testing.T) {
+	const id = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
+	started := time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
+	session, model, result, report, returnedTo := "ses-implementer", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", 1
+	write := StepWrite{Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation",
+		Agent: "legion-leg-leg-1-implementer", Generation: 1, Session: &session, Model: &model, StartedAt: &started,
+		EndedAt: &started, Result: &result, ReturnedTo: &returnedTo, Report: &report}
+	body := putRecord(t, "/api/v1/issues/LEG-1/steps/"+id+"/experiment", id, func(client *HTTPClient) error {
+		return client.PutStepExperiment(context.Background(), "LEG-1", id, write, StepExperiment{Experiment: "planning", Variant: "b"})
+	})
+	for name, want := range map[string]string{
+		"task": `"default"`, "step": "2", "kind": `"step"`, "role": `"implementer"`, "type": `"implementation"`,
+		"agent": `"legion-leg-leg-1-implementer"`, "generation": "1", "experiment": `"planning"`, "variant": `"b"`,
+		"actor": `{"kind":"session","id":"legion-daemon:LEG"}`,
+	} {
+		if got := string(body[name]); got != want {
+			t.Errorf("the body writes %s as %q, want %s", name, got, want)
+		}
+	}
+	for _, name := range []string{"id", "session", "model", "started_at", "ended_at", "result", "returned_to", "report", "rating", "rating_reason"} {
+		if raw, ok := body[name]; ok {
+			t.Errorf("the body writes %s as %s, want it left out", name, raw)
+		}
+	}
+}
+
 // The plan of one run of an issue is a PUT on the plan's own id under its issue, as the daemon's
 // session of the issue's project, the one session Dispatch's route takes a plan from. The body
-// names the run, the source and every task with its steps in order; a plan of the source default
-// names no document and no version, which Dispatch refuses on such a plan, so the body leaves both
-// out, and a plan of the source owner names both, under the names Dispatch's route reads. The
-// daemon writes no owner's plan yet (the workflow's defaultPlan is its one plan), so that case
-// holds the body of each field such a plan carries.
+// names the run, the source and every task with its steps in order and its needs, [] for a task
+// that needs none; a plan of the source default names no document and no version, which Dispatch
+// refuses on such a plan, so the body leaves both out, and a plan of the source owner names both,
+// under the names Dispatch's route reads. A task whose needs are nil, a row the release before
+// wrote, writes no needs member, which Dispatch reads as needs not recorded.
 func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 	const id = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
 	for _, tc := range []struct {
@@ -82,6 +116,14 @@ func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 		{
 			name: "the default plan",
 			plan: PlanWrite{Generation: 2, Source: "default",
+				Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}},
+			present: map[string]string{"generation": "2", "source": `"default"`,
+				"tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"],"needs":[]}]`},
+			absent: []string{"id", "artifact_id", "version"},
+		},
+		{
+			name: "a row of the release before, with no needs recorded",
+			plan: PlanWrite{Generation: 2, Source: "default",
 				Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}},
 			present: map[string]string{"generation": "2", "source": `"default"`,
 				"tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`},
@@ -90,9 +132,9 @@ func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 		{
 			name: "an owner's plan",
 			plan: PlanWrite{Generation: 3, Source: "owner", PlanDocument: &PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
-				Tasks: []PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}}},
+				Tasks: []PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}, Needs: &[]string{}}}},
 			present: map[string]string{"generation": "3", "source": `"owner"`, "artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`,
-				"version": "4", "tasks": `[{"id":"ui","steps":["tester","implementer:ui"]}]`},
+				"version": "4", "tasks": `[{"id":"ui","steps":["tester","implementer:ui"],"needs":[]}]`},
 			absent: []string{"id"},
 		},
 	} {
@@ -166,7 +208,7 @@ func putRecord(t *testing.T, path, id string, call func(client *HTTPClient) erro
 		writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
 	}))
 	defer server.Close()
-	if err := call(New(server.URL, dispatchToken)); err != nil {
+	if err := call(New(server.URL, BearerTransport(dispatchToken, nil))); err != nil {
 		t.Fatalf("write the record of LEG-1 to %s: %v", path, err)
 	}
 	return body

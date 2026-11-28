@@ -476,6 +476,7 @@ func unguardedFileReplacementSample(t *testing.T, registry *metrics.Registry) st
 // standing token is checked and not counted, a first upload replaces nothing and is not counted,
 // and a document's counter counts none of it. Serial: it sets the default logger.
 func TestFileReplacementWithNoTokenIsTakenCountedAndLogged(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	registry := metrics.New()

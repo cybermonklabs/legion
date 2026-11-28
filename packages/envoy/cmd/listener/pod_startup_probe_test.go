@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -142,7 +141,7 @@ func TestHubListenerStartupProbePassesOnlyOnceV1Serves(t *testing.T) {
 	run(t, "while the interest copy's first read is held", metricsScrape(t, rig.handler), 1)
 
 	releaseInterest()
-	waitFor(t, 5*time.Second, "GET /v1/interests/ to answer 200 once the interest copy's read completed", func() bool {
+	waitFor(t, "GET /v1/interests/ to answer 200 once the interest copy's read completed", func() bool {
 		return rig.get("/v1/interests/").StatusCode == http.StatusOK
 	})
 	rig.assertSample(t, gauge, 0)

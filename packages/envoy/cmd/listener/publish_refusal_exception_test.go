@@ -101,7 +101,7 @@ func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
 
 	publishRefusalException(client, logger, nil, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for time.Now().Before(deadline) {
 		if strings.Contains(logs.String(), exceptionPublishFailedLine) {
 			return
@@ -118,6 +118,8 @@ func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
 // publish waits there for a connection until the bus's 5 s publish bound runs out, and this call
 // must return long before that.
 func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
+	// Not parallel: it requires publishRefusalException to return within 500 ms against a
+	// reconnecting bus.
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
@@ -125,10 +127,10 @@ func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	server.Stop(t)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for client.Connected() || !client.Conn.IsReconnecting() {
 		if time.Now().After(deadline) {
-			t.Fatal("the client is not reconnecting 10 s after its server stopped")
+			t.Fatal("the client is not reconnecting the time this package gives a wait after its server stopped")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -255,7 +257,7 @@ func TestTheRouteRaisesOneExceptionWhereItRefusesARoleSend(t *testing.T) {
 	}
 
 	recorder, _ = publishThrough(d,
-		`{"topic":"`+contracts.RoleTopicPrefix+kept+`","source":"agent","message":"this one waits for the next holder"}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+kept+`","source":"agent","source_session":"ses_refusal_exception_sender","message":"this one waits for the next holder"}`)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202, the message kept", recorder.Code, recorder.Body.String())
 	}

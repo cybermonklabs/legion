@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // tradeKinds is every kind of trade the exchange mints a token for, under the subject token type
@@ -148,7 +149,7 @@ var narrowingRows = map[string]narrowingRow{
 func newNarrowingFixture(t *testing.T, adjust func(*oauth.Config)) *signInFixture {
 	t.Helper()
 	return newSignInFixtureWith(t, func(c *oauth.Config) {
-		c.Exchange.Policy = newPolicyReading(t,
+		c.Exchange.Policy = newPolicyListing(t,
 			[]exchange.AccountEntry{
 				{Account: account, Project: project, Person: person},
 				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
@@ -160,6 +161,7 @@ func newNarrowingFixture(t *testing.T, adjust func(*oauth.Config)) *signInFixtur
 				{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 				{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
 			},
+			nil,
 			exchange.GoogleEntry{Account: signInMachine, Service: signInFleet},
 			exchange.GoogleEntry{Account: pinnedMachine, Service: pinnedFleet, Project: project, Person: person})
 		adjust(c)
@@ -232,6 +234,31 @@ func narrowedAnswer(t *testing.T, kind, jkt, session string, exp int64) oauthwir
 		t.Fatalf("the narrowed answers hold no answer for %s", kind)
 	}
 	return answer
+}
+
+// withRecordedAccount copies into want what the broker answers beside a token whose credential
+// records it, after holding each to what the trade made: for kind person-sign-in, the Google
+// account of the sign-in (the issuer of this suite's Google stand-in and the person token's sub),
+// and for kind machine-login, when its machine login was made (within a minute of now, the broker's
+// clock in this test). A golden answer and a literal hold neither, since the issuer's URL and the
+// time change at every run; every other kind records neither, and want is left as it is.
+func withRecordedAccount(t *testing.T, f *signInFixture, kind string, answer oauthwire.Introspection, want *oauthwire.Introspection) {
+	t.Helper()
+	switch kind {
+	case "person-sign-in":
+		issuer, subject := oidc.CanonicalIssuer(f.google.URL()), "109"+person
+		if answer.AccountIssuer != issuer || answer.AccountSubject != subject {
+			t.Errorf("the sign-in's token answers the account %q %q, want %q %q, the account its person token named",
+				answer.AccountIssuer, answer.AccountSubject, issuer, subject)
+		}
+		want.AccountIssuer, want.AccountSubject = answer.AccountIssuer, answer.AccountSubject
+	case "machine-login":
+		made := time.Unix(answer.CredentialCreatedAt, 0)
+		if since := time.Since(made); since < -time.Minute || since > time.Minute {
+			t.Errorf("the token answers its credential was made at %s, %s from now; want within a minute of now", made, since)
+		}
+		want.CredentialCreatedAt = answer.CredentialCreatedAt
+	}
 }
 
 // TestEveryTradeKindNarrowsOnRequest holds narrowingRows to every kind of trade the exchange
@@ -316,6 +343,7 @@ func TestATradeThatAsksForReadKeepsItsIdentityAndHoldsRead(t *testing.T) {
 			status, body := f.send(t, tr, oauthwire.ScopeRead, c.cut)
 			answer := f.introspected(t, accessTokenOf(t, status, body))
 			want := narrowedAnswer(t, c.answer, thumbprint(t, tr.readKey()), tr.session, answer.ExpiresAt)
+			withRecordedAccount(t, f, c.kind, answer, &want)
 			if !reflect.DeepEqual(answer, want) {
 				t.Errorf("Introspect = %+v, want the golden answer %+v", answer, want)
 			}

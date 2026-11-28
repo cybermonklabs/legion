@@ -88,12 +88,19 @@ type BlockIndexTick struct {
 	// tick reads, Marked how many documents an artifact.version, artifact.created or issue.created
 	// event among them named that it marked owed a block index, Comments how many comments a
 	// comment.created or comment.answered event among them named whose rows it gave their nodes,
-	// and AnotherBuild whether a live server process of another build served, which the tick
-	// reports and which decides nothing (readEventsAfterCursor).
+	// and AnotherBuild whether a live server process of another build served, which decides
+	// nothing of which events the tick reads and makes it owe the object pass
+	// (readEventsAfterCursor).
 	Events       int
 	Marked       int
 	Comments     int
 	AnotherBuild bool
+	// ObjectNodes is how many issues, documents, asks and messages whose row named no node the
+	// tick wrote the node of, and OrphansGone how many document nodes whose row another build
+	// removed it stated gone, while this build owed the object pass
+	// (writeObjectNodesAnotherBuildWrote).
+	ObjectNodes int
+	OrphansGone int
 	// OwedDocuments, OwedTexts, OwedItems and OwedItemBlocks are what is still owed after the tick.
 	OwedDocuments  int
 	OwedTexts      int
@@ -196,6 +203,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
 		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.Comments > 0 ||
+		tick.ObjectNodes > 0 || tick.OrphansGone > 0 ||
 		tick.AnotherBuild != logged.AnotherBuild || tick.LiveAhead != logged.LiveAhead ||
 		tick.OwedDocuments != logged.OwedDocuments || tick.OwedItems != logged.OwedItems ||
 		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts ||
@@ -207,13 +215,15 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// changes - the drain reaching it, or a new backlog starting - and not as it ages.
 		// events= is how many events the tick read after its build's event cursor, marked= and
 		// comments= the documents it marked owed and the comments it gave their nodes from those
-		// events, and another_build= whether a live server process of another build served,
-		// which the tick reports and which decides nothing (readEventsAfterCursor).
+		// events, object_nodes= and orphans_gone= the rows the object pass gave their nodes and the
+		// orphaned document nodes it stated gone, and another_build= whether a live server process
+		// of another build served, which decides nothing of which events the tick reads and makes
+		// it owe the object pass (readEventsAfterCursor).
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
-			"comments", tick.Comments, "another_build", tick.AnotherBuild,
-			"owed_documents", tick.OwedDocuments,
+			"comments", tick.Comments, "object_nodes", tick.ObjectNodes, "orphans_gone", tick.OrphansGone,
+			"another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
 			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead,
 			"oldest_owed_at", refs.OwedTimeText(tick.OldestOwedDocumentAt),
@@ -248,8 +258,12 @@ type liveAheadDocuments map[string]owedDocument
 
 // ReconcileBlockIndex runs one tick: first the read of the events after its build's cursor, which
 // marks owed every document they name that this build's store has not stated at its version and
-// gives every comment they name whose row names no node its node (readEventsAfterCursor), then one
-// batch of the documents owed a block index past
+// gives every comment they name whose row names no node its node (readEventsAfterCursor), then,
+// while this build owes it, the object pass: the nodes of the issues, documents, asks and messages
+// whose rows another build wrote with none, and the gone statement of each document node another
+// build left behind no row (writeObjectNodesAnotherBuildWrote), which reads those four tables whole
+// where every other read of the tick reads only what is owed; then one batch of the documents owed
+// a block index past
 // cursors.Documents (a document id; empty is the start), one batch of the items owed an index
 // with the block grammar, oldest first (refs.ReindexOwed), one batch of the comments, messages
 // and asks owed a block index of their own blocks, oldest owed_at first
@@ -287,14 +301,24 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	// The read of the events runs first, so a document it marks is listed by this tick's batch
 	// below and drained by it when the batch has room. A read that fails is logged and holds back
 	// nothing else of the tick: the cursor stays where it was, and the next tick reads the same
-	// events again.
-	eventsFull, err := s.readEventsAfterCursor(ctx, &tick)
+	// events again. The object pass runs after it, so the node of a document the read marks is
+	// there before the documents batch states its blocks; one that fails, or stops with work left,
+	// is logged and leaves this build's debt, so the next tick runs it again.
+	eventsFull, debt, err := s.readEventsAfterCursor(ctx, &tick)
 	switch {
 	case ctx.Err() != nil:
 		return tick, ctx.Err()
 	case err != nil:
 		slog.Error("dispatch: block index could not read the events after its build's cursor", "error", err)
 	}
+	objectsLeft, err := s.writeObjectNodesAnotherBuildWrote(ctx, &tick, debt)
+	switch {
+	case ctx.Err() != nil:
+		return tick, ctx.Err()
+	case err != nil:
+		slog.Error("dispatch: block index could not write the nodes of the rows another build wrote", "error", err)
+	}
+	eventsFull = eventsFull || objectsLeft
 	owed, err := s.owedDocuments(ctx, after)
 	if err != nil {
 		return tick, err
@@ -309,7 +333,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		}
 		delete(liveAhead, document.id)
 		cold := s.srv.GetDoc(document.id) == nil
-		indexed, ahead, err := s.indexOwedDocument(ctx, document)
+		indexed, ahead, err := s.indexOwedDocument(ctx, document, nil)
 		switch {
 		case ctx.Err() != nil:
 			return tick, ctx.Err()
@@ -949,9 +973,10 @@ func (s *Service) reindexOwedText(ctx context.Context, source refs.Owed) (bool, 
 //
 // A document that is gone owes no index: the row is written from the artifacts table, so nothing
 // is inserted for one. exec is the pool for a caller that owes the index on its own
-// (reindexScope), and the transaction that settles a queue row for the drain
-// (drainOwedDocument), which must owe the index with that write or do neither. A version write
-// queues the same statement in its write phase (queueDocumentIndexOwed).
+// (reindexScope, and drainFormsDocument, which indexes the document itself in the same pass), and
+// the transaction that settles a queue row for the drain (drainOwedDocument), which must owe the
+// index with that write or do neither. A version write queues the same statement in its write
+// phase (queueDocumentIndexOwed).
 func oweDocumentIndex(ctx context.Context, exec refs.Execer, artifactID string, rule int) error {
 	if _, err := exec.Exec(ctx, oweDocumentIndexStatement, artifactID, rule); err != nil {
 		return fmt.Errorf("owe document %s a block index: %w", artifactID, err)
@@ -1076,7 +1101,21 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // stands at, as this one may be, which the fence's own statement decides against the row as it
 // stands when it runs (refs' queueStand). A pass the row then refuses fails there and commits
 // nothing, and a mark of a higher rule written in between stays.
-func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) (indexed, liveAhead bool, err error) {
+//
+// settle is the forms queue's row the caller drains with this index (drainFormsDocument), nil for
+// the block index's own batch. It is read under the document owner's lock, after every check
+// above, and the index runs for it only while it holds the enqueued_at it was listed with
+// (refs.StillOwed): a row this index did not run for - a document another process indexed first,
+// one whose live text is ahead, one whose latest version moved - is left owed, and so is one a
+// write moved meanwhile, with nothing written for it. The index then settles every queue the
+// document is in, after its own deletes from block_refs and from refs (refs.BlockIndexing.Queue,
+// then the reconciliation of its references, which settles the forms queue:
+// refs.Replacement.SettlingForms), each of which owes the forms queue the document it rewrites
+// (migrations 20261117025906 and 20261117025907). It settles it only where its block pass won the
+// revision fence (indexRenderedVersion): a pass that lost writes no block, and leaves the row owed
+// for the next pass, as it leaves the block index's own mark. So a document rebuild-refs left
+// owed is settled by this build's block index of it, which writes its blocks, and not before.
+func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, settle *refs.Owed) (indexed, liveAhead bool, err error) {
 	if document.version == 0 {
 		return false, false, nil
 	}
@@ -1137,6 +1176,12 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 		markdown, blocks = stored, nil
 	case markedAt != nil && markdown != stored:
 		return false, true, nil
+	}
+	if settle != nil {
+		owes, err := refs.StillOwed(queued, tx, *settle)
+		if err != nil || !owes {
+			return false, false, err
+		}
 	}
 	// The event that recorded this version is read before the index pass: it is the cause every
 	// node and tuple of the pass carries, and on this path it already exists, while on the

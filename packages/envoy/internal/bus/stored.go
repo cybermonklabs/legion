@@ -40,7 +40,10 @@ type StoredMessage struct {
 // nats.ErrMsgNotFound (nothing at or after seq on subject) and nats.ErrStreamNotFound (no such
 // stream); nats.ErrNoResponders when no JetStream answers; ErrPublishDenied, wrapping the server's
 // permissions violation, when the connection's user may not make the read, reported as soon as the
-// server refuses it rather than once the wait runs out; and ctx's error when ctx ends first.
+// server refuses it rather than once the wait runs out; and ctx's error when ctx ends first. A
+// read made while nats.go connects or reconnects the connection waits for it within ctx, and fails
+// as ErrReconnecting when ctx ends first or when the read fails while the connection is still not
+// connected (requestConfirmed).
 func (c *Client) NextStoredMessage(ctx context.Context, subject string, seq uint64) (StoredMessage, error) {
 	return c.storedMessage(ctx, struct {
 		Seq     uint64 `json:"seq"`
@@ -58,7 +61,8 @@ func (c *Client) NextStoredMessage(ctx context.Context, subject string, seq uint
 // Its errors are NextStoredMessage's: the stream's own API errors as *nats.APIError, so errors.Is
 // matches nats.ErrMsgNotFound (the stream holds nothing on subject) and nats.ErrStreamNotFound (no
 // such stream); nats.ErrNoResponders when no JetStream answers; ErrPublishDenied when the
-// connection's user may not make the read; and ctx's error when ctx ends first.
+// connection's user may not make the read; ctx's error when ctx ends first; and ErrReconnecting
+// while NATS is reconnecting (requestConfirmed).
 func (c *Client) LastStoredMessage(ctx context.Context, subject string) (StoredMessage, error) {
 	return c.storedMessage(ctx, struct {
 		LastFor string `json:"last_by_subj"`
@@ -198,7 +202,8 @@ func (c *Client) ReadKeptRoleCursor(ctx context.Context, role string) (StoredKep
 // answers an empty list: the state carries a subject only while a message is stored on it.
 //
 // Its errors are the stream's own: nats.ErrStreamNotFound when the stream is gone,
-// nats.ErrNoResponders when no JetStream answers, and ctx's error when ctx ends first.
+// nats.ErrNoResponders when no JetStream answers, and ctx's error when ctx ends first. A read
+// nats.go refuses while it reconnects the connection is ErrReconnecting (Client.JS).
 func (c *Client) KeptRoleLanes(ctx context.Context) ([]string, error) {
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err
@@ -207,7 +212,7 @@ func (c *Client) KeptRoleLanes(ctx context.Context) ([]string, error) {
 		&nats.StreamInfoRequest{SubjectsFilter: KeptRoleSubject(">")},
 		nats.Context(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("bus: read %s's kept role lanes: %w", Stream, err)
+		return nil, fmt.Errorf("read %s's kept role lanes: %w", Stream, err)
 	}
 	roles := make([]string, 0, len(info.State.Subjects))
 	for subject, held := range info.State.Subjects {
@@ -277,6 +282,17 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // out its whole deadline, since core NATS answers a denied publish to no one but the async error
 // callback. One publishConfirmed cannot confirm for another reason still waits for its reply, and
 // returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders.
+//
+// Every request SessionConsumers sends goes through it, and so does each stored-message read
+// (storedMessage), so it is the one place their errors are named when NATS is reconnecting. A
+// request made while nats.go connects or reconnects the connection waits for it within ctx
+// (ensureConnWithContext), and a ctx that ends first is
+// `bus: NATS is reconnecting: context deadline exceeded`, with nothing sent. So is a request made
+// while nats.go holds its connection lock through a reconnect's handshake: the wait reads the
+// connection's state within ctx (readWithin), and ends at ctx's end. Any error the request returns
+// once it is made, while the connection reports that state, or while a read of that state within
+// ctx has not answered, is `bus: NATS is reconnecting` (namedOn), with nats.go's error kept in the
+// chain.
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -287,15 +303,31 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 		return nil, err
 	}
 	conn := c.Connection()
+	reply, err := c.requestConfirmedOn(ctx, conn, subject, data)
+	return reply, namedOn(ctx, conn, err)
+}
+
+// requestConfirmedOn is requestConfirmed's request on conn, once conn can take it. Its error is
+// left for requestConfirmed to name. Its reply subscription ends with the wait (endReplies). The
+// request unsubscribes on the caller's goroutine only for a reply it took while conn was still in
+// the life it subscribed in (connLife). Once nats.go reports conn lost, a reconnect's handshake
+// can hold nats.go's connection lock, which the unsubscribe waits for. So a reply taken then, also
+// one that was waiting in the inbox, ends the inbox off the caller's goroutine.
+func (c *Client) requestConfirmedOn(ctx context.Context, conn *nats.Conn, subject string, data []byte) (*nats.Msg, error) {
+	life := lifeOf(conn).current()
 	inbox := conn.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
 		return nil, err
 	}
-	defer replies.Unsubscribe()
+	replied := false
+	defer func() { endReplies(replies, replied && lifeCurrent(life)) }()
 	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Data: data}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
+	}
+	if begins := c.replyWaitBegins.Load(); begins != nil {
+		(*begins)()
 	}
 	reply, waitErr := replies.NextMsgWithContext(ctx)
 	if waitErr != nil {
@@ -304,6 +336,7 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 		}
 		return nil, waitErr
 	}
+	replied = true
 	if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
 		return nil, nats.ErrNoResponders
 	}
@@ -339,6 +372,10 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 // a request whose connection is closed or drained under it waits out ctx and returns ctx's error,
 // where requestConfirmed returns nats.ErrConnectionClosed at once. The probe counts both as
 // connected, and the case is a shutdown race.
+//
+// Its reply subscription ends as requestConfirmedOn's does (endReplies): on the caller's goroutine
+// only for a reply taken while the connection was still in the life it subscribed in, and off it
+// otherwise.
 func (c *Client) RequestCore(ctx context.Context, subject, reply string, header nats.Header) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -349,18 +386,24 @@ func (c *Client) RequestCore(ctx context.Context, subject, reply string, header 
 		return nil, err
 	}
 	conn := c.Connection()
+	life := lifeOf(conn).current()
 	replies := make(chan *nats.Msg, nats.RequestChanLen)
 	subscription, err := conn.ChanSubscribe(reply, replies)
 	if err != nil {
 		return nil, err
 	}
-	defer subscription.Unsubscribe()
+	replied := false
+	defer func() { endReplies(subscription, replied && lifeCurrent(life)) }()
 	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: reply, Header: header}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
 	}
+	if begins := c.replyWaitBegins.Load(); begins != nil {
+		(*begins)()
+	}
 	select {
 	case answer := <-replies:
+		replied = true
 		if len(answer.Data) == 0 && answer.Header.Get("Status") == "503" {
 			return nil, nats.ErrNoResponders
 		}
@@ -425,21 +468,14 @@ func tokensContain(patternTokens, subjectTokens []string) bool {
 // A registration reduces its topics twice (sessionConsumerTarget), inside the request's own time
 // budget, and a session can register hundreds of them. So each subject is split into its tokens
 // once, and every pair is weighed on those tokens; a drop does not restart the scan of the pairs
-// (reduceFilterPairs).
+// (reduceFilterPairs). SessionConsumerReduction makes the same reduction, through the same body
+// (reduceFilters), and says which subjects fed each filter.
 func ReduceFilterSubjects(subjects []string) []string {
 	// An empty list reduces to itself, given back nil or empty as it came.
 	if len(subjects) == 0 {
 		return slices.Clone(subjects)
 	}
-	reduced := make([]filterSubject, 0, len(subjects))
-	for _, subject := range subjects {
-		reduced = append(reduced, filterSubject{subject: subject, tokens: strings.Split(subject, ".")})
-	}
-	for merged := true; merged; {
-		slices.SortFunc(reduced, func(a, b filterSubject) int { return strings.Compare(a.subject, b.subject) })
-		reduced = slices.CompactFunc(reduced, func(a, b filterSubject) bool { return a.subject == b.subject })
-		reduced, merged = reduceFilterPairs(reduced)
-	}
+	reduced := reduceFilters(subjects, nil)
 	filters := make([]string, len(reduced))
 	for index, filter := range reduced {
 		filters[index] = filter.subject
@@ -447,16 +483,67 @@ func ReduceFilterSubjects(subjects []string) []string {
 	return filters
 }
 
-// filterSubject is one subject ReduceFilterSubjects weighs, with its tokens.
+// reduceFilters is the reduction ReduceFilterSubjects makes of subjects, which are not empty, with
+// the provenance of each filter when fedBy is given: fedBy[i] is what subjects[i] stands for, and
+// a filter's fed holds the fedBy of each subject it stands for, its own where it is that subject
+// as it came, and every one each merge that made it took in, through each merge before it. A
+// subject another contains is dropped with its provenance, since nothing of it went into the
+// filter that contains it, and two equal subjects are kept once with the provenance of both
+// (compactFilters). With a nil fedBy every fed stays nil, and the reduction allocates nothing for
+// it.
+func reduceFilters(subjects []string, fedBy []int) []filterSubject {
+	reduced := make([]filterSubject, 0, len(subjects))
+	for index, subject := range subjects {
+		filter := filterSubject{subject: subject, tokens: strings.Split(subject, ".")}
+		if fedBy != nil {
+			filter.fed = []int{fedBy[index]}
+		}
+		reduced = append(reduced, filter)
+	}
+	for merged := true; merged; {
+		slices.SortFunc(reduced, func(a, b filterSubject) int { return strings.Compare(a.subject, b.subject) })
+		reduced = compactFilters(reduced)
+		reduced, merged, _ = reduceFilterPairs(reduced)
+	}
+	return reduced
+}
+
+// filterSubject is one subject ReduceFilterSubjects weighs, with its tokens and, where its caller
+// asks for it, its provenance (reduceFilters).
 type filterSubject struct {
 	subject string
 	tokens  []string
+	fed     []int
+}
+
+// compactFilters keeps each subject of subjects, which are sorted, once, with the provenance of
+// every copy of it on the one kept. It changes subjects in place.
+func compactFilters(subjects []filterSubject) []filterSubject {
+	kept := 0
+	for _, subject := range subjects {
+		if kept > 0 && subjects[kept-1].subject == subject.subject {
+			if subject.fed != nil {
+				subjects[kept-1].fed = slices.Concat(subjects[kept-1].fed, subject.fed)
+			}
+			continue
+		}
+		subjects[kept] = subject
+		kept++
+	}
+	clear(subjects[kept:])
+	return subjects[:kept]
 }
 
 // reduceFilterPairs weighs the pairs of subjects, which are sorted and each held once, in order:
 // it drops each subject another contains, and at the first pair that overlaps without either
-// containing the other it merges that pair and reports true, or reports false when it reaches the
-// last pair with no merge. It changes subjects in place.
+// containing the other it merges that pair, with the provenance of both, and reports true, or
+// reports false when it reaches the last pair with no merge. It changes subjects in place.
+//
+// It reports beside them how many pairs it weighed, which reduceFilters drops and
+// TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce reads. That number is the
+// pass's work counted the same way on every machine: a clock reads the machine the test ran on as
+// much as the reduction, and a count of allocations misses a scan that weighs pairs again on tokens
+// already split, which allocates nothing.
 //
 // A pair that does not overlap is weighed by that test alone, which settles most pairs: a subject
 // that contains another overlaps it, so such a pair is neither a drop nor a merge.
@@ -468,10 +555,12 @@ type filterSubject struct {
 // the subject that follows when the first went. A merge does restart it, from a sorted list: the
 // merged subject is new, so every subject must be weighed against it, and it takes its own place
 // in the order.
-func reduceFilterPairs(subjects []filterSubject) ([]filterSubject, bool) {
+func reduceFilterPairs(subjects []filterSubject) ([]filterSubject, bool, int) {
+	weighed := 0
 	for i := 0; i < len(subjects); i++ {
 		for j := i + 1; j < len(subjects); {
 			a, b := subjects[i], subjects[j]
+			weighed++
 			switch {
 			case !tokensOverlap(a.tokens, b.tokens):
 				j++
@@ -482,13 +571,17 @@ func reduceFilterPairs(subjects []filterSubject) ([]filterSubject, bool) {
 				j = i + 1
 			default:
 				tokens := append(commonTokenPrefix(a.tokens, b.tokens), ">")
+				merged := filterSubject{subject: strings.Join(tokens, "."), tokens: tokens}
+				if a.fed != nil || b.fed != nil {
+					merged.fed = slices.Concat(a.fed, b.fed)
+				}
 				subjects = slices.Delete(subjects, j, j+1)
 				subjects = slices.Delete(subjects, i, i+1)
-				return append(subjects, filterSubject{subject: strings.Join(tokens, "."), tokens: tokens}), true
+				return append(subjects, merged), true, weighed
 			}
 		}
 	}
-	return subjects, false
+	return subjects, false, weighed
 }
 
 // commonTokenPrefix is the tokens a and b begin with alike, up to the first that differs or is `>`,

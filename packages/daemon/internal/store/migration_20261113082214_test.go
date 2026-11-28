@@ -18,6 +18,7 @@ const updateAskVersion = 20261113082214
 // a kind left out would stop its own effect. A kind that is none is still refused, and so is a
 // merge-lane kind, which went with the merge the daemon no longer submits.
 func TestTheOutboxTakesTheUpdateAskKindWith20261113082214(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, updateAskVersion-1)

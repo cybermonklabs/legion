@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // The write's name and a setup failure's text are written as a refusal's lines are: the name can
@@ -17,7 +20,7 @@ import (
 func TestAWritesNameAndASetupFailureWriteNoControlByteRaw(t *testing.T) {
 	const name = "the push to /tmp/a\x1b[2Kb.git"
 	written := map[string]string{
-		"a refusal": (&Refusal{What: name, By: byRules, Lines: []string{"notes.md: " + theClass}}).Error(),
+		"a refusal": (&Refusal{What: name, By: byRules, Lines: []string{"notes.md: " + leakguardtest.RulesHostClass}}).Error(),
 		"a setup failure": (&SetupFailure{
 			What: name,
 			Why:  "the push's commits could not be read\x7f",
@@ -52,15 +55,16 @@ func TestAWritesNameAndASetupFailureWriteNoControlByteRaw(t *testing.T) {
 // query; a setup failure's Why can quote a caller's argument, such as the path a gh call's
 // --body-file names (readGhFile); and a failure underneath or a refusal's line can quote such a
 // URL. No answer's Error(), which is what every consumer prints, holds the credential, and each
-// still names the push by its URL with no credential. A remote's name that is no URL reads as
-// written.
+// still names the push by its URL with no credential: the authority of one with userinfo as the
+// URL rule's mark (redact.URLWithCredentials), a query left out. A remote's name that is no URL
+// reads as written.
 func TestNoAnswerPrintsACredentialThePushsNameCarries(t *testing.T) {
 	const token = "FAKEtok3nZQ9x"
 	for _, tc := range []struct {
 		name, remote, shown string
 	}{
-		{name: "in the userinfo", remote: "https://x-access-token:" + token + "@github.com/acme/widgets.git", shown: "the push to https://github.com/acme/widgets.git"},
-		{name: "as the userinfo, with no password", remote: "https://" + token + "@github.com/acme/widgets.git", shown: "the push to https://github.com/acme/widgets.git"},
+		{name: "in the userinfo", remote: "https://x-access-token:" + token + "@github.com/acme/widgets.git", shown: "the push to https://" + redact.URLWithCredentials + "/acme/widgets.git"},
+		{name: "as the userinfo, with no password", remote: "https://" + token + "@github.com/acme/widgets.git", shown: "the push to https://" + redact.URLWithCredentials + "/acme/widgets.git"},
 		{name: "in the query", remote: "https://github.com/acme/widgets.git?access_token=" + token, shown: "the push to https://github.com/acme/widgets.git"},
 		{name: "a remote's name", remote: "origin", shown: "the push to origin"},
 	} {
@@ -84,12 +88,13 @@ func TestNoAnswerPrintsACredentialThePushsNameCarries(t *testing.T) {
 }
 
 // A part of an answer that holds both a credential in a URL and a control byte is written with
-// neither: the URL rule runs on the text as it is, and the escaping after it.
+// neither: the URL rule runs on the text as it is, writing the URL's userinfo as its mark, and the
+// escaping after it.
 func TestAnAnswerWritesNeitherACredentialNorAControlByte(t *testing.T) {
 	const token = "FAKEtok3nZQ9x"
 	what := PushName("https://x-access-token:" + token + "@github.com/acme/wid\x1b[2Kgets.git")
 	for _, answer := range []error{
-		&Refusal{What: what, By: byRules, Lines: []string{"notes.md: " + theClass}},
+		&Refusal{What: what, By: byRules, Lines: []string{"notes.md: " + leakguardtest.RulesHostClass}},
 		&SetupFailure{What: what, Why: "the read failed", Err: errors.New("fatal: unable to access 'https://u:" + token + "@github.com/x\x07y/'")},
 		&NotFound{What: what, Repo: "acme/widgets"},
 	} {
@@ -98,8 +103,8 @@ func TestAnAnswerWritesNeitherACredentialNorAControlByte(t *testing.T) {
 			if strings.Contains(printed, token) {
 				t.Errorf("Error() holds the token: %s", strings.ReplaceAll(printed, token, "<the token>"))
 			}
-			if !strings.Contains(printed, "the push to https://github.com/acme/wid\\x1b[2Kgets.git: ") {
-				t.Errorf("Error() = %q, want the push named by its URL, its control byte escaped", strings.ReplaceAll(printed, token, "<the token>"))
+			if want := "the push to https://" + redact.URLWithCredentials + "/acme/wid\\x1b[2Kgets.git: "; !strings.Contains(printed, want) {
+				t.Errorf("Error() = %q, want the push named by its URL, its userinfo the mark and its control byte escaped", strings.ReplaceAll(printed, token, "<the token>"))
 			}
 			for _, r := range printed {
 				if r != '\n' && !unicode.IsPrint(r) {

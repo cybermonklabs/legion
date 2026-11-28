@@ -36,9 +36,11 @@ Extends docs/solutions/legion/a-stacked-branchs-retarget-is-two-forward-merges-t
   resolved tree. `legion push` sets the bookmark on `@-`, so `jj describe` the final message, then
   `jj new`, then `legion push` — otherwise the push moves the bookmark to the merge's parent and
   pushes nothing of the merge.
-- The merge's own commit is the one place for the contract renumber, the migration rename and
-  every prose site those move (the collision note, the CHANGELOGs, `AGENTS.md`, the TS contract
-  comments): one commit above the approved head, nothing of the branch's content rewritten.
+- The merge's own commit is the one place for what the merge moves, a migration rename and every
+  prose site it moves (the CHANGELOGs, `AGENTS.md`, the TS contract comments) among them: one
+  commit above the approved head, nothing of the branch's content rewritten. Until
+  dispatch://INFRA-1569 that included a contract renumber and its collision note; a contract change
+  adds an entry since, which no merge moves.
 
 ## Evidence
 

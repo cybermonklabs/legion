@@ -1,9 +1,10 @@
 // Package cipherclient is this repository's one Go client of the secrets broker's RFC 8693 token
 // exchange: a machine or a person trades the platform identity it already holds for one of the
 // broker's access tokens, which Dispatch and the Envoy listener read back at the broker's
-// introspection route. `agent-secrets`, `agent-secrets-helper` and `legion controller start` use
-// it; the TypeScript client of packages/cipher-client is its other half, and the two are held to
-// one wire contract by the corpus in testdata/wire.json, which both suites replay.
+// introspection route. `agent-secrets`, `agent-secrets-helper`, `legion controller start` and the
+// Legion daemon's own Dispatch client (NewTokenTransport) use it; the TypeScript client of
+// packages/cipher-client is its other half, and the two are held to one wire contract by the
+// corpus in testdata/wire.json, which both suites replay.
 //
 // What the exchange is: the caller presents the subject token its platform already gives it (a
 // Source), proves a key of its own with a DPoP proof (RFC 9449), and is answered an access token
@@ -12,8 +13,10 @@
 // rather than once. A person's sign-in trades their own Google identity token with the machine's
 // as the actor token (RFC 8693 Section 2.1), which is the one request that carries two tokens.
 //
-// Each process makes its own key and sends only its public half: the proof embeds the public JWK,
-// and no code here marshals a private member onto the wire.
+// A caller sends only the public half of the key it proves: the proof embeds the public JWK, and
+// no code here marshals a private member onto the wire. That key is one its process makes, a
+// person's sign-in box key, or, for a role in a pod, the role's own agent-secrets key
+// (MachineKey), the key the broker holds a pod session's trade to.
 //
 // When it trades again: at the renewal moment worked out once as a token lands (renewalAt states
 // the rule) and stored on the token. Token answers the token until then, Run sleeps until then,
@@ -40,12 +43,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -62,6 +67,26 @@ const (
 	// a renewal lands with the held token still good and nothing of the caller's restarts. The
 	// broker mints a machine's token for an hour or less.
 	DefaultRenewBefore = 5 * time.Minute
+	// CredentialRenewBefore is how long before the expiry of the launcher credential a token
+	// names the client trades again, beside RenewBefore for the access token: whichever comes
+	// first decides (renewalAt). The credential lives as long as the identity token it was traded
+	// from, about an hour, and the access token as long as BROKER_ACCESS_TOKEN_SECONDS, which may
+	// be an hour too, so a client that traded by the access token alone would, with a long one,
+	// trade with minutes of the credential left, and the broker renews no session of a machine or
+	// of a sign-in past its credential (enroll.Service.Renew). It is three SignInAskEvery and seven
+	// of Run's tries, so a trade that fails is tried again more than once before the credential
+	// lapses.
+	CredentialRenewBefore = 15 * time.Minute
+	// SignInAskEvery is how often a holder that keeps a sign-in's credential live by asking for
+	// it asks (agent-secrets-helper's helper.Broker.keepSignIns): a third of CredentialRenewBefore,
+	// so the first ask that finds the credential due finds more than two asks' worth of it left,
+	// and a trade that fails there is tried twice more before it lapses.
+	SignInAskEvery = CredentialRenewBefore / 3
+	// liveMargin is how long the held token must still be good for live to answer it, so a
+	// request that presents it reaches its server and is read there before it lapses. It is a
+	// small part of RenewBefore, so a renewal loop (Run) that waits out a broker that does not
+	// answer leaves requests presenting the token in hand for nearly all of that window.
+	liveMargin = 10 * time.Second
 	// defaultRetryWait is the wait after a trade the broker did not answer or answered 5xx,
 	// doubling to maxRetryWait. The grant has no rotation window to miss, so an outage longer
 	// than one token's life is the same event as a short one: the loop keeps trading until the
@@ -101,8 +126,9 @@ type Token struct {
 // RefusedError is a trade the broker refused: a plain error naming what it said. Almost every
 // one is a refusal no retry can cure — an identity no entry lists, a sign-in a person revoked,
 // a token of the wrong audience — and the renewal loop stops on those rather than asking again
-// every quarter minute. The exceptions are the broker's 429, its two DPoP refusals, a pod
-// session it holds no registration for yet, and a person Dispatch holds (Permanent).
+// every quarter minute. The exceptions are an outage, a 408 or a 429 from the broker or a proxy
+// before it (oauthrefusal.Outage), its two DPoP refusals, a pod session it holds no registration
+// for yet, and a person Dispatch holds (Permanent).
 type RefusedError struct {
 	// Status is the HTTP status of the refusal.
 	Status int
@@ -184,10 +210,13 @@ func (e *RefusedError) Unwrap() error { return &e.answer }
 // Permanent reports whether this refusal is one no retry can cure, which every refusal is but
 // five.
 //
-// The broker's 429: its token endpoint spends a bucket per source address, and a bucket
-// refills. A client that stopped trading on a 429 would stop for good over a burst — its own,
-// or that of another process behind the same address — and enrol nothing once the credential
-// it holds lapsed, with nothing but a restart to cure it.
+// An outage (oauthrefusal.Outage): a 408, a broker or a proxy before it that did not take the
+// request, and the broker's 429, whatever OAuth error either body names; no 5xx is a refusal,
+// which is read only from a 4xx. The token endpoint spends a bucket per source address, and a
+// bucket refills. A client that stopped trading on one would stop for good over a burst — its
+// own, or that of another process behind the same address — or over one request a proxy did not
+// pass on, and enrol nothing once the credential it holds lapsed, with nothing but a restart to
+// cure it.
 //
 // `invalid_dpop_proof`, which is what the broker answers a proof whose iat is outside its 60 s
 // skew window. A helper started at boot, before NTP has corrected the clock, would otherwise
@@ -209,7 +238,7 @@ func (e *RefusedError) Unwrap() error { return &e.answer }
 // login. A client that stopped on it would need a restart after every hold.
 func (e *RefusedError) Permanent() bool {
 	switch {
-	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered(),
+	case oauthrefusal.Outage(e.Status), e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered(),
 		e.Code == oauthwire.MembershipHeld:
 		return false
 	}
@@ -241,9 +270,9 @@ type Config struct {
 	// counts as no broker URL at all. It is a cipheraddr.Address so that no log line or error of
 	// this client can print the credential such an address may carry.
 	BrokerURL cipheraddr.Address
-	// Key is this process's own DPoP key, whose public half alone reaches the broker. A person's
-	// sign-in proves the box key `agent-secrets login` made; every other caller proves a key it
-	// made at start.
+	// Key is the DPoP key this client proves, whose public half alone reaches the broker. A
+	// person's sign-in proves the box key `agent-secrets login` made, and a role in a pod its own
+	// agent-secrets key (MachineKey); every other caller proves a key it made at start.
 	Key *ecdsa.PrivateKey
 	// Subject is the identity being traded.
 	Subject Source
@@ -317,8 +346,13 @@ type Client struct {
 	// now", which two of are one.
 	wake chan struct{}
 
-	mu   sync.Mutex
-	held *Token
+	// mu serialises the trades, and every write of held with them: one trade runs at a time, and
+	// no token is replaced by what an older trade answered.
+	mu sync.Mutex
+	// held is the token this client holds: nil before its first trade, after Drop, and after a
+	// failed trade with nothing live left. Only a holder of mu writes it, and live reads it
+	// without mu, so a request that finds a token still good here never queues behind a trade.
+	held atomic.Pointer[Token]
 }
 
 // WithoutTrailingSlashes is raw without the slashes it ends in: the one rule both halves of this
@@ -385,31 +419,60 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 // Token is a live access token: the held one until the renewal moment stored on it as it landed
 // (Token.renewsAt, as the TypeScript client holds HeldToken.renewsAt in
 // packages/cipher-client/src/token-client.ts), and otherwise a fresh trade. A trade the broker did
-// not answer, or answered with a refusal a later trade may cure (429, a DPoP refusal, a pod
-// session it holds no registration for yet, a person Dispatch holds), while the held token is
-// still live answers that token, since a client that already holds an identity need not stop for
-// a broker that is merely down or busy; a refusal no retry can cure (finalRefusal: the broker's
-// RefusedError.Permanent, or a sign-in the issuer has ended, ErrSignInEnded), and a failure with
-// nothing live left, answer the error and drop the token in hand, so no caller writes with no
-// identity. Token trades once; a caller that waits for a registration to land runs Run, which
-// trades again.
+// not answer, or answered with a refusal a later trade may cure (an outage, a 408 or a 429; a DPoP
+// refusal; a pod session it holds no registration for yet; a person Dispatch holds), while the
+// held token is still live answers that token, since a client that already holds an identity need
+// not stop for a broker that is merely down or busy; a refusal no retry can cure (finalRefusal: the
+// broker's RefusedError.Permanent, or a sign-in the issuer has ended, ErrSignInEnded), and a
+// failure with nothing live left, answer the error and drop the token in hand, so no caller writes
+// with no identity. Token trades once; a caller that waits for a registration to land runs Run,
+// which trades again.
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.held != nil && c.now().Before(c.held.renewsAt) {
-		return c.held, nil
+	held := c.held.Load()
+	if held != nil && c.now().Before(held.renewsAt) {
+		return held, nil
 	}
 	token, err := c.tradeHeld(ctx)
 	if err == nil {
 		return token, nil
 	}
-	if c.held != nil && c.now().Before(c.held.Expiry) {
-		what, attrs := retriedTrade(err)
-		c.logf(ctx, what+"; the token in hand is still live", attrs...)
-		return c.held, nil
+	if held := c.held.Load(); held != nil && c.now().Before(held.Expiry) {
+		c.logRetried(ctx, err, held, "the token in hand is still live")
+		return held, nil
 	}
-	c.held = nil
+	c.held.Store(nil)
 	return nil, err
+}
+
+// live is the held token while it is good for at least liveMargin more, and nil otherwise. It
+// takes no lock, so it never waits on a trade in flight: a caller holding a token inside its
+// renewal window presents it while a renewal loop (Run) trades for the next one, or waits out a
+// broker that does not answer or hangs, rather than queue behind that trade (NewTokenTransport).
+func (c *Client) live() *Token {
+	if held := c.held.Load(); held != nil && c.now().Add(liveMargin).Before(held.Expiry) {
+		return held
+	}
+	return nil
+}
+
+// Drop forgets token when it is still the one this client holds, so the next Token trades afresh
+// rather than answering it again: for a caller a server has told that the token it presented is
+// no longer live, such as one the broker ended at a revoke before it lapsed (NewTokenTransport).
+// It clears the held token as the TypeScript client's drop() does
+// (packages/cipher-client/src/token-client.ts), but only while that is the token named: a trade
+// that landed since the caller was answered holds a fresh token, and dropping it would cost the
+// next caller a trade for nothing.
+func (c *Client) Drop(token *Token) {
+	if token == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if held := c.held.Load(); held != nil && held.AccessToken == token.AccessToken {
+		c.held.Store(nil)
+	}
 }
 
 // Run keeps one token live until ctx ends, handing each one to onToken as it lands: the first
@@ -421,17 +484,17 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 // the identity for good (RefusedError.Permanent), or the issuer ending the person's sign-in it
 // trades (ErrSignInEnded) — dropping the token in hand as Token does, so a Token on this client
 // after Run returns asks again rather than answering it; and it stops when onToken fails. A
-// broker that does not answer, or answers 429, either of its DPoP refusals, that it holds no
-// registration for this pod's session yet, or that Dispatch holds the person the identity names,
-// is retried, from defaultRetryWait doubling to maxRetryWait, for as long as ctx lives: an
-// outage past the token's own life is the same event as a short one, since this grant has no
-// rotation window to miss, a host whose clock NTP corrects after boot trades again on the next
-// pass rather than holding no credential until somebody restarts it, a pod whose trade reached
-// the broker before its registration did trades once that registration lands, however long it
-// takes, and a person whom Dispatch held is traded again after their next Dispatch sign-in, or
-// the next refresh that confirms them, with nothing restarted. A missing registration is logged
-// once, naming the session, and again every unregisteredLogEvery while it lasts, rather than at
-// every trade. A cancelled ctx is no error.
+// broker that does not answer, or answers with an outage (a 5xx, a 408 or a 429), either of its
+// DPoP refusals, that it holds no registration for this pod's session yet, or that Dispatch holds
+// the person the identity names, is retried, from defaultRetryWait doubling to maxRetryWait, for
+// as long as ctx lives: an outage past the token's own life is the same event as a short one,
+// since this grant has no rotation window to miss, a host whose clock NTP corrects after boot
+// trades again on the next pass rather than holding no credential until somebody restarts it, a
+// pod whose trade reached the broker before its registration did trades once that registration
+// lands, however long it takes, and a person whom Dispatch held is traded again after their next
+// Dispatch sign-in, or the next refresh that confirms them, with nothing restarted. A missing
+// registration is logged once, naming the session, and again every unregisteredLogEvery while it
+// lasts, rather than at every trade. A cancelled ctx is no error.
 func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) error) error {
 	wait := defaultRetryWait
 	// since is when the broker first refused this pod's session as unregistered, and logged when
@@ -440,6 +503,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 	for {
 		c.mu.Lock()
 		token, err := c.tradeHeld(ctx)
+		held := c.held.Load()
 		c.mu.Unlock()
 		switch {
 		case err == nil:
@@ -479,8 +543,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 				logged = now
 			}
 		default:
-			what, attrs := retriedTrade(err)
-			c.logf(ctx, what+"; asking again", append(attrs, "in", wait.String())...)
+			c.logRetried(ctx, err, held, "asking again", "in", wait.String())
 		}
 		if !c.sleep(ctx, wait) {
 			return nil
@@ -513,24 +576,75 @@ func retriedTrade(err error) (string, []any) {
 	return "a trade got no usable answer from the secrets broker", []any{"error", err.Error()}
 }
 
-// renewalAt is when to trade again for token as of now: the later of RenewBefore ahead of its
-// expiry and half of what it has left, and now for a token already past its expiry. A token of at
-// least twice RenewBefore renews RenewBefore ahead of its expiry, and a shorter one at its half
-// life — a deployment that mints short tokens, or a dev stack proving a renewal in seconds. That
-// half is never later than the token's own expiry, and it is what keeps such a client from trading
-// again soon after each token lands, which would spend the broker's per-address token bucket in a
-// loop and end in a 429. The TypeScript client's BrokerTokenClient holds the same rule (renewalAt
-// in packages/cipher-client/src/token-client.ts), and testdata/renewal.json holds the two to it
-// (TestRenewalCorpus).
+// logRetried says that a trade failed with err, a failure a later trade may cure, while held is
+// the token in hand (nil for none), and what the caller does now (then, with extra beside it). It
+// says so at INFO while the launcher credential held names is not yet due for its trade
+// (credentialDueAt), since the access token alone was and it is still live; and at WARN once the
+// credential is due, naming when it expires. The broker renews no machine's own session and no
+// person's sign-in session under a lapsed credential (enroll.Service.Renew), so each such session
+// enrolled under it ends one lease after it lapses unless a later trade lands first. A pod's
+// session is not held to its credential, and the line names the two that are.
+func (c *Client) logRetried(ctx context.Context, err error, held *Token, then string, extra ...any) {
+	what, attrs := retriedTrade(err)
+	attrs = append(attrs, extra...)
+	due, named := credentialDueAt(held)
+	if !named || c.now().Before(due) {
+		c.logf(ctx, what+"; "+then, attrs...)
+		return
+	}
+	c.logAt(ctx, slog.LevelWarn, what+"; "+then+", but the launcher credential in hand expires soon: once it has, the broker renews no machine's own session and no person's sign-in session enrolled under it, and each ends one lease later unless a later trade lands first",
+		append([]any{"credential_id", held.CredentialID, "credential_expires_at", held.CredentialExpiresAt.UTC().Format(time.RFC3339)}, attrs...)...)
+}
+
+// credentialDueAt is when the launcher credential token names falls due for a trade,
+// CredentialRenewBefore ahead of its expiry: the one place that window is worked out, which
+// renewalAt trades by and logRetried warns by. named is false for no token, or one that names no
+// credential expiry.
+func credentialDueAt(token *Token) (due time.Time, named bool) {
+	if token == nil || token.CredentialExpiresAt.IsZero() {
+		return time.Time{}, false
+	}
+	return token.CredentialExpiresAt.Add(-CredentialRenewBefore), true
+}
+
+// renewalAt is when to trade again for token as of now: by its access token, the later of
+// RenewBefore ahead of its expiry and half of what it has left, and now for a token already past
+// its expiry (renewalBy). A token of at least twice RenewBefore renews RenewBefore ahead of its
+// expiry, and a shorter one at its half life — a deployment that mints short tokens, or a dev
+// stack proving a renewal in seconds. That half is never later than the token's own expiry, and
+// it is what keeps such a client from trading again soon after each token lands, which would
+// spend the broker's per-address token bucket in a loop and end in a 429. The TypeScript client's
+// BrokerTokenClient holds the same rule (renewalAt in packages/cipher-client/src/token-client.ts),
+// and testdata/renewal.json holds the two to it (TestRenewalCorpus).
+//
+// A token that names its launcher credential's expiry is traded again by that too, where it comes
+// first: when the credential falls due (credentialDueAt), or at half of its life, by the same
+// rule. That part is this client's alone: a TypeScript client holds no session under the
+// credential (none of them reads its id), so its credential's life decides nothing for it. A
+// credential already past its expiry as its token lands (a clock far off the broker's) is no
+// moment to trade at: the access token decides, so such an answer cannot make the client trade
+// without pause.
 func (c *Client) renewalAt(token *Token, now time.Time) time.Time {
-	left := token.Expiry.Sub(now)
+	at := renewalBy(token.Expiry.Add(-c.renewBefore), token.Expiry, now)
+	if due, named := credentialDueAt(token); named && token.CredentialExpiresAt.After(now) {
+		if credential := renewalBy(due, token.CredentialExpiresAt, now); credential.Before(at) {
+			at = credential
+		}
+	}
+	return at
+}
+
+// renewalBy is when to trade again, as of now, for what falls due at due and lapses at end: the
+// later of due and half of what is left, and now once end has passed.
+func renewalBy(due, end, now time.Time) time.Time {
+	left := end.Sub(now)
 	if left <= 0 {
 		return now
 	}
-	if half := now.Add(left / 2); half.After(token.Expiry.Add(-c.renewBefore)) {
+	if half := now.Add(left / 2); half.After(due) {
 		return half
 	}
-	return token.Expiry.Add(-c.renewBefore)
+	return due
 }
 
 // sleep waits d, reporting false when ctx ended first. A Wake cuts the wait short, so the
@@ -561,11 +675,18 @@ func (c *Client) Wake() {
 	}
 }
 
+// logf says message at INFO (logAt).
 func (c *Client) logf(ctx context.Context, message string, args ...any) {
+	c.logAt(ctx, slog.LevelInfo, message, args...)
+}
+
+// logAt says message at level, after the broker and the identity this client trades, and nothing
+// where the client has no log: every line of the client's goes through it.
+func (c *Client) logAt(ctx context.Context, level slog.Level, message string, args ...any) {
 	if c.log == nil {
 		return
 	}
-	c.log.InfoContext(ctx, message, append([]any{"broker", c.brokerURL, "identity", c.subject.Describe()}, args...)...)
+	c.log.Log(ctx, level, message, append([]any{"broker", c.brokerURL, "identity", c.subject.Describe()}, args...)...)
 }
 
 // tradeHeld is trade, leaving in c.held what the trade leaves in hand: the new token when one
@@ -576,9 +697,9 @@ func (c *Client) tradeHeld(ctx context.Context) (*Token, error) {
 	token, err := c.trade(ctx)
 	switch {
 	case err == nil:
-		c.held = token
+		c.held.Store(token)
 	case finalRefusal(err):
-		c.held = nil
+		c.held.Store(nil)
 	}
 	return token, err
 }
@@ -664,13 +785,28 @@ type tokenAnswer struct {
 // request itself through the address's Error, so no error of a trade carries a user name,
 // password, query or fragment the configured address holds.
 func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
+	body, shown, err := c.send(ctx, form)
+	if err != nil {
+		return nil, err
+	}
+	var answer tokenAnswer
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
+	}
+	return c.read(shown, answer)
+}
+
+// send posts one trade and answers the body of a 2xx answer that is JSON, and the token endpoint
+// as a message may print it; every other answer is post's error, a refusal the broker answered
+// with an OAuth error a RefusedError.
+func (c *Client) send(ctx context.Context, form url.Values) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, tradeTimeout)
 	defer cancel()
 	endpoint := c.brokerURL.Raw() + TokenPath
 	shown := c.brokerURL.Call(endpoint)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, c.brokerURL.Error(err)
+		return nil, shown, c.brokerURL.Error(err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	base := c.http.Transport
@@ -683,18 +819,18 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 	proofed := redirects.Refused(&http.Client{Transport: NewDPoPTransport(c.key, base), Timeout: c.http.Timeout})
 	resp, err := proofed.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), shown, c.brokerURL.Error(err))
+		return nil, shown, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), shown, c.brokerURL.Error(err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, fmt.Errorf("read the broker's answer from %s: %w", shown, c.brokerURL.Error(err))
+		return nil, shown, fmt.Errorf("read the broker's answer from %s: %w", shown, c.brokerURL.Error(err))
 	}
 	var answer tokenAnswer
 	if err := json.Unmarshal(body, &answer); err != nil && resp.StatusCode/100 == 2 {
 		// The decoder's error quotes the value it could not read, which is the answer's own
 		// text, so it prints as the address lets that text print (cipheraddr.Address.Words).
-		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
+		return nil, shown, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
 	}
 	if resp.StatusCode/100 != 2 {
 		// The broker's own words are its answer's text, and a caller prints what it is
@@ -708,11 +844,74 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		// the credential the address carries in the words it answers with; any other
 		// answer prints its words as the address lets them (cipheraddr.Address.Words).
 		if resp.StatusCode/100 == 4 && answer.Error != "" {
-			return nil, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, answer.Error, answer.ErrorDescription))
+			return nil, shown, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, answer.Error, answer.ErrorDescription))
 		}
-		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.Words(answer.Error))
+		return nil, shown, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.Words(answer.Error))
 	}
-	return c.read(shown, answer)
+	return body, shown, nil
+}
+
+// AirlockGrant is a CI run's result grant as the token endpoint answers it: the proxy placeholder
+// the run's command holds in place of a Dispatch credential, the grant's id, when it ends, and the
+// airlock release the command runs with.
+type AirlockGrant struct {
+	Placeholder, GrantID string
+	ExpiresAt            time.Time
+	Release              oauthwire.AirlockRelease
+}
+
+// placeholderAnswer is the token endpoint's answer to a run asking for the proxy placeholder,
+// as this client reads it: the release under oauthwire.ExtraProxy.
+type placeholderAnswer struct {
+	AccessToken     string                    `json:"access_token"`
+	IssuedTokenType string                    `json:"issued_token_type"`
+	ExpiresIn       json.Number               `json:"expires_in"`
+	GrantID         string                    `json:"grant_id"`
+	Proxy           *oauthwire.AirlockRelease `json:"proxy"`
+}
+
+// AirlockPlaceholder trades a GitHub workflow run's token at the broker's token endpoint for the
+// proxy placeholder of a result grant (requested_token_type
+// oauthwire.TokenTypeProxyPlaceholder), with a DPoP proof of this client's key, and never for
+// an access token: the broker keeps the grant and its proxy holds the run's results token. It
+// declines the launcher credential when Config.NoLauncherCredential says to. A refusal the
+// broker answered with an OAuth error is a RefusedError; an answer that is no placeholder of a
+// live grant - an access token among them - is refused, so a command is never run on one.
+func (c *Client) AirlockPlaceholder(ctx context.Context) (*AirlockGrant, error) {
+	subject, subjectType, err := c.subject.Token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	form := url.Values{
+		"grant_type":           {GrantTypeTokenExchange},
+		"client_id":            {oauthwire.ExchangeClientID},
+		"subject_token":        {subject},
+		"subject_token_type":   {subjectType},
+		"requested_token_type": {oauthwire.TokenTypeProxyPlaceholder},
+	}
+	if c.noLauncherCredential {
+		form.Set(oauthwire.FormLauncherCredential, oauthwire.FormLauncherCredentialDeclined)
+	}
+	body, shown, err := c.send(ctx, form)
+	if err != nil {
+		return nil, err
+	}
+	var answer placeholderAnswer
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
+	}
+	seconds, secondsErr := answer.ExpiresIn.Int64()
+	switch {
+	case answer.IssuedTokenType != oauthwire.TokenTypeProxyPlaceholder:
+		return nil, fmt.Errorf("the broker at %s answered issued_token_type %s, not the proxy placeholder", shown, c.brokerURL.Words(strconv.Quote(answer.IssuedTokenType)))
+	case answer.AccessToken == "" || answer.GrantID == "" || answer.Proxy == nil || answer.Proxy.ProxyPassword != answer.AccessToken ||
+		answer.Proxy.Names[oauthwire.AirlockResultsName].Value != answer.AccessToken:
+		return nil, fmt.Errorf("the broker at %s answered no placeholder of a result grant with its proxy release", shown)
+	case secondsErr != nil || seconds <= 0:
+		return nil, fmt.Errorf("the broker at %s answered no usable expires_in (%s)", shown, c.brokerURL.Words(strconv.Quote(answer.ExpiresIn.String())))
+	}
+	c.logf(ctx, "traded a workflow run's identity for a proxy placeholder", "grant", answer.GrantID)
+	return &AirlockGrant{Placeholder: answer.AccessToken, GrantID: answer.GrantID, ExpiresAt: c.now().Add(time.Duration(seconds) * time.Second), Release: *answer.Proxy}, nil
 }
 
 // read is the answer as a Token, refusing one that is not this grant's: no access token, a token
@@ -744,7 +943,6 @@ func (c *Client) read(shown string, answer tokenAnswer) (*Token, error) {
 		Expiry:       now.Add(time.Duration(seconds) * time.Second),
 		CredentialID: answer.CredentialID,
 	}
-	token.renewsAt = c.renewalAt(token, now)
 	if answer.CredentialExpiresAt != "" {
 		expires, err := time.Parse(time.RFC3339, answer.CredentialExpiresAt)
 		if err != nil {
@@ -752,5 +950,7 @@ func (c *Client) read(shown string, answer tokenAnswer) (*Token, error) {
 		}
 		token.CredentialExpiresAt = expires.UTC()
 	}
+	// Worked out once the credential's expiry is read, which it reads too (renewalAt).
+	token.renewsAt = c.renewalAt(token, now)
 	return token, nil
 }

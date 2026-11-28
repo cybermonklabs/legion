@@ -53,6 +53,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -86,7 +87,8 @@ type Runtime struct {
 	sandboxConfig                  SandboxConfig
 	resources                      PodResources
 	streamURL, daemonURL, envoyURL string
-	dispatchURL, dispatchToken     string
+	dispatchURL                    string
+	dispatch                       DispatchCredential
 	natsURLs                       []string
 	tools                          Tools
 	pod                            Pod
@@ -127,10 +129,23 @@ type Runtime struct {
 	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
 	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
 	keptVolumeBound time.Duration
+	// clock is what the runtime's polled waits run on: each await's budget and recheck (every wait
+	// of the probe, a role launcher's, a pod's end, a new pod's, a Sandbox's deletion and a
+	// repository cache's Service), the deadlines awaitRoleLauncher, ensureSandbox and
+	// ensureCacheSandbox measure against, and the deadline relaunch gives a role's start after its
+	// launcher's wait. clock.Real outside the tests; a test that asserts which of those deadlines a
+	// launch meets sets a clocktest.Fake here before it starts the launch. The launch try's own
+	// bound (launchBound), resend's backoff, awaitSandboxDeleted and stopIssuedChild's wait for a
+	// stop stay on the wall clock, and now (Options.Now) is a time source of its own: the present
+	// the runtime reads a pod's or a Sandbox's age against.
+	clock clock.Clock
 	// helloBindBound is how long a binding of a pod's launchers at a hello may hold the pod's
 	// launch turn (bindCurrentPod): apiTimeout, the longest a hello waits for it, which a test sets
 	// short.
 	helloBindBound time.Duration
+	// gitHubRefresh is how often the gh refresher start runs ticks: Options.GitHubRefreshInterval,
+	// or gitHubRefreshInterval where that is zero.
+	gitHubRefresh time.Duration
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// issue pods' guard off.
@@ -149,6 +164,13 @@ type Runtime struct {
 	// a live pod a launch would keep has ended (relaunch), nil for a runtime that keeps every such
 	// pod.
 	roundPodEnds runtime.RoundPodEnds
+	// launchTakes is Options.LaunchTakes: the daemon's record of what a launch's own replacement
+	// of an issue pod is about to take (relaunch), nil for a runtime that records nothing.
+	launchTakes runtime.LaunchTakes
+	// launchTook is Options.LaunchTook: the daemon's word of a launch's own replacement of an
+	// issue pod, with what the read of its workspace found (relaunch, R7 of
+	// #5285), nil for a runtime that tells nobody.
+	launchTook runtime.LaunchTook
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
 	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
@@ -190,12 +212,26 @@ type Runtime struct {
 	watch map[claim.Token]runtime.Locator
 	// observer is the running Observe, nil when none runs.
 	observer *observer
-	// sessions is, by claim, the session the latest Claude Code launch of it started or resumed
-	// under and the incarnation it started as (LaunchSession), kept only when agentSecrets names
+	// sessions is, by claim, the session the latest launch of it the runtime chose the session for
+	// (a Claude Code launch, or an Oh My Pi launch that trades) started or resumed under and the
+	// incarnation it started as (LaunchSession), kept only when agentSecrets names
 	// an exchange audience (nameSession): written once that launch's start is sent, and dropped
 	// with the watch's record when the process is let go or the claim's next launch begins
 	// (forget, forgetIf). Memory only; a restarted daemon answers none.
 	sessions map[claim.Token]launchedSession
+	// dispatchTokenClaims is, by claim, the incarnation of its live generation whose start carried
+	// DISPATCH_TOKEN in its Files (DispatchTokens' LiveLaunches): set when a launch's start is sent,
+	// from that launch's own decision (launchedDispatchToken), and at each observation of a live
+	// generation from the address record its start wrote (observeDispatchToken), so a restarted
+	// daemon counts the generations an earlier one started; dropped with the watch's record when
+	// the process is let go or the claim's next launch begins (forget, forgetIf). Kept under
+	// dispatch_token_broker alone (keepDispatchToken), the one setting it is read under.
+	dispatchTokenClaims map[claim.Token]string
+	// transitionLaunches counts the launches since this runtime was built whose start carried the
+	// transition token, and lastTransitionLaunch is when the latest was sent, zero before the first
+	// (launchedDispatchToken). Memory only: they count this daemon's own boot.
+	transitionLaunches   int
+	lastTransitionLaunch time.Time
 	// podTurns serializes the relaunches, issue suspension, release and orphan deletion of one pod,
 	// keyed by its Sandbox's name (lockPod). Nothing serializes the pods of one tree against each
 	// other: each issue's pod provisions its own clone on its own volume.
@@ -297,7 +333,7 @@ func checkSupervision(opts Options) error {
 	case opts.CacheRepositories == nil:
 		return refuse("no repository set for the repository caches")
 	}
-	if err := opts.RepositoryCache.check(); err != nil {
+	if err := opts.RepositoryCache.check(opts.Pod); err != nil {
 		return refuse("%v", err)
 	}
 	host, ok := strings.CutPrefix(opts.StreamURL, "tcp://")
@@ -311,9 +347,10 @@ func checkSupervision(opts Options) error {
 // defaults, touching no cluster. A runtime it builds alone runs the image probe and nothing else
 // (newProber); configure adds supervision's requirements to it.
 func configureProber(opts Options) (*Runtime, error) {
-	// The three provisioning phases' bounds together (ProvisionBound): the fetch's clocked budget,
-	// which its stream from the repository cache runs outside of, the shared clone's own, and the
-	// issue's own checkout's.
+	// The three provisioning phases' bounds together (ProvisionBound): the fetch's clocked budget
+	// (workspace.FetchBudget: the cache wait, the bucket attempt, /tar's verification and the
+	// delta), which its stream from the repository cache runs outside of, the shared clone's own,
+	// and the issue's own checkout's.
 	provisionBound := workspace.FetchBudget + workspace.CloneTimeout + workspace.CheckoutTimeout
 	// The longest a launch try gives a pod to start (startBound), which the try's bound counts in
 	// awaitRoleLauncher's backstop (launchBound): the kept-volume bound where the microvm block
@@ -357,12 +394,20 @@ func configureProber(opts Options) (*Runtime, error) {
 		return refuse("the registration deadline intervals %d is not positive", opts.RegistrationIntervals)
 	case opts.BusyBackoff <= 0:
 		return refuse("the busy backoff %s is not positive", opts.BusyBackoff)
-	case (opts.DispatchURL == "") != (opts.DispatchToken == ""):
-		return refuse("the Dispatch URL and its bearer are configured together (URL %q, bearer given: %t)",
-			opts.DispatchURL, opts.DispatchToken != "")
+	case opts.GitHubRefreshInterval < 0:
+		return refuse("the GitHub refresh interval %s is negative", opts.GitHubRefreshInterval)
+	case (opts.DispatchURL == "") != (opts.Dispatch.Bearer == "" && !opts.Dispatch.Broker):
+		return refuse("the Dispatch URL and its credential are configured together (URL %q, Dispatch.Bearer given: %t, Dispatch.Broker: %t)",
+			opts.DispatchURL, opts.Dispatch.Bearer != "", opts.Dispatch.Broker)
+	case opts.Dispatch.Bearer != "" && opts.Dispatch.Broker:
+		return refuse("Dispatch.Bearer is given beside Dispatch.Broker: a launch's Dispatch credential is the shared bearer or its role's own trade at the secrets broker, never both")
+	case opts.Dispatch.Transition != "" && !opts.Dispatch.Broker:
+		return refuse("Dispatch.Transition is given without Dispatch.Broker: it is the shared token a launch into a pod built before the broker carries, which only Dispatch.Broker hands out")
+	case opts.Dispatch.Broker && (opts.AgentSecrets == nil || opts.AgentSecrets.ExchangeAudience == ""):
+		return refuse("Dispatch.Broker is set but AgentSecrets names no exchange audience: under the broker a launch carries no Dispatch token and its role trades its pod's exchange identity, which no pod carries without one")
 	case poolSet:
-		return refuse("scheduling node selector sets %s=%q: %s is the runtime's, which puts every pod on the %s pool the cluster's admission policy requires",
-			poolKey, pool, poolKey, poolValue)
+		return refuse("scheduling node selector sets %s=%q: Legion's pods share the cluster's general nodes, and the retired Legion pool's label would set them apart on nodes of their own",
+			poolKey, pool)
 	}
 	if errs := validation.IsValidLabelValue(opts.Project); len(errs) > 0 {
 		return refuse("project %q is not a label value: %s", opts.Project, strings.Join(errs, "; "))
@@ -411,7 +456,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		}
 	}
 	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
-		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != ""); err != nil {
+		exchangeOf(opts.AgentSecrets, opts.Dispatch.Broker)); err != nil {
 		return refuse("%v", err)
 	}
 	for _, name := range opts.ProvidersSecrets {
@@ -440,23 +485,22 @@ func configureProber(opts Options) (*Runtime, error) {
 		namespace: opts.Namespace, project: opts.Project, image: opts.Image, storageClass: opts.StorageClass,
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, sandboxConfig: opts.Sandbox, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
-		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
+		dispatch: opts.Dispatch, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
 		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
-		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
-		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
+		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, clock: clock.Real(), helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
+		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace, gitHubRefresh: cmp.Or(opts.GitHubRefreshInterval, gitHubRefreshInterval),
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds,
+		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds, launchTakes: opts.LaunchTakes, launchTook: opts.LaunchTook,
 		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
-		taken:       map[string]sandboxTaken{},
-		sessions:    map[claim.Token]launchedSession{},
+		taken: map[string]sandboxTaken{}, sessions: map[claim.Token]launchedSession{}, dispatchTokenClaims: map[claim.Token]string{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}
@@ -470,11 +514,11 @@ func configureProber(opts Options) (*Runtime, error) {
 		r.log = slog.Default()
 	}
 	// The launchers carry the shared public leak check to a pod before any of its roles start,
-	// take its memory guard's kill reports, an issue pod's and the controller pod's, and its cache
-	// trimmer's sweep reports, and log what they could not carry or record, so they are built once
-	// the runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.MemoryGuardKilled, opts.ControllerMemoryGuardKilled,
-		opts.VolumeReported, r.log)
+	// record a pod of a kept volume at each role's start in it, take its memory guard's kill
+	// reports, an issue pod's and the controller pod's, and its cache trimmer's sweep reports, and
+	// log what they could not carry or record, so they are built once the runtime's log is settled.
+	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.KeptPodStart, opts.MemoryGuardKilled,
+		opts.ControllerMemoryGuardKilled, opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.
@@ -534,7 +578,7 @@ func (r *Runtime) start(ctx context.Context, c runtimeClients) error {
 	if err := r.startInformers(ctx, c); err != nil {
 		return err
 	}
-	go r.refreshGitHubCredentialsEvery(ctx, gitHubRefreshInterval)
+	go r.refreshGitHubCredentialsEvery(ctx, r.gitHubRefresh)
 	return nil
 }
 
@@ -717,31 +761,43 @@ func (r *Runtime) notify(obj any) {
 	}
 }
 
-// await re-checks done after every informer event, and every recheck interval, until it reports
-// true, fails, or budget passes; what names the wait in the timeout. done is handed ctx bounded by
-// budget, and that one bound is the wait's: a request done makes, a launch's waiting out an
-// overloaded server included (resend), ends with the wait rather than up to a boot timeout past it.
+// await checks done, again after every informer event and recheckInterval after each check began
+// (at once after a check that took longer), until it reports true, fails, or budget passes; what
+// names the wait in the timeout. done is handed ctx bounded by budget, and that one bound is the
+// wait's: a request done makes, a launch's waiting out an overloaded server included (resend),
+// ends with the wait rather than up to a boot timeout past it. The budget and the recheck run on
+// r.clock, and each recheck is armed for the moment its check began, read before the check, plus
+// recheckInterval: so on a test's fake clock a recheck pending one recheckInterval past the fake's
+// moment says a check began at that moment, and a check that began before the fake moved, however
+// late it arms, arms a recheck the move has already reached, which fires at once (step).
 func (r *Runtime) await(ctx context.Context, budget time.Duration, what string, done func(context.Context) (bool, error)) error {
-	bounded, cancel := context.WithTimeout(ctx, budget)
+	bounded, cancel := r.clock.WithTimeout(ctx, budget)
 	defer cancel()
-	recheck := time.NewTicker(recheckInterval)
-	defer recheck.Stop()
 	for {
 		r.mu.Lock()
 		changed := r.changed
 		r.mu.Unlock()
+		began := r.clock.Now()
 		ok, err := done(bounded)
 		if err != nil || ok {
 			return err
 		}
+		// The recheck's own context: one derived from bounded would end with it and race its end
+		// in the select below.
+		recheck, stop := r.clock.WithDeadline(context.WithoutCancel(ctx), began.Add(recheckInterval))
+		ended := false
 		select {
 		case <-bounded.Done():
+			ended = true
+		case <-changed:
+		case <-recheck.Done():
+		}
+		stop()
+		if ended {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return fmt.Errorf("timed out after %s waiting for %s", budget, what)
-		case <-changed:
-		case <-recheck.C:
 		}
 	}
 }
@@ -859,16 +915,19 @@ func serviceAccountOr(name string) string {
 }
 
 // accountDrift is the ServiceAccount p runs as, and whether it is not account, the one this
-// runtime creates every pod with (runtime.kubernetes.pod.service_account). A pod runs as the
-// account it was created with for its whole life — the field is fixed on the pod, and nothing the
-// daemon writes to the Sandbox moves it — so an operator who changes service_account reaches a
-// running pod only by replacing it: until then its agents hold the identity the old account
-// grants, whatever the configuration now says they may reach. Such a pod is replaced by its own
-// update round, which first asks every worker in it to do the steps of its update message
+// runtime creates p's kind of pod with, which each caller passes for the pod it holds: the kind's
+// own (podKind.serviceAccount — the controller's runtime.kubernetes.pod.controller_service_account
+// where the operator names one), the cache's own for a cache pod whose bucket is on
+// (cachePodAccount), and runtime.kubernetes.pod.service_account for every other pod. A pod runs as
+// the account it was created with for its whole life — the field is fixed on the pod, and nothing
+// the daemon writes to the Sandbox moves it — so an operator who changes any of those accounts
+// reaches a running pod only by replacing it: until then its agents hold the identity the old
+// account grants, whatever the configuration now says they may reach. Such a pod is replaced by
+// its own update round, which first asks every worker in it to do the steps of its update message
 // (supervise.UpdateTask), where a round covers its kind (roundCovers, PodDrift), by the next
 // launch of one of its roles where no round does (relaunch), and by reconcileCachePod at the next
 // ensure of a cache's (a sweep, or a new issue pod of its repository); ReconcileOrphans warns of
-// each one it finds, as all of them do for imageDrift.
+// each one it finds but a cache's, as all of them do for imageDrift.
 // The comparison is of the live pod's spec.ServiceAccountName, never the Sandbox's stored
 // template: the API server keeps a named account as written. It reads an unset account as
 // `default` on both sides, because the two sides spell the same account differently — the daemon
@@ -952,7 +1011,12 @@ func (r *Runtime) ProvisionsWorkspaces() bool { return true }
 // every other resident role shares that pod and stays reachable until its own explicit stop or
 // issue-level lifecycle effect. A recorded process its pod or launcher shows already ended — the
 // pod replaced or gone, or the launcher running no child or another generation — is stopped
-// already, and nothing is sent.
+// already, and nothing is sent. So is one whose launcher is not connected from a pod still in, or
+// failed in, an init container (beforeLaunchers): no launcher of that pod connected since its init
+// containers last ran, and none can until they end, so there is no answer to wait for. Waiting for
+// one held the stop for the boot timeout and the termination grace and then failed it, while the
+// claim it stops stayed held behind it. Only a stop a launcher can answer is waited on: a
+// connected launcher's, and the reconnect of one of a pod past its init containers.
 func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 	if err := r.checkLocator(loc); err != nil {
 		return err
@@ -970,7 +1034,14 @@ func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 		r.forgetIf(loc)
 		return nil
 	}
-	if state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID); connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
+	state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID)
+	if connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
+		r.forgetIf(loc)
+		return nil
+	}
+	if !connected && beforeLaunchers(pod) {
+		r.log.Info("sandbox runtime: suspend sends no stop: the pod is in or failed in an init container, so no launcher of it is connected",
+			"claim", loc.Claim, "sandbox", loc.Sandbox.Name, "pod", loc.Sandbox.PodUID, "generation", loc.Sandbox.Generation)
 		r.forgetIf(loc)
 		return nil
 	}
@@ -1243,13 +1314,16 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 
 // warnPodDrift logs, for the Sandbox u, what the pod it owns in the store runs that a pod created
 // now would not: a container on an image other than the runtime's (imageDrift), the pod running as
-// a ServiceAccount other than the configured one (accountDrift), and the recorded leak-check
-// manifest differing from the configured one (leakCheckDrift). Each kind of drift is one warning
-// of its own, naming the Sandbox and the held and current values, as ReconcileOrphans says, so a
-// pod holding several is named once for each. A same-named pod u does not own is an earlier
-// Sandbox's, on its way out, and is nothing of u's to warn about. No cache Sandbox is ever warned
-// of, for the account as for the image: ReconcileOrphans passes over it before the call, since its
-// own sweep replaces its pod for either drift without a relaunch to wait for.
+// a ServiceAccount other than the one its kind is configured with (accountDrift,
+// podKind.serviceAccount: the controller's own account for the controller's pod where one is
+// named), and the recorded leak-check manifest differing from the configured one
+// (leakCheckDrift). Each kind of drift is one warning of its own, naming the Sandbox and the held
+// and current values, as ReconcileOrphans says, so a pod holding several is named once for each. A
+// Sandbox whose labels name no kind (podKindOf) is held to no account, since there is none its
+// kind takes; the sweep names it instead. A same-named pod u does not own is an earlier Sandbox's,
+// on its way out, and is nothing of u's to warn about. No cache Sandbox is ever warned of, for the
+// account as for the image: ReconcileOrphans passes over it before the call, since its own sweep
+// replaces its pod for either drift without a relaunch to wait for.
 func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 	pod := r.storedPod(u.GetName())
 	if !ownedBy(pod, u.GetUID()) {
@@ -1259,10 +1333,13 @@ func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs image %s, the configured image is %s; its agents call this daemon as the older release until its update round replaces the pod", u.GetName(), other, r.image),
 			"sandbox", u.GetName(), "pod", pod.UID)
 	}
-	if account, drifted := accountDrift(pod, r.pod.ServiceAccount); drifted {
-		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs as ServiceAccount %s, the configured ServiceAccount is %s; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does",
-			u.GetName(), account, serviceAccountOr(r.pod.ServiceAccount)),
-			"sandbox", u.GetName(), "pod", pod.UID)
+	if kind, err := podKindOf(u.GetLabels()); err == nil {
+		configured := kind.serviceAccount(r)
+		if account, drifted := accountDrift(pod, configured); drifted {
+			r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs as ServiceAccount %s, the configured ServiceAccount is %s; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does",
+				u.GetName(), account, serviceAccountOr(configured)),
+				"sandbox", u.GetName(), "pod", pod.UID)
+		}
 	}
 	annotations, _, _ := unstructured.NestedStringMap(u.Object, "spec", "podTemplate", "metadata", "annotations")
 	if held, recorded := recordedLeakChecker(annotations, u.GetAnnotations(), string(pod.UID)); len(r.leakCheckDrift(held, recorded)) > 0 {

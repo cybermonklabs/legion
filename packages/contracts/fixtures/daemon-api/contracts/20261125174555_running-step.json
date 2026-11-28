@@ -1,0 +1,17 @@
+{
+  "answers": [
+    {
+      "answer": "plan-register",
+      "addKeyPaths": [
+        "plan.tasks.*.running",
+        "plan.tasks.*.running.*",
+        "plan.tasks.*.running.*.kind",
+        "plan.tasks.*.running.*.place",
+        "plan.tasks.*.running.*.role"
+      ]
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": []
+}

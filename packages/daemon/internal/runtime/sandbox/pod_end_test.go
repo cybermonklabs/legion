@@ -32,6 +32,7 @@ const evictedMessage = "The node was low on resource: ephemeral-storage. Thresho
 // evicted pod whose container also ended — fails, with an empty PodEnd and a detail naming the
 // container's end alone.
 func TestAnEvictedPodsReasonReachesTheObservationOnBothBranches(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, sandboxUID, modeRunning, labels),
@@ -84,6 +85,7 @@ func TestAnEvictedPodsReasonReachesTheObservationOnBothBranches(t *testing.T) {
 // detail it comes from ends with an unbounded tail of the role's log. A message longer than the
 // bound is cut at it; a pod with no reason at all carries nothing, however long its message.
 func TestThePodEndIsBoundedAndEmptyWithoutAReason(t *testing.T) {
+	t.Parallel()
 	if got := runtime.PodEnd("", strings.Repeat("x", 10)); got != "" {
 		t.Fatalf("a pod with no reason carries %q, want nothing: the reason is what says the pod ended it", got)
 	}
@@ -103,10 +105,12 @@ func TestThePodEndIsBoundedAndEmptyWithoutAReason(t *testing.T) {
 
 // The URL rule reads the reason and message whole, before the cut at the bound: a URL with a user
 // name and a planted query, placed across the cut, leaves neither on the field wherever in the URL
-// the cut falls, and its host is there. A cut made before the rule ended inside the user name,
-// whose start the rule the claim keeps the field under (storetext.FarSideText) then reads as the
-// URL's host, or inside the query, which the field then carried as it was.
+// the cut falls, and its scheme and the start of the mark of a URL with credentials, which stands
+// for its authority, are there. A cut made before the rule ended inside the user name, whose start
+// the rule the claim keeps the field under (storetext.FarSideText) then reads as the URL's host,
+// or inside the query, which the field then carried as it was.
 func TestAURLAcrossThePodEndsBoundLeavesNoUserNameOrQuery(t *testing.T) {
+	t.Parallel()
 	for n, tc := range []struct {
 		name string
 		// after is the part of the URL the bound falls just after.
@@ -132,8 +136,8 @@ func TestAURLAcrossThePodEndsBoundLeavesNoUserNameOrQuery(t *testing.T) {
 			if strings.Contains(got, "token=") {
 				t.Fatalf("the pod end ends %q, which holds the URL's query", got[strings.Index(got, "https://"):])
 			}
-			if !strings.Contains(got, "https://example.com/") {
-				t.Fatalf("the pod end ends %q, want the URL's host", got[max(0, len(got)-40):])
+			if !strings.Contains(got, "https://[a URL") {
+				t.Fatalf("the pod end ends %q, want the URL's scheme and the mark of its credentials", got[max(0, len(got)-40):])
 			}
 			if runes := []rune(got); len(runes) != runtime.PodEndRunes || runes[len(runes)-1] != '…' {
 				t.Fatalf("the pod end is %d runes ending %q, want %d ending in an ellipsis", len(runes), string(runes[len(runes)-1]), runtime.PodEndRunes)

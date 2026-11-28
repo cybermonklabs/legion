@@ -309,6 +309,9 @@ func (d *tickDispatch) PutStep(context.Context, string, string, dispatch.StepWri
 func (d *tickDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *tickDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *tickDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }
 func (d *tickDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
@@ -396,11 +399,20 @@ func seedTickMirror(t *testing.T, pool *store.Pool, key, status string, seq int6
 // keeps a mark, is queued for nobody.
 func registerProjectController(t *testing.T, pool *store.Pool, project string) {
 	t.Helper()
-	st, err := store.Open(context.Background(), pool.Config().ConnString())
+	registerProjectControllerAs(t, pool.Config().ConnString(), project, "ses-controller")
+}
+
+// registerProjectControllerAs is registerProjectController under session, on the database dsn
+// names: project is the Dispatch project key or its project token, which name the same row. It
+// leaves the row an earlier boot's registration leaves, so a test that boots a daemon after it
+// reads a controller registered.
+func registerProjectControllerAs(t *testing.T, dsn, project, session string) {
+	t.Helper()
+	st, err := store.Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
-	t.Cleanup(st.Close)
+	defer st.Close()
 	token, err := claim.ProjectToken(project)
 	if err != nil {
 		t.Fatal(err)
@@ -409,8 +421,8 @@ func registerProjectController(t *testing.T, pool *store.Pool, project string) {
 	if err != nil {
 		t.Fatalf("mint the controller capability: %v", err)
 	}
-	if ok, err := st.RegisterController(context.Background(), token, generation, "ses-controller", []byte("secret"), time.Now(), 0); err != nil || !ok {
-		t.Fatalf("register the controller = %t, %v", ok, err)
+	if ok, err := st.RegisterController(context.Background(), token, generation, session, []byte("secret"), time.Now(), 0); err != nil || !ok {
+		t.Fatalf("register %s as the controller = %t, %v", session, ok, err)
 	}
 }
 

@@ -5,7 +5,6 @@
 // this module runs nothing on import but the constants below.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
-import type { LegionState } from "@legion/contracts/legion-api";
 import { stallSweepMs } from "@legion/pi-shared/stall-limits";
 import {
   type Block,
@@ -23,6 +22,7 @@ import {
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { writtenLines } from "@legion/test-fixtures/transcript-lines";
+import { until } from "@legion/test-fixtures/wait";
 import { STALL_RESTART_MESSAGE } from "../src/stall-abort";
 import {
   STALL_WATCH_ENTRY,
@@ -78,15 +78,6 @@ export const SWEEP_MS = stallSweepMs({ stepMs: STEP_MS });
  * and short enough that the rule comes due well within the case. */
 export const SHELL_DEADLINE_MS = 20_000;
 
-/** How long a case waits for something the pane owes it before failing: the pane's boot and the
- * three steps of the ladder, each `STEP_MS` apart. */
-export const DEADLINE_MS = 120_000;
-
-/** How long `settled()` waits for the pane to finish the line it is writing. One line is one
- * `write`, so this is orders of magnitude more than it takes even on a loaded pod; it is a
- * bound, not a sleep. */
-const SETTLED_MS = 5_000;
-
 /** How long a case watches for something that must not happen: the bound, two of the plugin's
  * sweeps, and a margin. */
 export const QUIET_MS = BOUND_MS + 2 * SWEEP_MS + 2_000;
@@ -123,7 +114,7 @@ export async function runs(pid: number): Promise<boolean> {
 }
 
 /**
- * Waits until `pid` is gone, and fails at the pane's own deadline if it never is.
+ * Waits until `pid` is gone, and fails at the row's deadline if it never is.
  *
  * The ladder's first step sends SIGKILL and counts the signal (`src/stall-recovery.ts:242-243`);
  * it does not wait for the task to end, and the kernel ends it after that call has returned. So
@@ -193,42 +184,6 @@ export function warmedWedge(
     return [{ type: "text", text: then }];
   };
 }
-
-/** The daemon's state with the issue past this pane's phase: the reviewer works it now, so the
- * phase-stall follow-up (`src/phase-stall.ts`) has no reminder for this role and every turn a case
- * sees is one it asked for. */
-const MOVED_ON = {
-  daemon: {
-    project: PROJECT.toUpperCase(),
-    schemaVersion: 1,
-    boots: 1,
-    firstBootAt: "2026-10-30T14:03:27Z",
-    startedAt: "2026-10-31T09:15:02Z",
-  },
-  admission: { cap: 1, active: [TREE], waiting: [], blocked: [] },
-  issues: {
-    [ISSUE]: {
-      key: ISSUE,
-      generation: 1,
-      phase: "reviewing",
-      status: "in_progress",
-      repo: "acme/widgets",
-      defaultBranch: "main",
-      workers: {},
-    },
-  },
-  pendingStatusWrites: [],
-  heldOutboxRows: [],
-  strandedClaims: [],
-  capabilities: [],
-  repositories: {
-    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
-    withoutWebhookApp: [],
-    caches: [],
-  },
-  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
-  consumers: [],
-} satisfies LegionState;
 
 /**
  * The one-handler extension the last step's cases load beside the plugin. `abort` is not an own
@@ -351,18 +306,19 @@ export interface StallPane {
    * which nothing should be written: the only line that could falsify such a read is one a
    * write has not finished, which `records()` withholds while the pane runs. It is a separate
    * read from the one that follows, so it does not promise that one finds the file whole — it
-   * narrows the window to the gap between the two. Throws naming the file at its bound. */
+   * narrows the window to the gap between the two. Fails naming the file at the row's deadline. */
   settled(): Promise<void>;
-  /** Polls `probe` until it answers, failing on `what` at the deadline. */
+  /** Waits through the shared wait until `probe` answers, failing on `what` at the row's
+   * deadline, and at once when omp has exited while the case waits on it. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
 
 /**
  * Starts one Legion phase-worker pane on the real Oh My Pi: pi-envoy's extension and this
  * package's, the role's `LEGION_*` environment against a stand-in that is the model gateway, the
- * daemon's claim, grant, state and activity routes and the Envoy listener, and the three stall
- * numbers set low. The pane takes no NATS delivery of its own and is given a real server all the
- * same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
+ * daemon's register, ready, activity, owed and grant routes and the Envoy listener, and the three
+ * stall numbers set low. The pane takes no NATS delivery of its own and is given a real server
+ * all the same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
  * (INFRA-771), so one that can open no relay subject is answered no consumer, every registration
  * of its fails, and its claim boot ends the session rather than running on deaf. A side request —
  * the run-end self-check, a routing hint — is answered at once with one word, since none of them
@@ -418,11 +374,12 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 });
-    // The stall notice's record check and the phase reminder's both read one issue's record
-    // (dispatch://INFRA-2694); no reader of this pane asks for the whole project body.
-    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
-      return Response.json(MOVED_ON.issues[ISSUE]);
-    }
+    // The phase reminder asks the daemon what the claim owes, and the stand-in answers nothing,
+    // so the reminder puts nothing in front of this role and every turn a case sees is one it
+    // asked for. The stall watch's notice asks the same route for the architect that owns the
+    // claim, and the answer names none, so it goes to the tree's architect (`stallNoticeTopic`,
+    // `pi-legion/src/stall-evidence.ts`).
+    if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: false, work: "" });
     if (url.pathname === "/legion/v1/grants") {
       grants += 1;
       return Response.json({
@@ -567,20 +524,21 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     },
     exited: rpc.exited,
     running: () => running,
-    settled: () => awaitSettled(sessions, SETTLED_MS),
+    settled: () => awaitSettled(sessions),
     async until(what, probe) {
-      const deadline = Date.now() + DEADLINE_MS;
-      for (;;) {
+      // The answer is boxed, so a probe whose answer is falsy (a 0, an empty string) still ends
+      // the wait: only `undefined` is "not yet". A poll, because what is awaited is a line in a
+      // transcript the pane writes and a request it makes, neither of which this process can be
+      // woken by.
+      const answered = await until(what, async () => {
         const value = await probe();
-        if (value !== undefined) return value;
+        if (value !== undefined) return { value };
         if (options.denyAbort !== true && !running) {
           throw new Error(`omp exited while this case waited for ${what}`);
         }
-        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-        // A poll, because what is awaited is a line in a transcript the pane writes and a request
-        // it makes, neither of which this process can be woken by.
-        await Bun.sleep(100);
-      }
+        return undefined;
+      });
+      return answered.value;
     },
   };
   await pane.until("the pane's registration with the Envoy listener", () =>

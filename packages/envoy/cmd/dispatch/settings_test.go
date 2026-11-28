@@ -980,9 +980,12 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 		},
 		"NATS_SERVICE_TOKEN_FILE": func(t *testing.T) {
+			// A token file that could not be read is named by the variable and the system's reason,
+			// never its path: the path is where a person who pasted the token itself put it.
 			missing := filepath.Join(t.TempDir(), "missing")
-			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
-				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused", err)
+			err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS)
+			if err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names a service token file that could not be read: open: no such file or directory") || strings.Contains(err.Error(), missing) {
+				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused by its variable and reason, not its path", err)
 			}
 			token := writeFile(t, "token", "a.b.c\n")
 			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
@@ -1304,7 +1307,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			_, url := testnats.Start(t)
 			_, pemText := githubapptest.Key(t)
 			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
-				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, "", cireconcile.Interval, &registeredInstance{}, refs.Renames{})
+				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, "", cireconcile.Interval, &registeredInstance{}, refs.Renames{}, nil)
 			if err != nil || reconciler == nil {
 				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
 			}
@@ -1330,7 +1333,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			_, url := testnats.Start(t)
 			_, pemText := githubapptest.Key(t)
 			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
-				&auth.AppConfig{ClientID: "Iv1.verdict", PEM: pemText}, "", "", boot.VerdictAppID, cireconcile.Interval, &registeredInstance{}, refs.Renames{})
+				&auth.AppConfig{ClientID: "Iv1.verdict", PEM: pemText}, "", "", boot.VerdictAppID, cireconcile.Interval, &registeredInstance{}, refs.Renames{}, nil)
 			if err != nil || reconciler == nil {
 				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
 			}
@@ -1599,6 +1602,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 			})
 		},
+		"DISPATCH_PROOF_ORIGINS": func(t *testing.T) {
+			const public, inCluster = "https://dispatch.example", "http://dispatch.internal.example:8766"
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " " + public + " , " + inCluster + " "}); !slices.Equal(boot.ProofOrigins, []string{public, inCluster}) {
+				t.Errorf("ProofOrigins = %q, want each entry trimmed", boot.ProofOrigins)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " "}); boot.ProofOrigins != nil {
+				t.Errorf("a blank value: ProofOrigins = %q, want none", boot.ProofOrigins)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + ",," + inCluster}, "DISPATCH_PROOF_ORIGINS entry 2 of 3 is empty")
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + "/"}, `DISPATCH_PROOF_ORIGINS entry 1 of 1 is "`+public+`/"`)
+			// What the verifier main builds takes from it is TestDispatchReadsItsProofOrigins'.
+		},
 		"DISPATCH_EMBEDDER": func(t *testing.T) {
 			if boot := resolveWith(t, nil); boot.Embedder.Place != embed.PlaceBedrock {
 				t.Errorf("unset: Embedder.Place = %q, want bedrock", boot.Embedder.Place)
@@ -1652,14 +1667,21 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY": "", "DISPATCH_AZURE_EMBED_KEY_FILE": file})); boot.Embedder.AzureKey != "file-key" {
 				t.Errorf("file alone: AzureKey = %q, want the file's", boot.Embedder.AzureKey)
 			}
-			// An unreadable or blank file refuses, naming both variables, rather than falling back to
-			// the bare key.
+			// An unreadable or blank file refuses, naming both variables and why, never the path,
+			// rather than falling back to the bare key. A made-up seed pasted where the path goes
+			// is named nowhere in the refusal.
 			missing := filepath.Join(t.TempDir(), "missing")
 			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": missing}),
-				"DISPATCH_AZURE_EMBED_KEY_FILE names "+missing+", which could not be read, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that cannot be read (it does not exist), and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+			const pastedSeed = "SUAMADEUPPASTEDSEEDSHAPE0123456789ABCDEFGHIJKLMNOPQRSTUV"
+			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": pastedSeed}),
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that cannot be read (it does not exist), and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+			if _, err := resolveBootConfig(bootEnvironment(azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": pastedSeed}))); err == nil || strings.Contains(err.Error(), pastedSeed[:10]) {
+				t.Errorf("a seed pasted as DISPATCH_AZURE_EMBED_KEY_FILE: err = %v, want a refusal holding none of it", err)
+			}
 			blank := writeFile(t, "blank", "\n")
 			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": blank}),
-				"DISPATCH_AZURE_EMBED_KEY_FILE names "+blank+", which is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY": "bare-key"}, "DISPATCH_AZURE_EMBED_KEY set, but DISPATCH_EMBEDDER is unset")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": file}, "DISPATCH_AZURE_EMBED_KEY_FILE set, but DISPATCH_EMBEDDER is unset")
 			if _, ok := azureEmbedderFor(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": file}).(*embed.AzureClient); !ok {
@@ -2228,6 +2250,33 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
 			}
 		},
+		"DISPATCH_LEGION_STATUS_SCOPE": func(t *testing.T) {
+			// on turns the refusal on and is handed to the router, which passes it to the API's
+			// dependencies (routes.BuildAppContext). The router shows no dependencies, so the case
+			// checks the hand-off to it, as the DISPATCH_NATS_DISABLED case does. Unset and off
+			// leave it off. Any other value refuses the boot and names the value, so a misspelt on
+			// never leaves the refusal off in silence.
+			boot := resolveWith(t, map[string]string{"DISPATCH_LEGION_STATUS_SCOPE": "on"})
+			if !boot.LegionStatusScope {
+				t.Error("DISPATCH_LEGION_STATUS_SCOPE=on: LegionStatusScope false")
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.LegionStatusScope {
+				t.Error("DISPATCH_LEGION_STATUS_SCOPE=on: the router is handed LegionStatusScope = false, want true")
+			}
+			for name, overrides := range map[string]map[string]string{
+				"unset": {},
+				"off":   {"DISPATCH_LEGION_STATUS_SCOPE": "off"},
+			} {
+				boot := resolveWith(t, overrides)
+				if boot.LegionStatusScope {
+					t.Errorf("DISPATCH_LEGION_STATUS_SCOPE %s: LegionStatusScope true", name)
+				}
+				if options := appContextOptions(boot, routes.AppContextOptions{}); options.LegionStatusScope {
+					t.Errorf("DISPATCH_LEGION_STATUS_SCOPE %s: the router is handed LegionStatusScope = true, want false", name)
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_LEGION_STATUS_SCOPE": "yes"}, `DISPATCH_LEGION_STATUS_SCOPE="yes"`)
+		},
 		"DISPATCH_PARENT_STATUS_RULE": func(t *testing.T) {
 			// Its reader: R25's fix at boot (api.RunParentStatusFixAtBoot), whose answer is the rule
 			// main builds the server with (TestTheServerAnswersOnlyAfterTheParentStatusFix boots the
@@ -2275,6 +2324,47 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("unset: EmbedderOff true")
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_EMBEDDER_OFF": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_CREATE_STAGED": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_CREATE_STAGED": "1"}); !boot.CreateStaged {
+				t.Error("DISPATCH_TEST_CREATE_STAGED=1: CreateStaged false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_CREATE_STAGED": "true"}); boot.CreateStaged {
+				t.Error("DISPATCH_TEST_CREATE_STAGED=true: CreateStaged true, want only 1 to set it")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.CreateStaged {
+				t.Error("unset: CreateStaged true")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_CREATE_STAGED": "1"}, "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_CREATE_STAGED")
+			// Its reader: a process started with it takes a plan that puts parent, which its
+			// manifest stages for the next version, into a document that holds none. The same
+			// process started without it refuses that plan. A subprocess runs the shipped manifest
+			// alone, so this case writes the element that manifest stages now, and moves to the next
+			// staged element at each version that makes parent creatable; pmdoc's
+			// TestATestProcessCreatesAStagedElementOnlyWhenTold holds the hook on a made-up element.
+			t.Run("process", func(t *testing.T) {
+				plan, err := json.Marshal(map[string]string{
+					"name":    "plan.md",
+					"content": ":::plan_task{#default}\nShip it.\n:::\n\n:::plan_task{#t1 parent=\"dispatch://ACME-1/artifact/plan-md#b-default\"}\nWrite it.\n:::\n",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, run := range []struct {
+					env    map[string]string
+					status int
+				}{
+					{env: nil, status: http.StatusBadRequest},
+					{env: map[string]string{"DISPATCH_TEST_CREATE_STAGED": "1"}, status: http.StatusCreated},
+				} {
+					database := storetest.Open(t)
+					process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: run.env})
+					process.waitHealthy(t)
+					process.createProject(t, "ACME", "Acme")
+					key, _ := process.createIssueIn(t, "ACME", "A plan under its task", "Ship it.")
+					process.call(t, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", string(plan), run.status)
+				}
+			})
 		},
 	}
 	for _, row := range settings {

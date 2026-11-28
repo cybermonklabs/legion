@@ -1,9 +1,9 @@
 package api
 
-// read_class_drive_seed_test.go builds the one seeded store the drives of read_class_drive_test.go
-// read: every kind of state a GET row of the table can read, written through the API's own write
-// routes where it has one and through the package's own fixtures where it has none, so the data is
-// the data the server writes.
+// read_class_drive_seed_test.go builds the seeded store each world of the read drive in
+// read_class_drive_test.go reads: every kind of state a GET row of the table can read, written
+// through the API's own write routes where it has one and through the package's own fixtures where
+// it has none, so the data is the data the server writes.
 
 import (
 	"context"
@@ -96,6 +96,8 @@ func newDriveWorld(t *testing.T) *driveWorld {
 	// and its writer's.
 	world.as(t, "alice", http.MethodPost, "/api/v1/artifacts/_test/quiesce", nil, http.StatusOK)
 	awaitSettledDocuments(t, world.raw)
+	world.tracer.checked = world.tracer.count()
+	world.tracer.checkGaps = true
 	return world
 }
 
@@ -120,10 +122,76 @@ func newDriveRig(t *testing.T) *driveWorld {
 			driveSession: {"notifications.dispatch.issue." + driveProject + "-1.>", "notifications.dispatch.document." + driveProject + ".>"},
 		}),
 	})
+	world.rig.served.readWorkers = &backgroundWork{}
+	world.tracer.waitWork = world.waitReadWork
 	world.caller = newBrokerCaller(t)
 	seedPeople(t, raw, drivePerson)
 	world.mintTokens(t)
 	return world
+}
+
+// waitReadWork joins the startup marker, every read stage (including a timed-out stage), the
+// statistics those stages started, and the writes the request or its stages detached. No request
+// is in flight when it starts. Stages register before launching, and finish before statistics
+// are joined, so none can start a refresh after this barrier looked for it. The raw pool keeps
+// this barrier's own project lookup out of the request's traced SQL.
+func (w *driveWorld) waitReadWork(ctx context.Context) error {
+	s := w.rig.served
+	if s.bootMark != nil {
+		select {
+		case <-s.bootMark:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := driveWaitForWork(ctx, s.readWorkers); err != nil {
+		return fmt.Errorf("read stages: %w", err)
+	}
+	rows, err := w.raw.Pool.Query(ctx, `select key from projects`)
+	if err != nil {
+		return fmt.Errorf("read the projects whose statistics may be refreshing: %w", err)
+	}
+	var projects []string
+	for rows.Next() {
+		var project string
+		if err := rows.Scan(&project); err != nil {
+			rows.Close()
+			return err
+		}
+		projects = append(projects, project)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, project := range projects {
+		select {
+		case <-s.termStats.DoChan(project, func() (any, error) { return nil, nil }):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return driveWaitForWork(ctx, &s.detached)
+}
+
+func driveWaitForWork(ctx context.Context, work *backgroundWork) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		work.mu.Lock()
+		running, idle := work.running, work.idle
+		work.mu.Unlock()
+		if running == 0 {
+			return nil
+		}
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // mintTokens says the two broker tokens to the stub broker, for the caller's key, and mints P's
@@ -435,10 +503,12 @@ func (w *driveWorld) seed(t *testing.T) {
 	}
 	w.values["nearCopy"] = nearCopy
 
-	// The pre-check's prose: a document no other test of this process has shown. A write stores
-	// the tree of every text it writes in the latest mode, and only a read of a version stores a
-	// tree in the version mode, so the pre-check's read of this version is where its tree first
-	// reaches the table.
+	// The pre-check's prose: a document no other test or world of this process has shown. A write
+	// stores the tree of every text it writes in the latest mode, and only a read of a version
+	// stores a tree in the version mode, so the pre-check's read of this version is where its tree
+	// first reaches the table. The text is this world's own: the display cache is the process's,
+	// keyed by the text's sum (pmdoc.HeldDisplayTree), and a read of a text another world has
+	// shown takes the tree from it and stores none.
 	prose := uploadDocument(t, w.rig.handler, owner, "prose.md", "# Prose\n\nProse no other test of this process has shown: "+uuid.NewString()+".\n")
 	w.values["prose"] = prose.Artifact.ID
 

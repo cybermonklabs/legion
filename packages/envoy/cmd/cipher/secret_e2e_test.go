@@ -37,6 +37,7 @@ func useRigSession(t *testing.T, rig *ciphertest.Rig) {
 // TestSecretCreateIsServedByTheBrokerAtOnce drives a create end to end: the CLI writes to (fake)
 // AWS and the broker serves the secret on its very next read, no reload.
 func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:42); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (awsClients set at secret_e2e_test.go:45).
 	rig := ciphertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	useRigSession(t, rig)
@@ -61,6 +62,7 @@ func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
 // moment the CLI deletes it, and serves it again the moment the CLI restores it, each on the
 // CLI's own reread; a retag the broker would refuse is reported, and exits 1.
 func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:67); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	rig := ciphertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	useRigSession(t, rig)
@@ -94,6 +96,7 @@ func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
 // rereads the name after that answer and serves the new secret, with no reload. The line it
 // prints about the unchecked view is TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned's.
 func TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:101); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	rig := ciphertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	withNoBrokerIdentity(t)

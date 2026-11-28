@@ -16,6 +16,7 @@ const readmittedApprovalStepVersion = 20261106150254
 // reads every stored pair as that step's. The check admits the three step names and nothing else,
 // and an insert that names no step still lands, which is what an earlier release's write does.
 func TestTheStoredKeptApprovalBecomesTheSpecStepsWith20261106150254(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, readmittedApprovalStepVersion-1)

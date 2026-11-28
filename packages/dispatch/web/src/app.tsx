@@ -26,6 +26,7 @@ import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversati
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
+import { useInboxFillsViewport } from "./features/inbox/fills-viewport";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
 import { useInboxCount } from "./features/inbox/useInboxCount";
@@ -38,7 +39,6 @@ import {
   type MarginDrawerPage,
   MarginSlotProvider,
 } from "./features/issue-page/margin-slot";
-import { ReferenceNamesProvider } from "./features/issue-page/reference-names";
 import {
   type ShellNavigation,
   ShellNavigationContext,
@@ -51,6 +51,7 @@ import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
+import { ReferenceNamesProvider } from "./features/refs/reference-names";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
@@ -66,6 +67,7 @@ import {
   routeHasMargin,
   routeIsInbox,
   routeProjectOf,
+  unknownToShell,
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPalette } from "./features/search/SearchPalette";
@@ -88,7 +90,6 @@ import {
 import {
   COMPACT_VIEWPORT_QUERY,
   MD_VIEWPORT_QUERY,
-  READING_PANE_QUERY,
   useDialog,
   useMediaQuery,
 } from "./features/shell/useDialog";
@@ -227,9 +228,9 @@ function IssuePageFallback(): ReactNode {
           />
         </h1>
       </header>
-      {/* `overflow-hidden`: the ten labels are wider than a narrow window and this row neither
-          wraps nor scrolls, where the real tablist scrolls inside itself. Clipped, a chunk's load
-          never scrolls the page sideways. */}
+      {/* `overflow-hidden`: the ten labels are wider than a narrow window and this placeholder row
+          neither wraps nor scrolls, where the real tablist wraps onto a further line. Clipped, a
+          chunk's load never scrolls the page sideways. */}
       <div className={`mb-4 flex gap-2 overflow-hidden border-b ${borderDefault}`} role="tablist">
         {ISSUE_TAB_LABELS.map((label) => (
           <span
@@ -294,13 +295,24 @@ function ShellMessagePage({ children, title }: { children?: ReactNode; title: st
   );
 }
 
+/**
+ * The Inbox page, in two named groups in this order:
+ *
+ * - **Heading**: the page's title, then **Answered by you**. Too narrow for both on one line,
+ *   the link moves whole to a line of its own under the title; the title never shortens.
+ * - **Inbox**: the list and the row the reader is reading (`Inbox`), below the heading at every
+ *   width. From the reading column's width, and below it while the reader has a row open, it
+ *   fills the height left under the heading (`useInboxFillsViewport`); otherwise the page
+ *   scrolls as one document.
+ */
 function InboxPage(): ReactNode {
   useDocumentTitle("Inbox · Dispatch");
-  // From the reading pane's width the page fills the viewport (`fillsViewport` below), and the
-  // two columns divide the height left under the heading; below it the page scrolls as ever.
-  const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
+  // From the reading pane's width, and below it while a row's reading view is open, the page
+  // fills the viewport (`fillsViewport` below) and the Inbox divides the height left under the
+  // heading; otherwise the page scrolls as ever.
+  const fillsViewport = useInboxFillsViewport();
   return (
-    <section className={readingPaneShown ? "flex min-h-0 flex-1 flex-col" : undefined}>
+    <section className={fillsViewport ? "flex min-h-0 flex-1 flex-col" : undefined}>
       {/* Only the page links to the answers page; the drawer's Inbox stays a peek. */}
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h1 className="text-[22px] font-semibold tracking-tight">Inbox</h1>
@@ -538,6 +550,27 @@ function ShellProviders({
   );
 }
 
+/**
+ * The signed-in frame, in three named groups in this order:
+ *
+ * - **Navigation**: below the compact width, a top bar - the title, the Inbox count or Peek, the
+ *   unread replies, then Menu - whose counts wrap whole onto a second row of the bar, and inside
+ *   that row one count at a time, each whole, where it is still too narrow; Menu is its own item
+ *   at the right, in reach however the counts wrap. The navigation itself is in a drawer the
+ *   reader opens with Menu. From the compact width up it is the sidebar, or the rail the reader
+ *   collapses it to; the issue frame draws its icon rail from the `md` width instead and opens
+ *   the same drawer from it.
+ * - **Main**: the page (`<main>`).
+ * - **Margin**: the details column, which the reader collapses or resizes (`MarginColumn`).
+ *
+ * Below `xl` Navigation stands above Main; from `xl` the groups stand side by side, in that
+ * order. The Margin's own narrow forms - its rail, the issue frame's Details drawer - are
+ * `Margin`'s (`features/margin/Margin.tsx`). A page that
+ * scrolls inside itself - the Inbox from its reading column's width, or below it with a row
+ * open (`useInboxFillsViewport`) - gets a viewport-tall frame whose Main hands that page the
+ * height left under Navigation. The status corner, the search bar, the Inbox drawer and the
+ * dialogs float over the frame and are in none of its groups.
+ */
 function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -629,11 +662,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // the browser has them, so a phone's collapsing toolbar is accounted for), with `<main>` a
   // flex column that hands it the height left below the compact header, capped above an iOS
   // on-screen keyboard while its composer has focus. The Inbox is one of them wherever its
-  // reading pane shows: each of the pane's two columns scrolls in itself, which it cannot do
-  // while the page scrolls as one. Below that width the Inbox scrolls the document as ever.
-  const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
+  // reading pane shows, and below that width while a row's reading view is open
+  // (`useInboxFillsViewport`): each scrolls in itself, which it cannot do while the page
+  // scrolls as one. Otherwise the Inbox scrolls the document as ever.
+  const inboxFillsViewport = useInboxFillsViewport();
   const fillsViewport =
-    routeFillsViewport(location.pathname) || (routeIsInbox(location.pathname) && readingPaneShown);
+    routeFillsViewport(location.pathname) ||
+    (routeIsInbox(location.pathname) && inboxFillsViewport);
   // The session whose live view the address names, or `null` on every other page. The shell
   // mounts that view and the one the person left (`MountedLiveViews`, below `<Routes>`), so it
   // is the one thing about the live view the router still decides.
@@ -714,7 +749,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // `?` does.
   const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
-  const routeProject = routeProjectOf(location.pathname);
+  // An address of the new issue page alone is none the shell knows where the reader draws
+  // today's page, as on `main` (`unknownToShell`): it names no project and no issue here.
+  const unknownRoute = unknownToShell(location.pathname, issuePageChoice === "outline");
+  const routeProject = unknownRoute ? undefined : routeProjectOf(location.pathname);
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
@@ -856,7 +894,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // genuine page change — a different issue, or a different top-level route —
   // should move focus to the main region.
   const pageIdentity =
-    parseIssuePath(location.pathname)?.key ??
+    (unknownRoute ? undefined : parseIssuePath(location.pathname)?.key) ??
     parseProjectPath(location.pathname)?.project ??
     location.pathname;
 
@@ -973,37 +1011,37 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           <header
             className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
           >
-            {/* The title never shrinks and no count breaks its own words: the counts that do not
-                fit beside the title wrap onto a second row of the bar, with Menu on the right. */}
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <Link className="shrink-0 text-lg font-semibold" to="/">
                 Dispatch
               </Link>
-              {routeIsInbox(location.pathname) ? (
-                <span className={inboxBadgeClass}>{inboxLabel}</span>
-              ) : (
-                <>
-                  <button
-                    aria-label="Peek at the inbox without leaving this page"
-                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
-                    onClick={() => setInboxDrawerOpen(true)}
-                    type="button"
+              <span className="flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1">
+                {routeIsInbox(location.pathname) ? (
+                  <span className={inboxBadgeClass}>{inboxLabel}</span>
+                ) : (
+                  <>
+                    <button
+                      aria-label="Peek at the inbox without leaving this page"
+                      className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
+                      onClick={() => setInboxDrawerOpen(true)}
+                      type="button"
+                    >
+                      Peek
+                    </button>
+                    <Link className={inboxBadgeClass} to="/">
+                      {inboxLabel}
+                    </Link>
+                  </>
+                )}
+                {unreadReplies === 0 ? null : (
+                  <Link
+                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
+                    to="/agents"
                   >
-                    Peek
-                  </button>
-                  <Link className={inboxBadgeClass} to="/">
-                    {inboxLabel}
+                    {unreadRepliesLabel(unreadReplies)}
                   </Link>
-                </>
-              )}
-              {unreadReplies === 0 ? null : (
-                <Link
-                  className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-                  to="/agents"
-                >
-                  {unreadRepliesLabel(unreadReplies)}
-                </Link>
-              )}
+                )}
+              </span>
             </div>
             <button
               aria-expanded={navigationOpen}
@@ -1150,8 +1188,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
-        {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
-        <RefPreviewHost />
+        {createOpen ? (
+          <CreateIssueDialog
+            newPage={issuePageChoice === "outline"}
+            onClose={() => setCreateOpen(false)}
+          />
+        ) : null}
+        <RefPreviewHost surface="reference-hover-card" />
       </div>
     </ShellProviders>
   );

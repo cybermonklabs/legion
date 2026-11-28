@@ -2,6 +2,7 @@ package testnats
 
 import (
 	"bytes"
+	"context"
 	"maps"
 	"net"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -17,14 +19,18 @@ import (
 // connection does, and Freeze silences it, as a network that drops packets does, and Restore ends
 // either. A Proxy started with ProxyLatency adds a round trip's delay to everything it relays, as
 // the route to a remote NATS hub does, and one started with ProxyRate moves no faster than its
-// rate, as a slow link does.
+// rate, as a slow link does. Both run on the proxy's clock (ProxyClock).
 type Proxy struct {
 	listener net.Listener
 	target   string
 	url      string
 	delay    time.Duration
-	done     chan struct{}
-	closing  sync.Once
+	// clock is the clock the delay and the rate run on: clock.Real for a test that takes the
+	// latency as it comes, and a clocktest.Fake for one that asserts what the proxy holds back.
+	clock   clock.Clock
+	ctx     context.Context
+	stop    context.CancelFunc
+	closing sync.Once
 	// rate is the bytes a second each direction of each connection reads at, 0 for no limit.
 	rate int
 
@@ -33,6 +39,9 @@ type Proxy struct {
 	conns map[net.Conn]struct{}
 	// cut is set from Cut until Restore: every connection is closed as it is accepted.
 	cut bool
+	// refusedWhileCut counts the connections closed as they were accepted because the proxy was
+	// cut: each is one dial the network refused.
+	refusedWhileCut int
 	// gate is nil while the proxy moves bytes, and open from Freeze until Restore: every read
 	// and every write of a relayed connection waits for it to close.
 	gate chan struct{}
@@ -49,9 +58,16 @@ type ProxyOption func(*Proxy)
 
 // ProxyLatency holds every chunk read from either side for half of rtt before writing it on, in
 // the order it was read, so a connection through the proxy sees rtt added to each round trip and
-// nothing else.
+// nothing else. The holding runs on the proxy's clock (ProxyClock).
 func ProxyLatency(rtt time.Duration) ProxyOption {
 	return func(p *Proxy) { p.delay = rtt / 2 }
+}
+
+// ProxyClock is the clock the proxy's latency and rate run on, clock.Real by default: a test that
+// asserts what a round trip through the proxy costs hands it a clocktest.Fake, whose armed
+// deadlines are the chunks the proxy is holding and which moves only when the test moves it.
+func ProxyClock(c clock.Clock) ProxyOption {
+	return func(p *Proxy) { p.clock = c }
 }
 
 // ProxyRate reads each direction of each connection at about bytesPerSecond, so a sender's socket
@@ -76,11 +92,14 @@ func StartProxy(t testing.TB, target string, options ...ProxyOption) *Proxy {
 	}
 	proxied := *server
 	proxied.Host = listener.Addr().String()
+	ctx, stop := context.WithCancel(context.Background())
 	p := &Proxy{
 		listener: listener,
 		target:   server.Host,
 		url:      proxied.String(),
-		done:     make(chan struct{}),
+		clock:    clock.Real(),
+		ctx:      ctx,
+		stop:     stop,
 		conns:    map[net.Conn]struct{}{},
 		atGate:   map[string]bool{},
 	}
@@ -165,7 +184,7 @@ func (p *Proxy) join(client net.Conn) {
 	if !p.track(client) {
 		return
 	}
-	server, err := net.DialTimeout("tcp", p.target, dialTimeout)
+	server, err := net.Dial("tcp", p.target)
 	if err != nil || !p.track(server) {
 		if err == nil {
 			_ = server.Close()
@@ -183,12 +202,13 @@ func (p *Proxy) track(conn net.Conn) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	select {
-	case <-p.done:
+	case <-p.ctx.Done():
 		_ = conn.Close()
 		return false
 	default:
 	}
 	if p.cut {
+		p.refusedWhileCut++
 		_ = conn.Close()
 		return false
 	}
@@ -205,14 +225,21 @@ func (p *Proxy) untrack(conns ...net.Conn) {
 	}
 }
 
+// refusedDials is how many dials the proxy has refused while cut.
+func (p *Proxy) refusedDials() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.refusedWhileCut
+}
+
 // proxyReadBuffer is the most one read of a relayed connection takes. With ProxyRate the reader
-// forwards each read before it sleeps for it, so a direction can run up to proxyReadBuffer bytes
+// forwards each read before it waits for it, so a direction can run up to proxyReadBuffer bytes
 // ahead of its rate.
 const proxyReadBuffer = 64 << 10
 
 // relay copies src to dst, each chunk written the proxy's delay after it was read and each read
-// held to the proxy's rate, until either ends; then it closes both, which ends the other direction
-// too.
+// held to the proxy's rate, both on the proxy's clock, until either ends; then it closes both,
+// which ends the other direction too.
 func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 	defer p.untrack(dst, src)
 	type chunk struct {
@@ -232,9 +259,11 @@ func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 			p.pass(serverToClient, reader)
 			read, err := src.Read(buffer)
 			if read > 0 {
-				queue <- chunk{data: bytes.Clone(buffer[:read]), due: time.Now().Add(p.delay)}
+				queue <- chunk{data: bytes.Clone(buffer[:read]), due: p.clock.Now().Add(p.delay)}
 				if p.rate > 0 {
-					time.Sleep(time.Duration(read) * time.Second / time.Duration(p.rate))
+					if err := p.clock.Sleep(p.ctx, time.Duration(read)*time.Second/time.Duration(p.rate)); err != nil {
+						return
+					}
 				}
 			}
 			if err != nil {
@@ -243,7 +272,12 @@ func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 		}
 	}()
 	for c := range queue {
-		time.Sleep(time.Until(c.due))
+		// A proxy with no latency arms no timer: its chunks are due as they are read.
+		if p.delay > 0 {
+			if err := p.clock.Sleep(p.ctx, c.due.Sub(p.clock.Now())); err != nil {
+				break
+			}
+		}
 		p.pass(serverToClient, "")
 		if _, err := dst.Write(c.data); err != nil {
 			// The reader ends once src is closed below.
@@ -269,7 +303,7 @@ func (p *Proxy) pass(serverToClient bool, reader string) {
 	if gate != nil {
 		select {
 		case <-gate:
-		case <-p.done:
+		case <-p.ctx.Done():
 		}
 		if reader != "" {
 			p.mu.Lock()
@@ -280,7 +314,7 @@ func (p *Proxy) pass(serverToClient bool, reader string) {
 	if serverToClient && serverGate != nil {
 		select {
 		case <-serverGate:
-		case <-p.done:
+		case <-p.ctx.Done():
 		}
 	}
 }
@@ -298,7 +332,7 @@ func (p *Proxy) gatedReaders() map[string]bool {
 // close stops listening, closes every relayed connection and releases every copy a freeze holds.
 func (p *Proxy) close() {
 	p.closing.Do(func() {
-		close(p.done)
+		p.stop()
 		_ = p.listener.Close()
 		p.mu.Lock()
 		defer p.mu.Unlock()

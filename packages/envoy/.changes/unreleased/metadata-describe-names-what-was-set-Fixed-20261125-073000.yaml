@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  `agent-secrets identity --source`, and every trade's log line and error, no longer name settings
+  nobody set for a machine's metadata server identity. One the machine source found with no setting
+  names its audience as the Google exchange audience the broker names, not
+  `AGENT_SECRETS_MACHINE_AUDIENCE`, and either kind names `GCE_METADATA_HOST` only while that
+  variable is set: a Compute Engine VM's metadata server is at Google's own address.
+time: 2026-11-25T07:30:00Z
+custom:
+    Issue: metadata-describe-names-what-was-set

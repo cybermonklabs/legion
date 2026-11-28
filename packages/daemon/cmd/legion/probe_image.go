@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -48,17 +49,23 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // ProbeImage). Both pass --plugin-root and --envoy-plugin-root, the Legion and Envoy plugin
 // directories a pod loads as its two explicit extensions, and the command refuses a run without
 // either (exit 2): the probe certifies the lane a pod uses, so a build line that lost a flag fails
-// the build instead of probing a lane no pod loads. Every run also checks the Claude lane:
-// --claude-root, the claude-envoy package root the image carries, and --claude-code-pin, the
-// directory of the Claude Code pin a pod installs Claude Code from at launch, both defaulting to
-// where the worker image carries them, so the daemon's probe Sandbox, which names neither, checks
-// them as the build does. The image carries no Claude Code — its licence grants no
-// redistribution and the image is public — so the lane holds the root's built channel server and
-// generated Legion plugin, and its manifest to the same contract, and holds the pin to one a pod
-// can install and verify, exact and checksummed (daemon.ProbeImage, whose verifyClaude says why
-// it reads the pin rather than installing from it); the claude-code capability row checks the
-// same two facts.
-// It runs the image's launch probes under the image's own environment (daemon.ProbeImage), then
+// the build instead of probing a lane no pod loads. LEGION_IMAGE_PROBE_RUN
+// (bootprobe.ImageProbeRunVariable), read from the command's own process env, says which of two
+// runs this is. With no value, it is the image build's run, which makes every launch probe. With
+// boot (bootprobe.ImageProbeRunBoot), which the daemon's probe Sandbox sets in its container's
+// env, it is the daemon's boot run: of the launch probes it makes only the contract probe and the
+// plugin load probe, not pi.agents, the session-storage probe or the Claude lane, and its OK line
+// says session-storage=skipped. Any other value is refused as a bad flag is, exit 2, before any
+// check runs. Both runs take --claude-root, the claude-envoy package root the image carries, and
+// --claude-code-pin, the directory of the Claude Code pin a pod installs Claude Code from at
+// launch, both defaulting to where the worker image carries them; the daemon's probe Sandbox
+// names neither. The image build's run checks them in the Claude lane. The image carries no Claude
+// Code — its licence grants no redistribution and the image is public — so the lane holds the
+// root's built channel server and generated Legion plugin, and its manifest to the same contract,
+// and holds the pin to one a pod can install and verify, exact and checksummed (daemon.ProbeImage,
+// whose verifyClaude says why it reads the pin rather than installing from it). In both runs the
+// claude-code capability row checks the root's two files and the pin, but not the root's contract.
+// It runs the launch probes of its run under the image's own environment (daemon.ProbeImage), then
 // the capability check (capabilities.CheckImage) under the same environment and launch: every
 // image-site capability of the list every worker is held to (LEGION-578), with the whole table
 // printed, one line per capability, before anything else — so the probe pod's log reads as the
@@ -66,20 +73,24 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // whether the image's Oh My Pi falls back to another model (capabilities.ReadModelFallback): a
 // failure to read it is not a refusal — the probe writes the failure to stderr and carries on
 // with the mark bootprobe.ModelFallbackUnread, so the deployment's capability report shows that
-// row open rather than the probe's own line going missing. When every check passes, it prints
-// bootprobe.OKLine with the capabilities and model-fallback marks; a failed capability is the
-// probe's message, exit 1, so a broken image never publishes. Each check is judged as it returns,
-// by the deadline --probe-budget sets: what it saw fail before the deadline is exit 1, while a
-// check the deadline cut, a capability row among them (capabilities.StatusUnanswered), has no
-// verdict, which ends nothing, so the later checks still run. Where nothing failed and something
-// has no verdict, it prints bootprobe.NoVerdictLine, naming each, to stderr and exits
-// bootprobe.NoVerdictExit, which asks the daemon's probe Sandbox for another attempt rather than
-// refusing the image. Unlike the
-// TypeScript command, the contract is always checked:
-// with none named, against this binary's own DaemonAPIVersion, which the plugin packed from the
-// same commit must declare. The load probe also holds every task agent the
-// prompts dispatch to its own model; the OK line says so (agent-models=resolved), or that the
-// build's probe, which has no operator model configuration, skipped it (--skip-agent-models).
+// row open rather than the probe's own line going missing. It then reads the image's Oh My Pi's
+// version and whether its help lists --session-id (capabilities.ReadOmpVersion and
+// ReadSessionIDFlag) onto the OK line's omp-version and omp-session-id marks, each `unread` with
+// the failure on stderr when its read fails before the deadline, since only a daemon that sets an
+// exchange audience needs the flag and refuses the image without it; a read the deadline cut has
+// no verdict, like every other check. When every check passes, it prints bootprobe.OKLine with
+// the session-storage, capabilities, model-fallback, omp-version and omp-session-id marks; a
+// failed capability is the probe's message, exit 1, so a broken image never publishes. Each check
+// is judged as it returns, by the deadline --probe-budget sets: what it saw fail before the
+// deadline is exit 1, while a check the deadline cut, a capability row among them
+// (capabilities.StatusUnanswered), has no verdict, which ends nothing, so the later checks still
+// run. Where nothing failed and something has no verdict, it prints bootprobe.NoVerdictLine, naming
+// each, to stderr and exits bootprobe.NoVerdictExit, which asks the daemon's probe Sandbox for
+// another attempt rather than refusing the image. Unlike the TypeScript command, the contract is
+// always checked: with none named, against this binary's own DaemonAPIVersion, which the plugin
+// packed from the same commit must declare. The load probe also holds every task agent the prompts
+// dispatch to its own model; the OK line says so (agent-models=resolved), or that the build's
+// probe, which has no operator model configuration, skipped it (--skip-agent-models).
 // With --skip-browser, the build of an image for a deployment that turns Oh My Pi's browser off
 // (`browser.enabled: false`), which carries no Chromium, the capability check leaves the browser
 // row unchecked, and the OK line's capabilities mark says so (capabilities=browser-skipped, which
@@ -108,18 +119,18 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 func newProbeImageCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "probe-image --plugin-root <dir> --envoy-plugin-root <dir>",
-		Short:  "run the worker image's launch probes (the image build and the daemon's probe Sandbox run it)",
+		Short:  "run the worker image's checks: the image build's launch probes, or the daemon's boot run (LEGION_IMAGE_PROBE_RUN=boot)",
 		Hidden: true,
 	}
 	flags := cmd.Flags()
 	f := &probeImageFlags{}
 	flags.StringVar(&f.omp, "omp", "", "the OMP executable to probe (default: $LEGION_OMP_PATH)")
-	flags.StringVar(&f.contract, "daemon-api-version", strconv.Itoa(api.DaemonAPIVersion),
+	flags.StringVar(&f.contract, "daemon-api-version", strconv.Itoa(api.DaemonAPIVersion()),
 		"the daemon API contract the image's pi-legion must declare (the daemon's probe Sandbox passes its own)")
 	flags.StringVar(&f.pluginRoot, "plugin-root", "", "the Legion plugin directory a pod loads as an explicit extension, which the load probe loads the same way (required)")
 	flags.StringVar(&f.envoyPluginRoot, "envoy-plugin-root", "", "the Envoy plugin directory a pod loads as its other explicit extension, which the load probe loads the same way (required)")
-	flags.StringVar(&f.claudeRoot, "claude-root", imageClaudeRoot, "the claude-envoy package root a worker on the `claude` backend loads, which the Claude lane checks")
-	flags.StringVar(&f.claudeCodePin, "claude-code-pin", imageClaudeCodePin, "the directory of the package.json and package-lock.json a pod installs Claude Code from at launch, which the Claude lane checks")
+	flags.StringVar(&f.claudeRoot, "claude-root", imageClaudeRoot, "the claude-envoy package root a worker on the `claude` backend loads, which the image build's Claude lane and the `claude-code` row check")
+	flags.StringVar(&f.claudeCodePin, "claude-code-pin", imageClaudeCodePin, "the directory of the package.json and package-lock.json a pod installs Claude Code from at launch, which the image build's Claude lane and the `claude-code` row check")
 	flags.BoolVar(&f.podSafety, "pod-safety", false, "run the probes on a pod's baseline (internal/podsafety), as a pod's shim starts Oh My Pi")
 	flags.StringVar(&f.providerEnvDir, "provider-env-dir", "", "a directory whose files NAME=contents the probes' Oh My Pi gets, as a worker's shim exports them")
 	flags.DurationVar(&f.probeBudget, "probe-budget", 0, "the duration the daemon's probe pod reserves for this command")
@@ -156,7 +167,22 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		return 2
 	}
 	if f.claudeRoot == "" || f.claudeCodePin == "" {
-		fmt.Fprintln(stderr, "legion probe-image: --claude-root and --claude-code-pin each name a directory: the claude-envoy plugin and the Claude Code pin a worker on the `claude` backend needs, which the Claude lane checks")
+		fmt.Fprintln(stderr, "legion probe-image: --claude-root and --claude-code-pin each name a directory: the claude-envoy plugin and the Claude Code pin a worker on the `claude` backend needs, which the image build's Claude lane and the `claude-code` row check")
+		return 2
+	}
+	// LEGION_IMAGE_PROBE_RUN is read from this process's own env, here with the other usage checks
+	// and before --pod-safety and --provider-env-dir change the env the probes run under.
+	// newProbeImageCommand's comment says what each value means. The value is compared exactly: no
+	// case folding and no trim.
+	bootRun := false
+	switch run := os.Getenv(bootprobe.ImageProbeRunVariable); run {
+	case "":
+		// The image build's run.
+	case bootprobe.ImageProbeRunBoot:
+		bootRun = true
+	default:
+		fmt.Fprintf(stderr, "legion probe-image: %s is %q: it takes only %s, which the daemon's probe Sandbox sets, or no value\n",
+			bootprobe.ImageProbeRunVariable, run, bootprobe.ImageProbeRunBoot)
 		return 2
 	}
 
@@ -258,12 +284,13 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	// the probe with exit 1, and what the probe's deadline (--probe-budget) cut has no verdict,
 	// which ends nothing, so the later steps still run and a failure they see still fails. noVerdict
 	// names each step with no verdict; where nothing failed, they make the exit
-	// bootprobe.NoVerdictExit.
+	// bootprobe.NoVerdictExit. The launch probes are the ones of this run (BootRun); every step
+	// after them runs in both runs alike.
 	var noVerdict []string
 	err = daemon.ProbeImage(ctx, daemon.ImageProbe{
 		Omp: invocation, Contract: expected, Env: env, WorkDir: workDir, PluginRoot: f.pluginRoot, EnvoyPluginRoot: f.envoyPluginRoot,
 		ClaudeRoot: f.claudeRoot, ClaudeCodePin: f.claudeCodePin,
-		RoleReferences: references, SkipAgentModels: f.skipAgentModels,
+		RoleReferences: references, SkipAgentModels: f.skipAgentModels, BootRun: bootRun,
 		Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(&slog.HandlerOptions{Level: slog.LevelWarn}))),
 	})
 	switch {
@@ -303,6 +330,30 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		fmt.Fprintf(stderr, "legion probe-image: model-fallback not read; the deployment's capability report shows the row open: %v\n", err)
 		modelFallback = bootprobe.ModelFallbackUnread
 	}
+	// Which Oh My Pi the image carries, and whether it takes the --session-id a daemon under an
+	// exchange audience starts each new role with. A read that fails before the deadline refuses
+	// nothing: its mark says unread, with the failure on stderr, and the daemon that reads the
+	// marks decides. A read that failed once ctx ended has no verdict, as checkRoleOverlays judges
+	// a role's read: the deadline stops the read's process group, so the failure may be its own
+	// doing, and an omp-session-id=unread it would leave is a mark a daemon under an exchange
+	// audience refuses for good. A read that answered keeps its answer, whenever it returned.
+	ompVersion, err := capabilities.ReadOmpVersion(ctx, img)
+	switch {
+	case err != nil && ctx.Err() != nil:
+		noVerdict = append(noVerdict, "omp-version: "+err.Error())
+	case err != nil:
+		fmt.Fprintf(stderr, "legion probe-image: Oh My Pi's version not read; the OK line says omp-version=%s: %v\n", bootprobe.OmpVersionUnread, err)
+		ompVersion = bootprobe.OmpVersionUnread
+	}
+	sessionIDFlag, err := capabilities.ReadSessionIDFlag(ctx, img)
+	switch {
+	case err != nil && ctx.Err() != nil:
+		noVerdict = append(noVerdict, "omp-session-id: "+err.Error())
+	case err != nil:
+		fmt.Fprintf(stderr, "legion probe-image: whether Oh My Pi takes --session-id not read; the OK line says omp-session-id=%s, which a daemon that sets runtime.kubernetes.agent_secrets.exchange_audience refuses: %v\n",
+			bootprobe.SessionIDFlagUnread, err)
+		sessionIDFlag = bootprobe.SessionIDFlagUnread
+	}
 	// Each role's own overlays, read as that role's Oh My Pi will start on them, after the table so
 	// the log still reads as the declared list first.
 	roleImage := capabilities.Image{Launch: invocation, Env: environ, WorkDir: workDir}
@@ -326,10 +377,14 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	if f.skipBrowser {
 		checked = bootprobe.CapabilitiesBrowserSkipped
 	}
+	sessionStorage := bootprobe.SessionStorageProbed
+	if bootRun {
+		sessionStorage = bootprobe.SessionStorageSkipped
+	}
 	if natsUser != "" {
 		fmt.Fprintln(stdout, bootprobe.NATSUserLine(natsUser))
 	}
-	fmt.Fprintln(stdout, bootprobe.OKLine(omp, expected, agentModels, checked, modelFallback))
+	fmt.Fprintln(stdout, bootprobe.OKLine(omp, expected, sessionStorage, agentModels, checked, modelFallback, ompVersion, sessionIDFlag))
 	return 0
 }
 
@@ -378,14 +433,20 @@ func (f *roleConfigFilesFlag) Set(value string) error {
 	return nil
 }
 
-// envValue is the value environ gives name, "" when it gives none.
-func envValue(environ []string, name string) string {
-	value := ""
-	for _, pair := range environ {
+// envLookup is the value environ gives name and whether it gives one, the last entry winning where
+// a name is set twice, as os/exec builds a child's environment from such a list.
+func envLookup(environ []string, name string) (string, bool) {
+	for _, pair := range slices.Backward(environ) {
 		if found, v, _ := strings.Cut(pair, "="); found == name {
-			value = v
+			return v, true
 		}
 	}
+	return "", false
+}
+
+// envValue is the value environ gives name, "" when it gives none (envLookup).
+func envValue(environ []string, name string) string {
+	value, _ := envLookup(environ, name)
 	return value
 }
 

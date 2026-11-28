@@ -415,8 +415,8 @@ func newPauseDaemonRig(t *testing.T, tune func(*config.Config)) *pauseDaemonRig 
 	cfg.WorkerBootTimeout = time.Hour
 	cfg.ProbeInterval = time.Hour
 	cfg.PodUpdateGrace = pauseRigPodUpdateGrace
-	// An admission pass every second, besides the one each fact makes, so a pass the pause did
-	// not stop would admit within the test's reads.
+	// An admission pass every second, besides the passes facts run (the pass rule, admit's
+	// Admission.Apply), so a pass the pause did not stop would admit within the test's reads.
 	cfg.ControllerWakeInterval = time.Second
 	clock := newWaveClock()
 	envoy := newPauseEnvoy(t, clock)
@@ -488,9 +488,9 @@ func (r *pauseDaemonRig) root(issue string, ph phase.Phase) record.Issue {
 		HandedOver: true, Rank: "U"}
 }
 
-// podLocator is the process of token in issue's pod, as the Sandbox runtime records it: every role
+// pauseRigPodLocator is the process of token in issue's pod, as the Sandbox runtime records it: every role
 // of an issue runs in its one pod.
-func podLocator(token claim.Token, issue string) *runtime.Locator {
+func pauseRigPodLocator(token claim.Token, issue string) *runtime.Locator {
 	pod := "pod-" + strings.ToLower(issue)
 	return &runtime.Locator{Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(pod, 1),
 		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "sandbox-" + strings.ToLower(issue), PodUID: pod,
@@ -508,7 +508,7 @@ func (r *pauseDaemonRig) running(issue string, role claim.Role, state supervise.
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: state, Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl",
-		PluginContract: api.DaemonAPIVersion, Locator: podLocator(token, issue),
+		PluginContract: api.DaemonAPIVersion(), Locator: pauseRigPodLocator(token, issue),
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
@@ -518,7 +518,7 @@ func (r *pauseDaemonRig) released(issue string, role claim.Role) supervise.Claim
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-		Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion}
+		Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion()}
 }
 
 // unfinished is role's claim of issue as a daemon stopped mid-launch left it: launching, with no
@@ -527,11 +527,11 @@ func (r *pauseDaemonRig) unfinished(issue string, role claim.Role) supervise.Cla
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: supervise.StateLaunching, Session: "ses-" + string(token),
-		SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion,
+		SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion(),
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
-// inPodRound is c in an update round over its issue's pod (podLocator's), opened at opened and
+// inPodRound is c in an update round over its issue's pod (pauseRigPodLocator's), opened at opened and
 // asked of c then, for the reason a pod that runs an outdated image gives.
 func inPodRound(c supervise.Claim, opened time.Time) supervise.Claim {
 	c.UpdateRound = supervise.PodRound("pod-" + strings.ToLower(c.Issue))
@@ -572,7 +572,7 @@ func (r *pauseDaemonRig) boot() {
 	r.mu.Unlock()
 	r.reportListener()
 	logger := slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	r.d = startDaemonWithin(r.t, r.cfg, r.o, logger, 90*time.Second)
+	r.d = startDaemonLogging(r.t, r.cfg, r.o, logger)
 	testwait.Eventually(r.t, "run to hand the rig its supervisor", func() bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -848,7 +848,7 @@ func (r *pauseDaemonRig) controllerUp() *shim {
 	r.awaitState(token, supervise.StateShimConnected, "the controller's shim said hello")
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_controller", OmpSessionFile: "/sessions/ses_controller.jsonl",
-		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		r.t.Fatalf("register the controller = %d; body %s", status, body)

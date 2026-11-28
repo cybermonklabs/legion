@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the reader's wheel and the margin's own scroll events, which user-event has no form for
 import { act, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
@@ -7,7 +7,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 
-import { nextFrame } from "../../__tests__/frames";
+import { nextFrame as oneFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { Ask, Comment } from "../../api/types";
 import { useDrawerPage } from "../issue-page/drawer-page";
@@ -18,6 +18,7 @@ import {
   MarginSlotProvider,
   useFillMarginSlot,
 } from "../issue-page/margin-slot";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { type KeyBindingDescription, useKeymap } from "../shell/keymap";
@@ -39,6 +40,14 @@ import {
   stubViewport,
 } from "./margin-fixture";
 import { RELAYOUT_SETTLES_FRAMES } from "./useCardHold";
+
+// The reply composer the landing card opens (`MentionField`) draws again when the lazy Markdown
+// engine lands. A row that waits outside `act` - the scroll stream below waits a frame at a time -
+// would take that draw outside it whenever the engine lands late, which the cold lane makes every
+// time. So each row starts with the engine loaded, whatever ran before it.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const secondComment: Comment = {
   ...comment,
@@ -129,6 +138,15 @@ function renderCommentLinkLanding(comments: Comment[] = [comment], asks: Ask[] =
   );
 }
 
+/** One rendering frame (`__tests__/frames.ts`), inside `act`, as `quiet` is, so whatever the
+ *  reply composer draws in the frame - its field taking focus, a timer of its own landing - draws
+ *  inside it. A frame is the unit the hold's relayout window counts. */
+async function nextFrame(): Promise<void> {
+  await act(async () => {
+    await oneFrame();
+  });
+}
+
 /** Longer than the hold's relayout window, so what follows is judged on its own: whatever the
  *  margin is still rendering lands first, then the window's frames run out. */
 async function settled(): Promise<void> {
@@ -145,9 +163,14 @@ async function settled(): Promise<void> {
  *  the margin left the card alone. The fake clock also freezes `performance.now()`, which the
  *  long-task row spins on. */
 async function quiet(): Promise<void> {
-  const settled = Promise.withResolvers<void>();
-  setTimeout(settled.resolve, 50);
-  await settled.promise;
+  // Inside `act`, so whatever draws in these 50 ms draws inside it: the margin's frames, and the
+  // reply composer, which draws again in the wait when the shared Markdown engine lands
+  // (`useLoadedEngine`) and when a timer updates its field.
+  await act(async () => {
+    const settled = Promise.withResolvers<void>();
+    setTimeout(settled.resolve, 50);
+    await settled.promise;
+  });
 }
 
 test("a phone comment deep link highlights its card without expanding it or opening the Thread dialog", async () => {

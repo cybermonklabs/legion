@@ -17,6 +17,7 @@ import (
 // command that does not run. A script is named by its path under packages/envoy/loadtest/, and
 // loadgen is reached as `stack.sh loadgen ...` or as "$LOADTEST_ROOT/bin/loadgen".
 func TestREADMEBashCommandsRunAsWritten(t *testing.T) {
+	t.Parallel()
 	const scriptDir = "packages/envoy/loadtest/"
 	const readme = scriptDir + "README.md"
 	// The repository root is four directories above this package, and the README is reached from

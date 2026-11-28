@@ -2,7 +2,8 @@
 # The live proof that a project's declared experiment draws a group for each new issue, and that
 # the group sets how the issue is done: the experiment `planning` gives its arm `a` the plan
 # `owner`, where the issue's owner gives its plan as today, and its arm `b` the plan `default`,
-# where the issue runs the project's default steps and Legion takes no plan from its owner. The
+# where the issue runs the project's default steps. Legion takes from that issue's owner only a
+# version that changes nothing but the text of its running task `default`. The
 # driver (packages/daemon/internal/daemon/plan_experiment_live_test.go, which this script builds
 # with `-tags e2e`) builds and starts the real Dispatch server from this checkout's packages/envoy
 # on a database of its own, with its events on the run's own broker, and boots the whole daemon
@@ -24,7 +25,12 @@
 #     third issue is handed to Legion; register_plan on it answers 409 PLAN_NOT_TAKEN, and the same
 #     call sent again the same; once its gate opens, its run starts at planning, the project's
 #     default steps; `legion state` prints `planning: 3 issues — 2 a (on), 1 b (on)`, the issues
-#     drawn before the second boot keeping the arm `a`.
+#     drawn before the second boot keeping the arm `a`;
+#   - variant-on-steps: the real `dispatch steps --issue <KEY>` prints `Experiment planning:
+#     variant b.` right after the third issue's header and before its first run, and `Experiment
+#     planning: variant a.` there for the first, as each record of a step names the variant of its
+#     issue's draw; control, run by hand: with envoy-client's `dispatch steps` printing the line
+#     after the runs, this check fails, naming where the line stands.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), bun (after `bun install` at the checkout's root), awk and python3, as

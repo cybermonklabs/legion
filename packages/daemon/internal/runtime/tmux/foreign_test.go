@@ -220,7 +220,9 @@ func TestAForeignLocatorStoppedBeforeTheSweepIsNotReported(t *testing.T) {
 func TestAResumeOverAForeignIncarnationOpensThePaneOnTheCarriedSession(t *testing.T) {
 	ctx := context.Background()
 	f := takingOver(t)
-	f.stopGrace = time.Hour
+	// A hundred years, past any test binary's deadline, -timeout 0 included: a resume that waited
+	// for the previous incarnation could never return, and the wait below fails it by name.
+	f.stopGrace = 100 * 365 * 24 * time.Hour
 	spec := f.spec(t, claim.RoleTester)
 	prev := sandboxLocator(t, spec.Project, spec.Issue, claim.RoleTester)
 	spec.ResumeSessionFile = podSession
@@ -232,7 +234,7 @@ func TestAResumeOverAForeignIncarnationOpensThePaneOnTheCarriedSession(t *testin
 		_, err := f.Resume(ctx, &prev, spec)
 		done <- err
 	}()
-	// A resume that waited for the previous incarnation would wait out the hour-long stop grace.
+	// A resume that waited for the previous incarnation would wait out the hundred-year grace.
 	if err := testwait.Receive(t, "the resume over a foreign incarnation, which waits for no process this runtime cannot see", done); err != nil {
 		t.Fatalf("Resume over a foreign incarnation: %v", err)
 	}

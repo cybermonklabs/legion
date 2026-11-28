@@ -17,20 +17,21 @@ import (
 // token that lists none covers the public projects and no private one, since a private project
 // needs a token that lists it; a credential of no person that lists PRIV covers PRIV and PUB, and
 // one that lists none covers PUB alone (R3); a browser lists nothing and
-// covers every project.
+// covers every project. The empty project stands for every project and is not private, so each
+// credential covers it except a restricted member's that lists projects.
 func TestCredentialCoversDecidesOnlyPrivateProjects(t *testing.T) {
-	private := map[string]bool{"PUB": false, "PRIV": true, "PRIV2": true}
+	private := map[string]bool{"": false, "PUB": false, "PRIV": true, "PRIV2": true}
 	for _, test := range []struct {
 		name   string
 		cred   Credential
 		covers []string
 	}{
-		{"carol's token that lists PRIV", Credential{Listed: []string{"PRIV"}, Person: true}, []string{"PRIV", "PUB"}},
+		{"carol's token that lists PRIV", Credential{Listed: []string{"PRIV"}, Person: true}, []string{"", "PRIV", "PUB"}},
 		{"bob's token that lists PRIV", Credential{Listed: []string{"PRIV"}, Person: true, Restricted: true}, []string{"PRIV"}},
-		{"the shared token", Credential{}, []string{"PUB"}},
-		{"bob's token that lists none", Credential{Person: true, Restricted: true}, []string{"PUB"}},
-		{"a token of no person that lists PRIV", Credential{Listed: []string{"PRIV"}}, []string{"PRIV", "PUB"}},
-		{"carol's browser", Credential{Person: true, Browser: true}, []string{"PRIV", "PRIV2", "PUB"}},
+		{"the shared token", Credential{}, []string{"", "PUB"}},
+		{"bob's token that lists none", Credential{Person: true, Restricted: true}, []string{"", "PUB"}},
+		{"a token of no person that lists PRIV", Credential{Listed: []string{"PRIV"}}, []string{"", "PRIV", "PUB"}},
+		{"carol's browser", Credential{Person: true, Browser: true}, []string{"", "PRIV", "PRIV2", "PUB"}},
 	} {
 		for project, isPrivate := range private {
 			if got, want := CredentialCovers(test.cred, project, isPrivate), slices.Contains(test.covers, project); got != want {
@@ -43,8 +44,8 @@ func TestCredentialCoversDecidesOnlyPrivateProjects(t *testing.T) {
 // TestACredentialOfNoPersonSeesThePrivateProjectsItLists (R3): a credential that names no person
 // sees every public project and the private projects its list names, as Resolve answers it: a
 // service-account token that lists PRIV sees PRIV and PUB, and one that lists nothing, the shared
-// token, sees PUB alone. No broker token names no person and lists a project
-// (ciphertoken.sessionCaller refuses one), so this is the rule's row, read through Resolve.
+// token, sees PUB alone. These two rows are the rule's, read through Resolve. A job's broker token
+// also names no person and lists projects, and no row of this test runs that shape.
 func TestACredentialOfNoPersonSeesThePrivateProjectsItLists(t *testing.T) {
 	database := seedAccess(t)
 	for _, test := range []struct {

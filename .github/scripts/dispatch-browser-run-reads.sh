@@ -12,9 +12,9 @@
 # {id, name, conclusion, leg} that the merge job's two readings consume - reading one for the
 # legs that owed a blob report, reading three for the legs that did not succeed. <job> is the id
 # of the job that calls dispatch-browser.yaml, the merge job's `${{ inputs.job }}`: GitHub names
-# each job of a called workflow `<caller> / <job>`, and a pull request labelled full-ci runs
-# ci.yaml's two callers of this workflow in one run, so only the jobs named under this caller
-# are this lane's.
+# each job of a called workflow `<caller> / <job>`, and one run of a pull request can run several
+# of ci.yaml's three callers of this workflow, so only the jobs named under this caller are this
+# lane's.
 #
 # `blobs-refused` writes no file and makes no request. It prints the one `::error::` line for a
 # blob download `actions/download-artifact` could not complete and exits 0: that step has

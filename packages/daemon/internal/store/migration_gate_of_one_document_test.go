@@ -28,6 +28,7 @@ import (
 // closed. So the open gate read above is the gate's own answer and not a read that cannot see a
 // closed one.
 func TestAGateOfOneDocumentSurvivesTheUpgrade(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, designNewsVersion-1)
