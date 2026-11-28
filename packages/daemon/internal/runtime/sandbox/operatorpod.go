@@ -90,7 +90,9 @@ func exchangeOf(agentSecrets *AgentSecrets, broker bool) PodExchange {
 // podVariables maps every variable a worker's Oh My Pi finds set before the shim exports a
 // provider key (shim.ReadProviderEnv) to who sets it: the runtime (runtimeOwned, the session
 // store's two variables named apart, since they are Legion's under either store, the controller's
-// Slack channel list, which the runtime sets in the controller's pod alone, Claude Code's three
+// Slack channel list, which the runtime sets in the controller's pod alone, the image probe's own
+// (probeOwned: LEGION_IMAGE_PROBE_RUN, which it sets in the image probe's pod alone, to tell
+// `legion probe-image` it is the daemon's boot run), Claude Code's three
 // (claudelaunch.Environment) and the session its launcher keeps (claudelaunch.SessionVariable),
 // which it tells a Claude role alone, in its start command, what holds a resumed Oh My Pi to the
 // session it resumes (runtime.SessionExclusiveVariable), which it tells a launch that resumes a
@@ -145,6 +147,9 @@ func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[str
 	}
 	for _, name := range slices.Sorted(maps.Keys(runtimeOwned)) {
 		add(name, "Legion's runtime sets in every pod", false)
+	}
+	for _, name := range slices.Sorted(maps.Keys(probeOwned)) {
+		add(name, "Legion's runtime sets in the image probe's pod, to tell legion probe-image it is the daemon's boot run", false)
 	}
 	if exchange != NoExchange {
 		for _, name := range slices.Sorted(maps.Keys(exchangeOwned)) {

@@ -43,6 +43,7 @@ func (r *colorRunner) Run(ctx context.Context, command Command) (Result, error) 
 // issue's workspace is provisioned, removed, and provisioned again at its bookmark, and the second
 // provisioning writes no jj setting the first one already wrote.
 func TestProvisioningParsesUncoloredReadsUnderColorAlways(t *testing.T) {
+	t.Parallel()
 	local := newLocalRunner(t)
 	run := newColorRunner(t, local)
 	req := provisionRequest(t)
@@ -92,6 +93,7 @@ func (r *pendingRunner) Run(ctx context.Context, command Command) (Result, error
 // provision again, with a change pending in the clone before every command, the clone's log holds
 // exactly one snapshot per add.
 func TestProvisioningSnapshotsTheSharedCloneOnlyInWorkspaceAdd(t *testing.T) {
+	t.Parallel()
 	req := provisionRequest(t)
 	location, err := Location(req.StateDir, req.Repo, req.Issue)
 	if err != nil {
@@ -127,6 +129,7 @@ func TestProvisioningSnapshotsTheSharedCloneOnlyInWorkspaceAdd(t *testing.T) {
 // (configureCloneReads): the clone and the issue's workspace each read one gh-resolved line,
 // `remote.origin.gh-resolved base`, and core.warnAmbiguousRefs as false.
 func TestProvisionMarksOriginAndTurnsOffTheAmbiguousRefWarning(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	working, err := Provision(context.Background(), run, request)
@@ -165,6 +168,7 @@ var packWindows = [][2]string{
 // provision. The repository cache holds none of them: Fetch rebuilds a cache whose configuration
 // does (cacheConfigKeys).
 func TestTheSharedCloneMapsPacksInSmallWindows(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	request := provisionRequest(t)
 	readsAll := func(t *testing.T, working Workspace) {
@@ -196,6 +200,7 @@ func TestTheSharedCloneMapsPacksInSmallWindows(t *testing.T) {
 // value changed in one place and not in the others fails here, in CI. The pack-memory Job
 // (scripts/e2e/pack-memory-job.sh) is what measures the built image itself.
 func TestTheWorkerImageWritesPackWindowConfig(t *testing.T) {
+	t.Parallel()
 	requireImagePackWindows(t, filepath.Join("..", "..", "docker", "worker.Dockerfile"))
 }
 
@@ -306,6 +311,7 @@ func gitConfigRead(t *testing.T, dir string, args ...string) (string, int) {
 // --remote` leaves on the remote it renames origin to, keeps it at its next provision and gets no
 // origin line beside it.
 func TestProvisionMarksOriginAsGhsDefaultRepository(t *testing.T) {
+	t.Parallel()
 	// readsOnly fails the test unless the shared clone and the issue's workspace each print the
 	// one line want from `git config --get-regexp '^remote\..*\.gh-resolved$'`, the read gh makes
 	// of every remote's default marker (cli/cli git/client.go, populateResolvedRemotes). git exits
@@ -323,6 +329,7 @@ func TestProvisionMarksOriginAsGhsDefaultRepository(t *testing.T) {
 	}
 	const marked = "remote.origin.gh-resolved base\n"
 	t.Run("from GitHub", func(t *testing.T) {
+		t.Parallel()
 		run := newLocalRunner(t)
 		working, err := Provision(context.Background(), run, provisionRequest(t))
 		if err != nil {
@@ -331,6 +338,7 @@ func TestProvisionMarksOriginAsGhsDefaultRepository(t *testing.T) {
 		readsOnly(t, working, marked)
 	})
 	t.Run("over a marker the clone holds", func(t *testing.T) {
+		t.Parallel()
 		run := newLocalRunner(t)
 		request := provisionRequest(t)
 		working, err := Provision(context.Background(), run, request)

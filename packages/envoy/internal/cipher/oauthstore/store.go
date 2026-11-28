@@ -90,6 +90,8 @@ var sweepStatements = []struct{ what, sql string }{
 		where expires_at <= now() order by expires_at limit $1)`},
 	{"pod session registrations", `delete from oauth_pod_sessions where (pod_uid, session) in (select pod_uid, session from oauth_pod_sessions
 		where expires_at <= now() order by expires_at limit $1)`},
+	{"result grants", `delete from result_grants where id in (select id from result_grants
+		where expires_at <= now() order by expires_at limit $1)`},
 	// Every review trades an approve grant of its own (ApproveGrants), which no read serves once it
 	// has ended, so an ended one goes. The proxy's own copy of its values goes at its pod's next
 	// read of a new grant, by the one rule proxy.Server's valuesFor states.
@@ -121,7 +123,7 @@ type sweepCursor struct {
 // polling one is answered expired_token, not invalid_grant as for an unknown code), DPoP proofs
 // and nonces past theirs, access tokens past theirs, narrowed ones included, lapsed session
 // bindings, the two replay stores' remembered JWT ids past theirs, pod-session registrations past
-// theirs, and every refresh token of a family (rows sharing
+// theirs, CI runs' result grants past theirs, and every refresh token of a family (rows sharing
 // request_id) none of whose rows is still redeemable (active, unexpired, and in its
 // rotation's grace or never rotated). A family with a redeemable row keeps all its rows, so
 // replaying one of its rotated tokens still finds it and revokes the family. Each kind is

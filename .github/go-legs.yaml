@@ -259,7 +259,7 @@ packages/envoy:
       - internal/holdrecord/holdrecordtest
     # Dispatch's commands and the lighter half of its packages.
     3:
-      - internal/dispatch/legion                # 489 s alone in an issue pod (docs/testing.md)
+      - internal/dispatch/legion                # 617 s (run 46059758378, its read-rule seeds beside each other)
       - cmd/dispatch                            # 316 s
       - cmd/dispatch-seed                       # 83 s
       - internal/dispatch/duty                  # 31 s
@@ -368,6 +368,7 @@ packages/envoy:
       - internal/stacktest
       - internal/redact
       - natsgrant
+      - awsbody
       - internal/oauthrefusal
       - internal/pgmigrate/pgmigratetest
       - internal/ratelimit
@@ -448,22 +449,31 @@ packages/envoy:
       - internal/kvwatch                        # 98 s
       - natscred                                # 32 s
       - internal/kvwatch/kvwatchtest
-    # Dispatch: the Dispatch store and delivery, each with the packages under it.
+    # Dispatch's delivery, with the packages under it and under the Dispatch store, beside the NATS
+    # auth service and the sign-in code flow; the times beside them are their Elapsed in throwaway
+    # run 46045787166, which ran these packages in two legs of their own. Delivery's time is its
+    # serial tests' (435 s of its 488 s, its process using 0.09 of a core over them), so the
+    # packages beside it share four cores that are mostly idle.
     4:
-      - internal/dispatch/store                 # 554 s
-      - internal/dispatch/delivery              # 429 s
-      - internal/dispatch/store/storetest       # 18 s
-      - internal/dispatch/delivery/measures     # 1 s
+      - internal/dispatch/delivery              # 488 s
+      - internal/cipher/natscallout             # 219 s
+      - internal/dispatch/store/storetest       # 110 s
+      - internal/oidc                           # 44 s
+      - internal/dispatch/delivery/measures     # 6 s
       - internal/dispatch/delivery/citebody     # 1 s
       - internal/dispatch/delivery/deliverytest
       - internal/dispatch/store/cmd/connections
       - internal/dispatch/store/searchtest
       - internal/dispatch/store/storetest/lockstep
-    # The NATS auth service and the sign-in code flow, and the forced-order steps, which run no
-    # leg's packages.
+    # The Dispatch store, in two legs, a group of its tests each
+    # (.github/go-legs/packages/envoy/internal/dispatch/store.yaml, modelled 295 s a group): whole,
+    # beside delivery, it took 583-654 s in the 12 green merge groups of 2026-11-27 10:48Z-16:49Z,
+    # the lane's time, and its serial tests took 362 s of its 630 s in run 46045787549. The last
+    # leg also runs the forced-order steps, which run no leg's packages.
     5:
-      - internal/cipher/natscallout             # 211 s
-      - internal/oidc                           # 42 s
+      - internal/dispatch/store: 1
+    6:
+      - internal/dispatch/store: 2
   # envoy-go-race-api (.github/workflows/ci-job-envoy-go-race-api.yaml, job
   # envoy-go-race-api-legs): one package, internal/dispatch/api, in three legs, a group of its
   # tests each (.github/go-legs/packages/envoy/internal/dispatch/api.yaml). The whole package took

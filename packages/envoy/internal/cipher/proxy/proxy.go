@@ -192,11 +192,11 @@ type Options struct {
 	DialAllow []string
 	// ClusterRanges is BROKER_AIRLOCK_CLUSTER_RANGES: the broker cluster's own Service, pod and
 	// node ranges. Such a range can be global unicast - a GKE Service range such as
-	// 34.118.224.0/20 is - so none of localRule's fixed rules refuses an address in it, and a
-	// tunnel there reaches a ClusterIP of the cluster the broker runs in. An address inside any
-	// of them is refused as a private one is, after those fixed rules; DialAllow still opens
-	// one it names. Nil refuses nothing beyond the fixed rules, which is a broker outside a
-	// cluster.
+	// 34.118.224.0/20 is - so none of netaddr.DialRefusal's fixed rules refuses an address in
+	// it, and a tunnel there reaches a ClusterIP of the cluster the broker runs in. An address
+	// inside any of them is refused as a private one is, after those fixed rules; DialAllow
+	// still opens one it names. Nil refuses nothing beyond the fixed rules, which is a broker
+	// outside a cluster.
 	ClusterRanges []netip.Prefix
 	// PrivateUpstreams is BROKER_PROXY_PRIVATE_UPSTREAM: the bound hosts whose requests go to an
 	// address inside the broker's own cluster, in place of the host's own address, one entry per
@@ -252,8 +252,8 @@ type Server struct {
 	// resolve answers the addresses a host has, the ones refuseLocalAddress reads. It is
 	// Options.Resolve, and net.DefaultResolver's lookup for a proxy given none.
 	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
-	// clusterRanges is Options.ClusterRanges, the broker cluster's own ranges, which localRule
-	// refuses after its fixed rules.
+	// clusterRanges is Options.ClusterRanges, the broker cluster's own ranges, which
+	// netaddr.DialRefusal refuses after its fixed rules and netaddr.DestinationRefusal takes.
 	clusterRanges []netip.Prefix
 	// destinations are Options.PrivateUpstreams by bound host, each with the transport every
 	// request to its host goes out on: nil for a proxy given none (destinationOf).

@@ -32,7 +32,8 @@ const (
 	// that has not turned the exchange on, and is why no program here fails for want of it.
 	IdentityVar = "AGENT_SECRETS_MACHINE_IDENTITY"
 	// MachineTokenFileVar is the projected Kubernetes service-account token file, which
-	// IdentityKubernetes reads and IdentityPool federates.
+	// IdentityKubernetes reads and IdentityPool federates, and the file an
+	// IdentityGitHubActions job with no runner endpoint reads its run's token from.
 	MachineTokenFileVar = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
 	// MachineAudienceVar is the audience of this machine's identity token: the metadata server
 	// mints it for that audience, a pool mint names it as the minted token's own, and GitHub
@@ -199,9 +200,16 @@ func MachineIdentity(getenv func(string) string) (Source, error) {
 			TokenAudience: audience, HTTP: HTTPClient(),
 		}, nil
 	case IdentityGitHubActions:
-		requestURL, err := required(getenv, ActionsIDTokenRequestURLVar, kind)
-		if err != nil {
-			return nil, err
+		// A job's run names its token by the runner's endpoint (ActionsIDTokenRequestURLVar); with no
+		// endpoint, a file that holds the run's token (MachineTokenFileVar) stands in for it. The
+		// refusal of neither names the endpoint's variable alone, as every refusal of a kind's first
+		// variable does (testdata/machine-identities.json).
+		requestURL := strings.TrimSpace(getenv(ActionsIDTokenRequestURLVar))
+		if requestURL == "" {
+			if path := strings.TrimSpace(getenv(MachineTokenFileVar)); path != "" {
+				return NewWorkflowRunTokenFile(path), nil
+			}
+			return nil, fmt.Errorf("%s is required by %s=%s", ActionsIDTokenRequestURLVar, IdentityVar, kind)
 		}
 		requestToken, err := required(getenv, ActionsIDTokenRequestTokenVar, kind)
 		if err != nil {
