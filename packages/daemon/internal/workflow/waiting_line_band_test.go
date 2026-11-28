@@ -27,8 +27,8 @@ import (
 // that puts its prose on a single line, so a text wrapped across a line break reads as one
 // written out on a single line. (INFRA-1100.)
 //
-// The five texts outside packages/daemon are read out of waiting_line_words_extract.txt, the
-// copy of their sentences committed beside this package, and never out of the files themselves:
+// Four of the five texts outside packages/daemon are read out of waiting_line_words_extract.txt,
+// the copy of their sentences committed beside this package, and never out of the files themselves:
 // a test that reads a shipped text puts that text in this job's filter — a declared read applies
 // to every compiled source file of a run — and an edit of a docs or skill page would then
 // start the whole daemon Go lane. Each quotation is held to the constant its file was held to,
@@ -37,6 +37,8 @@ import (
 // cover every file of that list, and carries the ban over them, is internal/textcheck's
 // TestTheWaitingLineWordsExtractIsWhatTheShippedTextsSay and
 // TestNoShippedTextClaimsAPositionInTheWaitingLine (INFRA-1413).
+// No test holds the fifth text, skills/legion-controller/references/admission.md, because no
+// unit test reads the words of a skill (INFRA-5720).
 //
 // The rule those texts keep, and this test with them: a text states the placement,
 // record.WaitingLineBand, with a tree root's own first phase placed at the moment its gate

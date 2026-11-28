@@ -114,14 +114,20 @@ export function IssueIdentityRow({
       <span className="flex-1" />
       {details === undefined ? null : (
         // A press leaves the focus where it is, so Details opens on the node the reader stood
-        // on: a button takes no focus from a click in every browser, and the outline reads the
-        // focus moving to nothing as the reader leaving it (`IssueTree.tsx`).
+        // on and follows it, the answer box Dashboard draws among them: a button takes no focus
+        // from a click in every browser, the outline reads the focus moving to nothing as the
+        // reader leaving it (`IssueTree.tsx`), and opening asks the drawer to leave the focus
+        // where it is rather than put it on its Close (`MarginDrawerPage.leaveFocusOnNextOpen`).
         <button
           aria-expanded={details.open}
           className={pageHeaderControl}
           data-testid="issue-details-control"
           {...{ [DETAILS_ATTRIBUTE]: "" }}
-          onClick={() => details.setOpen(!details.open)}
+          onClick={() => {
+            const opening = !details.open;
+            if (opening) details.page?.leaveFocusOnNextOpen();
+            details.setOpen(opening);
+          }}
           onMouseDown={(event) => event.preventDefault()}
           type="button"
           {...pageChrome}

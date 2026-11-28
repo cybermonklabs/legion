@@ -1929,7 +1929,7 @@
     },
     "/api/v1/artifacts/{id}/events": {
       "get": {
-        "description": "Page a document's event log as an issue's is paged (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. At a cut the route pages only the events written at or before the cut. A post deleted after the cut answers its own events with no body, as it does now. A preview of it that another post's event holds keeps its text. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*/payload/referenced_by_count, /*/payload/revision, /*/payload/options/*/id, /*/payload/answer/id, /*/payload/body. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id.",
+        "description": "Page a document's event log as an issue's is paged (after, before, ids, order, limit, exclude_types); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. exclude_types is at most 50 comma-separated event types the page leaves out before limit counts it; a blank exclude_types leaves out none, and an unknown type or an empty item in the list is 400 INVALID_QUERY. At a cut the route pages only the events written at or before the cut. A post deleted after the cut answers its own events with no body, as it does now. A preview of it that another post's event holds keeps its text. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*/payload/referenced_by_count, /*/payload/revision, /*/payload/options/*/id, /*/payload/answer/id, /*/payload/body. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id.",
         "operationId": "getApiV1ArtifactsByIdEvents",
         "parameters": [
           {
@@ -1973,6 +1973,13 @@
             "in": "query",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "exclude_types",
+            "in": "query",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -8030,7 +8037,7 @@
     },
     "/api/v1/issues/{key}/events": {
       "get": {
-        "description": "Page an issue's event log (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. At a cut the route pages only the events written at or before the cut, under an ETag over the cut and the answer's own bytes. A post deleted after the cut answers its own events with no body, as it does now. A preview of it that another post's event holds keeps its text. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*/payload/referenced_by_count, /*/payload/revision, /*/payload/options/*/id, /*/payload/answer/id, /*/payload/body. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id.",
+        "description": "Page an issue's event log (after, before, ids, order, limit, exclude_types); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. exclude_types is at most 50 comma-separated event types the page leaves out before limit counts it; a blank exclude_types leaves out none, and an unknown type or an empty item in the list is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. At a cut the route pages only the events written at or before the cut, under an ETag over the cut and the answer's own bytes. A post deleted after the cut answers its own events with no body, as it does now. A preview of it that another post's event holds keeps its text. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*/payload/referenced_by_count, /*/payload/revision, /*/payload/options/*/id, /*/payload/answer/id, /*/payload/body. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id.",
         "operationId": "getApiV1IssuesByKeyEvents",
         "parameters": [
           {
@@ -8074,6 +8081,13 @@
             "in": "query",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "exclude_types",
+            "in": "query",
+            "schema": {
+              "type": "string"
             }
           },
           {

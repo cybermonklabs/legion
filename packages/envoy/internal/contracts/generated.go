@@ -131,6 +131,12 @@ const MintedDedupeKeyPattern = "^(?:envoy\\.role\\.forward\\.)?(?:publish|agent\
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = "The listener didn't answer within the send window; the message may already have been delivered."
 
+// NoLiveSession opens the listener's refusal of a session it will not answer for ("no live
+// session <id>", noLiveSession in cmd/listener) and is the failure Dispatch records for such a
+// session itself. Generated from NO_LIVE_SESSION in packages/contracts so the listener, Dispatch
+// and every reader that keys on the words spell them once.
+const NoLiveSession = "no live session"
+
 // DeletedPostDeliveryError is what a delete settles each send of its post still pending with.
 // Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes
 // and the string the dashboard reads a delete's receipts and attempts by cannot drift apart.
@@ -141,6 +147,13 @@ const DeletedPostDeliveryError = "ended by the post's delete"
 // from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string
 // the dashboard keys its retry wording on cannot drift apart.
 const StoreUnconfirmedCause = "The listener sent the message but could not confirm it was stored; the message may already have been delivered."
+
+// KeptForwardUnconfirmedCause is what a delivery attempt of a post to a role records when the copy
+// the listener kept for the role ended after a forward of it to the role's holder began and was
+// never confirmed (bus.KeptCopyExpiry.ForwardUnconfirmed). Generated from
+// KEPT_FORWARD_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the
+// string the dashboard keys its retry wording on cannot drift apart.
+const KeptForwardUnconfirmedCause = "The Envoy listener kept this message for the role, and a forward to its holder was not confirmed before the listener dropped it; the message may already have been delivered."
 
 // MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
@@ -842,6 +855,14 @@ func GithubPushSubject(owner, repo, refType, refName string) string {
 
 func GithubWorkflowSubject(owner, repo, workflowFilename, action string) string {
 	return GithubRepositoryPrefix(owner, repo) + ".workflow." + SanitizeSubjectSegment(workflowFilename) + "." + action
+}
+
+// GithubDefaultBranchWorkflowSubject is the second subject of a run of a workflow on its
+// repository's default branch, of the repository's own head: its workflow file, its action and its
+// trigger event, each one segment, sanitized. Mirrored on the TS side as
+// `githubDefaultBranchWorkflowSubject`.
+func GithubDefaultBranchWorkflowSubject(owner, repo, workflowFilename, action, event string) string {
+	return GithubRepositoryPrefix(owner, repo) + ".default_branch.workflow." + SanitizeSubjectSegment(workflowFilename) + "." + SanitizeSubjectSegment(action) + "." + SanitizeSubjectSegment(event)
 }
 
 // GithubJobSubject names a finished GitHub Actions job on the default branch, of a run with no pull

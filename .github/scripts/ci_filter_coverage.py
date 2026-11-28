@@ -2025,8 +2025,8 @@ ENV_ALLOWED = frozenset({
     "GOCACHE",
     "GOPROXY",
     # The job's state, success, failure or cancelled, which the step "Wait for the script
-    # harnesses and judge them" of the test job and envoy-go-checks hands .github/scripts/
-    # harness-pool.sh to choose --allow-none and --now. go reads it nowhere.
+    # harnesses and judge them" of envoy-go-checks and envoy-session-stall hands
+    # .github/scripts/harness-pool.sh to choose --allow-none. go reads it nowhere.
     "JOB_STATUS",
     # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
     # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
