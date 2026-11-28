@@ -1467,6 +1467,49 @@ It changes no output and no status; it does change the order in which a Python p
 This repository's artifacts can be downloaded by anyone for those 90 days, and GitHub's log masking does not reach them: the record holds each harness's output as the harness wrote it.
 No pooled harness is given a secret today — each runs over fakes — and a harness that is ever given one must keep it out of its output, as every harness whose log the wait prints already must.
 
+## The CPU time of each test binary
+
+Each `go test` and `go run` of the Go jobs of `envoy-go` (`.github/workflows/ci-job-envoy-go.yaml`) runs its binary through `.github/scripts/go-cpu-exec.py`, which the workflow's `GOFLAGS` names as go's `-exec`.
+The wrapper runs the binary unchanged and exits as it did, and then writes one JSON row for it.
+The job keeps the rows in its artifact `go-test-events-<job id>`, in the directory `cpu/`, and the runner's facts in `cpu/runner/`.
+So a reader of the test events reads only the artifact's top-level `*.jsonl` files, and a reader of the CPU record reads only `cpu/`.
+
+A row holds the binary's directory (`cwd`, relative to the workspace), its base name and arguments, its wall seconds, and its user and system CPU seconds (`user_s`, `sys_s`).
+Those CPU seconds are the binary's own and those of every process it started and waited for: the `go build` that a test runs, a database it starts, a `go run` it makes.
+`self_user_s` and `self_sys_s` hold the binary's own CPU alone, and `children_user_s` and `children_sys_s` that of its children.
+`go_pid` names the `go` process that started the wrapper, so the rows of one `go test` call share it.
+A test binary's environment carries `GO_CPU_PARENT`, so a wrapper that a test starts below it writes `parent`, the id of the row above it.
+
+A row is in one class, tested in this order:
+
+- `nested`: it has a `parent`; its CPU is already in its parent's;
+
+- `outside`: its `cwd` is outside the workspace, such as the temporary checkout of `packages/envoy/scripts/database-skips.test.sh`;
+
+- `list`: its arguments hold `-test.list`, the listing `packages/envoy/scripts/database-skips.sh` makes;
+
+- `run`: its binary does not end in `.test`: a program that `go run` started;
+
+- `test`: every other row.
+
+A package's CPU seconds in a job are the sum of its `test` rows.
+The job's CPU seconds are the sum over its `test`, `list` and `outside` rows; a `run` row is not in it, since a launcher's row would count its test binaries twice.
+The job's log prints that sum on its `go-cpu job:` line, with the runner's facts on `go-cpu runner:` and the whole machine's CPU between the two steps on `go-cpu usage:`.
+The whole machine's CPU holds the compiles too, which no row counts.
+
+To read one run:
+
+```sh
+python3 .github/scripts/go_cpu_record.py cpu --run <run id>
+python3 .github/scripts/go_cpu_record.py coverage --run <run id>
+```
+
+`cpu` prints each package's CPU seconds, its own and its children's apart, and each job's total, and fails when a job's total differs from its log's `go-cpu job:` line or its artifact holds no row.
+`coverage` fails, naming the job and the package, when the events show a package that ran a test binary and the rows hold none for it.
+`python3 .github/scripts/go_cpu_record.py spread --runs <id> <id> <id> <id> <id>` gives each job's minimum, median and maximum wall time over five or more runs of one commit, and `factors --runs` gives the factors weighed against it.
+
+The rows hold each binary's arguments, directory, times and exit status, and neither its output nor any value of its environment.
+
 ## A test asserts no count of work a broker may repeat
 
 A message broker that gives at-least-once delivery may hand one message to a handler twice. NATS
