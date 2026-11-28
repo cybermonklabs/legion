@@ -332,6 +332,7 @@ packages/envoy:
       - internal/dispatch/api/apitest
       - internal/dispatch/docs/crafted
       - internal/dispatch/docs/docstest
+      - internal/dispatch/docs/docstest/newerversion
       - internal/dispatch/embed/embedtest
       - internal/dispatch/files/filestest
       - internal/dispatch/graphcensus/censustest

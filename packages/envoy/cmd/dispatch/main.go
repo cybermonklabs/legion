@@ -259,6 +259,11 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// HoldDecisionsStep keeps the server from running any phase of the decisions step
+	// (docs.DecisionStep), at boot or on its tick, so a test driver's command entry point makes the
+	// first move; only DISPATCH_TEST_HOLD_DECISIONS_STEP=1, under the test hooks, sets it.
+	// kept for one release: decisions-step
+	HoldDecisionsStep bool
 	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
@@ -524,8 +529,9 @@ func main() {
 	// install is here, beside the migration run: a process serving on a schema that is not the
 	// store's would hold documents to types the deployment has moved on from, so a failure
 	// stops the boot as a failed migration does. The reinstall on each change is a loop of its
-	// own, started beside the other woken loops below.
-	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+	// own, started beside the other woken loops below. Each opens the pool's transactions, so
+	// each marks its context for the pool's nested-acquire guard (store.WithTransactionTracking).
+	if err := schemanodes.InstallFromStore(store.WithTransactionTracking(ctx), database.Pool); err != nil {
 		slog.Error("dispatch: install the block schema from the store", "error", err)
 		os.Exit(1)
 	}
@@ -579,6 +585,26 @@ func main() {
 		os.Exit(1)
 	} else if filled > 0 {
 		slog.Info("dispatch: filled session_titles for the events stored before this release", "rows", filled)
+	}
+
+	// The decisions step's first phase (docs.DecisionStep): every asks and ask_followers row the
+	// release before wrote is stated on its ask's node and marked, in committed batches, before
+	// this process serves, as document_search is filled above. A reading's check of its ask takes
+	// the answer from the node, which reads an ask the backfill has not stated as open, so a
+	// failure stops the boot, and the release before keeps serving in a roll until this process
+	// can. The process waits here for the step's lock only while the first phase owes a row, so a
+	// process that holds the lock, stalled or not, keeps no boot waiting when nothing is owed. Its
+	// catch-up and its later passes run on its own tick once the server listens, below: the boot
+	// reads only what the first phase reads, so a table it does not need, held by another
+	// transaction, keeps no process from serving.
+	// kept for one release: decisions-step
+	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
+	// kept for one release: decisions-step
+	if !boot.HoldDecisionsStep {
+		if err := decisionStep.Boot(ctx); err != nil {
+			slog.Error("dispatch: the decisions step's backfill", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// asks_anchor_artifact_id (migration 0148) indexes the anchors whose artifact_id is a
@@ -1139,7 +1165,7 @@ func main() {
 			}
 			documentService.CloseDocumentSockets()
 		},
-	}).Run(ctx)
+	}).Run(store.WithTransactionTracking(ctx))
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
 	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
 	// functions set it from the deploy on, and this labels the rows stored before it, in
@@ -1216,6 +1242,13 @@ func main() {
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
 	// a build indexed without the block grammar.
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
+	// The decisions step's tick, for as long as the process runs: the backfill while a row the
+	// release before wrote stands unmarked, and the catch-up of what a process of another build
+	// writes while one lives.
+	// kept for one release: decisions-step
+	if !boot.HoldDecisionsStep {
+		go decisionStep.Run(ctx)
+	}
 	// The reference forms drain: each comment, ask, issue message and document a build that
 	// predates an issue's tab addresses and a document's dashboard URLs indexed without them
 	// (refs_forms_owed). A loop of its own under a lease of its own, on the block index's
@@ -1934,6 +1967,8 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_CREATE_STAGED", &boot.CreateStaged},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
+		// kept for one release: decisions-step
+		{"DISPATCH_TEST_HOLD_DECISIONS_STEP", &boot.HoldDecisionsStep},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {

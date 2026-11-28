@@ -193,7 +193,7 @@ var markVersionedDocuments = `
 // the revision fence takes a document's document_block_versions row before any node it writes
 // (the fifth invariant on api's markInboxReadThreads), and a settlement takes its document's row
 // and then the node of the session that follows an ask it opens (lockSettlementFence,
-// followsByEvent): a tick that wrote a comment's author's node first and then waited for that
+// causedByEvent): a tick that wrote a comment's author's node first and then waited for that
 // document's row would hold what the settlement waits for, while the settlement held what the
 // tick waits for. A tick that fails moves nothing and the next reads the same events again; a
 // document already marked keeps its mark and its time. A document marked here is listed by the

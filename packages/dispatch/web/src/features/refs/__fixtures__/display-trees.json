@@ -566,7 +566,6 @@
           "attrs": {
             "blockId": "q2",
             "multiple": false,
-            "state": "open",
             "urgency": "blocking"
           },
           "content": [

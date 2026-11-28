@@ -1,0 +1,189 @@
+package docs
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+)
+
+// asAgentReadsIt is document as an agent reads it through the text routes (TextWithAsks): its
+// markdown, then a line `asks:` and one line per entry of its asks member (askLines). A person's
+// answer is held on the ask's node alone, so the asks member is where a
+// test reads it beside the text; it fails t where the markdown holds a server-owned attribute of
+// an ask block, which the text routes take off every ask block.
+func asAgentReadsIt(t *testing.T, service *Service, document string) string {
+	t.Helper()
+	text, err := service.TextWithAsks(context.Background(), document, false)
+	if err != nil {
+		t.Fatalf("read %s as an agent reads it: %v", document, err)
+	}
+	requireNoAskServerAttributes(t, document, text.Markdown)
+	return text.Markdown + "\nasks:\n" + askLines(text.Asks)
+}
+
+// askLines is entries as these tests compare them, one line each, each ended by a newline: `#`
+// and the block id, then each value the entry holds as name="value", in the order the release
+// before wrote them on the block's opening line, the options chosen as their JSON list.
+func askLines(entries []model.TextAsk) string {
+	var lines strings.Builder
+	for _, entry := range entries {
+		lines.WriteString("#" + entry.BlockID)
+		if entry.State != "" {
+			lines.WriteString(` state="` + entry.State + `"`)
+		}
+		if entry.AnsweredBy != "" {
+			lines.WriteString(` answered_by="` + entry.AnsweredBy + `"`)
+		}
+		if entry.AnsweredAt != "" {
+			lines.WriteString(` answered_at="` + entry.AnsweredAt + `"`)
+		}
+		if entry.Selected != nil {
+			selected, _ := json.Marshal(*entry.Selected)
+			lines.WriteString(" selected=" + string(selected))
+		}
+		if entry.Answer != nil {
+			lines.WriteString(` answer="` + *entry.Answer + `"`)
+		}
+		if entry.CopiedFrom != "" {
+			lines.WriteString(` copied_from="` + entry.CopiedFrom + `"`)
+		}
+		if entry.CopiedFromDocument != "" {
+			lines.WriteString(` copied_from_document="` + entry.CopiedFromDocument + `"`)
+		}
+		lines.WriteString("\n")
+	}
+	return lines.String()
+}
+
+// requireNoAskServerAttributes fails t where an ask block's opening line in markdown, the text
+// routes' rendering of document, carries one of the server-owned attributes
+// (askServerAttributeNames).
+func requireNoAskServerAttributes(t *testing.T, document, markdown string) {
+	t.Helper()
+	for _, line := range strings.Split(markdown, "\n") {
+		kind, attrs, opens := pmdoc.ParseTypedDirectiveOpen(strings.TrimLeft(line, " \t>"))
+		if !opens || kind != "ask" {
+			continue
+		}
+		for _, name := range askServerAttributeNames {
+			if _, held := attrs[name]; held {
+				t.Fatalf("the text of %s an agent reads carries the server-owned ask attribute %s:\n%s", document, name, markdown)
+			}
+		}
+	}
+}
+
+// While another build serves, settlement keeps the server-owned attributes of an ask block in step
+// with its asks row in the live document, for that build's pages (rollWindowAskAttributes), and
+// the text routes take them off all the same (TextWithAsks): read through the room that holds the
+// document and through the cache once no room does, with its blocks and without, the markdown an
+// agent reads holds none of them, the blocks' byte ranges index that markdown, the token is the
+// document's own, and the answer reads in the asks member. The kept form a reader of a release
+// before reads (KeptText) takes off only the answer's words and selection, keeps the state, the
+// answerer and the time as the live document holds them, and answers the same token, blocks that
+// index its own markdown, and the same asks.
+func TestTheTextAnAgentReadsHoldsNoServerOwnedAskAttributeWhileAnotherBuildServes(t *testing.T) {
+	t.Parallel()
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	ctx := context.Background()
+	repaired := seedAnsweredAskBlock(t, service, artifactID)
+	service.settleRoom(artifactID, 0)
+	live, token, err := service.TextWithToken(ctx, artifactID)
+	if err != nil || live != repaired {
+		t.Fatalf("the live document reads %q (%v), want the roll window's attributes on its ask block:\n%s", live, err, repaired)
+	}
+	answeredAt := strings.Split(strings.Split(repaired, `answered_at="`)[1], `"`)[0]
+	const served = ":::ask{#ask-block urgency=\"med\" multiple=\"false\"}\nShip it?\n:::\n\nContext.\n"
+	kept := strings.Replace(repaired, ` selected="[]"`, "", 1)
+	if kept == repaired {
+		t.Fatalf("the live document holds no selection, so its kept form proves nothing:\n%s", repaired)
+	}
+	wantAsks := `#ask-block state="answered" answered_by="alice" answered_at="` + answeredAt + `" selected=[]` + "\n"
+	forms := []struct {
+		name   string
+		read   func(context.Context, string, bool) (AskedText, error)
+		served string
+	}{
+		{"the text a reader of asks reads", service.TextWithAsks, served},
+		{"the kept form", service.KeptText, kept},
+	}
+	read := func(what string) {
+		t.Helper()
+		for _, form := range forms {
+			block := form.served[:strings.Index(form.served, "\n\nContext.")]
+			for _, withBlocks := range []bool{false, true} {
+				text, err := form.read(ctx, artifactID, withBlocks)
+				if err != nil {
+					t.Fatalf("%s, %s, blocks %t: %v", what, form.name, withBlocks, err)
+				}
+				if text.Markdown != form.served || text.Token != token {
+					t.Fatalf("%s, %s, blocks %t: the text reads %q with token %q, want %q with the document's own token %q", what, form.name, withBlocks, text.Markdown, text.Token, form.served, token)
+				}
+				if got := askLines(text.Asks); got != wantAsks {
+					t.Fatalf("%s, %s, blocks %t: the asks read %q, want %q", what, form.name, withBlocks, got, wantAsks)
+				}
+				if withBlocks != (len(text.Blocks) > 0) {
+					t.Fatalf("%s, %s, blocks %t: %d blocks", what, form.name, withBlocks, len(text.Blocks))
+				}
+				for _, listed := range text.Blocks {
+					if listed.ID == "ask-block" && text.Markdown[listed.From:listed.To] != block {
+						t.Fatalf("%s, %s: the ask block's range [%d, %d) reads %q in the text served, want the block as it serves it, %q", what, form.name, listed.From, listed.To, text.Markdown[listed.From:listed.To], block)
+					}
+				}
+			}
+		}
+	}
+	read("the room's read")
+	if err := service.Evict(ctx, artifactID); err != nil {
+		t.Fatalf("evict the room: %v", err)
+	}
+	waitForNoLiveDocument(t, service, artifactID)
+	read("the cold read")
+	read("the cached read")
+}
+
+// The test the text routes make of a stored text for an ask block (holdsAskOpener) finds one in the
+// rendering of every tree that holds one, wherever the renderer writes it: at the top, in a list
+// item, in a blockquote, and in a typed block, whose own fence the renderer writes one colon
+// longer. It finds none in a plan document's, whose `:::plan_task{` opener holds `ask{`.
+func TestAskedTextFindsAnAskOpenerWhereverTheRendererWritesOne(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, markdown string
+		holdsAsk       bool
+	}{
+		{name: "an ask block at the top", markdown: ":::ask{#a1}\nShip it?\n:::\n", holdsAsk: true},
+		{name: "an ask block in a list item", markdown: "- Context\n\n  :::ask{#a1}\n  Ship it?\n  :::\n", holdsAsk: true},
+		{name: "an ask block in a blockquote", markdown: "> :::ask{#a1}\n> Ship it?\n> :::\n", holdsAsk: true},
+		{
+			name:     "an ask block in a callout",
+			markdown: "::::callout{#c1 kind=\"note\" title=\"T\"}\nA note.\n\n:::ask{#a1}\nShip it?\n:::\n::::\n",
+			holdsAsk: true,
+		},
+		{name: "a plan document", markdown: ":::plan_task{#t1}\nRead the version.\n:::\n"},
+		{name: "a plan task beside an ask block", markdown: ":::plan_task{#t1}\nRead the version.\n:::\n\n:::ask{#a1}\nShip it?\n:::\n", holdsAsk: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := pmdoc.Parse(test.markdown)
+			if err != nil {
+				t.Fatalf("parse %q: %v", test.markdown, err)
+			}
+			if held := pmdoc.HoldsAskBlock(tree); held != test.holdsAsk {
+				t.Fatalf("the tree of %q holds an ask block: %t, want %t", test.markdown, held, test.holdsAsk)
+			}
+			rendered, err := pmdoc.Render(tree)
+			if err != nil {
+				t.Fatalf("render %q: %v", test.markdown, err)
+			}
+			if found := holdsAskOpener(rendered); found != test.holdsAsk {
+				t.Errorf("holdsAskOpener of the rendering %q = %t, want %t, as its tree holds an ask block or not", rendered, found, test.holdsAsk)
+			}
+		})
+	}
+}

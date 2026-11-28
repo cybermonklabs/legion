@@ -68,6 +68,11 @@ type BlockIndex struct {
 	placed      map[string]blockFarEnd
 }
 
+// HasNode reports whether the block's index row names its node.
+func (i BlockIndex) HasNode(blockID string) bool {
+	return i.blocks[blockID].named
+}
+
 // indexedLink is one block_refs row the index holds: its pair, when the row was written, the
 // source event it stands at, and whether it names its block's node.
 type indexedLink struct {

@@ -3,12 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -128,18 +128,25 @@ func leaveAnswerUnsettled(t *testing.T, database *store.Store, written string) s
 		t.Fatalf("approve version 1 as alice: %v", err)
 	}
 
+	// alice's answer is written as the answer route writes it: through the one writer of an ask's
+	// answer state, on the ask's node and its row (asks.Settle), and into the block in step with
+	// them (docs.Service.KeepAskBlockInStep), which leaves the document owing a settlement.
 	at := time.Now().UTC()
-	answer, err := json.Marshal(model.AskAnswer{User: "alice", Selected: []string{"East"}, At: at})
-	if err != nil {
-		t.Fatal(err)
-	}
+	alice := model.Actor{Kind: "user", ID: "alice"}
 	backfillJoinedWrite(t, database, server, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `update asks set state = 'answered', answer = $2 where block_artifact_id = $1 and block_id = 'region'`, artifactID, answer); err != nil {
+		var askID string
+		if err := tx.QueryRow(ctx, `select id::text from asks where block_artifact_id = $1 and block_id = 'region'`, artifactID).Scan(&askID); err != nil {
 			return err
 		}
-		return server.SetBlockAttributes(ctx, artifactID, "region", map[string]any{
-			"state": "answered", "answered_by": "alice", "answered_at": at.Format(time.RFC3339Nano), "selected": []string{"East"}, "answer": nil,
-		}, model.Actor{Kind: "user", ID: "alice"})
+		change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"East"}, At: at})
+		change.Who, change.At = alice, at
+		ask, err := asks.Settle(ctx, tx, askID, change)
+		if err != nil {
+			return err
+		}
+		blockID := "region"
+		ask.BlockID, ask.BlockArtifactID = &blockID, &artifactID
+		return server.KeepAskBlockInStep(ctx, ask, alice)
 	})
 	if err := server.Quiesce(ctx); err != nil {
 		t.Fatalf("stop the server's document service: %v", err)

@@ -266,9 +266,10 @@ var projections = []projection{{
 }, {
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
-	table:    "comments.author",
+	table:    "comments.author, asks.author, asks.answer",
 	note: "no table projects a person, so the row side is the people the projected tables name as authors," +
-		" and the owner of each session the server proved that wrote one",
+		" the owner of each session the server proved that wrote one, the person each ask's answer names and each" +
+		" answer the store took ever named",
 	names: `select p.login from (` + commentPeople + `) p`,
 	rows: `
 		select 'person ' || p.login, '` + graphstore.KindPerson + `', p.login, ''
@@ -444,9 +445,51 @@ func provedSessionOwner(actor string) string {
 // The backfill gives these people their nodes in its comment pass (writeCommentBatch,
 // graphstore.AuthorFacts) and needs no pass of its own for them: a row names its author to that
 // pass.
+//
+// An ask whose row names its node names people too: its author, read as a comment's is
+// (graphstore.AskFacts states its authored_by), and the person whose answer it holds, whose node
+// its answered_by and decided_by point at (asks.Settle). A node is history and never goes, as a
+// session that once followed an ask still owes its node (recordedSessions), so a person whose
+// answer a reopen took off the row is still the person that answer named: every person an ask's
+// answered_by or decided_by ever named, asserted or retracted since, is read here off the store's
+// own log (answeredHistory). The census's whole reading of the writers the store names, the
+// authors of decisions and readings beside the asks', comes with the decision and reading nodes
+// (slice 5 of cybermonklabs/legion#4173).
 var commentPeople = `
-	select distinct named.login
-	from (` + commentWriterPeople + `) named`
+	select distinct user_threads_login(author.login) as login
+	from (
+		select named.login
+		from (` + commentWriterPeople + `) named
+		union all
+		select case
+			when k.author->>'kind' = 'user' and coalesce(k.author->>'id', '') <> '' then k.author->>'id'
+			when k.author->>'kind' = 'session' and coalesce(k.author->>'id', '') <> '' then null
+			when coalesce(k.author->>'owner', '') <> '' then k.author->>'owner'
+		end
+		from asks k where k.node_kind is not null
+		union all
+		select k.author->>'owner'
+		from asks k
+		where k.node_kind is not null and k.author->>'kind' = 'session' and coalesce(k.author->>'id', '') <> ''
+		  and k.author->'act'->>'session' = k.author->>'id'
+		  and octet_length(k.author->>'id') <= ` + addressBound + `
+		union all
+		select k.answer->>'user' from asks k where k.node_kind is not null and k.answer is not null
+		union all
+		select answered.id from (` + answeredHistory + `) answered
+	) author (login)
+	where author.login is not null and user_threads_login(author.login) <> ''`
+
+// answeredHistory is every person an ask's answered_by or decided_by ever named, asserted or
+// retracted since, as (kind, id, at) (commentPeople), read from each person's node: the probe of
+// graph_tuples binds graph_tuples_as_of_in's partial predicate (to_kind <> 'value') beside its
+// join, as graphstore.CurrentIn binds it, so that index is one the probe can take.
+var answeredHistory = `select answered.kind, answered.id, answered.made_at from graph_nodes answered
+		where answered.kind = '` + graphstore.KindPerson + `' and exists (
+			select 1 from graph_tuples t
+			where t.to_kind = answered.kind and t.to_kind <> '` + graphstore.KindValue + `' and t.to_id = answered.id
+			  and t.kind in ('` + graphstore.TupleAnsweredBy + `', '` + graphstore.TupleDecidedBy + `')
+			  and t.from_kind = '` + graphstore.KindAsk + `')`
 
 // recordedSessions are the sessions a row of the store names or an event of the log has named,
 // each once, with the first event that named it (null for a session only a row names) and the

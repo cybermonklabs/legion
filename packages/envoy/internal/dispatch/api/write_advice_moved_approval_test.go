@@ -254,33 +254,25 @@ func TestMovedApprovalRequestIsAbsentWhenNoRequestNamesTheDocument(t *testing.T)
 	}
 }
 
-// A write whose own carry answered the request reports nothing. The person approved version 2,
-// the agent reworded an open decision block, and the request stands at version 3; the person's
-// answer to the other block is the whole change since the version he approved, and the agent's
-// edit versions it in the route's own transaction, so that version carries his approval
-// (docs.carryApproval) and answers the request. The request is answered, not moved onto the
-// agent's turn, so the edit's answer names it nowhere.
+// A write whose own carry answered the request reports nothing. The person approved version 1,
+// the agent edited it, and the request stands at version 2; the agent's next edit undoes the
+// first, in the route's own transaction, so its version holds the text he approved, carries his
+// approval (docs.carryApproval) and answers the request. The request is answered, not moved onto
+// the agent's turn, so the edit's answer names it nowhere. (The carry is the restore's.)
 func TestMovedApprovalRequestIsAbsentWhenTheWritesOwnCarryAnsweredIt(t *testing.T) {
 	t.Parallel()
-	// Settling past the run (pastTheRun), so no settlement timer versions alice's answer before the
-	// agent's edit does: the edit's own transaction is what versions it, and carries the approval
-	// there, however long a loaded machine takes between the two requests.
-	handler, _, documents := settlingCarryDocuments(t, pastTheRun)
+	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carried, not moved", "Context\n")
-	insertDecisionMarkdown(t, handler, issue.PrimaryArtifactID, waveAsk+"\n"+regionAsk, 2)
-	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID,
-		map[string]string{"wave": "How many regions take the first wave?", "region": "Which region goes first?"})
-	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
-	reviseDocument(t, handler, issue.PrimaryArtifactID, "Which region goes first?", "Which cloud region goes first?", 3)
+	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 1)
+	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context", "Context, revised", 2)
 	request := requestApproval(t, handler, issue.PrimaryArtifactID)
 
-	answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
 	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 		"actor": adviceSessionActor("session-editor"),
-		"ops":   []map[string]string{{"op": "replace", "find": "Which cloud region goes first?", "with": "Which cloud region ships first?"}},
+		"ops":   []map[string]string{{"op": "replace", "find": "Context, revised", "with": "Context"}},
 	})
 	advice := adviceFromResponse(t, edited.Code, edited.Body.String())
-	requireCarriedReview(t, handler, issue.PrimaryArtifactID, 4, 2, &request.ID)
+	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), &request.ID)
 	if answered := readBlockAsk(t, handler, request.ID); answered.State != "answered" {
 		t.Fatalf("request after the carry = %q, want answered", answered.State)
 	}
@@ -381,24 +373,23 @@ func TestMovedApprovalRequestReachesAPersonsWrite(t *testing.T) {
 	}
 }
 
-// A carry that answers only one document of a two-document request. The person's answer to a
-// decision block of the spec carried his approval to the version it settled into, which answers
-// the spec's half alone: nobody has approved the Verification document, so the request stays
-// open. The edit that then versions the Verification document takes it further from him, and the
-// report names that document as the one standing above the version the request asks about.
+// A carry that answers only one document of a two-document request. The agent's undo of its edit
+// to the spec holds the text the person approved, so that version carries his approval
+// (docs.restoresApprovedText), which answers the spec's half alone: nobody has approved the
+// Verification document, so the request stays open. The edit that then versions the Verification
+// document takes it further from him, and the report names that document as the one standing
+// above the version the request asks about.
 func TestMovedApprovalRequestNamesTheDocumentACarryLeftBehind(t *testing.T) {
 	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carried one half", "Context\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne.\n")
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
-	asks := insertDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, waveAsk, 2,
-		map[string]string{"wave": "How many regions take the first wave?"})
+	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context", "Context, revised", 2)
 	request := requestApprovalWithVerification(t, handler, issue.PrimaryArtifactID)
 
-	answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
-	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 3)
-	requireCarriedReview(t, handler, issue.PrimaryArtifactID, 3, 1, &request.ID)
+	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context, revised", "Context", 3)
+	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), &request.ID)
 	if still := readBlockAsk(t, handler, request.ID); still.State != "open" {
 		t.Fatalf("request after the carry = %q, want it still open for the Verification document", still.State)
 	}

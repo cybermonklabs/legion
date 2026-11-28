@@ -73,12 +73,27 @@ type backfillAnswer struct {
 	err    error
 }
 
+// backfillRun is a run a test starts on a connection of its own (startRun): the whole Backfill
+// (wholeBackfill), or one pass of it.
+type backfillRun func(ctx context.Context, database *store.Store) (BackfillReport, error)
+
+// wholeBackfill is Backfill as a run, writing its report nowhere.
+func wholeBackfill(ctx context.Context, database *store.Store) (BackfillReport, error) {
+	return Backfill(ctx, database, io.Discard)
+}
+
 // startBackfill runs Backfill on a pool of one connection, off the test's goroutine, and answers
 // that connection's backend process id and the channel the run's answer arrives on. One
 // connection is what lets the test watch the run's own backend: every statement of the run
 // goes through it, and a session queued on the same lock with anything else is never taken for
 // it.
 func startBackfill(t *testing.T, database *store.Store) (uint32, <-chan backfillAnswer) {
+	t.Helper()
+	return startRun(t, database, wholeBackfill)
+}
+
+// startRun is startBackfill of run.
+func startRun(t *testing.T, database *store.Store, run backfillRun) (uint32, <-chan backfillAnswer) {
 	t.Helper()
 	backfiller := storetest.SingleConnection(t, database)
 	var pid uint32
@@ -87,7 +102,7 @@ func startBackfill(t *testing.T, database *store.Store) (uint32, <-chan backfill
 	}
 	answered := make(chan backfillAnswer, 1)
 	go func() {
-		report, err := Backfill(context.Background(), backfiller, io.Discard)
+		report, err := run(context.Background(), backfiller)
 		answered <- backfillAnswer{report, err}
 	}()
 	return pid, answered

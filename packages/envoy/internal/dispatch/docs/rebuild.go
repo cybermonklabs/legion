@@ -36,7 +36,7 @@ type RebuildReport struct {
 // does not know (ErrDocNewerContent, as every read of it answers), and markdown that is not a
 // Proof document, drops an open ask block, introduces a check block that breaks a rule of a check
 // CI proves (refuseCICheckText, refuseCICheckBlocks) or a block pointer at a block the attribute
-// may not name (refuseBlockPointers), both against the latest version. Supplied markdown is caller
+// may not name (refuseBlockPointers), each against the latest version. Supplied markdown is caller
 // text: it is parsed as an upload is, and its rendering is weighed as a new document's is
 // (SeedText). The latest version is the server's own rendering of the document, read back as
 // every stored rendering is (pmdoc.ParseRendering), so a document whose version is past what one
@@ -191,13 +191,24 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// in the history this replaces. So the close's final sweep is written into the tree here
 	// (closedIssueAskState): every resolved ask's block and copy, and every answered ask's copy,
 	// from the rows as they stand under the issue's owner lock this transaction holds, and every
-	// readable ask block with no ask row marked resolved. The ask rows are taken before RebuildTx
-	// takes the document's advisory lock, the order the close's own write takes them in
-	// (WriteIssueAskStates). Once this transaction commits, the rebuilt document reads as the
-	// issue's other documents do.
+	// readable ask block with no ask row marked resolved. The sweep is written as the fleet stands
+	// (anotherBuildServes), as the close writes it: while another build serves, each block gets the
+	// attributes that build's pages read its state from, from the rows; once the fleet is one build,
+	// each gets the ones a version keeps, which the release before's readers of a stored version
+	// read its state from, written from its ask's node, or from its row where the node is behind it,
+	// and none of the rest of the seven (readIssueAskStateWrites, keptAskState, keptFromItsNode). The ask
+	// rows are taken before RebuildTx takes the document's advisory lock, the order the close's own
+	// write takes them in (WriteIssueAskStates). Once this transaction commits, the rebuilt document
+	// reads as the issue's other documents do.
 	var closedStates *issueAskStateWrites
 	if !open {
-		closedStates, err = readIssueAskStateWrites(ctx, tx, artifactID, owner, tree, closedIssueAskState, true)
+		// kept for one release: roll-window-attributes
+		// kept for one release: stored-ask-state
+		twoBuilds, err := anotherBuildServes(ctx, tx)
+		if err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
+		closedStates, err = readIssueAskStateWrites(ctx, tx, artifactID, owner, tree, closedIssueAskState, true, twoBuilds)
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
@@ -213,11 +224,11 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		if err := weighRendering("", canonical); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
-		// Supplied markdown is a caller's write, so a block pointer or a check block it introduces
-		// over the latest version is checked: the rules that read a check block alone first, then
-		// those that read the database. That version is read back as the tree before the write;
-		// one that does not read back holds no pointer and no check block. The check blocks the
-		// write introduces are found once, for both refusals that read them.
+		// Supplied markdown is a caller's write, so a block pointer, a check block or a reading it
+		// introduces over the latest version is checked: the rules that read a check block alone
+		// first, then those that read the database. That version is read back as the tree before
+		// the write; one that does not read back holds no pointer, no check block and no reading.
+		// The check blocks the write introduces are found once, for both refusals that read them.
 		var prior *pmdoc.Node
 		if latestTree, err := pmdoc.ParseRendering(latest.markdown); err == nil {
 			prior = latestTree
@@ -266,6 +277,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		if err := owed.exec(ctx, tx); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
+		// kept for one release: roll-window-attributes
 		logUnindexedAskBlocks(*owner.IssueKey, closedStates.marked)
 	}
 	// Supplied markdown whose rendering the latest version holds - byte for byte, or as another

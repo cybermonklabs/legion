@@ -262,7 +262,8 @@ func unchangedNode(next, live *Node) bool {
 // answer itself apart (attrsEqualOutsideServerState); and a typed block's that names no id but for
 // its id, which is then carried like an untyped block's, and the whole of its server state, the
 // answer included. The answer is held apart there because an upload resets a typed block's server
-// state and the settlement writes it back from the ask row (docs.setAskServerAttributes), and an
+// state and the settlement writes back, from the ask's node, what the stored bytes keep of it
+// (docs.rollWindowAskAttributes while another build serves, docs.keptAskState once one does), and an
 // agent composing a document body cannot know the answer a person gave: an answered ask whose
 // question text is unchanged must still read as unchanged, or it takes a fresh id, orphans the row
 // holding that answer and opens a second row on the same question.

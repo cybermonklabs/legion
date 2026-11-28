@@ -4,7 +4,7 @@ import type { Doc } from "yjs";
 import type { BlockSchema } from "../../api/types";
 import { requestMermaidDrawing } from "../refs/mermaid-diagrams";
 import { importWhenOnline } from "../shell/DeploymentResilience";
-import type { AnchoredBlock } from "./ask-block";
+import type { AnchoredBlock, AskStateOf } from "./ask-block";
 import type { WatchPicture } from "./picture-view";
 import { MARKS_MAP_NAME } from "./roots";
 import type { AskBlockHost } from "./typed-block-drawing";
@@ -26,6 +26,10 @@ export type EditorOptions = CreateProofEditorOptions & {
    *  `AnchoredBlockView` `installTypedBlocks` mounts below. The reading pane passes one; a
    *  document's own page passes none, and then no such view is installed at all. */
   anchoredBlock?: AnchoredBlock;
+  /** The server's read of the answer state of the ask each block shows, by block id, for the
+   *  refusal of a reading in an ask it reads open (`readingsInOpenAsksPlugin`). A read-only
+   *  editor, which takes no edit, passes none. */
+  askStateOf?: AskStateOf;
   blockSchema: BlockSchema;
   /** The document's decision blocks, in document order, whenever the set changes. */
   onAskBlockHosts: (hosts: readonly AskBlockHost[]) => void;
@@ -69,7 +73,8 @@ export const createEditor: CreateEditor = async (root, options) => {
     options.blockSchema,
     options.onAskBlockHosts,
     options.watchPicture,
-    options.anchoredBlock
+    options.anchoredBlock,
+    options.askStateOf
   );
   return handle;
 };

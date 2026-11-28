@@ -409,12 +409,11 @@ func (s *Service) sendEditNotice(ctx context.Context, artifactID string) (bool, 
 
 // serverStateOnly reports whether two stored versions differ only in the attributes the server
 // keeps on its typed blocks: an ask's state, who answered it and when, the options selected and
-// the answer's words. Both are compared with those attributes at their defaults
-// (pmdoc.StripServerOwnedAttrs), so a version a person's answer or resolve wrote is no edit of
-// theirs. pmdoc.EqualOutsideServerState is not enough here: it counts the selection and the
-// answer as caller text, which they are for the growth check, so an answer would still send a
-// notice. Block ids are left out too (pmdoc.Node.Equal): a stored version carries only a typed
-// block's id, and each parse mints the others afresh. A list's and a list item's spread is left
+// the answer's words, which a version written while another build serves keeps in step with the
+// ask. Both are compared without those attributes (pmdoc.StripServerOwnedAttrs), so a version a
+// person's answer or resolve wrote is no edit of theirs. Block ids are left out too
+// (pmdoc.Node.Equal): a stored version carries only a typed block's id, and each parse mints the
+// others afresh. A list's and a list item's spread is left
 // out as well, but only of a list whose item holds a typed block (stripListSpread): that is the
 // shape whose reading changed, a document stored before the reader learned to read a blank line
 // inside a typed block in a list item as that item's reading back spread where the live tree is

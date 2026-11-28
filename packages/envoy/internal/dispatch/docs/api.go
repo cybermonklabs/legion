@@ -40,8 +40,14 @@ type API interface {
 	FollowClosedIssueVersions(ctx context.Context, issueKey string, versions []ClosedIssueVersion) error
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)
 	ApplyOps(ctx context.Context, artifactID string, ops []model.EditOp, actor model.Actor, precondition *model.EditPrecondition) (EditOutcome, error)
-	SetBlockAttributes(ctx context.Context, artifactID, blockID string, attributes map[string]any, actor model.Actor) error
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
+	KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error
 	SetAskBlockText(ctx context.Context, artifactID, blockID string, edit AskBlockEdit, actor model.Actor) (AskBlockText, error)
+	TextWithAsks(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error)
+	// kept for one release: stored-ask-state
+	KeptText(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error)
+	VersionAskedText(ctx context.Context, artifactID, markdown string, withBlocks, kept bool) (AskedText, error)
 	ScheduleSettlement(artifactID string)
 	SettleCopiesOf(ctx context.Context, ask model.Ask) error
 	CopiesOf(ctx context.Context, ask model.Ask) ([]string, error)

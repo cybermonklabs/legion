@@ -259,6 +259,8 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/signins":                  {target: "/api/v1/signins", fromMemory: noBroker, status: http.StatusNotFound},
 	"GET /api/v1/credentials/capabilities": {target: "/api/v1/credentials/capabilities", fromMemory: noBroker},
 	"GET /api/v1/artifacts/_test/rooms":    {target: "/api/v1/artifacts/_test/rooms", fromMemory: testHookRead},
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes": {target: "/api/v1/artifacts/$spec/_test/ask-attributes",
+		fromMemory: documentHookRead, status: http.StatusNotFound},
 	"GET /api/v1/artifacts/{id}/_test/room-counters": {target: "/api/v1/artifacts/$spec/_test/room-counters",
 		fromMemory: documentHookRead, status: http.StatusNotFound},
 	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {target: "/api/v1/artifacts/$spec/_test/live-write-pauses/after-commit?wait=100ms",

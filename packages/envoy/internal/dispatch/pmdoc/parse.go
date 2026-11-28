@@ -271,25 +271,47 @@ func withWrittenReadBack(doc *Node) (*Node, WrittenReadBack, error) {
 // as ParseForWrite parses a fragment: a leading `---` line is a horizontal rule, as it is anywhere
 // after a document's start. Written where the document begins (opensDocument), a closed
 // front-matter block opening the markdown is front matter, as Parse reads it. Its tables' short
-// rows are padded on budget, the caller write's, which its other fragments share.
+// rows are padded on budget, the caller write's, which its other fragments share. It judges the
+// markdown against no document, so an element this build cannot create yet is refused wherever
+// it is written: a write into a live document parses with ParseFragmentHolding.
 func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*Node, error) {
 	return parseForWrite(markdown, nil, opensDocument, budget)
+}
+
+// ParseFragmentHolding is ParseFragment of markdown written into live - an insert, a replace's
+// `with`, an accepted suggestion - which carries none of live's block IDs into the fragment. An
+// element live already holds need not be creatable by this build, as an upload of the whole
+// document over live may keep it.
+func ParseFragmentHolding(markdown string, opensDocument bool, budget *WriteBudget, live *Node) (*Node, error) {
+	return parseForWriteHolding(markdown, nil, live, opensDocument, budget)
 }
 
 // parseForWrite is the parse ParseForWrite and ParseFragment share. The markdown's tree is judged
 // for repeated ids (RepeatedBlockID) with only the ids it names, then takes the ids of the blocks
 // of live it leaves unchanged (carryBlockIDs), and only then is an id minted for each block still
 // without one (EnsureBlockIDs), so the refusal and the carry see only the ids the markdown named.
+// The tree is held to the content rule of each block a live document keeps in any order
+// (writtenContentError), since a caller wrote it in one piece.
 func parseForWrite(markdown string, live *Node, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
+	return parseForWriteHolding(markdown, live, live, readFrontmatter, budget)
+}
+
+// parseForWriteHolding is parseForWrite whose markdown may keep an element held holds that this
+// build cannot create (refuseUncreatable), live being the tree whose block ids it carries:
+// ParseFragmentHolding carries none, and holds the live document it writes into.
+func parseForWriteHolding(markdown string, live, held *Node, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
 	doc, err := parseUnstamped(LineFeeds(markdown), fromStart, readFrontmatter, budget)
 	if err != nil {
+		return nil, err
+	}
+	if err := writtenContentError(doc); err != nil {
 		return nil, err
 	}
 	if err := RepeatedBlockID(live, doc, doc); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrSchema, err)
 	}
 	// A write may keep an element live holds that this build cannot create, never add one.
-	if err := refuseUncreatable([]*Node{doc}, func() *Node { return live }); err != nil {
+	if err := refuseUncreatable([]*Node{doc}, func() *Node { return held }); err != nil {
 		return nil, err
 	}
 	carryBlockIDs(doc, live)
@@ -1114,12 +1136,15 @@ func parseTypedDirective(directive *typedDirective, source []byte, footnotes map
 	}
 	// A typed block whose schema content opens with a paragraph is read holding one ahead of what
 	// the markdown wrote (opensWithAParagraph), and the display read marks the blocks it keeps
-	// whose content rule wants one for the same reason (displayFillAttr, displayContentFit).
+	// whose content rule wants one for the same reason (displayFillAttr, displayContentFit). So is
+	// one whose markdown opens with a block it admits after its content (a decision holding its
+	// readings alone): ProseMirror fills the content its rule wants ahead of them with a paragraph.
 	_, fill := directive.Attribute(displayFillAttr)
+	opensAdmitted := len(children) > 0 && AdmitsAfterContent(directive.Name, children[0].Type)
 	return &Node{
 		Type:     directive.Name,
 		Attrs:    directive.values,
-		Children: emptyParagraphFirst(children, fill || opensWithAParagraph(directive.Name)),
+		Children: emptyParagraphFirst(children, fill || opensAdmitted || opensWithAParagraph(directive.Name)),
 	}, nil
 }
 

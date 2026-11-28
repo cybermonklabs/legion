@@ -298,6 +298,67 @@ func TestNullAttributesSurviveABrowserEdit(t *testing.T) {
 	}
 }
 
+// The browser editor gives an attribute pmdoc gives no written default no default either - a
+// server attribute, and one it may not create yet - so a node it makes holds each such attribute
+// as undefined, which y-prosemirror writes into the live document and Read reads as null: an ask
+// block a browser pastes holds `state` null, although the attribute's default is `open`. Such a
+// null reads as the block not holding the attribute (nullReadsAbsent), so the live tree reads and
+// renders without it. A null of an attribute with a written default, an ask's `multiple`, is no
+// value of it, and the read refuses it.
+func TestALiveNullReadsAbsentWhereTheAttributeHasNoWrittenDefault(t *testing.T) {
+	const markdown = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nWhich one?\n:::\n"
+	written, err := Parse(markdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attributes, _ := BlockTypeAttributes("ask")
+	var server []string
+	for _, attribute := range attributes {
+		if attribute.Server {
+			server = append(server, attribute.Name)
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		nulls   []string
+		refused string
+	}{
+		{name: "every server attribute", nulls: server},
+		{name: "an attribute with a written default", nulls: []string{"multiple"}, refused: `typed block "ask" attribute "multiple"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			doc := crdt.New(crdt.WithClientID(1))
+			frag := doc.GetXmlFragment("prosemirror")
+			var err error
+			doc.Transact(func(txn *crdt.Transaction) {
+				if err = Update(txn, frag, written); err != nil {
+					return
+				}
+				ask := frag.Children()[0].(*crdt.YXmlElement)
+				for _, name := range test.nulls {
+					ask.SetAttributeValue(txn, name, nil)
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tree, err := Read(frag)
+			if test.refused != "" {
+				if err == nil || !strings.Contains(err.Error(), test.refused) {
+					t.Fatalf("the live ask holding %v null reads with error %v, want it refused naming %s", test.nulls, err, test.refused)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("the live ask holding %v null is refused: %v", test.nulls, err)
+			}
+			if rendered, err := Render(tree); err != nil || rendered != markdown {
+				t.Fatalf("the live ask holding %v null renders %q (%v), want %q", test.nulls, rendered, err, markdown)
+			}
+		})
+	}
+}
+
 // firstNodeOfType is the first node of type in node's tree, in document order, or nil.
 func firstNodeOfType(node *Node, nodeType string) *Node {
 	if node.Type == nodeType {

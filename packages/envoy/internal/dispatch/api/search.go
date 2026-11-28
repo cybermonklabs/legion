@@ -381,18 +381,21 @@ func searchPageAndTailSQL(legsSource string, seen int) string {
 }
 
 // searchPresentTexts is the page's lateral join that gives each hit the text its snippet is cut
-// from (txt.text): the item's present text.
-const searchPresentTexts = `  -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
+// from (txt.text): the item's present text. It is a var, not a const, because askSearchTextOf
+// builds its read of the ask's node from graphstore.CurrentTupleRead.
+var searchPresentTexts = `  -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
   -- column); the two must stay in sync. issue reuses r.issue_title, already carried from the
   -- same issues row by kinds, rather than re-reading it. ask reads the text its search vector is
   -- built from (asks_search: the question, then ask_search_suffix's option labels and
-  -- descriptions, answer text and selected labels), so its snippet shows what the query matched.
+  -- descriptions, answer text and selected labels), so its snippet shows what the query matched,
+  -- with the answer read from the ask's node (askSearchTextOf, which says why the vector is the
+  -- row's).
   left join lateral (
     select case r.kind
       when 'issue' then r.issue_title
       when 'document' then (select v.markdown from artifact_versions v where v.artifact_id = r.artifact_id order by v.number desc limit 1) -- re-resolves the latest version kinds already found once; accepted, bounded by the page size
       when 'comment' then (select c.body from comments c where c.id = r.id::uuid)
-      when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = r.id::uuid)
+      when 'ask' then (select ` + askSearchTextOf("k") + ` from asks k where k.id = r.id::uuid)
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
   ) txt on true
@@ -400,7 +403,7 @@ const searchPresentTexts = `  -- Mirrors the kind arms in kinds above (issue/doc
 
 // searchPageAndTailReading is searchPageAndTailSQL with texts, the lateral join that gives each
 // hit of the page the text its snippet is cut from (txt.text): searchPresentTexts, or at a cut
-// searchAsOfTexts. texts, like legsSource, is always one of this package's own constants.
+// searchAsOfTexts. texts, like legsSource, is always this package's own text, never a request's.
 //
 // shown is empty for every statement of the present, and the page is the CTE `page`. At a cut it
 // is searchAsOfShown: the ranked page is then searchAsOfRankedPage, and shown, which this text

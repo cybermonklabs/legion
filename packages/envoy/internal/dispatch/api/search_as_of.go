@@ -404,13 +404,21 @@ func searchAsOfDocumentLegs(cut string) string {
 }
 
 // searchAsOfTexts is the page's texts at a cut (searchPageAndTailReading): a document hit's
-// newest version at the cut (the artifact_versions shadow), and every other hit's version in the
-// keyword table at the cut, the text its arm matched.
-const searchAsOfTexts = `  -- At a cut, each hit's text as it stood at the cut: a document's newest version at the cut,
-  -- and every other kind's version in the keyword table, which its arm matched.
+// newest version at the cut (the artifact_versions shadow); an ask hit's text as the present
+// reads it (askSearchTextOf), over the ask as the asks shadow gives it at the cut, whose answer is
+// the one its newest state event at the cut carries, so an ask resolved at the cut shows no answer,
+// as the present shows none for an ask resolved now; and every other hit's version in the keyword
+// table at the cut, the text its arm matched. The keyword table's version of an ask holds the
+// answer of the event that wrote it, and a resolution writes no version, so that version shows the
+// answer of an ask resolved after it was answered. It is a var, not a const, because
+// askSearchTextOf builds it, as it builds searchPresentTexts.
+var searchAsOfTexts = `  -- At a cut, each hit's text as it stood at the cut: a document's newest version at the cut, an
+  -- ask's text from the asks shadow, as the present reads it, and every other kind's version in
+  -- the keyword table, which its arm matched.
   left join lateral (
     select case r.kind
       when 'document' then (select v.markdown from artifact_versions v where v.artifact_id = r.artifact_id order by v.number desc limit 1)
+      when 'ask' then (select ` + askSearchTextOf("k") + ` from asks k where k.id = r.id::uuid)
       else (select tv.body from text_versions tv where tv.kind = r.kind and tv.id = r.id)
     end as text
   ) txt on true
@@ -674,8 +682,8 @@ const searchAskBlocksMovedStatement = `select k.id::text from asks k
 //     one the graph gave at the cut.
 //   - the snippet, and its tree where the answer carries display trees (trees), where the ask's
 //     wording at the cut no record gives (reason E, asof.AsksWordingUnknownStatement). The snippet
-//     is cut from the keyword table's version of the ask at the cut (searchAsOfTexts), which holds
-//     the wording of the ask's newest event at the cut, and a restore changed that wording with
+//     is cut from the ask as the asks shadow gives it at the cut (searchAsOfTexts), whose wording
+//     is that of the ask's newest state event at the cut, and a restore changed that wording with
 //     no event at a time no record gives. The keyword arm finds such an ask by that wording. The
 //     meaning arm keeps an ask's window only where the ask's text at the cut is its present text
 //     (searchAsOfWindows("ask_part", ...), v.body = present_ask.question || ' ' ||

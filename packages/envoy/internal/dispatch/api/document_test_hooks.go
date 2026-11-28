@@ -18,6 +18,7 @@ import (
 // does not carry test hooks.
 type documentTestHooks interface {
 	ResidentRooms() []string
+	AskBlockAttributes(ctx context.Context, artifactID string) (map[string]map[string]any, error)
 	RoomCounters(artifactID string) (docs.RoomCounters, error)
 	HoldRoomPersistence(artifactID string, duration time.Duration) error
 	ArmLiveWritePause(artifactID string, point docs.LiveWritePausePoint) error
@@ -63,6 +64,12 @@ type residentRooms struct {
 	Rooms []string `json:"rooms"`
 }
 
+// liveAskAttributes is the body GET /api/v1/artifacts/{id}/_test/ask-attributes answers: each ask
+// block of the live document, by block id, with every attribute but its id.
+type liveAskAttributes struct {
+	Blocks map[string]map[string]any `json:"blocks"`
+}
+
 // liveWritePauseState is the body the GET and the DELETE of
 // /api/v1/artifacts/{id}/_test/live-write-pauses/{point} answer.
 type liveWritePauseState struct {
@@ -77,6 +84,22 @@ func (s *server) listResidentRooms(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, residentRooms{Rooms: hooks.ResidentRooms()})
+}
+
+// getLiveAskAttributes answers {"blocks": {block id: {attribute: value, ...}}}: the attributes
+// each ask block holds in this process's live tree of the document
+// (docs.Service.AskBlockAttributes).
+func (s *server) getLiveAskAttributes(w http.ResponseWriter, r *http.Request) {
+	hooks, ok := s.requireDocumentTestHooks(w, r)
+	if !ok {
+		return
+	}
+	blocks, err := hooks.AskBlockAttributes(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeDocumentTestHookError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, liveAskAttributes{Blocks: blocks})
 }
 
 // getRoomCounters answers {"room_failures": n, "lock_waiting_compactions": n, "room_closes": n,

@@ -256,7 +256,7 @@ func (p *unsupportedDirectiveParser) CanAcceptIndentedLine() bool {
 // refused where its attributes are, since the browser editor's parser refuses it too. The line
 // is passed past its indentation and its containers' markers and without its line ending, as
 // the parser passes it (typedDirectiveParser.Open), and this is the one reader of the grammar:
-// a caller outside the document parser - refs.questionBlocks, which scans a stored version's
+// a caller outside the document parser - QuestionBlocks, which scans a stored version's
 // lines for its question blocks - reads a line with it rather than with a grammar of its own.
 func ParseTypedDirectiveOpen(line string) (string, Attrs, bool) {
 	colons := colonRun([]byte(line))

@@ -279,6 +279,54 @@ export const askBlockEditingPlugin = new Plugin({
   },
 });
 
+/** The answer state the server reads of the ask a block shows, by the block's id (the asks of
+ *  the document's owner, `servedAskOf`), or undefined while it reads none. */
+export type AskStateOf = (blockId: string) => string | undefined;
+
+/** Each reading of `doc` that stands in an ask block whose ask `askStateOf` reads open, by the
+ *  ask block's id and the reading's. */
+export function readingsInOpenAsks(doc: ProseMirrorNode, askStateOf: AskStateOf): Set<string> {
+  const found = new Set<string>();
+  doc.descendants((node) => {
+    if (node.type.name !== "ask") {
+      return true;
+    }
+    const ask = String(node.attrs.blockId);
+    if (askStateOf(ask) === "open") {
+      node.forEach((child) => {
+        if (child.type.name === "reading") {
+          found.add(`${ask}/${String(child.attrs.blockId)}`);
+        }
+      });
+    }
+    return false;
+  });
+  return found;
+}
+
+/** Refuses a local edit that leaves a reading in an ask the server reads as open, which it did
+ *  not stand in before: a reading reads a decision, and an ask is one only once a person answers
+ *  it, which the server holds on the ask alone, so the editor reads the ask's state from the
+ *  server (`askStateOf`) rather than from the block. A remote update (y-prosemirror's sync,
+ *  `y-sync$`) is never refused: the server settles what another writer wrote. */
+export function readingsInOpenAsksPlugin(askStateOf: AskStateOf): Plugin {
+  return new Plugin({
+    key: new PluginKey("dispatch-readings-in-open-asks"),
+    filterTransaction: (transaction, state) => {
+      if (!transaction.docChanged || transaction.getMeta("y-sync$") !== undefined) {
+        return true;
+      }
+      const before = readingsInOpenAsks(state.doc, askStateOf);
+      for (const reading of readingsInOpenAsks(transaction.doc, askStateOf)) {
+        if (!before.has(reading)) {
+          return false;
+        }
+      }
+      return true;
+    },
+  });
+}
+
 /** Installs the document's typed blocks in the editor: `AskBlockView` for every `ask` node,
  * reporting the live set of hosts (in document order) whenever it changes,
  * `renderTypedBlock`'s node view for every other type in the block schema, `pictureNodeView` for
@@ -297,7 +345,8 @@ export function installTypedBlocks(
   blockSchema: BlockSchema,
   onHostsChange: (hosts: readonly AskBlockHost[]) => void,
   watchPicture: WatchPicture,
-  anchoredBlock?: AnchoredBlock
+  anchoredBlock?: AnchoredBlock,
+  askStateOf?: AskStateOf
 ): void {
   const registry = new Map<number, AskBlockHost>();
   const publish = () => {
@@ -350,4 +399,12 @@ export function installTypedBlocks(
     nodeViews,
     plugins: [...(view.props.plugins ?? []), askBlockEditingPlugin],
   });
+  // A transaction filter is a state plugin's, so the refusal joins the state's plugins.
+  if (askStateOf !== undefined) {
+    view.updateState(
+      view.state.reconfigure({
+        plugins: [...view.state.plugins, readingsInOpenAsksPlugin(askStateOf)],
+      })
+    );
+  }
 }

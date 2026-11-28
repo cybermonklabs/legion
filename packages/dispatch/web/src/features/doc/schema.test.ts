@@ -32,13 +32,32 @@ function raisedByOne(schema: BlockSchema): BlockSchema {
   return { ...schema, version: schema.version + 1 };
 }
 
+/** The manifest with the named attributes of the typed block `type` taken out. */
+function withoutAttributes(schema: BlockSchema, type: string, names: string[]): BlockSchema {
+  return {
+    ...schema,
+    types: schema.types.map((declared) =>
+      declared.name === type
+        ? {
+            ...declared,
+            attributes: Object.fromEntries(
+              Object.entries(declared.attributes).filter(([name]) => !names.includes(name))
+            ),
+          }
+        : declared
+    ),
+  };
+}
+
 // The page presents the manifest it was built with: its version V, and R, the highest `since`
 // among the elements it may create (`creatable_since` V or less), as Go's `pmdoc.SchemaCreatable`
-// computes it. The manifest stages the task block's `parent`: it reads it from its version and
-// creates it only from the next. So it leaves R where the same manifest without it has it, below
-// V, and it counts toward R in the manifest at the next version. The numbers come from the
-// manifest, never from a literal here.
-test("the compiled manifest is the page's own, and it reads plan_task.parent without creating it", () => {
+// computes it. Schema 8 stages the decision and reading blocks and the ask block's `shaped`: it
+// reads them from its version and creates them only from the next. It creates `plan_task.parent`,
+// read from the version before its own, and `check.subject` and `check.program`, read from version
+// 6 and created from version 7. So the new blocks and `ask.shaped` leave R where the same manifest
+// without them has it, at the version before V, and each counts toward R in the manifest at the
+// next version. The numbers come from the manifest, never from a literal here.
+test("the compiled manifest is the page's own: it creates plan_task.parent and check's marks, and reads the new blocks before creating them", () => {
   expect(compiledBlockSchema.nodes?.map(({ name }) => name)).toContain("paragraph");
   expect(compiledBlockSchema.types.map(({ name }) => name)).toEqual([
     "callout",
@@ -46,34 +65,64 @@ test("the compiled manifest is the page's own, and it reads plan_task.parent wit
     "requirement",
     "plan_task",
     "check",
+    "decision",
+    "reading",
   ]);
   const version = compiledBlockSchema.version;
+  expect(schemaCreatable(compiledBlockSchema)).toBe(version - 1);
+  const ask = compiledBlockSchema.types.find(({ name }) => name === "ask");
+  const decision = compiledBlockSchema.types.find(({ name }) => name === "decision");
+  const reading = compiledBlockSchema.types.find(({ name }) => name === "reading");
+  const shaped = ask?.attributes.shaped;
+  if (decision === undefined || reading === undefined || shaped === undefined) {
+    throw new Error(
+      "the compiled manifest declares the decision and reading blocks and the ask block's shaped"
+    );
+  }
+  for (const element of [decision, reading, shaped]) {
+    expect(element.since).toBe(version);
+    expect(element.creatable_since).toBe(version + 1);
+  }
+  const withoutTheNewBlocks = (schema: BlockSchema): BlockSchema => {
+    const withoutShaped = withoutAttributes(schema, "ask", ["shaped"]);
+    return {
+      ...withoutShaped,
+      types: withoutShaped.types.filter(({ name }) => name !== "decision" && name !== "reading"),
+    };
+  };
+  expect(schemaCreatable(compiledBlockSchema)).toBe(
+    schemaCreatable(withoutTheNewBlocks(compiledBlockSchema))
+  );
+  expect(schemaCreatable(compiledBlockSchema)).toBeLessThan(version);
+  expect(schemaCreatable(raisedByOne(compiledBlockSchema))).toBe(version);
+  expect(schemaCreatable(withoutTheNewBlocks(raisedByOne(compiledBlockSchema)))).toBeLessThan(
+    version
+  );
+
   const task = compiledBlockSchema.types.find(({ name }) => name === "plan_task");
   const parent = task?.attributes.parent;
   if (task === undefined || parent === undefined) {
     throw new Error("the compiled manifest declares the plan_task block's parent");
   }
-  expect(parent).toMatchObject({ creatable_since: version + 1, kind: "block[]", since: version });
-  const withoutIt = (schema: BlockSchema): BlockSchema => ({
-    ...schema,
-    types: schema.types.map((type) =>
-      type.name === "plan_task"
-        ? {
-            ...type,
-            attributes: Object.fromEntries(
-              Object.entries(type.attributes).filter(([name]) => name !== "parent")
-            ),
-          }
-        : type
-    ),
+  expect(parent).toMatchObject({
+    creatable_since: version,
+    kind: "block[]",
+    since: version - 1,
   });
-
-  expect(schemaCreatable(compiledBlockSchema)).toBe(
-    schemaCreatable(withoutIt(compiledBlockSchema))
+  expect(schemaCreatable(withoutAttributes(compiledBlockSchema, "plan_task", ["parent"]))).toBe(
+    version - 2
   );
-  expect(schemaCreatable(compiledBlockSchema)).toBeLessThan(version);
-  expect(schemaCreatable(raisedByOne(compiledBlockSchema))).toBe(version);
-  expect(schemaCreatable(withoutIt(raisedByOne(compiledBlockSchema)))).toBeLessThan(version);
+
+  const check = compiledBlockSchema.types.find(({ name }) => name === "check");
+  const subject = check?.attributes.subject;
+  const program = check?.attributes.program;
+  if (check === undefined || subject === undefined || program === undefined) {
+    throw new Error("the compiled manifest declares the check block's subject and program");
+  }
+  for (const attribute of [subject, program]) {
+    expect(attribute.since).toBe(version - 2);
+    expect(attribute.creatable_since).toBe(version - 1);
+  }
 });
 
 test("an element the page creates counts toward its creatable version, one it only reads does not", () => {

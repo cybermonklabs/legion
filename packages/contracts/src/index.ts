@@ -3,6 +3,7 @@ export * from "./agent-stream";
 export * from "./block-schema.generated";
 export * from "./claim-holds";
 export * from "./dispatch-api";
+export * from "./dispatch-block-reader";
 export * from "./dispatch-block-ref";
 export * from "./dispatch-href";
 export * from "./dispatch-mentions";

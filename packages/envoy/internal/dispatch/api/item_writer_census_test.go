@@ -97,10 +97,6 @@ var itemRowWriters = map[string]map[string]string{
 		"putAskAskedOf": "the ask's owner lock, taken with the read of the owner it guards " +
 			"(requireOpenOwner, store.LockOwnerAndRead)",
 	},
-	"internal/dispatch/api/ask_transitions.go": {
-		"answerTransition": "the ask's owner lock, which transitionAskTx takes before the " +
-			"transition reads the ask (requireOpenOwner)",
-	},
 	"internal/dispatch/api/asks.go": {
 		"createAskFor": "the owner's lock (requireOpenOwnerStatus)",
 		"editAsk":      "the ask's owner lock, taken before the document's (requireOpenOwner)",
@@ -150,6 +146,13 @@ var itemRowWriters = map[string]map[string]string{
 		"handBackApprovalAsk": "the document's owner lock (requireOpenOwner)",
 		"openApprovalAsk":     "the document's owner lock (requireOpenOwner)",
 	},
+	"internal/dispatch/asks/settle.go": {
+		"Queue": "the ask's owner lock, which every caller holds before it plans the change " +
+			"(asks.PlanSettle, docs.Ledger.PlanSettle): the answer route (transitionAskTx, " +
+			"requireOpenOwner), an ask's resolution (docs.WriteAskResolution), the reopen's restore " +
+			"(docs.WriteRestoredAsks, under api's lockIssue), and the approval carry and " +
+			"settlement's restore of a retracted ask (lockArtifactOwner)",
+	},
 	"internal/dispatch/docs/anchor_blocks.go": {
 		"backfillAnchorBlock": "the row's owner lock, taken in the row's own transaction before " +
 			"the row is read (refs.LockItemOwner)",
@@ -163,21 +166,9 @@ var itemRowWriters = map[string]map[string]string{
 			"the request, by the reopen that follows a closed issue's versions or by the route " +
 			"that hands it back (lockArtifactOwner, api's lockIssue, requireOpenOwner)",
 	},
-	"internal/dispatch/docs/approval_carry.go": {
-		"answerApprovalAsk": "the document's owner lock, which the version write holds " +
-			"(lockArtifactOwner), or the issue's, which the reopen that follows a closed issue's " +
-			"versions holds (api's lockIssue)",
-	},
 	"internal/dispatch/docs/ask_blocks.go": {
-		"createAskBlock":      "the document's owner lock, which settlement holds (lockArtifactOwner)",
-		"reconcileAskBlocks":  "the document's owner lock, which settlement holds (lockArtifactOwner)",
-		"restoreRetractedAsk": "the document's owner lock, which settlement holds (lockArtifactOwner)",
-	},
-	"internal/dispatch/docs/ask_row.go": {
-		"queueAskResolution": "the ask's owner lock, which every caller holds: the route that " +
-			"resolves it (WriteAskResolution) and settlement (lockArtifactOwner)",
-		"WriteRestoredAsks": "the issue's owner lock, which the reopen holds " +
-			"(api's prepareRestoration, under lockIssue)",
+		"createAskBlock":     "the document's owner lock, which settlement holds (lockArtifactOwner)",
+		"reconcileAskBlocks": "the document's owner lock, which settlement holds (lockArtifactOwner)",
 	},
 	"internal/dispatch/docs/decided_wording.go": {
 		"restoreWordings": "none at boot, which is the boot restoration's exception: " +
@@ -185,6 +176,10 @@ var itemRowWriters = map[string]map[string]string{
 			"owner lock and no ask's row, and refuses the restoration when the rows moved under " +
 			"it (errDecidedWordingsMoved). Settlement's own call holds the document's owner lock " +
 			"(restoreDocumentDecidedWordings, lockArtifactOwner)",
+	},
+	"internal/dispatch/graphcensus/backfill_asks.go": {
+		"writeAskBatch": "the owner locks of the batch's asks, taken first in the transaction it " +
+			"opens (lockAskOwners, events.LockOwnerRows)",
 	},
 	"internal/dispatch/refs/comment_nodes.go": {
 		"Queue": "the owner lock of every comment it names, which each of its callers takes before it " +
@@ -432,15 +427,14 @@ var itemRowLockNoRow = map[string]map[string]string{
 	"internal/dispatch/api/post_history.go":    {"queueDeletedPostSettlement": itemRowCallersTransaction},
 	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
-	"internal/dispatch/docs/approval_carry.go": {"answerApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/ask_blocks.go": {
-		"createAskBlock":      itemRowCallersTransaction,
-		"reconcileAskBlocks":  itemRowCallersTransaction,
-		"restoreRetractedAsk": itemRowCallersTransaction,
+		"createAskBlock":     itemRowCallersTransaction,
+		"reconcileAskBlocks": itemRowCallersTransaction,
 	},
-	"internal/dispatch/docs/ask_row.go": {
-		"queueAskResolution": itemRowCallersTransaction,
-		"WriteRestoredAsks":  itemRowCallersTransaction,
+	"internal/dispatch/graphcensus/backfill_asks.go": {
+		"writeAskBatch": "a boot pass of graphcensus.Backfill, no request's; its lock-step test " +
+			"holds it behind both owners' locks (graphcensus' " +
+			"TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows)",
 	},
 	"internal/dispatch/refs/comment_nodes.go": {"Queue": itemRowCallersTransaction},
 	"internal/dispatch/refs/item_blocks.go": {

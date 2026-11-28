@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -434,9 +436,44 @@ func declinePageAsk(t *testing.T, h http.Handler, id string) {
 	}
 }
 
+// setAskActivity moves the time of the ask's current answer or resolution, as column names, to
+// at. The page reads the answer off the ask's node (R3), so the move is written as the decisions
+// step's catch-up states a write (settleAskAsTheCatchUp): the ask's whole answer state as its row
+// holds it, with that one time moved, on its node and its row both.
 func setAskActivity(t *testing.T, db *store.Store, id, column string, at time.Time) {
 	t.Helper()
-	legionExec(t, db, "update asks set "+column+" = jsonb_set("+column+", '{at}', to_jsonb($2::text)) where id = $1", id, at.Format(time.RFC3339Nano))
+	var state string
+	var storedAnswer, storedResolution []byte
+	if err := db.Pool.QueryRow(t.Context(), `select state, answer, resolution from asks where id = $1`, id).
+		Scan(&state, &storedAnswer, &storedResolution); err != nil {
+		t.Fatalf("read the answer state of ask %s: %v", id, err)
+	}
+	var answer *model.AskAnswer
+	var resolution *model.AskResolution
+	if storedAnswer != nil {
+		answer = new(model.AskAnswer)
+		if err := json.Unmarshal(storedAnswer, answer); err != nil {
+			t.Fatalf("decode the answer of ask %s: %v", id, err)
+		}
+	}
+	if storedResolution != nil {
+		resolution = new(model.AskResolution)
+		if err := json.Unmarshal(storedResolution, resolution); err != nil {
+			t.Fatalf("decode the resolution of ask %s: %v", id, err)
+		}
+	}
+	var who model.Actor
+	switch {
+	case column == "answer" && answer != nil:
+		answer.At, who = at, model.Actor{Kind: "user", ID: answer.User}
+	case column == "resolution" && resolution != nil:
+		resolution.At, who = at, resolution.Actor
+	default:
+		t.Fatalf("ask %s holds no %s to move", id, column)
+	}
+	change := asks.Recorded(state, answer, resolution)
+	change.Who, change.At, change.Event = who, at, graphstore.NoEvent
+	settleAskAsTheCatchUp(t, db, id, change)
 }
 
 func walkAskPages(t *testing.T, h http.Handler, db *store.Store, key string) {

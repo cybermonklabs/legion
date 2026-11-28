@@ -93,12 +93,13 @@ func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller mod
 }
 
 // inboxListedAsks is the filter of the asks the Inbox lists, over the ask aliased a, its issue i and
-// its own document ar (the joins of askReadFrom): an open ask, on an open issue where it has one,
-// of the project $1 names, or of any where $1 is empty. listInbox reads it twice, as its own filter
-// and as the filter of `subjects`, the issues its priority walk climbs from, so the walk climbs
-// from the issue of every ask the read can list: a change of which asks the Inbox lists moves the
-// walk with it, and no listed ask reads a resolved priority of null for want of a climb.
-const inboxListedAsks = `a.state = 'open'
+// its own document ar (the joins of askReadFrom): an open ask, as its row and its node both say
+// (askOpenOf), on an open issue where it has one, of the project $1 names, or of any where $1 is
+// empty. listInbox reads it twice, as its own filter and as the filter of `subjects`, the issues
+// its priority walk climbs from, so the walk climbs from the issue of every ask the read can list:
+// a change of which asks the Inbox lists moves the walk with it, and no listed ask reads a
+// resolved priority of null for want of a climb.
+var inboxListedAsks = askOpenOf("a") + `
 		  and (i.key is null or i.closed_at is null)
 		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)`
 
@@ -124,6 +125,14 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// i, its own document as ar and their project as p - so this read joins none of them itself
 	// and reads the document's columns off the shared join. `unassigned` is left standing for
 	// the caller that sends it: every question reaches a person now, so it answers nothing.
+	//
+	// An ask is open here while its row and its node both say so (askOpenOf): the row's state
+	// lets the partial index asks_open (0001) pick the candidates out of every ask of the
+	// instance, and the node, the state every row here shows (scanAskRead), decides (R3). An
+	// owner's lists by state read one owner's asks through that owner's own index and pick by the
+	// node alone (listIssueAsksQueryOpen); the Inbox reads every owner's, which without the row's
+	// test would probe the node of every ask stored. At a cut the asks shadow names no node, so
+	// the shadow's state decides.
 	//
 	// The rows are ordered by the priority each ask's issue resolves to (refs.IssuePriorityTerms:
 	// its own, else the nearest issue's above it), so an ask on a child that takes P0 from a parent

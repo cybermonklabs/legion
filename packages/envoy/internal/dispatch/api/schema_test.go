@@ -34,15 +34,30 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	for index, typ := range schema.Types {
 		names[index] = typ.Name
 	}
-	if schema.Version != 7 || !slices.Equal(names, []string{"callout", "ask", "requirement", "plan_task", "check"}) {
-		t.Fatalf("schema = version %d, types %v; want version 7 and callout, ask, requirement, plan_task, check", schema.Version, names)
+	want := []string{"callout", "ask", "requirement", "plan_task", "check", "decision", "reading"}
+	if schema.Version != 8 || !slices.Equal(names, want) {
+		t.Fatalf("schema = version %d, types %v; want version 8 and %v", schema.Version, names, want)
 	}
 	if ciCheck, declared := schema.Types[4].Attributes.Lookup("ci_check"); !declared || ciCheck.Kind != pmdoc.BlockAttributeString {
 		t.Fatalf("check attribute ci_check = %+v (declared %v), want a string", ciCheck, declared)
 	}
+	if parents := schema.Types[6].Parents; !slices.Equal(parents, []string{"decision", "ask"}) {
+		t.Fatalf("reading parents = %v, want decision and ask", parents)
+	}
+	// decision and reading are read from version 8 and created from version 9: this build reads a
+	// store the slice that gives them nodes wrote, and refuses to create them before it.
+	for _, typ := range schema.Types[5:] {
+		if typ.Since != 8 || typ.CreatableSince != 9 {
+			t.Fatalf("typed block %s = since %d, creatable_since %d; want it read from version 8 and created from version 9", typ.Name, typ.Since, typ.CreatableSince)
+		}
+	}
+	if shaped, declared := schema.Types[1].Attributes.Lookup("shaped"); !declared || shaped.Since != 8 || shaped.CreatableSince != 9 {
+		t.Fatalf("ask attribute shaped = %+v (declared %v), want it read from version 8 and created from version 9", shaped, declared)
+	}
 	if steps, declared := schema.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
 		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
 	}
+	// check's subject and program are read from version 6 and created from version 7.
 	if subject, declared := schema.Types[4].Attributes.Lookup("subject"); !declared || subject.Kind != pmdoc.BlockAttributeEnum ||
 		!slices.Equal(subject.Choices, []string{"code", "production", "graph"}) || subject.Since != 6 || subject.CreatableSince != 7 {
 		t.Fatalf("check attribute subject = %+v (declared %v), want an enum of code, production and graph, read from version 6 and created from 7", subject, declared)

@@ -437,8 +437,11 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 			 jsonb_build_object('ask_id', $2::text, 'session_id', 'ses_sized'), false, now()),
 			-- The removal of an untouched scratch document, which states its node gone.
 			('CORE-1', 8, 'artifact.removed', '{"kind":"user","id":"alice"}',
-			 jsonb_build_object('artifact', jsonb_build_object('id', $3::text)), false, now())
-	`, message, "6a0e5d4c-3b2a-4f19-8e7d-6c5b4a392817", "7b1f6e5d-4c3b-4a20-9f8e-7d6c5b4a3928"); err != nil {
+			 jsonb_build_object('artifact', jsonb_build_object('id', $3::text)), false, now()),
+			-- A settlement's flag of a block of the spec that fails the strict read.
+			('CORE-1', 9, 'block.invalid', '{"kind":"user","id":"alice"}',
+			 jsonb_build_object('artifact_id', $4::text, 'block_id', 'box'), false, now())
+	`, message, "6a0e5d4c-3b2a-4f19-8e7d-6c5b4a392817", "7b1f6e5d-4c3b-4a20-9f8e-7d6c5b4a3928", document); err != nil {
 		t.Fatalf("write the events: %v", err)
 	}
 	// The comment's comment.created, as the API appends one for a person's comment on a document:
@@ -485,9 +488,10 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 // the listener took, two body blocks of the comment of which one is removed, a link out of the
 // live one, a child issue that waits on its parent, a failed result with two screenshots and its
 // retraction, a Keep, two components of one imported snapshot, one under and depending on the
-// other, with CORE-1 affecting the first, alice's dismissal of the message's thread, and her
-// snooze of an ask the session ses_asker opened before the window, so that inside the window
-// the snooze is the one write of it a term counts.
+// other, with CORE-1 affecting the first, alice's dismissal of the message's thread, her snooze
+// of an ask the session ses_asker opened before the window, so that inside the window the snooze
+// is the one write of it a term counts, and a copy in the spec of an ask block of a document
+// written before the window.
 func seedSizedRelations(t *testing.T, database *store.Store, document, comment, message string) {
 	t.Helper()
 	ctx := context.Background()
@@ -540,6 +544,21 @@ func seedSizedRelations(t *testing.T, database *store.Store, document, comment, 
 		{"write the Keep", `
 			insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
 			values ($1::uuid, 'box', 'x', 1, 'alice')`, []any{document}},
+		{"write a copy of another document's ask block", `
+			with source as (
+				insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, created_at)
+				values ('CORE-1', 'CORE', 'source', 'source.md', 'doc', false, '{"kind":"user","id":"alice"}',
+				        now() - interval '40 days')
+				returning id
+			), asked as (
+				insert into asks (issue_key, author, question, created_at, block_artifact_id, block_id)
+				select 'CORE-1', '{"kind":"user","id":"alice"}', 'Which store does the copy name?',
+				       now() - interval '40 days', id, 'copied' from source
+				returning id
+			)
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+			select $1::uuid, 'copied', (select ref_key from artifacts where id = $1::uuid) || '#copied', 'ask', '',
+			       'Which store does the copy name?', 3, now() from asked`, []any{document}},
 		{"write the components", `
 			with source as (
 				insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
@@ -848,17 +867,17 @@ func seededDrives(database *store.Store) []StoreDrive {
 
 // writeTheStore runs every drive of the store's writers: the ones over the history
 // seedSizedHistory wrote on database (seededDrives), graphstore's own writers run on their own
-// (graphstoreDrives), the seed (seedRunDrives), and the drives of the sites whose packages import
-// this one, which this package's external test registers (ImportedDrives). It holds them to
-// driving every site the register of the store's writers lists (requireEveryListedSiteDriven).
-// Each drive is the writer itself and not a copy of what it writes. It answers how many tuples of
-// each kind each drive appended, read off graph_tuples by the sequences the drive's tuples took,
-// and the terms each drive says count each kind it appends; and it logs, for every listed site,
-// what each drive that runs it appended.
+// (graphstoreDrives), the boot step's ask passes (askBackfillDrives), the seed (seedRunDrives), and
+// the drives of the sites whose packages import this one, which this package's external test
+// registers (ImportedDrives). It holds them to driving every site the register of the store's
+// writers lists (requireEveryListedSiteDriven). Each drive is the writer itself and not a copy of
+// what it writes. It answers how many tuples of each kind each drive appended, read off
+// graph_tuples by the sequences the drive's tuples took, and the terms each drive says count each
+// kind it appends; and it logs, for every listed site, what each drive that runs it appended.
 func writeTheStore(t *testing.T, database *store.Store) (map[writtenKind]int64, map[writtenKind][]string) {
 	t.Helper()
 	ctx := context.Background()
-	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), seedRunDrives(t))
+	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), askBackfillDrives(t), seedRunDrives(t))
 	if ImportedDrives == nil {
 		t.Errorf("no drive of the sites whose packages import graphcensus is registered: ImportedDrives, which this package's external test sets, is nil")
 	} else {
@@ -1146,8 +1165,12 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"result": {tuples: 16, writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
 		// The leaf's part_of the root and its depends_on it, and CORE-1's affects of the root.
 		"component": {tuples: 2, writes: 2}, "component_relation": {tuples: 1, writes: 3},
-		"ask": {tuples: 3, writes: 1}, "ask_opened": {tuples: 6, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 5, writes: 1},
-		"ask_resolved": {tuples: 1, writes: 1}, "ask_follower": {tuples: 1, writes: 1}, "keep": {tuples: 2, writes: 1},
+		// The ask's part_of the document holding its block beside its anchored_to, an answer's
+		// decided_by beside its answered_by, and a resolution's value and its retraction.
+		"ask": {tuples: 3, writes: 1}, "ask_opened": {tuples: 7, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 6, writes: 1},
+		"ask_resolved": {tuples: 3, writes: 1}, "ask_follower": {tuples: 1, writes: 1}, "keep": {tuples: 2, writes: 1},
+		// The copy of the source document's ask block, and the spec's block the settlement flagged.
+		"ask_copy": {tuples: 1, writes: 1}, "ask_invalid": {tuples: 2, writes: 1},
 		"decision": {tuples: 5, writes: 10 * sizingWindowDays, assumed: true},
 		"reading":  {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		// No table holds a kind of the lenses child's yet, so each term reads the writes it

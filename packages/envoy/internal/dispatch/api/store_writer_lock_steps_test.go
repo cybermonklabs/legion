@@ -41,13 +41,17 @@ const storeStepWait = 20 * time.Second
 //   - the settle of a comment mention's delivery (completeCommentDelivery) and of a targeted
 //     message's (completeMessageDelivery), each of which records the session it reached under
 //     its receipt, in the batch that appends the receipt (graphstore.QueueReached);
-//   - the follower route (changeAskFollower, through appendCausingEvent) and an ask's create
-//     (createAskFor), each of which follows the ask for a session before the event it appends and
-//     moves the node that follow made onto that event (graphstore.QueueCaused);
-//   - an approval request renewed (renewApprovalAsk), once on a retry, which follows the request
-//     for the session before it appends ask.follower_added and moves the follow's node onto that
-//     event (graphstore.QueueCaused), and once handing the request back, which follows after its
-//     event and states the node under it in the follow's own statement;
+//   - the follower route (changeAskFollower, through appendCausingEvent), which follows the ask
+//     for a session before the event it appends and moves the node that follow made onto that
+//     event (graphstore.QueueCaused), and an ask's create (createAskFor), whose node write states
+//     the asker's node beside the ask's (graphstore.AskFacts) and which moves both onto the event
+//     it appends;
+//   - an approval request renewed (renewApprovalAsk), once on a retry by a session that did not
+//     follow it, which follows it before the ask.follower_added it appends and moves the node
+//     onto that event, as the follower route does, once on a retry by a session that follows it
+//     already, which appends no event and states nothing of its follow, and once handing the
+//     request back, which follows after its event and states the node under it in the follow's
+//     own statement;
 //   - three writes of a document version, each of which runs the block index (refs'
 //     BlockIndexing.Queue) under the revision fence and appends what it stated under the event
 //     that recorded the version: an upload creating an issue's document (storeArtifact), an edit
@@ -89,7 +93,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.commentCreate("createCommentFor on a project document", "/api/v1/artifacts/"+rig.document+"/comments",
 			ownerLockStep(store.ArtifactOwner(rig.document))),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
-		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalHandBack(),
+		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalFollowerRetry(), rig.approvalHandBack(),
 		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
@@ -174,8 +178,9 @@ type storeWriter struct {
 	// started.
 	ready func(t *testing.T, ctx context.Context) storeWriterRun
 	// projectKeyShare says the path writes a row whose foreign key names a project - a new
-	// document's artifacts row names the project it is in - and so holds that project's row
-	// `for key share`, which conflicts with no lock an event's project is taken with.
+	// document's artifacts row names the project it is in, and an issue's row written a second time
+	// in one transaction has its foreign key into projects checked again - and so holds that
+	// project's row `for key share`, which conflicts with no lock an event's project is taken with.
 	projectKeyShare bool
 	// projectOwner says the path's owner is its project, whose row it writes: the issue's create,
 	// which numbers the issue on it.
@@ -211,6 +216,9 @@ const (
 	// tupleAppendStatement is graphstore's tuple append for a write that wrote nodes, which states
 	// their base attributes and moves them onto the cause in the same statement (queueAppend).
 	tupleAppendStatement = "with written as ("
+	// plainTupleAppendStatement is graphstore's tuple append for a write that wrote no nodes, a
+	// plain insert with nothing to move onto the cause (queueAppend).
+	plainTupleAppendStatement = "insert into graph_tuples ("
 	// followStatement is asks' follow statement: the follower row, with the store's node arm
 	// spliced in after it (graphstore.WriteArms, WriteArmsUncaused).
 	followStatement = "with followed as ("
@@ -444,15 +452,24 @@ func (r *storeWriterRig) askFollow() storeWriter {
 }
 
 // askCreate is an ask's create by a session no write has recorded (createAskFor). It takes its
-// owner's lock, writes the ask, follows it for its asker, whose node that follow makes marked for
-// its cause (asks.QueueFollowAuthor), appends ask.opened, and then moves the asker's node onto that
-// event and appends its two base attributes under it (graphstore.QueueCaused).
+// owner's lock, and in its write phase writes the ask's node and its asker's in one write, at the
+// sentinel and before the asks row (graphstore.AskFacts, which states the ask's author beside it
+// through AuthorFacts, queued through graphstore.QueueNodes), writes the ask, follows it for its
+// asker, whose node that follow finds there (asks.PlanFollowAuthor), appends ask.opened, and
+// then moves both nodes onto that event and appends what their write stated under it
+// (graphstore.QueueCaused). The ask's id is drawn inside its own transaction, so its node and its
+// row are not held; the session is new, so its node is held as a row another transaction inserted
+// and has not committed, which the node write reaches after the ask's in ascending (kind, id).
 func (r *storeWriterRig) askCreate() storeWriter {
 	return storeWriter{
 		name: "createAskFor",
 		steps: []storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
-			followNodeStep("the asker's node"),
+			{
+				name: "the asker's node", order: nodeStep,
+				hold: holdNewNode, at: nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
 			eventAppendStep(),
 			tupleAppendStep(),
 		},
@@ -477,7 +494,7 @@ func (r *storeWriterRig) askCreate() storeWriter {
 // ask.follower_added as the follower route does. The renewal takes its owner's lock
 // (requireOpenOwner), follows the request for that session with the node marked for its cause,
 // since the follow is queued before its event, appends the event, and then moves the node onto it
-// and appends the node's two base attributes under it (graphstore.QueueCaused).
+// and appends the node's two base attributes and the followed_by under it (graphstore.QueueCaused).
 func (r *storeWriterRig) approvalRetry() storeWriter {
 	return storeWriter{
 		name: "renewApprovalAsk on a retry",
@@ -498,6 +515,44 @@ func (r *storeWriterRig) approvalRetry() storeWriter {
 					return statusOrError(sessionRequest(t, r.call, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 						map[string]any{"actor": map[string]any{"kind": "session", "id": session}}), http.StatusOK)
 				},
+			}
+		},
+	}
+}
+
+// approvalFollowerRetry is the spec's approval request renewed unchanged while it waits on the
+// person by a session that follows it already (renewApprovalAsk), the retry that appends no event
+// and adds no follower: each run first renews the request as a session no write has recorded,
+// through the rig's own server, which makes that session a follower and its node, and then renews
+// it again as that session. The renewal takes its owner's lock (requireOpenOwner), and its follow
+// finds the follower row marked and the session's node there, so it states nothing of either; the
+// facts it holds for the node are appended at the sentinel (graphstore.QueueCaused), for a node
+// this follow made, which is none. The path takes no event step and no node step, and its tuple
+// append carries no event.
+func (r *storeWriterRig) approvalFollowerRetry() storeWriter {
+	return storeWriter{
+		name: "renewApprovalAsk on a retry by a follower",
+		steps: []storeStep{
+			ownerLockStep(store.IssueOwner(r.issue)),
+			{
+				name: "the tuple append", order: tupleStep,
+				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
+				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+			},
+		},
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			session := r.fresh("lock-steps-follower-requester")
+			actor := model.Actor{Kind: "session", ID: session}
+			renew := func(handler http.Handler) error {
+				return statusOrError(sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
+					map[string]any{"actor": map[string]any{"kind": "session", "id": session}}), http.StatusOK)
+			}
+			if err := renew(r.handler); err != nil {
+				t.Fatalf("make %s a follower of the approval request: %v", session, err)
+			}
+			return storeWriterRun{
+				made:  graphstore.SessionNode(session, actor, time.Now().UTC(), graphstore.NoEvent),
+				write: func() error { return renew(r.call) },
 			}
 		},
 	}

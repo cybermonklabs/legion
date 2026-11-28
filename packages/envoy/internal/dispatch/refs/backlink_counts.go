@@ -270,14 +270,15 @@ func blockRefCarries(alias string) string {
 
 // TupleKinds is every relation kind this build writes as tuples and graph_edges answers from
 // them, sorted: a block's in_document and mentions, the pointer kinds the installed block schema
-// declares (pmdoc.LinkKinds), and a comment's anchored_to and owned_by. It is the list the view's
-// tuple arm renders (migration 20261109215947) and the list the announcer writes into
-// server_build_announcements.tuple_kinds (startup.Deps), which is how the release that deletes an
-// old arm of the view reads whether the release a rollback would reach writes that arm's kinds as
-// tuples too. A child that moves another relation into the store adds its kinds here, so the arm
-// and the announcement read one list.
+// declares (pmdoc.LinkKinds), a comment's and an ask's anchored_to and owned_by, and an ask's
+// followed_by. It is the list the view's tuple arm renders (migrations 20261109215947 and
+// 20261125163554) and the list the announcer writes into server_build_announcements.tuple_kinds
+// (startup.Deps), which is how the release that deletes an old arm of the view reads whether the
+// release a rollback would reach writes that arm's kinds as tuples too. A child that moves another
+// relation into the store adds its kinds here, so the arm and the announcement read one list.
 func TupleKinds() []string {
-	kinds := append([]string{TupleInDocument, "mentions", graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy}, pmdoc.LinkKinds()...)
+	kinds := append([]string{TupleInDocument, "mentions", graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy,
+		graphstore.TupleFollowedBy}, pmdoc.LinkKinds()...)
 	slices.Sort(kinds)
 	return kinds
 }

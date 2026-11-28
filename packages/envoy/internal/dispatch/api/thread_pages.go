@@ -384,36 +384,41 @@ type askThreadPage struct {
 // the newest activity. The answer names a login and the resolution names an actor. Replaced
 // answers and resolutions count for neither filter nor sort.
 //
-// A literal state lets even a generic plan use asks_open. The answer and resolution times
-// are cut as JSON text before the timestamptz cast, which would otherwise round them and
-// move the cursor away from the entry's time at microsecond precision.
+// The state, the answer and the resolution are the ones the ask's node holds, as the list reads
+// them (askNodeStateOf, askNodeAnsweredAtTextOf, askNodeAnswererOf, askNodeResolutionOf): every
+// read of an answer reads the node (R3). The state is written in as a literal, one statement per
+// state, as the list's are (listIssueAsksQueryOpen); no index of asks holds the node's state, so
+// the page reaches the issue's asks through asks_issue_key and filters each by its node. The
+// answer and resolution times are cut as text before the timestamptz cast, which would otherwise
+// round them and move the cursor away from the entry's time at microsecond precision.
 //
 // askThreadRowsQuery reads the selected asks as the list reads them, in page order.
 var (
 	askThreadPageQueryAll      = askThreadPageStatement("")
-	askThreadPageQueryOpen     = askThreadPageStatement(" and a.state = 'open'")
-	askThreadPageQueryAnswered = askThreadPageStatement(" and a.state = 'answered'")
+	askThreadPageQueryOpen     = askThreadPageStatement(" and " + askNodeStateOf("a") + " = 'open'")
+	askThreadPageQueryAnswered = askThreadPageStatement(" and " + askNodeStateOf("a") + " = 'answered'")
 	askThreadRowsQuery         = `select ` + askReadColumns + ` ` + askReadFrom + `
   join unnest($1::uuid[]) with ordinality picked(thread_id, pos) on a.id = picked.thread_id
   order by picked.pos`
 )
 
 // askThreadPageStatement is the ask page statement narrowed by stateFilter, a literal
-// condition on a.state or nothing.
+// condition on the state the ask's node holds or nothing.
 func askThreadPageStatement(stateFilter string) string {
+	resolution := `(` + askNodeResolutionOf("a") + `)`
 	return `
  with threads as (
   select a.id, greatest(a.created_at, max(c.created_at),
-   regexp_replace(a.answer->>'at', '(\.\d{6})\d+', '\1')::timestamptz,
-   regexp_replace(a.resolution->>'at', '(\.\d{6})\d+', '\1')::timestamptz
+   regexp_replace(` + askNodeAnsweredAtTextOf("a") + `, '(\.\d{6})\d+', '\1')::timestamptz,
+   regexp_replace(` + resolution + `->>'at', '(\.\d{6})\d+', '\1')::timestamptz
   ) as last_activity_at
   from asks a left join comments c on c.ask_id = a.id
   where a.issue_key = $1` + stateFilter + `
   group by a.id
   having $2 = '' or ` + threadAuthorMatches("a.author") + `
    or bool_or(` + threadAuthorMatches("c.author") + `)
-   or user_threads_login(a.answer->>'user') = user_threads_login($2)
-   or ` + threadAuthorMatches("(a.resolution->'actor')") + `
+   or user_threads_login(` + askNodeAnswererOf("a") + `) = user_threads_login($2)
+   or ` + threadAuthorMatches("("+resolution+"->'actor')") + `
  )` + selectThreadPage
 }
 

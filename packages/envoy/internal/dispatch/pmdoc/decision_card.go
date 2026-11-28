@@ -12,7 +12,7 @@ import (
 // DecisionCard is where the browser reader draws a decision card in a body: Position is the place,
 // counted from 1, of the top-level block that holds the first `ask` the reader draws a card for,
 // and Type is that block's type, named as the conversion names the Proof node it makes of such a
-// block (blockType). The decision block's own type is that block's type only where the decision
+// block (blockType). The ask block's own type is that block's type only where the ask
 // block stands at the top of the body. A card nowhere is the zero DecisionCard.
 type DecisionCard struct {
 	Position int
@@ -117,8 +117,8 @@ func cardInSource(source []byte) DecisionCard {
 	}
 }
 
-// holdsAnAsk reports whether block is a decision block or holds one wherever it stands: in a
-// quote, in a list item, in another typed block. The decision block is an `ask` typed directive,
+// holdsAnAsk reports whether block is an ask block or holds one wherever it stands: in a
+// quote, in a list item, in another typed block. The ask block is an `ask` typed directive,
 // which the parser makes for `:::ask{…}` alone; an opener the reader opens an `ask` on and this
 // parser does not is written in that spelling before the body is read again (askOpener).
 //

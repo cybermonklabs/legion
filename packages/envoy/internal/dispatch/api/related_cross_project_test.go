@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -31,7 +33,7 @@ const crossProjectQuestion = "Which cache do we drop first when the backlog grow
 const crossProjectIssueSpec = "Weekly planning notes."
 
 // crossProjectQueryTexts is every text one of the five writes embeds for crossProjectQuestion.
-// An ask create, a new decision block and both forms of the related route embed the question
+// An ask create, a new ask block and both forms of the related route embed the question
 // alone; an issue create embeds its title, a newline and its document as it was stored, which
 // this maps in each shape the store may hold it (with and without the trailing newline), so the
 // create's vector is the query's whatever the serializer writes.
@@ -234,7 +236,7 @@ func askWindowsHold(t *testing.T, database *store.Store, askID, phrase string) b
 
 // A question write offers the answered question of another project, and a write that is not a
 // question offers none. The five forms the check runs in are all here: an ask create, a new
-// decision block and the POST form of the related route are questions to a person; an issue
+// ask block and the POST form of the related route are questions to a person; an issue
 // create and the GET form are not.
 //
 // Each form's answer also says it searched by meaning and keywords and lists the asking
@@ -340,7 +342,7 @@ func TestCrossProjectRelatedOffersAnAnsweredQuestionToQuestionWritesOnly(t *test
 		t.Fatalf("the issue create offered %+v, want no answered question of another project", filed.OtherProjects)
 	}
 
-	// A new decision block.
+	// A new ask block.
 	checks, present := decisionBlockChecksOf(t, editDocument(t, handler, hostArtifact,
 		insertAtEnd(":::ask{#evict}\n"+crossProjectQuestion+"\n:::")))
 	if !present || len(checks) != 1 || checks[0].Suggestions == nil {
@@ -348,9 +350,9 @@ func TestCrossProjectRelatedOffersAnAnsweredQuestionToQuestionWritesOnly(t *test
 	}
 	block := checks[0].Suggestions
 	if ids := crossProjectItemIDs(block.OtherProjects); !slices.Equal(ids, []string{offered}) {
-		t.Fatalf("the decision block offered %v, want %s", ids, offered)
+		t.Fatalf("the ask block offered %v, want %s", ids, offered)
 	}
-	t.Logf("measured: the ask create, the decision block and the POST form each offered the ask %s of XOTH at cosine 0.90; "+
+	t.Logf("measured: the ask create, the ask block and the POST form each offered the ask %s of XOTH at cosine 0.90; "+
 		"the issue create and the GET form offered none, both having searched by meaning and keywords and listed %s",
 		offered, target)
 }
@@ -394,14 +396,15 @@ func TestCrossProjectRelatedSkipsAsksThatDoNotQualify(t *testing.T) {
 	// the schema admits an answer on an answered row only (asks_answer_state_check). The
 	// windows the answer was indexed into stay as they are, so this ask still stands at cosine
 	// 0.92 of the question through the answer's own words; its state is what leaves it out. No
-	// route writes this row, so it is written here.
-	if tag, err := database.Pool.Exec(context.Background(), `
-		update asks set state = 'resolved', answer = null,
-		    resolution = jsonb_build_object('kind', 'resolved', 'reason', 'the document moved on',
-		      'actor', jsonb_build_object('kind', 'user', 'id', 'alice'), 'at', now())
-		 where id = $1`, resolved); err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("resolve the answered ask %s: %v (%d rows)", resolved, err, tag.RowsAffected())
+	// route writes this state, so it is written here as the decisions step's catch-up states a
+	// retraction a release before wrote (asks.Recorded): on the ask's node, which the statement
+	// reads the state off (askNodeStateOf), and on its row.
+	retraction := model.AskResolution{
+		Kind: "resolved", Reason: "the document moved on", Actor: model.Actor{Kind: "user", ID: "alice"}, At: time.Now().UTC(),
 	}
+	retracted := asks.Recorded(asks.StateResolved, nil, &retraction)
+	retracted.Who, retracted.At, retracted.Event = retraction.Actor, retraction.At, graphstore.NoEvent
+	settleAskAsTheCatchUp(t, database, resolved, retracted)
 	// A write of an ask's answer marks it owed a block index and owed its windows
 	// (item_blocks_owe, migration 20261107194001), and the statement above writes that column.
 	// The marks are this statement's own artefact: no route writes this row, so nothing in the

@@ -327,15 +327,18 @@ func replyToOf(t *testing.T, tx pgx.Tx, parent string) string {
 }
 
 // A document's question map is the question blocks its latest version declares: a block settlement
-// made a row for, a copied block under the ask it was copied from, a block in a quote, and a block
-// after a closed code fence; never a block not settled yet, one whose copied_from names no ask, an
-// id an older version alone declares, a `#` inside an attribute's value, or a directive inside
-// fenced code - backticks or tildes, in a quote, a fence a shorter run or the other character does
-// not close, one nothing closes - even one whose copied_from names an ask that exists. An id is
-// read as pmdoc reads a block's `#id` shortcut, to the first character such an id cannot hold, so
-// a block whose id holds one no bare `#id` in prose can name (`q:1`) is mapped under the whole id
-// its row carries. Each maps to the reference text.Extract reads from that ask's dispatch://
-// address, which for a question of a project document is that document's and not an issue's.
+// made a row for, a copied block under the ask it was copied from, a block in a quote, a block
+// after a closed code fence, and a footnote's later block, four columns in; never a block not
+// settled yet, one whose copied_from names no ask, an id an older version alone declares, a `#`
+// inside an attribute's value, a directive inside fenced code - backticks or tildes, in a quote,
+// opened on a footnote's label line, one whose label holds an escaped bracket among them, a fence a
+// shorter run or the other character does not close, one nothing closes - a directive in indented
+// code, or a line of the front matter the document opens with, even one whose copied_from names an
+// ask that exists. An id is read as pmdoc reads a block's `#id` shortcut, to the first character
+// such an id cannot hold, so a block whose id holds one no bare `#id` in prose can name (`q:1`) is
+// mapped under the whole id its row carries. Each maps to the reference text.Extract reads from
+// that ask's dispatch:// address, which for a question of a project document is that document's
+// and not an issue's.
 func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -368,7 +371,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 	// - the browser editor's parser ends the value at the escaped quote and reads the whole line
 	// as a paragraph, so the document service refuses it by name rather than storing an ask no
 	// browser draws (packages/envoy/internal/dispatch/pmdoc, "A typed block's attributes").
-	insertScopeVersion(t, tx, spec, 2, "# Spec\n\n"+
+	insertScopeVersion(t, tx, spec, 2, "---\ntitle: Spec\n"+copiedFrom("fronted", source)+"--- \n\n# Spec\n\n"+
 		`:::ask{#q1 urgency="med" answer="see #fake and &quot;#q9&quot;" state="answered"}`+"\nWhich?\n:::\n\n"+
 		`:::ask{#q2 state="open" copied_from="`+source+`" copied_from_document="dispatch://ACME-1/artifact/record"}`+"\nWhich?\n:::\n\n"+
 		"> :::ask{#quoted}\n> Which?\n> :::\n\n"+
@@ -379,18 +382,23 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 		"~~~md\n```\n"+copiedFrom("tilde", source)+"~~~\n\n"+
 		"> ```\n> "+copiedFrom("quotedfence", source)+"> ```\n\n"+
 		"````\n```\n"+copiedFrom("longer", source)+"````\n\n"+
+		"Footnoted.[^n]\n\n[^n]: ```\n    "+copiedFrom("footnoted", source)+"    ```\n\n"+
 		copiedFrom("after", source)+"Which?\n:::\n\n"+
+		"Escaped.[^a\\]b]\n\n[^a\\]b]: ```\n    "+copiedFrom("escaped", source)+"    ```\n\n"+
+		"    "+copiedFrom("noteblock", source)+"    Which?\n    :::\n\n"+
+		"Indented.\n\n    "+copiedFrom("indented", source)+"    Which?\n    :::\n\n"+
 		"```\n"+copiedFrom("unclosed", source))
 	insertScopeVersion(t, tx, handbook, 1, ":::ask{#rule}\nWhich?\n:::\n")
 
 	issueAsk := func(id string) text.Ref { return text.Extract("dispatch://ACME-1/ask/"+id, text.Origins{})[0] }
 	for doc, want := range map[string]map[string]text.Ref{
 		spec: {
-			"q1":     issueAsk(q1),
-			"q2":     issueAsk(source),
-			"quoted": issueAsk(quoted),
-			"q:1":    issueAsk(colon),
-			"after":  issueAsk(source),
+			"q1":        issueAsk(q1),
+			"q2":        issueAsk(source),
+			"quoted":    issueAsk(quoted),
+			"q:1":       issueAsk(colon),
+			"after":     issueAsk(source),
+			"noteblock": issueAsk(source),
 		},
 		record:   nil,
 		handbook: {"rule": text.Extract("dispatch://ACME/artifact/handbook/ask/"+projectQuestion, text.Origins{})[0]},

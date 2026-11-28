@@ -84,31 +84,36 @@ func (s *server) versionAtTheCut(ctx context.Context, artifactID string, blocks 
 	return markdown, token, texts, nil
 }
 
-// artifactTextAtTheCut is the markdown and the token of the text route at the cut ctx carries:
-// the markdown of document artifactID's newest version then and the document token stored with
-// it. A version stored with no token leaves the token out (/token, reason E). With blocks, the
-// answer gives the blocks of that markdown (blocksAtTheCut) beside the rendering they index,
-// which is the markdown itself for each version this build's renderer wrote.
-func (s *server) artifactTextAtTheCut(ctx context.Context, artifactID string, blocks bool) (string, string, *[]model.ArtifactBlock, error) {
+// artifactTextAtTheCut is the text route's document at the cut ctx carries: the markdown of
+// document artifactID's newest version then, in the form the request reads (kept for a reader
+// that sent no `Dispatch-Asks: 1`), the document token stored with it, and its asks, each ask
+// block's state and answer as the asks shadow gives them at the cut (docs.VersionAskedText). A
+// version stored with no token leaves the token out (/token, reason E). With blocks, the answer
+// gives the blocks of that markdown (blocksAtTheCut) beside the rendering they index, which is
+// the markdown itself for each version this build's renderer wrote: the one reading of the
+// version gives the markdown, its blocks and its asks.
+func (s *server) artifactTextAtTheCut(ctx context.Context, artifactID string, blocks, kept bool) (docs.AskedText, *[]model.ArtifactBlock, error) {
 	markdown, token, recorded, err := s.versionAtTheCut(ctx, artifactID, blocks)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("read the version of document %s at the cut: %w", artifactID, err)
+		return docs.AskedText{}, nil, fmt.Errorf("read the version of document %s at the cut: %w", artifactID, err)
 	}
 	if token == nil {
 		leaveOut(ctx, "/token")
 	}
-	if !blocks {
-		return markdown, deref(token), nil, nil
-	}
-	rendered, listed, err := docs.VersionRenderingBlocks(markdown)
+	text, err := s.deps.Docs.VersionAskedText(ctx, artifactID, markdown, blocks, kept)
 	if err != nil {
-		return "", "", nil, err
+		return docs.AskedText{}, nil, fmt.Errorf("read the text of document %s at the cut: %w", artifactID, err)
 	}
+	text.Token = deref(token)
+	if !blocks {
+		return text, nil, nil
+	}
+	listed := text.Blocks
 	if listed == nil {
 		listed = []model.ArtifactBlock{}
 	}
-	blocksAtTheCut(ctx, rendered, listed, recorded, "/blocks")
-	return rendered, deref(token), &listed, nil
+	blocksAtTheCut(ctx, text.Markdown, listed, recorded, "/blocks")
+	return text, &listed, nil
 }
 
 // artifactBlocksAtTheCut is the answer of a block route at the cut ctx carries: the blocks of

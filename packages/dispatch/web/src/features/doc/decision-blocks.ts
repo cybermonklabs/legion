@@ -11,10 +11,9 @@ import { BLANK_LINE, closingFenceAfter, codeFenceEnd } from "./document-blocks";
  * blank line after the closing fence goes with it, or the one before the opening fence when the
  * block ends the document, so the text around it closes up as if the block had never been
  * written. A block no later line closes is left as it is, and a fenced code block is kept whole
- * (`codeFenceEnd`): what it spells is text, not a block. The Go server cuts the parsed tree
- * (`packages/envoy/internal/dispatch/docs/approval_carry.go`, `CutDecisionBlocks`); the two need
- * not agree byte for byte, but over the fixtures in `packages/contracts/fixtures/decision-blocks`
- * both give the same answer to whether two versions differ outside their blocks. The fence rules
+ * (`codeFenceEnd`): what it spells is text, not a block. Its fixtures are
+ * `packages/contracts/fixtures/decision-blocks`, which the Go server's tests also read as text
+ * `pmdoc.Render` writes back byte for byte. The fence rules
  * are `document-blocks.ts`'s, so this cut and the block split the change view reads
  * (`splitBlocks`) see the same fences.
  */

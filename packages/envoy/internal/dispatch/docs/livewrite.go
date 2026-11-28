@@ -437,8 +437,7 @@ func (s *Service) forkLive(ctx context.Context, write *liveWrite) (*crdt.Doc, er
 // appended and the room has committed since the transaction read it, so the state its appends were
 // made on is no longer anywhere to be read. It is ErrServiceUnavailable, which is what it is for a
 // caller - this transaction cannot serve the write, and the retry that follows reads the room
-// afresh - rather than the 500 an error that maps to no status becomes (SetBlockAttributes
-// retries in the same transaction, and reaches this when the room has committed since its read).
+// afresh - rather than the 500 an error that maps to no status becomes.
 var errForkReleased = fmt.Errorf("%w: the transaction can no longer write this document: the write has ended, or an operation failed after it changed the document and the document has changed since", ErrServiceUnavailable)
 
 // rebuildFork builds write's fork again, after an operation abandoned it (applyLive), on the state
@@ -630,8 +629,9 @@ func (s *Service) warmFork(write *liveWrite, live *crdt.Doc) (*crdt.Doc, error) 
 
 // coldFork returns the fork of a write to a document no room holds, or whose room stands behind
 // head (readFork): the stored document, which is all of it then. It loads no room, which would hold
-// a second copy of the document for as long as the write runs; the room loads when the
-// write is published, from the store, which by then holds the write. A browser's room load takes no
+// a second copy of the document for as long as the write runs, and the publish loads none
+// (publishLiveWrite): a room that loads later loads from the store, which by then holds the
+// write. A browser's room load takes no
 // lock the write holds (onLoadDocument), so a room can load while this reads the store: a room
 // found once the read is done, and not behind head, is forked from instead (warmFork), and the copy
 // read from the store is dropped undecoded, so the document is never held both in a room and in a
@@ -650,6 +650,14 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 			return nil, err
 		}
 		s.failRoom(write.artifactID, err)
+		if errors.Is(err, ErrDocumentUnloadable) {
+			// A history that does not even merge (mergedThrough) is the one a decode refuses
+			// below: the state a rebuild repairs, which every retry meets again, and not a fault
+			// of the server. Its writer answers it as it answers that decode, so a close, reopen or
+			// repair writing every document of an issue goes on without this one
+			// (writeDocumentAskStates) whatever number of stored updates the history holds.
+			return nil, err
+		}
 		return nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 	}
 	if live := s.srv.GetDoc(write.artifactID); live != nil && !closedIssueCommentMark(ctx, write) && !s.roomBehindHead(ctx, write.artifactID, live, head) {
@@ -918,10 +926,11 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 	if s.beforePublish != nil {
 		s.beforePublish(write)
 	}
-	// Committed, the write has no more use for its fork, so the fork goes before the publish,
-	// which loads the room when no room holds the document (coldFork). The room's shadow keeps it
-	// (newShadow) and applies the room's later commits to it as it measures them, so from the
-	// commit on the fork is the shadow's and describes no state of the write's.
+	// Committed, the write has no more use for its fork, so the fork goes before the publish. The
+	// publish loads no room: where no room holds the document, it schedules the settlement of the
+	// write's updates and returns (coldFork). The room's shadow keeps the fork (newShadow) and
+	// applies the room's later commits to it as it measures them, so from the commit on the fork is
+	// the shadow's and describes no state of the write's.
 	write.releaseFork()
 	if !s.roomHeld(write.artifactID) {
 		if len(write.updates) > 0 {

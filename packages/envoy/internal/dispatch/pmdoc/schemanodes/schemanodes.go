@@ -37,6 +37,32 @@ const (
 	Channel = "dispatch_block_schema"
 )
 
+// StoreName is the name the store holds the values of attribute name of block type typeName
+// under: the kind of each tuple that states one of its values (R1), the `store_name` its
+// attribute node carries, and what follows the `/` in that node's id. A document, the editor and
+// the schema Read builds know the attribute by name alone, so a writer or an indexer that stores
+// one of its values maps name to this, and a reader of the store maps it back: the writer of an
+// ask node's `invalid` (asks.PlanInvalidReasons) reads it in production. It is name itself except
+// where name is a base attribute every node carries (graphstore.IsBaseAttribute), whose value
+// tuple would read as the node's own visibility, state, project or parties: ask's `state` is
+// stored as `answer_state`, and any other such attribute as its type's name, `_` and its own name.
+//
+// The mapping exists only while a markdown attribute carries a base attribute's name, as ask's
+// `state` does. Once no type declares such an attribute, StoreName goes and every attribute's
+// store name is its name. The seed of the type nodes
+// (store/migrations/20261109051232_graph_supertags.up.sql) writes what this answers, and
+// cmd/dispatch's TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds the two together.
+func StoreName(typeName, name string) string {
+	switch {
+	case !graphstore.IsBaseAttribute(name):
+		return name
+	case typeName == "ask" && name == "state":
+		return "answer_state"
+	default:
+		return typeName + "_" + name
+	}
+}
+
 // supertagAttributes is what a supertag node carries. A node without BlockType is a type the
 // block schema does not declare - a person, a comment, an issue - which this reader skips: the
 // block schema is the part of the store a build can address, and a kind it cannot address is
@@ -55,6 +81,9 @@ type supertagAttributes struct {
 	// normalizeVersions), as blocks.json leaves them out.
 	Since          int `json:"since"`
 	CreatableSince int `json:"creatable_since"`
+	// Parents is the typed blocks the type stands in after their own content, and nowhere else
+	// (pmdoc.BlockTypeSchema.Parents); a node that carries none is a type in the block group.
+	Parents []string `json:"parents"`
 }
 
 // attributeAttributes is what an attribute node carries: the name its type declares it under,
@@ -144,6 +173,7 @@ func read(ctx context.Context, q graphstore.Queryer) (pmdoc.BlockSchema, error) 
 			Content:        carried.Content,
 			Render:         carried.Render,
 			Attributes:     declared,
+			Parents:        carried.Parents,
 			Since:          carried.Since,
 			CreatableSince: carried.CreatableSince,
 		}})

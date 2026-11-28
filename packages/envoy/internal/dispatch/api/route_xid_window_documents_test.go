@@ -94,7 +94,7 @@ var documentRouteXidWindows = []routeXidWindowCase{
 		ready: readyEditRestoringTheApprovedText, window: storetest.XidBatchedWindow,
 	},
 	{
-		name: "the spec upload restoring the approved text under an open approval request", route: "POST /api/v1/issues/{key}/artifacts restoring the approved text (docs.CarryRestoredApproval, writeCarriedReview, answerApprovalAsk)",
+		name: "the spec upload restoring the approved text under an open approval request", route: "POST /api/v1/issues/{key}/artifacts restoring the approved text (docs.CarryUploadedApproval, writeCarriedReview, answerApprovalAsk)",
 		ready: readyUploadRestoringTheApprovedText, window: storetest.XidBatchedWindow,
 	},
 	{
@@ -364,7 +364,7 @@ func readyEditRestoringTheApprovedText(t *testing.T, base routeFixture) lockedIt
 // readyUploadRestoringTheApprovedText drives POST /api/v1/issues/{key}/artifacts uploading the
 // approved version's text under an open approval request: the upload moves the request to its
 // version and then carries alice's approval, which answers the request
-// (docs.CarryRestoredApproval, writeCarriedReview, answerApprovalAsk).
+// (docs.CarryUploadedApproval, writeCarriedReview, answerApprovalAsk).
 func readyUploadRestoringTheApprovedText(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Upload restoring the approved text")

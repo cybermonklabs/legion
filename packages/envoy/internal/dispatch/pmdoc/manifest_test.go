@@ -411,13 +411,12 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 
 // The check block's marks, subject and program (what a check reads - code, production or the
 // graph - and which deployed program it reads), are read from manifest version 6, N, and created
-// from version 7, N+1: the first elements a release reads one release before it creates them. A
-// build at N reads a check carrying either, and writes one only into a document that already holds
-// that mark, so no write of it puts one into a document that holds none; a build at N-1, the
-// release before, declares the check block but neither mark, so it creates none and reads a stored
-// check carrying one as an element it does not know (ErrUnknownElement, answered 409
-// DOC_NEWER_CONTENT). Each build is the embedded manifest as of its version (manifestAsOf), so each
-// assertion holds whether this build is N or N+1.
+// from version 7, N+1, so a build at N reads a check carrying either, and writes one only into a
+// document that already holds that mark, so no write of it puts one into a document that holds
+// none; a build at N-1, the release before, declares the check block but neither mark, so it
+// creates none and reads a stored check carrying one as an element it does not know
+// (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT). Each build is the embedded manifest as of
+// its version (manifestAsOf), so each assertion holds whether this build is N or N+1.
 func TestTheCheckMarksAreReadAtNAndWrittenFromNPlusOne(t *testing.T) {
 	const n = 6
 	const withoutIt = ":::check{#b-c1}\nBody.\n:::\n"

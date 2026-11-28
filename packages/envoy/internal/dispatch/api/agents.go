@@ -19,6 +19,12 @@ type agentResponse struct {
 	LastActivity *string `json:"last_activity"`
 }
 
+// agentOpenAskCounts counts each session's open asks on open issues and on project documents. The
+// count reads the ask's row's state, not its node's: the one writer of an answer state writes the
+// two in one transaction (asks.Settle), so they differ only inside a roll's window, between a
+// process of the release before writing an answer state to the row alone and the decisions step's
+// catch-up tick that states it on the node; R3 holds the reads that show an answer to the node,
+// and a count shows none.
 func (s *server) agentOpenAskCounts(ctx context.Context, sessionIDs []string) (map[string]int, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select a.author->>'id', count(*)::int

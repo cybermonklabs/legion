@@ -562,8 +562,9 @@ func (a edgesBlockArm) String() string {
 // edgesBlockArms is the list "The arms that can end at a block" of the plan of this change: the
 // arms of graph_edges whose to_kind is a column or one of blockNodeKinds. They are refs;
 // block_refs, whose typed pointer is listed only where block_ref_listed allows its target, over
-// the rows that name no node; the store's own arm over graph_tuples, which answers a document
-// block's link once its block_refs row names its node, and only while that row carries it;
+// the rows that name no node; the store's own arm over graph_tuples (migration 20261125163554),
+// which answers a document block's link once its block_refs row names its node, and only while
+// that row carries it, and an answered ask's shaped, which no writer of this build states yet;
 // comment_block_refs, message_block_refs and ask_block_refs, each joined to its source block, which
 // must hold a position; a comment's reply to a comment's block and to an ask's part, told apart by
 // the ask/ that starts an ask part's node id; and a message's reply to a message's block.
@@ -580,30 +581,31 @@ var edgesBlockArms = []edgesBlockArm{
 	},
 	{
 		arm: graphViewArm{table: "graph_tuples"},
-		from: "FROM ( SELECT DISTINCT ON (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, " +
-			"tuple.from_id) tuple.from_kind, tuple.from_id, CASE WHEN tuple.kind = 'in_document'::text " +
-			"THEN 'part_of'::text ELSE tuple.kind END AS kind, tuple.to_kind, tuple.to_id, tuple.at AS " +
-			"created_at, tuple.legacy_source_seq AS source_seq, tuple.kind AS stated, tuple.asserted, " +
-			"CASE WHEN tuple.from_kind = 'block'::text AND tuple.kind = 'in_document'::text THEN " +
-			"'block'::text WHEN tuple.from_kind = 'block'::text AND tuple.kind <> 'part_of'::text THEN " +
-			"'block_ref'::text WHEN tuple.from_kind = 'comment'::text AND (tuple.kind = ANY " +
-			"(ARRAY['anchored_to'::text, 'owned_by'::text])) THEN 'comment'::text ELSE NULL::text END AS " +
-			"projects FROM graph_tuples tuple WHERE tuple.to_kind <> 'value'::text AND (tuple.from_kind " +
-			"= 'block'::text AND tuple.kind = 'in_document'::text OR tuple.from_kind = 'block'::text AND " +
-			"tuple.kind <> 'part_of'::text OR tuple.from_kind = 'comment'::text AND (tuple.kind = ANY " +
-			"(ARRAY['anchored_to'::text, 'owned_by'::text]))) ORDER BY tuple.to_kind, tuple.to_id, " +
-			"tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq DESC) edge JOIN graph_nodes node ON " +
-			"node.kind = edge.from_kind AND node.id = edge.from_id WHERE edge.asserted AND node.state <> " +
-			"'gone'::text AND (edge.projects <> 'block_ref'::text OR edge.stated = 'mentions'::text OR " +
-			"block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id)) AND CASE " +
-			"edge.projects WHEN 'block'::text THEN (EXISTS ( SELECT 1 FROM document_blocks projected " +
-			"WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET " +
-			"0)) WHEN 'block_ref'::text THEN (EXISTS ( SELECT 1 FROM block_refs projected WHERE " +
-			"projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id AND " +
-			"projected.kind = edge.stated AND projected.to_kind = edge.to_kind AND projected.to_id = " +
-			"edge.to_id OFFSET 0)) WHEN 'comment'::text THEN (EXISTS ( SELECT 1 FROM comments projected " +
-			"WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET " +
-			"0)) ELSE NULL::boolean END",
+		from: `FROM ( SELECT DISTINCT ON (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id) tuple.from_kind, tuple.from_id, ` +
+			`CASE WHEN tuple.kind = 'in_document'::text THEN 'part_of'::text ELSE tuple.kind END AS kind, tuple.to_kind, tuple.to_id, ` +
+			`tuple.at AS created_at, tuple.legacy_source_seq AS source_seq, tuple.kind AS stated, tuple.asserted, ` +
+			`CASE WHEN tuple.from_kind = 'block'::text AND tuple.kind = 'in_document'::text THEN 'block'::text ` +
+			`WHEN tuple.from_kind = 'block'::text AND tuple.kind <> 'part_of'::text THEN 'block_ref'::text ` +
+			`WHEN tuple.from_kind = 'comment'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text, 'owned_by'::text])) THEN 'comment'::text ` +
+			`WHEN tuple.from_kind = 'ask'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text, 'owned_by'::text])) THEN 'ask'::text ` +
+			`WHEN tuple.from_kind = 'ask'::text AND tuple.kind = 'followed_by'::text THEN 'ask_follower'::text ` +
+			`WHEN tuple.from_kind = 'ask'::text AND tuple.kind = 'shaped'::text THEN 'block_ref'::text ELSE NULL::text END AS projects ` +
+			`FROM graph_tuples tuple WHERE tuple.to_kind <> 'value'::text AND (tuple.from_kind = 'block'::text AND tuple.kind = 'in_document'::text ` +
+			`OR tuple.from_kind = 'block'::text AND tuple.kind <> 'part_of'::text ` +
+			`OR tuple.from_kind = 'comment'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text, 'owned_by'::text])) ` +
+			`OR tuple.from_kind = 'ask'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text, 'owned_by'::text])) ` +
+			`OR tuple.from_kind = 'ask'::text AND tuple.kind = 'followed_by'::text OR tuple.from_kind = 'ask'::text AND tuple.kind = 'shaped'::text) ` +
+			`ORDER BY tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq DESC) edge ` +
+			`JOIN graph_nodes node ON node.kind = edge.from_kind AND node.id = edge.from_id ` +
+			`WHERE edge.asserted AND node.state <> 'gone'::text AND (edge.projects <> 'block_ref'::text OR edge.stated = 'mentions'::text ` +
+			`OR block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id)) AND CASE edge.projects ` +
+			`WHEN 'block'::text THEN (EXISTS ( SELECT 1 FROM document_blocks projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET 0)) ` +
+			`WHEN 'block_ref'::text THEN (EXISTS ( SELECT 1 FROM block_refs projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id ` +
+			`AND projected.kind = edge.stated AND projected.to_kind = edge.to_kind AND projected.to_id = edge.to_id OFFSET 0)) ` +
+			`WHEN 'comment'::text THEN (EXISTS ( SELECT 1 FROM comments projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET 0)) ` +
+			`WHEN 'ask'::text THEN (EXISTS ( SELECT 1 FROM asks projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET 0)) ` +
+			`WHEN 'ask_follower'::text THEN (EXISTS ( SELECT 1 FROM ask_followers projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id ` +
+			`AND projected.session_id = edge.to_id OFFSET 0)) ELSE NULL::boolean END`,
 	},
 	{
 		arm:  graphViewArm{table: "comment_block_refs", fromKind: "comment_block"},

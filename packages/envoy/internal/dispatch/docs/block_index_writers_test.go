@@ -554,18 +554,47 @@ var indexPasses = map[string]string{
 	// statement (graphstore.WriteArms), and each caller that appends an event after the follow
 	// moves the node that follow made onto it (graphstore.QueueCaused). Neither reads a row of
 	// either side: the follow writes the session its caller names, and the cause the node the
-	// follow answered.
+	// follow answered. A follow planned in a write's read phase (asks.PlannedFollow) queues the same
+	// statement on that write's batch.
+	"asks/followers.go#Follow":         "the ask and the session its caller names",
 	"asks/followers.go#queueFollow":    "the ask and the session its caller names",
+	"asks/followers.go#Queue":          "the ask and the author its caller's plan names",
 	"api/server.go#appendCausingEvent": "the event its caller appends and the facts its caller's write stated before it",
 	"api/asks.go#createAskFor":         "the ask the create request opens and the event it appended after the follow",
 	// A renewed approval request follows its ask for the requester and moves the node that
 	// follow made onto the last event the renewal appended, or leaves it at the sentinel when
 	// the renewal appended none.
 	"api/reviews.go#renewApprovalAsk": "the open approval request, the requester and the event the renewal appended",
+	// The one writer of an ask's answer state, queued (asks.Settled.Queue): the answer on the
+	// ask's node, then its row, from the transition its caller names; and each site that appends
+	// what a transition held under the event it appended after it (graphstore.QueueCaused).
+	"asks/settle.go#Queue":                             "the transition its caller names",
+	"api/ask_transitions.go#closeAskTx":                "the transition the answer, resolve or decline request makes and the event it appended",
+	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx": "the asks an issue's close withdraws and the events it appended",
+	"api/issue_ask_lifecycle.go#recordRestoredAsksTx":  "the asks an issue's reopen restores and the events it appended",
+	"docs/approval_carry.go#answerApprovalAsk":         "the approval the carry answers and the event it appended",
+	// A settlement states on each ask node the readability of its block that the reconciliation
+	// read, through the writer of that value (asks.PlanInvalidReasons): the reason a block fails
+	// the strict read for, as the node's `invalid` value, and that value's retraction once the
+	// block reads again. It reads the value each node holds only to state what moved, never a side
+	// of a projection to mend the other.
+	"asks/invalid.go#PlanInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
+	// A settlement states on each copy's block node the ask its classification read it a copy of,
+	// and retracts the copied_from of each block that holds one and is no longer an ask block. It
+	// reads the copied_from each block node holds only to find those blocks, a relation no table
+	// projects, never a side of a projection to mend the other.
+	"docs/ask_blocks.go#claimCopies": "the source asks settlement classified as copies of other documents' asks, and the copied_from each block node of the document holds",
+	// The catch-up of a follow a process of the release before recorded: the follower rows that
+	// build wrote, stated on the ask's node where the node does not state them yet.
+	"asks/followers.go#CatchUpFollower": "the follower rows another build recorded and what the ask's node already states of them",
+	// The boot step's backfill of the asks and their followers written before this release.
+	"graphcensus/backfill_asks.go#writeAskBatch":         "each pre-store asks row's own content",
+	"graphcensus/backfill_asks.go#writeAskFollowerBatch": "each pre-store ask_followers row's own content",
 	// A settlement states right after each event it appends what waited for it: its version's
 	// block index after the artifact.version, and each ask it opened, its node and its follow,
-	// after that ask's ask.opened (graphstore.QueueCaused).
-	"docs/settlement.go#appendEvents": "the facts the settlement's index pass, its asks' nodes and its follows stated and the events it appended after them",
+	// after that ask's ask.opened, with the answer states it wrote (graphstore.QueueCaused,
+	// causedByEvent).
+	"docs/settlement.go#appendEvents": "the facts the settlement's index pass, its asks' nodes and follows and its answer states stated and the events it appended after them",
 	// The node of every ask and message a request or a settlement creates, before its row, in the
 	// project or between the parties it belongs to, and caused by the event the create appends.
 	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",

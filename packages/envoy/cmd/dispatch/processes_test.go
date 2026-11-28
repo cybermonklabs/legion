@@ -4,12 +4,14 @@
 // this tree; the two-build suite (twobuild_test.go) starts one of this tree and one of an earlier
 // build. The processes' own logs, the stream read by sequence, the delivery durables and settings,
 // and the GitHub App a process boots with are in nats_unreachable_test.go, which every build of the
-// tests compiles.
+// tests compiles. A row that needs only the registry to list a second build beside this tree's
+// processes - the multiprocess, memory and basebuild suites' - registers one here
+// (registerOtherBuild).
 //
 // This file carries no build constraint, so every build of the tests compiles it too. It holds no
-// test, only what the two tagged suites call: a constraint naming both tags
-// (`multiprocess || twobuild`) is a shape .github/scripts/go-tagged-tests.sh refuses, since it
-// reads only a bare tag, and each suite's file keeps its own bare tag.
+// test, only what the tagged suites call: a constraint naming two tags (`multiprocess ||
+// twobuild`) is a shape .github/scripts/go-tagged-tests.sh refuses, since it reads only a bare
+// tag, and each suite's file keeps its own bare tag.
 
 package main
 
@@ -21,12 +23,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -119,6 +125,99 @@ func (p *dispatchPair) name(one *dispatchProcess) string {
 	return "B"
 }
 
+// ───── a process of another build ───────────────────────────────────────────
+
+// otherBuild keeps a row of the registry live for a process of the build commit, as a process of
+// that build serving beside this tree's registers one (processes.Register): with the key set,
+// dashboard build, embedder, file store and owner lock protocol of the newest process of the build
+// beside, so it is admitted beside this tree's processes and leaves the owner lock out of its
+// legacy mode, as the base release, which registers store.OwnerLockProtocol too, does; and with
+// the base release's own schema numbers (pmdoctest.ReleaseBeforeSchemaVersion,
+// pmdoctest.ReleaseBeforeSchemaCreatable), as a process of it registers them. So
+// this tree's fleet guard (docs' anotherBuildServes) reads two builds: the roll window, in which
+// this tree keeps the server-owned attributes of each ask block in step with its asks row for the
+// earlier build's pages (docs' rollWindowAskAttributes). A page that
+// presents no schema_creatable, as a test's editor does (documentURL), stays writable beside it:
+// its creatable is 1, at most the row's version. beside is the commit this tree's processes
+// register: headBuildStamp for the basebuild suite's stamped head, "" for a build that runs
+// unstamped (main.buildCommit), as cmdtest.Build's and the memory harness's do; a process of it
+// must be live when this is called. The row heartbeats every two seconds until stop removes it,
+// which leaves the fleet one build again.
+type otherBuild struct {
+	stop func()
+}
+
+func registerOtherBuild(t *testing.T, ctx context.Context, databaseURL, commit, beside string) otherBuild {
+	t.Helper()
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to register a process of the build %s: %v", commit, err)
+	}
+	instance := uuid.NewString()
+	tag, err := conn.Exec(ctx, `
+		insert into server_processes (instance, commit, dashboard_build, signing_keys, started_at, heartbeat_at,
+			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
+		select $1::uuid, $2, dashboard_build, signing_keys, now(), now(), $4, $5, embedder_identity, file_store, owner_lock_protocol
+		from server_processes where commit = $3 order by heartbeat_at desc limit 1
+	`, instance, commit, beside, pmdoctest.ReleaseBeforeSchemaVersion, pmdoctest.ReleaseBeforeSchemaCreatable)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("register a process of the build %s beside the build %q: %v (%d rows)", commit, beside, err, tag.RowsAffected())
+	}
+	// The row carries the owner lock protocol of the build beside, as a process of the base
+	// release registers the same one (processes.Register, store.OwnerLockProtocol): a row at the
+	// column's default, 0, would fire owner_lock_legacy_registration and hold every owner lock of
+	// the database in the legacy mode for store.OwnerLockMarkWindow, past stop, which no roll
+	// beside the base release takes.
+	var protocol int
+	var marked, legacy bool
+	if err := conn.QueryRow(ctx, `
+		select (select owner_lock_protocol from server_processes where instance = $1::uuid),
+			exists (select from owner_lock_legacy_mark),
+			public.owner_lock_fleet($2, $3)`,
+		instance, store.OwnerLockLegacyWindow.Seconds(), store.OwnerLockMarkWindow.Seconds(),
+	).Scan(&protocol, &marked, &legacy); err != nil {
+		t.Fatalf("read the owner lock protocol of the process of the build %s and the owner lock's fleet: %v", commit, err)
+	}
+	if protocol != store.OwnerLockProtocol || marked || legacy {
+		t.Fatalf("the process of the build %s registers owner_lock_protocol %d, an earlier build's mark stamped %v, an earlier build in the owner lock's fleet %v; want %d, no mark and no earlier build",
+			commit, protocol, marked, legacy, store.OwnerLockProtocol)
+	}
+	done := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				_, _ = conn.Exec(ctx, `update server_processes set heartbeat_at = now() where instance = $1::uuid`, instance)
+			}
+		}
+	}()
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			close(done)
+			wait.Wait()
+			if _, err := conn.Exec(ctx, `delete from server_processes where instance = $1::uuid`, instance); err != nil {
+				t.Errorf("remove the process of the build %s: %v", commit, err)
+			}
+			_ = conn.Close(ctx)
+		})
+	}
+	t.Cleanup(stop)
+	return otherBuild{stop: stop}
+}
+
+// earlierBuildStamp is the commit a row registerOtherBuild keeps names in a suite that starts no
+// process of an earlier build: one no build of this tree is stamped with, as headBuildStamp is the
+// basebuild suite's head's.
+const earlierBuildStamp = "1149114911491149114911491149114911491149"
+
 // ───── the API a row drives ─────────────────────────────────────────────────
 
 // uniqueProjectKey is prefix with six random characters after it, within the project key's own
@@ -169,18 +268,32 @@ func (p *dispatchProcess) createIssueIn(t *testing.T, project, title, spec strin
 	return issue.Key, issue.PrimaryArtifactID
 }
 
-// documentText is the markdown GET /api/v1/artifacts/{id}/text answers: the document as this
-// process renders it now.
+// documentText is the markdown GET /api/v1/artifacts/{id}/text answers a reader of this build
+// (asReaderOfAsks): the document as this process renders it now.
 func (p *dispatchProcess) documentText(t *testing.T, artifactID string) string {
 	t.Helper()
-	answer := p.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", "", http.StatusOK)
+	path := "/api/v1/artifacts/" + artifactID + "/text"
+	answer := p.send(t, http.MethodGet, path, "", asReaderOfAsks(dispatchTestLogin))
+	if answer.status != http.StatusOK {
+		t.Fatalf("GET %s: status %d, want %d: %s", path, answer.status, http.StatusOK, answer.body)
+	}
 	var document struct {
 		Markdown string `json:"markdown"`
 	}
-	if err := json.Unmarshal(answer, &document); err != nil {
-		t.Fatalf("decode the document's text: %v: %s", err, answer)
+	if err := json.Unmarshal(answer.body, &document); err != nil {
+		t.Fatalf("decode the document's text: %v: %s", err, answer.body)
 	}
 	return document.Markdown
+}
+
+// asReaderOfAsks is login's header for a read of a text route as every reader of this build that
+// reads the asks member sends it: `Dispatch-Asks: 1` (api's asksHeader), which is served markdown
+// with none of an ask block's server-owned attributes. A request without it is served the form
+// kept for one release for the readers of the release before.
+func asReaderOfAsks(login string) http.Header {
+	header := asUser(login)
+	header.Set("Dispatch-Asks", "1")
+	return header
 }
 
 // ───── the notification stream ──────────────────────────────────────────────

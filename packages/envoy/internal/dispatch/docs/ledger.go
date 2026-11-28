@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -177,9 +178,13 @@ type Ledger struct {
 	// ask.opened queued after that write (api.recordRestoredAsksTx). The asks table reads them
 	// withdrawn, and the events table holds no such ask.opened, until the write phase has run, so
 	// the reopen's reads that must see them restored take them from here (restoredAsksOf): its
-	// mark (MarkReopenOwedAskDocuments), and its follow's request and carry (openApprovalAsk,
-	// reopenRestoredSince).
+	// mark (MarkReopenOwedAskDocuments), and its follow's request (openApprovalAsk).
 	restored []string
+	// settledAsks holds, per ask, the last change of its answer state this transaction has planned
+	// and queued (PlanSettle): the asks row and the ask's node hold none of it until the write
+	// phase has run, so a later change of the same ask in this transaction is planned from it
+	// (asks.PlanSettleAfter) rather than from the tables.
+	settledAsks map[string]asks.Settled
 }
 
 // WriteStep is one step of a transaction's write phase: it puts the statements of one write on the
@@ -834,6 +839,49 @@ func recordPendingReview(ctx context.Context, tx pgx.Tx, artifactID string, revi
 	}
 	ledger.reviews[artifactID] = review
 	return nil
+}
+
+// PlanSettle plans change on the ask askID for this transaction's write phase, as the one writer
+// of an ask's answer state plans it (asks.PlanSettle): from the last change of the same ask this
+// transaction has planned, where it has planned one (asks.PlanSettleAfter), and from the stored row
+// and node otherwise; and records the plan as the ask's latest, so a change after it is planned
+// from it in turn. The caller queues the plan where it makes the write (Queue, write,
+// asks.Settled.Queue). Every settle of a transaction that queues its writes is planned here - the
+// reopen restores an ask and then its follow answers it, a settlement retracts an ask whose block
+// then returns - so no change of an ask is planned from a row an earlier queued change has already
+// moved. It refuses a ledger no caller joined and a sealed one (ErrQueueSealed).
+func (l *Ledger) PlanSettle(ctx context.Context, askID string, change asks.Change) (asks.Settled, error) {
+	if l.writer == nil {
+		return asks.Settled{}, errUnjoined
+	}
+	if l.sealed {
+		return asks.Settled{}, ErrQueueSealed
+	}
+	var settled asks.Settled
+	var err error
+	if earlier, planned := l.settledAsks[askID]; planned {
+		settled, err = asks.PlanSettleAfter(earlier, change)
+	} else {
+		settled, err = asks.PlanSettle(l.ReadContext(ctx), l.writer, askID, change)
+	}
+	if err != nil {
+		return asks.Settled{}, err
+	}
+	if l.settledAsks == nil {
+		l.settledAsks = make(map[string]asks.Settled, 1)
+	}
+	l.settledAsks[askID] = settled
+	return settled, nil
+}
+
+// planSettle plans change on the ask askID in tx: through the ledger that queues tx's writes
+// (Ledger.PlanSettle), which plans it after a change of the same ask that ledger already holds,
+// and else from the stored row and node, for a write that runs at once (asks.PlanSettle).
+func planSettle(ctx context.Context, tx pgx.Tx, askID string, change asks.Change) (asks.Settled, error) {
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		return ledger.PlanSettle(ctx, askID, change)
+	}
+	return asks.PlanSettle(ctx, tx, askID, change)
 }
 
 // PendingReview is the review of artifactID this transaction has queued and not yet written

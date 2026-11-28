@@ -6,17 +6,21 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestAnswerBlockAskWritesItsServerStateIntoTheDocument(t *testing.T) {
+// An answered block ask reads answered in the asks member of its document's text, with who
+// answered and the words, and the markdown beside it carries none of that.
+func TestAnAnsweredBlockAskReadsAnsweredInTheAsksOfItsDocumentsText(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -46,11 +50,112 @@ func TestAnswerBlockAskWritesItsServerStateIntoTheDocument(t *testing.T) {
 	if answered.Code != http.StatusOK {
 		t.Fatalf("answer ask: status=%d body=%s", answered.Code, answered.Body.String())
 	}
-	text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice")
-	if text.Code != http.StatusOK || !strings.Contains(text.Body.String(), `state=\"answered\"`) ||
-		!strings.Contains(text.Body.String(), `answered_by=\"alice\"`) || !strings.Contains(text.Body.String(), `answer=\"Yes.\"`) {
-		t.Fatalf("answered block text: status=%d body=%s", text.Code, text.Body.String())
+	if text := agentText(t, handler, issue.PrimaryArtifactID); !strings.Contains(text, `#ask-1 state="answered" answered_by="alice"`) ||
+		!strings.Contains(text, `selected=[] answer="Yes."`) {
+		t.Fatalf("answered block text:\n%s", text)
 	}
+}
+
+// The text routes serve each reader the form it reads (R5): a reader that reads the asks member
+// sends `Dispatch-Asks: 1` (asksHeader) and is served markdown with none of an ask block's
+// server-owned attributes, and a request without it, as every reader of a release before this one
+// sends, is served the kept form: the answered ask's state, answerer and time as the document holds
+// them, and no answer's words or selection. Both forms answer the same token and the same asks, by
+// id and by slug, and each answer tells a cache that the header chooses its bytes.
+func TestTheTextRoutesServeAReaderOfAsksNoAskAttributeAndEveryOtherReaderTheKeptForm(t *testing.T) {
+	t.Parallel()
+	var documentService *docs.Service
+	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		return documentService
+	})
+	issue := createInteractionIssue(t, handler, "TEST", "Two forms of the text", "Before\n")
+	const stripped = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Ship: Now.\n- Hold: Later.\n:::\n"
+	if _, err := replaceDocumentText(database, documentService, issue.PrimaryArtifactID, stripped, model.Actor{Kind: "session", ID: "session-1"}); err != nil {
+		t.Fatalf("write ask block: %v", err)
+	}
+	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
+		"question": "Ship it?", "options": []map[string]string{{"label": "Ship", "description": "Now."}, {"label": "Hold", "description": "Later."}},
+		"actor": model.Actor{Kind: "session", ID: "session-1"},
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create indexed ask: status=%d body=%s", created.Code, created.Body.String())
+	}
+	askID := decodeBody[model.Ask](t, created).ID
+	if _, err := database.Pool.Exec(context.Background(), `
+		update asks set block_id = 'ask-1', block_artifact_id = $2 where id = $1
+	`, askID, issue.PrimaryArtifactID); err != nil {
+		t.Fatalf("attach indexed ask to block: %v", err)
+	}
+	answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
+		"selected": []string{"Ship"}, "text": "Ship it now.",
+	}, "alice")
+	if answered.Code != http.StatusOK {
+		t.Fatalf("answer ask: status=%d body=%s", answered.Code, answered.Body.String())
+	}
+	type servedText struct {
+		Markdown string          `json:"markdown"`
+		Token    string          `json:"token"`
+		Asks     []model.TextAsk `json:"asks"`
+	}
+	for _, path := range []string{
+		"/api/v1/artifacts/" + issue.PrimaryArtifactID + "/text",
+		"/api/v1/issues/" + issue.Key + "/artifacts/spec/text",
+	} {
+		var forms [2]servedText
+		for index, readsAsks := range []bool{true, false} {
+			response := textRead(t, handler, path, readsAsks)
+			if response.Code != http.StatusOK {
+				t.Fatalf("GET %s (Dispatch-Asks %t): status=%d body=%s", path, readsAsks, response.Code, response.Body.String())
+			}
+			if !slices.Contains(response.Header().Values("Vary"), asksHeader) {
+				t.Errorf("GET %s (Dispatch-Asks %t): Vary = %v, want %s named in it", path, readsAsks, response.Header().Values("Vary"), asksHeader)
+			}
+			forms[index] = decodeBody[servedText](t, response)
+		}
+		asked, kept := forms[0], forms[1]
+		if asked.Markdown != stripped {
+			t.Errorf("GET %s with Dispatch-Asks: 1 serves\n%s\nwant the ask block with none of the server-owned attributes:\n%s", path, asked.Markdown, stripped)
+		}
+		if len(asked.Asks) != 1 || asked.Asks[0].State != "answered" || asked.Asks[0].AnsweredBy != "alice" || asked.Asks[0].AnsweredAt == "" {
+			t.Fatalf("GET %s with Dispatch-Asks: 1 answers asks %s, want ask-1 answered by alice", path, askLines(asked.Asks))
+		}
+		opener, _, _ := strings.Cut(kept.Markdown, "\n")
+		_, attrs, opens := pmdoc.ParseTypedDirectiveOpen(opener)
+		if !opens || attrs["state"] != "answered" || attrs["answered_by"] != "alice" || attrs["answered_at"] != asked.Asks[0].AnsweredAt {
+			t.Errorf("GET %s without Dispatch-Asks opens the answered ask with %q, want its state, answerer and time as the asks member answers them (%s)", path, opener, askLines(asked.Asks))
+		}
+		for _, name := range []string{"selected", "answer", "invalid"} {
+			if value, held := attrs[name]; held {
+				t.Errorf("GET %s without Dispatch-Asks serves the answered ask's %s=%v, want no answer's words on the block", path, name, value)
+			}
+		}
+		if body := strings.TrimPrefix(kept.Markdown, opener); body != strings.TrimPrefix(stripped, ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}") {
+			t.Errorf("GET %s without Dispatch-Asks serves\n%s\nwant the text with Dispatch-Asks but for the block's opening line:\n%s", path, kept.Markdown, stripped)
+		}
+		if kept.Token != asked.Token || kept.Token == "" {
+			t.Errorf("GET %s answers token %q without Dispatch-Asks and %q with it, want one token", path, kept.Token, asked.Token)
+		}
+		if askLines(kept.Asks) != askLines(asked.Asks) {
+			t.Errorf("GET %s answers asks %s without Dispatch-Asks and %s with it, want the same asks", path, askLines(kept.Asks), askLines(asked.Asks))
+		}
+	}
+}
+
+// textRead is GET target, a text route, as alice: under `Dispatch-Asks: 1` (asksHeader) where
+// readsAsks, as every reader of this build that reads the asks member sends it, and without it,
+// as a reader of a release before this one sends it, where not.
+func textRead(t *testing.T, handler http.Handler, target string, readsAsks bool) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	if readsAsks {
+		request.Header.Set(asksHeader, "1")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
 }
 
 func TestSearchAskBlockOptionDescription(t *testing.T) {
@@ -437,13 +542,10 @@ func TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks(t *testing.T) {
 	}, "alice"); resolved.Code != http.StatusOK {
 		t.Fatalf("resolve: status=%d body=%s", resolved.Code, resolved.Body.String())
 	}
-	current := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice")
-	record := decodeBody[struct {
-		Markdown string `json:"markdown"`
-	}](t, current).Markdown
-	if !strings.Contains(record, `state="answered"`) || !strings.Contains(record, `state="resolved"`) {
-		t.Fatalf("spec before the copy = %s", record)
+	if shown := agentText(t, handler, issue.PrimaryArtifactID); !strings.Contains(shown, `#rec-answered state="answered"`) || !strings.Contains(shown, `#rec-resolved state="resolved"`) {
+		t.Fatalf("spec before the copy:\n%s", shown)
 	}
+	record, _ := documentTexts(t, handler, issue.PrimaryArtifactID)
 
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec-record.md", "content": record,
@@ -454,13 +556,12 @@ func TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks(t *testing.T) {
 	copied := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact.ID
-	testwait.UntilPolling(t, 20*time.Millisecond, "the copy to show its sources' states (its text)", func() (string, bool) {
-		text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+copied+"/text", nil, "alice").Body.String()
-		return text, strings.Contains(text, `#rec-answered urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\"`) &&
-			strings.Contains(text, `copied_from=\"`+asks["rec-answered"]+`\"`) &&
-			strings.Contains(text, `#rec-resolved urgency=\"med\" multiple=\"false\" state=\"resolved\" copied_from=\"`+asks["rec-resolved"]+`\"`) &&
-			strings.Contains(text, `#rec-open urgency=\"med\" multiple=\"false\" state=\"open\" copied_from=\"`+asks["rec-open"]+`\"`)
-	})
+	awaitTextShows(t, handler, copied, "its sources' states", contains(
+		`#rec-answered state="answered" answered_by="alice"`,
+		`copied_from="`+asks["rec-answered"]+`"`,
+		`#rec-resolved state="resolved" copied_from="`+asks["rec-resolved"]+`"`,
+		`#rec-open state="open" copied_from="`+asks["rec-open"]+`"`,
+	), nil)
 	// A settlement is what would open the copy's asks: once the copy owes none, no later pass runs
 	// over it that the read below could come before.
 	awaitSettled(t, database, copied)
@@ -476,8 +577,8 @@ func TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks(t *testing.T) {
 	}
 }
 
-// documentTexts is document's live text and the markdown of its latest version, "" when it has
-// none, which are what the decision card and dispatch request-approval's refusal read.
+// documentTexts is document's live text, as the text routes serve it, and the markdown of its
+// latest version, "" when it has none.
 func documentTexts(t *testing.T, handler http.Handler, document string) (string, string) {
 	t.Helper()
 	read := decodeBody[struct {
@@ -508,6 +609,107 @@ func awaitDocumentText(t *testing.T, handler http.Handler, document, what string
 	})
 }
 
+// awaitVersionText polls document until its latest version holds, failing the test after ten
+// seconds. The roll window writes the server-owned attributes of each ask block into the live
+// document and its versions while another build serves (docs' rollWindowAskAttributes), and the
+// text routes take them off what they serve, so a test reads them in the versions.
+func awaitVersionText(t *testing.T, handler http.Handler, document, what string, holds func(string) bool) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		_, version := documentTexts(t, handler, document)
+		if holds(version) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the document's latest version never showed %s:\n%s", what, version)
+		}
+	}
+}
+
+// askServerAttributes are the server-owned attributes of an ask block, none of which the text
+// routes serve on any ask block (docs.TextWithAsks).
+var askServerAttributes = [...]string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"}
+
+// agentText is document's text as an agent of this build reads it (GET
+// /api/v1/artifacts/{id}/text under `Dispatch-Asks: 1`, textRead): its markdown, then a line
+// `asks:` and one line per entry of its asks member (askLines). A person's answer is held on the
+// ask's node alone, so the asks member is where a test reads it beside the text. It fails t where
+// an ask block of the markdown carries a server-owned attribute (askServerAttributes).
+func agentText(t *testing.T, handler http.Handler, document string) string {
+	t.Helper()
+	read := decodeBody[struct {
+		Markdown string          `json:"markdown"`
+		Asks     []model.TextAsk `json:"asks"`
+	}](t, textRead(t, handler, "/api/v1/artifacts/"+document+"/text", true))
+	for _, line := range strings.Split(read.Markdown, "\n") {
+		kind, attrs, opens := pmdoc.ParseTypedDirectiveOpen(strings.TrimLeft(line, " \t>"))
+		if !opens || kind != "ask" {
+			continue
+		}
+		for _, name := range askServerAttributes {
+			if _, held := attrs[name]; held {
+				t.Fatalf("the text of %s an agent reads carries the server-owned ask attribute %s:\n%s", document, name, read.Markdown)
+			}
+		}
+	}
+	return read.Markdown + "\nasks:\n" + askLines(read.Asks)
+}
+
+// askLines is entries as these tests compare them, one line each, each ended by a newline: `#`
+// and the block id, then each value the entry holds as name="value", in the order the release
+// before wrote them on the block's opening line, the options chosen as their JSON list.
+func askLines(entries []model.TextAsk) string {
+	var lines strings.Builder
+	for _, entry := range entries {
+		lines.WriteString("#" + entry.BlockID)
+		if entry.State != "" {
+			lines.WriteString(` state="` + entry.State + `"`)
+		}
+		if entry.AnsweredBy != "" {
+			lines.WriteString(` answered_by="` + entry.AnsweredBy + `"`)
+		}
+		if entry.AnsweredAt != "" {
+			lines.WriteString(` answered_at="` + entry.AnsweredAt + `"`)
+		}
+		if entry.Selected != nil {
+			selected, _ := json.Marshal(*entry.Selected)
+			lines.WriteString(" selected=" + string(selected))
+		}
+		if entry.Answer != nil {
+			lines.WriteString(` answer="` + *entry.Answer + `"`)
+		}
+		if entry.CopiedFrom != "" {
+			lines.WriteString(` copied_from="` + entry.CopiedFrom + `"`)
+		}
+		if entry.CopiedFromDocument != "" {
+			lines.WriteString(` copied_from_document="` + entry.CopiedFromDocument + `"`)
+		}
+		lines.WriteString("\n")
+	}
+	return lines.String()
+}
+
+// awaitTextShows polls document's text as an agent reads it (agentText: its markdown and the
+// entries of its asks member) until it holds, and answers that text; it fails the test after ten
+// seconds, or at once when the text shows refused (nil refuses nothing). A person's answer is held
+// on the ask's node alone, so no stored version of a document written
+// on a fleet of one build shows it: the asks member is where a test reads it.
+func awaitTextShows(t *testing.T, handler http.Handler, document, what string, holds, refused func(string) bool) string {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		text := agentText(t, handler, document)
+		if refused != nil && refused(text) {
+			t.Fatalf("the document's text showed what it must not while waiting for %s:\n%s", what, text)
+		}
+		if holds(text) {
+			return text
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the document's text never showed %s:\n%s", what, text)
+		}
+	}
+}
+
 // contains is a predicate holding of text that contains every one of parts.
 func contains(parts ...string) func(string) bool {
 	return func(text string) bool {
@@ -520,9 +722,11 @@ func contains(parts ...string) func(string) bool {
 	}
 }
 
-// An answer to a copy's source, or its resolution, made after the copy settled reaches the copy a
-// settlement later, in its live text and in its latest version, which is what the decision card and
-// dispatch request-approval's refusal read: the routes settle the copies of the ask they close.
+// An answer to a copy's source, or its resolution, made after the copy settled reaches the copy's
+// asks entry as an agent reads it beside the text, which shows the source's answer state and
+// answer, read from the store (docs.TextWithAsks): a person's answer is held on the ask's node
+// alone, so no stored version of the copy holds it. The routes settle
+// the copies of the ask they close, so the copy owes nothing after them and holds no ask of its own.
 func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
@@ -552,9 +756,9 @@ func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
 	copied := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact.ID
-	awaitDocumentText(t, handler, copied, "its open sources", contains(
-		`#later-answered urgency="med" multiple="false" state="open" copied_from="`+asks["later-answered"]+`"`,
-		`#later-resolved urgency="med" multiple="false" state="open" copied_from="`+asks["later-resolved"]+`"`,
+	awaitTextShows(t, handler, copied, "its open sources", contains(
+		`#later-answered state="open" copied_from="`+asks["later-answered"]+`"`,
+		`#later-resolved state="open" copied_from="`+asks["later-resolved"]+`"`,
 	), nil)
 
 	if answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+asks["later-answered"]+"/answer", map[string]any{
@@ -567,11 +771,14 @@ func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
 	}, "alice"); resolved.Code != http.StatusOK {
 		t.Fatalf("resolve the source: status=%d body=%s", resolved.Code, resolved.Body.String())
 	}
-	awaitDocumentText(t, handler, copied, "its sources' answer and resolution", contains(
-		`:::ask{#later-answered urgency="med" multiple="false" state="answered" answered_by="alice" `,
-		`selected="[&#x22;Yes&#x22;]" answer="From the record." copied_from="`+asks["later-answered"]+`"`,
-		`:::ask{#later-resolved urgency="med" multiple="false" state="resolved" copied_from="`+asks["later-resolved"]+`"`,
+	awaitTextShows(t, handler, copied, "its sources' answer and resolution", contains(
+		`#later-answered state="answered" answered_by="alice" `,
+		`selected=["Yes"] answer="From the record." copied_from="`+asks["later-answered"]+`"`,
+		`#later-resolved state="resolved" copied_from="`+asks["later-resolved"]+`"`,
 	), nil)
+	awaitSettled(t, database, copied)
+	_, version := documentTexts(t, handler, copied)
+	requireNoAnswerAttributes(t, "the copy's latest version", version)
 	var onCopy, pending int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select (select count(*) from asks where block_artifact_id = $1),
@@ -614,8 +821,8 @@ func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T
 	copied := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact.ID
-	awaitDocumentText(t, handler, copied, "its open source",
-		contains(`#ship urgency="med" multiple="false" state="open" copied_from="`+source+`"`), nil)
+	awaitTextShows(t, handler, copied, "its open source",
+		contains(`#ship state="open" copied_from="`+source+`"`), nil)
 
 	reworded := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/asks/"+source, map[string]any{
 		"question": "Ship on Tuesday?",
@@ -630,8 +837,8 @@ func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T
 	}, "alice"); answered.Code != http.StatusOK {
 		t.Fatalf("answer the reworded source: status=%d body=%s", answered.Code, answered.Body.String())
 	}
-	awaitDocumentText(t, handler, copied, "its own ask",
-		contains(`:::ask{#ship urgency="med" multiple="false" state="open"}`+"\nShip on Monday?"), contains(`state="answered"`))
+	awaitTextShows(t, handler, copied, "its own ask",
+		contains(`:::ask{#ship urgency="med" multiple="false"}`+"\nShip on Monday?", `#ship state="open"`+"\n"), contains(`state="answered"`))
 	var onCopy []string
 	for _, ask := range decodeBody[[]model.Ask](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/asks", nil, "alice")) {
 		if ask.BlockArtifact != nil && ask.BlockArtifact.ID == copied {
@@ -684,7 +891,9 @@ func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t
 		t.Fatalf("upload the reworded spec: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
 	awaitDocumentText(t, handler, issue.PrimaryArtifactID, "the decided wording written back",
-		contains(`state="answered" answered_by="alice"`, "Ship on Monday?", "- Yes: Monday."), nil)
+		contains("Ship on Monday?", "- Yes: Monday."), nil)
+	awaitTextShows(t, handler, issue.PrimaryArtifactID, "the answer on the decided wording",
+		contains(`#ship state="answered" answered_by="alice"`, "Ship on Monday?", "- Yes: Monday."), nil)
 	ask := decodeBody[struct {
 		Ask model.Ask `json:"ask"`
 	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+source, nil, "alice")).Ask
@@ -701,8 +910,8 @@ func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t
 	record := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, copied).Artifact.ID
-	awaitDocumentText(t, handler, record, "its own ask",
-		contains(`:::ask{#ship urgency="med" multiple="false" state="open"}`+"\nShip on Tuesday?"), contains(`state="answered"`))
+	awaitTextShows(t, handler, record, "its own ask",
+		contains(`:::ask{#ship urgency="med" multiple="false"}`+"\nShip on Tuesday?", `#ship state="open"`+"\n"), contains(`state="answered"`))
 }
 
 // A free-text ask block (no bullet list) must put `"options": []` on the wire - in the ask.opened
@@ -829,7 +1038,9 @@ func TestBlockAskIndexedAfterEditKeepsTheWritingActor(t *testing.T) {
 	}
 }
 
-func TestChangingBlockAskReplacesAnswerAttributes(t *testing.T) {
+// Changing a block ask's answer replaces the one its document's text answers: the asks member
+// reads the new choice and none of the old words.
+func TestChangingBlockAskReplacesTheAnswerItsTextAnswers(t *testing.T) {
 	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	issue, askID := seedBlockAsk(t, handler, "Change typed ask", "decision", transportAsk, "Which transport?")
@@ -859,9 +1070,9 @@ func TestChangingBlockAskReplacesAnswerAttributes(t *testing.T) {
 	if updated.Answer == nil || len(updated.Answer.Selected) != 1 || updated.Answer.Selected[0] != "gRPC" || updated.Answer.Text != nil || !updated.Answer.At.After(original.Answer.At) {
 		t.Fatalf("changed block answer = %#v", updated)
 	}
-	markdown := documentMarkdown(t, handler, issue.PrimaryArtifactID)
-	if !strings.Contains(markdown, `selected="[&#x22;gRPC&#x22;]"`) || strings.Contains(markdown, `answer="REST first."`) || strings.Contains(markdown, `answer=""`) {
-		t.Fatalf("changed block markdown = %q, want gRPC selected and no answer attribute", markdown)
+	if shown := agentText(t, handler, issue.PrimaryArtifactID); !strings.Contains(shown, `#decision state="answered" answered_by="alice" answered_at="`+timestampValue(updated.Answer.At)+`" selected=["gRPC"]`+"\n") ||
+		strings.Contains(shown, `answer=`) {
+		t.Fatalf("changed block text:\n%s\nwant gRPC selected and no answer", shown)
 	}
 }
 

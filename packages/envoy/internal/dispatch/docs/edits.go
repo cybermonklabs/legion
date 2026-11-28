@@ -38,16 +38,23 @@ type operationStamped interface {
 	setOperation(int)
 }
 
-// ErrInvalidOp identifies the malformed user-facing operation field.
+// ErrInvalidOp identifies the malformed user-facing operation field. Err is the refusal Reason
+// reports where another check made it - a block pointer the write may not hold
+// (pmdoc.ErrBlockPointer), the caller's markdown the schema refuses (ErrInvalidMarkdown) - so a
+// caller tells that refusal by its kind, as it does where no operation reports it; it is nil where
+// the reason is the operation's own.
 type ErrInvalidOp struct {
 	opIndex
 	Field  string
 	Reason string
+	Err    error
 }
 
 func (e *ErrInvalidOp) Error() string {
 	return fmt.Sprintf("%sinvalid document operation field %q: %s", e.prefix(), e.Field, e.Reason)
 }
+
+func (e *ErrInvalidOp) Unwrap() error { return e.Err }
 
 func invalidOp(field string) error {
 	return &ErrInvalidOp{Field: field}
@@ -1540,7 +1547,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			at = pmdoc.Range{From: 0, To: pmdoc.Size(tree.node)}
 		}
 		// Front matter opens only the document's start, so only there does the insert read it.
-		with, err := parseFragmentInput(op.Markdown, opensDocument(tree.node, at.From), budget)
+		with, err := parseFragmentInput(op.Markdown, opensDocument(tree.node, at.From), budget, tree.node)
 		if err != nil {
 			return nil, invalidMarkdownOp("markdown", err)
 		}
@@ -1768,7 +1775,7 @@ func invalidSchemaOp(field string, err error) error {
 // the route's other attribute refusals are.
 func invalidBlockPointerOp(err error) error {
 	if errors.Is(err, pmdoc.ErrBlockPointer) {
-		return &ErrInvalidOp{Field: "attributes", Reason: err.Error()}
+		return &ErrInvalidOp{Field: "attributes", Reason: err.Error(), Err: err}
 	}
 	return err
 }
@@ -1810,7 +1817,7 @@ func invalidTableIndex(tree *pmdoc.Node, blockID, axis, supplied, problem string
 
 func invalidMarkdownOp(field string, err error) error {
 	if errors.Is(err, ErrInvalidMarkdown) {
-		return &ErrInvalidOp{Field: field, Reason: err.Error()}
+		return &ErrInvalidOp{Field: field, Reason: err.Error(), Err: err}
 	}
 	return err
 }
@@ -2260,7 +2267,7 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 		// may send. The cost is one uncharged parse an operation, bounded by a budget of its
 		// own as every other parse is.
 		opens := opensDocument(tree.node, r.From)
-		parsed, parseErr := pmdoc.ParseFragment(replacement, opens, pmdoc.NewWriteBudget())
+		parsed, parseErr := pmdoc.ParseFragmentHolding(replacement, opens, pmdoc.NewWriteBudget(), tree.node)
 		switch {
 		case parseErr == nil:
 			// Which way the `with` goes is its blocks' types and nothing else, so this tree is
@@ -2272,7 +2279,7 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 		}
 		if blocks {
 			// The blocks the document keeps are the second parse's, the one the batch pays for.
-			if with, err = parseFragmentInput(replacement, opens, budget); err != nil {
+			if with, err = parseFragmentInput(replacement, opens, budget, tree.node); err != nil {
 				return nil, invalidMarkdownOp("with", err)
 			}
 		} else if with, err = inlineReplacement(replacement, edgesOf(at, r), budget); err != nil {
@@ -2369,7 +2376,7 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 // is kept (continueText) and a leading list or heading marker is text, never a new block. A `with`
 // that names blocks of its own is written by blockReplacement instead. Its ErrSchema refusal
 // names the `with` as HTML that opens a block, which is true of the text it can be given and of
-// no other: its caller must reach it only for a `with` the block parser (pmdoc.ParseFragment)
+// no other: its caller must reach it only for a `with` the block parser (pmdoc.ParseFragmentHolding)
 // refused with pmdoc.ErrBlockHTML, or read as one paragraph or as nothing, which is what
 // applyReplace does. Text no such parse has sorted could reach that refusal as a footnote
 // definition, a link reference definition or two paragraphs across a blank line, none of them
@@ -2744,11 +2751,12 @@ func hasHardBreak(with *pmdoc.Node) bool {
 	return false
 }
 
-// inlineAware parses a suggestion's replacement as blocks written into the document, keeping the
-// edge whitespace of a replacement that stays inline. opensDocument says whether the replacement
-// lands where the document begins; its tables are padded on budget, the accept's.
-func inlineAware(markdown string, edges textEdges, opensDocument bool, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
-	tree, err := parseFragmentInput(markdown, opensDocument, budget)
+// inlineAware parses a suggestion's replacement as blocks written into live, the document the
+// accept started from (parseFragmentInput), keeping the edge whitespace of a replacement that
+// stays inline. opensDocument says whether the replacement lands where the document begins; its
+// tables are padded on budget, the accept's.
+func inlineAware(markdown string, edges textEdges, opensDocument bool, budget *pmdoc.WriteBudget, live *pmdoc.Node) (*pmdoc.Node, error) {
+	tree, err := parseFragmentInput(markdown, opensDocument, budget, live)
 	if err != nil {
 		return nil, err
 	}

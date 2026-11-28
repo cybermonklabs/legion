@@ -246,7 +246,7 @@ func xidWindowAskCreateAnchored(t *testing.T, f *xidFixture) {
 // the id of the ask settlement opened from it. A block ask's row is opened by settlement, so this
 // fixture settles twenty milliseconds after each write, as the default server does, and waits for
 // every settlement to finish before it answers, so the measured request runs alone. A block ask is
-// the one whose transitions write its block back into the document (SetBlockAttributes,
+// the one whose transitions write its block back into the document (KeepAskBlockInStep,
 // SetAskBlockText); an anchored ask's touch only its row.
 func newBlockAskFixture(t *testing.T) (*xidFixture, string) {
 	t.Helper()
@@ -407,7 +407,7 @@ func xidWindowUploadReplace(t *testing.T, f *xidFixture) {
 }
 
 // An upload of the text a person approved carries his approval to the version it writes
-// (docs.CarryRestoredApproval). Everything that carry is decided on - the document's newest
+// (docs.CarryUploadedApproval). Everything that carry is decided on - the document's newest
 // review, the approved version's text, its decision blocks' rows and the open approval request -
 // is read in the route's read phase, and what it writes - the request's answer, when one is open,
 // and the review - is queued with the route's own writes, so the window is that one batch and the

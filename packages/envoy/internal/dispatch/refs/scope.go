@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -427,12 +427,15 @@ func ScopeSources(ctx context.Context, q Queryer, doc string) ([]Target, error) 
 }
 
 // QuestionMap is the question map of the document doc: each question block id its latest version
-// declares (a `:::ask{#id …}` line outside fenced code) to the reference a `dispatch://` address of
-// its ask makes, as text.Extract reads that address, so a `#id` edge is stored as that address's
-// edge is. The ask is the row settlement made for the block on doc, or, for a copied block, the ask
-// settlement wrote into it as copied_from. A block with neither (not settled yet) is absent. It
-// reads the latest version's directive lines (sourceText), never parsing the document, and takes
-// no lock.
+// declares (a `:::ask{#id …}` block outside fenced and indented code, pmdoc.QuestionBlocks) to the
+// reference a `dispatch://` address of its ask makes, as text.Extract reads that address, so a
+// `#id` edge is stored as that address's edge is. The ask is the row settlement made for the block
+// on doc, or, for a copied block, the ask its block node's copied_from tuple names, which
+// settlement states (docs' claimCopies), or, for a block whose node holds none - a copy no
+// settlement of this build has claimed yet, in a version the release before wrote - the ask its
+// opening line names as copied_from. A block with neither (not settled yet) is absent. It reads
+// the latest version's text (sourceText) line by line for its blocks (pmdoc.QuestionBlocks), never
+// parsing the document into a tree, and takes no lock.
 //
 // The map is the document's as the reading transaction leaves it: the version and the block asks
 // it has queued and not written yet are read from what those statements write (Pending), since
@@ -481,13 +484,13 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 		}
 		markdown = stored
 	}
-	blocks := questionBlocks(markdown)
+	blocks := pmdoc.QuestionBlocks(markdown)
 	if len(blocks) == 0 {
 		return nil, nil
 	}
 	ids := make([]string, len(blocks))
 	for index, block := range blocks {
-		ids[index] = block.id
+		ids[index] = block.ID
 	}
 	queuedBlocks, queuedAsks, queuedIssues := []string{}, []string{}, []*string{}
 	if pending != nil {
@@ -520,14 +523,34 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 	}
 	copiedBy := map[string][]string{}
 	sources := []string{}
+	var unowned []string
 	for _, block := range blocks {
-		if _, own := questions[block.id]; own || block.copiedFrom == "" {
+		if _, own := questions[block.ID]; !own {
+			unowned = append(unowned, block.ID)
+		}
+	}
+	if len(unowned) == 0 {
+		return questions, nil
+	}
+	stated, err := copiedFromTuples(ctx, q, doc, unowned)
+	if err != nil {
+		return nil, fmt.Errorf("read the copied questions of document %s: %w", doc, err)
+	}
+	for _, block := range blocks {
+		if _, own := questions[block.ID]; own {
 			continue
 		}
-		if _, listed := copiedBy[block.copiedFrom]; !listed {
-			sources = append(sources, block.copiedFrom)
+		source, held := stated[block.ID]
+		if !held {
+			source = block.CopiedFrom
 		}
-		copiedBy[block.copiedFrom] = append(copiedBy[block.copiedFrom], block.id)
+		if source == "" {
+			continue
+		}
+		if _, listed := copiedBy[source]; !listed {
+			sources = append(sources, source)
+		}
+		copiedBy[source] = append(copiedBy[source], block.ID)
 	}
 	if len(sources) == 0 {
 		return questions, nil
@@ -549,6 +572,54 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 		}
 	}
 	return questions, nil
+}
+
+// copiedFromTuples is, for each of blocks, block ids of document doc, whose block node the
+// document's block index holds (document_blocks), the ask that node's copied_from tuple names as it
+// stands now (graphstore.TupleCopiedFrom, graphstore.CurrentTupleRead), keyed by block id. A node
+// that holds no standing copied_from is absent, so a version the release before wrote, whose copy
+// no settlement of this build has claimed, is read from its line instead (questionMap).
+func copiedFromTuples(ctx context.Context, q Queryer, doc string, blocks []string) (map[string]string, error) {
+	return readCopiedFrom(ctx, q, doc, ` and d.block_id = any($2::text[])`, blocks)
+}
+
+// DocumentCopiedFrom is copiedFromTuples for every block of document doc whose block node the
+// document's block index holds, whatever the block's type now: the ask each such node's
+// copied_from tuple names as it stands now, keyed by block id. Settlement reads it once, to retract
+// the copied_from of each block that is no longer an ask block copying an ask (docs'
+// claimCopies): one a person retyped, or one the settlement's version drops.
+func DocumentCopiedFrom(ctx context.Context, q Queryer, doc string) (map[string]string, error) {
+	return readCopiedFrom(ctx, q, doc, "")
+}
+
+// readCopiedFrom is the one read of copiedFromTuples and DocumentCopiedFrom: each document_blocks
+// row d of document doc that names a node, cut by narrow, a further condition on d that binds args
+// from $2 on, with the ask that node's newest copied_from tuple names while that tuple asserts.
+func readCopiedFrom(ctx context.Context, q Queryer, doc, narrow string, args ...any) (map[string]string, error) {
+	rows, err := q.Query(ctx, `
+		select d.block_id, c.to_id
+		from document_blocks d
+		cross join lateral (`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted`,
+		`t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = '`+graphstore.TupleCopiedFrom+`'
+			  and t.to_kind = '`+graphstore.KindAsk+`'`)+`
+		) c
+		where d.artifact_id = $1::uuid and d.node_address is not null and c.asserted`+narrow+`
+	`, append([]any{doc}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stated := map[string]string{}
+	for rows.Next() {
+		var block, ask string
+		if err := rows.Scan(&block, &ask); err != nil {
+			return nil, err
+		}
+		if parsed, err := uuid.Parse(ask); err == nil {
+			stated[block] = parsed.String()
+		}
+	}
+	return stated, rows.Err()
 }
 
 // AskRef is the `dispatch://` address of one ask a question map holds, as every writer of an
@@ -589,136 +660,6 @@ func scanQuestions(rows pgx.Rows, err error) (map[string]text.Ref, error) {
 		found[key] = ref
 	}
 	return found, rows.Err()
-}
-
-// questionBlock is one question block a document's text declares: its id and, for a copy, the
-// uuid of the ask settlement wrote into it as copied_from.
-type questionBlock struct {
-	id, copiedFrom string
-}
-
-// questionBlocks is every question block markdown declares, in document order, the first of each
-// id: each line that, past its containers' quote and list markers, opens a typed block named ask
-// holding an id, outside fenced code. A fenced example of a directive is code to pmdoc, so a
-// `copied_from` it carries names no question of this document.
-func questionBlocks(markdown string) []questionBlock {
-	blocks := []questionBlock{}
-	seen := map[string]struct{}{}
-	var fence codeFence
-	for line := range strings.Lines(markdown) {
-		rest := trimContainerMarkers(line)
-		if fence.run > 0 {
-			if fence.closedBy(rest) {
-				fence = codeFence{}
-			}
-			continue
-		}
-		if fence = openingFence(rest); fence.run > 0 {
-			continue
-		}
-		block, ok := askBlock(rest)
-		if !ok {
-			continue
-		}
-		if _, repeated := seen[block.id]; repeated {
-			continue
-		}
-		seen[block.id] = struct{}{}
-		blocks = append(blocks, block)
-	}
-	return blocks
-}
-
-// codeFence is the fence a fenced code block opened with: its character, a backtick or a tilde,
-// and how many of it the run holds, none when no fence is open.
-type codeFence struct {
-	char byte
-	run  int
-}
-
-// openingFence is the fence text, a line past its containers' markers, opens, as CommonMark reads
-// one: a run of three or more backticks or tildes, a backtick run followed by no other backtick
-// (such a line is an inline code span). Text that opens none is the zero codeFence.
-func openingFence(text string) codeFence {
-	fence := fenceRun(text)
-	if fence.run < 3 || fence.char == '`' && strings.ContainsRune(text[fence.run:], '`') {
-		return codeFence{}
-	}
-	return fence
-}
-
-// closedBy reports whether text, a line past its containers' markers, closes the fence: a run of
-// its character at least as long, followed by nothing but whitespace. A fence nothing closes runs
-// to the document's end.
-func (fence codeFence) closedBy(text string) bool {
-	closer := fenceRun(text)
-	return closer.char == fence.char && closer.run >= fence.run && strings.TrimRight(text[closer.run:], " \t\r\n") == ""
-}
-
-// fenceRun is the run of backticks or tildes text opens with, if any.
-func fenceRun(text string) codeFence {
-	if text == "" || text[0] != '`' && text[0] != '~' {
-		return codeFence{}
-	}
-	run := 1
-	for run < len(text) && text[run] == text[0] {
-		run++
-	}
-	return codeFence{char: text[0], run: run}
-}
-
-// askBlock is the question block one line opens, the line past its containers' markers
-// (trimContainerMarkers) and without its line ending, as pmdoc's parser is passed it: a typed
-// block named ask that holds an id, with the uuid of the ask its `copied_from` names where it
-// carries one. ok is false for every other line.
-//
-// The line is read by the one parser of a typed block's opening line
-// (pmdoc.ParseTypedDirectiveOpen), never by a grammar of its own, so this reads a line exactly
-// as the document's own parse reads it: an id written either way (`#id` and `id="…"`,
-// pmdoc.TypedBlockIDAttribute), and no block at all on a line that parser refuses. What stays
-// here is the line and fence scan alone (questionBlocks): refs parses no document.
-func askBlock(line string) (questionBlock, bool) {
-	name, attrs, ok := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(line, "\r\n"))
-	if !ok || name != "ask" {
-		return questionBlock{}, false
-	}
-	id, _ := attrs[pmdoc.BlockIDAttr].(string)
-	if id == "" {
-		return questionBlock{}, false
-	}
-	block := questionBlock{id: id}
-	// Only the one attribute carries an ask: every other value on the line - the state, the
-	// asker, the question's own wording - is left unread.
-	if copied, ok := attrs["copied_from"].(string); ok {
-		if parsed, err := uuid.Parse(copied); err == nil {
-			block.copiedFrom = parsed.String()
-		}
-	}
-	return block, true
-}
-
-// trimContainerMarkers drops the indentation, quote markers (`>`) and list markers (`-`, `*`, `+`,
-// or a number and `.` or `)`, each followed by a space) a block nested in a quote or a list item
-// is written after.
-func trimContainerMarkers(line string) string {
-	for {
-		line = strings.TrimLeft(line, " \t")
-		switch {
-		case strings.HasPrefix(line, ">"):
-			line = line[1:]
-		case len(line) > 1 && (line[0] == '-' || line[0] == '*' || line[0] == '+') && (line[1] == ' ' || line[1] == '\t'):
-			line = line[2:]
-		default:
-			digits := 0
-			for digits < len(line) && line[digits] >= '0' && line[digits] <= '9' {
-				digits++
-			}
-			if digits == 0 || digits+1 >= len(line) || (line[digits] != '.' && line[digits] != ')') || (line[digits+1] != ' ' && line[digits+1] != '\t') {
-				return line
-			}
-			line = line[digits+2:]
-		}
-	}
 }
 
 // canonicalUUID is id in the one spelling the graph and Postgres read it by, and false for a

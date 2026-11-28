@@ -11,13 +11,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // copiedAskSources finds the ask each block of blocks was copied from, keyed by block id, among the
-// blocks no ask of this document indexes (rows). Block ids are unique per document only
+// blocks no ask of this document indexes (unindexed). Block ids are unique per document only
 // (asks_block_id_unique is on block_artifact_id and block_id), so a document copied from another
 // carries its ask blocks' ids, and an id an author chose, such as `decision`, can name unrelated
 // questions on two documents. A block is therefore a copy only of an ask on another document of
@@ -45,19 +46,15 @@ import (
 // settlement holds this document's owner lock and room lock, and a source's answer route takes the
 // source's owner lock before its own document's room. A project document's settlement also takes
 // its project's copy lock first (lockProjectCopies), and then reads the sources
-// (readCopiedAskSources).
+// (readCopiedAskSources). Settlement reads its blocks' sources through it (readBlockAsks).
 func copiedAskSources(
 	ctx context.Context,
 	tx pgx.Tx,
 	artifactID string,
 	owner artifactOwner,
 	blocks []askBlock,
-	rows map[string]model.Ask,
+	unindexed []string,
 ) (map[string]copiedSource, error) {
-	unindexed := unindexedAskBlockIDs(blocks, rows)
-	if len(unindexed) == 0 {
-		return nil, nil
-	}
 	if err := lockProjectCopies(ctx, tx, owner); err != nil {
 		return nil, err
 	}
@@ -77,7 +74,8 @@ func unindexedAskBlockIDs(blocks []askBlock, rows map[string]model.Ask) []string
 
 // readCopiedAskSources is copiedAskSources for the blocks of blocks under the ids unindexed, which
 // takes no copy lock: its caller has taken the one owner needs, or owner is an issue, whose
-// documents need none (lockProjectCopies).
+// documents need none (lockProjectCopies), or its caller opens no ask from what it reads
+// (readBlockAsks for every reader but settlement).
 func readCopiedAskSources(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -152,8 +150,82 @@ func readCopiedAskSources(
 	return sources, nil
 }
 
+// blockAsks is the ask each ask block of a document has, as readBlockAsks reads it: rows, each ask
+// of the document that indexes a block (loadAskBlocks), by block id; sources, the ask on another
+// document of its owner that each block no row indexes is a copy of, by block id; and owner, the
+// document's owner where a block no row indexes made the read need it, nil otherwise.
+type blockAsks struct {
+	rows    map[string]model.Ask
+	sources map[string]copiedSource
+	owner   *artifactOwner
+}
+
+// copySourcesRead is how readBlockAsks reads the asks the blocks no row indexes are copies of:
+// copiedAskSources, which takes the owner's copy lock first, or readCopiedAskSources, which takes
+// none.
+type copySourcesRead func(
+	ctx context.Context,
+	tx pgx.Tx,
+	artifactID string,
+	owner artifactOwner,
+	blocks []askBlock,
+	unindexed []string,
+) (map[string]copiedSource, error)
+
+// readBlockAsks reads, in tx, the ask each of blocks, ask blocks of the document artifactID, has
+// (blockAsks): the rows first, as the caller's transaction, which holds the document owner's lock,
+// reads them; then the asks the blocks no row indexes are copies of, through copies:
+// copiedAskSources for settlement, which opens an ask from what it reads, and readCopiedAskSources
+// for every other reader, which opens none and so takes no copy lock. owner is the document's
+// owner, nil where the caller does not hold it, and then read only where a block no row indexes
+// is left to read the copies of (documentOwner). It is the one read of which ask a document's
+// blocks have, so every reader finds a copy as settlement finds it.
+func readBlockAsks(
+	ctx context.Context,
+	tx pgx.Tx,
+	artifactID string,
+	owner *artifactOwner,
+	blocks []askBlock,
+	copies copySourcesRead,
+) (blockAsks, error) {
+	rows, err := loadAskBlocks(ctx, tx, artifactID)
+	if err != nil {
+		return blockAsks{}, err
+	}
+	read := blockAsks{rows: rows}
+	unindexed := unindexedAskBlockIDs(blocks, rows)
+	if len(unindexed) == 0 {
+		return read, nil
+	}
+	if owner == nil {
+		found, err := documentOwner(ctx, tx, artifactID)
+		if err != nil {
+			return blockAsks{}, err
+		}
+		owner = &found
+	}
+	read.owner = owner
+	if read.sources, err = copies(ctx, tx, artifactID, *owner, blocks, unindexed); err != nil {
+		return blockAsks{}, err
+	}
+	return read, nil
+}
+
+// askIDs is the id of each ask read holds, each row's and each source's: the asks whose nodes
+// askNodeAnswers reads for the blocks.
+func (read blockAsks) askIDs() []string {
+	ids := make([]string, 0, len(read.rows)+len(read.sources))
+	for _, ask := range read.rows {
+		ids = append(ids, ask.ID)
+	}
+	for _, source := range read.sources {
+		ids = append(ids, source.ask.ID)
+	}
+	return ids
+}
+
 // copiedSource is the ask a copied block was copied from and the address of the document it is
-// on (refs.ArtifactRef), which settlement writes into the copy as copied_from and
+// part of (refs.ArtifactRef), which settlement writes into the copy as copied_from and
 // copied_from_document, so a reader names the source and where it is answered without asking.
 type copiedSource struct {
 	ask      model.Ask
@@ -240,18 +312,34 @@ func ownerDocuments(owner artifactOwner) (string, string) {
 }
 
 // copiedAskSourcesQuery reads the asks of owner's other documents under the block ids $1, the
-// document settled being $2, oldest first, each followed by its document's issue key, project,
-// slug, kind and whether it is the issue's spec, and returns the value it binds as $3: the owner's
+// document settled being $2, oldest first, and returns the value it binds as $3: the owner's
 // documents through their index, then each one's asks through asks_block_id_unique, whose second
 // column is block_id_key(block_id) (migration 0127), so the ids' keys are matched beside the ids.
+// Each ask is followed by the issue key, project, slug and kind of the document it is part of, and
+// whether that is the issue's spec: the far end of the current part_of of the ask's node
+// (graphstore.TuplePartOf, the record of where the ask is), read through graph_tuples_as_of_out,
+// which keys every tuple out of a node by kind, and the document's ref_key, or, for a row that
+// names no node yet, which the boot step's backfill marks, the document its block_artifact_id
+// names. A node holding no part_of names no document, and its columns are empty. The far end's
+// kind is held to a document outside the tuples' read, behind an offset 0 that keeps the planner
+// from pushing it in: bound inside it, it fits graph_tuples_as_of_in too, keyed on the far end's
+// kind and the tuple's kind alone, which reads every part_of into every document, and over an
+// analyzed fixture's few tuples the planner takes it.
 func copiedAskSourcesQuery(owner artifactOwner) (string, string) {
 	documents, ownerKey := ownerDocuments(owner)
 	return `
-		select ` + AskColumns + `, d.issue_key, coalesce(d.project_key, ''), d.slug, d.kind, d.is_primary
+		select ` + AskColumns + `, place.issue_key, coalesce(place.project_key, ''), coalesce(place.slug, ''),
+		       coalesce(place.kind, ''), coalesce(place.is_primary, false)
 		from artifacts d
 		join asks a on a.block_artifact_id = d.id
 			and block_id_key(a.block_id) = any(array(select block_id_key(id) from unnest($1::text[]) id))
 			and a.block_id = any($1)
+		left join artifacts place on place.id = case when a.node_kind is null then d.id else (
+			select part_of.id from artifacts part_of
+			where part_of.ref_key = (
+				select part.to_id from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted, t.seq`,
+		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = a.id::text and t.kind = '`+graphstore.TuplePartOf+`'`) + ` offset 0) part
+				where part.asserted and part.to_kind = '` + graphstore.KindArtifact + `' order by part.seq desc limit 1)) end
 		where ` + documents + ` and d.id <> $2
 		order by a.created_at, a.id
 	`, ownerKey
@@ -322,9 +410,9 @@ func owedCopiesOf(ctx context.Context, tx pgx.Tx, documents ...documentAsks) ([]
 // colliding keys take the same id twice in a row, harmless because an advisory lock is re-entrant
 // within one session), and returns, sorted and once each, every other document of each document's
 // owner whose latest version holds the block of one of that document's asks with no ask of its own
-// under that block's id (copiesOf). A document's latest version is read for the block's opener
-// (`:::ask{<id> …}`, the id as pmdoc.TypedBlockIDAttribute writes it), so one that quotes the
-// opener elsewhere, in code, is settled for nothing.
+// under that block's id (copiesOf). A document's latest version is read for the block's opener as
+// copyOpenerArgs spells it, from askOpenerMark on. One that quotes the opener elsewhere, in
+// code, is settled for nothing.
 // The caller has taken no pending row and appended no event. A copy's settlement waits on the row
 // this marks holding its own owner lock and room lock, which the caller never takes, and deletes
 // its own row before it appends an event, so the two can wait on each other in only one direction.
@@ -378,22 +466,21 @@ func ProjectsInLockOrder(ctx context.Context, tx pgx.Tx, projects []string) ([]s
 }
 
 // copiesOf reads the other documents of document's owner holding the block of one of its asks with
-// no ask of their own under that block's id (owedCopiesQuery).
+// no ask of their own under that block's id (owedCopiesQuery), with the block ids and their
+// opener's patterns paired as copyOpenerArgs pairs them.
 func copiesOf(ctx context.Context, tx pgx.Tx, document documentAsks) ([]string, error) {
-	var blockIDs, patterns []string
+	var blockIDs []string
 	for _, ask := range document.asks {
-		if ask.BlockID == nil {
-			continue
+		if ask.BlockID != nil {
+			blockIDs = append(blockIDs, *ask.BlockID)
 		}
-		opener := `%ask{` + likeLiteral(pmdoc.TypedBlockIDAttribute(*ask.BlockID))
-		blockIDs = append(blockIDs, *ask.BlockID, *ask.BlockID)
-		patterns = append(patterns, opener+` %`, opener+`}%`)
 	}
 	if len(blockIDs) == 0 {
 		return nil, nil
 	}
+	ids, patterns := copyOpenerArgs(blockIDs...)
 	query, ownerKey := owedCopiesQuery(document.owner)
-	rows, err := tx.Query(ctx, query, blockIDs, document.artifactID, ownerKey, patterns)
+	rows, err := tx.Query(ctx, query, ids, document.artifactID, ownerKey, patterns)
 	if err != nil {
 		return nil, fmt.Errorf("find copies of asks: %w", err)
 	}
@@ -404,8 +491,40 @@ func copiesOf(ctx context.Context, tx pgx.Tx, document documentAsks) ([]string, 
 	return copies, nil
 }
 
-// documentOwner reads the owner of the document artifactID without locking it.
+// copyOpenerArgs is what owedCopiesQuery binds for the openers of the ask blocks under blockIDs,
+// as the two lists it pairs by position: the LIKE patterns of each block's opener, and the block's
+// id once for each of them. A markdown holding the opener of a block matches
+// one of its two patterns: askOpenerMark, then the id as pmdoc.TypedBlockIDAttribute writes it
+// (likeLiteral), then the space before the block's next attribute or the brace that closes them,
+// so an id never matches the opener of a longer id it begins.
+func copyOpenerArgs(blockIDs ...string) (ids, patterns []string) {
+	ends := [...]string{` %`, `}%`}
+	ids = make([]string, 0, len(ends)*len(blockIDs))
+	patterns = make([]string, 0, len(ends)*len(blockIDs))
+	for _, blockID := range blockIDs {
+		opener := `%` + askOpenerMark + likeLiteral(pmdoc.TypedBlockIDAttribute(blockID))
+		for _, end := range ends {
+			ids = append(ids, blockID)
+			patterns = append(patterns, opener+end)
+		}
+	}
+	return ids, patterns
+}
+
+// documentOwner reads the owner of the document artifactID without locking it: the owner this
+// transaction recorded for an artifacts row it is creating (Ledger.RegisterPendingArtifact), whose
+// insert is queued and which no read of the transaction finds before its write phase, else the
+// stored row's. A read of which ask a new document's blocks have (readBlockAsks) can run before
+// that insert, and reads the owner whose documents a copy's source is looked for among, as
+// addressOfDocument answers for its address.
 func documentOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artifactOwner, error) {
+	if address, pending := pendingArtifact(ctx, artifactID); pending {
+		owner := artifactOwner{Project: address.Project}
+		if address.IssueKey != "" {
+			owner.IssueKey = &address.IssueKey
+		}
+		return owner, nil
+	}
 	var owner artifactOwner
 	if err := tx.QueryRow(ctx, `
 		select issue_key, coalesce(project_key, '') from artifacts where id = $1

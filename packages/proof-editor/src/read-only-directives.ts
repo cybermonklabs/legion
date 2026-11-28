@@ -8,7 +8,8 @@ import { type MdastNode, remarkDecideTypedBlocks } from "./typed-block-drawing.j
 
 /**
  * `node`'s attributes without those its block type marks `server` in `blockSchema`, so the parse
- * fills each with its schema default. The block id and the client-owned attributes are kept.
+ * reads the block without them: a server attribute has no default in the editor's schema
+ * (`writtenDefault` in ./block-schema). The block id and the client-owned attributes are kept.
  * Throws when `blockSchema` has no type of `node`'s name, which `typedBlockRefusal` refuses first.
  */
 function clientAttributes(
@@ -28,10 +29,11 @@ function clientAttributes(
 /**
  * Drops, at any depth, every attribute the block schema marks `server` from each container
  * directive `remarkDecideTypedBlocks` kept a typed block (it draws every other one as
- * paragraphs), so each reads at its schema default: outside a document no server wrote them, so
- * a body's `:::ask{state="answered" …}` reads as the open decision its author wrote, never as an
- * answer nobody recorded. It runs after the decision, so a forged server attribute with a value
- * the schema refuses (`:::ask{state="bogus"}`) still has the block drawn as its fence lines.
+ * paragraphs), so each is read as absent: outside a document no server wrote them, so a body's
+ * `:::ask{state="answered" …}` reads as the open ask its author wrote (a reader takes an ask with
+ * no `state` as open), never as an answer nobody recorded. It runs after the decision, so a
+ * forged server attribute with a value the schema refuses (`:::ask{state="bogus"}`) still has the
+ * block drawn as its fence lines.
  */
 function dropServerAttributes(nodes: MdastNode[], blockSchema: BlockSchema): void {
   for (const node of nodes) {
@@ -87,13 +89,14 @@ export function remarkReadOnlyDirectives(blockSchema: BlockSchema | undefined, s
  * paragraph line that opens like a directive stays text, as in the read-only parse.
  *
  * Unlike the read-only parse it keeps every `server` attribute. A paste carries a document the
- * server wrote, and that text carries an answered decision's `state`, `answered_by` and
- * `selected`, which the pasted block must keep showing, as the live editor always did:
- * settlement owns them and writes each block's from its ask's row (`setAskServerAttributes`), so
- * a pasted `state="answered"` is put back to the row's state once the paste settles. (A past
- * version is drawn from the tree its server read, through `setDocumentJSON`, and parses here no
- * longer.) It must be registered after the mark plugins,
- * so a block-level mark span is a mark node when the fit check reads it.
+ * server wrote, and that text can carry an answered ask block's `state`, `answered_by` and
+ * `selected`, which the pasted block keeps as the live editor always did. Settlement owns them:
+ * while two builds serve it writes each block's from its ask's row (`rollWindowAskAttributes`), so
+ * a pasted `state="answered"` is put back to the row's state once the paste settles, and once the
+ * fleet is one build it takes them off the live tree, since the answer is held on the ask's node
+ * alone. (A past version is drawn from the tree its server read, through `setDocumentJSON`, and
+ * parses here no longer.) It must be registered after the mark plugins, so a block-level mark span
+ * is a mark node when the fit check reads it.
  */
 export function liveTypedBlocksRemarkPlugin(blockSchema: BlockSchema) {
   validateBlockSchema(blockSchema);

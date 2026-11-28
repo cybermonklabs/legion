@@ -100,6 +100,7 @@ import {
   DISPATCH_AS_OF_NOT_SERVED,
   DISPATCH_AS_OF_SEARCH_NOT_FILLED,
   DISPATCH_AS_OF_TOKEN_NOT_SERVED,
+  DISPATCH_ASKS_HEADER,
   DISPATCH_INVALID_AS_OF,
   everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
@@ -2814,7 +2815,7 @@ export class DispatchClient {
     read: AsOfRead = {}
   ): Promise<ArtifactText | ArtifactVersionText> {
     return version === undefined
-      ? this.#read(["api", "v1", "artifacts", id, "text"], undefined, read)
+      ? this.#liveText(id, undefined, read)
       : this.#read(["api", "v1", "artifacts", id, "versions", String(version)], undefined, read);
   }
 
@@ -2837,7 +2838,20 @@ export class DispatchClient {
    *  computed over. A Dispatch older than the parameter answers the text without `blocks`. With
    *  `asOf`, the version that stood at that cut and its blocks. */
   async docReadWithBlocks(id: string, read: AsOfRead = {}): Promise<ArtifactText> {
-    return this.#read(["api", "v1", "artifacts", id, "text"], { blocks: true }, read);
+    return this.#liveText(id, { blocks: true }, read);
+  }
+
+  /** `GET /api/v1/artifacts/{id}/text` with `query`, sent with `Dispatch-Asks: 1`
+   *  (`DISPATCH_ASKS_HEADER`): this client reads each ask's state and answer from the `asks`
+   *  member (`liveTextAsks`), so Dispatch serves it markdown with none of an ask block's
+   *  server-owned attributes, which an upload of the text takes back unchanged. A request without
+   *  the header is served the form a client of the release before reads. A Dispatch older than the
+   *  header serves its own form whatever the request sends. With `asOf`, the document's version
+   *  that stood at that cut, in the same form, with its asks as they stood then (`#read`). */
+  async #liveText(id: string, query: object | undefined, read: AsOfRead): Promise<ArtifactText> {
+    const path = ["api", "v1", "artifacts", id, "text"];
+    const headers = { [DISPATCH_ASKS_HEADER]: "1" };
+    return this.#read<ArtifactText>(path, query, read, undefined, headers);
   }
 
   /** One version of an uploaded file as Dispatch stores it: `GET /artifacts/{id}/versions/{n}`
@@ -3302,35 +3316,46 @@ export class DispatchClient {
    *  no key: a keyed write goes through `#writeAnswer`. `signal` aborts it beside the client's own
    *  signal (`#send`). `read` is a read's cut, which a read of a route that answers `as_of` sends
    *  (`#read`): `as_of` goes where it names a cut, and the answer is read as the answer at that
-   *  cut (`#answerAtCut`). */
+   *  cut (`#answerAtCut`). `headers` are a read's own request headers, which it sends beside the
+   *  credential's (`#liveText`'s `Dispatch-Asks`). */
   async #json<T>(
     method: ReadMethod,
     path: readonly string[],
     body?: unknown,
     query?: object,
     signal?: AbortSignal,
-    read: AsOfRead = {}
+    read: AsOfRead = {},
+    headers?: Readonly<Record<string, string>>
   ): Promise<T> {
     const url = this.#url(path, query, read.asOf);
     const encoded: EncodedBody | undefined =
       body === undefined ? undefined : { content: JSON.stringify(body), type: "application/json" };
     return this.#noRoute(async () => {
-      const { answer: response } = await this.#send(method, url, encoded, undefined, signal);
+      const { answer: response } = await this.#send(
+        method,
+        url,
+        encoded,
+        undefined,
+        signal,
+        headers
+      );
       return this.#answerAtCut(url, response, read, () => this.#response<T>(method, url, response));
     }, signal);
   }
 
   /**
    * A read of a route that answers `as_of`: `#json`'s GET, which sends `read.asOf` as `as_of`
-   * where it names a cut. An answer to a read at a cut must name the cut (`#answerAtCut`).
+   * where it names a cut, and `headers` beside the credential's. An answer to a read at a cut must
+   * name the cut (`#answerAtCut`).
    */
   async #read<T>(
     path: readonly string[],
     query: object | undefined,
     read: AsOfRead,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    headers?: Readonly<Record<string, string>>
   ): Promise<T> {
-    return await this.#json<T>("GET", path, undefined, query, signal, read);
+    return await this.#json<T>("GET", path, undefined, query, signal, read, headers);
   }
 
   /**
@@ -3586,36 +3611,38 @@ export class DispatchClient {
    * broker refuses throws out of the second presentation, so the call fails in the broker's own
    * words, which name `agent-secrets login` after a revoke. It returns the answer and the headers
    * of each presentation (`SentRequest`). Every other write (POST or PATCH) goes through
-   * `#write` instead.
+   * `#write` instead. `headers` go out on each presentation beside the credential's own.
    */
   async #send(
     method: string,
     url: string,
     body?: EncodedBody,
     accept = "application/json",
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    headers?: Readonly<Record<string, string>>
   ): Promise<SentRequest> {
-    const sent = await this.#sendOnce(method, url, body, accept, signal);
+    const sent = await this.#sendOnce(method, url, body, accept, signal, headers);
     if (this.#credential.stale === undefined || !(await tokenNotLive(sent.answer))) {
       return sent;
     }
     // The presentation the dead token went out in, so the credential drops that token alone.
     this.#credential.stale(undefined, sent.presented);
     return {
-      ...(await this.#sendOnce(method, url, body, accept, signal)),
+      ...(await this.#sendOnce(method, url, body, accept, signal, headers)),
       stalePresentation: sent.presented,
     };
   }
 
   /** One request of `#send`'s (a read, a PUT, a DELETE or `sendRoute`'s write), presenting the
    *  credential for it, and the headers it presented; `signal` aborts it beside the client's own
-   *  signal. */
+   *  signal, and `headers` are the read's own. */
   async #sendOnce(
     method: string,
     url: string,
     body: EncodedBody | undefined,
     accept: string,
-    signal: AbortSignal | undefined
+    signal: AbortSignal | undefined,
+    headers: Readonly<Record<string, string>> | undefined
   ): Promise<SentRequest> {
     // The call's own deadline and the client's, which the credential is given too, less the
     // request's reserve (`#credentialSignal`): a broker credential waiting on a pod's missing
@@ -3634,6 +3661,7 @@ export class DispatchClient {
       headers: {
         Accept: accept,
         ...(body === undefined ? {} : { "Content-Type": body.type }),
+        ...headers,
         ...presented,
       },
       signal: limit,

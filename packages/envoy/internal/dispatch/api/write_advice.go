@@ -179,11 +179,13 @@ func (s *server) computeWriteAdvice(
 	if err := s.runAdviceQueryHook(ctx, tx, "your_open_asks"); err != nil {
 		return nil, &adviceQueryError{query: "your_open_asks", err: err}
 	}
+	// An ask is open as its node holds it (askNodeStateOf), as every read of an answer reads it
+	// (R3): the read takes one issue's asks, so it picks by the node alone.
 	rows, err := tx.Query(ctx, `
-		select id::text, question from asks
+		select id::text, question from asks a
 		where issue_key = $1
 		  and author->>'kind' = 'session' and author->>'id' = $2
-		  and ((state = 'open' and id::text <> all(coalesce($3::text[], '{}')))
+		  and ((`+askNodeStateOf("a")+` = 'open' and id::text <> all(coalesce($3::text[], '{}')))
 		    or id::text = any(coalesce($5::text[], '{}')))
 		order by created_at, id
 		limit $4
@@ -322,9 +324,12 @@ func declinedAskHead(text string) string {
 	return flat
 }
 
-// declinedAsk is the SQL predicate, on asks, that holds for an ask a person declined to answer
-// (model.AskResolutionDeclined), as withdrawnAsk is the one for an ask a close withdrew.
-const declinedAsk = `state = 'resolved' and resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
+// declinedResolution is the SQL predicate, on resolution, an ask's resolution as its node holds it
+// (askNodeResolutionOf), that holds for an ask a person declined to answer
+// (model.AskResolutionDeclined), as withdrawnAsk is the one for an ask a close withdrew. The
+// resolution is read off the node, as every read of an answer reads it (R3); it is none on an ask
+// the node holds other than resolved.
+const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
 
 // readDeclinedAsks is declinedAsksAdvice's read, apart so its rows are closed before the
 // savepoint they were read on is released. Nil, not an empty list, where the issue holds no
@@ -343,9 +348,11 @@ func (s *server) readDeclinedAsks(ctx context.Context, tx pgx.Tx, issueKey strin
 	}
 	// The note is the resolution's reason, which a person who wrote none leaves empty.
 	rows, err := tx.Query(ctx, `
-		select id::text, question, coalesce(resolution->>'reason', '') from asks
-		where issue_key = $1 and `+declinedAsk+`
-		order by created_at, id
+		select a.id::text, a.question, coalesce(r.resolution->>'reason', '')
+		from asks a
+		cross join lateral (select `+askNodeResolutionOf("a")+` as resolution) r
+		where a.issue_key = $1 and r.`+declinedResolution+`
+		order by a.created_at, a.id
 	`, issueKey)
 	if err != nil {
 		return nil, err

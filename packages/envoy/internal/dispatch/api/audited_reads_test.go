@@ -76,7 +76,7 @@ var auditedReads = []auditedRead{
 		name:       "an issue's open ask thread page",
 		query:      askThreadPageQueryOpen,
 		relation:   "asks",
-		index:      "asks_open",
+		index:      "asks_issue_key",
 		parameters: []string{"text", "text", "timestamptz", "uuid", "integer"},
 		literals:   []string{"'TEST-1'", "''", "null", "null", "20"},
 	},

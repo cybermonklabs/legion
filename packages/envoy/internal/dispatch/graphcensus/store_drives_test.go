@@ -4,6 +4,7 @@ package graphcensus
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"os/exec"
 	"regexp"
@@ -211,6 +212,94 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 		Counts: map[StoredKind][]string{
 			{graphstore.KindPerson, graphstore.AttributeVisibility}: {graphstore.KindPerson},
 			{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
+		},
+	}}
+}
+
+// The drives of the boot step's ask passes (backfillAsks, backfillAskFollowers), each over the
+// rows a build before the store wrote.
+const (
+	askBatchDrive         = "graphcensus/backfill_asks.go#writeAskBatch"
+	askFollowerBatchDrive = "graphcensus/backfill_asks.go#writeAskFollowerBatch"
+)
+
+// askBackfillDrives are the drives of the boot step's two ask passes, over a database of their
+// own: an ask of ASKS-1 that a session asked and the person bob answered, written by a build
+// before the store, whose node the object pass writes first (backfillObjectNodes), as the boot
+// step's first phase runs it (BackfillAsks), and then a follow of it that build recorded. The asks
+// pass states who asked it, its answer and its answerer's node; the follower pass the follower's
+// node and its followed_by.
+func askBackfillDrives(t *testing.T) []StoreDrive {
+	t.Helper()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	var ask string
+	return []StoreDrive{{
+		Name: askBatchDrive, Sites: []string{askBatchDrive, "graphstore/write.go#Write"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			t.Helper()
+			text := "The node store."
+			answer, err := json.Marshal(model.AskAnswer{User: "bob", Selected: []string{}, Text: &text, At: time.Now().UTC()})
+			if err != nil {
+				t.Fatalf("encode bob's answer: %v", err)
+			}
+			if err := database.Pool.QueryRow(ctx, `
+				with project as (
+					insert into projects (key, name, default_assignee) values ('ASKS', 'Asks', 'bob') returning key
+				), issue as (
+					insert into issues (key, project_key, number, title, created_by, rank)
+					select 'ASKS-1', key, 1, 'Asked', '{"kind":"user","id":"bob"}', 'U' from project
+					returning key
+				)
+				insert into asks (issue_key, author, question, state, answer)
+				select key, '{"kind":"session","id":"ses_asked"}', 'Which store?', 'answered', $1::jsonb from issue
+				returning id::text
+			`, answer).Scan(&ask); err != nil {
+				t.Fatalf("write the answered ask a build before the store wrote: %v", err)
+			}
+			if _, err := backfillObjectNodes(ctx, database); err != nil {
+				t.Fatalf("write the nodes of ASKS-1 and its ask: %v", err)
+			}
+		},
+		Drive: func(t *testing.T) {
+			if done, err := backfillAsks(ctx, database); err != nil || done.Rows != 1 {
+				t.Fatalf("backfill the ask (%d rows): %v", done.Rows, err)
+			}
+		},
+		// Who asked the ask, which ask.opened states, the answer bob gave, and the nodes of the
+		// session that asked and of bob, each first recorded by this write.
+		Counts: map[StoredKind][]string{
+			{graphstore.KindAsk, graphstore.TupleAuthoredBy}:         {"ask_opened"},
+			{graphstore.KindAsk, graphstore.TupleAnswerState}:        {"answer"},
+			{graphstore.KindAsk, graphstore.TupleAnswer}:             {"answer"},
+			{graphstore.KindAsk, graphstore.TupleSelected}:           {"answer"},
+			{graphstore.KindAsk, graphstore.TupleAnsweredAt}:         {"answer"},
+			{graphstore.KindAsk, graphstore.TupleAnsweredBy}:         {"answer"},
+			{graphstore.KindAsk, graphstore.TupleDecidedBy}:          {"answer"},
+			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
+			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
+			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
+		},
+	}, {
+		Name: askFollowerBatchDrive, Sites: []string{askFollowerBatchDrive, "graphstore/write.go#Write"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			t.Helper()
+			if _, err := database.Pool.Exec(ctx, `insert into ask_followers (ask_id, session_id) values ($1::uuid, 'ses_follows')`, ask); err != nil {
+				t.Fatalf("write the follow a build before the store recorded: %v", err)
+			}
+		},
+		Drive: func(t *testing.T) {
+			if done, err := backfillAskFollowers(ctx, database); err != nil || done.Rows != 1 {
+				t.Fatalf("backfill the follower (%d rows): %v", done.Rows, err)
+			}
+		},
+		Counts: map[StoredKind][]string{
+			{graphstore.KindAsk, graphstore.TupleFollowedBy}:         {"ask_follower"},
+			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
+			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
 	}}
 }

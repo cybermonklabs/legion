@@ -14,8 +14,9 @@ import (
 // The carry of an approval (docs/approval_carry.go) writes an approval in the person's name, so
 // the form gate judges the version it would approve, as it judges a person's own Approve. A
 // version whose text breaks the form takes no carried approval: the person approves it, or not,
-// through a judged route. Both kinds of carry go through the gate: the person's answer to a
-// decision block, and a version whose text is the approved text again.
+// through a judged route. Both kinds of carry go through the gate: the person's answer to an ask
+// block, whose version changes only the block's server-owned attributes (R5's case), and a version
+// whose text is the approved text again.
 
 // carryThreeSentences and carryTwoSentences are a statement that breaks the form and one that
 // keeps it.
@@ -48,11 +49,30 @@ func approvedVersions(t *testing.T, tree specFormTree, artifactID string) []int 
 	return versions
 }
 
-// The person approves a covered spec, the agent adds a decision block whose option is a statement,
-// and the person answers the block. The answer is the whole change since his approval, so the
-// carry would approve the version it writes. With a statement of three sentences in it, that
-// version breaks the form, and it stays unapproved. The control: the same block with a statement
-// of two sentences carries the approval, as it always did.
+// answeredUnderTheRoot is a spec whose version 2 holds a decision block whose option is
+// statement, which the person approves outside every root. The issue then moves under the root,
+// and the person answers the block: the version the answer writes, version 3, changes only the
+// block's server-owned attributes, so the carry would approve it (R5's case). It answers the tree
+// and the spec's id once version 3 is written.
+func answeredUnderTheRoot(t *testing.T, statement string) (specFormTree, string) {
+	t.Helper()
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: 20 * time.Millisecond})
+	document := createFormIssue(t, tree.handler, tree.outside, "Keep each message", carrySpec("Dispatch keeps each message."))
+	asks := insertDecisionBlocks(t, tree.handler, document.Key, document.PrimaryArtifactID, carryBlock(statement), 2,
+		map[string]string{"which": "Which statement does this spec keep?"})
+	approveVersion(t, tree.handler, document.PrimaryArtifactID, "alice", 2)
+	reparentFormIssue(t, tree.handler, document.Key, tree.root)
+	answerDecisionBlock(t, tree.handler, asks["which"], "alice", []string{"Keep it"}, "", nil)
+	waitForArtifactVersion(t, tree.handler, document.PrimaryArtifactID, 3)
+	return tree, document.PrimaryArtifactID
+}
+
+// The person approves a spec that holds a decision block whose option is a statement, outside
+// every root, the issue moves under a root, and the person answers the block. The answer's
+// version changes only the block's server-owned attributes, so the carry would approve it. With
+// a statement of three sentences in it, that version breaks the form, and it stays unapproved.
+// The control: the same block with a statement of two sentences carries the approval, by R5's
+// case.
 func TestTheAnswerCarryApprovesNoVersionThatBreaksTheForm(t *testing.T) {
 	for _, test := range []struct {
 		statement string
@@ -61,24 +81,17 @@ func TestTheAnswerCarryApprovesNoVersionThatBreaksTheForm(t *testing.T) {
 		{carryThreeSentences, true},
 		{carryTwoSentences, false},
 	} {
-		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: 20 * time.Millisecond})
-		document := createFormIssue(t, tree.handler, tree.root, "Keep each message", carrySpec("Dispatch keeps each message."))
-		reviewDocument(t, tree.handler, document.PrimaryArtifactID, "alice", "approved", "")
-		asks := insertDecisionBlocks(t, tree.handler, document.Key, document.PrimaryArtifactID, carryBlock(test.statement), 2,
-			map[string]string{"which": "Which statement does this spec keep?"})
-		answerDecisionBlock(t, tree.handler, asks["which"], "alice", []string{"Keep it"}, "", nil)
-		waitForArtifactVersion(t, tree.handler, document.PrimaryArtifactID, 3)
-
-		findings := specFormReadAtVersion(t, tree, document.PrimaryArtifactID, 3).Findings
+		tree, artifactID := answeredUnderTheRoot(t, test.statement)
+		findings := specFormReadAtVersion(t, tree, artifactID, 3).Findings
 		if broken := len(findings) > 0; broken != test.breaks {
 			t.Fatalf("%q: the read of version 3 has findings %+v; want a break: %t", test.statement, findings, test.breaks)
 		}
 		if !test.breaks {
-			requireCarriedReview(t, tree.handler, document.PrimaryArtifactID, 3, 1, nil)
+			requireReviewCarriedWith(t, tree.handler, artifactID, 3, 2, attributeRemovalSentence(2), nil)
 			continue
 		}
-		if got := approvedVersions(t, tree, document.PrimaryArtifactID); len(got) != 1 || got[0] != 1 {
-			t.Errorf("%q: the approved versions are %v; want only version 1, which the person approved", test.statement, got)
+		if got := approvedVersions(t, tree, artifactID); len(got) != 1 || got[0] != 2 {
+			t.Errorf("%q: the approved versions are %v; want only version 2, which the person approved", test.statement, got)
 		}
 	}
 }
@@ -134,12 +147,12 @@ func TestTheRestoreCarryApprovesNoVersionThatBreaksTheForm(t *testing.T) {
 // The person approves a spec and its Verification document outside every root, the agent changes
 // the spec and requests approval of both, and the issue moves under a root, where the
 // Verification document's claim breaks the form. The agent's edit then puts the approved spec
-// text back with a decision block, and the person answers it: the carry would approve that
-// version of the spec in her name and answer the request, which names both documents. An
-// approval of that request covers both, so the carry judges both, as her own Approve does: it
-// carries nothing, and the request stays open. The controls: her own Approve of the request is
-// refused for the Verification document, and the same steps with a claim that keeps the form
-// carry the spec's approval and answer the request, as they always did.
+// text back: the restore carry would approve that version of the spec in her name and answer the
+// request, which names both documents. An approval of that request covers both, so the carry
+// judges both, as her own Approve does: it carries nothing, and the request stays open. The
+// controls: her own Approve of the request is refused for the Verification document, and the same
+// steps with a claim that keeps the form carry the spec's approval and answer the request, as
+// they always did.
 func TestTheCarryJudgesEachDocumentOfTheRequestItWouldAnswer(t *testing.T) {
 	for _, test := range []struct {
 		claim  string
@@ -173,15 +186,11 @@ func TestTheCarryJudgesEachDocumentOfTheRequestItWouldAnswer(t *testing.T) {
 			}
 		}
 
-		agentEdit(t, tree.handler, issue.PrimaryArtifactID, 3, replaceOp("Dispatch stores each message.", "Dispatch keeps each message."),
-			map[string]string{"op": "insert", "after": "end", "markdown": waveAsk})
-		asks := indexedDecisionBlocks(t, tree.handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"wave": "How many regions take the first wave?"})
-		answerDecisionBlock(t, tree.handler, asks["wave"], "alice", []string{"Two"}, "", nil)
-		waitForArtifactVersion(t, tree.handler, issue.PrimaryArtifactID, 4)
+		agentEdit(t, tree.handler, issue.PrimaryArtifactID, 3, replaceOp("Dispatch stores each message.", "Dispatch keeps each message."))
 
 		state := readBlockAsk(t, tree.handler, request.ID).State
 		if !test.breaks {
-			requireCarriedReview(t, tree.handler, issue.PrimaryArtifactID, 4, 1, &request.ID)
+			requireReviewCarriedWith(t, tree.handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), &request.ID)
 			if state != "answered" {
 				t.Fatalf("%q: the request after the carry is %q, want answered", test.claim, state)
 			}
@@ -197,48 +206,38 @@ func TestTheCarryJudgesEachDocumentOfTheRequestItWouldAnswer(t *testing.T) {
 }
 
 // requireNoCarryOver judges the version a carry wrote: the read of version 3 names the fault's
-// rule, and the only approved version is version 1, which the person approved. Each part fails on
+// rule, and the only approved version is approved, which the person approved. Each part fails on
 // its own, so a build that breaks both shows both.
-func requireNoCarryOver(t *testing.T, tree specFormTree, artifactID string, fault formFault) {
+func requireNoCarryOver(t *testing.T, tree specFormTree, artifactID string, fault formFault, approved int) {
 	t.Helper()
 	findings := specFormReadAtVersion(t, tree, artifactID, 3).Findings
 	if !slices.ContainsFunc(findings, func(finding specFormFinding) bool { return string(finding.Rule) == fault.rule }) {
 		t.Errorf("the read of version 3 has findings %+v; want one of rule %q", findings, fault.rule)
 	}
-	if got := approvedVersions(t, tree, artifactID); !slices.Equal(got, []int{1}) {
-		t.Errorf("the approved versions are %v; want only version 1, which the person approved: the carry approved a version that breaks the form", got)
+	if got := approvedVersions(t, tree, artifactID); !slices.Equal(got, []int{approved}) {
+		t.Errorf("the approved versions are %v; want only version %d, which the person approved: the carry approved a version that breaks the form", got, approved)
 	}
 }
 
 // Each of the seven fixtures of v-form (formFaults) goes through the answer carry: the person
-// approves a covered spec, the agent adds a decision block whose option holds the fixture's
-// broken text, and the person answers the block. The version the carry writes breaks the form,
-// so it stays unapproved. The control: a statement of two sentences of 25 words each, which no
-// rule refuses, is carried, so the carry runs in this tree and no fixture passes for want of it.
+// approves, outside every root, a spec that holds a decision block whose option holds the
+// fixture's broken text, the issue moves under a root, and the person answers the block. The
+// version the answer writes breaks the form, so it stays unapproved. The control: a statement of
+// two sentences of 25 words each, which no rule refuses, is carried, so the carry runs in this
+// tree and no fixture passes for want of it.
 func TestTheAnswerCarryApprovesNoVersionThatBreaksTheFormForEachFixture(t *testing.T) {
-	answered := func(t *testing.T, statement string) (specFormTree, string) {
-		t.Helper()
-		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: 20 * time.Millisecond})
-		document := createFormIssue(t, tree.handler, tree.root, "Keep each message", carrySpec("Dispatch keeps each message."))
-		reviewDocument(t, tree.handler, document.PrimaryArtifactID, "alice", "approved", "")
-		asks := insertDecisionBlocks(t, tree.handler, document.Key, document.PrimaryArtifactID, carryBlock(statement), 2,
-			map[string]string{"which": "Which statement does this spec keep?"})
-		answerDecisionBlock(t, tree.handler, asks["which"], "alice", []string{"Keep it"}, "", nil)
-		waitForArtifactVersion(t, tree.handler, document.PrimaryArtifactID, 3)
-		return tree, document.PrimaryArtifactID
-	}
 	for _, fault := range formFaults {
 		t.Run(fault.name, func(t *testing.T) {
-			tree, artifactID := answered(t, fault.broken)
-			requireNoCarryOver(t, tree, artifactID, fault)
+			tree, artifactID := answeredUnderTheRoot(t, fault.broken)
+			requireNoCarryOver(t, tree, artifactID, fault, 2)
 		})
 	}
 	t.Run("the control: two sentences of 25 words each", func(t *testing.T) {
-		tree, artifactID := answered(t, twentyFiveWords)
+		tree, artifactID := answeredUnderTheRoot(t, twentyFiveWords)
 		if findings := specFormReadAtVersion(t, tree, artifactID, 3).Findings; len(findings) != 0 {
 			t.Fatalf("the read of version 3 has findings %+v; want none", findings)
 		}
-		requireCarriedReview(t, tree.handler, artifactID, 3, 1, nil)
+		requireReviewCarriedWith(t, tree.handler, artifactID, 3, 2, attributeRemovalSentence(2), nil)
 	})
 }
 
@@ -264,7 +263,7 @@ func TestTheRestoreCarryApprovesNoVersionThatBreaksTheFormForEachFixture(t *test
 	for _, fault := range formFaults {
 		t.Run(fault.name, func(t *testing.T) {
 			tree, artifactID := restored(t, fault, fault.broken)
-			requireNoCarryOver(t, tree, artifactID, fault)
+			requireNoCarryOver(t, tree, artifactID, fault, 1)
 		})
 	}
 	t.Run("the control: two sentences of 25 words each", func(t *testing.T) {

@@ -700,14 +700,16 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// The close's and the reopen's document work (prepareWithdrawal, prepareRestoration): it reads
 	// the asks, which none of the patch's row writes below touches, and queues its writes. It runs
 	// before the advice so the advice knows which asks the patch withdraws or restores; its writes
-	// are queued, not made, so the advice's queries still hold no transaction id. The reopen's
-	// second half runs here too (recordRestoredAsksTx): its follow of the versions a settlement
-	// wrote while the issue was closed reads and renders those versions, document work that must
-	// not run once the issue's update below has given the transaction its id, and it plans the
-	// restored asks' parts before the follow plans the parts of the request it moves. Its writes
-	// and events queue after the document writes and before everything the patch queues below,
-	// which is where its writes run in the write phase.
-	var closingAsks []model.Ask
+	// are queued, not made, so the advice's queries still hold no transaction id. The close plans
+	// each ask's withdrawal here too, reading each ask's row and node before the issue's update
+	// below gives the transaction its id, and queues it after that update (recordWithdrawnAsksTx).
+	// The reopen's second half runs here too (recordRestoredAsksTx): its follow of the versions a
+	// settlement wrote while the issue was closed reads and renders those versions, document work
+	// that must not run once the issue's update below has given the transaction its id, and it
+	// plans the restored asks' parts before the follow plans the parts of the request it moves.
+	// Its writes and events queue after the document writes and before everything the patch
+	// queues below, which is where its writes run in the write phase.
+	var closingAsks withdrawal
 	var restore restoration
 	var restoredEvents []*model.Event
 	switch {
@@ -737,7 +739,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		afterRow.labels = *labelsAfter
 	}
 	advice := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
-		excluded: askIDs(closingAsks),
+		excluded: askIDs(closingAsks.asks),
 		opened:   askIDs(restore.restored),
 	})
 	// The write phase: the statements from here on run back to back.
@@ -859,7 +861,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	var withdrawn []model.Ask
 	appended := append([]*model.Event{}, restoredEvents...)
 	if closing {
-		if withdrawn, appended, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, key, closingAsks, actor); err != nil {
+		if withdrawn, appended, err = s.recordWithdrawnAsksTx(ledger, key, closingAsks, actor); err != nil {
 			return issueWriteResult{}, err
 		}
 	}

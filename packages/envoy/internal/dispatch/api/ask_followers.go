@@ -14,7 +14,7 @@ import (
 )
 
 // Ask followers: the sessions an ask's answer, edits, resolution, and replies reach
-// directly. Every session that writes to an ask follows it (asks.QueueFollowAuthor at each
+// directly. Every session that writes to an ask follows it (asks.PlanFollowAuthor at each
 // insert site); these routes let a session leave or rejoin and a person curate the list.
 //
 // A credential acting as the addressed session — the session a broker-issued token proved,
@@ -168,15 +168,20 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	}
 	eventType := "ask.follower_added"
 	var changed bool
-	var followed asks.Followed
+	// What the change states on the ask's node, held for the event that records it, below: the
+	// follower's node and the followed_by the follow states, or the retraction the unfollow does.
+	var held graphstore.Uncaused
 	if follow {
 		// The follower is a node of the store from this write on, made before the event that
 		// records the follow exists and moved onto it below.
+		var followed asks.Followed
 		followed, err = asks.Follow(r.Context(), tx, askID, sessionID, actor, time.Now(), graphstore.NoEvent)
-		changed = followed.Added
+		changed, held = followed.Added, followed.Uncaused
 	} else {
 		eventType = "ask.follower_removed"
-		changed, err = asks.Unfollow(r.Context(), tx, askID, sessionID)
+		var unfollowed asks.Unfollowed
+		unfollowed, err = asks.Unfollow(r.Context(), tx, askID, sessionID, actor, time.Now().UTC())
+		changed, held = unfollowed.Removed, unfollowed.Uncaused
 	}
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -190,11 +195,11 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	// The follow's node waits for the event that records it: the two are one batch, the node's
+	// The change's node facts wait for the event that records it: the two are one batch, the
 	// facts appended right after the event, under its id (appendCausingEvent).
 	event, err := s.appendCausingEvent(r.Context(), tx, own.event(eventType, actor, model.AskFollowerEventPayload{
 		AskID: askID, SessionID: sessionID, By: actor,
-	}), followed.Uncaused)
+	}), held)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -119,7 +119,7 @@ func runReplayCheckSeed(args []string) error {
 	fmt.Printf("version sizes: %d changes compared, %d mismatches, %d sign flipped, %d without a listed size\n",
 		sa.SizeChanges, len(sa.SizeMismatches), sa.SignFlipped, sa.SizesMissing)
 	fmt.Printf("anchors: %d recorded, %d outside the block their rule chose; by rule %s\n", sa.Anchors, len(sa.Outside), fmtCounts(sa.Rules))
-	fmt.Printf("documents with answered or resolved typed ask blocks %d, compared with answered_at masked: %d equal\n", r.AskBlockDocs, r.AskBlockDocsEqual)
+	fmt.Printf("documents with answered or resolved typed ask blocks %d, compared by text and by their asks' answers: %d equal\n", r.AskBlockDocs, r.AskBlockDocsEqual)
 	for _, d := range r.Distribution {
 		fmt.Printf("open anchored roots on written primary documents (%s): documents %d, median %.1f, write-weighted mean %.2f\n",
 			d.When, d.Documents, d.Median, d.WeightedMean)
@@ -200,8 +200,9 @@ type sizeAnchorCheck struct {
 // stored quote lies, once, inside the span of the text at At its rule chose. An answer version's
 // expected change counts its answers' answered_at as the seed's answer wrote it: Dispatch writes
 // the time of the answer with its trailing zeros trimmed, so its length is not production's (the
-// same attribute the text comparison masks). A resolve version needs no such count: a resolve
-// writes only state="resolved" into its block, no time.
+// text comparison leaves out every server-owned attribute of an ask block, this one among them:
+// servedText). A resolve version needs no such count: a resolve writes only state="resolved" into
+// its block, no time.
 func checkSizesAndAnchors(ctx context.Context, conn *pgx.Conn, b *replayBundle, plans []seedIssuePlan, ids map[[2]string]string) (sizeAnchorCheck, error) {
 	r := sizeAnchorCheck{Rules: map[string]int{}}
 	recorded, err := readReplayAnchors(ctx, conn)
@@ -449,15 +450,36 @@ func checkSeed(ctx context.Context, conn *pgx.Conn, b *replayBundle, plans []see
 			if err != nil {
 				return r, err
 			}
-			want, masked := maskAnsweredAt(string(raw))
-			got, _ := maskAnsweredAt(latest)
-			stepped := masked || resolvedBlock.MatchString(want)
-			if stepped {
-				r.AskBlockDocs++
-			}
-			if want != got {
+			// The text is compared as the text route serves it, and the answer of each answered or
+			// resolved typed ask block as its ask's node holds it: a version this build writes
+			// keeps no answer's words or selection and no open ask's state, so no answer is read
+			// off the text.
+			same := true
+			if want, got := servedText(string(raw)), servedText(latest); want != got {
 				diff(p.Key, a.Name, "text", textDigest(want), textDigest(got))
-			} else if stepped {
+				same = false
+			}
+			stepped := steppedBlockAsks(is, a)
+			if len(stepped) == 0 {
+				continue
+			}
+			r.AskBlockDocs++
+			served, err := servedAnswers(ctx, conn, local)
+			if err != nil {
+				return r, err
+			}
+			for _, ask := range stepped {
+				want := ask.answerDigest()
+				got := "no ask"
+				if answer, ok := served[*ask.BlockID]; ok {
+					got = answer.digest()
+				}
+				if want != got {
+					diff(p.Key, a.Name, "answer of block "+*ask.BlockID, want, got)
+					same = false
+				}
+			}
+			if same {
 				r.AskBlockDocsEqual++
 			}
 		}
@@ -551,8 +573,7 @@ func replayChecksum(ctx context.Context, conn *pgx.Conn) (replaySum, error) {
 	}
 	if _, err := pgx.ForEachRow(rows, []any{&key, &name, &slug, &number, &md, &sha}, func() error {
 		// A typed ask block's answered_at is the time the seed answered it, so it is masked.
-		masked, _ := maskAnsweredAt(md)
-		md5Fields(h, "version", key, name, slug, fmt.Sprint(number), masked, sha)
+		md5Fields(h, "version", key, name, slug, fmt.Sprint(number), maskAnsweredAt(md), sha)
 		return nil
 	}); err != nil {
 		return s, err

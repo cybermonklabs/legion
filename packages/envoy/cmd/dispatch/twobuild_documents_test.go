@@ -134,6 +134,9 @@ type manifestType struct {
 	Name       string                       `json:"name"`
 	Content    string                       `json:"content"`
 	Attributes map[string]manifestAttribute `json:"attributes"`
+	// Parents are the typed blocks this type stands in, at the end of that block's own content; a
+	// type that names none is a block of its own wherever a block stands.
+	Parents []string `json:"parents"`
 }
 
 // blockManifest is a build's pmdoc/schema/blocks.json.
@@ -518,8 +521,8 @@ func corpusFiles(t *testing.T, dir string) []string {
 // X's own corpus: a document created on X answers /text on Y and takes an append edit there, and X
 // then renders it as its first render with the appended paragraph after it; on Y, a document socket
 // opened with X's page parameters is admitted writable, its room answers its sync step 1, and it
-// is still open once every socket's room has answered. A version X wrote holding
-// every typed block of X's manifest is approved, the answer to its decision block makes Y write the
+// is still open once every socket's room has answered. A version X wrote holding every typed
+// block both builds create is approved, the answer to its decision block makes Y write the
 // next version, and the approval is carried to it. A body holding every reference form of X's
 // text/testdata that Y's own table holds too keeps its refs rows after Y rewrites it, but for the
 // edges a Y from before the unknown-kind guard drops, which it logs (requireRefsKept); a body
@@ -624,22 +627,75 @@ func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader 
 // typedBlockID is the block id the typed-block document gives each typed block: tb-<type name>.
 func typedBlockID(name string) string { return "tb-" + name }
 
-// typedBlocksMarkdown is a document holding one block of every typed block both manifests
-// declare, each with its id and every attribute a writer sets at its default. A decision block
-// (the ask type) is given two choices, First and Second. A type only the writer's manifest
-// declares is left out: the reader could not read such a document at all, which is the point of
-// the manifest's own staging tests and not of this row, which is about what both builds read.
+// typedBlocksMarkdown is a document holding one block of every typed block both builds create,
+// each with its id and every attribute both builds create that a writer sets at its default. A
+// decision block (the ask type) is given two choices, First and Second. A build creates an element
+// its manifest declares at a creatable_since no later than the manifest's version. It reads an
+// element from its since, and refuses a write that creates one it reads but does not create yet
+// (pmdoc's refuseUncreatable): a build at version 8 reads the decision and the reading, and
+// creates them from 9. So what is written is read off both manifests, whichever commit each build
+// is. A type only one build creates is left out: the other build could not take such a document,
+// or could not read it at all, which is the point of the manifest's own staging tests and not of
+// this row, which is about what both builds write and read.
+//
+// Where each block stands is the manifest's to say. A type that names no parents is a block of
+// the document's own, in manifest order. A type that names parents, as the reading names the
+// decision and the ask, stands only at the end of a block of one of them, so it is written there:
+// in the block of the first of its parents the document writes, after that block's own content,
+// in manifest order among that parent's other such types. A parent's fence is one colon longer
+// than the longest fence inside it, which is how markdown closes the inner block before the outer
+// one. A type none of whose parents the document writes fails the test, as does one the document
+// reaches through no block of its own. So a document of types that name no parents, as every
+// manifest before the reading's is, is each type's three-colon block in manifest order, under the
+// document's heading.
 func typedBlocksMarkdown(t *testing.T, manifest, reader blockManifest) string {
 	t.Helper()
-	blocks := []string{"# Every typed block\n"}
+	// bothCreate is whether both builds create the element name, a key of blockManifest.declared:
+	// each manifest declares it at a creatable_since no later than its own version.
+	sides := []blockManifest{manifest, reader}
+	declared := []map[string]elementVersions{manifest.declared(), reader.declared()}
+	bothCreate := func(name string) bool {
+		for index, side := range sides {
+			element, declares := declared[index][name]
+			if _, creatableSince := element.numbers(); !declares || creatableSince > side.Version {
+				return false
+			}
+		}
+		return true
+	}
+	var written []manifestType
 	for _, typed := range manifest.Types {
-		if !slices.ContainsFunc(reader.Types, func(other manifestType) bool { return other.Name == typed.Name }) {
+		if bothCreate(typed.Name) {
+			written = append(written, typed)
+		}
+	}
+	writes := func(name string) bool {
+		return slices.ContainsFunc(written, func(typed manifestType) bool { return typed.Name == name })
+	}
+	// own are the types written as blocks of the document's own, and inside the types written at
+	// the end of each parent's block.
+	var own []manifestType
+	inside := map[string][]manifestType{}
+	for _, typed := range written {
+		if len(typed.Parents) == 0 {
+			own = append(own, typed)
 			continue
 		}
+		at := slices.IndexFunc(typed.Parents, writes)
+		if at < 0 {
+			t.Fatalf("the %s block stands only at the end of a block of %q, none of which both builds create; teach typedBlocksMarkdown where to write it", typed.Name, typed.Parents)
+		}
+		inside[typed.Parents[at]] = append(inside[typed.Parents[at]], typed)
+	}
+	placed := 0
+	// block is typed's block, the blocks inside it included, and the length of its fence.
+	var block func(typed manifestType) (string, int)
+	block = func(typed manifestType) (string, int) {
+		placed++
 		attributes := []string{"#" + typedBlockID(typed.Name)}
 		for _, name := range slices.Sorted(maps.Keys(typed.Attributes)) {
 			attribute := typed.Attributes[name]
-			if attribute.Server || len(attribute.Default) == 0 {
+			if attribute.Server || len(attribute.Default) == 0 || !bothCreate(typed.Name+"."+name) {
 				continue
 			}
 			var value any
@@ -670,7 +726,22 @@ func typedBlocksMarkdown(t *testing.T, manifest, reader blockManifest) string {
 				t.Fatalf("the harness writes no %q content, as the %s block takes; teach typedBlocksMarkdown to write it", token, typed.Name)
 			}
 		}
-		blocks = append(blocks, ":::"+typed.Name+"{"+strings.Join(attributes, " ")+"}\n"+strings.Join(content, "\n\n")+"\n:::\n")
+		fence := 3
+		for _, child := range inside[typed.Name] {
+			markdown, childFence := block(child)
+			content = append(content, strings.TrimSuffix(markdown, "\n"))
+			fence = max(fence, childFence+1)
+		}
+		colons := strings.Repeat(":", fence)
+		return colons + typed.Name + "{" + strings.Join(attributes, " ") + "}\n" + strings.Join(content, "\n\n") + "\n" + colons + "\n", fence
+	}
+	blocks := []string{"# Every typed block\n"}
+	for _, typed := range own {
+		markdown, _ := block(typed)
+		blocks = append(blocks, markdown)
+	}
+	if placed != len(written) {
+		t.Fatalf("the document reaches %d of the %d typed blocks both builds create: a type whose parents stand only inside one another is in no block of the document's own; teach typedBlocksMarkdown where to write it", placed, len(written))
 	}
 	return strings.Join(blocks, "\n")
 }

@@ -974,7 +974,7 @@ func (r *renderedReplica) spliceTouched(room string) (changed bool, asks func() 
 	}
 	return true, func() map[string]struct{} {
 		ids := map[string]struct{}{}
-		for _, index := range layout.AskBlocks() {
+		for _, index := range layout.CreditedBlocks() {
 			block, err := read(index)
 			if err != nil {
 				slog.Error("dispatch: read a block of the updated document to list its ask blocks", "room", room, "error", err)

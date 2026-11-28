@@ -20,7 +20,7 @@ import {
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
+import type { Artifact, AskWithTrees, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
@@ -47,6 +47,7 @@ import {
   CLOSED_ISSUE_UPLOAD_REFUSAL,
   useArtifactUpload,
 } from "../artifacts/ArtifactUpload";
+import { issueAsksQuery } from "../issue-page/useIssueTree";
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
@@ -90,7 +91,7 @@ import { FRAGMENT_NAME } from "./roots";
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
-import type { AskBlockHost } from "./typed-block-drawing";
+import { type AskBlockHost, type ServedAsk, servedAskOfBlock } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
 
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
@@ -114,6 +115,23 @@ export const liveTextQueryOptions = (artifactId: string) =>
     queryKey: ["artifact", artifactId, "text"],
     queryFn: () => api.getArtifactText(artifactId),
   });
+
+/** The asks of the document `artifactId`'s owner, in every state: the issue's, under the key and
+ * with the read the issue page takes them from (`issueAsksQuery`), or, where `issueKey` is null,
+ * the document's own, as a project document's are. A rendered ask block reads who asked from
+ * these, and the server's read of its ask (`servedAskOfBlock`). The issue's read answers rows that
+ * carry more than an ask, so the options take either read's key and fetch and read both as asks
+ * with their display trees (`AskWithTrees`), which the open decision's question draws from. */
+export const ownerAsksQueryOptions = (artifactId: string, issueKey: string | null) => {
+  const { queryKey, queryFn } =
+    issueKey === null
+      ? {
+          queryKey: ["artifact", artifactId, "asks"],
+          queryFn: () => api.listArtifactAsks(artifactId),
+        }
+      : issueAsksQuery(issueKey);
+  return queryOptions<AskWithTrees[], Error, AskWithTrees[], string[]>({ queryKey, queryFn });
+};
 
 /** Why an admission left the live editor closed, from its own `/text` read: a tree outside the
  * Proof schema the page offers to repair from markdown, a stored history that cannot load the page
@@ -412,11 +430,9 @@ export function ProofDocument({
     queryKey: ["artifact", artifact.id, "version", version],
     queryFn: () => api.getArtifactVersion(artifact.id, version ?? 0),
   });
-  const asksQuery = useQuery({
-    queryKey: owner.kind === "issue" ? ["asks", owner.key] : ["artifact", artifact.id, "asks"],
-    queryFn: () =>
-      owner.kind === "issue" ? api.listIssueAsks(owner.key) : api.listArtifactAsks(artifact.id),
-  });
+  const asksQuery = useQuery(
+    ownerAsksQueryOptions(artifact.id, owner.kind === "issue" ? owner.key : null)
+  );
   /** Every ask indexed from a typed block of this document, in every state — the rendered blocks
    * read who asked from these, and an answered block still names its asker. */
   const blockAsks = useMemo(
@@ -428,6 +444,32 @@ export function ProofDocument({
   );
   const blocksReadOnly = isClosed || schemaReadOnly;
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
+  // The server's read of the ask the block `blockId` shows (`servedAskOfBlock`).
+  const servedAsk = (blockId: string): ServedAsk | undefined =>
+    servedAskOfBlock(
+      asksQuery.data ?? [],
+      liveTextQuery.data,
+      artifact.id,
+      blockId,
+      owner.kind === "issue" ? undefined : owner.project
+    );
+  // The server's read of the ask each mounted block shows, by block id, read once per render for
+  // the cards below and for the editor's refusal of a reading in an open ask, which reads the
+  // answer states at each edit: a ref, so the editor made once reads the latest asks read.
+  const servedAsks = new Map(
+    askBlockHosts.map((host) => {
+      const blockId = String(host.node.attrs.blockId);
+      return [blockId, servedAsk(blockId)] as const;
+    })
+  );
+  const askStates = useRef<ReadonlyMap<string, string>>(new Map());
+  askStates.current = new Map(
+    [...servedAsks].flatMap(([blockId, served]) =>
+      served === undefined
+        ? []
+        : [[blockId, "ask" in served ? served.ask.state : served.rendered.state] as const]
+    )
+  );
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
   // Naming a version is the name dialog's form, which shows a refusal itself; a rebuild shows
   // its own beside its button.
@@ -503,8 +545,11 @@ export function ProofDocument({
     setIsNameDialogOpen(true);
   }, []);
   // The answer itself goes through the shared ask card; the document's own reads (text, blocks,
-  // versions) refresh once it lands, since the server writes the outcome into the block, and a
-  // host that selected the question hears of its answer too.
+  // versions) refresh once it lands, since the server's ask node now holds the outcome the block
+  // shows and the answer writes one version, which changes only the block's server-owned
+  // attributes when the answer is that version's whole change (the server's
+  // changesAskAttributesAlone: text a person was editing in the browser can settle into the same
+  // version), and a host that selected the question hears of its answer too.
   const blockAnswered = useCallback(
     (askId: string) => {
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
@@ -948,6 +993,7 @@ export function ProofDocument({
                     globalThis.document.documentElement.clientWidth < 1280)
                     ? null
                     : connection.awareness,
+                askStateOf: (blockId) => askStates.current.get(blockId),
                 heatMapMode: "hidden",
                 onAskBlockHosts: setAskBlockHosts,
                 onMarkAction: (action) => {
@@ -1293,6 +1339,7 @@ export function ProofDocument({
               owner={owner.kind === "document" ? owner : undefined}
               readOnly={blocksReadOnly}
               rowResolution={isClosed}
+              served={servedAsks.get(blockId)}
             />
           );
         })}
@@ -1366,6 +1413,7 @@ export function ProofDocument({
             highlight={highlight}
             issueKey={artifact.issue_key}
             owner={owner.kind === "document" ? owner : undefined}
+            servedAsk={servedAsk}
             version={version}
           />
         </div>

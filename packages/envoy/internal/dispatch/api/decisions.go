@@ -181,7 +181,9 @@ func artifactMissing(err error) bool {
 }
 
 // specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
-// shape every ask read has (askReadColumns, with the newest reply beside the row). reader is the
+// shape every ask read has (askReadColumns, with the newest reply beside the row). An ask is open
+// as its node holds it (asks.NodeAnswer.ApplyTo), which every read of an answer reads (R3), so the
+// statement reads each of the spec's asks and the scan keeps the open ones. reader is the
 // answer's own, and each row registers its texts with it once the slice has stopped growing: a
 // shaping registers a pointer into the row, and an append that moved the backing array would
 // leave the reader filling trees into memory the answer no longer holds.
@@ -190,7 +192,7 @@ func (s *server) specOpenQuestions(
 ) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+` `+askReadFrom+`
-		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid
+		where a.issue_key = $1 and a.block_artifact_id = $2::uuid
 		order by a.created_at, a.id
 	`, key, specID)
 	if err != nil {
@@ -202,6 +204,9 @@ func (s *server) specOpenQuestions(
 		if err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if ask.State != "open" {
+			continue
 		}
 		questions = append(questions, issueAskRow{Ask: ask, LastReply: reply})
 	}

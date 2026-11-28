@@ -1,38 +1,47 @@
 import { $prose } from "@milkdown/kit/utils";
 import { isHistoryTransaction } from "@milkdown/prose/history";
-import type { Fragment, ResolvedPos, Schema } from "@milkdown/prose/model";
+import type { Fragment, NodeType, ResolvedPos, Schema } from "@milkdown/prose/model";
 import { type EditorState, Plugin, TextSelection, type Transaction } from "@milkdown/prose/state";
 import { dropPoint } from "@milkdown/prose/transform";
 import type { EditorProps, EditorView } from "@milkdown/prose/view";
 import { ySyncPluginKey } from "y-prosemirror";
 
 /**
- * Makes `schema`'s `ask` node (when it has one) accept, as a node's content, what the document
- * service accepts in it: at least one child of the schema's `block` group (the server's block
- * node types, pmdoc's `isBlockNodeType`, and the block schema's typed blocks), and no mark the
- * ask disallows.
+ * Makes `schema`'s `ask` node (when it has one), and every node a typed block's `parents` name (a
+ * `decision`, which its readings close), accept, as a node's content, what the document service
+ * accepts in it: at least one child, each of the schema's `block` group (the server's block node
+ * types, pmdoc's `isBlockNodeType`, and the block schema's typed blocks that name no parents) or
+ * of a type the node admits after its own content (a reading, whose `parents` name it: pmdoc's
+ * `TypedContent`), in any order, and no mark the node disallows.
  *
- * An ask's content rule is `paragraph+ bullet_list?`, but two collaborators' concurrent edits
- * (two lists, a paragraph after the list) can leave a shared document holding an ask that rule
- * refuses. y-prosemirror builds each node through `createChecked`, and when that throws it deletes
- * the whole element from the shared Yjs document, so every editor and the server lose the ask's
- * text (sjawhar/legion#2433). Only `validContent` changes, which is what `createChecked`, a step's own
- * check and `Node.check` read; content matching (`contentMatch`, `canReplace`, `createAndFill`)
- * keeps the rule, so every command, input rule, paste and markdown parse still holds a local edit
- * to it, and the typed-block drawing's fit check is untouched.
+ * An ask's content rule is `paragraph+ bullet_list? reading*` and a decision's `block+ reading*`,
+ * but two collaborators' concurrent edits (two lists, a paragraph after the list, a paragraph
+ * landing after a reading another writer added at the same place) can leave a shared document
+ * holding a node its rule refuses. y-prosemirror builds each node through `createChecked`, and
+ * when that throws it deletes the whole element from the shared Yjs document, so every editor and
+ * the server lose the ask's or the decision's text, its readings with it (sjawhar/legion#2433).
+ * Only `validContent` changes, which is what `createChecked`, a step's own check and `Node.check`
+ * read; content matching (`contentMatch`, `canReplace`, `createAndFill`) keeps the rule, so every
+ * command, input rule, paste and markdown parse still holds a local edit to it, and the
+ * typed-block drawing's fit check is untouched.
  */
 export function relaxAskContentCheck(schema: Schema): void {
-  const ask = schema.nodes.ask;
-  if (ask === undefined) return;
-  ask.validContent = (content: Fragment): boolean => {
-    if (content.childCount === 0) return false;
-    for (let index = 0; index < content.childCount; index++) {
-      const child = content.child(index);
-      if (!child.type.isInGroup("block")) return false;
-      if (!ask.allowsMarks(child.marks)) return false;
-    }
-    return true;
-  };
+  const parentsOf = (type: NodeType) => (type.spec.parents as readonly string[] | undefined) ?? [];
+  const relaxed = new Set(Object.values(schema.nodes).flatMap(parentsOf));
+  relaxed.add("ask");
+  for (const name of relaxed) {
+    const parent = schema.nodes[name];
+    if (parent === undefined) continue;
+    parent.validContent = (content: Fragment): boolean => {
+      if (content.childCount === 0) return false;
+      for (let index = 0; index < content.childCount; index++) {
+        const child = content.child(index);
+        if (!child.type.isInGroup("block") && !parentsOf(child.type).includes(name)) return false;
+        if (!parent.allowsMarks(child.marks)) return false;
+      }
+      return true;
+    };
+  }
 }
 
 /** Whether `$pos` lies inside an ask whose content its own content rule refuses. */

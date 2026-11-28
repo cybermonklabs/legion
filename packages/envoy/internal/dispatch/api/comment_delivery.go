@@ -1664,6 +1664,17 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, plan.refusal)
 		return
 	}
+	// A session replying in an ask's thread follows the ask: the follow is planned here, under
+	// the owner lock the reply's write already holds and before any of its writes
+	// (asks.PlanFollowAuthor), and queued with what the reply states, after its event.
+	var follow asks.PlannedFollow
+	if plan.thread.AskID != nil {
+		var err error
+		if follow, err = asks.PlanFollowAuthor(r.Context(), tx, *plan.thread.AskID, actor, plan.createdAt); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	// The index the named block's comment was found to owe is written here, before the reply's
 	// own writes, as refs.IndexItemIfOwed writes one.
 	if err := plan.parentIndex.Write(r.Context(), tx); err != nil {
@@ -1768,7 +1779,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if plan.thread.AskID != nil {
-			if _, err := asks.QueueFollowAuthor(b, *plan.thread.AskID, actor, plan.createdAt, event.ID); err != nil {
+			if _, err := follow.Queue(b, event.ID); err != nil {
 				return err
 			}
 		}

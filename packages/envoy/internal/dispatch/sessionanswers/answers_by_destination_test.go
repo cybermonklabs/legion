@@ -192,23 +192,40 @@ func requireMainsRows(t *testing.T, f *answersFixture, step string) {
 
 // sameAnswerRows holds got, what query answered as subject, to want, what mainQuery answered: the
 // same columns, and the same rows in the same order, each column the same bytes the server sent
-// and null only where main's is. It fails t through Errorf for each difference, and answers false
-// where the columns or the number of rows differ, since no row is compared then.
+// and null only where main's is. query answers one column more than main's: row_answer, the ask
+// row's own answer beside answer, which query reads off the ask's node (R3) where main's read the
+// row's. So row_answer is taken out of got, by its name, before the comparison, and held row for
+// row to main's answer, which is the row's answer, byte for byte and of the same type. Every
+// column of main's, answer among them, which now comes off the node, is then still held to the
+// same bytes, and row_answer is still held to the row's. It fails t through Errorf for each
+// difference, and answers false where the columns or the number of rows differ, since no row is
+// compared then.
 func sameAnswerRows(t testing.TB, subject string, got, want answerRows) bool {
 	t.Helper()
-	if !slices.Equal(got.columns, want.columns) {
-		t.Errorf("%s answers the columns %v, want main's %v", subject, got.columns, want.columns)
+	rowAnswer, answer := got.column("row_answer"), want.column("answer")
+	if rowAnswer < 0 || answer < 0 || got.columns[rowAnswer] != "row_"+want.columns[answer] {
+		t.Errorf("%s answers the columns %v, want main's %v with a row_answer of the type of main's answer", subject, got.columns, want.columns)
 		return false
 	}
-	if len(got.raw) != len(want.raw) {
-		t.Errorf("%s answers %d rows, want main's %d:\n%s\nmain's:\n%s", subject, len(got.raw), len(want.raw), got, want)
+	rows := got.without(rowAnswer)
+	if !slices.Equal(rows.columns, want.columns) {
+		t.Errorf("%s answers the columns %v without row_answer, want main's %v", subject, rows.columns, want.columns)
 		return false
 	}
+	if len(rows.raw) != len(want.raw) {
+		t.Errorf("%s answers %d rows, want main's %d:\n%s\nmain's:\n%s", subject, len(rows.raw), len(want.raw), got, want)
+		return false
+	}
+	same := func(a, b []byte) bool { return bytes.Equal(a, b) && (a == nil) == (b == nil) }
 	for row := range want.raw {
+		if !same(got.raw[row][rowAnswer], want.raw[row][answer]) {
+			t.Errorf("%s answers row %d's row_answer as %v, want main's answer %v", subject, row,
+				got.values[row][rowAnswer], want.values[row][answer])
+		}
 		for column := range want.raw[row] {
-			if !bytes.Equal(got.raw[row][column], want.raw[row][column]) || (got.raw[row][column] == nil) != (want.raw[row][column] == nil) {
+			if !same(rows.raw[row][column], want.raw[row][column]) {
 				t.Errorf("%s answers row %d's %s as %v, want main's %v", subject, row, want.columns[column],
-					got.values[row][column], want.values[row][column])
+					rows.values[row][column], want.values[row][column])
 			}
 		}
 	}
@@ -229,6 +246,22 @@ func (r answerRows) String() string {
 		fmt.Fprintf(&text, "  %v\n", row)
 	}
 	return text.String()
+}
+
+// column answers the index of r's column named name, or -1 where r has none.
+func (r answerRows) column(name string) int {
+	return slices.IndexFunc(r.columns, func(column string) bool { return strings.HasPrefix(column, name+" (type ") })
+}
+
+// without answers r with its column at index taken out of its columns and of each row. It leaves
+// r's own slices as they are.
+func (r answerRows) without(index int) answerRows {
+	out := answerRows{columns: slices.Concat(r.columns[:index], r.columns[index+1:])}
+	for row := range r.raw {
+		out.raw = append(out.raw, slices.Concat(r.raw[row][:index], r.raw[row][index+1:]))
+		out.values = append(out.values, slices.Concat(r.values[row][:index], r.values[row][index+1:]))
+	}
+	return out
 }
 
 // readAnswerRows runs statement for session since since, bound as List binds the read.

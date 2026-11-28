@@ -2341,6 +2341,32 @@ type ArtifactBlock struct {
 	DescendantIDs []string              `json:"-"`
 }
 
+// TextAsk is one entry of the asks member the text routes answer (GET
+// /api/v1/artifacts/{id}/text and its issue and project slug variants): an ask block of the
+// markdown they serve, in document order, with its answer as the ask's node holds it - its
+// answer_state, answered_by, answered_at, selected and answer tuples - and the asks row saying only
+// which ask indexes the block. A person's answer is held once, on the ask's node, so that markdown
+// holds none of it; each field carries the name
+// and the value the server-owned attribute of the block carried in the release before. State is
+// the block's ask's state, open where its node holds none; for a copy of an ask of another
+// document of the same owner, the source's, with CopiedFrom the source's id and
+// CopiedFromDocument its document's dispatch:// address; for a block of a closed issue's document
+// that no settlement has indexed, resolved; and absent for any other block no ask indexes yet, a
+// question nobody has opened, which the text routes showed with no state before they took the
+// attributes off. AnsweredBy (the answerer's login as the node's person holds it), AnsweredAt (RFC
+// 3339), Selected (empty where no option was chosen) and Answer (absent where the answer has no
+// words) are present on an answered ask alone.
+type TextAsk struct {
+	BlockID            string    `json:"block_id"`
+	State              string    `json:"state,omitempty" enum:"open,answered,resolved"`
+	AnsweredBy         string    `json:"answered_by,omitempty"`
+	AnsweredAt         string    `json:"answered_at,omitempty"`
+	Selected           *[]string `json:"selected,omitempty"`
+	Answer             *string   `json:"answer,omitempty"`
+	CopiedFrom         string    `json:"copied_from,omitempty"`
+	CopiedFromDocument string    `json:"copied_from_document,omitempty"`
+}
+
 // BlockAttributeValue is one attribute a typed block carries: the name its type declares it
 // under, the value the block holds, as its opening line writes it with no escape and no quotes
 // (pmdoc.TypedBlockAttributes), and the kind the block schema declares that attribute

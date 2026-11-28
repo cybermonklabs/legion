@@ -232,7 +232,15 @@ type commentThreadTarget struct {
 	AskID       *string
 	ReplyRoot   *model.Comment
 	AskQuestion string
-	AskState    string
+	// AskState is the state of the thread's ask as its node holds it (askNodeStateOf), the state
+	// the comment's event shows (commentEventThread), as every read of an answer reads the node
+	// (R3).
+	AskState string
+	// AskOpen says the ask's row holds it open, which decides whether a reply records a turn
+	// (openAsk). A reply's turn is a write the ask's turn moves by, so it is decided on the row,
+	// as every read that decides a transition reads it (askNodeStateOf); the two differ only
+	// inside a roll's window, where the row is the newer of the two.
+	AskOpen bool
 	// AskMoved says the ask is an approval request a version moved past the one its agent last
 	// handed to the human (approvalMoved): it waits on its agent whatever a reply's turn says.
 	AskMoved bool
@@ -246,7 +254,7 @@ type commentThreadTarget struct {
 
 // openAsk says the thread hangs under an open ask, the only kind with a turn.
 func (t commentThreadTarget) openAsk() bool {
-	return t.AskID != nil && t.AskState == "open"
+	return t.AskID != nil && t.AskOpen
 }
 
 // replyTurn is who holds the turn once a reply into this thread is posted. Only an open ask
@@ -532,19 +540,20 @@ func (s *server) threadHeadFrom(
 }
 
 // describeAsk reads the ask on this owner that a reply joins, as the thread it heads, refusing one
-// that belongs to another.
+// that belongs to another: the state its node holds, which the comment's event shows, and whether
+// its row holds it open, which decides the reply's turn (commentThreadTarget.AskOpen).
 func (s *server) describeAsk(
 	ctx context.Context, tx pgx.Tx, owner owner, askID *string,
 ) (commentThreadTarget, error) {
 	target := commentThreadTarget{AskID: askID}
 	err := tx.QueryRow(ctx, `
-		select a.question, a.state, `+approvalMoved+`,
+		select a.question, `+askNodeStateOf("a")+`, a.state = '`+asks.StateOpen+`', `+approvalMoved+`,
 		       case when a.author->>'kind' = 'session' then a.author->>'id' end
 		from asks a
 		where a.id = $1
 		  and a.issue_key is not distinct from $2
 		  and a.artifact_id is not distinct from $3
-	`, *askID, owner.IssueKey, owner.ArtifactID).Scan(&target.AskQuestion, &target.AskState, &target.AskMoved, &target.AskAuthorSession)
+	`, *askID, owner.IssueKey, owner.ArtifactID).Scan(&target.AskQuestion, &target.AskState, &target.AskOpen, &target.AskMoved, &target.AskAuthorSession)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "ask_id must identify an ask on this owner")
 	}
@@ -558,8 +567,8 @@ func (s *server) describeAsk(
 // last, when it is a session none of those names, and [] when no session owns the ask. It reads
 // in the route's read phase, where the read holds no transaction id and finds the followers
 // committed before this write, but not the follow the write queues for a session that replies
-// (asks.QueueFollowAuthor), which only Ledger.Commit sends: so the replier is added here rather
-// than read.
+// (asks.PlanFollowAuthor's PlannedFollow, queued by its Queue), which only Ledger.Commit sends: so
+// the replier is added here rather than read.
 func askSessions(ctx context.Context, tx pgx.Tx, askID string, author *string, replier model.Actor) ([]string, error) {
 	followers, err := asks.Followers(ctx, tx, askID)
 	if err != nil {
@@ -1395,7 +1404,15 @@ func (s *server) queueCommentCreated(
 	// takes the author's person node and their session node in one statement in ascending (kind,
 	// id): a follow before it would take the session first and leave the person to that
 	// statement, which is the pair in the other order, and two such writes racing over a session
-	// and an owner the store holds neither of would deadlock (R17).
+	// and an owner the store holds neither of would deadlock. The follow is planned here,
+	// in the read phase, under the owner lock the comment's write holds over the ask's thread
+	// (asks.PlanFollowAuthor), and queued in that step.
+	var follow asks.PlannedFollow
+	if comment.AskID != nil {
+		if follow, err = asks.PlanFollowAuthor(ctx, tx, *comment.AskID, comment.Author, comment.CreatedAt); err != nil {
+			return nil, err
+		}
+	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		if !stored.unprojected {
 			graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
@@ -1404,7 +1421,7 @@ func (s *server) queueCommentCreated(
 			}
 		}
 		if comment.AskID != nil {
-			if _, err := asks.QueueFollowAuthor(b, *comment.AskID, comment.Author, comment.CreatedAt, graphstore.LatestEvent); err != nil {
+			if _, err := follow.Queue(b, graphstore.LatestEvent); err != nil {
 				return err
 			}
 		}

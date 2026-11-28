@@ -900,6 +900,54 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/artifacts/{id}/_test/ask-attributes": {
+      "get": {
+        "description": "Test hook: read the attributes each ask block of a document holds in this process's live tree. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "operationId": "getApiV1ArtifactsByIdTestAskAttributes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveAskAttributes"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true
+      }
+    },
     "/api/v1/artifacts/{id}/_test/hold-persistence": {
       "post": {
         "description": "Test hook: hold this process's appends of a document's browser updates for a duration.",
@@ -2473,7 +2521,7 @@
     },
     "/api/v1/artifacts/{id}/text": {
       "get": {
-        "description": "A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. At a cut the route answers the markdown and the document token of the document's newest version at the cut, and with ?blocks=true the blocks of that version. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /token, /blocks/*/token, /blocks/*/embedding, /blocks/*/id, /blocks/*/table/rows/*/id, /blocks/*/table/rows/*/cells/*/id, /blocks/*/references. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id.",
+        "description": "A document's canonical markdown, its whole-document token and its version, with asks: one entry per ask block in document order, its state and answer read from its ask. A reader that reads asks sends Dispatch-Asks: 1 and is served markdown with none of an ask block's eight server-owned attributes (state, answered_by, answered_at, selected, answer, invalid, copied_from, copied_from_document), which it can upload back unchanged; a request without that header is served the form kept for one release for the readers of the release before, with selected, answer and invalid taken off every ask block and state, answered_by, answered_at, copied_from and copied_from_document as the document holds them. Both forms answer the same token. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. At a cut the route answers the markdown and the document token of the document's newest version at the cut, in the form the request reads with or without Dispatch-Asks: 1, its asks with each ask's state and answer as the ask's newest event at the cut gives them, and with ?blocks=true the blocks of that version. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /token, /blocks/*/token, /blocks/*/embedding, /blocks/*/id, /blocks/*/table/rows/*/id, /blocks/*/table/rows/*/cells/*/id, /blocks/*/references. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id.",
         "operationId": "getApiV1ArtifactsByIdText",
         "parameters": [
           {
@@ -6577,7 +6625,7 @@
     },
     "/api/v1/issues/{key}/artifacts/{slug}/text": {
       "get": {
-        "description": "An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "description": "An issue document's canonical markdown, whole-document token, version and asks, by slug or unambiguous filename, its ask blocks served as GET /api/v1/artifacts/{id}/text serves them with and without Dispatch-Asks: 1; ?blocks=true carries its blocks beside them, from the one tree. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV1IssuesByKeyArtifactsBySlugText",
         "parameters": [
           {
@@ -12153,7 +12201,7 @@
     },
     "/api/v1/projects/{key}/artifacts/{slug}/text": {
       "get": {
-        "description": "A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "description": "A project document's canonical markdown, whole-document token, version and asks, by slug or unambiguous filename, its ask blocks served as GET /api/v1/artifacts/{id}/text serves them with and without Dispatch-Asks: 1; ?blocks=true carries its blocks beside them, from the one tree. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV1ProjectsByKeyArtifactsBySlugText",
         "parameters": [
           {
@@ -16206,6 +16254,12 @@
       },
       "ArtifactText": {
         "properties": {
+          "asks": {
+            "items": {
+              "$ref": "#/components/schemas/TextAsk"
+            },
+            "type": "array"
+          },
           "blocks": {
             "items": {
               "$ref": "#/components/schemas/ArtifactBlock"
@@ -26858,6 +26912,24 @@
         ],
         "type": "object"
       },
+      "LiveAskAttributes": {
+        "properties": {
+          "blocks": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "blocks"
+        ],
+        "type": "object"
+      },
       "LiveWritePauseState": {
         "properties": {
           "parked": {
@@ -32665,6 +32737,46 @@
         },
         "required": [
           "ok"
+        ],
+        "type": "object"
+      },
+      "TextAsk": {
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "answered_at": {
+            "type": "string"
+          },
+          "answered_by": {
+            "type": "string"
+          },
+          "block_id": {
+            "type": "string"
+          },
+          "copied_from": {
+            "type": "string"
+          },
+          "copied_from_document": {
+            "type": "string"
+          },
+          "selected": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "answered",
+              "resolved"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "block_id"
         ],
         "type": "object"
       },

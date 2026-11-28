@@ -278,6 +278,7 @@ export type {
   Suggestion,
   Suggestions,
   TargetCandidate,
+  TextAsk,
   TmuxPlace,
   UpdateIssueInput,
   UserAgentState,

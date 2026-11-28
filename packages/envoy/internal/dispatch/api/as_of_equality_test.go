@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
@@ -70,6 +71,12 @@ const (
 	asOfSearchWord        = "lighthouse"
 	asOfBroadenedQuery    = "lighthouse marmalade"
 	asOfEditedMessageWord = "plover"
+	// asOfResolvedQuestionWord is a word only the question of the ask answered and then resolved
+	// before the cut holds (asOfWorld.resolved), and asOfResolvedAnswerWord a word only its answer
+	// holds, which the text a search hit's snippet is cut from (askSearchTextOf) holds no more
+	// once the ask is resolved.
+	asOfResolvedQuestionWord = "osprey"
+	asOfResolvedAnswerWord   = "albatross"
 	// asOfOtherPerson is the second person among the callers (asOfRig.callers), the other one
 	// newTestServer seeds beside brokerTestPerson, and asOfOtherSession the session their machine
 	// login's token acts for. The comment brokerTestPerson keeps to herself (asOfWorld.hidden) is
@@ -102,6 +109,8 @@ type asOfWorld struct {
 	deleted map[string]string
 	// What writeAfterTheCut writes to: the asks it answers and closes, and the posts it deletes.
 	openQuestion, handbookAsk, deletedComment, deletedMessage string
+	// resolved is the ask answered and then resolved before the cut (seedAnsweredThenResolved).
+	resolved string
 	// hidden is the comment brokerTestPerson keeps to herself (seedHiddenComment): the world's
 	// search word matches it at the cut, and its node is reserved for her, its author.
 	hidden string
@@ -325,6 +334,47 @@ func (w *asOfWorld) seedHiddenComment(t *testing.T, handler http.Handler, databa
 	}
 }
 
+// seedAnsweredThenResolved writes the ask answered and then resolved before the cut
+// (asOfWorld.resolved): the agent session's question on the parent, whose question alone holds
+// asOfResolvedQuestionWord, answered through the route in words that alone hold
+// asOfResolvedAnswerWord, then resolved as a process of the release before resolves it, which no
+// route of this build writes for an answered ask: the parent's log gains that process's
+// ask.resolved, the answer's payload resolved with no answer (appendAskEventAsAnEarlierRelease),
+// and the resolution is stated on the ask's node and its row as the decisions step's catch-up
+// states it (asks.Recorded, settleAskAsTheCatchUp). A resolution writes no version of the ask into
+// the keyword table (textversions' unchangingTypes), so at the cut the table holds the answer's
+// version of the ask, its answer's words among it. A search at the cut finds the ask there by its
+// question, and must show it as the present does: a snippet that holds no word of its answer.
+func (w *asOfWorld) seedAnsweredThenResolved(t *testing.T, handler http.Handler, database *store.Store) {
+	t.Helper()
+	w.resolved = decodeBody[model.Ask](t, asOfSessionWrite(t, handler, http.MethodPost, "/api/v1/issues/"+w.parent+"/asks", map[string]any{
+		"question": "Does the " + asOfResolvedQuestionWord + " survey go first?",
+		"options":  []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	})).ID
+	asOfWrite(t, handler, http.MethodPost, "/api/v1/asks/"+w.resolved+"/answer",
+		map[string]any{"selected": []string{"Yes"}, "text": "Yes, with the " + asOfResolvedAnswerWord + " count beside it."}, "alice")
+
+	var answered []byte
+	if err := database.Pool.QueryRow(t.Context(), `
+		select payload from events where type = 'ask.answered' and payload->>'id' = $1 order by id desc limit 1
+	`, w.resolved).Scan(&answered); err != nil {
+		t.Fatalf("read the answer's payload of the ask %s: %v", w.resolved, err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(answered))
+	decoder.UseNumber()
+	var payload map[string]any
+	if err := decoder.Decode(&payload); err != nil {
+		t.Fatalf("decode the answer's payload of the ask %s: %v", w.resolved, err)
+	}
+	resolution := model.AskResolution{Kind: "resolved", Reason: "Settled by the release before.",
+		Actor: model.Actor{Kind: "user", ID: "alice"}, At: time.Now().UTC().Truncate(time.Microsecond)}
+	payload["state"], payload["answer"], payload["resolution"] = asks.StateResolved, nil, resolution
+	appendAskEventAsAnEarlierRelease(t, database, w.parent, "ask.resolved", payload)
+	change := asks.Recorded(asks.StateResolved, nil, &resolution)
+	change.Who, change.At, change.Event = resolution.Actor, resolution.At, graphstore.NoEvent
+	settleAskAsTheCatchUp(t, database, w.resolved, change)
+}
+
 // writeAfterTheCut makes every later write of the check t-routes' run text and the two the plan
 // adds: edits, new comments, messages, asks and answers, a closed ask, an issue status change, a
 // new document version, a new check result, a document removed, a comment and an issue message
@@ -394,14 +444,18 @@ func (w *asOfWorld) writeAfterTheCut(t *testing.T, handler http.Handler) {
 
 // asOfRead is one request of a row: its target, path and query; whether it names the document
 // removed after the cut, which answers 404 as of the cut; whether it names what the world holds
-// only after the cut, which answers 404 at the cut and so as of it; and whether it is a search
-// whose query matches the comment reserved for its author (asOfWorld.hidden) at the cut, which
-// must show that comment to its author and hide it from asOfOtherPerson (hiddenShown).
+// only after the cut, which answers 404 at the cut and so as of it; whether it is a search whose
+// query matches the comment reserved for its author (asOfWorld.hidden) at the cut, which must
+// show that comment to its author and hide it from asOfOtherPerson (hiddenShown); and whether it
+// is a search whose query matches the question of the ask answered and then resolved before the
+// cut (asOfWorld.resolved), which must show that ask with a snippet that holds no word of its
+// answer (resolvedAnswerShown).
 type asOfRead struct {
-	target  string
-	removed bool
-	missing bool
-	hidden  bool
+	target   string
+	removed  bool
+	missing  bool
+	hidden   bool
+	resolved bool
 }
 
 // asOfRow is one route of kind answers and the reads the harness makes of it. window, where it
@@ -419,16 +473,19 @@ func asOfOne(target func(w *asOfWorld) string) func(w *asOfWorld) []asOfRead {
 	return func(w *asOfWorld) []asOfRead { return []asOfRead{{target: target(w)}} }
 }
 
-// asOfSearchReads is a search route's three reads: a query the world's text matched at the cut,
+// asOfSearchReads is a search route's four reads: a query the world's text matched at the cut,
 // the comment reserved for its author among it (asOfWorld.hidden); two words that matched nothing
-// together at the cut, which the read at the cut broadened; and a word only the edited message's
-// text at the cut holds, which the fill reads from its edit (message.edited).
+// together at the cut, which the read at the cut broadened; a word only the edited message's text
+// at the cut holds, which the fill reads from its edit (message.edited); and a word only the
+// question of the ask answered and then resolved before the cut holds (asOfWorld.resolved), whose
+// keyword table version at the cut, the answer's, holds its answer's words.
 func asOfSearchReads(path string) func(w *asOfWorld) []asOfRead {
 	return func(*asOfWorld) []asOfRead {
 		return []asOfRead{
 			{target: path + "?" + url.Values{"q": {asOfSearchWord}, "keywords_only": {"true"}}.Encode(), hidden: true},
 			{target: path + "?" + url.Values{"q": {asOfBroadenedQuery}, "keywords_only": {"true"}}.Encode()},
 			{target: path + "?" + url.Values{"q": {asOfEditedMessageWord}, "keywords_only": {"true"}}.Encode()},
+			{target: path + "?" + url.Values{"q": {asOfResolvedQuestionWord}, "keywords_only": {"true"}}.Encode(), resolved: true},
 		}
 	}
 }
@@ -699,10 +756,17 @@ func withAsOfValue(t *testing.T, target, value string) string {
 // the callers, bob's (asOfOtherPerson). Each search read whose query matches it (asOfRead.hidden)
 // must show it to alice's caller and not to bob's, at the cut and as of it (hiddenShown), so a
 // search row cannot pass because the comment matched nothing or because no caller had it hidden.
+//
+// Before the cut, the world also gains an ask answered and then resolved
+// (seedAnsweredThenResolved), whose answer's words the keyword table's version of it at the cut
+// holds. Each search read whose query matches its question (asOfRead.resolved) must show that ask
+// with a snippet that holds no word of its answer, at the cut and as of it (resolvedAnswerShown),
+// so the row cannot pass because the ask matched nothing.
 func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 	rig := newAsOfRig(t)
 	world := seedAsOfWorld(t, rig.handler)
 	world.seedHiddenComment(t, rig.handler, rig.database)
+	world.seedAnsweredThenResolved(t, rig.handler, rig.database)
 	callers := rig.callers(t)
 	author := slices.IndexFunc(callers, func(caller asOfReader) bool { return caller.login == brokerTestPerson })
 	if author < 0 || !slices.ContainsFunc(callers, func(caller asOfReader) bool { return caller.login == asOfOtherPerson }) {
@@ -728,6 +792,9 @@ func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 					t.Fatalf("%s as %s, %s: %s", row.route, caller.name, read.target, problem)
 				}
 				if problem := world.hiddenShown(read, caller, answer); problem != "" {
+					t.Fatalf("%s as %s, %s: at the cut, %s", row.route, caller.name, read.target, problem)
+				}
+				if problem := world.resolvedAnswerShown(read, answer); problem != "" {
 					t.Fatalf("%s as %s, %s: at the cut, %s", row.route, caller.name, read.target, problem)
 				}
 				then[readKey{rowIndex, readIndex, callerIndex}] = answer
@@ -758,6 +825,9 @@ func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 					if problem := world.hiddenShown(read, caller, answer); problem != "" {
 						problems = append(problems, "as of the cut, "+problem)
 					}
+					if problem := world.resolvedAnswerShown(read, answer); problem != "" {
+						problems = append(problems, "as of the cut, "+problem)
+					}
 					if len(problems) > 0 {
 						t.Errorf("%s as %s, %s:\n  %s", row.route, caller.name, read.target, strings.Join(problems, "\n  "))
 					}
@@ -767,6 +837,9 @@ func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
 				comparison := asOfComparison{route: row.route, cut: cut, world: world, window: row.window, removed: read.removed}
 				problems := comparison.problems(then[readKey{rowIndex, readIndex, author}], answer)
 				problems = append(problems, asOfReadWrites(rig.statements.take())...)
+				if problem := world.resolvedAnswerShown(read, answer); problem != "" {
+					problems = append(problems, "with the token cut at the cut, "+problem)
+				}
 				if len(problems) > 0 {
 					t.Errorf("%s as %s, %s:\n  %s", row.route, cutCaller.name, read.target, strings.Join(problems, "\n  "))
 				}
@@ -799,6 +872,32 @@ func (w *asOfWorld) hiddenShown(read asOfRead, caller asOfReader, answer asOfAns
 	case !author && shown:
 		return fmt.Sprintf("the answer holds the comment %s, which %s keeps to herself and this caller, %s, may not see",
 			w.hidden, brokerTestPerson, caller.login)
+	}
+	return ""
+}
+
+// resolvedAnswerShown says how answer, an answer to read at the cut or as of it, fails to show
+// the ask answered and then resolved before the cut (asOfWorld.resolved) with a snippet that
+// holds no word of its answer (asOfResolvedAnswerWord), and is empty when it shows it so. It holds
+// nothing of a read whose query does not match the ask's question (asOfRead.resolved), or of a
+// read the caller's scopes refused. Only the snippet is held to it: the hit's ask carries the
+// answer the ask held before it was resolved, as every read of a resolved ask's answers does
+// (attachAskStates).
+func (w *asOfWorld) resolvedAnswerShown(read asOfRead, answer asOfAnswer) string {
+	if !read.resolved || answer.status != http.StatusOK {
+		return ""
+	}
+	var page model.SearchResponse
+	if err := json.Unmarshal(answer.body, &page); err != nil {
+		return fmt.Sprintf("the search answered %s (%v), want a page of hits", abbreviateAnswer(answer.body), err)
+	}
+	index := slices.IndexFunc(page.Results, func(hit model.SearchResult) bool { return hit.Kind == "ask" && hit.ID == w.resolved })
+	if index < 0 {
+		return fmt.Sprintf("the answer lacks the ask %s, whose question holds %q: %s", w.resolved, asOfResolvedQuestionWord, abbreviateAnswer(answer.body))
+	}
+	if snippet := page.Results[index].Snippet; strings.Contains(strings.ToLower(snippet), asOfResolvedAnswerWord) {
+		return fmt.Sprintf("the snippet of the ask %s, which was resolved after it was answered, shows %q, a word of its answer: %q",
+			w.resolved, asOfResolvedAnswerWord, snippet)
 	}
 	return ""
 }

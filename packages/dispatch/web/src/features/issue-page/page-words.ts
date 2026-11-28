@@ -128,6 +128,8 @@ export const NODE_TYPE_NAMES = joinWords("NODE_TYPE_NAMES", {
   issue: "issue",
   message: "message",
   plan_task: "plan task",
+  /** A `reading`: an agent's reading of a person's answer, inside the ask it reads. */
+  reading: "reading",
   /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
    *  sentence that must be true of the software. */
   requirement: "statement",
@@ -1214,8 +1216,16 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   ci_check: "CI check",
   copied_from: "copied from",
   copied_from_document: "copied from document",
+  /** The author of a decision, which the server writes from who wrote the block. */
+  decided_by: "decided by",
+  /** The question an agent's decision settles. An ask is drawn as a question (R34). */
+  from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
+  /** The person who kept the decision as it reads; the server writes it. */
+  kept_by: "kept by",
+  /** The sum of the words that person kept, which the server compares with the words now. */
+  kept_text_sum: "sum of the kept words",
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
@@ -1224,16 +1234,23 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   /** The one block a plan task stands directly under (`parent`, read from this release). */
   parent: "stands under",
   program: "program",
+  /** Whether a newer decision stands in this one's place. */
+  replaced: "replaced",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
+  /** The spec blocks a decision, or the answer of an ask, shaped. */
+  shaped: "shaped",
   state: "state",
   /** The steps of Legion a plan task runs, in their order. */
   steps: "steps",
   subject: "subject",
   surface: "surface",
   title: "title",
+  /** How unsure the agent was of a decision, and in the next one why. */
+  uncertainty: "uncertainty",
+  uncertainty_reason: "why unsure",
   urgency: "urgency",
   when: "when",
 } as const);
@@ -1394,6 +1411,7 @@ export const GLYPH_TOKENS = joinWords("GLYPH_TOKENS", {
     issue: "issue",
     message: "message",
     plan_task: "plan-task",
+    reading: "reading",
     requirement: "requirement",
     result: "result",
   },

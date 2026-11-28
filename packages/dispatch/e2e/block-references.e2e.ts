@@ -7,9 +7,9 @@ import {
   createProject,
   editArtifact,
   editComment,
-  getArtifact,
   getArtifactText,
   getIssue,
+  latestVersion,
 } from "./api";
 import { blockId } from "./editor";
 import { expect, type Locator, type Page, test } from "./test";
@@ -32,11 +32,6 @@ const PROBE = { intervals: [50, 50, 100, 200, 500] };
 test.beforeEach(async () => {
   await createProject({ key: "CORE", name: "Core" });
 });
-
-async function latestVersion(artifactId: string): Promise<number> {
-  const artifact = await getArtifact(artifactId);
-  return Math.max(...(artifact.versions ?? []).map((version) => version.number));
-}
 
 /** Opens the hover card of `link` from the keyboard, which every project can do (the phone
  *  project has no hover), and answers the card. */

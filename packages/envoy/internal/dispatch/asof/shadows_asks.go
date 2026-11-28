@@ -148,9 +148,23 @@ var AskAnchorBlocksNotGivenStatement = anchorBlocksNotGiven("asks", askStateList
 //   - approval: the payload's as written. An approval written before event 186,599 holds no
 //     documents, which migration 20261102110100 filled in the row with no event: the field is
 //     absent at such a cut (reason B).
+//   - node_kind and node_address: none. A read of the present takes the answer state of an ask
+//     whose row names its node from that node (api's askNodeAnswerColumn, asks.NodeAnswer), and a
+//     read at a cut takes it from this shadow: the node's tuples give no answer state that the
+//     boot step's backfill folded into one fact, and every write of an answer state appends the
+//     ask's state event with the row that the node projects into (asks.Settle). So the shadow
+//     names no node, every read at a cut reads the answer off the row, and no read at a cut reads
+//     a tuple (graphTuplesShadow, which holds none).
+//   - answer and resolution: the payload's, laid as a read of the present lays the node's over the
+//     row (asks.NodeAnswer.ApplyTo) where the present row names its node: the answer only on an
+//     ask answered at the cut, and the resolution only on one resolved then. The row keeps an
+//     answer when its ask is reopened, handed back or resolved, and its node does not. A row that
+//     names no node, one past the store's bound (graphstore.AskFacts) among them, is read as its
+//     row holds it at the present, and so the payload's are given whole.
 func asksShadow(cut string) string {
 	question, options := askWordingAt.question, askWordingAt.options
 	answer := jsonValue(`s.payload->'answer'`)
+	state := `coalesce(s.payload->>'state', 'open')`
 	return `select a.id as id,
 		a.issue_key as issue_key,
 		a.author as author,
@@ -159,10 +173,10 @@ func asksShadow(cut string) string {
 		` + askWordingAt.multiple + ` as multiple,
 		` + askWordingAt.urgency + ` as urgency,
 		` + jsonValue(`s.payload->'anchor'`) + ` as anchor,
-		coalesce(s.payload->>'state', 'open') as state,
-		` + answer + ` as answer,
+		` + state + ` as state,
+		case when a.node_kind is null or ` + state + ` = 'answered' then ` + answer + ` end as answer,
 		a.created_at as created_at,
-		` + jsonValue(`s.payload->'resolution'`) + ` as resolution,
+		case when a.node_kind is null or ` + state + ` = 'resolved' then ` + jsonValue(`s.payload->'resolution'`) + ` end as resolution,
 		a.artifact_id as artifact_id,
 		(s.payload->>'edited_at')::timestamptz as edited_at,
 		a.kind as kind,
@@ -188,7 +202,9 @@ func asksShadow(cut string) string {
 		a.written_version as written_version,
 		s.payload->>'asked_of' as asked_of,
 		s.payload->>'asked_of_by' as asked_of_by,
-		(s.payload->>'asked_of_at')::timestamptz as asked_of_at
+		(s.payload->>'asked_of_at')::timestamptz as asked_of_at,
+		null::text as node_kind,
+		null::text as node_address
 	from public.asks a
 	cross join lateral (
 		select e.payload from public.events e
@@ -205,9 +221,12 @@ func asksShadow(cut string) string {
 // unfollow (ask.follower_added, ask.follower_removed; a renewed approval request appends
 // ask.follower_added for its session). The insert keeps the first follow's time (on conflict do
 // nothing, asks/followers.go), so since is the earliest follow after the session's last unfollow
-// at the cut, and a session whose last word at the cut is an unfollow follows not.
+// at the cut, and a session whose last word at the cut is an unfollow follows not. It names no
+// follower node (node_kind and node_address), as the asks shadow names no ask node: no read at a
+// cut reads a tuple.
 func askFollowersShadow(cut string) string {
-	return `select a.id as ask_id, f.session_id as session_id, f.since as since
+	return `select a.id as ask_id, f.session_id as session_id, f.since as since,
+		null::text as node_kind, null::text as node_address
 	from public.asks a
 	cross join lateral (
 		select v.session_id, min(v.created_at) filter (where v.follows and v.id > v.left_at) as since

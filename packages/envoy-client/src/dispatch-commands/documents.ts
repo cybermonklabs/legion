@@ -63,6 +63,7 @@ import {
   storedTextCheckFailed,
   uploadedFile,
 } from "./stored-text";
+import { answeredAskLines, liveTextAsks } from "./text-asks";
 import { artifactNameExistsProblem, artifactUnderName, uploadKindOf } from "./upload-checks";
 
 /**
@@ -448,10 +449,15 @@ export async function docReadCommand(
   if (threadsResult.status === "rejected") throw threadsResult.reason;
   const threads = threadsResult.value;
   const approval = approvalLine(resolved.artifact, typeof resolved.issue?.closed_at === "string");
+  // A live read's markdown holds no ask's state or answer: each answered ask is named beside the
+  // token, from the text's asks (liveTextAsks). A version read prints the stored bytes, which are
+  // the record a person approved, and names none.
+  const answered = version === undefined ? answeredAskLines(liveTextAsks(document)) : [];
   const trailer = [
     ...("token" in document && document.token !== undefined
       ? [`Document token: ${document.token}`]
       : []),
+    ...answered,
     ...("sha256" in document && document.sha256 !== undefined
       ? [`Content: sha256:${document.sha256}`]
       : []),
@@ -473,14 +479,18 @@ export async function docReadCommand(
   };
 }
 
-/** `dispatch request-approval`'s words around the open blocks it refuses over. */
+/** `dispatch request-approval`'s words around the open blocks it refuses over, which it counts as
+ *  ask blocks. */
 const APPROVAL_REQUEST_OPEN_BLOCKS = {
+  blocks: "ask block",
+  // kept for one release: stored-ask-state
+  decidedBy: "live",
   effect:
-    "Answering one writes a new version, which would move this request to that version and leave it waiting on you.",
+    "Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
   remedy:
     "Do not request approval over an open block, even when a human asked for it. " +
     OPEN_BLOCK_ASK_THE_HUMAN +
-    " When the human approved an earlier version and their answer is the whole change since it, Dispatch carries the approval to the new version in their name: request nothing. When the answer changes design text outside the block, rewrite that text (never to restate the answer), then request approval again once the human has agreed to every point in the new version, with a one-sentence --summary naming what changed since the earlier approval. On a document nobody has approved, wait for that version, then request. " +
+    " Their answer is held on the ask, not in the text: Dispatch records its state, and who answered and when, on the block's opening line, which settles into a version on its own about two seconds later and changes no word of the text, so once every block is answered, request approval of the latest version, after any version a line above says to wait for. When the answer changes design text outside the block, rewrite that text (never to restate the answer), then request approval once the human has agreed to every point in the new version, with a one-sentence --summary naming what changed since any earlier approval. " +
     OPEN_BLOCK_WAIVED +
     ", write their decision into the text with dispatch doc-edit, then request approval again once the human has agreed to every point in the new version. The call opens the request, or hands an open one back to the human.",
 } as const;
@@ -526,7 +536,7 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
   if (result.ask === null) {
     return {
       text: [
-        `${resolved.artifact.name} (document id ${resolved.artifact.id}) is already approved at version ${result.version} by ${result.approval.by?.id ?? "unknown"}; no new request was opened. A change outside the decision blocks after approval makes it stale, so request again only for such a version, once the human has agreed to every point in it, with a --summary naming what changed since version ${result.version}; the human's own answer to a decision block carries the approval when that answer is the whole change.`,
+        `${resolved.artifact.name} (document id ${resolved.artifact.id}) is already approved at version ${result.version} by ${result.approval.by?.id ?? "unknown"}; no new request was opened. A change outside the ask blocks after approval makes it stale, so request again only for such a version, once the human has agreed to every point in it, with a --summary naming what changed since version ${result.version}. A human's answer to an ask block, or its resolve or decline, writes one version. When the answer, resolve or decline is that version's whole change, the version changes only the block's state, and who answered and when, and the approval carries across it. The version carries the approval only when the person's answer, resolve or decline is its whole change. If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.`,
         ...trailing,
       ].join("\n"),
       details: {
@@ -549,7 +559,7 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
   const waitsOn = waitsOnPerson(result.ask);
   return {
     text: [
-      `${outcome}${waitsOn === undefined ? "" : ` It waits on ${waitsOn}.`} The human's Inbox asks: ${JSON.stringify(result.ask.question)}. The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the decision blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. The human's own answer to a decision block carries the approval when that answer is the whole change since the approved version, and answers an open request Approve in their name: request nothing then.`,
+      `${outcome}${waitsOn === undefined ? "" : ` It waits on ${waitsOn}.`} The human's Inbox asks: ${JSON.stringify(result.ask.question)}. The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the ask blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. A human's answer to an ask block, or its resolve or decline, writes one version. When the answer, resolve or decline is that version's whole change, the version changes only the block's state, and who answered and when: an approval carries across it, and this request stays with whoever holds its turn. The version carries an approval only when the person's answer, resolve or decline is its whole change. If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.`,
       ...trailing,
     ].join("\n"),
     details: { ...details, artifact: resolved.artifact.id, version: result.version },

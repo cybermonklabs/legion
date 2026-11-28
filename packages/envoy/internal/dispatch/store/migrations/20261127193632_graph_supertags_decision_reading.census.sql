@@ -1,0 +1,14 @@
+-- This migration writes the type nodes of the store alone: it moves the `supertag` nodes
+-- `decision` and `reading` to block types, writes nine `attribute` nodes (`decision`'s eight
+-- attributes and `ask/shaped`), sets `markdown` on the attribute node `ask/invalid`, sets the
+-- attributes of the five other block type supertag nodes (callout, ask, requirement, plan_task and
+-- check) to what 20261127114415_graph_supertags_plan_task_parent left on them, the version moved
+-- from 7 to 8, and appends the tuples that state each value. Nothing but a migration writes a type
+-- node (cmd/dispatch's requireNoRouteOrCommandWritesAType), and no migration between
+-- 20261127114415 and this one writes one, so the five supertag nodes hold what that one left and
+-- the update rewrites only their version, `ask/invalid` holds what the seed left and the update
+-- adds `markdown: false` alone, and none of the nine new attribute nodes exists for the insert to
+-- meet. Each statement is a literal insert or a primary-key update to a literal, and it reads no
+-- row of another table. The number of existing rows this migration would refuse or rewrite is
+-- therefore 0.
+select 0

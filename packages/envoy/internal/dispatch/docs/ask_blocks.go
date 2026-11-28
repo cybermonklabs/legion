@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"reflect"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -47,19 +47,56 @@ type settlementReconciliation struct {
 	// copied are the blocks this settlement wrote a copy's attributes into, as a copy of another
 	// document's ask (copiedAskSources), which it logs once it commits (logCopiedBlocks).
 	copied []copiedBlock
+	// copiedFrom records each ask block's classified source, empty for a block that is not a copy.
+	// Settlement states the relation after the block index plans the block nodes, and retracts it
+	// from each other block of the document that holds one (claimCopies).
+	copiedFrom map[string]string
 	// indexedAskBlocks are the blocks this settlement indexed or found indexed, whose author the
 	// room forgets as it commits (consumeAskAuthorsLocked) and whose durable author its transaction
 	// deletes (deleteSettledAskAuthors). A copy is neither: its author is kept for the ask it opens
 	// once its source is retracted. Nor is a new block a closed issue's settlement leaves with no
 	// row: its author is kept for the ask it opens once the issue reopens (reconcileAskBlocks).
 	indexedAskBlocks []string
-	// rewrites are the ask blocks whose server attributes repairAsk repaired, which
-	// withholdAnswers reads again where a repair wrote back an answer.
-	rewrites []serverRewrite
+	// invalid is the reason each ask whose block settlement could not read fails the strict read
+	// for (readAskBlockStrictly), by ask id, where the block has an ask row; readable is each ask
+	// whose block reads again. Settlement states both on the asks' nodes (asks.PlanInvalidReasons).
+	invalid  map[string]string
+	readable []string
 	// follows are the follows of the asks this settlement opened, each beside the ask it follows:
 	// a session author's node is written before the ask.opened that records the ask exists, and
-	// learns that event right after the settlement appends it (followsByEvent).
+	// learns that event right after the settlement appends it (causedByEvent).
 	follows []openedFollow
+	// answers are the answer states this settlement wrote through the one writer of an ask's
+	// answer state (asks.PlanSettle) - a retraction of an ask whose block left, the restoration of
+	// one whose block came back - each beside the event that records it, whose facts on the ask's
+	// node wait for that event (causedByEvent).
+	answers []settledAnswer
+	// inStep are the ask blocks this settlement wrote an answer's words into while another build
+	// serves (rollWindowAskAttributes), in document order, which withholdAnswersWithoutRoom weighs.
+	// kept for one release: roll-window-attributes
+	inStep []answerInStep
+}
+
+// answerInStep is an ask block settlement wrote an answer's words into (repairAskInStep): the
+// block in the tree settlement reconciled, its attributes as settlement found them, the write with
+// the words and the one without them (askReadableWriteWithheld), and the indexes of the repair and
+// of the block.repaired the write made, -1 for none.
+//
+// kept for one release: roll-window-attributes
+type answerInStep struct {
+	node            *pmdoc.Node
+	found           pmdoc.Attrs
+	write, withheld func(*pmdoc.Node) bool
+	repair, event   int
+}
+
+// settledAnswer is one answer state this settlement wrote: the ask, the type of the event the
+// settlement appends for it, and what the write stated on its node (asks.Settled.Held), held for
+// that event.
+type settledAnswer struct {
+	ask       string
+	eventType string
+	held      graphstore.Uncaused
 }
 
 // openedFollow is one ask this settlement opened: the write of the ask's own node, queued before
@@ -72,33 +109,120 @@ type openedFollow struct {
 	followed *graphstore.Uncaused
 }
 
-// followsByEvent is, for each of events that is the ask.opened of an ask this reconciliation
-// opened, the writes that event causes, by the event's place in events: the ask's own node and
-// its author's follow, which the write phase states under it right after its append
-// (appendEvents). It matches by the ask its payload names rather than by a position recorded when
-// the follow was, because events is edited after the follows are recorded: withholdAnswers drops
-// the block.repaired of a repair it takes back, which moves every event after it. An ask this
-// settlement opened whose ask.opened is not among events is a settlement that lost the event
-// recording an ask it wrote, and fails here naming the ask.
-func (r *settlementReconciliation) followsByEvent(events []model.Event) (map[int][]*graphstore.Uncaused, error) {
-	if len(r.follows) == 0 {
+// causedByEvent is, for each of events that records a write of this reconciliation held for it,
+// the writes that event causes, by the event's place in events, which the write phase states under
+// it right after its append (appendEvents): under the ask.opened of each ask this reconciliation
+// opened, the ask's own node and its author's follow; and under the event recording each answer
+// state it wrote (settledAnswer) -
+// the ask.resolved of a retraction, the ask.opened or ask.answered of a restoration - what that
+// write stated on the ask's node. It matches by the type and the ask its payload names rather than
+// by a position recorded when the write was, because events is edited after the writes are
+// recorded: withholdAnswersWithoutRoom drops the block.repaired of a repair it takes back, which
+// moves every event after it. A write whose event is not among events is a settlement that lost
+// the event recording a write it made, and fails here naming the ask.
+func (r *settlementReconciliation) causedByEvent(events []model.Event) (map[int][]*graphstore.Uncaused, error) {
+	if len(r.follows) == 0 && len(r.answers) == 0 {
 		return nil, nil
 	}
-	opened := make(map[string]int, len(r.follows))
+	type recorded struct{ ask, eventType string }
+	places := make(map[recorded]int, len(events))
 	for index, event := range events {
-		if payload, ok := event.Payload.(model.AskEventPayload); ok && event.Type == "ask.opened" {
-			opened[payload.ID] = index
+		if payload, ok := event.Payload.(model.AskEventPayload); ok {
+			places[recorded{payload.ID, event.Type}] = index
 		}
 	}
-	caused := make(map[int][]*graphstore.Uncaused, len(r.follows))
+	caused := make(map[int][]*graphstore.Uncaused, len(r.follows)+len(r.answers))
 	for _, follow := range r.follows {
-		index, found := opened[follow.ask]
+		index, found := places[recorded{follow.ask, "ask.opened"}]
 		if !found {
 			return nil, fmt.Errorf("settlement opened ask %s and appended no ask.opened for it", follow.ask)
 		}
-		caused[index] = []*graphstore.Uncaused{follow.node, follow.followed}
+		caused[index] = append(caused[index], follow.node, follow.followed)
+	}
+	for position := range r.answers {
+		answer := &r.answers[position]
+		index, found := places[recorded{answer.ask, answer.eventType}]
+		if !found {
+			return nil, fmt.Errorf("settlement wrote the answer state of ask %s and appended no %s for it", answer.ask, answer.eventType)
+		}
+		caused[index] = append(caused[index], &answer.held)
 	}
 	return caused, nil
+}
+
+// claimCopies states each ask block's copy source from settlement's classification, not from
+// browser attributes, on each ask block whose node the document's block index holds once this
+// settlement's own indexing is written: an empty source retracts the current relation. It reads
+// once which blocks of the document hold a copied_from now (refs.DocumentCopiedFrom), and retracts
+// the relation from each of them that is no longer an ask block - one a person retyped, or one this
+// settlement's version drops - so a settlement of a document that holds no ask block now still
+// retracts the copied_from of a block that was a copy. A claim that restates what the node holds
+// appends nothing (graphstore.Claim). The source document is read through the source ask's own
+// part_of, not stored as another fact.
+func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, artifactID string, who model.Actor, at time.Time) (func(*store.WriteBatch, int64) error, error) {
+	standing, err := refs.DocumentCopiedFrom(ctx, tx, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("read the copies the blocks of %s hold: %w", artifactID, err)
+	}
+	if len(r.copiedFrom) == 0 && len(standing) == 0 {
+		return nil, nil
+	}
+	// Only an ask block is claimed where the block index holds its node. A block that holds a
+	// copied_from has its node, so its retraction needs no index.
+	var index refs.BlockIndex
+	if len(r.copiedFrom) > 0 {
+		var held bool
+		if ledger := queueFor(ctx, tx); ledger != nil {
+			index, held = ledger.blockIndexes[artifactID]
+		}
+		if !held {
+			index, err = refs.ReadBlockIndex(ctx, tx, artifactID)
+			if err != nil {
+				return nil, fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+			}
+		}
+	}
+	address, err := addressOfDocument(ctx, tx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	blocks := make([]string, 0, len(r.copiedFrom)+len(standing))
+	for blockID := range r.copiedFrom {
+		blocks = append(blocks, blockID)
+	}
+	for blockID := range standing {
+		if _, asked := r.copiedFrom[blockID]; !asked {
+			blocks = append(blocks, blockID)
+		}
+	}
+	slices.Sort(blocks)
+	var claims []graphstore.Claim
+	for _, blockID := range blocks {
+		// A block that is no longer an ask block has no source: its claim retracts.
+		source, asked := r.copiedFrom[blockID]
+		if asked && !index.HasNode(blockID) {
+			continue
+		}
+		claims = append(claims, graphstore.Claim{
+			FromKind: refs.BlockNodeKind, FromID: address.RefKey + "#" + blockID,
+			Kind: graphstore.TupleCopiedFrom, ToKind: graphstore.KindAsk, ToID: source,
+			At: at, Who: who,
+		})
+	}
+	if len(claims) == 0 {
+		return nil, nil
+	}
+	return func(b *store.WriteBatch, cause int64) error {
+		for i := range claims {
+			claims[i].SourceEvent = cause
+		}
+		arms, params, err := graphstore.WriteArms(1, nil, nil, claims)
+		if err != nil {
+			return err
+		}
+		b.Queue(fmt.Sprintf("state the copies of %s", artifactID), "with "+arms+"\nselect 1", params...)
+		return nil
+	}, nil
 }
 
 // blockRepair is one attribute repair settlement made to the block of type blockType carrying
@@ -147,35 +271,163 @@ func (r *settlementReconciliation) repair(node *pmdoc.Node, blockID string, set 
 	return true
 }
 
-// repairAsk repairs the server attributes of node, the ask block carrying blockID in the tree
-// settlement read, to agree with ask (setAskServerAttributes), records the repair for repairLive
-// and, when event is not nil, the block.repaired it emits - each where withholdAnswers finds it
-// again - and reports whether it changed the block. copied is the document ask is on when node is
-// a copy of it, "" otherwise.
-func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, ask model.Ask, copied string, event *model.Event) bool {
-	found := readAskServerState(node)
-	changed, wroteAnswer := setAskServerAttributes(node, ask, copied, false)
-	if !changed {
+// repairAsk makes set, settlement's write of the server attributes of an ask block
+// (askReadableWrite), on node, the ask block carrying blockID in the tree settlement read,
+// records the repair for repairLive and, when event is not nil, the block.repaired it emits, and
+// reports whether it changed the block.
+func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, set func(*pmdoc.Node) bool, event *model.Event) bool {
+	if !r.repair(node, blockID, set) {
 		return false
 	}
-	rewrite := serverRewrite{node: node, ask: ask, copied: copied, found: found, answer: wroteAnswer, repair: len(r.repairs), event: -1}
-	r.repairs = append(r.repairs, askRepair(blockID, askServerAttributes(ask, copied, false)))
 	if event != nil {
-		rewrite.event = len(r.events)
 		r.events = append(r.events, *event)
 	}
-	r.rewrites = append(r.rewrites, rewrite)
 	return true
+}
+
+// repairAskInStep is repairAsk with askReadableWrite, settlement's write to a block of ask, or
+// of a copy of ask on the document copied, that records the block when the write gave it an
+// answer's words while another build serves (wroteAnswerWords), for withholdAnswersWithoutRoom to
+// weigh. A block that already held the words its write leaves - one whose repair cleared its
+// `invalid` or moved a copy's provenance - keeps them: they are in the document settlement read
+// and add nothing to it, and the release before weighed only a repair that wrote an answer. The
+// write stays, settlement's one write to a block of an ask; the record of the words it wrote
+// goes with the roll window.
+func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID string, twoBuilds bool, ask model.Ask, copied string, event *model.Event) bool {
+	// kept for one release: roll-window-attributes
+	found := maps.Clone(node.Attrs)
+	// kept for one release: roll-window-attributes
+	repair, eventAt := len(r.repairs), len(r.events)
+	if event == nil {
+		eventAt = -1
+	}
+	write := askReadableWrite(twoBuilds, ask, copied)
+	if !r.repairAsk(node, blockID, write, event) {
+		return false
+	}
+	// kept for one release: roll-window-attributes
+	if twoBuilds && wroteAnswerWords(found, node) {
+		r.inStep = append(r.inStep, answerInStep{
+			node: node, found: found, write: write, withheld: askReadableWriteWithheld(ask, copied),
+			repair: repair, event: eventAt,
+		})
+	}
+	return true
+}
+
+// wroteAnswerWords reports whether node, an ask block a write left, holds an answer's words
+// (answerWords) that found, its attributes before the write, did not: a selection or words found
+// held none of, or held another value of.
+//
+// kept for one release: roll-window-attributes
+func wroteAnswerWords(found pmdoc.Attrs, node *pmdoc.Node) bool {
+	for _, name := range answerWords {
+		value, held := node.Attrs[name]
+		if !held {
+			continue
+		}
+		if was, had := found[name]; !had || !sameAskAttribute(was, value) {
+			return true
+		}
+	}
+	return false
+}
+
+// withholdAnswersWithoutRoom keeps out of the document each answer this settlement wrote into its
+// block while another build serves (inStep) that the document has no room for: one that would
+// leave it past what one upload may hold and bigger than before, the document's rendering as
+// settlement read it (weigh, which weighs a caller's write the same way). A block that leaves the
+// document and returns gets its answer from the ask, so a returning block is the answer's text
+// arriving without the answer route that weighs it (KeepAskBlockInStep): forty answers of 32,000
+// characters, each taken against a document their deleted blocks had left small, come back in one
+// edit. Where the answers do not all fit, every one is taken out of tree, and each is given back
+// in document order while the document still has room for it. A block whose answer stays out is
+// repaired without it (askReadableWriteWithheld), so it still says who answered and when, as the
+// release before wrote such a block, and the ask keeps the answer; a later settlement of a
+// document with room for it writes it back. A repair that then changes nothing is dropped with
+// its block.repaired. A document that does not render cannot be weighed, so its answers all stay
+// out, and the settlement that renders it next fails as it would have.
+//
+// kept for one release: roll-window-attributes
+func (r *settlementReconciliation) withholdAnswersWithoutRoom(artifactID string, tree *pmdoc.Node, before string) {
+	if len(r.inStep) == 0 {
+		return
+	}
+	after, err := renderTree(tree)
+	rendered := err == nil
+	if rendered {
+		if err = weighRendering(before, after); err == nil {
+			return
+		}
+	}
+	// changes says whether each block repaired without its answer still changes from what
+	// settlement found.
+	changes := make([]bool, len(r.inStep))
+	for index, answer := range r.inStep {
+		answer.node.Attrs = maps.Clone(answer.found)
+		changes[index] = answer.withheld(answer.node)
+	}
+	returned := make([]bool, len(r.inStep))
+	if rendered {
+		r.returnAnswersWithRoom(tree, before, returned)
+	}
+	withheld := 0
+	droppedRepairs, droppedEvents := map[int]bool{}, map[int]bool{}
+	for index, answer := range r.inStep {
+		switch {
+		case returned[index]:
+			continue
+		case changes[index]:
+			r.repairs[answer.repair].set = answer.withheld
+		default:
+			droppedRepairs[answer.repair] = true
+			if answer.event >= 0 {
+				droppedEvents[answer.event] = true
+			}
+		}
+		withheld++
+	}
+	slog.Warn("dispatch: settlement withholds restored answers from their blocks", "room", artifactID,
+		"withheld", withheld, "answers", len(r.inStep), "reason", err)
+	r.repairs = withoutIndexes(r.repairs, droppedRepairs)
+	r.events = withoutIndexes(r.events, droppedEvents)
+	r.inStep = nil
+}
+
+// returnAnswersWithRoom gives back, in document order, the answer of each block of inStep, all of
+// them left out of tree, while the document still has room for it, and marks in returned which it
+// gave back. The document is rendered once without them, and each answer is weighed by what it
+// adds to its block's own rendering (grownBy).
+//
+// kept for one release: roll-window-attributes
+func (r *settlementReconciliation) returnAnswersWithRoom(tree *pmdoc.Node, before string, returned []bool) {
+	left, err := renderTree(tree)
+	if err != nil {
+		return
+	}
+	document, was := renderingOf(left), renderingOf(before)
+	for index, answer := range r.inStep {
+		withheld := *answer.node
+		withheld.Attrs = maps.Clone(answer.node.Attrs)
+		answer.write(answer.node)
+		grown, err := grownBy(document, &withheld, answer.node)
+		if err == nil {
+			err = weigh(was, grown)
+		}
+		if err != nil {
+			answer.node.Attrs = withheld.Attrs
+			continue
+		}
+		document, returned[index] = grown, true
+	}
 }
 
 // changedTree reports whether settlement changed the tree it reconciled. Every change
 // reconcileAskBlocks and reconcileCICheckBlocks make in place is recorded in repairs - by repair,
 // which the deletion of a broken ci_check goes through too, by repairAsk, and by the write of a
-// decided ask's wording - and repairAsk records its change in rewrites too. withholdAnswers drops
-// a repair only for an entry of rewrites, which never shrinks, so changedTree is true whenever the
-// tree was touched.
+// decided ask's wording - so changedTree is true whenever the tree was touched.
 func (r *settlementReconciliation) changedTree() bool {
-	return len(r.repairs) > 0 || len(r.rewrites) > 0
+	return len(r.repairs) > 0
 }
 
 // repairLive makes the reconciliation's repairs on live, the document as it stands when settlement
@@ -232,17 +484,16 @@ func (r *settlementReconciliation) nameVersion(
 		}
 	}
 	for _, ask := range r.retracted {
-		retracted, encoded, err := askResolution(ask, "retracted", fmt.Sprintf("%s %d", SettlementRetractionReason, version), SettlementActor, time.Now())
+		// The retraction is queued through the one writer of an ask's answer state
+		// (WriteAskResolution), and what it states on the ask's node waits for its ask.resolved
+		// (causedByEvent).
+		var held graphstore.Uncaused
+		retracted, err := WriteAskResolution(ctx, tx, ask, "retracted", fmt.Sprintf("%s %d", SettlementRetractionReason, version), SettlementActor, &held)
 		if err != nil {
 			return fmt.Errorf("retract deleted ask block: %w", err)
 		}
-		if err := write(ctx, tx, func(b *store.WriteBatch) error {
-			queueAskResolution(b, "retract deleted ask block", ask.ID, encoded)
-			return nil
-		}); err != nil {
-			return err
-		}
 		recordAskBlock(ctx, tx, artifactID, retracted)
+		r.answers = append(r.answers, settledAnswer{ask: ask.ID, eventType: "ask.resolved", held: held})
 		// Its thread_logins are read when settlement appends it (settlementEventLogins).
 		r.events = append(r.events, documentAskEvent(
 			owner, artifactID, "ask.resolved", SettlementActor, model.NewAskEventPayload(retracted, model.ReferenceChanges{}),
@@ -311,14 +562,25 @@ func closeWithdrawn(ask model.Ask) bool {
 // (copiedAskSources). A decided ask of this document that a task of an earlier release reworded
 // gets its decided wording back first (restoreDocumentDecidedWordings), so the block is written
 // back to it, and its copies settle again.
-// before is the document's rendering as settlement read it ("" where it did not render), which the
-// answers settlement writes back into returning blocks are weighed against (withholdAnswers).
+//
+// Each ask block is written as the fleet stands at this write (anotherBuildServes): while another
+// build serves, the attributes the release before reads from the block are kept in step with its
+// ask (rollWindowAskAttributes); once the fleet is one build, the ones a version keeps are kept in
+// step with it and the rest of the seven a version can store taken out (keptAskState). A block
+// settlement cannot read keeps whatever a browser wrote onto it - a forged state or answerer
+// among them - so once the fleet is one build it is given its row's kept state where a row
+// indexes it, and none of the seven where none does. `invalid` is written into the live tree
+// either way: onto a block that fails the strict read, and off one that reads again, and
+// where the block has an ask row its node holds the reason too, until the block reads again
+// (asks.PlanInvalidReasons).
 //
 // issueClosed is whether the issue row, as the settlement's transaction locked it, reads closed
 // (settlement.issueClosed), and on a closed issue no ask changes: the close withdrew every ask of
 // the issue, so an ask opened, restored or edited now would contradict the close. A new block
-// opens no ask and is indexed by no row. It is written state="resolved", as the close's own sweep
-// writes such a block (resolveUnindexedAskBlock), and its author is recorded in tx
+// opens no ask and is indexed by no row. While another build serves, it is written
+// state="resolved", as the close's own sweep writes such a block (resolveUnindexedAskBlock), and
+// once the fleet is one build it keeps none of the seven attributes a version can store, as a block
+// with no ask row and no source keeps none (unindexedAskWrite). Its author is recorded in tx
 // (recordAskAuthors, the first registration winning): this settlement deletes the document's
 // pending row, whose latest edit source would otherwise name the author. The reopen marks the
 // document owed (MarkReopenOwedAskDocuments), and the settlement after it opens the block's
@@ -340,7 +602,6 @@ func (s *Service) reconcileAskBlocks(
 	owner artifactOwner,
 	tree *pmdoc.Node,
 	credit settlementVersionCredit,
-	before string,
 	issueClosed bool,
 ) (settlementReconciliation, error) {
 	blocks, invalidBlocks, err := collectAskBlocksForSettlement(tree)
@@ -361,10 +622,13 @@ func (s *Service) reconcileAskBlocks(
 		readable = append(readable, block)
 	}
 	blocks = readable
-	rows, err := loadAskBlocks(ctx, tx, artifactID)
+	// The rows and the copies' sources through the one read of which ask each block has, which
+	// takes the project's copy lock right before it reads the sources (copiedAskSources).
+	read, err := readBlockAsks(ctx, tx, artifactID, &owner, blocks, copiedAskSources)
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
+	rows, sources := read.rows, read.sources
 	credit.askSources.recorded, err = transactionRecordedAskAuthors(ctx, tx, artifactID)
 	if err != nil {
 		return settlementReconciliation{}, err
@@ -375,13 +639,47 @@ func (s *Service) reconcileAskBlocks(
 	}
 
 	actor := credit.actor
-	var reconciled settlementReconciliation
+	// The fleet is read at each write that holds an ask block, never cached: the attributes stay in
+	// step while another build serves, and the first settlement after its last process left takes
+	// them out.
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
+	twoBuilds := false
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
+	if len(blocks)+len(invalidBlocks) > 0 {
+		if twoBuilds, err = anotherBuildServes(ctx, tx); err != nil {
+			return settlementReconciliation{}, err
+		}
+	}
+	// Once the fleet is one build, the attributes a version keeps are written from each ask's node,
+	// each one its node holds no value of taken off, or from its row where the node is behind it,
+	// before the decisions step's catch-up (keptAskState, shownAsks); an ask whose state this
+	// settlement writes - one it restores - is written as it states it.
+	// kept for one release: stored-ask-state
+	shown, err := shownAsks(ctx, tx, twoBuilds, read)
+	if err != nil {
+		return settlementReconciliation{}, err
+	}
+	reconciled := settlementReconciliation{}
+	if len(blocks)+len(invalidBlocks) != 0 {
+		reconciled.copiedFrom = make(map[string]string, len(blocks)+len(invalidBlocks))
+	}
 	// unindexed are the authors of the new blocks a closed issue's settlement leaves with no row,
 	// where the durable record holds none yet, recorded once the blocks are reconciled.
 	var unindexed map[string]model.Actor
 	for _, invalid := range invalidBlocks {
+		reconciled.copiedFrom[invalid.id] = ""
+		reason := invalid.reason.Error()
+		ask, indexed := rows[invalid.id]
+		if indexed {
+			if reconciled.invalid == nil {
+				reconciled.invalid = map[string]string{}
+			}
+			reconciled.invalid[ask.ID] = reason
+		}
 		delete(rows, invalid.id)
-		if reconciled.repair(invalid.node, invalid.id, askInvalidAttribute(invalid.reason.Error())) {
+		if reconciled.repair(invalid.node, invalid.id, askInvalidAttribute(reason)) {
 			reconciled.events = append(reconciled.events, documentAskEvent(
 				owner,
 				artifactID,
@@ -389,23 +687,34 @@ func (s *Service) reconcileAskBlocks(
 				actor,
 				model.BlockInvalidEventPayload{
 					BlockID:     invalid.id,
-					Reason:      invalid.reason.Error(),
+					Reason:      reason,
 					DisturbedBy: actor,
 				},
 			))
 		}
-	}
-	sources, err := copiedAskSources(ctx, tx, artifactID, owner, blocks, rows)
-	if err != nil {
-		return settlementReconciliation{}, err
+		// Once the fleet is one build, an invalid block keeps none of the attributes a version can
+		// store where it has no ask row (R5), which stays, and an indexed one what a version keeps
+		// of its ask, which goes with that form; the roll window's branch goes with it.
+		// kept for one release: roll-window-attributes
+		if twoBuilds {
+			continue
+		}
+		unread := withoutStoredAskAttributes
+		// kept for one release: stored-ask-state
+		if indexed {
+			unread = keptAskState(shown(ask), "")
+		}
+		reconciled.repair(invalid.node, invalid.id, unread)
 	}
 	for _, block := range blocks {
+		reconciled.copiedFrom[block.id] = ""
 		ask, exists := rows[block.id]
 		if !exists {
 			// A copy is read-only here: its source's state is written into the block, and
 			// nothing this settlement does writes the source's row.
 			if source, copied := sources[block.id]; copied {
-				if reconciled.repairAsk(block.node, block.id, source.ask, source.document, nil) {
+				reconciled.copiedFrom[block.id] = source.ask.ID
+				if reconciled.repairAskInStep(block.node, block.id, twoBuilds, shown(source.ask), source.document, nil) {
 					reconciled.copied = append(reconciled.copied, copiedBlock{blockID: block.id, source: source})
 				}
 				continue
@@ -418,9 +727,10 @@ func (s *Service) reconcileAskBlocks(
 			}
 			if issueClosed {
 				// No ask on a closed issue: the block reads resolved, as the close left the
-				// issue's asks, and keeps its author for the ask the reopen's settlement opens. An
-				// author the durable record holds already stays (askAuthorsStatement keeps it).
-				reconciled.repair(block.node, block.id, resolveUnindexedAskBlock)
+				// issue's asks (unindexedAskWrite), and it keeps its author for the ask the
+				// reopen's settlement opens. An author the durable record holds already stays
+				// (askAuthorsStatement keeps it).
+				reconciled.repair(block.node, block.id, unindexedAskWrite(twoBuilds))
 				if _, stored := credit.askSources.recorded[block.id]; !stored {
 					if unindexed == nil {
 						unindexed = make(map[string]model.Actor)
@@ -465,23 +775,27 @@ func (s *Service) reconcileAskBlocks(
 			reconciled.events = append(reconciled.events, documentAskEvent(
 				owner, artifactID, "ask.opened", blockActor, model.NewAskEventPayload(ask, changes),
 			))
-			reconciled.repairAsk(block.node, block.id, ask, "", nil)
+			reconciled.repairAsk(block.node, block.id, askReadableWrite(twoBuilds, ask, ""), nil)
 			continue
 		}
 		reconciled.indexedAskBlocks = append(reconciled.indexedAskBlocks, block.id)
+		reconciled.readable = append(reconciled.readable, ask.ID)
 		delete(rows, block.id)
 
+		stated := false
 		if settlementRetracted(ask) && !issueClosed {
-			restored, err := restoreRetractedAsk(ctx, tx, ask)
+			var held graphstore.Uncaused
+			restored, err := restoreRetractedAsk(ctx, tx, ask, actor, &held)
 			if err != nil {
 				return settlementReconciliation{}, err
 			}
-			ask = restored
+			ask, stated = restored, true
 			recordAskBlock(ctx, tx, artifactID, ask)
 			eventType := "ask.opened"
 			if ask.State == "answered" {
 				eventType = "ask.answered"
 			}
+			reconciled.answers = append(reconciled.answers, settledAnswer{ask: ask.ID, eventType: eventType, held: held})
 			// The restoration writes state, answer and resolution back: the answer it brings
 			// back is a part again, and the event names what that moved. The parts are written
 			// after the restoring update, which this transaction has queued. The restoration holds
@@ -580,17 +894,20 @@ func (s *Service) reconcileAskBlocks(
 			actor,
 			model.BlockRepairedEventPayload{BlockID: block.id, DisturbedBy: actor},
 		)
+		kept := ask
+		// kept for one release: stored-ask-state
+		if !stated {
+			kept = shown(ask)
+		}
 		if reworded {
 			// One block.repaired names both repairs: the wording's, and the server attributes'
-			// when they changed too, which withholdAnswers may then drop without taking the
-			// event that still names the wording's.
+			// when they changed too.
 			reconciled.events = append(reconciled.events, repaired)
-			reconciled.repairAsk(block.node, block.id, ask, "", nil)
+			reconciled.repairAskInStep(block.node, block.id, twoBuilds, kept, "", nil)
 		} else {
-			reconciled.repairAsk(block.node, block.id, ask, "", &repaired)
+			reconciled.repairAskInStep(block.node, block.id, twoBuilds, kept, "", &repaired)
 		}
 	}
-	reconciled.withholdAnswers(artifactID, tree, before)
 	if err := recordAskAuthors(ctx, tx, artifactID, unindexed); err != nil {
 		return settlementReconciliation{}, err
 	}
@@ -699,19 +1016,20 @@ func askFingerprints(tree *pmdoc.Node, fingerprint func(*pmdoc.Node) (string, er
 	return held, err
 }
 
-// addedAskBlockIDs is the id of every readable ask block in after that before does not hold: one
-// an edit inserted, retyped another block into, or repaired after a browser left it unreadable,
-// wherever it lands - a blockquote, a list item - as the parser reads it, so an opener quoted in
-// code adds none. One the edit moved, reworded or left alone keeps its id and is not among them. A
-// nil before - a write with no readable starting tree, a repair - holds nothing, so every readable
-// ask in after counts.
+// addedAskBlockIDs is the id of every credited block in after that before does not hold as the
+// same type: a readable ask block one an edit inserted, retyped another block into, or repaired
+// after a browser left it unreadable, wherever it lands - a blockquote, a list item - as the parser
+// reads it, so an opener quoted in code adds none. One the edit moved, reworded or left alone
+// keeps its id and is not among them. A nil before - a write with no readable starting tree, a
+// repair - holds nothing, so every readable ask in after counts.
 func addedAskBlockIDs(before, after *pmdoc.Node) map[string]struct{} {
 	held := readableAskBlockIDs(before)
 	added := map[string]struct{}{}
 	pmdoc.Walk(after, func(node *pmdoc.Node) bool {
-		if node.Type == "ask" {
+		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+		switch node.Type {
+		case "ask":
 			if _, err := parseAskBlock(node); err == nil {
-				id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 				if _, kept := held[id]; !kept {
 					added[id] = struct{}{}
 				}
@@ -899,7 +1217,9 @@ func readWrittenAskBlockStrictly(node *pmdoc.Node) error {
 }
 
 // parseAskBlock is the ask settlement reads in node, or why it cannot be read: a block no
-// paragraph of which holds text asks nothing, and settlement leaves its row as it was.
+// paragraph of which holds text asks nothing, and settlement leaves its row as it was. The
+// readings an ask closes with (pmdoc.TypedContent) are no part of what it asks, and the parse
+// passes over them.
 func parseAskBlock(node *pmdoc.Node) (askBlock, error) {
 	block, err := parseAskBlockLeniently(node)
 	if err != nil {
@@ -927,7 +1247,8 @@ func parseAskBlockLeniently(node *pmdoc.Node) (askBlock, error) {
 	// An ask block without a bullet list is a free-text decision; its options are an empty
 	// list on the wire (never JSON null), the same shape every other ask carries.
 	options := []model.AskOption{}
-	for _, child := range node.Children {
+	content, _ := pmdoc.TypedContent(node)
+	for _, child := range content {
 		switch child.Type {
 		case "paragraph":
 			questionParts = append(questionParts, strings.TrimSpace(pmdoc.TextContent(child)))
@@ -1009,9 +1330,11 @@ func recordAskBlock(ctx context.Context, tx pgx.Tx, artifactID string, ask model
 // as the insert leaves it before the insert has run. The node goes in first, in the project of the
 // document that holds the block: the owner's where the caller read it with the document's own row
 // (lockArtifactOwner), so the node costs no read of its own, and otherwise read off the document
-// here (graphstore.ScopeOf). The ask.opened that records this ask is appended with the
-// settlement's other events, after this, so the ask's node and the author's node are made at the
-// sentinel and learn it then (followsByEvent).
+// here (graphstore.ScopeOf). The node and its relations are dated by that created_at, as
+// graph_edges' old arm dates the row (graphstore.AskFacts), by the database's clock, never a
+// host's. The ask.opened that records this ask is appended with the settlement's other events,
+// after this, so the ask's node and the author's node are made at the sentinel and learn it then
+// (causedByEvent).
 func createAskBlock(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1046,17 +1369,29 @@ func createAskBlock(
 			return model.Ask{}, openedFollow{}, err
 		}
 	}
+	// The ask is anchored to and part of the document holding its block, and belongs to that
+	// document where it is on no issue (graphstore.AskFacts).
+	places, err := graphstore.ReadAskPlaces(ctx, tx, &artifactID, ownerArtifactID, &artifactID)
+	if err != nil {
+		return model.Ask{}, openedFollow{}, err
+	}
+	nodes, facts, marked := graphstore.AskFacts(id, project, parties, author, createdAt, graphstore.NoEvent, places)
+	nodeKind, nodeAddress := graphstore.AskRowNode(id, marked)
+	// The author's follow of the ask this transaction creates is planned with no read: its node is
+	// queued before the follow's own statement below, and its follower row is new
+	// (asks.PlanFollowNewAsk), dated by the ask's created_at.
+	follow := asks.PlanFollowNewAsk(id, author, createdAt)
 	opening := openedFollow{ask: id, followed: new(graphstore.Uncaused)}
-	node := graphstore.PlanUncaused([]graphstore.Node{graphstore.AskNode(id, project, parties, author, createdAt)}, nil)
+	node := graphstore.PlanUncaused(nodes, facts)
 	opening.node = &node
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, node)
 		b.Queue("create ask block row", `
-			insert into asks (id, issue_key, artifact_id, block_id, block_artifact_id, author, question, options, multiple, urgency, kind, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'question', $11)
-		`, id, owner.IssueKey, ownerArtifactID, block.id, artifactID, authorJSON, block.question, options, block.multiple, block.urgency, createdAt)
+			insert into asks (id, issue_key, artifact_id, block_id, block_artifact_id, author, question, options, multiple, urgency, kind, created_at, node_kind, node_address)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'question', $11, $12, $13)
+		`, id, owner.IssueKey, ownerArtifactID, block.id, artifactID, authorJSON, block.question, options, block.multiple, block.urgency, createdAt, nodeKind, nodeAddress)
 		var err error
-		*opening.followed, err = asks.QueueFollowAuthor(b, id, author, createdAt, graphstore.NoEvent)
+		*opening.followed, err = follow.Queue(b, graphstore.NoEvent)
 		return err
 	}); err != nil {
 		return model.Ask{}, openedFollow{}, err
@@ -1076,144 +1411,49 @@ func createAskBlock(
 	return ask, opening, nil
 }
 
-// restoreRetractedAsk gives ask, whose block came back after settlement retracted it, the state it
-// had before the retraction, read from its events where it is called; the update goes through
-// write.
-func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
+// restoreRetractedAsk gives an ask settlement retracted, whose block came back, the state and the
+// answer it held before the retraction (stateBeforeRetraction) and takes the retraction off,
+// through the one writer of an ask's answer state in who's name: planned where it is called
+// (asks.PlanSettle) and queued through write. What that write states on the ask's node waits in
+// held for the event the settlement appends for the restoration (causedByEvent).
+func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who model.Actor, held *graphstore.Uncaused) (model.Ask, error) {
+	prior, err := stateBeforeRetraction(ctx, tx, ask.ID)
+	if err != nil {
+		return model.Ask{}, err
+	}
+	change := asks.Restored(prior.State, prior.Answer)
+	change.Who, change.At, change.Held = who, time.Now().UTC(), held
+	settled, err := planSettle(ctx, tx, ask.ID, change)
+	if err != nil {
+		return model.Ask{}, fmt.Errorf("restore retracted ask: %w", err)
+	}
+	if err := write(ctx, tx, settled.Queue); err != nil {
+		return model.Ask{}, fmt.Errorf("restore retracted ask: %w", err)
+	}
+	ask.State, ask.Answer, ask.Resolution = settled.Ask.State, settled.Ask.Answer, settled.Ask.Resolution
+	return ask, nil
+}
+
+// stateBeforeRetraction is the ask askID as it stood before settlement retracted it, read from
+// the newest ask.opened, ask.edited or ask.answered that recorded it: open, or answered with its
+// answer. It is the state the restoration gives the ask back (restoreRetractedAsk).
+func stateBeforeRetraction(ctx context.Context, tx pgx.Tx, askID string) (model.Ask, error) {
 	var payload []byte
 	if err := tx.QueryRow(ctx, `
 		select payload from events
 		where type in ('ask.opened', 'ask.edited', 'ask.answered') and payload->>'id' = $1
 		order by id desc limit 1
-	`, ask.ID).Scan(&payload); err != nil {
+	`, askID).Scan(&payload); err != nil {
 		return model.Ask{}, fmt.Errorf("load ask state before retraction: %w", err)
 	}
 	var prior model.Ask
 	if err := json.Unmarshal(payload, &prior); err != nil {
 		return model.Ask{}, fmt.Errorf("decode ask state before retraction: %w", err)
 	}
-	if prior.State != "open" && prior.State != "answered" {
-		return model.Ask{}, fmt.Errorf("ask %q state before retraction is %q", ask.ID, prior.State)
+	if prior.State != asks.StateOpen && prior.State != asks.StateAnswered {
+		return model.Ask{}, fmt.Errorf("ask %q state before retraction is %q", askID, prior.State)
 	}
-	var answer any
-	if prior.Answer != nil {
-		encoded, err := json.Marshal(prior.Answer)
-		if err != nil {
-			return model.Ask{}, fmt.Errorf("encode restored ask answer: %w", err)
-		}
-		answer = encoded
-	}
-	if err := writeExec(ctx, tx, "restore retracted ask", `update asks set state = $2, answer = $3, resolution = null where id = $1`, ask.ID, prior.State, answer); err != nil {
-		return model.Ask{}, err
-	}
-	ask.State = prior.State
-	ask.Answer = prior.Answer
-	ask.Resolution = nil
-	return ask, nil
-}
-
-// askServerAttributeNames are the attributes of an ask block the server keeps in agreement with
-// its ask row (setAskServerAttributes).
-//
-// These eight, and no ninth: an answer an agent made for its person names that agent in the
-// row's answer (model.AskAnswer.Act), and that agent is deliberately not written onto the block.
-// Every version stored before the act existed would fail blockAsItsRowHasIt against a ninth name
-// the writer now fills in, and the carry holds the approved version to exactly that test
-// (blockAsSettlementLeavesIt), so every document would silently stop carrying approvals. The
-// accepted consequence is that a decision block still reads `answered_by: <person>` with no agent
-// in it; the agent is shown by every reader of the act instead.
-var askServerAttributeNames = [...]string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"}
-
-// askServerAttributes is setAskServerAttributes for ask as it stands now, leaving its answer out
-// when withholdAnswer, for a repair to make again on another tree (repairLive).
-func askServerAttributes(ask model.Ask, copied string, withholdAnswer bool) func(*pmdoc.Node) bool {
-	return func(node *pmdoc.Node) bool {
-		changed, _ := setAskServerAttributes(node, ask, copied, withholdAnswer)
-		return changed
-	}
-}
-
-// setAskServerAttributes makes node's server attributes agree with ask, and reports whether it
-// changed any and whether it wrote an answer (pmdoc.IsAnswerAttribute): its words, or the options
-// it selects, which are caller text the server keeps. With withholdAnswer it leaves the answer out
-// of the block, taking off any the block holds, and writes the rest: the block still says who
-// answered and when. A copied block, one ask was copied from on another document
-// (copiedAskSources), names that ask in copied_from and its document's address (copied, the
-// refs.ArtifactRef of that document) in copied_from_document, so a reader of the copy finds the
-// source, its state and where it is answered from the block alone.
-func setAskServerAttributes(node *pmdoc.Node, ask model.Ask, copied string, withholdAnswer bool) (changed, answered bool) {
-	desired := pmdoc.Attrs{"state": ask.State}
-	if copied != "" {
-		desired["copied_from"] = ask.ID
-		desired["copied_from_document"] = copied
-	}
-	if ask.State == "answered" && ask.Answer != nil {
-		desired["answered_by"] = ask.Answer.User
-		desired["answered_at"] = ask.Answer.At.UTC().Format(time.RFC3339Nano)
-		if !withholdAnswer {
-			// Never a nil list, even for an answer that selects nothing: a nil list renders as
-			// null from the tree a settlement repaired and as [] once it has gone through the
-			// room, so a version made from that tree would differ from the room.
-			desired["selected"] = append([]string{}, ask.Answer.Selected...)
-			if ask.Answer.Text != nil {
-				desired["answer"] = *ask.Answer.Text
-			}
-		}
-	}
-	for _, name := range askServerAttributeNames {
-		want, present := desired[name]
-		got, exists := node.Attrs[name]
-		if present {
-			if exists && askServerAttributeEqual(got, want) {
-				continue
-			}
-			node.Attrs[name] = want
-			changed = true
-			answered = answered || pmdoc.IsAnswerAttribute(name)
-			continue
-		}
-		if exists {
-			delete(node.Attrs, name)
-			changed = true
-		}
-	}
-	return changed, answered
-}
-
-func askServerAttributeEqual(got, want any) bool {
-	gotItems, gotIsItems := askStringItems(got)
-	wantItems, wantIsItems := askStringItems(want)
-	if gotIsItems || wantIsItems {
-		if !gotIsItems || !wantIsItems || len(gotItems) != len(wantItems) {
-			return false
-		}
-		for index := range gotItems {
-			if gotItems[index] != wantItems[index] {
-				return false
-			}
-		}
-		return true
-	}
-	return reflect.DeepEqual(got, want)
-}
-
-func askStringItems(value any) ([]string, bool) {
-	switch items := value.(type) {
-	case []string:
-		return items, true
-	case []any:
-		out := make([]string, len(items))
-		for index, item := range items {
-			text, ok := item.(string)
-			if !ok {
-				return nil, false
-			}
-			out[index] = text
-		}
-		return out, true
-	default:
-		return nil, false
-	}
+	return prior, nil
 }
 
 func setAskInvalidAttribute(node *pmdoc.Node, reason string) bool {
@@ -1228,6 +1468,30 @@ func setAskInvalidAttribute(node *pmdoc.Node, reason string) bool {
 // tree (settlementReconciliation.repair).
 func askInvalidAttribute(reason string) func(*pmdoc.Node) bool {
 	return func(node *pmdoc.Node) bool { return setAskInvalidAttribute(node, reason) }
+}
+
+// clearAskInvalidAttribute takes `invalid` off node, an ask block settlement reads again, and
+// reports whether it held one, so a repaired block shows no old reason.
+func clearAskInvalidAttribute(node *pmdoc.Node) bool {
+	if _, present := node.Attrs["invalid"]; !present {
+		return false
+	}
+	delete(node.Attrs, "invalid")
+	return true
+}
+
+// unindexedAskWrite is settlement's write to a readable ask block of a closed issue's document
+// that no row indexes: resolved while another build serves (resolveUnindexedAskBlock), and none
+// of the seven attributes a version can store once the fleet is one build, as the close's sweep
+// leaves such a block (unindexedAskResolution). The block reads, so it carries no `invalid`
+// either way. The one-build write is R5's and stays; the roll window's branch is
+// unindexedAskResolution's and goes with it.
+func unindexedAskWrite(twoBuilds bool) func(*pmdoc.Node) bool {
+	resolve := unindexedAskResolution(twoBuilds)
+	return func(node *pmdoc.Node) bool {
+		changed := clearAskInvalidAttribute(node)
+		return resolve(node) || changed
+	}
 }
 
 func documentAskEvent(owner artifactOwner, artifactID, eventType string, actor model.Actor, payload any) model.Event {

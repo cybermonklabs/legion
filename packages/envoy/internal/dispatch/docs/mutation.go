@@ -1613,7 +1613,7 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 // (settlement.commitVersion), inside the caller's joined transaction and under the owner lock it
 // holds: the version moves the open approval request as a settlement's does, keeping it with the
 // person where it holds the text that person was asked about (MoveApprovalAsk's bySettlement,
-// restoresVersionText): byte for byte, or, where another renderer version stored that text or
+// restoresApprovedText): byte for byte, or, where another renderer version stored that text or
 // none stamped it, as stored text this build reads as the version's text (readsAs);
 // on a closed issue it moves no request and carries no approval
 // (versionWrite.closedIssue); and it opens, moves or deletes the edit notice as a settlement's
@@ -2124,73 +2124,96 @@ func editTree(current pmdoc.ValidDocument, read func() (*pmdoc.Node, error)) (*b
 	return newBatchTree(tree), nil
 }
 
-// SetBlockAttributes applies server-owned typed-block state through the
-// transactional live-document mutation path. An ask's answer the document has no room for - its
-// words or the options it selects (pmdoc.IsAnswerAttribute), which are caller text - is left out of
-// the block: the block is written without either, saying who answered and when, and the caller's
-// ask keeps the answer, as settlement leaves a returning block's answer out (withholdAnswers).
-// attributes' names are the server's own, never taken from a request (pmdoc.SetBlockAttributes).
-func (s *Service) SetBlockAttributes(
-	ctx context.Context,
-	artifactID, blockID string,
-	attributes map[string]any,
-	actor model.Actor,
-) error {
-	err := s.setBlockAttributes(ctx, artifactID, blockID, attributes, actor)
-	if IsTooLarge(err) {
-		if withheld, withholds := withoutAnswer(attributes); withholds {
-			slog.Warn("dispatch: an answer is left out of its block", "room", artifactID, "block", blockID, "reason", err)
-			// A refused write appends nothing, and the transaction's next write starts from a
-			// fork built again without it (forkLive).
-			err = s.setBlockAttributes(ctx, artifactID, blockID, withheld, actor)
-		}
+// KeepAskBlockInStep writes ask's state, as the answer, resolve and decline routes leave it, into
+// the ask's own block, in the transaction ctx joined, as the release before writes it, at once
+// rather than at the document's next settlement, so the settlement the write arms writes a
+// version showing it. While another build serves (anotherBuildServes), whose pages read an ask's
+// state from its block, it writes the attributes the roll window keeps in step with the asks row
+// (rollWindowAskAttributes); an answer the document has no room for, by what one upload may hold
+// (answerHasRoom), is written without its words - the block says who answered and when
+// (rollWindowAskAttributesWithheld) - and the ask keeps it whole, as the release before writes
+// such a block. Once the fleet is one build it writes the ones a version keeps (keptAskState): the
+// state, and for an answer who answered and when, which the release before's readers of a stored
+// version read the ask's state from, and never the answer's words. An ask with no block, and a
+// block the document no longer holds as an ask, are written nothing. It serves the roll window's
+// write and the form a version keeps (root-deletes.txt lists it under stored-ask-state), so it
+// goes with the last of those.
+//
+// kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
+func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error {
+	if ask.BlockID == nil {
+		return nil
 	}
-	// Setting attributes a block already carries writes nothing, which the live path reports as
-	// ErrNoChanges; the block holds what the caller asked for, so that is success.
-	if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
-		return wrapUnlessTooLarge(err, "set live block attributes")
+	if ask.BlockArtifactID == nil {
+		return fmt.Errorf("ask %q has block id without block artifact", ask.ID)
 	}
-	return nil
-}
-
-// withoutAnswer is attributes with each answer attribute they name (pmdoc.IsAnswerAttribute) taken
-// off the block instead, and whether they name one with a value to leave out.
-func withoutAnswer(attributes map[string]any) (withheld map[string]any, withholds bool) {
-	withheld = make(map[string]any, len(attributes))
-	for name, value := range attributes {
-		if pmdoc.IsAnswerAttribute(name) {
-			withholds = withholds || value != nil
-			value = nil
-		}
-		withheld[name] = value
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return errUnjoined
 	}
-	return withheld, withholds
-}
-
-func (s *Service) setBlockAttributes(ctx context.Context, artifactID, blockID string, attributes map[string]any, actor model.Actor) error {
-	return s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
-		fragment := doc.GetXmlFragment(fragmentName)
+	twoBuilds, err := anotherBuildServes(ctx, tx)
+	if err != nil {
+		return err
+	}
+	// Once the fleet is one build, ask holds what the route states on the ask's node in this
+	// transaction, its writes queued behind this one, so the block is written from the node as the
+	// commit leaves it.
+	keep := fleetAskAttributes(twoBuilds, ask, "")
+	err = s.applyLive(ctx, *ask.BlockArtifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		valid, err := startTree(current, doc)
 		if err != nil {
 			return err
 		}
 		tree := valid.Node()
-		next, err := pmdoc.SetBlockAttributes(tree, blockID, pmdoc.Attrs(pmdoc.LineFeedAttrs(attributes)))
+		var block *pmdoc.Node
+		pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+			if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); id == *ask.BlockID {
+				block = node
+			}
+			return block == nil
+		})
+		if block == nil || block.Type != "ask" {
+			return nil
+		}
+		kept := attributesOf(block)
+		if !keep(kept) {
+			return nil
+		}
+		if holdsAnswerWords(kept) {
+			room, err := answerHasRoom(tree, block, kept.Attrs)
+			if err != nil {
+				return err
+			}
+			if !room {
+				slog.Warn("dispatch: an answer is left out of its block", "room", *ask.BlockArtifactID, "block", *ask.BlockID, "ask", ask.ID)
+				kept = attributesOf(block)
+				if !rollWindowAskAttributesWithheld(ask, "")(kept) {
+					return nil
+				}
+			}
+		}
+		attributes := pmdoc.Attrs{}
+		for _, name := range storedAskAttributes() {
+			attributes[name] = kept.Attrs[name]
+		}
+		next, err := pmdoc.SetBlockAttributes(tree, *ask.BlockID, attributes)
 		if err != nil {
 			return err
 		}
-		if next.EqualWithBlockIDs(tree) {
-			return nil
-		}
+		// The fragment is taken before the transaction: the doc's lock the transaction holds is the
+		// one taking the fragment would wait for.
+		fragment := doc.GetXmlFragment(fragmentName)
 		var updateErr error
 		transact(func(transaction *crdt.Transaction) {
 			updateErr = pmdoc.Update(transaction, fragment, next)
 		})
-		if updateErr != nil {
-			return updateErr
-		}
-		return nil
+		return updateErr
 	})
+	if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
+		return wrapUnlessTooLarge(err, "keep an ask block in step with its ask")
+	}
+	return nil
 }
 
 // NamedVersion records the live document as a deliberately named immutable version. Like
@@ -2421,11 +2444,99 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 	if fromStore {
 		capture = capture.withoutInflight(actor)
 	}
+	if tree, err = storableVersionTree(ctx, tx, room, tree); err != nil {
+		return renderedTree{}, authorCapture{}, err
+	}
 	markdown, offsets, err := documentMarkdownWithOffsets(tree)
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
 	return renderedTree{tree: tree, markdown: markdown, offsets: offsets, head: &stored}, capture, nil
+}
+
+// storableVersionTree is tree, the document artifactID a version write takes without settling it
+// first (NamedVersion, SnapshotVersion and so the edit route's version, captureLiveTextAndAuthors
+// and captureWrite), as a version stores it: once the fleet is one build (anotherBuildServes), each
+// ask block that has no ask row and is no copy of an ask has every attribute a version can store
+// taken off (withoutStoredAskAttributes), as settlement takes them off it
+// (unindexedAskResolution): it keeps none of the eight (R5), whatever state its live tree gives
+// it, the state="resolved" a closed issue's settlement or the close's sweep wrote while another
+// build served among them. Each ask block that has an ask (keptAskBlocks) has only what no version
+// written then holds taken off, the answer's words and selection and an open state
+// (withoutUnkeptAskAttributes), as the document's next settlement takes them off the live tree
+// (askReadableWrite), and keeps the state of an ask that is not open, the answerer and time and a
+// copy's provenance as the live tree holds them, which every write of an ask's state keeps in step
+// with it (keptAskState: KeepAskBlockInStep, WriteIssueAskStates, settlement). Each container on
+// the way to a block it changes and each such block is a fresh node, and tree itself is left as it
+// is. It is tree where no ask block holds an attribute a version can store, and where another
+// build serves, whose pages read the attributes, which settlement keeps in step with each ask
+// meanwhile. The fleet is read only for a tree holding one (holdsStoredAskAttribute).
+//
+// The strip is R5's and stays. The roll window's read of the fleet goes with it, and the lighter
+// strip of a block that has an ask goes with the form a version keeps.
+func storableVersionTree(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (*pmdoc.Node, error) {
+	// kept for one release: roll-window-attributes
+	if !holdsStoredAskAttribute(tree) {
+		return tree, nil
+	}
+	// kept for one release: roll-window-attributes
+	if twoBuilds, err := anotherBuildServes(ctx, tx); err != nil || twoBuilds {
+		return tree, err
+	}
+	// kept for one release: stored-ask-state
+	withAsk, err := keptAskBlocks(ctx, tx, artifactID, tree)
+	if err != nil {
+		return tree, err
+	}
+	return withAskBlocks(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
+		taken := attributesOf(node)
+		strip := withoutStoredAskAttributes
+		// kept for one release: stored-ask-state
+		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); withAsk[id] {
+			strip = withoutUnkeptAskAttributes
+		}
+		if !strip(taken) {
+			return node, false
+		}
+		copied := *node
+		copied.Attrs = taken.Attrs
+		return &copied, true
+	}), nil
+}
+
+// holdsStoredAskAttribute reports whether an ask block of tree holds an attribute a version can
+// store (storedAskAttributes): the one tree storableVersionTree reads the fleet for, since it
+// stores every other as it is.
+//
+// kept for one release: roll-window-attributes
+func holdsStoredAskAttribute(tree *pmdoc.Node) bool {
+	held := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		held = node.Type == "ask" && slices.ContainsFunc(storedAskAttributes(), func(name string) bool {
+			_, present := node.Attrs[name]
+			return present
+		})
+		return !held
+	})
+	return held
+}
+
+// keptAskBlocks is askBlocksWithAnAsk for tree where one of its ask blocks holds what a version
+// keeps of an ask (holdsKeptAskAttribute), and nil where none does: such a tree's blocks hold
+// none but the attributes withoutUnkeptAskAttributes takes off whatever ask a block has, so the
+// rows and copies its blocks have are not read for it (storableVersionTree).
+//
+// kept for one release: stored-ask-state
+func keptAskBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (map[string]bool, error) {
+	kept := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		kept = node.Type == "ask" && holdsKeptAskAttribute(node)
+		return !kept
+	})
+	if !kept {
+		return nil, nil
+	}
+	return askBlocksWithAnAsk(ctx, tx, artifactID, tree)
 }
 
 // captureWrite is captureLiveTextAndAuthors for a transaction with a write of its own to room: the
@@ -2468,13 +2579,24 @@ func (s *Service) captureWrite(ctx context.Context, tx pgx.Tx, room string, writ
 		capture = capture.withoutInflight(actor)
 	}
 	if rendering, reused := s.reuseRendering(write, fork, "capture"); reused {
-		return rendering, capture, nil
+		tree, err := storableVersionTree(ctx, tx, room, rendering.tree)
+		if err != nil || tree == rendering.tree {
+			return rendering, capture, err
+		}
+		markdown, offsets, err := documentMarkdownWithOffsets(tree)
+		if err != nil {
+			return renderedTree{}, authorCapture{}, err
+		}
+		return renderedTree{tree: tree, markdown: markdown, offsets: offsets}, capture, nil
 	}
 	valid, err := s.readForkTree(fork)
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
-	tree := valid.Node()
+	tree, err := storableVersionTree(ctx, tx, room, valid.Node())
+	if err != nil {
+		return renderedTree{}, authorCapture{}, err
+	}
 	markdown, offsets, err := documentMarkdownWithOffsets(tree)
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err
@@ -2682,13 +2804,13 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		// The open approval request follows the document version without leaving its thread or
 		// opening another Inbox row. The request then waits on its agent until it is handed back,
 		// unless this is a settlement's version (versionWrite.settlement), the request waited on
-		// the person and this version holds the text it named (restoresVersionText: byte for byte,
-		// or, for a version another renderer version stored, as this build renders it), which
-		// keeps it with the person (MoveApprovalAsk). A move over versions written while the
-		// issue was closed names the editor a closed issue's settlement kept, where this version
-		// names SettlementActor only because it adds none of that editor's text
-		// (versionWrite.keptEditor).
-		if err := moveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, spec.keptEditor, spec.settlement, s.origins); err != nil {
+		// the person and this version holds the text it named (restoresApprovedText: byte for byte,
+		// or, for a version another renderer version stored, as this build renders it), or differs
+		// from it in the server-owned attributes of its ask blocks alone, which keeps it with the
+		// person (MoveApprovalAsk). A move over versions written while the issue was closed names
+		// the editor a closed issue's settlement kept, where this version names SettlementActor only
+		// because it adds none of that editor's text (versionWrite.keptEditor).
+		if err := moveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, tree, actor, spec.keptEditor, spec.settlement, s.origins); err != nil {
 			return versionWriteResult{}, err
 		}
 		// A human's approval carries to the version this writes by carryApproval's rules: his

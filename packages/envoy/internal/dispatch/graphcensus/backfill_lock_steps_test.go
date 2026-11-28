@@ -129,12 +129,14 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 	}
 }
 
-// requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch writes every
-// node it writes - its comments' and their authors' - in one store write, which takes their rows
-// in ascending (kind, id) and then appends every tuple: the facts each comment row projects, and
-// each author's authored_by and aliases (graphstore.AuthorFacts). Only then does it name the
-// nodes on the comments rows. It takes the owner lock of its comments' issue first, as every
-// writer of a comments row does (refs.LockCommentOwners), and appends no event.
+// requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch first takes the
+// owner lock of its comments' issue, as every writer of a comments row does
+// (refs.LockCommentOwners), and reads under it which comments still stand unmarked
+// (refs.CommentsNamingNoNode), so a batch read before another run marked a comment writes nothing
+// for it. It then writes every node it writes - its comments' and their authors' - in one store
+// write, which takes their rows in ascending (kind, id) and then appends every tuple: the facts
+// each comment row projects, and each author's authored_by and aliases (graphstore.AuthorFacts).
+// Only then does it name the nodes on the comments rows. It appends no event.
 //
 // Three comments are written with comment.created events, so every tuple carries a cause other
 // than the sentinel and so a repeat key a hold can stand on. Their ids order them c1, c2, c3, which
@@ -384,6 +386,135 @@ func TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow(t *testing.T) {
 	}
 }
 
+// The two asks the ask batches' owner-order test seeds, one on each of two issues, whose ids sort
+// the other way round from their owner keys, as the two documents above do: issue:ACME-1 sorts
+// before issue:CORE-1, and CORE-1's ask's id before ACME-1's.
+const (
+	coreAskID = "00000000-0000-4000-8000-0000000000a1"
+	acmeAskID = "00000000-0000-4000-8000-0000000000a2"
+)
+
+// askBatchSession is the session that follows both asks in the follower batch's half.
+const askBatchSession = "session-ask-batch-follower"
+
+// TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows holds writeAskBatch and writeAskFollowerBatch,
+// each over the asks of two issues, to the store's lock order (lockstep.RequireTheStoreLockOrder):
+// both issues' owner locks first, each once and in ascending owner key, the order
+// lockBlockDocuments takes a block batch's owners in, and only then the batch's asks or
+// ask_followers rows. A writer of an ask's answer or of its followers, and a settlement of an
+// ask's document, takes the ask's owner lock before its rows and before the authors' nodes, so a
+// batch that locked its rows first, in id order and across owners, could hold an ask such a
+// writer goes on to take while it waits for a node that writer holds, or hold one ask a
+// settlement waits for while it waits for another that settlement took in its own order. The
+// asks' ids sort the other way round from their issues' keys, so a batch that took its rows
+// first, in id order, would take CORE-1's ask before either owner.
+//
+// Each owner lock and each of the batch's rows is held in a transaction of its own while the real
+// Backfill runs (followTheBackfill), and the run must queue behind both owners, ACME-1's first,
+// before it queues behind any of its rows. Each half then reads that both rows name their node, so
+// the run it followed is the one that committed.
+func TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows(t *testing.T) {
+	ownerHolds := func(t *testing.T, database *store.Store, unlocked ...string) []*lockstep.Hold {
+		var holds []*lockstep.Hold
+		for _, issue := range []string{"ACME-1", "CORE-1"} {
+			holds = append(holds, lockstep.HoldOwner(t, database, &lockstep.Hold{
+				Name: "issue " + issue + "'s owner lock", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: issue,
+				Statement: lockstep.OwnerLockStatement,
+				Unlocked:  unlocked,
+			}, store.IssueOwner(issue)))
+		}
+		return holds
+	}
+	t.Run("writeAskBatch takes both owner locks ascending, then its asks rows", func(t *testing.T) {
+		database := storetest.Open(t)
+		seedAskBatchAsks(t, database)
+		holds := ownerHolds(t, database, "asks", "graph_tuples")
+		for _, ask := range []string{coreAskID, acmeAskID} {
+			holds = append(holds, lockstep.HoldRow(t, database, &lockstep.Hold{
+				Name: "ask " + ask + "'s row", Step: lockstep.StepHeld, Taken: true,
+				Statement: "select k.id from asks k",
+				Unlocked:  []string{"graph_tuples"},
+			}, `select 1 from asks where id = $1::uuid for update`, ask))
+		}
+
+		report := followTheBackfill(t, database, "writeAskBatch", holds)
+
+		requireNamedNodes(t, database, `select count(*) from asks where id = any($1::uuid[]) and node_kind = 'ask' and node_address = id::text`, "asks")
+		if done := reportedKind(t, report, "asks"); done.Rows != 2 {
+			t.Errorf("the backfill reports %#v for asks, want 2 rows", done)
+		}
+	})
+	t.Run("writeAskFollowerBatch takes both owner locks ascending, then its ask_followers rows", func(t *testing.T) {
+		database := storetest.Open(t)
+		seedAskBatchAsks(t, database)
+		// The asks are this release's from the first run on; their followers come after it, as rows
+		// of the release before naming no node.
+		if _, err := Backfill(context.Background(), database, io.Discard); err != nil {
+			t.Fatalf("state the two asks before their followers exist: %v", err)
+		}
+		for _, ask := range []string{coreAskID, acmeAskID} {
+			if _, err := database.Pool.Exec(context.Background(), `
+				insert into ask_followers (ask_id, session_id) values ($1::uuid, $2)
+			`, ask, askBatchSession); err != nil {
+				t.Fatalf("follow ask %s as the release before follows it: %v", ask, err)
+			}
+		}
+		holds := ownerHolds(t, database, "ask_followers", "graph_tuples")
+		for _, ask := range []string{coreAskID, acmeAskID} {
+			holds = append(holds, lockstep.HoldRow(t, database, &lockstep.Hold{
+				Name: "ask " + ask + "'s follower row", Step: lockstep.StepHeld, Taken: true,
+				Statement: "select f.ask_id::text, f.session_id, f.since",
+				Unlocked:  []string{"graph_tuples"},
+			}, `select 1 from ask_followers where ask_id = $1::uuid and session_id = $2 for update`, ask, askBatchSession))
+		}
+
+		report := followTheBackfill(t, database, "writeAskFollowerBatch", holds)
+
+		requireNamedNodes(t, database, `select count(*) from ask_followers where ask_id = any($1::uuid[]) and node_kind = 'ask' and node_address = ask_id::text`, "ask_followers")
+		if done := reportedKind(t, report, "ask_followers"); done.Rows != 2 {
+			t.Errorf("the backfill reports %#v for ask followers, want 2 rows", done)
+		}
+	})
+}
+
+// seedAskBatchAsks writes the projects ACME and CORE, their issues ACME-1 and CORE-1 and an open
+// ask on each under coreAskID and acmeAskID, as the release before writes them: naming no node.
+func seedAskBatchAsks(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	for project, ask := range map[string]string{"CORE": coreAskID, "ACME": acmeAskID} {
+		if _, err := database.Pool.Exec(ctx, `
+			insert into projects (key, name, default_assignee) values ($1, $1, 'alice')
+		`, project); err != nil {
+			t.Fatalf("seed project %s: %v", project, err)
+		}
+		if _, err := database.Pool.Exec(ctx, `
+			insert into issues (key, project_key, number, title, created_by, rank)
+			values ($1 || '-1', $1, 1, 'One', '{"kind":"user","id":"alice"}', 'U')
+		`, project); err != nil {
+			t.Fatalf("seed issue %s-1: %v", project, err)
+		}
+		if _, err := database.Pool.Exec(ctx, `
+			insert into asks (id, issue_key, author, question) values ($1::uuid, $2 || '-1', '{"kind":"user","id":"alice"}', 'Ship it?')
+		`, ask, project); err != nil {
+			t.Fatalf("seed the ask of %s-1: %v", project, err)
+		}
+	}
+}
+
+// requireNamedNodes holds count, a count of the rows of the two seeded asks that name their node,
+// to both, so the run the test followed is the one that committed.
+func requireNamedNodes(t *testing.T, database *store.Store, count, table string) {
+	t.Helper()
+	var named int64
+	if err := database.Pool.QueryRow(context.Background(), count, []string{coreAskID, acmeAskID}).Scan(&named); err != nil {
+		t.Fatalf("read the two %s rows back: %v", table, err)
+	}
+	if named != 2 {
+		t.Errorf("%d of the two %s rows name their node, want both: the run the test followed is not one that committed", named, table)
+	}
+}
+
 // seedIssueDocument writes project, its issue <project>-1, and one document of that issue under id
 // at version 1 holding markdown. The version carries markdown, so migration 0122's trigger gives
 // the document its document_block_versions row, as a version gives one in production.
@@ -454,8 +585,16 @@ func holdWrite(t *testing.T, database *store.Store, hold *lockstep.Hold, nodes [
 // its node is refused by the foreign key, and the order is what names the step.
 func followTheBackfill(t *testing.T, database *store.Store, batch string, holds []*lockstep.Hold) BackfillReport {
 	t.Helper()
+	return followTheRun(t, database, batch, wholeBackfill, holds)
+}
+
+// followTheRun is followTheBackfill over run, which may be one pass of Backfill alone: where a
+// later pass takes a row a hold stands for a step the batch under test does not take, following the
+// whole run would read that pass's lock as the batch's.
+func followTheRun(t *testing.T, database *store.Store, batch string, run backfillRun, holds []*lockstep.Hold) BackfillReport {
+	t.Helper()
 	ctx := context.Background()
-	pid, answered := startBackfill(t, database)
+	pid, answered := startRun(t, database, run)
 	// The run's own pool is closed by a cleanup startBackfill registered, which waits for the run's
 	// connection; this one runs before it and lets go of every hold, so a failure never leaves that
 	// close waiting on a run queued behind a hold.

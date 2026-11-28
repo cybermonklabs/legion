@@ -150,14 +150,70 @@ func moduleRelative(source string) string {
 }
 
 // askOpeningWriterCensus is every writer that opens an ask, as the census in spec_form.go names
-// them, by module-relative file.
+// them, by module-relative file. Every change of an ask's answer state goes through one writer
+// (asks.Settle), whose one statement writes the state from a parameter (asks.Settled.Queue, named
+// Queue here), so the restore of a withdrawn ask and of a retracted one are writers through it;
+// askOpeningChangeCensus names the functions that hand it a change that can leave an ask open.
 var askOpeningWriterCensus = map[string]string{
-	"openApprovalAsk":     "internal/dispatch/api/reviews.go",
-	"WriteRestoredAsks":   "internal/dispatch/docs/ask_row.go",
-	"createAskFor":        "internal/dispatch/api/asks.go",
-	"createAskBlock":      "internal/dispatch/docs/ask_blocks.go",
-	"restoreRetractedAsk": "internal/dispatch/docs/ask_blocks.go",
-	"writeAsks":           "cmd/dispatch-seed/write_items.go",
+	"openApprovalAsk": "internal/dispatch/api/reviews.go",
+	"Queue":           "internal/dispatch/asks/settle.go",
+	"createAskFor":    "internal/dispatch/api/asks.go",
+	"createAskBlock":  "internal/dispatch/docs/ask_blocks.go",
+	"writeAsks":       "cmd/dispatch-seed/write_items.go",
+}
+
+// askOpeningChangeCensus is every function that builds a change of an ask's answer state that can
+// leave the ask open, for the one writer (Queue in askOpeningWriterCensus) to write, by the
+// change's constructor and the function, mapped to its module-relative file: an issue's reopen
+// writes a withdrawn ask open again (asks.Reopened, in docs.WriteRestoredAsks, which only
+// prepareRestoration calls), settlement restores a retracted ask to the state it held before
+// (asks.Restored, in restoreRetractedAsk), and the decisions step's catch-up states on an ask's
+// node the state that a process of the release before recorded in the ask's event
+// (asks.Recorded, in applyCaughtUpEvent).
+var askOpeningChangeCensus = map[string]string{
+	"asks.Reopened: WriteRestoredAsks":   "internal/dispatch/docs/ask_row.go",
+	"asks.Restored: restoreRetractedAsk": "internal/dispatch/docs/ask_blocks.go",
+	"asks.Recorded: applyCaughtUpEvent":  "internal/dispatch/docs/decision_step.go",
+}
+
+// askOpeningChanges names each function of sources outside the asks package that builds a change
+// of an ask's answer state that can leave the ask open: a call of asks.Reopened, asks.Restored or
+// asks.Recorded, or a literal asks.Change, which can name any state, by the change and the
+// function, mapped to its module-relative file.
+func askOpeningChanges(sources []moduleSource) map[string]string {
+	changes := map[string]string{}
+	for _, source := range sources {
+		if source.file.Name.Name == "asks" {
+			continue
+		}
+		for _, declared := range source.file.Decls {
+			function, ok := declared.(*ast.FuncDecl)
+			if !ok || function.Body == nil {
+				continue
+			}
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				var selector *ast.SelectorExpr
+				switch typed := node.(type) {
+				case *ast.CallExpr:
+					if called, ok := typed.Fun.(*ast.SelectorExpr); ok && slices.Contains([]string{"Reopened", "Restored", "Recorded"}, called.Sel.Name) {
+						selector = called
+					}
+				case *ast.CompositeLit:
+					if named, ok := typed.Type.(*ast.SelectorExpr); ok && named.Sel.Name == "Change" {
+						selector = named
+					}
+				}
+				if selector == nil {
+					return true
+				}
+				if qualifier, ok := selector.X.(*ast.Ident); ok && qualifier.Name == "asks" {
+					changes["asks."+selector.Sel.Name+": "+function.Name.Name] = moduleRelative(source.path)
+				}
+				return true
+			})
+		}
+	}
+	return changes
 }
 
 // approvalCallers is each call the gate's census rests on, by the functions that make it, one
@@ -335,14 +391,17 @@ func plantedSource(t *testing.T, code string) moduleSource {
 	return moduleSource{path: planted, file: file, positions: positions}
 }
 
-// Every statement of the module that opens an ask is one of the six writers of the census, and only
-// requestArtifactApproval opens or hands back an approval request, only prepareRestoration writes
-// a withdrawn ask open again, and only queueApprovalReviews writes a person's review, each beside
-// its call of the form gate; a person's review and the carry judge the documents of an approval by
-// one function (approvalDocuments). A scan that read nothing names fewer than six and fails; each
-// control plants one writer the census must name, or one the patterns must leave out, or a second
-// caller that the caller part must refuse, or a plan review's write that it must leave out. The gate
-// a carry asks is set in one place too (formGateSetter); its control plants a second setter.
+// Every statement of the module that opens an ask is one of the five writers of the census, every
+// change of an ask's answer state that can leave it open, which the one writer of that state
+// writes, is built where the change census names, and only requestArtifactApproval opens or hands
+// back an approval request, only prepareRestoration writes a withdrawn ask open again, and only
+// queueApprovalReviews writes a person's review, each beside its call of the form gate; a person's
+// review and the carry judge the documents of an approval by one function (approvalDocuments). A
+// scan that read nothing names fewer than five and fails; each control plants one writer the
+// census must name, or one the patterns must leave out, or a second builder of a reopen that the
+// change census must name, or a second caller that the caller part must refuse, or a plan review's
+// write that it must leave out. The gate a carry asks is set in one place too (formGateSetter);
+// its control plants a second setter.
 func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
 	sources := moduleSources(t)
 	if problems := approvalCallerProblems(sources); len(problems) > 0 {
@@ -350,6 +409,9 @@ func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
 	}
 	if got := censusOf(t, sources); !reflect.DeepEqual(got, askOpeningWriterCensus) {
 		t.Fatalf("the writers that open an ask are\n%v\nthe census names\n%v\nA new writer of an open ask must judge the form (spec_form.go) and join the census.", got, askOpeningWriterCensus)
+	}
+	if got := askOpeningChanges(sources); !reflect.DeepEqual(got, askOpeningChangeCensus) {
+		t.Fatalf("the changes that can leave an ask open are built in\n%v\nthe census names\n%v\nA new change that opens an ask must judge the form (spec_form.go) and join the census.", got, askOpeningChangeCensus)
 	}
 	if got := formGateSetters(sources); !slices.Equal(got, formGateSetter) {
 		t.Fatalf("the form gate of a document service is set by\n\t%s\nthe census names\n\t%s\nBuild the form with api.NewSpecForm, which sets its gate.",
@@ -426,6 +488,16 @@ func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
 		problems := approvalCallerProblems(append(slices.Clone(sources), moduleSource{path: planted, file: file, positions: positions}))
 		if len(problems) != 1 || !strings.Contains(problems[0], "plantedCarry") {
 			t.Fatalf("the caller part with an ungated carry planted = %q, want one problem naming plantedCarry", problems)
+		}
+	})
+	t.Run("control: a second builder of a reopen of an ask", func(t *testing.T) {
+		got := askOpeningChanges(append(slices.Clone(sources), plantedSource(t,
+			"func plantedReopenChange(ctx context.Context, tx pgx.Tx, id string) error {\n"+
+				"\t_, err := asks.Settle(ctx, tx, id, asks.Reopened())\n\treturn err\n}\n")))
+		want := maps.Clone(askOpeningChangeCensus)
+		want["asks.Reopened: plantedReopenChange"] = "internal/dispatch/api/planted.go"
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("the change census with a second reopen planted =\n%v\nwant\n%v", got, want)
 		}
 	})
 	t.Run("control: a second setter of the form gate", func(t *testing.T) {

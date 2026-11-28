@@ -17,6 +17,7 @@ import type {
   Anchor,
   Artifact,
   ArtifactVersionText,
+  Ask,
   AskAnchorArtifact,
   AskSnooze,
   Comment,
@@ -188,8 +189,16 @@ function askNodeOf(markdown: string): ProseMirrorNode {
  *  write puts it there: a version draws the reading the server sent (`setDocumentJSON`), and one
  *  that arrived with no reading writes its own markdown instead (`setMarkdown`), which is the
  *  fallback this change gives the version view. Either replaces everything in the editor's
- *  root. */
-function drawAskBlock(markdown: string): (inner: CreateEditor) => CreateEditor {
+ *  root. `serverAttrs` are the server-owned attributes the block's opening line holds in the
+ *  version, which the server's reading carries and the read-only parse of the markdown drops. */
+function drawAskBlock(
+  markdown: string,
+  serverAttrs: Readonly<Record<string, unknown>> = {}
+): (inner: CreateEditor) => CreateEditor {
+  const drawnNode = (): ProseMirrorNode => {
+    const node = askNodeOf(markdown);
+    return node.type.create({ ...node.attrs, ...serverAttrs }, node.content, node.marks);
+  };
   return (inner) => async (root, options) => {
     const handle: EditorHandle = await inner(root, options);
     const nodeViews = handle.view.props.nodeViews as Record<
@@ -201,12 +210,12 @@ function drawAskBlock(markdown: string): (inner: CreateEditor) => CreateEditor {
     const writtenMarkdown = handle.setMarkdown;
     handle.setMarkdown = (text: string) => {
       writtenMarkdown(text);
-      root.append(construct(askNodeOf(markdown)).dom);
+      root.append(construct(drawnNode()).dom);
     };
     const writtenDocument = handle.setDocumentJSON;
     handle.setDocumentJSON = (json) => {
       writtenDocument(json);
-      root.append(construct(askNodeOf(markdown)).dom);
+      root.append(construct(drawnNode()).dom);
     };
     return handle;
   };
@@ -976,6 +985,96 @@ test("an approval draws the ask card of a question block in the version it shows
   }
 });
 
+// A version this build writes of an answered ask keeps on the block's opening line its state and
+// who answered it when, and never the words or the options chosen (the server's `keptAskState`).
+// The approver reads the decided ask in the pane before approving, so the card draws the answer
+// from the server's read of the ask, as the document page's version view does
+// (`ProofDocument.decisions.test.tsx`, "a saved version of an answered ask draws who answered and
+// the answer"). A line elsewhere in the version that quotes the block's opener in fenced code is
+// the document's own text, not a record of the answer, and changes nothing of that.
+const answeredVersion =
+  '# Plan\n\n:::ask{#b-1 urgency="high" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z"}\nShould we ship?\n\n- Ship: Release it\n- Hold\n:::\n';
+test.each([
+  { markdown: answeredVersion, suffix: "" },
+  {
+    markdown: `${answeredVersion}\nAn opener, quoted:\n\n\`\`\`\n:::ask{#b-1 state="open"}\n\`\`\`\n`,
+    suffix: ", beside a fenced code block that quotes its opener",
+  },
+])(
+  "an approval draws the answer of an answered ask in a version this build wrote$suffix",
+  async ({ markdown: latest }) => {
+    await warmMarkdownRenderer();
+    const answered: Ask = {
+      anchor: null,
+      answer: {
+        at: "2026-11-16T09:00:00Z",
+        selected: ["Ship"],
+        text: "Ship on Friday.",
+        user: "bob",
+      },
+      author: {
+        id: "01a086ad",
+        kind: "session",
+        origin: { session_title: "Architect for CORE-1" },
+      },
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
+      block_id: "b-1",
+      created_at: "2026-11-16T08:00:00Z",
+      edited_at: null,
+      id: "ask-b-1",
+      issue_key: "CORE-1",
+      kind: "question",
+      multiple: false,
+      opened_event_id: 1,
+      options: [{ description: "Release it", label: "Ship" }, { label: "Hold" }],
+      question: "Should we ship?",
+      state: "answered",
+      urgency: "high",
+    };
+    // The server's read of the ask, cached under the document page's keys and answered by the
+    // network too, whichever of the owner's reads the pane takes it from.
+    const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
+      { ...answered, last_reply: null },
+    ]);
+    const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([answered]);
+    const { view } = renderPane({
+      ask: approvalAsk(),
+      createEditor: drawAskBlock(latest, {
+        answered_at: "2026-11-16T09:00:00Z",
+        answered_by: "bob",
+        state: "answered",
+      }),
+      seed: (client) => {
+        seedDocument(
+          client,
+          document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
+          { 4: latest }
+        );
+        client.setQueryData(["asks", "CORE-1"], [answered]);
+        client.setQueryData(["artifact", "artifact-1", "asks"], [answered]);
+      },
+    });
+
+    try {
+      const drawn = await screen.findByLabelText("Document version 4");
+      expect(await within(drawn).findByText("Answered by bob")).toBeDefined();
+      await waitFor(() =>
+        expect(drawn.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(
+          "Ship on Friday."
+        )
+      );
+    } finally {
+      view.unmount();
+      listIssueAsks.mockRestore();
+      listArtifactAsks.mockRestore();
+    }
+  }
+);
+
 // The same version as the row above, answered the way a pod of the build before this one
 // answers it: its markdown, and no reading. The column draws it by parsing that text
 // (`VersionView`), and the question block in it is hosted and carded as it is for a drawn
@@ -1006,6 +1105,39 @@ test("an approval draws the ask card of a version answered with no reading", asy
     expect(screen.queryByText("Could not load this document version.")).toBeNull();
   } finally {
     view.unmount();
+  }
+});
+
+// The pane reads the server's read of a version's asks, the owner's asks and the live text, only
+// for a version that holds an ask block, by the server's test of a text (docs.holdsAskOpener): it
+// holds `:ask{`. A plan document's version holds `:::plan_task{`, whose `ask{` opens no ask
+// block, so an approval of one starts neither read.
+test("an approval of a plan document's version starts neither the owner's asks read nor the live text read", async () => {
+  await warmMarkdownRenderer();
+  const latest = "# Plan\n\n:::plan_task{#t1}\nRead the version.\n:::\n";
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+  const { view } = renderPane({
+    ask: approvalAsk(),
+    seed: (client) => {
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
+        { 4: latest }
+      );
+      // Neither read is answered from the cache, so one that starts reaches the network, where
+      // the spies see it.
+      client.removeQueries({ exact: true, queryKey: ["asks", "CORE-1"] });
+      client.removeQueries({ exact: true, queryKey: ["artifact", "artifact-1", "text"] });
+    },
+  });
+
+  try {
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    expect(listIssueAsks).not.toHaveBeenCalled();
+    expect(getArtifactText).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listIssueAsks.mockRestore();
   }
 });
 

@@ -1,6 +1,7 @@
-// Package pmdoctest swaps the block schema for Dispatch tests in more than one package. It is an
-// ordinary package rather than a _test.go file because api and docs cannot import one another's
-// test helpers, and keeping it out of pmdoc keeps package testing out of the server binary.
+// Package pmdoctest swaps the block schema for Dispatch tests in more than one package, and holds
+// the schema numbers of the release before that they register. It is an ordinary package rather
+// than a _test.go file because api and docs cannot import one another's test helpers, and keeping
+// it out of pmdoc keeps package testing out of the server binary.
 package pmdoctest
 
 import (
@@ -9,6 +10,17 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+)
+
+// ReleaseBeforeSchemaVersion and ReleaseBeforeSchemaCreatable are the schema numbers a process of
+// the release before registers (processes.Register): the version its pmdoc/schema/blocks.json
+// reads, one below this build's, and the highest version it creates. A test registers a process
+// with them so that the fleet guard (docs' anotherBuildServes) is driven at the real boundary, a
+// process one version below this build's. A renumber of this build's block schema moves them with
+// the bump.
+const (
+	ReleaseBeforeSchemaVersion   = 7
+	ReleaseBeforeSchemaCreatable = 6
 )
 
 // UseBlockSchema makes schema the block schema for the rest of t, as if the server had been built
