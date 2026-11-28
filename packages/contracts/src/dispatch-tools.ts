@@ -189,7 +189,9 @@ const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name
  * upload among them. A replacement naming none is taken unchecked for now and refused 400
  * PRECONDITION_REQUIRED in a later release, so the rule names both. A name held as a file or a
  * picture is refused by fileNameExistsRule, and an upload of another kind than the name holds by
- * artifactKindConflictRule, both below.
+ * artifactKindConflictRule, both below (save a Markdown upload over an issue's role document held
+ * as a file or a picture, which Dispatch converts to a document; `artifactNameExistsProblem`
+ * advises `--force` alone for it).
  */
 export const ARTIFACT_NAME_EXISTS_RULE =
   'An upload under the name of a document the owner already holds is refused: it writes that document\'s next version, over the text it holds. Change a document with dispatch doc-edit. To write the next version, send the upload again with force (--force) and the token of the version it replaces (--precondition-json \'{"document":"sha256:…"}\', the token dispatch doc-read prints).';
@@ -225,7 +227,10 @@ export function fileNameExistsRule(kind: string, statesToken: boolean): string {
  * that are a PNG, JPEG, GIF or WebP are a picture, and anything else is a file. Dispatch refuses
  * such an upload under that name whatever it carries, `--force` and a token included (400
  * ARTIFACT_KIND_MISMATCH, "give it another name"), so the rule names another name and nothing
- * else.
+ * else. The one change of kind Dispatch takes is not this rule's: a Markdown upload under the name
+ * of an issue's plan, Verification document or decisions document that an earlier upload stored as
+ * a file or a picture, which it takes as that artifact's next version and makes the document; the
+ * command advises `--force` for it (`artifactNameExistsProblem`, packages/envoy-client).
  */
 export function artifactKindConflictRule(held: string, upload: string): string {
   return `This upload is a ${artifactKindWord(upload)}, and the name holds a ${artifactKindWord(held)}: Dispatch keeps one kind under one name, so this upload cannot be its next version, with force or without. Give the upload another name.`;

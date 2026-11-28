@@ -17,7 +17,10 @@ body: |-
   characters reaches Dispatch's own refusal, and a name-only upload, the empty-document create, is
   not held for an AskGate marker. The check that refuses an upload under a name the owner already
   holds, unless `--force` is given, reads the name as Dispatch trims it, so `plan.md` followed by
-  U+0085 is refused over a held `plan.md`, as `plan.md` is. The commands also trim the host session
+  U+0085 is refused over a held `plan.md`, as `plan.md` is; for a Markdown upload over an issue's
+  role document (`plan-md`, `verification-md`, `decisions-md`) held as a file or picture, that
+  check advises `--force` alone (no token) rather than another name, since Dispatch converts it to
+  a document as its next version. The commands also trim the host session
   id, a GitHub repository and an ask's question as Dispatch does, so a session id of U+0085 alone is
   refused as none. Its
   answer names the kind Dispatch stored: `a document

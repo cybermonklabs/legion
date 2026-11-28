@@ -576,8 +576,11 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     if (held !== undefined) {
       // The kind Dispatch would store this upload as decides what the refusal may advise: an
       // upload of another kind than the name holds is refused under that name whatever it
-      // carries, so it is told to take another name. Only a path that is not Markdown has bytes
-      // to read, and only their first PICTURE_SNIFF_BYTES decide.
+      // carries, so it is told to take another name, save a Markdown upload over an issue's
+      // plan, Verification document or decisions document held as a file or a picture, which
+      // Dispatch takes as that artifact's next version and makes a document, so it is told to
+      // send --force (artifactNameExistsProblem). Only a path that is not Markdown has bytes to
+      // read, and only their first PICTURE_SNIFF_BYTES decide.
       const kind = await uploadKindOf(name, path, input.cwd, (named) =>
         input.uploadBytes === undefined
           ? readPictureHead(resolvePath(input.cwd, named))
