@@ -509,9 +509,17 @@ func (st *settlement) applyStamp(ctx context.Context) (settleStep, settleOutcome
 	s, room, state := st.service, st.room, st.state
 	st.reconciled, st.reconciledCounts = st.read, st.first.counts
 	if pmdoc.SettlementBlockIDRepairCount(st.read) > 0 {
+		// An id a browser's edit put into one fragment of an issue room while another fragment
+		// holds it stays with the block that held it when the room was last indexed, and the
+		// newcomer takes a fresh one: no write but the conversion renames another document's
+		// unchanged block (R13 of the issue-tree spec).
+		keepers, err := roomIDKeepers(ctx, st.tx, room, st.layout, st.read, st.first.counts)
+		if err != nil {
+			return settleDone, st.abandon(err)
+		}
 		slot, update, err := s.applySuppressed(ctx, room, st.doc, func(doc *crdt.Doc, origin any) error {
 			var stampErr error
-			st.reconciled, st.reconciledCounts, _, st.renamed, stampErr = stampSettlementBlockIDs(doc, st.layout, origin)
+			st.reconciled, st.reconciledCounts, _, st.renamed, stampErr = stampSettlementBlockIDs(doc, st.layout, origin, keepers)
 			return stampErr
 		})
 		st.keep(slot, update)

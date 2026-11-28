@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  A write of one document of an issue whose spec, Verification document and plan share one room no
+  longer renames a block of another of those documents. Before, an upload of `plan.md` that held
+  `:::plan_task{#t9}` while the spec held its own `t9` was taken, and so was an edit that inserted
+  such a block, and the room's settlement then gave the spec's `t9` a fresh id, so every address that
+  named the spec's task, a `needs` among them, named the plan's. Such an upload
+  (`POST /api/v1/issues/{key}/artifacts`, the plan's first version or a later one), an edit
+  (`POST /api/v1/artifacts/{id}/edits` and its by-slug route), an accepted suggestion, and a rebuild
+  from supplied markdown are now refused `400 INVALID_MARKDOWN` in words that name the id and the
+  document that holds it, and write nothing. A browser's edit cannot be refused, so where a paste
+  puts another document's id into a fragment, the settlement now keeps the id for the block the
+  room's block index recorded holding it and gives the pasted block a fresh id, rather than keeping
+  it for whichever block the room renders first. An id the written document already holds, and every
+  id left to the server to mint, are never refused, and a block of the plan may still point at the
+  spec's `t9`. Only the conversion of an issue into its room renames a block it leaves unchanged.
+time: 2026-11-28T17:58:42Z
+custom:
+    Issue: INFRA-1253

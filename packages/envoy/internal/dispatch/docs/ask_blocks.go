@@ -635,7 +635,7 @@ func (r *settlementReconciliation) repairLive(live *pmdoc.Node) bool {
 // writeLive writes the reconciliation's repairs into doc as it stands (rewriteRoom over the room's
 // layout, repairLive).
 func (r *settlementReconciliation) writeLive(doc *crdt.Doc, origin any) error {
-	_, _, err := rewriteRoom(doc, r.layout, origin, r.repairLive)
+	_, _, err := rewriteRoom(doc, r.layout, origin, func(live *pmdoc.Node, _ []int) bool { return r.repairLive(live) })
 	return err
 }
 

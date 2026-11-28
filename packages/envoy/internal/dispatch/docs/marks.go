@@ -409,6 +409,12 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		// address either - is simply not tracked, so the check under-reports there rather than
 		// naming a block nobody can name.
 		write := func(next *pmdoc.Node) error {
+			// An accepted replacement takes no block id another document of the room holds (R13).
+			if accept {
+				if err := s.refuseForkBlockIDsOfAnotherDocument(ctx, artifactID, doc, next, tree); err != nil {
+					return err
+				}
+			}
 			written := editBatch{tree: next, operations: 1}
 			return recordInsertedText(ctx, artifactID, id, fragment, doc.fragment, since, written.writes, func() error {
 				var updateErr error

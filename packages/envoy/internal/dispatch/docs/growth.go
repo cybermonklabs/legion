@@ -376,35 +376,37 @@ func clocksOf(vector crdt.StateVector) uint64 {
 // that one: the room's stored updates through its head, decoded as a load decodes them
 // (documentThrough), beside the seed. A state whose clocks sum to no more than the cap is not
 // decoded, as refuseUndecodable decodes none; a refusal is the one a joined write meets, before
-// anything is appended, so nothing is stored.
-func refuseUndecodableSeed(ctx context.Context, tx pgx.Tx, room string, seed []byte) error {
+// anything is appended, so nothing is stored. It answers the room's stored state it decoded, which
+// the seed's other checks of the room read (refuseSeedBlockIDsOfAnotherDocument), nil for a room
+// no update is stored of yet.
+func refuseUndecodableSeed(ctx context.Context, tx pgx.Tx, room string, seed []byte) (*crdt.Doc, error) {
 	if err := lockDocumentRoom(ctx, tx, room); err != nil {
-		return err
+		return nil, err
 	}
 	head, err := roomHead(ctx, tx, room)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var stored *crdt.Doc
 	if head > 0 {
 		if stored, err = documentThrough(room, head, storedUpdates(ctx, tx, room, head), maxUpdateItems); err != nil {
-			return fmt.Errorf("load issue room %s before a document is seeded into it: %w", room, err)
+			return nil, fmt.Errorf("load issue room %s before a document is seeded into it: %w", room, err)
 		}
 	}
 	encoded, err := crdt.EncodeStateVectorFromUpdate(seed)
 	if err != nil {
-		return fmt.Errorf("read the seeded document's clocks: %w", err)
+		return nil, fmt.Errorf("read the seeded document's clocks: %w", err)
 	}
 	vector, err := crdt.DecodeStateVectorV1(encoded)
 	if err != nil {
-		return fmt.Errorf("read the seeded document's clocks: %w", err)
+		return nil, fmt.Errorf("read the seeded document's clocks: %w", err)
 	}
 	clocks := clocksOf(vector)
 	if stored != nil {
 		clocks += clocksOf(stored.StateVector())
 	}
 	if clocks <= maxUpdateItems {
-		return nil
+		return stored, nil
 	}
 	parts := [][]byte{seed}
 	if stored != nil {
@@ -412,7 +414,7 @@ func refuseUndecodableSeed(ctx context.Context, tx pgx.Tx, room string, seed []b
 	}
 	state, err := crdt.MergeUpdatesV1(parts...)
 	if err != nil {
-		return fmt.Errorf("merge the seeded document into issue room %s: %w", room, err)
+		return nil, fmt.Errorf("merge the seeded document into issue room %s: %w", room, err)
 	}
-	return refuseUndecodableState(state)
+	return stored, refuseUndecodableState(state)
 }

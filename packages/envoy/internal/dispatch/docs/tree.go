@@ -603,13 +603,14 @@ func treeOfFragmentsUnshared(doc *crdt.Doc, fragments []string) (*pmdoc.Node, []
 
 // rewriteRoom is rewriteLive over every fragment of a room's layout: edit is handed the room's
 // tree as it stands, read inside one transaction that holds the document's lock, joined as the
-// room renders it (joinFragments), and each fragment takes back its own top-level blocks of the
-// tree the edit left. An edit that changed how many top-level blocks the room holds cannot be
-// parted back into its fragments, and is refused, writing nothing. A room that is its own document
-// is rewriteLive's. It returns the tree as the transaction left it, with each fragment's count.
-func rewriteRoom(doc *crdt.Doc, layout roomLayout, origin any, edit func(live *pmdoc.Node) bool) (*pmdoc.Node, []int, error) {
+// room renders it (joinFragments), with how many top-level blocks each fragment holds of it, and
+// each fragment takes back its own top-level blocks of the tree the edit left. An edit that changed
+// how many top-level blocks the room holds cannot be parted back into its fragments, and is
+// refused, writing nothing. A room that is its own document is rewriteLive's, whose edit is handed
+// no counts. It returns the tree as the transaction left it, with each fragment's count.
+func rewriteRoom(doc *crdt.Doc, layout roomLayout, origin any, edit func(live *pmdoc.Node, counts []int) bool) (*pmdoc.Node, []int, error) {
 	if len(layout) == 0 {
-		tree, err := rewriteLive(doc, origin, edit)
+		tree, err := rewriteLive(doc, origin, func(live *pmdoc.Node) bool { return edit(live, nil) })
 		return tree, nil, err
 	}
 	names := layout.fragments()
@@ -633,7 +634,7 @@ func rewriteRoom(doc *crdt.Doc, layout roomLayout, origin any, edit func(live *p
 			trees[index] = tree
 		}
 		live, counts = joinFragments(trees)
-		if !edit(live) {
+		if !edit(live, counts) {
 			return nil
 		}
 		total := 0

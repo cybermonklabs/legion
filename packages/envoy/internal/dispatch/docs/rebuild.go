@@ -211,6 +211,16 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			return RebuildReport{}, VersionResult{}, err
 		}
 		asksOf, whole = roomAsksOf(room), joinedSeeds(seeds)
+		// Supplied markdown takes no block id another fragment's latest version holds (R13): the
+		// rebuilt room would hold it twice, and its settlement would rename one of them. A
+		// rebuild from the latest version puts back the ids that version held, which no fragment
+		// shares with another.
+		if markdown != nil {
+			own := slices.Index(layout.fragments(), fragmentOf(room, artifactID))
+			if err := refuseBlockIDsOfAnotherDocument(ctx, tx, tree, nil, treeBlockHolders(seeds, room, layout, own)); err != nil {
+				return RebuildReport{}, VersionResult{}, err
+			}
+		}
 	}
 	// A rebuild is a person's own write: its route needs the person scope (api's routeScopes).
 	if err := s.refuseDroppedAskBlocks(ctx, asksOf, whole, dropper{person: true, remover: personOf(actor), actor: actor}); err != nil {

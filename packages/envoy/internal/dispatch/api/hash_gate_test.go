@@ -39,6 +39,16 @@ const hashGateSpec = ":::criterion{#k1}\nI want the urgent list.\n:::\n\n" +
 	"A paragraph the spec query does not take.\n\n" +
 	":::decision{#d1}\nWe ship on Friday.\n:::\n"
 
+// hashGateChecks is the Verification document of the hash gate's issue: twoChecks with its
+// pre-merge check under an id of its own, c1, since the spec's criterion holds k1 and no write of
+// one document of an issue room takes an id another holds (R13 of the issue-tree spec).
+const hashGateChecks = ":::check{#c1 surface=\"cli\" run=\"go test ./...\" negative_control=\"Break it and watch it fail.\"}\n" +
+	"The server records a result against a check.\n" +
+	":::\n\n" +
+	":::check{#k2 when=\"after_merge\"}\n" +
+	"Production answers at the merged commit.\n" +
+	":::\n"
+
 // hashGateAsk is the ask block the test's spec takes through the edits route.
 const hashGateAsk = ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Matches the platform\n- gRPC: Adds streaming\n:::\n"
 
@@ -74,7 +84,7 @@ func newHashGateRig(t *testing.T) *hashGateRig {
 	}
 	settleIssue(t, rig.service, issue.Key)
 	awaitSettled(t, database, rig.spec)
-	uploaded := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	uploaded := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", hashGateChecks)
 	rig.verification = uploaded.Artifact.ID
 	settleIssue(t, rig.service, issue.Key)
 	awaitSettled(t, database, rig.verification)
@@ -540,9 +550,9 @@ func TestHashGateEmitsDigestAndDropsSyntheticCarries(t *testing.T) {
 		approvedBefore, digestsBefore, reviewsBefore := rig.counts(t, rig.verification)
 		latest := newestVersionOf(t, rig.database, rig.verification)
 		digest := versionDigestOf(t, rig.database, rig.verification, latest)
-		recorded := recordResult(t, rig.handler, rig.issue.Key, resultBody("k1", "pass", headCommit, nil))
+		recorded := recordResult(t, rig.handler, rig.issue.Key, resultBody("c1", "pass", headCommit, nil))
 		if recorded.Code != http.StatusCreated {
-			t.Fatalf("record a result on k1: status=%d body=%s", recorded.Code, recorded.Body.String())
+			t.Fatalf("record a result on c1: status=%d body=%s", recorded.Code, recorded.Body.String())
 		}
 		result := decodeBody[recordedResult](t, recorded).Result
 		requireStands := func(what string) {

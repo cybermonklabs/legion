@@ -846,9 +846,14 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 		return "", fmt.Errorf("seed live document tree: %w", err)
 	}
 	// A fragment of an issue room joins the room's other documents in one state, which must still
-	// load with it (refuseUndecodableSeed); a document that is its own room starts it.
+	// load with it (refuseUndecodableSeed), and takes no block id another document of the room
+	// holds (refuseSeedBlockIDsOfAnotherDocument); a document that is its own room starts it.
 	if !target.ownRoom() {
-		if err := refuseUndecodableSeed(ctx, tx, target.room, update); err != nil {
+		stored, err := refuseUndecodableSeed(ctx, tx, target.room, update)
+		if err != nil {
+			return "", err
+		}
+		if err := refuseSeedBlockIDsOfAnotherDocument(ctx, tx, target, stored, seeded.tree); err != nil {
 			return "", err
 		}
 	}
@@ -965,6 +970,11 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		target, read, err = parseWrittenReplacing(current, markdown)
 		if err != nil {
 			return &textRefusalError{err}
+		}
+		// A document of an issue room takes no block id another document of the room holds, so
+		// the room's settlement renames none of theirs (R13).
+		if err := s.refuseForkBlockIDsOfAnotherDocument(ctx, artifactID, doc, target, current); err != nil {
+			return err
 		}
 		// A child that is a view on its ancestor's spec takes no requirement of its own, and a
 		// replacement let through holding one marks its issue's spec its own (R23).
@@ -2388,6 +2398,12 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 		fragment := doc.documentFragment()
 		// Read before the Yjs transaction opens: the state vector takes the document lock.
 		since := authoredClock(ctx, artifactID, doc.Doc)
+		// The block ids the room's other fragments hold, read before the Yjs transaction opens, as
+		// the state vector is: the batch writes this document's fragment alone (R13).
+		holders, err := s.forkBlockHolders(ctx, artifactID, doc)
+		if err != nil {
+			return err
+		}
 		var mutationErr error
 		transact(func(transaction *crdt.Transaction) {
 			start, err := editTree(current, func() (*pmdoc.Node, error) { return treeOfTransaction(transaction, fragment) })
@@ -2425,6 +2441,9 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 			}
 			var written pmdoc.ValidDocument
 			if outcome, written, mutationErr = s.finishBatch(ctx, artifactID, tree, batch, len(ops), dropperOf(ctx, actor)); mutationErr != nil {
+				return
+			}
+			if mutationErr = refuseBlockIDsOfAnotherDocument(ctx, s.queryFrom(ctx), written.Node(), tree, holders); mutationErr != nil {
 				return
 			}
 			mutationErr = recordInsertedText(ctx, artifactID, "", fragment, doc.fragment, since, batch.writes, func() error {
@@ -2527,6 +2546,9 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 		}
 		var written pmdoc.ValidDocument
 		if outcome, written, err = s.finishBatch(ctx, artifactID, tree, batch, len(ops), dropperOf(ctx, actor)); err != nil {
+			return err
+		}
+		if err := s.refuseForkBlockIDsOfAnotherDocument(ctx, artifactID, doc, written.Node(), tree); err != nil {
 			return err
 		}
 		return recordInsertedText(ctx, artifactID, "", fragment, doc.fragment, since, batch.writes, func() error {

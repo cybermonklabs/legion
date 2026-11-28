@@ -22,12 +22,15 @@ func refuseControlCharacters(tree, prior *pmdoc.Node) error {
 // U+0000 and duplicate ids, any block id holding a control character (pmdoc.ValidWrittenBlockID)
 // is replaced with a freshly minted id so a browser's CRDT update cannot carry one into a settled
 // version. Kept beside settlement rather than in service.go so reads and historical backfills keep
-// storedBlockID unchanged.
-func stampSettlementBlockIDs(doc *crdt.Doc, layout roomLayout, origin any) (*pmdoc.Node, []int, int, []stampedAsk, error) {
+// storedBlockID unchanged. keepers names, for an id two fragments of an issue room hold, the
+// fragment that keeps it (roomIDKeepers, keepPriorHolders); every other id stays with its first
+// holder in the room's order.
+func stampSettlementBlockIDs(doc *crdt.Doc, layout roomLayout, origin any, keepers map[string]int) (*pmdoc.Node, []int, int, []stampedAsk, error) {
 	minted := 0
 	var stamped []stampedAsk
-	tree, counts, err := rewriteRoom(doc, layout, origin, func(live *pmdoc.Node) bool {
+	tree, counts, err := rewriteRoom(doc, layout, origin, func(live *pmdoc.Node, counts []int) bool {
 		before := askBlockOrder(live)
+		keepPriorHolders(live, counts, keepers)
 		minted = pmdoc.EnsureSettlementBlockIDsCount(live)
 		if minted > 0 && len(before) > 0 {
 			stamped = stampedAskBlocks(before, askBlockOrder(live))

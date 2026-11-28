@@ -1801,15 +1801,17 @@ func ArtifactVersionEventPayload(
 // stampBlockIDs stamps the block ids doc's tree lacks or repeats on the tree as it stands
 // (rewriteRoom, over the room's layout, which is rewriteLive's for a room that is its own
 // document), and returns the stamped tree, how many top-level blocks each of the room's fragments
-// holds, how many ids it minted, and each ask block whose id it changed. Its caller decides from a
-// read of its own whether any id needs repair, so a document that needs none opens no
-// transaction, and records the stamped asks (recordStampedAskBlocks) once it holds the room's
-// state lock, which no Yjs transaction takes.
-func stampBlockIDs(doc *crdt.Doc, layout roomLayout, origin any) (*pmdoc.Node, []int, int, []stampedAsk, error) {
+// holds, how many ids it minted, and each ask block whose id it changed. An id two fragments of an
+// issue room hold stays with the fragment keepers names (keepPriorHolders), every other with its
+// first holder. Its caller decides from a read of its own whether any id needs repair, so a
+// document that needs none opens no transaction, and records the stamped asks
+// (recordStampedAskBlocks) once it holds the room's state lock, which no Yjs transaction takes.
+func stampBlockIDs(doc *crdt.Doc, layout roomLayout, origin any, keepers map[string]int) (*pmdoc.Node, []int, int, []stampedAsk, error) {
 	minted := 0
 	var stamped []stampedAsk
-	tree, counts, err := rewriteRoom(doc, layout, origin, func(live *pmdoc.Node) bool {
+	tree, counts, err := rewriteRoom(doc, layout, origin, func(live *pmdoc.Node, counts []int) bool {
 		before := askBlockOrder(live)
+		keepPriorHolders(live, counts, keepers)
 		minted = pmdoc.EnsureBlockIDsCount(live)
 		if minted > 0 && len(before) > 0 {
 			stamped = stampedAskBlocks(before, askBlockOrder(live))
@@ -2662,7 +2664,9 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 		if s.afterBackfillRead != nil {
 			s.afterBackfillRead(artifactID)
 		}
-		_, _, minted, stampRenamed, err := stampBlockIDs(doc, layout, origin)
+		// The backfill stamps ids a history stored before ids were written lacks, and reads no
+		// block index, so a repeat stays with its first holder in the room's order.
+		_, _, minted, stampRenamed, err := stampBlockIDs(doc, layout, origin, nil)
 		report.Stamped = minted
 		renamed = stampRenamed
 		return err
