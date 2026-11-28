@@ -248,8 +248,11 @@ func TestAStateConflictAnEventCannotOrderIsSettledByAReadOfGitHub(t *testing.T) 
 }
 
 // A merge is final: an event whose copy of the pull request is from before its merge, delivered
-// after the merge in the same second, leaves it merged. A redelivered close of an earlier
-// unmerged close is one: the pull request closed, reopened and merged within a second.
+// after the merge in the same second, changes nothing of the merged row — not its state, its
+// final head, its read time or the rule that judged it, so a merged row an older rule judged is
+// still offered to the reconcile (ListStalePullRequestHeads). A redelivered close of an earlier
+// unmerged close is one such copy, of a pull request that closed, reopened and merged within a
+// second; a label applied just before the merge, at an earlier head, is another.
 func TestAMergedPullRequestStaysMerged(t *testing.T) {
 	t.Parallel()
 	intake := newStateIntake(t)
@@ -257,10 +260,24 @@ func TestAMergedPullRequestStaysMerged(t *testing.T) {
 	issue := seedHeadIssue(t, intake.ctx, intake.pool, number)
 	intake.deliver(number, pullRequestStateEvent(issue, "opened", "open", number, "2026-11-23T21:00:00Z"))
 	intake.deliver(number, pullRequestStateEvent(issue, "closed", "merged", number, "2026-11-23T21:10:00Z"))
+	stampLegacyAttributionRule(t, intake.ctx, intake.pool, "acme/widgets", number)
+	merged := readHead(t, intake.ctx, intake.pool, "acme/widgets", number)
+	earlierHead := pullRequestStateEvent(issue, "labeled", "open", number, "2026-11-23T21:10:00Z")
+	earlierHead["pull_request"].(map[string]any)["head"].(map[string]any)["sha"] = "9b406e9cfc000000000000000000000000000000"
 	intake.deliver(number, pullRequestStateEvent(issue, "closed", "closed", number, "2026-11-23T21:10:00Z"))
-	intake.deliver(number, pullRequestStateEvent(issue, "labeled", "open", number, "2026-11-23T21:10:00Z"))
-	if stored := readHead(t, intake.ctx, intake.pool, "acme/widgets", number); stored.State != "merged" {
-		t.Fatalf("after copies from before the merge #%d is stored %q, want merged", number, stored.State)
+	intake.deliver(number, earlierHead)
+	stored := readHead(t, intake.ctx, intake.pool, "acme/widgets", number)
+	if stored.State != "merged" || stored.HeadSHA != merged.HeadSHA || stored.attributionRule != 0 ||
+		stored.CheckedAt == nil || merged.CheckedAt == nil || !stored.CheckedAt.Equal(*merged.CheckedAt) {
+		t.Fatalf("after copies from before the merge #%d is %q at %s, rule %d, checked at %v; want merged at %s, rule 0, checked at %v",
+			number, stored.State, stored.HeadSHA, stored.attributionRule, stored.CheckedAt, merged.HeadSHA, merged.CheckedAt)
+	}
+	offered, err := ListStalePullRequestHeads(intake.ctx, intake.pool, PullRequestHeadBatch, time.Now())
+	if err != nil {
+		t.Fatalf("list the stale heads: %v", err)
+	}
+	if len(offered) != 1 || offered[0].Number != number {
+		t.Fatalf("the reconcile is offered %+v, want #%d, a merged row an older rule judged", offered, number)
 	}
 }
 

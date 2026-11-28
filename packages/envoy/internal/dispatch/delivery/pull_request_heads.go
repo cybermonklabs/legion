@@ -418,25 +418,26 @@ const headLaidColumns = `head_sha, base_ref, state, issue_key, event_at, checked
 // state by place and never reads it. An event's copy is the pull request as it stood at that
 // event, and its event time counts whole seconds, so a copy at the row's own event time, or one
 // that carries no time or lands on a row that holds none, may be older than the copy the row
-// holds. A copy that says the pull request is not merged leaves a merged row merged, since a
-// merge is final and the copy is from before it. A copy no newer than the row that says open
-// where the row says closed, or closed where it says open, cannot be ordered against the row's:
-// that write stores open with no read time, and the reconcile reads the pull request at its next
-// pass, never-read rows first (ListStalePullRequestHeads), and stores GitHub's state, which a
-// read settles. Open is the one state the reconcile reads again: a closed row is never read
-// again, so a stale copy that closed an open pull request would take it out of its issue's
-// checks for good, while one left open holds those checks back only until that read. A copy no
-// newer than the row that agrees with it is no read either, so it leaves the row's read time, and
-// a row such a conflict left due stays due however often the copy is delivered again.
+// holds. Such a copy no newer than the row that says open where the row says closed, or closed
+// where it says open, cannot be ordered against the row's: that write stores open with no read
+// time, and the reconcile reads the pull request at its next pass, never-read rows first
+// (ListStalePullRequestHeads), and stores GitHub's state, which a read settles. Open is the one
+// state the reconcile reads again: a closed row is never read again, so a stale copy that closed
+// an open pull request would take it out of its issue's checks for good, while one left open
+// holds those checks back only until that read. A copy no newer than the row that agrees with it
+// is no read either, so it leaves the row's read time and the rule that judged it, and a row such
+// a conflict left due stays due however often the copy is delivered again. An event's copy that
+// says a merged row is not merged changes nothing at all (upsertHeadQuery).
 func headLaidRules(complete, hasMerge, fromEvent string) []string {
 	state, checked := "excluded.state", "coalesce(excluded.checked_at, stored.checked_at)"
+	rule := "case when excluded.checked_at is null then stored.attribution_rule else excluded.attribution_rule end"
 	if fromEvent != "" {
 		noNewer := "(" + fromEvent + " and not coalesce(excluded.event_at > stored.event_at, false))"
 		unordered := "(" + noNewer + ` and excluded.state <> stored.state
 			and excluded.state <> 'merged' and stored.state <> 'merged')`
-		state = "case when " + fromEvent + " and stored.state = 'merged' then 'merged' when " + unordered +
-			" then 'open' else excluded.state end"
+		state = "case when " + unordered + " then 'open' else excluded.state end"
 		checked = "case when " + unordered + " then null when " + noNewer + " then stored.checked_at else " + checked + " end"
+		rule = "case when " + noNewer + " or excluded.checked_at is null then stored.attribution_rule else excluded.attribution_rule end"
 	}
 	return []string{
 		"excluded.head_sha", "excluded.base_ref", state,
@@ -446,7 +447,7 @@ func headLaidRules(complete, hasMerge, fromEvent string) []string {
 		"excluded.head_ref",
 		"case when " + hasMerge + " then excluded.merge_commit_sha else stored.merge_commit_sha end",
 		"coalesce(excluded.merged_at, stored.merged_at)",
-		"case when excluded.checked_at is null then stored.attribution_rule else excluded.attribution_rule end",
+		rule,
 	}
 }
 
@@ -461,6 +462,12 @@ const headWriteApplies = `(excluded.event_at is null or stored.event_at is null 
 // upsertHeadQuery is upsertHeadRow's statement: its parameters are the head's columns in the
 // order of the insert, then $13 the attribution's completeness, $14 AttributionRuleVersion, $15
 // and $16 the merge commit and time, and $17 whether the state is an event's copy (FromEvent).
+//
+// Besides the event-time guard, it refuses an event's copy that says a merged row is not merged.
+// A merge is final and every later event says merged, so such a copy is from before the merge,
+// at the merge's own second (a redelivered unmerged close, a label applied just before the
+// merge), and none of its facts is the merged pull request's: its head is not the final head,
+// and it judged nothing, so a merged row an older rule judged stays offered to the reconcile.
 var upsertHeadQuery = `
 	insert into pull_request_heads as stored (
 		repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
@@ -473,7 +480,7 @@ var upsertHeadQuery = `
 			then excluded.attribution_source else stored.attribution_source end,
 		title = excluded.title,
 		url = excluded.url
-	where ` + headWriteApplies
+	where ` + headWriteApplies + ` and not ($17::boolean and stored.state = 'merged' and excluded.state <> 'merged')`
 
 // upsertHeadRow is the head row's own statement (upsertHeadQuery), which UpsertPullRequestHead's
 // doc comment explains in full: it is here, on a refs.Execer — the pool, or a transaction already
@@ -481,10 +488,11 @@ var upsertHeadQuery = `
 // transaction where the merge's branch answer, the attribution's own events, or both go with
 // it.
 //
-// It answers whether the write applied: false where the event-time guard (headWriteApplies) left
-// the row exactly as it was, which is the one way this statement writes nothing and reports no
-// error. Only an applied write can have moved the row's attribution, so that is what
-// UpsertPullRequestHead tests before it appends an event.
+// It answers whether the write applied: false where the event-time guard (headWriteApplies), or
+// the refusal of an event's copy from before a merge, left the row exactly as it was, which are
+// the ways this statement writes nothing and reports no error. Only an applied write can have
+// moved the row's attribution, so that is what UpsertPullRequestHead tests before it appends an
+// event.
 //
 // The merge commit and the merge time are written only for a merged row, and a write that
 // carries neither keeps what the row holds: an envelope of the release before this one carries

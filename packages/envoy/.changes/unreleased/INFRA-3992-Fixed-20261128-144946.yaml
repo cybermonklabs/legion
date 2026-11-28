@@ -14,7 +14,8 @@ body: |-
   where Dispatch holds closed or closed where it holds open, now leaves the pull request open
   and has the reconcile read it from GitHub at its next pass. So a stale copy can no longer close
   an open pull request, which the reconcile would never read again. An event's copy from before
-  a merge no longer turns a merged pull request back into an open or closed one.
+  a merge now changes nothing of a merged pull request: not its state, its final head, or the
+  attribution rule that judged it.
 
   An envelope from a listener before this release has no `state`. Dispatch then reads closed
   from a close and open from an open or a reopen. For any other action it stores open, as before,
