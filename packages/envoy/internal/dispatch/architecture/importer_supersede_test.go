@@ -241,8 +241,6 @@ func TestALeasedImportPassRecordsTheRetryOfASupersededTryNotItsFailure(t *testin
 // (Importer.Clock), a fake that the test moves past syncTimeout once the flight has armed it, so
 // the bound ends when the test says and not when the machine has waited it out.
 func TestALeasedImportPassKeepsASupersededTrysFailureWhenItsRetryAsksGitHubNothing(t *testing.T) {
-	// Parallel: the bound ends where the test moves its own fake clock, so the test leaves the
-	// package variable syncTimeout, which every sync of the parallel tests reads, as it is.
 	t.Parallel()
 	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles()})
 	branch.holdNextHeadLookup()

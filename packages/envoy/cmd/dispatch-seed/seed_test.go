@@ -153,7 +153,7 @@ func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
 		t.Fatalf("drop the snapshot columns 20261101182515 added: %v", err)
 	}
 	run := seedAtOnce(t, oldSchemaScale, database)[0]
-	assertSeedKeepsItsShapes(t, t.Name(), seedShapes(t, database, run))
+	assertSeedKeepsItsShapes(t, seedShapes(t, database, run))
 
 	var built int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from search_term_totals`).Scan(&built); err != nil {
@@ -190,7 +190,7 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 		t.Fatalf("restore the schema before comment answers: %v", err)
 	}
 	run := seedAtOnce(t, oldSchemaScale, database)[0]
-	assertSeedKeepsItsShapes(t, t.Name(), seedShapes(t, database, run))
+	assertSeedKeepsItsShapes(t, seedShapes(t, database, run))
 	var replies int
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from comments where reply_to is not null`).Scan(&replies); err != nil {
 		t.Fatal(err)
@@ -1089,10 +1089,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	pairs := map[[2]string]bool{}
 	for index, arm := range arms {
-		var rows int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+arm+`) arm`).Scan(&rows); err != nil {
-			t.Fatalf("count arm %d of graph_edges: %v\n%s", index+1, err, arm)
-		}
+		rows := armRows(t, database, index, arm)
 		switch {
 		case rows > 0:
 		case armGatedPerRow.MatchString(arm):
@@ -1101,10 +1098,8 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 		default:
 			t.Errorf("arm %d of graph_edges holds no row:\n%s", index+1, arm)
 		}
-		kind := armKindLiteral.FindStringSubmatch(arm)
-		toKind := armToKindLiteral.FindStringSubmatch(arm)
-		if kind != nil && toKind != nil {
-			pairs[[2]string{kind[1], toKind[1]}] = true
+		if kind, toKind, ok := armPair(arm); ok {
+			pairs[[2]string{kind, toKind}] = true
 		}
 	}
 	if len(pairs) == 0 {

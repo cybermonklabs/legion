@@ -42,14 +42,11 @@ func (c *countingEmbedder) Embed(_ context.Context, texts []string, _ InputType)
 // Successive calls wait out the limiter's interval between them. The test runs in a synctest
 // bubble, the limiter built inside it, so the limiter's clock, its waits and the times
 // countingEmbedder records are the bubble's: each gap is measured on the clock the limiter waits
-// on, and the waits take no real time. setInterval scales the pace down to the 20ms the gaps are
-// held to; the first call's success floors it at rateLimitFloor again (adjust), so the later calls
-// wait the floor.
+// on, and the waits take no real time.
 func TestRateLimitedEmbedderPacesSuccessiveCallsAtLeastTheFloorApart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		inner := &countingEmbedder{}
 		limiter := NewRateLimitedEmbedder(inner)
-		limiter.setInterval(20 * time.Millisecond)
 
 		ctx := context.Background()
 		for range 3 {

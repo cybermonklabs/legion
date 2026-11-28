@@ -7,14 +7,15 @@
 // migration in its declared execution mode is most of the Postgres work a test would
 // otherwise do, so a package's wall time would scale with its test count times the speed of the
 // Postgres it runs against; a clone costs one create database. Open's template is one of the
-// templates OpenFrom makes, each once per key: Open's key is openKey, and this tree's runner
-// migrates it. A filled template (Filled) is a copy of Open's into which a Fill writes rows once,
-// for tests that each need the same rows; OpenFilled clones it.
+// templates made once per key, as OpenFrom's are (makeTemplate): Open's key is openKey, and this
+// tree's runner migrates it. A filled template (Filled) is a copy of Open's into which a Fill
+// writes rows once, for tests that each need the same rows; OpenFilled clones it.
 //
 // Under Main, the default, each template is made by the first test that asks for it, and that test
-// pays for it: Open's takes 3 to 8 s. A package whose TestMain is MainEager (or RunEager) has
-// Open's template, and each filled template it names, made in TestMain before any test runs, so no
-// test pays for them; any other template is still made by the first test that asks.
+// pays for it: Open's took 3.8 to 8.5 s in CI's envoy-go job. A package whose TestMain is MainEager
+// (or RunEager) has Open's template, and each filled template it names, made in TestMain before any
+// test runs, so no test pays for them; any other template is still made by the first test that
+// asks.
 //
 // A clone copies the template's files (strategy file_copy). Postgres's default from 15, strategy
 // wal_log, writes every page of the template into the write-ahead log instead: 6.4 MB of the
@@ -88,7 +89,7 @@ const openKey = "this tree's runner (storetest.Open)"
 // t when DISPATCH_TEST_DATABASE_URL is unset.
 func Open(t testing.TB) *store.Store {
 	t.Helper()
-	return OpenFrom(t, openKey, migrateWithThisTree)
+	return openTemplate(t, openKey, makeOpen)
 }
 
 // migrateWithThisTree migrates the database databaseURL names with this tree's runner: Open's
@@ -127,26 +128,41 @@ func throughStore(databaseURL string, write func(ctx context.Context, database *
 // measures its bound from when the string was made: a connection it makes s seconds later can end
 // s seconds past the binary's deadline less the margin, which a migrate, made and run at once, and
 // a test's own store keep within the margin unless the test runs on for longer than it. The admin
-// URL is read before the Once, so a URL that cannot be read fails each test that asks, and never
-// leaves the Once done with no admin pool for a later test to call.
+// URL is read (serverFromEnv) before the Once, so a URL that cannot be read fails each test that
+// asks, and never leaves the Once done with no admin pool for a later test to call.
 func ready(t testing.TB) {
 	t.Helper()
 	if !shared.main {
 		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }, or storetest.Run around another harness's Main")
 	}
-	raw := os.Getenv(DatabaseURLEnv)
-	if raw == "" {
+	raw, set, err := serverFromEnv()
+	if !set {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
-	if _, err := url.Parse(raw); err != nil {
-		// url.Parse's own error quotes the URL it was given, which carries a credential.
-		t.Fatalf("parse %s: %v", DatabaseURLEnv, errors.Unwrap(err))
+	if err != nil {
+		t.Fatal(err)
 	}
 	end, bounded := testdb.ConnectEnd(t)
 	shared.once.Do(func() { shared.err = openAdmin(raw, end, bounded) })
 	if shared.err != nil {
 		t.Fatalf("open the admin pool: %v", shared.err)
 	}
+}
+
+// serverFromEnv reads DISPATCH_TEST_DATABASE_URL for ready and eagerServer: raw is its value, set
+// is whether it names one, and err, where it does not parse, is a fixed text that carries nothing
+// of the URL. url.Parse's error quotes the URL, and even the error it wraps can (an invalid port's
+// quotes what follows the authority's last colon, which for a password holding an unescaped '#',
+// '/' or '?' is the password's first part).
+func serverFromEnv() (raw string, set bool, err error) {
+	raw = os.Getenv(DatabaseURLEnv)
+	if raw == "" {
+		return "", false, nil
+	}
+	if _, err = url.Parse(raw); err != nil {
+		return "", true, errors.New(DatabaseURLEnv + " does not parse")
+	}
+	return raw, true, nil
 }
 
 // clone returns a store on a new database cloned from template, dropped after t ends.
@@ -175,7 +191,7 @@ func Empty(t testing.TB) string {
 	t.Helper()
 	ready(t)
 	name := randomName(t, "dispatch_test_")
-	if err := adminExec(t, "create database "+name+" strategy file_copy"); err != nil {
+	if err := adminExec(t, cloneStatement(name, emptyTemplate)); err != nil {
 		t.Fatalf("create empty database: %v", err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
@@ -200,8 +216,8 @@ type templateDatabase struct {
 	err  error
 }
 
-// emptyTemplate is the database Open's template and each OpenFrom caller's copy: template1, the
-// one Postgres copies where a create database names none.
+// emptyTemplate is the database Open's template, each OpenFrom caller's and Empty's database copy:
+// template1, the one Postgres copies where a create database names none.
 const emptyTemplate = "template1"
 
 // OpenFrom is Open for a database migrate brings to its schema instead of this tree's runner
@@ -216,13 +232,9 @@ const emptyTemplate = "template1"
 // test that asks for it again.
 func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) *store.Store {
 	t.Helper()
-	ready(t)
-	end, bounded := testdb.ConnectEnd(t)
-	name, err := makeTemplate(key, end, bounded, emptyTemplate, "migrate", migrate)
-	if err != nil {
-		t.Fatalf("prepare template database %q: %v", key, err)
-	}
-	return clone(t, name)
+	return openTemplate(t, key, func(end time.Time, bounded bool) (string, error) {
+		return makeTemplate(key, end, bounded, emptyTemplate, "migrate", migrate)
+	})
 }
 
 // Filled is a template that holds rows, for the tests of a package that each need the same rows:
@@ -255,16 +267,28 @@ type Filled struct {
 // filled's (Filled).
 func OpenFilled(t testing.TB, filled Filled) *store.Store {
 	t.Helper()
+	return openTemplate(t, filled.Key, func(end time.Time, bounded bool) (string, error) {
+		return makeFilled(filled, end, bounded)
+	})
+}
+
+// openTemplate is what Open, OpenFrom and OpenFilled share: it makes sure t can have a database
+// (ready), has maker answer the template of key under t's connect end (testdb.ConnectEnd), failing
+// t where it could not be made, and returns a store on a new database cloned from it, dropped after
+// t ends.
+func openTemplate(t testing.TB, key string, maker func(end time.Time, bounded bool) (string, error)) *store.Store {
+	t.Helper()
 	ready(t)
 	end, bounded := testdb.ConnectEnd(t)
-	name, err := makeFilled(filled, end, bounded)
+	name, err := maker(end, bounded)
 	if err != nil {
-		t.Fatalf("prepare template database %q: %v", filled.Key, err)
+		t.Fatalf("prepare template database %q: %v", key, err)
 	}
 	return clone(t, name)
 }
 
-// makeOpen answers Open's template, made where no caller has made it yet (makeTemplate).
+// makeOpen answers Open's template, made where no caller has made it yet (makeTemplate). It is
+// the one place Open's template is defined, for Open, makeFilled and RunEager.
 func makeOpen(end time.Time, bounded bool) (string, error) {
 	return makeTemplate(openKey, end, bounded, emptyTemplate, "migrate", migrateWithThisTree)
 }
@@ -488,10 +512,10 @@ func MainEager(m *testing.M, filled ...Filled) int { return RunEager(m.Run, fill
 // RunEager is Run, but before run it makes Open's template, then each of filled's templates, in
 // order, each once, through the entries Open, OpenFrom and OpenFilled read (makeTemplate), so the
 // tests find them made and none pays for them. Under Main the first test that calls Open pays for
-// Open's template, 3 to 8 s; under RunEager TestMain pays it. The time moves from that test to
-// TestMain and is not saved: it stays in the package's time, which go test prints beside the
-// package. So a run of one test by name, even one that opens no database, pays for every template
-// RunEager makes, where under Main it pays only for those it asks for.
+// Open's template, 3.8 to 8.5 s in CI's envoy-go job; under RunEager TestMain pays it. The time
+// moves from that test to TestMain and is not saved: it stays in the package's time, which go test
+// prints beside the package. So a run of one test by name, even one that opens no database, pays
+// for every template RunEager makes, where under Main it pays only for those it asks for.
 //
 // After each template it writes one line to stderr: `storetest: template "<key>" made in <d>`, or
 // `storetest: template "<key>" could not be made after <d>: <error>`. A template that could not be
@@ -523,11 +547,8 @@ func RunEager(run func() int, filled ...Filled) int {
 // each test that asks, or the command line names -test.list, under which m.Run lists the tests and
 // runs none. It parses the command line when nothing has yet, as m.Run would.
 func eagerServer() (string, bool) {
-	raw := os.Getenv(DatabaseURLEnv)
-	if raw == "" {
-		return "", false
-	}
-	if _, err := url.Parse(raw); err != nil {
+	raw, set, err := serverFromEnv()
+	if !set || err != nil {
 		return "", false
 	}
 	if !flag.Parsed() {

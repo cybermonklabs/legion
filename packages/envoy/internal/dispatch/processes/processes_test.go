@@ -141,7 +141,14 @@ func driveRegister(t *testing.T, fake *clocktest.Fake, beside int, results <-cha
 // mustRegister is register for a process that must be accepted.
 func mustRegister(t *testing.T, database *store.Store, commit, setting string) *Registration {
 	t.Helper()
-	registration, err := register(t, database, commit, setting)
+	return mustRegisterHolding(t, database, commit, setting, nil)
+}
+
+// mustRegisterHolding is mustRegister with the registry's timers on clk, or on the real clock where
+// clk is nil (instanceHolding).
+func mustRegisterHolding(t *testing.T, database *store.Store, commit, setting string, clk clock.Clock) *Registration {
+	t.Helper()
+	registration, err := registerInstance(t, database, instanceHolding(t, commit, setting, clk))
 	if err != nil {
 		t.Fatalf("register a process holding %q: %v", setting, err)
 	}
@@ -423,7 +430,6 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 // fake clock which each row moves one try at a time (driveRegister), so a refusal costs the row
 // Register's tries and no span of its own.
 func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
-	// Parallel: no row writes a package variable, and each runs on a database of its own.
 	t.Parallel()
 	for _, c := range []struct {
 		name, peer, mine string
@@ -451,10 +457,7 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 			if c.stale {
 				peerClock = clocktest.New(time.Now())
 			}
-			peer, err := registerInstance(t, database, instanceHolding(t, "c1", c.peer, peerClock))
-			if err != nil {
-				t.Fatalf("register a process holding %q: %v", c.peer, err)
-			}
+			peer := mustRegisterHolding(t, database, "c1", c.peer, peerClock)
 			if c.stale {
 				ageHeartbeat(t, database, peer.ID, LiveWindow+time.Second)
 			}
@@ -497,7 +500,6 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 // this test takes on the table, and released together, which is the moment two reads without the
 // registry's own lock would both find the registry empty.
 func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
-	// Parallel: it writes no package variable, and runs on a database of its own.
 	t.Parallel()
 	database := storetest.Open(t)
 	gate, err := database.Pool.Begin(context.Background())
@@ -552,7 +554,6 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 // restarted after a kill, whose key is minted per process - is refused beside it at first.
 // Register waits for the row to lapse instead of refusing at once, and admits the newcomer then.
 func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *testing.T) {
-	// Parallel: it writes no package variable, and runs on a database of its own.
 	t.Parallel()
 	database := storetest.Open(t)
 	var dead string

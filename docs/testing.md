@@ -808,9 +808,9 @@ statement, or says on its first line, in a `// Not parallel:` comment, why it ca
 
 The ten of them whose tests open a database (architecture, duty, events, files, processes,
 redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `TestMain` calls
-`storetest.SetDefaultParallel` before `storetest.Main` or `storetest.Run`, and
-`storetest.DefaultParallel` says why it is 4. Each test has a database of its own
-(`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
+`storetest.SetDefaultParallel` before `storetest.Main`, `storetest.MainEager` or
+`storetest.Run`, and `storetest.DefaultParallel` says why it is 4. Each test has a database of its
+own (`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
 
 `internal/dispatch/refs` follows the same rule and runs 4 at once through the same
 `storetest.SetDefaultParallel`. Five of its tests stay serial, each with its comment: the grammar
@@ -1076,7 +1076,7 @@ moves its clone further forward applies only the migrations past its version (`m
 not the whole history again.
 
 `storetest` makes each template once per test binary, and under `storetest.Main` the first test
-that asks for one pays for it: Open's took 3.8 to 8.5 s of that one test's time in leg 3 of CI.
+that asks for one pays for it: Open's took 3.8 to 8.5 s of that one test's time in CI's envoy-go job.
 A package whose `TestMain` is `storetest.MainEager(m)` (or `storetest.RunEager` around another
 harness's Main) has Open's template made before its first test runs, and writes one line to stderr
 for it (`storetest: template "<key>" made in <d>`).

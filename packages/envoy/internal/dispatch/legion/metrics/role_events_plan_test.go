@@ -65,11 +65,12 @@ func TestTheRoleEventsReadReadsTheIssuesRowsByIssue(t *testing.T) {
 	// the statistics the test states.
 	exec("lay the filler events one to a page", `alter table events set (fillfactor = 10, autovacuum_enabled = off)`)
 	const fillerEvents, perIssue = 5_000, 100
+	const fillerIssues = fillerEvents / perIssue
 	seeded := time.Now()
 	exec("write the issues", `
 		insert into issues (key, project_key, number, title, status, rank, created_by)
 		select 'INFRA-' || n, 'INFRA', n, 'An issue', 'todo', lpad(n::text, 8, '0'), '{"kind":"user","id":"alice"}'::jsonb
-		from generate_series(1, $1::int + 3) n`, fillerEvents/perIssue)
+		from generate_series(1, $1::int + 3) n`, fillerIssues)
 	logged := exec("write the filler events", `
 		insert into events (issue_key, seq, type, actor, payload, notify, published_at, created_at)
 		select 'INFRA-' || (4 + (n - 1) / $2::int), 1 + (n - 1) % $2::int, 'comment.created',
@@ -91,7 +92,7 @@ func TestTheRoleEventsReadReadsTheIssuesRowsByIssue(t *testing.T) {
 	}
 	defer connection.Release()
 	stateRoleEventsStatistics(t, ctx, connection)
-	t.Logf("seeded %d events over %d issues and stated a log of %d in %s", logged, fillerEvents/perIssue+3,
+	t.Logf("seeded %d events over %d issues and stated a log of %d in %s", logged, fillerIssues+3,
 		roleEventsLogSize+150, time.Since(seeded).Round(time.Millisecond))
 
 	keys := []string{"INFRA-1", "INFRA-2", "INFRA-3"}

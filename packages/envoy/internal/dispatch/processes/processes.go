@@ -247,9 +247,7 @@ type Registration struct {
 	instance Instance
 	// pool is the registry's own one-connection pool, which Register opens and Deregister closes
 	// (Register says why it is not the shared pool).
-	pool *pgxpool.Pool
-	// clock is Instance.Clock, clock.Real() where that is nil: the clock the heartbeat ticks on.
-	clock   clock.Clock
+	pool    *pgxpool.Pool
 	stop    context.CancelFunc
 	stopped chan struct{}
 	// lost carries the heartbeat's refusal (Lost); it holds one value and is sent at most once.
@@ -307,8 +305,8 @@ func Register(ctx context.Context, pool *store.Pool, instance Instance) (*Regist
 		return nil, err
 	}
 	beating, stop := context.WithCancel(context.Background())
-	registration := &Registration{ID: id, instance: instance, pool: own, clock: clk, stop: stop, stopped: make(chan struct{}), lost: make(chan error, 1)}
-	go registration.heartbeat(beating)
+	registration := &Registration{ID: id, instance: instance, pool: own, stop: stop, stopped: make(chan struct{}), lost: make(chan error, 1)}
+	go registration.heartbeat(beating, clk)
 	return registration, nil
 }
 
@@ -443,15 +441,16 @@ func describe(peer Process) string {
 	return fmt.Sprintf("%s, started %s", peer.Build(), peer.StartedAt.UTC().Format(time.RFC3339))
 }
 
-// heartbeat stamps the row's heartbeat_at every HeartbeatInterval of the registration's clock until
-// ctx ends. It runs for as long as the process serves, through its HTTP drain, so a draining
-// process counts as live until its last request is answered and Deregister ends it. It ends early,
-// once, when a beat refuses to count this process as live again (beat); Lost delivers that refusal.
-// Its ticks are a clock.Ticker's, which come as a time.Ticker's do: a beat that overran its period
-// is followed at once by the tick it overran, and only the ones after it are dropped.
-func (r *Registration) heartbeat(ctx context.Context) {
+// heartbeat stamps the row's heartbeat_at every HeartbeatInterval of clk, the registration's clock
+// (Instance.Clock, clock.Real() where that is nil), until ctx ends. It runs for as long as the
+// process serves, through its HTTP drain, so a draining process counts as live until its last
+// request is answered and Deregister ends it. It ends early, once, when a beat refuses to count
+// this process as live again (beat); Lost delivers that refusal. Its ticks are a clock.Ticker's,
+// which come as a time.Ticker's do: a beat that overran its period is followed at once by the tick
+// it overran, and only the ones after it are dropped.
+func (r *Registration) heartbeat(ctx context.Context, clk clock.Clock) {
 	defer close(r.stopped)
-	ticks := clock.NewTicker(r.clock, HeartbeatInterval, false)
+	ticks := clock.NewTicker(clk, HeartbeatInterval, false)
 	defer ticks.Stop()
 	for {
 		select {

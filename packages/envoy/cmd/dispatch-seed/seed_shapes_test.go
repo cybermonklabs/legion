@@ -48,16 +48,10 @@ func seedShapes(t *testing.T, database *store.Store, run *seedRun) []shapeCount 
 
 	for index, arm := range graphEdgeArms(t, database) {
 		name := fmt.Sprintf("graph arm %02d", index+1)
-		kind := armKindLiteral.FindStringSubmatch(arm)
-		toKind := armToKindLiteral.FindStringSubmatch(arm)
-		if kind != nil && toKind != nil {
-			name += " " + kind[1] + "->" + toKind[1]
+		if kind, toKind, ok := armPair(arm); ok {
+			name += " " + kind + "->" + toKind
 		}
-		var rows int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+arm+`) arm`).Scan(&rows); err != nil {
-			t.Fatalf("count arm %d of graph_edges: %v\n%s", index+1, err, arm)
-		}
-		shapes = append(shapes, shapeCount{name, rows})
+		shapes = append(shapes, shapeCount{name, armRows(t, database, index, arm)})
 	}
 
 	bands := slices.Clone(sizeBands)
@@ -92,14 +86,15 @@ func seedShapes(t *testing.T, database *store.Store, run *seedRun) []shapeCount 
 	return shapes
 }
 
-// assertSeedKeepsItsShapes holds the census of test's seed (seedShapes) to a row of every shape
-// its seed at testScale held: each name testdata/seed-shapes-<test>.txt lists, the census of that
+// assertSeedKeepsItsShapes holds the census of t's seed (seedShapes) to a row of every shape its
+// seed at testScale held: each name testdata/seed-shapes-<t.Name()>.txt lists, the census of that
 // seed at the merge base, is a shape of shapes with a count above zero. A name the census no
 // longer holds fails as well, since the file then names a part of the seed that nothing reads; a
 // change of the schema or the seed that drops one captures the file again, as its head says. On a
 // failure the whole census is logged, so the reader sees what the smaller data set does hold.
-func assertSeedKeepsItsShapes(t *testing.T, test string, shapes []shapeCount) {
+func assertSeedKeepsItsShapes(t *testing.T, shapes []shapeCount) {
 	t.Helper()
+	test := t.Name()
 	path := filepath.Join("testdata", "seed-shapes-"+test+".txt")
 	base, err := os.ReadFile(path)
 	if err != nil {
@@ -137,12 +132,11 @@ func assertSeedKeepsItsShapes(t *testing.T, test string, shapes []shapeCount) {
 	}
 }
 
-// formatShapes prints a census one "name<TAB>count" line per shape, sorted by name.
+// formatShapes prints a census one "name<TAB>count" line per shape, in its order: seedShapes's
+// census is sorted by name.
 func formatShapes(shapes []shapeCount) string {
-	sorted := slices.Clone(shapes)
-	slices.SortFunc(sorted, func(a, b shapeCount) int { return strings.Compare(a.name, b.name) })
 	var out strings.Builder
-	for _, shape := range sorted {
+	for _, shape := range shapes {
 		fmt.Fprintf(&out, "%s\t%d\n", shape.name, shape.count)
 	}
 	return out.String()
@@ -165,10 +159,31 @@ func graphEdgeArms(t *testing.T, database *store.Store) []string {
 	return arms
 }
 
+// armRows is how many rows arm, the one at index of graphEdgeArms, answers as its own query.
+func armRows(t *testing.T, database *store.Store, index int, arm string) int {
+	t.Helper()
+	var rows int
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from (`+arm+`) arm`).Scan(&rows); err != nil {
+		t.Fatalf("count arm %d of graph_edges: %v\n%s", index+1, err, arm)
+	}
+	return rows
+}
+
+// armPair is the kind and the target kind arm states as its literals, and false where it does not
+// state both (armKindLiteral, armToKindLiteral).
+func armPair(arm string) (kind, toKind string, ok bool) {
+	kindLiteral := armKindLiteral.FindStringSubmatch(arm)
+	toKindLiteral := armToKindLiteral.FindStringSubmatch(arm)
+	if kindLiteral == nil || toKindLiteral == nil {
+		return "", "", false
+	}
+	return kindLiteral[1], toKindLiteral[1], true
+}
+
 // sizeBands are the markdown size bands versionBytes draws a version's size in, by the names it
 // counts them under in run.bands. They are listed so that a band no version of a run fell in is
 // counted as zero rather than left out of the census.
-var sizeBands = []string{"1-5 KB", "5-10 KB", "10-20 KB", "100-660 KB"}
+var sizeBands = []string{band1To5KB, band5To10KB, band10To20KB, band100To660KB}
 
 // anchorShapes are the anchors the plan hangs an anchored comment or ask on (planAsks,
 // planComments): the first paragraph of the latest version (firstParagraphBlock) or the first

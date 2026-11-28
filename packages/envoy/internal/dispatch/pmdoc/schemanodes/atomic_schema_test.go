@@ -313,7 +313,7 @@ func requireAFailedReadKeepsTheValueAndIsMadeAgain(t *testing.T, ctx context.Con
 	const retry = 20 * time.Millisecond
 	running, stop := context.WithCancel(ctx)
 	defer stop()
-	unreachable := &unreachableStore{end: stop}
+	unreachable := &unreachableStore{readRecord{end: stop}}
 	installer := &Installer{Store: unreachable, Retry: retry}
 	testwait.Returns(t, fmt.Sprintf("the end of the installer's run on a store that cannot be read, which the store makes at its read %d: "+
 		"an installer that does not read that store again never gets there", endingRead), func() { installer.Run(running) })
@@ -337,7 +337,7 @@ func requireARefusedValueKeepsTheValueAndIsReadAgain(t *testing.T, ctx context.C
 	const retry = 20 * time.Millisecond
 	running, stop := context.WithCancel(ctx)
 	defer stop()
-	counted := &countedStore{pool: pool, end: stop}
+	counted := &countedStore{readRecord: readRecord{end: stop}, pool: pool}
 	installer := &Installer{Store: counted, Retry: retry, OnSwitch: func() { switches++ }}
 	testwait.Returns(t, fmt.Sprintf("the end of the installer's run on a store whose schema fails validation, which the store makes at its read %d: "+
 		"an installer that does not read that store again never gets there", endingRead), func() { installer.Run(running) })
@@ -516,40 +516,45 @@ func decodeSchema(t *testing.T, body []byte) pmdoc.BlockSchema {
 // one after a retry.
 const endingRead = 3
 
-// unreachableStore is a store no read reaches, which records when each read of it was made and
-// ends the installer's run (end, which cancels Run's context) at its endingRead-th read. Run reads
-// it on a goroutine of its own, and the test reads the record once that goroutine has ended, so
-// the record needs no lock.
-type unreachableStore struct {
+// readRecord is what unreachableStore and countedStore keep of their reads: when each was made
+// (reads), and the end of the installer's run (end, which cancels Run's context), which record
+// calls at the endingRead-th read. Run reads the store on a goroutine of its own, and the test
+// reads the record once that goroutine has ended, so the record needs no lock.
+type readRecord struct {
 	reads []time.Time
 	end   context.CancelFunc
+}
+
+// record notes a read made now, and ends the installer's run where it is the endingRead-th.
+func (r *readRecord) record() {
+	r.reads = append(r.reads, time.Now())
+	if len(r.reads) == endingRead {
+		r.end()
+	}
+}
+
+// unreachableStore is a store no read reaches, which records when each read of it was made and
+// ends the installer's run at its endingRead-th read (readRecord).
+type unreachableStore struct {
+	readRecord
 }
 
 var errUnreachable = errors.New("the store is unreachable")
 
 func (s *unreachableStore) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error) {
-	s.reads = append(s.reads, time.Now())
-	if len(s.reads) == endingRead {
-		s.end()
-	}
+	s.record()
 	return nil, errUnreachable
 }
 
 // countedStore is the store's pool, which records when each read of it began and ends the
-// installer's run (end, which cancels Run's context) at its endingRead-th read. That read fails,
-// since the context it begins its transaction on is Run's; the test holds only when it began. Run
-// reads it on a goroutine of its own, and the test reads the record once that goroutine has ended,
-// so the record needs no lock.
+// installer's run at its endingRead-th read (readRecord). That read fails, since the context it
+// begins its transaction on is Run's; the test holds only when it began.
 type countedStore struct {
-	pool  *store.Pool
-	reads []time.Time
-	end   context.CancelFunc
+	readRecord
+	pool *store.Pool
 }
 
 func (s *countedStore) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	s.reads = append(s.reads, time.Now())
-	if len(s.reads) == endingRead {
-		s.end()
-	}
+	s.record()
 	return s.pool.BeginTx(ctx, options)
 }

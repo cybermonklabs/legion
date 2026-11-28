@@ -373,11 +373,13 @@ choice (cmd/go/internal/work/exec.go: `omitdebug %v`), so the two are different 
 the build cache. The fill now runs `go test -count=1 -run '^$'`, which builds and starts each
 binary as envoy-go's go test does, to the last cached action, and runs no test, since `^$`
 matches none. Every TestMain of the module opens a database, a NATS server or a build only when
-a test asks for one (storetest, testdb, testnats and cmdtest are lazy), so each binary starts and
-exits; the fill has no Postgres, so a TestMain that opened one at its start would fail the fill
-and say so. The natslive build covers the five packages envoy-go's natslive step tests, not
-internal/testnats alone. -count=1 keeps the fill from saving test results, as every reader passes
-it too.
+a test asks for one (storetest under Main or Run, testdb, testnats and cmdtest are lazy), but for
+storetest.MainEager, which makes its templates in TestMain only where DISPATCH_TEST_DATABASE_URL
+is set (the fill sets none) and never under -test.list; a template it cannot make fails each test
+that asks for it, not the binary. So each binary starts and exits; the fill has no Postgres, so a
+TestMain that always opened one at its start would fail the fill and say so. The natslive build
+covers the five packages envoy-go's natslive step tests, not internal/testnats alone. -count=1
+keeps the fill from saving test results, as every reader passes it too.
 
 Measured on one tree, each fill followed by an envoy-go that restored what it saved (scratch
 runs 45722872667 before and 45722872215 after; the unit step under `go test -debug-actiongraph`):
