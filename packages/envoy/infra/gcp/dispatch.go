@@ -3,8 +3,10 @@ package gcp
 import (
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
@@ -101,6 +103,20 @@ const (
 	// proxyEphemeralStorage is unset
 	// (https://cloud.google.com/kubernetes-engine/docs/concepts/autopilot-resource-requests).
 	autopilotDefaultEphemeralStorage = "1Gi"
+
+	// defaultDispatchPreStopSeconds is the app's envoy-dispatch container's preStop wait when
+	// preStopSeconds is unset, and defaultDispatchGraceSeconds the app pod's grace period when
+	// terminationGracePeriodSeconds is unset: that wait and the server's own stop together.
+	defaultDispatchPreStopSeconds = 5
+	defaultDispatchGraceSeconds   = defaultDispatchPreStopSeconds + dispatchStopGraceSeconds
+
+	// dispatchStopGraceSeconds is the seconds envoy-dispatch's shutdown takes once the kubelet
+	// signals it: stopGrace in packages/envoy/cmd/dispatch/shutdown.go, copied because this module
+	// imports no package main (AGENTS.md). That package's TestDispatchPodGracePeriodCoversStopGrace
+	// reads this constant from this file and holds it to stopGrace, so a change to either fails
+	// there until the other follows. The app pod's grace period must cover the preStop wait and
+	// this (newDispatchDrain).
+	dispatchStopGraceSeconds = 30
 )
 
 // dispatchConnectionsPerPod is the most connections one app pod opens to Postgres: envoy-dispatch's
@@ -264,22 +280,58 @@ type DispatchArgs struct {
 	// (packages/envoy/cmd/dispatch/settings.go). Unset renders nothing, so a deployment that
 	// leaves it unset renders what it always rendered.
 	LegionStatusScope bool `pulumi:"legionStatusScope,optional"`
-	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
-	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
-	// entrance the deployment builds itself, such as a load balancer, which forwards to the app's
-	// Service <hostname> on 8766. The app's pods (labelled app=<hostname>) admit that entrance by
-	// loadBalancerSourceRanges, which the component renders into the app's own NetworkPolicy, or by
-	// a NetworkPolicy of the deployment's own, since policies add up. It is an origin
+	// PublicOrigin is Dispatch's canonical address where the deployment serves it from an entrance
+	// of its own, such as a load balancer, which forwards to the app's Service <hostname> on 8766:
+	// the address a reader is sent back to, DISPATCH_SERVER_URL and the url output. It is an origin
 	// weborigin.Parse takes, https, and with the sign-in inputs set its host is one
 	// weborigin.GoogleRedirectHost takes, since the Google client then lists
-	// <publicOrigin>/auth/callback. It is refused beside the tailnet inputs, whose front door's
-	// name is the origin of a Dispatch on the tailnet; a second origin beside that one is
-	// outsideOrigin. With it the sign-in inputs, signInWorkspaceDomains, signInOutside,
-	// outsideOrigin and signInPasskey are taken without the tailnet inputs, natsInCluster is
-	// required, as it is in the sandbox, and allowedNamespaces is not, since the entrance admits its
-	// own traffic. Unset, Dispatch is reached as it always was: at the front door's name or, in the
-	// sandbox, inside its cluster.
+	// <publicOrigin>/auth/callback. Beside the tailnet inputs the front door's name,
+	// <hostname>.<tailnetDnsName>, is then a served address, rendered first in
+	// DISPATCH_SERVED_ORIGINS, and the front door's own objects render as they do without
+	// publicOrigin, since none of them reads Dispatch's address; the load balancer serving
+	// publicOrigin there is the deployment's own whole, so iapAudience, loadBalancerSourceRanges
+	// and networkEndpointGroupName are refused beside the tailnet inputs. Without the tailnet
+	// inputs the app's pods (labelled app=<hostname>) admit that entrance by
+	// loadBalancerSourceRanges, which the component renders into the app's own NetworkPolicy, or by
+	// a NetworkPolicy of the deployment's own, since policies add up; the sign-in inputs,
+	// signInWorkspaceDomains, signInOutside, outsideOrigin and signInPasskey are taken there,
+	// natsInCluster is required, as it is in the sandbox, and allowedNamespaces is not, since the
+	// entrance admits its own traffic. Unset, Dispatch is reached as it always was: at the front
+	// door's name or, in the sandbox, inside its cluster.
 	PublicOrigin string `pulumi:"publicOrigin,optional"`
+	// ServedOrigins are the other addresses Dispatch serves beside its canonical one, rendered
+	// comma-joined, in the order given, as DISPATCH_SERVED_ORIGINS right after
+	// DISPATCH_SERVER_URL: a request whose Host is one of them is answered as that address, its
+	// browser writes, Google sign-in and signed agent requests included, and a link at one is read
+	// as a reference. The canonical address is publicOrigin where it is set, else the front door's
+	// name, else, in the sandbox, the app's own Service; with the tailnet inputs and publicOrigin
+	// both set, the front door's name is a served address too and renders before these. Each is an
+	// origin weborigin.Parse takes, http or https, written as a browser writes it (one trailing
+	// slash is trimmed), and with the sign-in inputs set its host is one
+	// weborigin.GoogleRedirectHost takes, since the Google client then lists
+	// <address>/auth/callback. Unset renders no DISPATCH_SERVED_ORIGINS unless the front door's
+	// name is served.
+	ServedOrigins []string `pulumi:"servedOrigins,optional"`
+	// FormerOrigins are addresses Dispatch served before and serves no more, rendered
+	// comma-joined, in the order given, as DISPATCH_FORMER_ORIGINS right after
+	// DISPATCH_SERVED_ORIGINS, or right after DISPATCH_SERVER_URL where that renders none: a link
+	// written at one is still read as a reference, and a request at one is not served (its
+	// sign-in routes answer 404, and a write carrying a browser's credential 403). Each is an
+	// origin weborigin.Parse takes, written as a browser writes it. No two of the canonical
+	// address, the front door's name, servedOrigins and formerOrigins share a host, compared by
+	// name at any port as Dispatch compares them when it starts, which refuses every such pair:
+	// the component refuses each, naming the input resolved later. Unset renders nothing.
+	FormerOrigins []string `pulumi:"formerOrigins,optional"`
+	// TrustedProxyRanges are the proxies, such as a load balancer's, whose X-Forwarded-For
+	// Dispatch trusts, rendered comma-joined, in the order given, as DISPATCH_TRUSTED_PROXY_RANGES
+	// after Dispatch's address settings: for a request whose connection comes from inside one of
+	// them, Dispatch takes the client address that proxy appended, which keys the broker token's
+	// introspection limit and is the address of the request's log line. It renders in every mode
+	// that runs the app, whatever else is set. Each is a CIDR written as the network it names
+	// (10.0.0.0/8, not 10.0.0.1/8), with a prefix longer than /0, as Dispatch refuses to start on
+	// any other: 0.0.0.0/0 or ::/0 would trust every peer's X-Forwarded-For, so any caller would
+	// pick its own address. Unset renders nothing, and Dispatch trusts no proxy.
+	TrustedProxyRanges []string `pulumi:"trustedProxyRanges,optional"`
 	// IapAudience turns on the IAP door: a browser reaches Dispatch through Identity-Aware Proxy
 	// on the deployment's load balancer, and Dispatch names its person from the signed header IAP
 	// adds to each request it lets through (DISPATCH_IDENTITY=iap), which Dispatch verifies
@@ -290,10 +342,11 @@ type DispatchArgs struct {
 	// output, such as one built from the backend service's own id. It needs publicOrigin, the
 	// origin that load balancer serves, and signInDomain, the Workspace domain whose accounts may
 	// use Dispatch, rendered as DISPATCH_SIGNIN_DOMAIN, which Dispatch holds the signed header's hd
-	// claim to; it is refused beside signInClientId, signInClientSecret, signInWorkspaceDomains,
-	// signInOutside, signInPasskey and outsideOrigin: IAP signs a person in, and a browser reaches
-	// Dispatch through it alone. Unset renders none of the three variables, and Dispatch keeps its
-	// default identity.
+	// claim to; it is refused beside the tailnet inputs, whose front door serves Dispatch where no
+	// request carries IAP's signed header, and beside signInClientId, signInClientSecret,
+	// signInWorkspaceDomains, signInOutside, signInPasskey and outsideOrigin: IAP signs a person in,
+	// and a browser reaches Dispatch through it alone. Unset renders none of the three variables,
+	// and Dispatch keeps its default identity.
 	IapAudience pulumi.StringInput `pulumi:"iapAudience,optional"`
 	// LoadBalancerSourceRanges are the CIDRs the deployment's load balancer reaches the app's pods
 	// from, such as Google's health-check and proxy ranges, which the component renders as ipBlock
@@ -301,7 +354,9 @@ type DispatchArgs struct {
 	// selects the Dispatch pods. Each is a CIDR net.ParseCIDR takes, written as its network
 	// (10.0.0.0/8, not 10.1.2.3/8), with a prefix longer than /0: 0.0.0.0/0 or ::/0 would admit
 	// every address to 8766, past the load balancer and IAP alike. It needs publicOrigin, the
-	// origin that load balancer serves. Unset renders no such peer.
+	// origin that load balancer serves, and is refused beside the tailnet inputs, where that load
+	// balancer, the backend it takes and the policy admitting it are the deployment's own. Unset
+	// renders no such peer.
 	LoadBalancerSourceRanges []string `pulumi:"loadBalancerSourceRanges,optional"`
 	// NetworkEndpointGroupName names the standalone network endpoint group GKE makes for the app's
 	// Service on 8766, which the deployment's load balancer takes as its backend: the Service gets
@@ -310,8 +365,9 @@ type DispatchArgs struct {
 	// pre-provision the group in every zone of the cluster's region, empty until a pod runs there,
 	// so the load balancer's backend can name it in each zone; that needs GKE 1.36.2-gke.3104000 or
 	// later, a Preview feature. It is a Compute Engine resource name, a lowercase letter, then up to
-	// 62 lowercase letters, digits or hyphens, not ending in a hyphen. It needs publicOrigin. Unset
-	// renders no annotation.
+	// 62 lowercase letters, digits or hyphens, not ending in a hyphen. It needs publicOrigin and is
+	// refused beside the tailnet inputs, as loadBalancerSourceRanges is. Unset renders no
+	// annotation.
 	NetworkEndpointGroupName string `pulumi:"networkEndpointGroupName,optional"`
 
 	// AgentSecretsUrl and agentSecretsAudience turn on Dispatch's secrets-broker relay together:
@@ -441,6 +497,18 @@ type DispatchArgs struct {
 	// Deployment is recreated at one replica and rolls above one, by its own count.
 	FrontDoorReplicas *int `pulumi:"frontDoorReplicas,optional"`
 	ListenerReplicas  *int `pulumi:"listenerReplicas,optional"`
+	// PreStopSeconds is how long the app's envoy-dispatch container waits, once its pod is marked
+	// for termination, before the kubelet signals it: the sleep of its preStop hook, which keeps
+	// the pod answering while its removal from its Service's endpoints reaches every node's proxy,
+	// the front door and any load balancer that sends to it. 5 by default, and at least 1.
+	// TerminationGracePeriodSeconds is the app pod's terminationGracePeriodSeconds, 35 by default:
+	// the kubelet spends the wait and the server's own stop of 30 seconds inside it, so one under
+	// preStopSeconds plus those 30 is refused, naming terminationGracePeriodSeconds. A load
+	// balancer that takes longer than the default wait to stop sending to a pod needs a longer
+	// wait, and a grace period raised with it. The listener's and the front door's pods keep their
+	// own.
+	PreStopSeconds                *int `pulumi:"preStopSeconds,optional"`
+	TerminationGracePeriodSeconds *int `pulumi:"terminationGracePeriodSeconds,optional"`
 
 	// NatsInCluster: the app and the listener dial natsUrl directly, at an address their own
 	// cluster resolves, rather than through the front door's SOCKS5 proxy. Neither NATS client
@@ -704,6 +772,21 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 			return fmt.Sprintf("loadBalancerSourceRanges[%d]", i), true
 		}
 	}
+	for i, origin := range args.ServedOrigins {
+		if bus.HoldsSeed(origin) {
+			return fmt.Sprintf("servedOrigins[%d]", i), true
+		}
+	}
+	for i, origin := range args.FormerOrigins {
+		if bus.HoldsSeed(origin) {
+			return fmt.Sprintf("formerOrigins[%d]", i), true
+		}
+	}
+	for i, cidr := range args.TrustedProxyRanges {
+		if bus.HoldsSeed(cidr) {
+			return fmt.Sprintf("trustedProxyRanges[%d]", i), true
+		}
+	}
 	if args.AzureFederationAudience != nil && bus.HoldsSeed(*args.AzureFederationAudience) {
 		return "azureFederationAudience", true
 	}
@@ -771,10 +854,17 @@ type Dispatch struct {
 // listener's Deployments (heldReplacement). frontDoor and signInOn are the two groups of inputs a
 // consumer sets together or not at all: frontDoor is set when any tailnet input is, where the
 // component builds the front door and Dispatch is reached at its tailnet name, and signInOn when
-// any sign-in input is, where the app runs browser sign-in. publicOrigin is the origin Dispatch
-// is served at without a front door, "" when its input is unset, and iap is iapAudience set,
-// where a browser's person is the one IAP's signed header names; the Input itself is rendered
-// from args, since it may be another resource's output.
+// any sign-in input is, where the app runs browser sign-in. publicOrigin is Dispatch's canonical
+// address where its input is set, beside a front door or without one, and "" where it is unset,
+// and iap is iapAudience set, where a browser's person is the one IAP's signed header names; the
+// Input itself is rendered from args, since it may be another resource's output. servedOrigins
+// is what DISPATCH_SERVED_ORIGINS renders: the front door's name where publicOrigin is the
+// canonical address beside it, then the servedOrigins input's entries; formerOrigins is what
+// DISPATCH_FORMER_ORIGINS renders, and trustedProxyRanges what DISPATCH_TRUSTED_PROXY_RANGES
+// renders. Each entry of the two origin lists is written as a browser writes it
+// (newDispatchOriginList), and each of the three lists is empty where nothing renders.
+// preStopSeconds and graceSeconds are the app pod's preStop wait and
+// terminationGracePeriodSeconds, with their defaults applied (newDispatchDrain).
 // With neither group and no publicOrigin the component is the sandbox: Dispatch is reached in the
 // cluster alone, by readers the app's NetworkPolicy admits, and tailnetDNSName, tags, the
 // tailscale and tools images, outsideOrigin, signIn, signInWorkspaceDomains, signInOutside and
@@ -796,6 +886,8 @@ type dispatchSettings struct {
 	frontDoor, signInOn                         bool
 	hostname, tailnetDNSName, region, namespace string
 	outsideOrigin, publicOrigin                 string
+	servedOrigins, formerOrigins                []string
+	trustedProxyRanges                          []string
 	iap                                         bool
 	tags                                        []string
 	images                                      struct{ envoy, tailscale, proxy, tools string }
@@ -822,6 +914,7 @@ type dispatchSettings struct {
 	signingKeyGenerations                       []int
 	appResources                                dispatchAppResources
 	pprofPort                                   int
+	preStopSeconds, graceSeconds                int
 	disruption                                  dispatchDisruption
 	azure                                       dispatchAzure
 	answerer                                    dispatchAnswerer
@@ -849,18 +942,25 @@ func (s dispatchSettings) clusterURL() string {
 	return "http://" + clusterLocal(s.hostname, s.namespace) + ":8766"
 }
 
-// serverURL is the address Dispatch tells a reader it is at, the url output and the app's
-// DISPATCH_SERVER_URL: the tailnet name the front door hosts, publicOrigin where the deployment's
-// own entrance serves Dispatch, or, in the sandbox, the app's own Service inside the cluster,
-// which is all there is to reach. It carries no trailing slash, it is http in the sandbox because
-// that Service terminates no TLS, and its port is the 8766 that Service publishes. One
-// derivation, so the output and the variable can never disagree.
+// dispatchFrontDoorOrigin is the origin the front door serves Dispatch at, its tailnet name: the
+// canonical address of a Dispatch on the tailnet, and a served address beside publicOrigin.
+func dispatchFrontDoorOrigin(hostname, tailnetDNSName string) string {
+	return "https://" + core.TailnetHostName(hostname, tailnetDNSName)
+}
+
+// serverURL is the address Dispatch tells a reader it is at, its canonical address, the url
+// output and the app's DISPATCH_SERVER_URL: publicOrigin where the deployment's own entrance
+// serves Dispatch, beside a front door or without one, else the tailnet name the front door
+// hosts, or, in the sandbox, the app's own Service inside the cluster, which is all there is to
+// reach. It carries no trailing slash, it is http in the sandbox because that Service terminates
+// no TLS, and its port is the 8766 that Service publishes. One derivation, so the output and the
+// variable can never disagree.
 func (s dispatchSettings) serverURL() string {
 	switch {
-	case s.frontDoor:
-		return "https://" + core.TailnetHostName(s.hostname, s.tailnetDNSName)
 	case s.publicOrigin != "":
 		return s.publicOrigin
+	case s.frontDoor:
+		return dispatchFrontDoorOrigin(s.hostname, s.tailnetDNSName)
 	}
 	return s.clusterURL()
 }
@@ -1147,6 +1247,9 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"parentStatusRule", args.ParentStatusRule},
 		{"legionStatusScope", args.LegionStatusScope},
 		{"publicOrigin", args.PublicOrigin != ""},
+		{"servedOrigins", len(args.ServedOrigins) > 0},
+		{"formerOrigins", len(args.FormerOrigins) > 0},
+		{"trustedProxyRanges", len(args.TrustedProxyRanges) > 0},
 		{"iapAudience", args.IapAudience != nil},
 		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
 		{"networkEndpointGroupName", args.NetworkEndpointGroupName != ""},
@@ -1172,6 +1275,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"replicas", args.Replicas != nil},
 		{"frontDoorReplicas", args.FrontDoorReplicas != nil},
 		{"listenerReplicas", args.ListenerReplicas != nil},
+		{"preStopSeconds", args.PreStopSeconds != nil},
+		{"terminationGracePeriodSeconds", args.TerminationGracePeriodSeconds != nil},
 		{"natsInCluster", args.NatsInCluster != nil},
 		{"natsReplicas", args.NatsReplicas != nil},
 		{"streamMaxBytes", args.StreamMaxBytes != nil},
@@ -1343,14 +1448,14 @@ func refuseDispatchWithoutFrontDoor(args *DispatchArgs) error {
 	return nil
 }
 
-// refuseDispatchPublicOrigin judges publicOrigin where the tailnet group is unset, the one place
-// it may be set, and returns it as a URL holding its scheme and host alone, whose String is the
-// origin with a trailing slash trimmed, as Dispatch trims one. It must be a web origin
-// weborigin.Parse takes, whose refusals it prefixes with the input's name, and https, since
-// Dispatch's session cookie, browser sign-in and IAP all need TLS there, as they do at the front
-// door's name; with the sign-in inputs set its host must be one weborigin.GoogleRedirectHost
-// takes, since the Google client must then list <publicOrigin>/auth/callback, and that function's
-// refusals it prefixes with "publicOrigin's ".
+// refuseDispatchPublicOrigin judges publicOrigin, beside the tailnet inputs or without them, and
+// returns it as a URL holding its scheme and host alone, whose String is the origin with a
+// trailing slash trimmed, as Dispatch trims one. It must be a web origin weborigin.Parse takes,
+// whose refusals it prefixes with the input's name, and https, since Dispatch's session cookie,
+// browser sign-in and IAP all need TLS there, as they do at the front door's name; with the
+// sign-in inputs set its host must be one weborigin.GoogleRedirectHost takes, since the Google
+// client must then list <publicOrigin>/auth/callback, and that function's refusals it prefixes
+// with "publicOrigin's ".
 func refuseDispatchPublicOrigin(args *DispatchArgs, signInOn bool) (*url.URL, error) {
 	origin, err := weborigin.Parse(args.PublicOrigin)
 	if err != nil {
@@ -1365,6 +1470,88 @@ func refuseDispatchPublicOrigin(args *DispatchArgs, signInOn bool) (*url.URL, er
 		}
 	}
 	return origin, nil
+}
+
+// dispatchAddress is one address Dispatch is told it serves or served, as the resolver has taken
+// it so far: origin holds its scheme and host, and owner is how a refusal names it, the
+// possessive of its input ("publicOrigin's", "servedOrigins[1]'s") or of what it is ("the front
+// door's").
+type dispatchAddress struct {
+	owner  string
+	origin *url.URL
+}
+
+// refuseDispatchSharedHost refuses origin, the address name names, as a core.InputError naming
+// input, when an address taken before it has its host name. Dispatch picks the address a request
+// came to by its Host, and it refuses to start on two of its addresses with one host name,
+// compared by name alone at any port (weborigin.SameHostName, which its boot compares them with:
+// checkServedOrigins in packages/envoy/cmd/dispatch/signin.go), so a pod rendered with such a pair
+// would never start.
+func refuseDispatchSharedHost(input, name string, origin *url.URL, taken []dispatchAddress) error {
+	for _, other := range taken {
+		if weborigin.SameHostName(origin, other.origin) {
+			return core.InputErrorf(input, "%s's host %s is %s: each address of Dispatch's needs a host of its own", name, origin.Hostname(), other.owner)
+		}
+	}
+	return nil
+}
+
+// newDispatchOriginList judges servedOrigins or formerOrigins, which input names, and returns its
+// entries as DISPATCH_SERVED_ORIGINS or DISPATCH_FORMER_ORIGINS renders them, nil for none, with
+// taken grown by each. Each entry must be a web origin weborigin.Parse takes, whose refusals it
+// prefixes with the entry's path, so it is written as a browser writes it and Dispatch, which
+// compares a request's Origin with it as a string, reads it as written; one trailing slash is
+// trimmed, as Dispatch trims one. With googleSignIn each entry's host must be one
+// weborigin.GoogleRedirectHost takes, since the Google client must then list
+// <address>/auth/callback. No entry may share a host with an address taken before it
+// (refuseDispatchSharedHost). Each refusal is a core.InputError naming input, as the schema names
+// the list, whose message names the entry by its index. dispatchSeededInput has refused a seed in
+// any entry already, so a refusal may quote one.
+func newDispatchOriginList(input string, entries []string, googleSignIn bool, taken []dispatchAddress) ([]string, []dispatchAddress, error) {
+	var origins []string
+	for i, entry := range entries {
+		name := fmt.Sprintf("%s[%d]", input, i)
+		origin, err := weborigin.Parse(entry)
+		if err != nil {
+			return nil, nil, core.InputErrorf(input, "%s: %w", name, err)
+		}
+		if googleSignIn {
+			if err := weborigin.GoogleRedirectHost(origin.Hostname()); err != nil {
+				return nil, nil, core.InputErrorf(input, "%s's %w", name, err)
+			}
+		}
+		if err := refuseDispatchSharedHost(input, name, origin, taken); err != nil {
+			return nil, nil, err
+		}
+		taken = append(taken, dispatchAddress{owner: name + "'s", origin: origin})
+		origins = append(origins, origin.String())
+	}
+	return origins, taken, nil
+}
+
+// refuseDispatchTrustedProxyRanges judges trustedProxyRanges, which every mode that runs the app
+// takes, whatever else is set, as Dispatch's own reading of DISPATCH_TRUSTED_PROXY_RANGES judges
+// each entry (parseTrustedProxyRanges in packages/envoy/cmd/dispatch/main.go), so no pod is
+// rendered with a list its boot refuses: each entry must be a CIDR netip.ParsePrefix takes,
+// written as the network it names, so the setting trusts what it says, with a prefix longer than
+// /0: 0.0.0.0/0 or ::/0 would trust every peer's X-Forwarded-For, and any caller would pick the
+// address it is logged and rate limited by. Each refusal is a core.InputError naming the input,
+// whose message names the entry by its index; dispatchSeededInput has refused a seed in any entry
+// already, so a refusal may quote one.
+func refuseDispatchTrustedProxyRanges(args *DispatchArgs) error {
+	for i, cidr := range args.TrustedProxyRanges {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q must be a CIDR, such as 130.211.0.0/22", i, cidr)
+		}
+		if network := prefix.Masked(); prefix != network {
+			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q must be written as the network it names, %s", i, cidr, network)
+		}
+		if prefix.Bits() == 0 {
+			return core.InputErrorf("trustedProxyRanges", "trustedProxyRanges[%d] %q trusts every peer's X-Forwarded-For, so any caller would pick the address it is logged and rate limited by: name the proxies' own ranges, such as 130.211.0.0/22", i, cidr)
+		}
+	}
+	return nil
 }
 
 // refuseDispatchIAP judges what the IAP door, which iapAudience turns on, needs beside it. It needs
@@ -1539,18 +1726,26 @@ func refuseDispatchAccessValues(args *DispatchArgs) error {
 // publicOrigin, hands the component: loadBalancerSourceRanges, the CIDRs it reaches the app's pods
 // from, and networkEndpointGroupName, the endpoint group it takes as its backend. Each needs
 // publicOrigin: a Dispatch on the tailnet is reached through its front door and one in the sandbox
-// inside its cluster, and neither has a load balancer to admit or to name a group for. Each range
-// must be a CIDR written as its network, which net.ParseCIDR takes and which is the network it
-// names, so the rule admits what it says, and with a prefix longer than /0: 0.0.0.0/0 or ::/0
-// would admit every address to 8766, past the load balancer, and IAP with it. The name must be
-// negNameRule's.
-func refuseDispatchEntrance(args *DispatchArgs) error {
+// inside its cluster, and neither has a load balancer to admit or to name a group for. Each is
+// refused beside the front door (frontDoor) too, publicOrigin set or not: there the load balancer
+// serving publicOrigin, the backend it takes and the policy admitting it are the deployment's own,
+// built beside the component, which renders no part of them. Each range must be a CIDR written as
+// its network, which net.ParseCIDR takes and which is the network it names, so the rule admits
+// what it says, and with a prefix longer than /0: 0.0.0.0/0 or ::/0 would admit every address to
+// 8766, past the load balancer, and IAP with it. The name must be negNameRule's.
+func refuseDispatchEntrance(args *DispatchArgs, frontDoor bool) error {
 	for _, in := range []dispatchInput{
 		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
 		{"networkEndpointGroupName", args.NetworkEndpointGroupName != ""},
 	} {
-		if in.set && args.PublicOrigin == "" {
+		if !in.set {
+			continue
+		}
+		if args.PublicOrigin == "" {
 			return core.InputErrorf(in.input, "%s needs publicOrigin: it describes the deployment's own load balancer, which serves Dispatch at that origin, and a Dispatch reached through the tailnet front door or inside its cluster has none; set publicOrigin, or unset %s", in.input, in.input)
+		}
+		if frontDoor {
+			return core.InputErrorf(in.input, "%s is refused beside the tailnet inputs: beside the front door, the load balancer serving publicOrigin, the backend it takes and the policy admitting it are the deployment's own, and the component renders no part of them; unset %s, or unset the tailnet inputs", in.input, in.input)
 		}
 	}
 	for i, cidr := range args.LoadBalancerSourceRanges {
@@ -1718,20 +1913,44 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 		signInOn = false
 	}
-	if err := refuseDispatchEntrance(args); err != nil {
+	if err := refuseDispatchEntrance(args, frontDoor); err != nil {
 		return dispatchSettings{}, err
 	}
+	// Dispatch's addresses are taken in one order: the front door's name, publicOrigin, the app's
+	// own Service where there is neither, then servedOrigins and formerOrigins. Each is refused when
+	// it shares a host with one taken before it (refuseDispatchSharedHost), so no pod is rendered
+	// with a pair of addresses its boot refuses, and the refusal names an input the consumer set.
+	// outsideOrigin keeps the one rule it has, a host other than the front door's or, without the
+	// front door, publicOrigin's (refuseDispatchOutsideOrigin).
 	var outsideOrigin, publicOrigin string
+	var taken []dispatchAddress
 	switch {
 	case frontDoor:
 		if err := refuseDispatchTailnetGroup(args, dispatchGroupClause("tailnet", tailnetGroup)); err != nil {
 			return dispatchSettings{}, err
 		}
+		frontDoorHost := core.TailnetHostName(args.Hostname, args.TailnetDnsName)
+		taken = []dispatchAddress{{owner: "the front door's", origin: &url.URL{Scheme: "https", Host: frontDoorHost}}}
+		// Beside the front door publicOrigin is the canonical address and the front door's name a
+		// served one; no object of the front door reads either, so it renders as without
+		// publicOrigin. The IAP door admits a browser through IAP alone, and the front door's name
+		// would serve Dispatch past it.
 		if args.PublicOrigin != "" {
-			return dispatchSettings{}, core.InputErrorf("publicOrigin", "publicOrigin is refused beside the tailnet inputs: the front door serves Dispatch at <hostname>.<tailnetDnsName>, which is then its origin, and a second origin beside that one is outsideOrigin; unset publicOrigin, or unset the tailnet inputs")
+			if args.IapAudience != nil {
+				return dispatchSettings{}, core.InputErrorf("publicOrigin", "publicOrigin is refused beside the tailnet inputs and iapAudience: behind the IAP door a browser reaches Dispatch through IAP alone, at publicOrigin, and the front door would serve it at <hostname>.<tailnetDnsName> too, where no request carries IAP's signed header; unset publicOrigin and iapAudience, or unset the tailnet inputs")
+			}
+			origin, err := refuseDispatchPublicOrigin(args, signInOn)
+			if err != nil {
+				return dispatchSettings{}, err
+			}
+			if err := refuseDispatchSharedHost("publicOrigin", "publicOrigin", origin, taken); err != nil {
+				return dispatchSettings{}, err
+			}
+			publicOrigin = origin.String()
+			taken = append(taken, dispatchAddress{owner: "publicOrigin's", origin: origin})
 		}
 		var err error
-		if outsideOrigin, err = refuseDispatchOutsideOrigin(args, core.TailnetHostName(args.Hostname, args.TailnetDnsName), "the front door's", signInOn); err != nil {
+		if outsideOrigin, err = refuseDispatchOutsideOrigin(args, frontDoorHost, "the front door's", signInOn); err != nil {
 			return dispatchSettings{}, err
 		}
 	case args.PublicOrigin != "":
@@ -1743,6 +1962,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, err
 		}
 		publicOrigin = origin.String()
+		taken = []dispatchAddress{{owner: "publicOrigin's", origin: origin}}
 		if outsideOrigin, err = refuseDispatchOutsideOrigin(args, origin.Hostname(), "publicOrigin's", signInOn); err != nil {
 			return dispatchSettings{}, err
 		}
@@ -1750,6 +1970,22 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if err := refuseDispatchSandbox(args, signInGroup); err != nil {
 			return dispatchSettings{}, err
 		}
+		// The sandbox's canonical address is the app's own Service, in the namespace whose input is
+		// judged below.
+		namespace := defaultDispatchNamespace
+		if args.Namespace != nil {
+			namespace = *args.Namespace
+		}
+		taken = []dispatchAddress{{owner: "the app's own Service's", origin: &url.URL{Scheme: "http", Host: clusterLocal(args.Hostname, namespace)}}}
+	}
+	servedOrigins, taken, err := newDispatchOriginList("servedOrigins", args.ServedOrigins, signInOn, taken)
+	if err != nil {
+		return dispatchSettings{}, err
+	}
+	// A former address serves no sign-in, so the Google client need list no callback of it.
+	formerOrigins, _, err := newDispatchOriginList("formerOrigins", args.FormerOrigins, false, taken)
+	if err != nil {
+		return dispatchSettings{}, err
 	}
 	if signInOn {
 		if err := refuseDispatchSignInGroup(args, dispatchGroupClause("sign-in", signInGroup)); err != nil {
@@ -1782,6 +2018,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if args.SignInOutside {
 			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey is refused beside signInOutside: passkey sign-in replaces the Google sign-in of people from outside the company that signInOutside turns on; unset signInOutside, or unset signInPasskey")
 		}
+	}
+	if err := refuseDispatchTrustedProxyRanges(args); err != nil {
+		return dispatchSettings{}, err
 	}
 	// The app's two images, which the app's pod runs in either mode: they belong to no group, so
 	// every consumer sets both and neither refusal trails a clause. The front door's two are the
@@ -1942,6 +2181,13 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 	}
 	s.publicOrigin = publicOrigin
+	// Beside publicOrigin the front door's name is a served address, and the first.
+	if frontDoor && publicOrigin != "" {
+		s.servedOrigins = append(s.servedOrigins, dispatchFrontDoorOrigin(args.Hostname, args.TailnetDnsName))
+	}
+	s.servedOrigins = append(s.servedOrigins, servedOrigins...)
+	s.formerOrigins = formerOrigins
+	s.trustedProxyRanges = slices.Clone(args.TrustedProxyRanges)
 	s.iap = args.IapAudience != nil
 	s.agentSecretsURL = agentSecretsURL
 	s.agentSecretsAudience = args.AgentSecretsAudience
@@ -2029,6 +2275,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if s.pprofPort, err = newDispatchPprofPort(args); err != nil {
 		return dispatchSettings{}, err
 	}
+	if s.preStopSeconds, s.graceSeconds, err = newDispatchDrain(args); err != nil {
+		return dispatchSettings{}, err
+	}
 	if s.disruption, err = newDispatchDisruption(args, s.replicas, s.frontDoorReplicas, s.listenerReplicas); err != nil {
 		return dispatchSettings{}, err
 	}
@@ -2106,6 +2355,38 @@ func newDispatchPprofPort(args *DispatchArgs) (int, error) {
 		return 0, core.InputErrorf("pprofPort", "pprofPort %d is the cloud-sql-proxy sidecar's port in the same pod; choose another, such as 6060", port)
 	}
 	return port, nil
+}
+
+// newDispatchDrain resolves the app pod's drain: preStopSeconds, the wait of envoy-dispatch's
+// preStop hook, defaultDispatchPreStopSeconds when it is unset, and terminationGracePeriodSeconds,
+// the pod's grace period, defaultDispatchGraceSeconds when it is unset. The kubelet spends the
+// wait and then the server's shutdown inside the one grace period, signalling the container only
+// once the hook returns, so a grace period under the wait plus dispatchStopGraceSeconds is
+// refused, set or not: the kubelet would kill envoy-dispatch mid-shutdown, past its document
+// service's five-second reserve, with a write still waiting on a lock killed mid-commit. A wait
+// under 1 second is refused, since the pod would stop answering while its removal from routing
+// still spreads, and so is one whose sum with dispatchStopGraceSeconds overflows an int, which
+// would wrap below every grace period and pass any. Each refusal is a core.InputError naming the
+// input to correct.
+func newDispatchDrain(args *DispatchArgs) (preStop, grace int, err error) {
+	preStop, grace = defaultDispatchPreStopSeconds, defaultDispatchGraceSeconds
+	if args.PreStopSeconds != nil {
+		preStop = *args.PreStopSeconds
+		switch {
+		case preStop < 1:
+			return 0, 0, core.InputErrorf("preStopSeconds", "preStopSeconds %d is below 1: envoy-dispatch keeps answering for this wait while its pod's removal from routing reaches every proxy, and with none a request still sent there finds the server gone; leave it unset for %d", preStop, defaultDispatchPreStopSeconds)
+		case preStop > math.MaxInt-dispatchStopGraceSeconds:
+			return 0, 0, core.InputErrorf("preStopSeconds", "preStopSeconds %d overflows a count of seconds once the %d seconds envoy-dispatch's shutdown takes are added to it, so no grace period could hold it; leave it unset for %d", preStop, dispatchStopGraceSeconds, defaultDispatchPreStopSeconds)
+		}
+	}
+	if args.TerminationGracePeriodSeconds != nil {
+		grace = *args.TerminationGracePeriodSeconds
+	}
+	if least := preStop + dispatchStopGraceSeconds; grace < least {
+		return 0, 0, core.InputErrorf("terminationGracePeriodSeconds", "terminationGracePeriodSeconds %d is under %d, preStopSeconds %d plus the %d seconds envoy-dispatch's shutdown takes: the kubelet spends the wait and then the shutdown inside the one grace period, so it would kill the server mid-shutdown with a write still waiting on a lock; set terminationGracePeriodSeconds to at least %d, or leave both unset for %d and %d",
+			grace, least, preStop, dispatchStopGraceSeconds, least, defaultDispatchPreStopSeconds, defaultDispatchGraceSeconds)
+	}
+	return preStop, grace, nil
 }
 
 // newDispatchSigningKeyGenerations resolves signingKeyGenerations, the generations the component
