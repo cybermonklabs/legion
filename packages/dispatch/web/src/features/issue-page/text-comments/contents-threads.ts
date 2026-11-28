@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { whoAmIQuery } from "../../../api/queries";
+import { CONVERSATION_KINDS, whoAmIQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { isViewer } from "../../refs/actor";
 import { buildIssuePath } from "../../refs/routes";
@@ -38,7 +38,11 @@ export interface ThreadEntries {
 }
 
 /** The entries of the reader's comments on text of `issue` in `list`, the tree the Contents list
- *  is given (Conversation's view of `preset`'s outline read), and where a press on one goes. */
+ *  is given (Conversation's view of `preset`'s outline read), and where a press on one goes. The
+ *  threads are those of that same outline read: Conversation's beside Conversation and each
+ *  filter, Graph's in Graph (`outlineOf`). `withThreadEntries` gives no entry to a thread on a
+ *  node of a kind that Conversation's read does not return, a result or a plan task, so the list
+ *  holds the same entries beside every view (R8). */
 export function useThreadEntries(
   issue: IssueDetails,
   list: TreeNode,
@@ -81,17 +85,27 @@ interface WithEntries {
   readonly node: TreeNode;
 }
 
+/** The kinds of node that Conversation's read returns (`CONVERSATION_KINDS`), each the supertag
+ *  the tree read names such a node by. */
+const CONVERSATION_SUPERTAGS: ReadonlySet<string> = new Set(CONVERSATION_KINDS);
+
 /**
  * The tree `root` with an entry for each comment on text the reader wrote - the root of a thread
  * of `threads`, by node (`textThreadsOf`), which no row of the outline draws (R1) - as a node
  * under the node its thread stands by, first among its children, in the order of the threads'
  * words: so the list, which reads the rule of its entries (`contents-entries.ts`'
  * `isContentsEntry`), draws it in the tree's order under the nearest entry above that node, and
- * none for a reply in a thread. `threads` are those of the loaded pages of Conversation's read
- * (`useTextThreads`), so each later page of that read adds the entries of the threads it holds as
- * it loads (R8, root R15). A thread that stands by a node `root` holds none of - Conversation
- * draws no row of a plan task with no step - has its entry under the node it hangs from
- * (`NodeThreads.parent`) instead. A node that is a comment or a message takes no entry as a
+ * none for a reply in a thread. `threads` are those of the loaded pages of the outline read that
+ * `root` is drawn from (`useTextThreads`): Conversation's beside Conversation and each filter,
+ * Graph's in Graph. So each later page of that read adds the entries of the threads it holds as
+ * it loads (R8, root R15). A thread that stands by a node `root` holds none of - a block of a
+ * converted document, which Conversation draws no row of, or a node the words filter leaves out
+ * - has its entry under the node it hangs from (`NodeThreads.parent`) instead, where its node is
+ * of a kind that Conversation's read returns (`CONVERSATION_KINDS`). A thread on a node of
+ * another kind (`NodeThreads.supertag`), a result or a plan task, that `root` holds none of has
+ * no entry: Conversation's read does not return that node, so Graph's read, which does, adds no
+ * entry for it either, the list holds the same entries beside every view (R8), and Threads lists
+ * the thread (root R37). A node that is a comment or a message takes no entry as a
  * child, which the rule refuses as a reply: its entries follow it, in its parent's place, under
  * the nearest entry above it. The entries are no row: `held` stays as it was, and `root` is the
  * same object where no entry is added.
@@ -109,7 +123,8 @@ export function withThreadEntries(
   const entries = new Map<string, TreeNode[]>();
   const present =
     threads.size === 0 ? new Set<string>() : new Set(nodesInOrder(root).map((node) => node.id));
-  for (const [nodeId, { parent, threads: held }] of threads) {
+  for (const [nodeId, { parent, supertag, threads: held }] of threads) {
+    if (!present.has(nodeId) && !CONVERSATION_SUPERTAGS.has(supertag)) continue;
     const host = present.has(nodeId) ? nodeId : parent;
     if (!present.has(host)) continue;
     for (const { thread } of held) {

@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import type { CommentNodeAnchor } from "@legion/contracts";
 import { type RenderResult, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -11,7 +12,7 @@ import type { TreeNode } from "../issue-tree";
 import { readComment } from "../outline-fixtures";
 import { CONTROL_LABELS } from "../page-words";
 import { treeOf } from "../slots/stage-fixtures";
-import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { commentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { withThreadEntries } from "./contents-threads";
 import {
   answerSeededReads,
@@ -19,25 +20,30 @@ import {
   columnOf,
   drawPage,
   newClient,
+  ON_CHECK,
   ON_PLAN_TASK,
   ON_STATEMENT,
   PLAN_TASK,
   REPLY_ON_STATEMENT,
   RESULT,
   rowOf,
+  SERVES,
   STATEMENT,
   seededNodes,
   type TextThreadSeed,
   threadOn,
 } from "./margin-fixtures";
+import { THREAD_NODE_ATTRIBUTE } from "./TextMargin";
 import type { NodeThreads, TextThread } from "./text-threads";
 
 /**
  * R8 (root R14): the Contents list holds an entry for each comment on text that the reader wrote,
  * since it begins a thread, and none for a reply in its thread; the entry stands in the tree's
  * order at the node the comment is on, under the nearest entry above that node, and a press on it
- * opens its thread as an address of R8 does. The page is drawn by its own root (`drawPage`), whose
- * Contents pane stands beside the stage from 1024 px.
+ * opens its thread as an address of R8 does. A comment on a node of a kind that Conversation's
+ * read does not return, a result or a plan task, has no entry beside any view, Graph included.
+ * The page is drawn by its own root (`drawPage`), whose Contents pane stands beside the stage
+ * from 1024 px.
  */
 
 const COLUMN = "Comments on text";
@@ -62,11 +68,11 @@ const BOBS: TextThreadSeed = (() => {
   return { ...seed, comment: { ...seed.comment, author: bob } };
 })();
 
-// R8: the reader's own comment on text, a thread's root, is an entry; a reply in a thread is none,
-// nor is another reader's thread (the rule of `isContentsEntry`). The comment on a plan task,
-// which Conversation draws no row of, stands under the node its thread hangs from.
+// R8: the reader's own comments on text, each a thread's root - on the statement and on the check
+// under it - are entries; a reply in a thread is none, nor is another reader's thread (the rule of
+// `isContentsEntry`).
 test("the Contents list holds an entry for each comment on text the reader wrote, and none for a reply", async () => {
-  stubs = answerSeededReads({ threads: [ON_STATEMENT, ON_PLAN_TASK, BOBS] });
+  stubs = answerSeededReads({ threads: [ON_STATEMENT, ON_CHECK, BOBS] });
   const client = newClient();
   const view = drawPage(client, "conversation");
   try {
@@ -74,7 +80,7 @@ test("the Contents list holds an entry for each comment on text the reader wrote
     await waitFor(() =>
       expect(entriesOf(view), "the list's entries").toEqual([
         ON_STATEMENT.comment.id,
-        ON_PLAN_TASK.comment.id,
+        ON_CHECK.comment.id,
       ])
     );
     expect(entriesOf(view), "a reply in a thread is an entry").not.toContain(REPLY_ON_STATEMENT.id);
@@ -135,14 +141,15 @@ function threadOf(comment: Comment): TextThread {
   };
 }
 
-/** The threads of each node, by the node's id. */
+/** The threads of each node, by the node's id, with the node's supertag and the node it hangs
+ *  from. */
 function threadsOn(
-  ...nodes: readonly (readonly [string, string, readonly Comment[]])[]
+  ...nodes: readonly (readonly [string, string, string, readonly Comment[]])[]
 ): ReadonlyMap<string, NodeThreads> {
   return new Map(
-    nodes.map(([id, parent, comments]): [string, NodeThreads] => [
+    nodes.map(([id, supertag, parent, comments]): [string, NodeThreads] => [
       id,
-      { parent, threads: comments.map(threadOf) },
+      { parent, supertag, threads: comments.map(threadOf) },
     ])
   );
 }
@@ -164,9 +171,9 @@ function tree(...children: TreeNode[]): TreeNode {
 }
 
 // R8: the entry stands in the tree's order at the node its comment is on, under the nearest entry
-// above that node: a question's statement's comment is under the question; a node that Conversation
-// draws no row of takes its comment under the node it hangs from; and a comment on a comment,
-// which the rule of an entry refuses as a reply, stands after it, under the entry above it.
+// above that node: a question's statement's comment is under the question; and a comment on a
+// comment, which the rule of an entry refuses as a reply, stands after it, under the entry above
+// it.
 test("an entry stands under the nearest entry above the node its comment is on", () => {
   const post = node({ author: alice, id: "post", type: "comment" });
   const root = tree(
@@ -187,12 +194,11 @@ test("an entry stands under the nearest entry above the node its comment is on",
   const { kinds, root: held } = withThreadEntries(
     root,
     threadsOn(
-      ["statement", "ask", [mine("on-statement")]],
-      // The plan task is no node of this tree: its thread hangs from the statement.
-      ["gone-task", "statement", [mine("on-task")]],
-      ["post", KEY, [mine("on-post")]],
+      ["statement", "requirement", "ask", [mine("on-statement")]],
+      ["post", "comment", KEY, [mine("on-post")]],
       [
         "later",
+        "requirement",
         KEY,
         [mine("on-later"), { ...mine("on-bobs"), author: { id: "bob", kind: "user" } }],
       ]
@@ -201,7 +207,7 @@ test("an entry stands under the nearest entry above the node its comment is on",
     KEY
   );
   expect(shape(contentsOf(held, "alice", producingMessages(held)))).toEqual([
-    "ask: on-statement, on-task",
+    "ask: on-statement",
     "post",
     "on-post",
     "on-later",
@@ -210,11 +216,91 @@ test("an entry stands under the nearest entry above the node its comment is on",
     "on-later",
     "on-post",
     "on-statement",
-    "on-task",
   ]);
   expect(withThreadEntries(root, new Map(), "alice", KEY).root, "no thread, no new tree").toBe(
     root
   );
+});
+
+// R8: the list holds the same entries beside every view, Graph included. Graph's read holds a
+// result and a plan task, which Conversation's read returns no node of (`CONVERSATION_KINDS`),
+// with the reader's comment on the words of each - the result's anchored on the result itself,
+// as the tree read and the comments read answer a node anchor - and Graph's column draws each
+// thread beside its node. The list, which Graph draws from Graph's read, draws no row of either
+// node, so each thread hangs from a node the list holds (the check, the statement); it still has
+// no entry, as beside Conversation, and Threads lists it (root R37). The reader's comment on the
+// statement has its entry. A list that gave an entry to a thread whatever its node's kind fails.
+test("beside Graph, the reader's comment on a result or a plan task has no entry", async () => {
+  const onResult: Comment & { readonly node_anchor: CommentNodeAnchor } = {
+    ...readComment("on-res1", 7),
+    node_anchor: {
+      node: { id: RESULT, kind: "result", state: "live" },
+      occurrence: 0,
+      orphaned: false,
+      quote: "result words",
+    },
+  };
+  const threads = [ON_STATEMENT, ON_PLAN_TASK];
+  stubs = answerSeededReads({ posts: [onResult], threads });
+  const read = spyOn(api, "getIssueTree");
+  const seeded = read.getMockImplementation();
+  if (seeded === undefined) throw new Error("the seeded reads answer no tree read");
+  stubs.push(read);
+  // The tree read with no view: the seeded nodes and the comments on the statement's and the plan
+  // task's words, and the comment on the result's words under the result, with its node anchor.
+  read.mockImplementation(async (key, query = {}, init) =>
+    query.view === undefined
+      ? treeOf(
+          [
+            ...seededNodes(threads),
+            {
+              ...commentNode(onResult, RESULT),
+              anchor: {
+                node: { id: RESULT, kind: "result", state: "live" },
+                occurrence: 0,
+                orphaned: false,
+                quote: "result words",
+              },
+            },
+          ],
+          SERVES
+        )
+      : seeded(key, query, init)
+  );
+  const client = newClient();
+  const view = drawPage(client, "graph");
+  try {
+    const column = await columnOf(view, COLUMN, 8000);
+    if (column === null) throw new Error("Graph draws no column");
+    const nodeOf = (id: string) =>
+      column.querySelector(`[data-text-thread="${id}"]`)?.getAttribute(THREAD_NODE_ATTRIBUTE);
+    await waitFor(
+      () =>
+        expect(
+          [ON_STATEMENT.comment.id, onResult.id, ON_PLAN_TASK.comment.id].map(nodeOf),
+          "Graph's column does not draw each thread beside its node"
+        ).toEqual([ON_STATEMENT.node, RESULT, ON_PLAN_TASK.node]),
+      { timeout: 8000 }
+    );
+    await waitFor(() =>
+      expect(
+        entriesOf(view),
+        "the list holds no entry for the reader's comment on the statement beside Graph"
+      ).toContain(ON_STATEMENT.comment.id)
+    );
+    expect(
+      entriesOf(view),
+      "the list holds an entry for the reader's comment on a result beside Graph"
+    ).not.toContain(onResult.id);
+    expect(
+      entriesOf(view),
+      "the list holds an entry for the reader's comment on a plan task beside Graph"
+    ).not.toContain(ON_PLAN_TASK.comment.id);
+    expect(entriesOf(view), "the list's entries").toEqual([ON_STATEMENT.comment.id]);
+  } finally {
+    view.finish();
+    client.clear();
+  }
 });
 
 // R8 (root R14, R15), through the page: the reader's comment on a statement that the first page of

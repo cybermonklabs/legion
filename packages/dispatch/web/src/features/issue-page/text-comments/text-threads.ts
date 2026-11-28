@@ -84,6 +84,11 @@ export interface NodeThreads {
    *  else the issue): a node drawn under several parents - a check or a plan task also under each
    *  other requirement it serves - has its threads beside its row under this parent alone. */
   readonly parent: string;
+  /** The node's supertag, its kind as the tree read names it (a typed block's type, `comment`,
+   *  `result`, ...): the Contents list gives no entry to a thread on a node of a kind that
+   *  Conversation's read does not return, where its tree holds no such node
+   *  (`withThreadEntries`). */
+  readonly supertag: string;
   readonly threads: readonly TextThread[];
 }
 
@@ -166,6 +171,7 @@ export function textThreadsOf(
     );
     threads.set(nodeId, {
       parent: storedParentOf(node, onText, idOf, drawn, key),
+      supertag: node.supertag,
       threads: rows.map((row) => row.thread),
     });
   }
