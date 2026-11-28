@@ -9,12 +9,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // A write phase past the send bound goes as several batches (partEnd): every statement once and
 // in its order, each batch within the bound unless it is one statement past it alone, and a batch
 // cut only where the next statement would take it past the bound.
 func TestPartsKeepEveryStatementInOrderWithinTheBound(t *testing.T) {
+	t.Parallel()
 	const bound = 8
 	sizes := []int{3, 4, 2, 9, 1, 1, 12, 5, 8, 0}
 	size := func(index int) (int, error) { return sizes[index], nil }
@@ -52,6 +55,7 @@ func TestPartsKeepEveryStatementInOrderWithinTheBound(t *testing.T) {
 // A statement whose arguments fail to build ends the part at itself, so Send sends the statements
 // queued before it first and their own failure comes before the build's.
 func TestAFailedBuildEndsThePartAtItsStatement(t *testing.T) {
+	t.Parallel()
 	failed := errors.New("encode the arguments")
 	size := func(index int) (int, error) {
 		if index == 2 {
@@ -79,8 +83,11 @@ func TestAFailedBuildEndsThePartAtItsStatement(t *testing.T) {
 // starts one statement late, and this fails, naming statements 3, 7 and 11, the first of each
 // later part, as missing from the rows.
 func TestAWritePhasePastTheSendBoundRunsEveryStatementInOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	config, err := pgx.ParseConfig(testDatabaseURL(t))
+	// A database of the test's own: its temporary table and its transaction touch no other test's.
+	admin := adminDatabaseURL(t)
+	config, err := pgx.ParseConfig(testdb.DatabaseOn(t, admin.String(), "dispatch_test"))
 	if err != nil {
 		t.Fatalf("parse the test database's URL: %v", err)
 	}

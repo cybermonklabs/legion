@@ -20,11 +20,9 @@ const ownerFallback = "operator@example.com"
 // owner from the operator's setting; and a project created afterwards takes its default assignee
 // as it is inserted. Then no project is without an owner.
 func TestEveryProjectHasAnOwner(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, projectAccessVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", projectAccessVersion-1, err)
-	}
+	store := openMigratedTestStore(t, projectAccessVersion-1)
 	if _, err := store.Pool.Exec(ctx, `insert into people (email) values ('carol@example.com'), ($1)`, ownerFallback); err != nil {
 		t.Fatalf("seed people before %d: %v", projectAccessVersion, err)
 	}
@@ -67,6 +65,7 @@ func TestEveryProjectHasAnOwner(t *testing.T) {
 // member, because an owner is always a full member. The refusal names no person's email, neither
 // the default assignees' nor the setting's, since the boot writes it to its log.
 func TestTheBootNamesEveryProjectItCannotGiveAnOwner(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, setting := range []struct{ name, fallback string }{
 		{"no setting", ""},
@@ -74,10 +73,7 @@ func TestTheBootNamesEveryProjectItCannotGiveAnOwner(t *testing.T) {
 		{"a setting that names a restricted member", "outsider@other.example"},
 	} {
 		t.Run(setting.name, func(t *testing.T) {
-			store := openEmptyTestStore(t)
-			if err := store.migrate(ctx, migrationsThrough(t, projectAccessVersion-1)); err != nil {
-				t.Fatalf("migrate through %d: %v", projectAccessVersion-1, err)
-			}
+			store := openMigratedTestStore(t, projectAccessVersion-1)
 			if _, err := store.Pool.Exec(ctx, `
 				insert into projects (key, name, default_assignee) values
 					('STRAY', 'Stray', 'gone@example.com'),
@@ -118,8 +114,9 @@ func TestTheBootNamesEveryProjectItCannotGiveAnOwner(t *testing.T) {
 // TestAWriteThatClearsTheOwnerIsRefused: once a project has an owner, no write can take it away,
 // so a project never goes back to having nobody who may change its access.
 func TestAWriteThatClearsTheOwnerIsRefused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openMigratedProjectStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('KEPT', 'Kept', 'carol@example.com')`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -140,8 +137,9 @@ func TestAWriteThatClearsTheOwnerIsRefused(t *testing.T) {
 // (`owner is null`) and every reader compare byte for byte, so a write of an empty or mixed-case
 // owner is refused with check_violation and leaves the owner as it was.
 func TestAnOwnerIsANonEmptyLowercaseLogin(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openMigratedProjectStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('KEPT', 'Kept', 'carol@example.com')`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -162,8 +160,9 @@ func TestAnOwnerIsANonEmptyLowercaseLogin(t *testing.T) {
 // many writers makes it, stores an owner, because a project with no owner named takes its default
 // assignee; an insert that names an owner keeps it.
 func TestAnInsertWithNoOwnerTakesTheDefaultAssignee(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openMigratedProjectStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('DEFAULT', 'Default', 'carol@example.com');
 		insert into projects (key, name, default_assignee, owner) values ('NAMED', 'Named', 'carol@example.com', 'dave@example.com');
@@ -176,16 +175,6 @@ func TestAnInsertWithNoOwnerTakesTheDefaultAssignee(t *testing.T) {
 	if got := projectOwner(t, store, "NAMED"); got != "dave@example.com" {
 		t.Errorf("owner of a project inserted with one = %q, want dave@example.com as named", got)
 	}
-}
-
-// openMigratedProjectStore is a database of its own carrying every migration.
-func openMigratedProjectStore(t *testing.T) *Store {
-	t.Helper()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	return store
 }
 
 // giveByUpdate is the store's own stand-in for the boot's giver (access.GiveOwnerless, which this

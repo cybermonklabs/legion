@@ -13,7 +13,7 @@ import (
 func TestReadRepoRenamesAnswersOneLowerCasePairForEachOldName(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := migratedEmptyStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into repo_projects (repo, project, created_by, renamed_to) values
@@ -44,7 +44,7 @@ func TestReadRepoRenamesAnswersOneLowerCasePairForEachOldName(t *testing.T) {
 func TestReadRepoRenamesReadsNothingOnceRepoProjectsIsDropped(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := migratedEmptyStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into repo_projects (repo, project, created_by, renamed_to)

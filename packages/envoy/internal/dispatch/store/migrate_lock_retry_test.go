@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // withOwedTrigger is censusBase plus a pending 0002 that adds a row trigger to things: a function and
@@ -50,20 +50,28 @@ func holdWrite(t *testing.T, store *Store) (pgx.Tx, uint32) {
 // A migration queued behind an open write gives up at its lock_timeout, rolls back, holding
 // nothing while it pauses, and tries again; once the writer commits, the next attempt applies it.
 // The timed-out attempt is logged with the lock, the writer and the writer's diagnosis.
+//
+// The store runs under production's Timeout on a fake clock: the logged lock and writer are what the
+// lock watch read, and its reading must land inside the wait (watchReadsTheWait). The writer
+// commits in the pause the runner arms on the store's clock once its first attempt has timed out
+// (awaitThePause), and the test then moves the clock past that pause.
 func TestMigrateTriesALockTimeoutAgainAndAppliesOnceTheWriterCommits(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the runner's attempt lines.
 	ctx := context.Background()
 	store, _ := migratedToOne(t)
+	fake := underLocking(store, 0)
 	logs := captureLogs(t)
 	held, pid := holdWrite(t, store)
 	migrated := make(chan error, 1)
 	go func() { migrated <- store.migrate(ctx, withOwedTrigger()) }()
-	waitForQueuedLock(t, store, "things", "ShareRowExclusiveLock")
+	watchReadsTheWait(t, store, fake, "things", "ShareRowExclusiveLock")
 	// Past the first attempt's lock_timeout and into the pause, then let the writer go.
-	time.Sleep(pgmigrate.LockTimeout + pgmigrate.LockTimeoutRetryPause/2)
+	awaitThePause(t, fake, 1)
 	if err := held.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-migrated; err != nil {
+	fake.Advance(pgmigrate.LockTimeoutRetryPause)
+	if err := testwait.Receive(t, "migrate to return once the writer committed", migrated); err != nil {
 		t.Fatalf("migrate once the writer committed: %v", err)
 	}
 	if got := schemaVersion(t, store); got != 2 {
@@ -87,12 +95,20 @@ func TestMigrateTriesALockTimeoutAgainAndAppliesOnceTheWriterCommits(t *testing.
 // A migration whose lock wait outlasts its lock_timeout on every attempt fails the runner after
 // pgmigrate.LockTimeoutAttempts attempts, applies nothing, and its error names the writer it was
 // queued behind with the writer's diagnosis. Each attempt is logged.
+//
+// The store runs under production's Timeout on a fake clock: the error's writer is what the lock
+// watch read, and its reading must land inside the wait (everyAttemptTimesOut).
 func TestMigrateFailsNamingTheWriterOnceEveryAttemptTimesOut(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read and count the runner's attempt lines.
 	ctx := context.Background()
 	store, _ := migratedToOne(t)
+	fake := underLocking(store, 0)
 	logs := captureLogs(t)
 	_, pid := holdWrite(t, store)
-	err := store.migrate(ctx, withOwedTrigger())
+	migrated := make(chan error, 1)
+	go func() { migrated <- store.migrate(ctx, withOwedTrigger()) }()
+	everyAttemptTimesOut(t, store, fake, "things", "ShareRowExclusiveLock")
+	err := testwait.Receive(t, "migrate to give up after its last attempt", migrated)
 	var lockTimeout *pgmigrate.LockTimeoutError
 	if !errors.As(err, &lockTimeout) || lockTimeout.Migration != "0002_things_owed.up.sql" {
 		t.Fatalf("migrate = %v, want a lock timeout of 0002", err)

@@ -2,15 +2,17 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Processes that boot at once against an empty database all migrate it. The version table is
@@ -28,21 +30,26 @@ func TestMigrateFromSeveralProcessesAtOnceOnAnEmptyDatabase(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open another process's store: %v", err)
 		}
-		t.Cleanup(another.Pool.Close)
+		t.Cleanup(func() {
+			testwait.Returns(t, "every connection of another process's pool to come back, so the pool closes", another.Pool.Close)
+		})
 		stores = append(stores, another)
 	}
 	set := fstest.MapFS{"migrations/0001_first.up.sql": {Data: []byte("create table guard_first (id integer)")}}
 	start := make(chan struct{})
-	errs := make(chan error, processes)
-	for _, process := range stores {
+	// Each process sends its answer on a channel of its own, so the wait for it names the process
+	// that has not returned.
+	errs := make([]chan error, len(stores))
+	for i, process := range stores {
+		errs[i] = make(chan error, 1)
 		go func() {
 			<-start
-			errs <- process.migrate(ctx, set)
+			errs[i] <- process.migrate(ctx, set)
 		}()
 	}
 	close(start)
-	for range processes {
-		if err := <-errs; err != nil {
+	for i := range processes {
+		if err := testwait.Receive(t, fmt.Sprintf("process %d of %d's migrate to return", i+1, processes), errs[i]); err != nil {
 			t.Errorf("a process migrating at the same moment failed: %v", err)
 		}
 	}
@@ -113,12 +120,18 @@ func TestMigrateRefusesTwoMigrationsSharingAVersionBeforeApplyingAny(t *testing.
 // out on every one of its attempts, naming itself, the lock it wanted and the session that held
 // it, and applies nothing. Unbounded, it waits for as long as the holder lives, and every read and
 // write of the table queues behind its request for that long.
+//
+// The store runs under production's Timeout on a fake clock: the error's lock and holder are what
+// the lock watch read, and its reading must land inside the wait (watchReadsTheWait). Each give-up
+// is a fact the runner reports: after each attempt but the last, the pause it arms on the store's
+// clock once the attempt has timed out (awaitThePause), which the test moves past, and after the
+// last, its error. A runner whose lock waits nothing bounds never arms that pause, and the test's
+// wait for it gives up at the test binary's deadline less testwait's margin, naming it.
 func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
-	lockTimeout := pgmigrate.LockTimeout
-	// Every attempt waits out the lock timeout, with the runner's pause between attempts.
-	gaveUp := pgmigrate.LockTimeoutAttempts*lockTimeout + (pgmigrate.LockTimeoutAttempts-1)*pgmigrate.LockTimeoutRetryPause
+	t.Parallel()
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
+	fake := underLocking(store, 0)
 	if _, err := store.Pool.Exec(ctx, "create table guard_held (id integer)"); err != nil {
 		t.Fatalf("create the held table: %v", err)
 	}
@@ -141,24 +154,21 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 		"migrations/0001_widen_held.up.sql": {Data: []byte("alter table guard_held add column wider integer")},
 	}
 
-	// The test's own bound on the wait, well past the runner's: a runner that does not bound its
-	// lock waits shows up here as a wait this long.
-	bound := gaveUp + 3*lockTimeout
-	bounded, cancel := context.WithTimeout(ctx, bound)
-	defer cancel()
-	started := time.Now()
-	err = store.migrate(bounded, set)
-	waited := time.Since(started)
-	if bounded.Err() != nil {
-		t.Fatalf("migrate waited %s for the held lock, until the test's own %s bound cancelled it (%v): nothing bounds a migration's lock wait", waited.Round(time.Millisecond), bound, err)
-	}
+	migrated := make(chan error, 1)
+	go func() { migrated <- store.migrate(ctx, set) }()
+	everyAttemptTimesOut(t, store, fake, "guard_held", "AccessExclusiveLock")
+	err = testwait.Receive(t, "migrate to give up after its last attempt", migrated)
 	if err == nil {
-		t.Fatalf("migrate applied a migration whose lock another transaction held, after %s", waited.Round(time.Millisecond))
+		t.Fatal("migrate applied a migration whose lock another transaction held")
 	}
-	if waited < gaveUp || waited > gaveUp+10*time.Second {
-		t.Errorf("migrate gave up after %s, want about %s: %d attempts of the %s lock timeout", waited.Round(time.Millisecond), gaveUp, pgmigrate.LockTimeoutAttempts, lockTimeout)
+	var lockTimeout *pgmigrate.LockTimeoutError
+	if !errors.As(err, &lockTimeout) || !strings.Contains(err.Error(), fmt.Sprintf("after %d attempts:", pgmigrate.LockTimeoutAttempts)) {
+		t.Fatalf("migrate = %v, want a *pgmigrate.LockTimeoutError after %d attempts: nothing bounds a migration's lock wait", err, pgmigrate.LockTimeoutAttempts)
 	}
-	t.Logf("migrate gave up after %s: %v", waited.Round(time.Millisecond), err)
+	if lockTimeout.Timeout != pgmigrate.LockTimeout {
+		t.Errorf("the migration gave up under a lock_timeout of %v, want the store's, %v", lockTimeout.Timeout, pgmigrate.LockTimeout)
+	}
+	t.Logf("migrate gave up: %v", err)
 	holderPID := strconv.FormatUint(uint64(holder.PgConn().PID()), 10)
 	for _, want := range []string{"0001_widen_held.up.sql", "AccessExclusiveLock", "guard_held", "pid " + holderPID, "pg_stat_activity"} {
 		if !strings.Contains(err.Error(), want) {

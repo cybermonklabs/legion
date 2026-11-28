@@ -6,9 +6,12 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestLoadNonTransactionalMigration(t *testing.T) {
@@ -383,6 +386,14 @@ func leaveInvalidIndex(t *testing.T, ctx context.Context, conn *pgx.Conn, name, 
 
 // A build the runner itself started and lost to lock_timeout leaves an INVALID index of the
 // migration's own name on the migration's own table. The next attempt must drop it and build again.
+//
+// The first attempt builds under a Locking of 300 ms, so Postgres cancels the build behind the
+// held write at 300 ms rather than at production's 5 s; the second builds under production's
+// Timeout, since it waits on nothing the test holds. Both run on a fake clock, as the retry's pause
+// does: the test moves the fake past the pause once RetryLockTimeouts has armed it
+// LockTimeoutRetryPause past the fake's moment, so a pause of another length fails the row. The
+// fake is never moved to a lock watch's tick, so no watch dials the test's database: a concurrent
+// build waits for each backend there that holds an older snapshot, and a watch's would be one.
 func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -402,32 +413,46 @@ func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	migration := indexMigration()
-	var attempts int
-	var leftover uint32
-	runErr := RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
-		attempts++
-		err := ExecNonTransactional(ctx, conn, migration, nil)
-		if attempts == 1 {
-			got := indexState(t, ctx, conn, "things_kind")
-			// The oid is the leftover's, read here and compared after the rebuild.
-			if want := (relation{OID: got.OID, Index: true, Table: "things"}); got != want {
-				t.Fatalf("after attempt 1: things_kind = %+v, want %+v", got, want)
+	fake := clocktest.New(time.Unix(0, 0).UTC())
+	start := fake.Now()
+	// errs holds each attempt's error. The retry's goroutine appends to it, and this one reads it
+	// once the armed pause, or the retry's return, says that attempt is done.
+	var errs []error
+	done := make(chan error, 1)
+	go func() {
+		done <- Locking{Clock: fake}.RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
+			locking := Locking{Clock: fake}
+			if len(errs) == 0 {
+				locking.Timeout = 300 * time.Millisecond
 			}
-			t.Logf("after attempt 1: things_kind = %+v; error %v", got, err)
-			leftover = got.OID
-			if rollback := tx.Rollback(ctx); rollback != nil {
-				t.Fatal(rollback)
-			}
-		}
-		return err
-	})
+			err := locking.ExecNonTransactional(ctx, conn, migration, nil)
+			errs = append(errs, err)
+			return err
+		})
+	}()
+	fake.AwaitArmedAt(t, "RetryLockTimeouts' pause after the first attempt", start.Add(LockTimeoutRetryPause))
+	if len(errs) != 1 {
+		t.Fatalf("attempts before the pause = %d, want 1", len(errs))
+	}
+	got := indexState(t, ctx, conn, "things_kind")
+	// The oid is the leftover's, read here and compared after the rebuild.
+	if want := (relation{OID: got.OID, Index: true, Table: "things"}); got != want {
+		t.Fatalf("after attempt 1: things_kind = %+v, want %+v", got, want)
+	}
+	t.Logf("after attempt 1: things_kind = %+v; error %v", got, errs[0])
+	leftover := got.OID
+	if rollback := tx.Rollback(ctx); rollback != nil {
+		t.Fatal(rollback)
+	}
+	fake.Advance(LockTimeoutRetryPause)
+	runErr := testwait.Receive(t, "RetryLockTimeouts to return after the attempt that follows its pause", done)
 	if runErr != nil {
 		t.Fatalf("RetryLockTimeouts = %v, want nil after the leftover is dropped and the index built again", runErr)
 	}
-	if attempts != 2 {
+	if attempts := len(errs); attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
 	}
-	got := indexState(t, ctx, conn, "things_kind")
+	got = indexState(t, ctx, conn, "things_kind")
 	if want := (relation{OID: got.OID, Index: true, Valid: true, Table: "things"}); got != want {
 		t.Fatalf("things_kind = %+v, want %+v", got, want)
 	}
@@ -546,7 +571,11 @@ func TestExecNonTransactionalLeavesAnIndexOfAnotherNameAlone(t *testing.T) {
 
 // The DROP of the runner's own leftover takes locks too. One that outlasts lock_timeout must come
 // back as a *LockTimeoutError, which is what RetryLockTimeouts finds with errors.As and retries,
-// and it must be the drop's own: the error carries the wrapping only the drop adds.
+// and it must be the drop's own: the error carries the wrapping only the drop adds. The error names
+// the Timeout of the Locking it ran under, here 300 ms, at which Postgres cancels the drop behind
+// the holder rather than at production's 5 s. The Locking's clock is a fake the row never moves,
+// so the lock watch never dials the test's database, whose backend would be one more that a
+// concurrent drop waits for.
 func TestExecNonTransactionalReportsADropTimeoutAsALockTimeoutError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -566,12 +595,19 @@ func TestExecNonTransactionalReportsADropTimeoutAsALockTimeoutError(t *testing.T
 	if _, err := tx.Exec(ctx, "lock table things in share update exclusive mode"); err != nil {
 		t.Fatal(err)
 	}
-	err = ExecNonTransactional(ctx, conn, indexMigration(), nil)
+	short := Locking{Timeout: 300 * time.Millisecond, Clock: clocktest.New(time.Unix(0, 0).UTC())}
+	err = short.ExecNonTransactional(ctx, conn, indexMigration(), nil)
 	var timedOut *LockTimeoutError
 	if !errors.As(err, &timedOut) {
 		t.Fatalf("ExecNonTransactional = %v, want a *LockTimeoutError from the DROP of the leftover", err)
 	}
 	if !strings.HasPrefix(err.Error(), "drop the INVALID index") {
 		t.Fatalf("error %q is not the one the DROP of the leftover wraps; it came from elsewhere", err)
+	}
+	if timedOut.Timeout != short.Timeout {
+		t.Errorf("the error's Timeout is %v, want %v, the Locking's the drop ran under", timedOut.Timeout, short.Timeout)
+	}
+	if want := "(300ms unless the migration sets its own)"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not name the Locking's timeout as %q", err, want)
 	}
 }

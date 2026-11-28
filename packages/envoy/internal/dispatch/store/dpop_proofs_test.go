@@ -2,16 +2,28 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// proofFixture is a migrated database of the test's own and the replay store on it.
-func proofFixture(t *testing.T) *DPoPProofs {
+// liveProofAhead is how far past the database's clock a row dates the expiry of a proof whose
+// record must still stand at a later presentation or a sweep: the record lasts until that expiry
+// and jtiRetentionMargin more, judged by the database's now(). It is staged state, not a wait:
+// longer than any go test -timeout this package runs under, so the record still stands however
+// long a loaded machine takes, where a minute could pass before the replay reached the database.
+const liveProofAhead = 24 * time.Hour
+
+// proofFixture is a migrated database of the test's own, the replay store on it, and the
+// database's clock read once (databaseNow), the clock the store judges every expiry by, so each
+// expiry a row dates is dated on that clock rather than this process's.
+func proofFixture(t *testing.T) (*DPoPProofs, time.Time) {
 	t.Helper()
-	database := migratedEmptyStore(t)
-	return NewDPoPProofs(database.Pool)
+	database := openMigratedTestStore(t, latestVersion)
+	return NewDPoPProofs(database.Pool), databaseNow(t, database.Pool)
 }
 
 // The first presentation of a proof is not a replay and the second is, and a proof reusing a
@@ -20,8 +32,8 @@ func proofFixture(t *testing.T) *DPoPProofs {
 func TestADPoPProofIsUsedOncePerTargetURI(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	proofs := proofFixture(t)
-	exp := time.Now().Add(time.Minute)
+	proofs, now := proofFixture(t)
+	exp := now.Add(liveProofAhead)
 
 	used, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-1", "jkt", "", "GET", "https://dispatch.test/a", exp)
 	if err != nil || used {
@@ -42,8 +54,8 @@ func TestADPoPProofIsUsedOncePerTargetURI(t *testing.T) {
 func TestTwoPresentationsOfOneProofAtOnceLeaveExactlyOneUnused(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	proofs := proofFixture(t)
-	exp := time.Now().Add(time.Minute)
+	proofs, now := proofFixture(t)
+	exp := now.Add(liveProofAhead)
 
 	const presentations = 8
 	outcomes := make([]bool, presentations)
@@ -60,7 +72,7 @@ func TestTwoPresentationsOfOneProofAtOnceLeaveExactlyOneUnused(t *testing.T) {
 		}()
 	}
 	start.Done()
-	done.Wait()
+	testwait.Returns(t, fmt.Sprintf("the %d presentations of one proof to be answered", presentations), done.Wait)
 
 	unused := 0
 	for i, err := range failures {
@@ -81,14 +93,14 @@ func TestTwoPresentationsOfOneProofAtOnceLeaveExactlyOneUnused(t *testing.T) {
 func TestAnExpiredRecordIsTakenOver(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	proofs := proofFixture(t)
+	proofs, now := proofFixture(t)
 
 	// Past by more than jtiRetentionMargin, which the record's own expiry adds.
-	expired := time.Now().Add(-2 * jtiRetentionMargin)
+	expired := now.Add(-2 * jtiRetentionMargin)
 	if used, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-expired", "jkt", "", "GET", "https://dispatch.test/a", expired); err != nil || used {
 		t.Fatalf("the expired proof's own presentation: used = %v, err = %v", used, err)
 	}
-	used, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-expired", "jkt", "", "GET", "https://dispatch.test/a", time.Now().Add(time.Minute))
+	used, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-expired", "jkt", "", "GET", "https://dispatch.test/a", now.Add(liveProofAhead))
 	if err != nil || used {
 		t.Fatalf("a fresh proof of an expired record's key: used = %v, err = %v; want not used", used, err)
 	}
@@ -99,14 +111,14 @@ func TestAnExpiredRecordIsTakenOver(t *testing.T) {
 func TestSweepDeletesOnlyTheRecordsThatCanNoLongerBePresented(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	proofs := proofFixture(t)
+	proofs, now := proofFixture(t)
 
 	for _, jti := range []string{"jti-gone-1", "jti-gone-2"} {
-		if _, err := proofs.CheckAndSetDPoPProofUsed(ctx, jti, "jkt", "", "GET", "https://dispatch.test/a", time.Now().Add(-2*jtiRetentionMargin)); err != nil {
+		if _, err := proofs.CheckAndSetDPoPProofUsed(ctx, jti, "jkt", "", "GET", "https://dispatch.test/a", now.Add(-2*jtiRetentionMargin)); err != nil {
 			t.Fatalf("record %s: %v", jti, err)
 		}
 	}
-	if _, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-live", "jkt", "", "GET", "https://dispatch.test/a", time.Now().Add(time.Minute)); err != nil {
+	if _, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-live", "jkt", "", "GET", "https://dispatch.test/a", now.Add(liveProofAhead)); err != nil {
 		t.Fatalf("record the live proof: %v", err)
 	}
 
@@ -117,7 +129,7 @@ func TestSweepDeletesOnlyTheRecordsThatCanNoLongerBePresented(t *testing.T) {
 	if deleted != 2 {
 		t.Fatalf("Sweep deleted %d records, want the 2 that had expired", deleted)
 	}
-	if used, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-live", "jkt", "", "GET", "https://dispatch.test/a", time.Now().Add(time.Minute)); err != nil || !used {
+	if used, err := proofs.CheckAndSetDPoPProofUsed(ctx, "jti-live", "jkt", "", "GET", "https://dispatch.test/a", now.Add(liveProofAhead)); err != nil || !used {
 		t.Fatalf("after the sweep the live record: used = %v, err = %v; want used", used, err)
 	}
 }

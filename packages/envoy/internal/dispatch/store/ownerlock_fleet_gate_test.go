@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,10 +26,17 @@ import (
 // owner_lock_legacy_registration). It goes on once that transaction commits, and the next owner
 // lock reads the earlier build in the fleet and takes the owner's row, without the gate; a second
 // arrival then waits for nothing, though that writer is between its owner lock and its write too.
+//
+// The arrival is read waiting when the writer is first between its lock and its write and again
+// as the writer lets the gate go, and its gate function catches no error (gateWaitsEndOnlyByTheLock),
+// so the wait ends only when the gate is granted, or by an error the Receive below fails on: an
+// arrival cannot give its wait up and go through.
 func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *testing.T) {
+	t.Parallel()
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			s, owners := openFleetStore(t)
+			gateWaitsEndOnlyByTheLock(t, s)
 			ctx := context.Background()
 			waitRegistrationsOut(ctx, t, s)
 			writer, err := s.Pool.Begin(ctx)
@@ -37,10 +44,11 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 				t.Fatal(err)
 			}
 			defer writer.Rollback(ctx)
-			if err := LockOwner(ctx, writer, owners.issueA); err != nil {
+			lock := recordModes(writer)
+			if err := LockOwner(ctx, lock, owners.issueA); err != nil {
 				t.Fatal(err)
 			}
-			if mode := lastOwnerLockMode(); mode != ownerLockAdvisory {
+			if mode := lock.mode(); mode != ownerLockAdvisory {
 				t.Fatalf("the writer took the %s mode with no earlier build in the fleet, want %s", mode, ownerLockAdvisory)
 			}
 			if gate, granted := gateLock(t, s, writer.Conn().PgConn().PID()); gate != "ShareLock" || !granted {
@@ -60,10 +68,12 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			arrived := make(chan error, 1)
 			go func() { arrived <- arriveOn(ctx, t, conn, arrival, uuid.NewString()) }()
 			awaitGateWait(t, s, arrivalPID, arrived, arrival.name)
+			// The arrival waits for the gate the writer holds shared (awaitGateWait read it
+			// waiting), so it cannot end before the writer commits: that state is what this reads.
 			select {
 			case err := <-arrived:
 				t.Fatalf("%s ended (%v) while the writer was between its owner lock and its write", arrival.name, err)
-			case <-time.After(300 * time.Millisecond):
+			default:
 			}
 
 			if _, err := writer.Exec(ctx, ownerLock, OwnerLockNamespace, owners.issueA.LockKey()); err != nil {
@@ -71,6 +81,9 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			}
 			if _, err := writer.Exec(ctx, `update issues set last_seq = $2 where key = $1`, owners.issueA.Key, seq+1); err != nil {
 				t.Fatal(err)
+			}
+			if gate, granted := gateLock(t, s, arrivalPID); gate != "ExclusiveLock" || granted {
+				t.Fatalf("%s holds the gate as %q (granted %t) as the writer is about to commit, want it still waiting for it exclusively: it gave its wait up", arrival.name, gate, granted)
 			}
 			if err := writer.Commit(ctx); err != nil {
 				t.Fatal(err)
@@ -84,10 +97,11 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 				t.Fatal(err)
 			}
 			defer next.Rollback(ctx)
-			if err := LockOwner(ctx, next, owners.issueA); err != nil {
+			nextLock := recordModes(next)
+			if err := LockOwner(ctx, nextLock, owners.issueA); err != nil {
 				t.Fatal(err)
 			}
-			if mode := lastOwnerLockMode(); mode != ownerLockAdvisoryAndRow {
+			if mode := nextLock.mode(); mode != ownerLockAdvisoryAndRow {
 				t.Errorf("the writer after %s took the %s mode, want %s", arrival.name, mode, ownerLockAdvisoryAndRow)
 			}
 			if !ownerRowHeld(t, s, owners.issueA) {
@@ -111,6 +125,25 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 				t.Fatalf("a second arrival beside a writer in the mode beside an earlier build: %v", answer.err)
 			}
 		})
+	}
+}
+
+// gateWaitsEndOnlyByTheLock fails t unless every function that takes the owner lock gate for an
+// earlier build's arrival (owner_lock_legacy_arrival, owner_lock_legacy_registration) takes it
+// with the waiting pg_advisory_xact_lock and catches no error: its wait then ends only when the
+// gate is granted, or with the error its lock_timeout raises (55P03), and never by giving the
+// wait up and going on without the gate, which a wait read as an order of events cannot see.
+func gateWaitsEndOnlyByTheLock(t *testing.T, s *Store) {
+	t.Helper()
+	for _, function := range []string{"owner_lock_legacy_arrival", "owner_lock_legacy_registration"} {
+		var source string
+		if err := s.Pool.QueryRow(context.Background(), `select prosrc from pg_proc where proname = $1`, function).Scan(&source); err != nil {
+			t.Fatalf("read %s's body: %v", function, err)
+		}
+		body := strings.ToLower(source)
+		if !strings.Contains(body, "pg_catalog.pg_advisory_xact_lock(") || strings.Contains(body, "pg_try_advisory") || strings.Contains(body, "exception") {
+			t.Fatalf("%s takes the owner lock gate in a way that can end its wait without the gate: want pg_catalog.pg_advisory_xact_lock and no exception handler or try lock in\n%s", function, source)
+		}
 	}
 }
 
@@ -185,17 +218,18 @@ func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pa
 }
 
 // dropRoleAfterTestDatabase is the cleanup of a role a test creates in s, a database of the
-// test's own (openEmptyTestStore), and is registered as soon as the role exists
-// (pauseFleetReadsAt, and the census's roles in census_test.go). It drops that database and then
-// the role, each a statement of its own on a connection of its own to the server's postgres
+// test's own (openMigratedTestStore or openEmptyTestStore), and is registered as soon as the role
+// exists (pauseFleetReadsAt, and the census's roles in census_test.go). It drops that database and
+// then the role, each a statement of its own on a connection of its own to the server's postgres
 // database, and runs the role's drop whatever the database's did. A role spans the cluster, and
 // what a test grants it or lets it own is in the test database, so once that database is gone
 // nothing depends on the role and its drop takes it, whatever the test left there: a table the
 // role owns that a view of the login depends on refuses `drop owned by` of the role (2BP01) and a
-// drop of the role, and not the database's drop. The test database's own drop (testdb.DatabaseOn)
-// was registered before the role existed, so it runs after this cleanup and finds the database
-// gone. A database whose drop fails is still there, and so are the role's grants in it, which
-// refuse the role's drop: the cleanup then drops them first (`drop owned by`, in that database).
+// drop of the role, and not the database's drop. The test database's own drop (openDatabaseCopy's
+// or testdb.DatabaseOn's) was registered before the role existed, so it runs after this cleanup
+// and finds the database gone. A database whose drop fails is still there, and so are the role's
+// grants in it, which refuse the role's drop: the cleanup then drops them first (`drop owned by`,
+// in that database).
 func dropRoleAfterTestDatabase(t *testing.T, s *Store, role string) {
 	t.Helper()
 	ctx := context.Background()
@@ -268,6 +302,7 @@ func awaitFleetReadPause(t *testing.T, s *Store, pid uint32, done <-chan struct{
 // advisory lock alone: the row the pause stops at counts for nothing. A second read that answered
 // the first read's result again would leave the writer in the advisory mode beside the arrival.
 func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		arrival *earlierBuildArrival
@@ -298,15 +333,16 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 				t.Fatal(err)
 			}
 			writerPID := writer.Conn().PgConn().PID()
+			lock := recordModes(writer)
 			locked := make(chan error, 1)
 			done := make(chan struct{})
 			go func() {
-				locked <- LockOwner(ctx, writer, owners.issueA)
+				locked <- LockOwner(ctx, lock, owners.issueA)
 				close(done)
 			}()
 			defer func() {
 				_ = pause.Rollback(ctx)
-				<-done
+				testwait.Receive(t, "the writer's LockOwner to return once the pause rolled back", done)
 				_ = writer.Rollback(ctx)
 			}()
 			awaitFleetReadPause(t, s, writerPID, done)
@@ -340,7 +376,7 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 			if c.arrival != nil {
 				want = ownerLockAdvisoryAndRow
 			}
-			if mode := lastOwnerLockMode(); mode != want {
+			if mode := lock.mode(); mode != want {
 				t.Errorf("the writer after %s took the %s mode, want %s", c.name, mode, want)
 			}
 			if held := ownerRowHeld(t, s, owners.issueA); held != (c.arrival != nil) {
@@ -394,6 +430,7 @@ func awaitUnblockedAnswer(t *testing.T, s *Store, pid uint32, answered <-chan er
 // the first of them queues behind the arrival until the transaction it waits for ends, and that
 // read sees it.
 func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			s, owners := openFleetStore(t)
@@ -446,8 +483,9 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 				if err != nil {
 					t.Fatal(err)
 				}
+				lock := recordModes(tx)
 				locked := make(chan error, 1)
-				go func() { locked <- writer.lock(tx) }()
+				go func() { locked <- writer.lock(lock) }()
 				answer := awaitUnblockedAnswer(t, s, writerPID, locked, writer.name)
 				if !answer.answered {
 					t.Errorf("%s waited for backend(s) %v while %s (backend %d) waited for the gate; want it to try the gate, not queue behind the arrival",
@@ -460,7 +498,7 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 				if answer.err != nil {
 					t.Fatalf("%s: %v", writer.name, answer.err)
 				}
-				if mode := lastOwnerLockMode(); mode != ownerLockAdvisoryAndRow {
+				if mode := lock.mode(); mode != ownerLockAdvisoryAndRow {
 					t.Errorf("%s while %s waited for the gate took the %s mode, want %s", writer.name, arrival.name, mode, ownerLockAdvisoryAndRow)
 				}
 				if !ownerRowHeld(t, s, writer.owner) {

@@ -326,22 +326,24 @@ func (m ownerLockMode) String() string {
 	return "unknown"
 }
 
-// latestOwnerLockMode is the mode the latest read-phase owner lock of this process took.
-var latestOwnerLockMode atomic.Int32
+// ownerLockModeOf is the mode an owner lock takes by its fleet read: ownerLockAdvisoryAndRow
+// where an earlier build is in the fleet (legacy), ownerLockAdvisory where none is.
+func ownerLockModeOf(legacy bool) ownerLockMode {
+	if legacy {
+		return ownerLockAdvisoryAndRow
+	}
+	return ownerLockAdvisory
+}
 
-// lastOwnerLockMode is the mode the latest read-phase owner lock this process took ran in: what
-// its fleet read answered. A test reads it after a write of its own; across concurrent writers it
-// is whichever answered last.
-func lastOwnerLockMode() ownerLockMode { return ownerLockMode(latestOwnerLockMode.Load()) }
+// latestOwnerLockMode is the mode the latest read-phase owner lock of this process took, which
+// noteOwnerLockMode compares with each new one so that it logs only a change.
+var latestOwnerLockMode atomic.Int32
 
 // noteOwnerLockMode records the mode a read-phase owner lock took, and logs once each time the
 // process's mode changes, not once per write. The common case, an unchanged mode, is one atomic
 // load.
 func noteOwnerLockMode(legacy bool) {
-	mode := ownerLockAdvisory
-	if legacy {
-		mode = ownerLockAdvisoryAndRow
-	}
+	mode := ownerLockModeOf(legacy)
 	previous := ownerLockMode(latestOwnerLockMode.Load())
 	if previous == mode || !latestOwnerLockMode.CompareAndSwap(int32(previous), int32(mode)) {
 		return
@@ -418,7 +420,7 @@ func LockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) error {
 //
 // Only a test reads the fleet read it answers: raceWriter (ownerlock_fleet_test.go), whose writers
 // in the owner lock's races run at once and so each need their own transaction's answer, which
-// lastOwnerLockMode, the latest of the process's, is not. Every caller here drops it.
+// latestOwnerLockMode, the latest of the process's, is not. Every caller here drops it.
 //
 // read, when it is not nil, is the statement the locks guard, sent with them (LockOwnersAndRead):
 // in one batch behind the advisory lock's statement, one round trip. The batch is sent before the

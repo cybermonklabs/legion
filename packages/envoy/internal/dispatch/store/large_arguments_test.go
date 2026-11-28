@@ -39,6 +39,7 @@ var largeArgumentRows = []struct {
 // connection rather than drop the arguments by destroying it, and a copy that lost the shared
 // pool's tracer fails here.
 func TestAReleasedConnectionKeepsNoLargeArguments(t *testing.T) {
+	// Not parallel: it holds the process's live heap (liveHeap, runtime.ReadMemStats) to 2 MiB of growth, which the parallel tests' allocations would move.
 	for _, row := range largeArgumentRows {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := context.Background()

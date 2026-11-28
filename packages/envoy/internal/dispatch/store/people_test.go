@@ -14,23 +14,25 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A sign-in and a confirmation are each dated by the database's now(), and Membership answers the
 // confirmation's age by the database's clock: a row aged ninety minutes in SQL reads ninety minutes
-// old, and the confirmation that follows reads new again.
+// old, and the confirmation that follows reads new again. Each age is held to the span between two
+// readings of the database's clock around its write and its read (confirmedBetween), so no verdict
+// depends on how long the machine takes between them.
 func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := openTestStore(t)
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	email := "person-" + randomDatabaseSuffix(t) + "@d.example"
 
 	if _, found, err := people.Membership(ctx, email); err != nil || found {
 		t.Fatalf("membership before any sign-in: found=%t err=%v, want not found", found, err)
 	}
+	before := databaseNow(t, database.Pool)
 	if err := people.SignIn(ctx, email, "refresh-1"); err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -39,23 +41,31 @@ func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
 		t.Fatalf("record: %v", err)
 	}
 	membership, found, err := people.Membership(ctx, email)
-	if err != nil || !found || membership.RefreshToken != "refresh-1" || !confirmedJustNow(membership) {
-		t.Fatalf("membership after sign-in = %#v found=%t err=%v, want refresh-1 confirmed just now", membership, found, err)
+	after := databaseNow(t, database.Pool)
+	if err != nil || !found || membership.RefreshToken != "refresh-1" || !confirmedBetween(membership, 0, before, after) {
+		t.Fatalf("membership after sign-in = %#v found=%t err=%v, want refresh-1 confirmed by the sign-in, at most %s ago (the database's clock from before the sign-in to after the read)",
+			membership, found, err, after.Sub(before))
 	}
 
+	before = databaseNow(t, database.Pool)
 	if _, err := database.Pool.Exec(ctx, `update people set confirmed_at = now() - interval '90 minutes' where email = $1`, email); err != nil {
 		t.Fatalf("date the confirmation ninety minutes back: %v", err)
 	}
 	membership, _, err = people.Membership(ctx, email)
-	if err != nil || !membership.Confirmed || membership.ConfirmedAge < 90*time.Minute || membership.ConfirmedAge >= 91*time.Minute {
-		t.Fatalf("membership dated ninety minutes back = %#v err=%v, want confirmed ninety minutes ago", membership, err)
+	after = databaseNow(t, database.Pool)
+	if err != nil || !confirmedBetween(membership, 90*time.Minute, before, after) {
+		t.Fatalf("membership dated ninety minutes back = %#v err=%v, want confirmed ninety minutes ago and at most %s more (the database's clock from before the update to after the read)",
+			membership, err, after.Sub(before))
 	}
+	before = databaseNow(t, database.Pool)
 	if err := people.Confirm(ctx, email, "refresh-2"); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
 	membership, _, err = people.Membership(ctx, email)
-	if err != nil || membership.RefreshToken != "refresh-2" || !confirmedJustNow(membership) {
-		t.Fatalf("membership after confirm = %#v err=%v, want refresh-2 confirmed just now", membership, err)
+	after = databaseNow(t, database.Pool)
+	if err != nil || membership.RefreshToken != "refresh-2" || !confirmedBetween(membership, 0, before, after) {
+		t.Fatalf("membership after confirm = %#v err=%v, want refresh-2 confirmed by the confirmation, at most %s ago (the database's clock from before the confirmation to after the read)",
+			membership, err, after.Sub(before))
 	}
 
 	if err := people.End(ctx, email); err != nil {
@@ -67,20 +77,23 @@ func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
 	}
 }
 
-// confirmedJustNow reports whether membership holds a confirmation the database dates within the
-// last minute: one a write in this test just made.
-func confirmedJustNow(membership auth.PersonMembership) bool {
-	return membership.Confirmed && membership.ConfirmedAge >= 0 && membership.ConfirmedAge < time.Minute
+// confirmedBetween reports whether membership holds a confirmation whose age, as the database
+// answers it, is at least staged and at most staged plus the span from before to after. before and
+// after are readings of the database's clock (databaseNow): before ahead of the write that dated the
+// confirmation at its now() less staged, and after once the read that aged it at its own now() has
+// answered. Both of those now()s fall between the two readings, so an age the product reads right
+// lies in that range however long a loaded machine takes between the write and the read, and the
+// range is what the two readings saw rather than a span the test chose.
+func confirmedBetween(membership auth.PersonMembership, staged time.Duration, before, after time.Time) bool {
+	return membership.Confirmed && membership.ConfirmedAge >= staged && membership.ConfirmedAge <= staged+after.Sub(before)
 }
 
 // People are named by lowercase email; the table refuses any other spelling, so no writer can
 // make one person two rows.
 func TestPeopleTableRefusesAnEmailThatIsNotLowercase(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := openTestStore(t)
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	for _, email := range []string{"Sami@d.example", ""} {
 		if err := people.Record(ctx, email); err == nil {
@@ -132,17 +145,6 @@ func storePlainRefreshToken(t *testing.T, database *Store, email, token string) 
 	}
 }
 
-// migratedEmptyStore is a database of the test's own at the current schema, so a sweep of people
-// meets only the rows the test writes.
-func migratedEmptyStore(t *testing.T) *Store {
-	t.Helper()
-	database := openEmptyTestStore(t)
-	if err := database.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	return database
-}
-
 // retireLines counts the lines logging a refresh token the pool did not revoke.
 func retireLines(logs *bytes.Buffer) int {
 	return strings.Count(logs.String(), "the sign-in pool did not revoke a refresh token stored in plain text")
@@ -151,11 +153,9 @@ func retireLines(logs *bytes.Buffer) int {
 // The row a backup copies never holds the refresh token: a sign-in and a confirmation each store it
 // sealed under the signing key, in the versioned format, and only a store under that key opens it.
 func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := openTestStore(t)
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	email := "sealed-" + randomDatabaseSuffix(t) + "@d.example"
 	for _, write := range []struct {
@@ -166,6 +166,7 @@ func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 		{"confirmation", func(token string) error { return people.Confirm(ctx, email, token) }},
 	} {
 		token := "refresh-" + write.name + "-" + randomDatabaseSuffix(t)
+		before := databaseNow(t, database.Pool)
 		if err := write.write(token); err != nil {
 			t.Fatalf("%s: %v", write.name, err)
 		}
@@ -177,8 +178,10 @@ func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 			t.Fatalf("after the %s the row holds %q, want the token sealed in the v1: format", write.name, *stored)
 		}
 		membership, found, err := people.Membership(ctx, email)
-		if err != nil || !found || membership.RefreshToken != token || !confirmedJustNow(membership) {
-			t.Fatalf("membership after the %s = %#v found=%t err=%v, want %s confirmed just now", write.name, membership, found, err, token)
+		after := databaseNow(t, database.Pool)
+		if err != nil || !found || membership.RefreshToken != token || !confirmedBetween(membership, 0, before, after) {
+			t.Fatalf("membership after the %s = %#v found=%t err=%v, want %s confirmed by the %s, at most %s ago (the database's clock from before the %s to after the read)",
+				write.name, membership, found, err, token, write.name, after.Sub(before), write.name)
 		}
 	}
 }
@@ -189,11 +192,9 @@ func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 // never the value; the read writes nothing and asks the pool nothing. The person's next sign-in
 // replaces the value, revoking one in plain text first; a sealed value is never sent to the pool.
 func TestPgPeopleStoreReadsARefreshTokenThatDoesNotOpenAsNone(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the line the people store logs for a token that does not open.
 	ctx := context.Background()
 	database := openTestStore(t)
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	for name, unopened := range map[string]struct {
 		store   func(t *testing.T, people *PgPeopleStore, email, token string)
 		revoked bool
@@ -267,8 +268,9 @@ func TestPgPeopleStoreReadsARefreshTokenThatDoesNotOpenAsNone(t *testing.T) {
 // pool, then forgets it with its confirmation, keeping the person. A sealed token is never sent to
 // the pool and stays, as does a person holding none, and a second boot finds nothing to do.
 func TestRetirePlainRefreshTokensRevokesEachThenForgetsIt(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read that the retirement logs no token.
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	pool, flow := revokingPool(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, flow)
 	storePlainRefreshToken(t, database, "plain-1@d.example", "plain-token-1")
@@ -317,8 +319,9 @@ func TestRetirePlainRefreshTokensRevokesEachThenForgetsIt(t *testing.T) {
 // boot logs one ERROR naming the person and the pool's HTTP status, never the value, and counts
 // it. The next boot the pool answers retires it.
 func TestRetirePlainRefreshTokensLeavesATokenThePoolDidNotRevoke(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the ERROR the retirement logs.
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	pool, flow := revokingPool(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, flow)
 	email := "plain@d.example"
@@ -355,14 +358,11 @@ func TestRetirePlainRefreshTokensLeavesATokenThePoolDidNotRevoke(t *testing.T) {
 func TestRetirePlainRefreshTokensRetiresATokenStoredAfterTheLastBoot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database := openEmptyTestStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	pool, flow := revokingPool(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, flow)
 	boot := func() (retired, failed int) {
 		t.Helper()
-		if err := database.Migrate(ctx); err != nil {
-			t.Fatalf("migrate: %v", err)
-		}
 		retired, failed, err := people.RetirePlainRefreshTokens(ctx)
 		if err != nil {
 			t.Fatalf("RetirePlainRefreshTokens: %v", err)
@@ -391,11 +391,9 @@ func TestRetirePlainRefreshTokensRetiresATokenStoredAfterTheLastBoot(t *testing.
 // own, apart from the boot's, naming the person to sign out at the pool and the status, never the
 // value: no later boot will see that token.
 func TestPgPeopleStoreSignInRetiresThePlainTokenItReplaces(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the line a sign-in logs for a token the pool did not revoke.
 	ctx := context.Background()
 	database := openTestStore(t)
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	for _, status := range []int{0, http.StatusBadRequest} {
 		pool, flow := revokingPool(t)
 		people := NewPgPeopleStore(database.Pool, testSigningKey, flow)
@@ -432,7 +430,7 @@ func TestPgPeopleStoreSignInRetiresThePlainTokenItReplaces(t *testing.T) {
 func TestRetireKeepsASignInRecordedSinceTheRead(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	_, flow := revokingPool(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, flow)
 	email := "raced@d.example"
@@ -464,8 +462,9 @@ func sessionGeneration(t *testing.T, sessions *PgSessionStore, login string) (in
 // the address. A sign-in under a group neither reads nor writes the subject, and ending a sign-in
 // keeps it, so the next account's sign-in is still compared with it.
 func TestPgPeopleStoreEndsTheSessionsOfAnAddressAnotherGoogleAccountSignsInTo(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the WARN a sign-in under another subject logs.
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	sessions := NewPgSessionStore(database.Pool)
 	const email = "a.person@example.com"
@@ -560,7 +559,7 @@ func TestPgPeopleStoreEndsTheSessionsOfAnAddressAnotherGoogleAccountSignsInTo(t 
 func TestPgPeopleStoreRecordsNoSubjectWhoseRevokeFailed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	sessions := NewPgSessionStore(database.Pool)
 	const email = "a.person@example.com"
@@ -600,7 +599,7 @@ func TestPgPeopleStoreRecordsNoSubjectWhoseRevokeFailed(t *testing.T) {
 func TestPgPeopleStoreEndsTheSessionsOfAConcurrentFirstSignIn(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	sessions := NewPgSessionStore(database.Pool)
 	const email = "a.person@example.com"
@@ -614,29 +613,25 @@ func TestPgPeopleStoreEndsTheSessionsOfAConcurrentFirstSignIn(t *testing.T) {
 	}
 	second := make(chan error, 1)
 	go func() { second <- people.SignInSubject(ctx, email, "subject-2", "refresh-2") }()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, "the second sign-in to wait on the first (a backend of the test's database blocked by another)", func() (int, bool) {
 		var waiting int
 		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting > 0 {
-			break
+			return waiting, true
 		}
 		select {
 		case err := <-second:
 			t.Fatalf("the second sign-in finished while the first was uncommitted: %v", err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the second sign-in never waited on the first")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return waiting, false
+	})
 	if err := first.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-second; err != nil {
+	if err := testwait.Receive(t, "the second sign-in's answer once the first committed", second); err != nil {
 		t.Fatalf("the second sign-in: %v", err)
 	}
 	if generation, found := sessionGeneration(t, sessions, email); !found || generation != 1 {
@@ -653,7 +648,7 @@ func TestPgPeopleStoreEndsTheSessionsOfAConcurrentFirstSignIn(t *testing.T) {
 func TestPgPeopleStoreConfirmKeepsTheRowOfAnotherGoogleAccount(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	const email = "a.person@example.com"
 	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1"); err != nil {
@@ -679,11 +674,14 @@ func TestPgPeopleStoreConfirmKeepsTheRowOfAnotherGoogleAccount(t *testing.T) {
 	if got := membership(); got.RefreshToken != "refresh-2" || got.Subject != "subject-2" || got.ConfirmedAge < 90*time.Minute {
 		t.Fatalf("after subject-1's stale confirmation: %#v, want subject-2's refresh-2 confirmed ninety minutes ago", got)
 	}
+	before := databaseNow(t, database.Pool)
 	if err := people.ConfirmSubject(ctx, email, "subject-2", "refresh-3"); err != nil {
 		t.Fatal(err)
 	}
-	if got := membership(); got.RefreshToken != "refresh-3" || !confirmedJustNow(got) {
-		t.Fatalf("after subject-2's confirmation: %#v, want refresh-3 confirmed just now", got)
+	got := membership()
+	after := databaseNow(t, database.Pool)
+	if got.RefreshToken != "refresh-3" || !confirmedBetween(got, 0, before, after) {
+		t.Fatalf("after subject-2's confirmation: %#v, want refresh-3 confirmed by it, at most %s ago (the database's clock from before the confirmation to after the read)", got, after.Sub(before))
 	}
 	if err := people.Confirm(ctx, email, "refresh-4"); err != nil {
 		t.Fatal(err)
@@ -699,7 +697,7 @@ func TestPgPeopleStoreConfirmKeepsTheRowOfAnotherGoogleAccount(t *testing.T) {
 func TestPgPeopleStoreEndSubjectEndsOnlyTheAccountItNames(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database := migratedEmptyStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	sessions := NewPgSessionStore(database.Pool)
 	const email = "a.person@example.com"

@@ -2,23 +2,20 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // newestEventFillMigration is the migration that fills each issue's newest-event pair
 // (last_event_at, last_event_at_seq) from its event of last_seq.
 const newestEventFillMigration = "20261125144002_issues_last_event_at_backfill.up.sql"
-
-// newestEventFillWait bounds how long the test waits for the fill to end while a second
-// transaction holds one of its rows. It is far above what a fill of three rows takes, so a wait
-// that runs out is the fill waiting on that row, not a slow machine.
-const newestEventFillWait = 20 * time.Second
 
 // TestTheNewestEventFillNeverWaitsOnAHeldIssueRow holds 20261125144002's fill to
 // R5 of dispatch://INFRA-5791: it never waits on a row lock. A request takes its issues' rows in
@@ -43,6 +40,7 @@ const newestEventFillWait = 20 * time.Second
 // the fill skipped. The broker's own write of the pair is held by
 // TestAnIssueAppendWritesTheNewestEventPairOnTheIssueRow (internal/dispatch/events).
 func TestTheNewestEventFillNeverWaitsOnAHeldIssueRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	fill, err := migrationFiles.ReadFile("migrations/" + newestEventFillMigration)
@@ -96,35 +94,34 @@ func TestTheNewestEventFillNeverWaitsOnAHeldIssueRow(t *testing.T) {
 		_, err := filler.Exec(ctx, string(fill))
 		done <- err
 	}()
-	for deadline := time.Now().Add(newestEventFillWait); ; {
+	// Its one bound is the test binary's deadline less testwait's margin (testwait.Until): a fill
+	// that waits behind the second transaction fails the test on the pass that reads it there, not
+	// on how long the fill took.
+	testwait.Until(t, fmt.Sprintf("the fill to end while a second transaction holds the row of %s", held), func() (struct{}, bool) {
 		select {
 		case err := <-done:
 			if err != nil {
 				t.Fatalf("the fill while a second transaction holds the row of %s: %v", held, err)
 			}
+			return struct{}{}, true
 		default:
-			var behind bool
-			if err := store.Pool.QueryRow(ctx, `
-				select coalesce(bool_or(`+lockwaittest.Waiting+` and $2 = any(pg_blocking_pids(pid))), false)
-				from pg_stat_activity where pid = $1
-			`, fillerPID, holderPID).Scan(&behind); err != nil {
-				t.Fatalf("read where the fill waits: %v", err)
-			}
-			if behind {
-				var blocked string
-				if err := store.Pool.QueryRow(ctx, `select query from pg_stat_activity where pid = $1`, fillerPID).Scan(&blocked); err != nil {
-					t.Fatalf("read the fill's blocked statement: %v", err)
-				}
-				t.Fatalf("the fill waits behind the transaction that holds the row of %s: %s", held, statementNamed(blocked))
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the fill did not end within %s while a second transaction holds the row of %s", newestEventFillWait, held)
-			}
-			time.Sleep(2 * time.Millisecond)
-			continue
 		}
-		break
-	}
+		var behind bool
+		if err := store.Pool.QueryRow(ctx, `
+			select coalesce(bool_or(`+lockwaittest.Waiting+` and $2 = any(pg_blocking_pids(pid))), false)
+			from pg_stat_activity where pid = $1
+		`, fillerPID, holderPID).Scan(&behind); err != nil {
+			t.Fatalf("read where the fill waits: %v", err)
+		}
+		if behind {
+			var blocked string
+			if err := store.Pool.QueryRow(ctx, `select query from pg_stat_activity where pid = $1`, fillerPID).Scan(&blocked); err != nil {
+				t.Fatalf("read the fill's blocked statement: %v", err)
+			}
+			t.Fatalf("the fill waits behind the transaction that holds the row of %s: %s", held, statementNamed(blocked))
+		}
+		return struct{}{}, false
+	})
 	t.Logf("the fill ended while the second transaction holds the row of %s, and never waited behind it", held)
 
 	pairs := func() map[string]bool {

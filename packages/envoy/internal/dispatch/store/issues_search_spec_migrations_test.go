@@ -154,6 +154,7 @@ func TestTheIssuesSearchTriggerIndexesAVersionWrittenAfterIt(t *testing.T) {
 // the old body rewrote the vector the stored latest version already gave, so the vector is the
 // same only because it was current; no writer inserts below the latest.
 func TestAMultiVersionInsertReVectorsItsIssueOnce(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, setup, versions string
 		want, wantAfter       int

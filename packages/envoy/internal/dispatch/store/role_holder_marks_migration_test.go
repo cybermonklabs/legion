@@ -17,11 +17,9 @@ const roleHolderMarksVersion = 20261120204136
 // holders on two of its issues, three rows in all, and BARE, whose issue holds none. After the
 // migration HELD alone is marked, once, and both projects read the setting as off.
 func TestTheRoleHolderMarksMigrationMarksEachProjectThatHasARoleHolder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, roleHolderMarksVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", roleHolderMarksVersion-1, err)
-	}
+	store := openMigratedTestStore(t, roleHolderMarksVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('HELD', 'Held', 'alice'), ('BARE', 'Bare', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank) values

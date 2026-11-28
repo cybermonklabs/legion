@@ -12,6 +12,7 @@ import (
 // MomentOn that read the process's clock there would pass every row that hands it a fake. Given a
 // clock, it hands that clock's reading cut to the microsecond the database keeps.
 func TestMomentOnHandsNoMomentWithoutAClockAndTheClocksReadingWithOne(t *testing.T) {
+	t.Parallel()
 	if at := MomentOn(nil); at != nil {
 		t.Fatalf("MomentOn(nil) = %s, want nil, so the statement's own now() stamps and judges", at)
 	}

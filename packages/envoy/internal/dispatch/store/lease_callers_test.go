@@ -26,6 +26,7 @@ func reserveLeaseCallers(t *testing.T, callers *LeaseCallers, count int) []strin
 // callers pass, one more (a leased loop added without a connection) and one fewer (a connection
 // added without a caller) fail, so neither can be merged in silently.
 func TestTheLeasePoolIsCompleteOnlyAtOneCallerPerConnection(t *testing.T) {
+	t.Parallel()
 	database := openTestStore(t)
 
 	short, err := database.Pool.Leases()
@@ -67,6 +68,7 @@ func TestTheLeasePoolIsCompleteOnlyAtOneCallerPerConnection(t *testing.T) {
 // Two callers cannot share one connection, so a name already reserved is refused: a second
 // reservation under one name would count two callers as one.
 func TestTheLeasePoolRefusesACallerNameTwice(t *testing.T) {
+	t.Parallel()
 	callers := leaseCallersOfANewPool(t)
 	if _, err := callers.For("document compaction"); err != nil {
 		t.Fatalf("reserve the first caller: %v", err)
@@ -81,6 +83,7 @@ func TestTheLeasePoolRefusesACallerNameTwice(t *testing.T) {
 // Every call returns the one registry the pool keeps, so a caller that asks for the lease pool
 // where it is wired is counted beside every other caller's reservation.
 func TestTheLeasePoolKeepsOneRegistryPerPool(t *testing.T) {
+	t.Parallel()
 	database := openTestStore(t)
 	first, err := database.Pool.Leases()
 	if err != nil {

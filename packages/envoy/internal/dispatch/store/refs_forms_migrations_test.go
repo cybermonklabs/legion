@@ -66,9 +66,9 @@ func assertOwedForms(t *testing.T, store *Store, want ...owedSource) map[owedSou
 // image's version and a direct message, which no mention is indexed from, are owed nothing, and
 // no `scope` row is written: these forms change no `#id`.
 func TestTheRefsFormsSeedOwesTextStoredBeforeIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeRefsForms)
+	store := openMigratedTestStore(t, beforeRefsForms)
 	seedCoreWithADefaultAssignee(t, store)
 	fixture := writeRefsGrammarFixture(t, store)
 
@@ -87,9 +87,9 @@ func TestTheRefsFormsSeedOwesTextStoredBeforeIt(t *testing.T) {
 // its trigger and keeps the enqueued_at that write gave it: the seed adds the rows it finds missing
 // and rewrites none.
 func TestTheRefsFormsSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, lastRefsFormsTrigger)
+	store := openMigratedTestStore(t, lastRefsFormsTrigger)
 	seedCoreWithADefaultAssignee(t, store)
 	fixture := writeRefsGrammarFixture(t, store)
 	enqueued, ok := readOwedForms(t, store)[owedSource{"comment", fixture.comment}]
@@ -121,11 +121,9 @@ func TestTheRefsFormsSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
 // `scope` row either, since these forms change no `#id` - beyond the ask itself, whose
 // block_artifact_id is a column its index reads.
 func TestTheRefsFormsTriggersOweWhatAnyBuildWrites(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
 	fixture := writeRefsGrammarFixture(t, store)
 	write := func(what, query string, args ...any) {
@@ -249,11 +247,9 @@ func TestTheRefsFormsTriggersOweWhatAnyBuildWrites(t *testing.T) {
 // source is passed over rather than refused; a delete that removes nothing owes nothing; and a row
 // already owed keeps its enqueued_at.
 func TestTheRefsFormsDeleteTriggerOwesEverySourceADeleteTouches(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
 	fixture := writeRefsGrammarFixture(t, store)
 	write := func(what, query string, args ...any) {
@@ -316,11 +312,8 @@ func TestTheRefsFormsDeleteTriggerOwesEverySourceADeleteTouches(t *testing.T) {
 // past a cursor bounds that index scan with the cursor (an index condition, not a filter), so a
 // pass deep into the backlog starts where the last one ended rather than reading every row before.
 func TestTheRefsFormsDrainReadsItsIndexInOrder(t *testing.T) {
-	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	t.Parallel()
+	store := openMigratedTestStore(t, latestVersion)
 	const read = `select o.kind, o.id::text, o.enqueued_at from refs_forms_owed o order by o.enqueued_at, o.kind, o.id limit 200`
 	plan := explainWithoutSeqScan(t, store, read)
 	if !strings.Contains(plan, "refs_forms_owed_enqueued") || strings.Contains(plan, "Sort") {

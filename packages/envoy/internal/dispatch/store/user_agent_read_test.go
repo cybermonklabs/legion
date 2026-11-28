@@ -28,7 +28,7 @@ func TestUserAgentReadBackfillMarksEveryExistingDirectConversationRead(t *testin
 	`); err != nil {
 		t.Fatalf("seed messages: %v", err)
 	}
-	before := time.Now().Add(-time.Minute)
+	before := databaseNow(t, store.Pool)
 	migrateAbove(t, store, 50, 51)
 
 	rows, err := store.Pool.Query(ctx, `select login, session_id, read_through from user_agent_read order by 1, 2`)

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,11 +23,9 @@ import (
 // on a lock. A caller that needs a connection of its own opens it elsewhere - the document
 // rooms pool - and a caller that only needs to read does it through its transaction.
 func TestPoolRefusesASecondConnectionInsideATransaction(t *testing.T) {
+	t.Parallel()
+	// The health probe reads the applied schema version, which openTestStore's copy carries.
 	database := openTestStore(t)
-	// The health probe reads the applied schema version, so the database must have one.
-	if err := database.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	ctx := WithTransactionTracking(context.Background())
 
 	tx, err := database.Pool.Begin(ctx)
@@ -96,6 +93,7 @@ func TestPoolRefusesASecondConnectionInsideATransaction(t *testing.T) {
 // An open cursor is a held connection too: pgx hands it back when the rows close, so work
 // inside the loop competes with the caller's own cursor for the pool.
 func TestPoolRefusesASecondConnectionInsideAnOpenCursor(t *testing.T) {
+	t.Parallel()
 	database := openTestStore(t)
 	ctx := WithTransactionTracking(context.Background())
 
@@ -160,6 +158,7 @@ func TestPoolRefusesASecondConnectionInsideAnOpenCursor(t *testing.T) {
 // of whatever holds a connection by then - here a transaction opened after the drain, which
 // would otherwise be free to take a second connection and wedge the pool.
 func TestClosingADrainedCursorLeavesALaterHolderMarked(t *testing.T) {
+	t.Parallel()
 	database := openTestStore(t)
 	ctx := WithTransactionTracking(context.Background())
 
@@ -191,6 +190,7 @@ func TestClosingADrainedCursorLeavesALaterHolderMarked(t *testing.T) {
 // pool's, and takes the room's advisory lock on it. A second connection under that is the same
 // deadlock, so the same refusal covers it.
 func TestPoolRefusesASecondConnectionWhileOneIsHeld(t *testing.T) {
+	t.Parallel()
 	database := openTestStore(t)
 	ctx, release := HoldsConnection(context.Background())
 
@@ -209,6 +209,7 @@ func TestPoolRefusesASecondConnectionWhileOneIsHeld(t *testing.T) {
 // mark of its own, so one read's open cursor does not refuse the other, while each is still
 // refused a second connection of its own, and a caller already holding one is refused them all.
 func TestConcurrentReadsEachHoldOneConnection(t *testing.T) {
+	t.Parallel()
 	database := openTestStore(t)
 	ctx := WithTransactionTracking(context.Background())
 
@@ -256,6 +257,7 @@ func TestConcurrentReadsEachHoldOneConnection(t *testing.T) {
 // read, and one whose failed read left its sibling running would hold the request until the
 // sibling's own end.
 func TestReadSideBySideAnswersTheFirstErrorAndEndsTheOtherReads(t *testing.T) {
+	t.Parallel()
 	failed := errors.New("the first read failed")
 	ctx := WithTransactionTracking(testwait.Context(t))
 	sibling := make(chan error, 1)
@@ -280,6 +282,7 @@ func TestReadSideBySideAnswersTheFirstErrorAndEndsTheOtherReads(t *testing.T) {
 // ReadSideBySide refuses a caller that already holds a connection before any read starts, as
 // ForConcurrentRead refuses it.
 func TestReadSideBySideRefusesACallerHoldingAConnectionBeforeAnyRead(t *testing.T) {
+	t.Parallel()
 	database := openTestStore(t)
 	ctx := WithTransactionTracking(context.Background())
 	tx, err := database.Pool.Begin(ctx)
@@ -300,6 +303,7 @@ func TestReadSideBySideRefusesACallerHoldingAConnectionBeforeAnyRead(t *testing.
 // Each read ReadSideBySide runs holds a mark of its own: one read's open cursor refuses the other
 // read no connection, where reads that shared the caller's mark would refuse it ErrNestedAcquire.
 func TestReadSideBySideGivesEachReadAMarkOfItsOwn(t *testing.T) {
+	t.Parallel()
 	database := openTestStore(t)
 	ctx := WithTransactionTracking(testwait.Context(t))
 	opened, served := make(chan struct{}), make(chan struct{})
@@ -341,6 +345,7 @@ func TestReadSideBySideGivesEachReadAMarkOfItsOwn(t *testing.T) {
 // transaction the starter opens later, on the mark the goroutine would otherwise have shared,
 // must not refuse that goroutine a connection.
 func TestAConcurrentWorkerKeepsAMarkOfItsOwn(t *testing.T) {
+	t.Parallel()
 	database := openTestStore(t)
 	starter := WithTransactionTracking(context.Background())
 
@@ -373,6 +378,7 @@ func TestAConcurrentWorkerKeepsAMarkOfItsOwn(t *testing.T) {
 // the property is the same at any size, and holding sixty-four server connections while the
 // other packages' tests share the server would push a default Postgres past its hundred.
 func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	config := openTestStore(t).Pool.Config().Copy()
 	config.MaxConns = 4
@@ -381,7 +387,9 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		t.Fatalf("open a four-connection shared pool: %v", err)
 	}
 	database := &Store{Pool: NewPool(shared)}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the four-connection shared pool to come back, so the pool closes", database.Pool.Close)
+	})
 	held := make([]*pgxpool.Conn, 0, database.Pool.Config().MaxConns)
 	for range database.Pool.Config().MaxConns {
 		conn, err := database.Pool.Acquire(ctx)
@@ -400,10 +408,9 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 	}
 
 	for round := range 2 {
-		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		waitCtx := testwait.Context(t)
 		listener, err := database.Pool.Listener(waitCtx)
 		if err != nil {
-			cancel()
 			t.Fatalf("round %d: Listener with the shared pool fully acquired: %v", round, err)
 		}
 		if _, err := listener.Exec(waitCtx, "listen pool_listener_test"); err != nil {
@@ -419,7 +426,6 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		if err := listener.Close(waitCtx); err != nil {
 			t.Fatalf("round %d: close: %v", round, err)
 		}
-		cancel()
 	}
 }
 
@@ -429,6 +435,7 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 // connection names itself dispatch-rooms, so pg_stat_activity tells a load from a room's append
 // and both from a request.
 func TestRoomAppendsIsAPoolOfItsOwnThatUseCounts(t *testing.T) {
+	t.Parallel()
 	database := openTestStore(t)
 	ctx := context.Background()
 	appends, err := database.Pool.RoomAppends()
@@ -491,12 +498,10 @@ func TestRoomAppendsIsAPoolOfItsOwnThatUseCounts(t *testing.T) {
 // it waits on will ever come back. Use keeps counting that connection, and once Close has returned
 // the health probe's pool has closed too.
 func TestHealthyAnswersWhileCloseWaitsForAConnectionInUse(t *testing.T) {
+	t.Parallel()
+	// The health probe reads the applied schema version, which openTestStore's copy carries.
 	database := openTestStore(t)
 	ctx := context.Background()
-	// The health probe reads the applied schema version, so the database must have one.
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	held, err := database.Pool.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("acquire a shared connection: %v", err)
@@ -514,14 +519,10 @@ func TestHealthyAnswersWhileCloseWaitsForAConnectionInUse(t *testing.T) {
 		database.Pool.Close()
 	}()
 	// Close refuses the other separate pools from the moment it begins.
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := database.Pool.Rooms(); errors.Is(err, ErrPoolClosed) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Close never began")
-		}
-	}
+	testwait.Until(t, "Close to begin, which Rooms shows by answering ErrPoolClosed", func() (error, bool) {
+		_, err := database.Pool.Rooms()
+		return err, errors.Is(err, ErrPoolClosed)
+	})
 	if _, err := database.Pool.Healthy(ctx); err != nil {
 		t.Fatalf("health probe while Close waits for a connection in use: %v, want an answer", err)
 	}
@@ -536,11 +537,7 @@ func TestHealthyAnswersWhileCloseWaitsForAConnectionInUse(t *testing.T) {
 
 	held.Release()
 	released = true
-	select {
-	case <-closed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Close did not return once the connection in use came back")
-	}
+	testwait.Receive(t, "Close to return once the connection in use came back", closed)
 	if _, err := database.Pool.Healthy(ctx); !errors.Is(err, ErrPoolClosed) {
 		t.Fatalf("health probe after Close: %v, want ErrPoolClosed", err)
 	}
@@ -553,6 +550,7 @@ func TestHealthyAnswersWhileCloseWaitsForAConnectionInUse(t *testing.T) {
 // observation holds back every live reader of the event log for as long as the requests ahead of
 // it take.
 func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	config := openTestStore(t).Pool.Config().Copy()
 	config.MaxConns = 4
@@ -561,7 +559,9 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		t.Fatalf("open a four-connection shared pool: %v", err)
 	}
 	database := &Store{Pool: NewPool(shared)}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the four-connection shared pool to come back, so the pool closes", database.Pool.Close)
+	})
 	held := make([]*pgxpool.Conn, 0, database.Pool.Config().MaxConns)
 	for range database.Pool.Config().MaxConns {
 		conn, err := database.Pool.Acquire(ctx)
@@ -584,7 +584,7 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		t.Fatalf("open the horizon pool: %v", err)
 	}
 	for round := range 2 {
-		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		waitCtx := testwait.Context(t)
 		batch := &pgx.Batch{}
 		batch.Queue(`begin`)
 		batch.Queue(`select pg_current_xact_id()::text`)
@@ -607,15 +607,12 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 			err = closeErr
 		}
 		if err != nil {
-			cancel()
 			t.Fatalf("round %d: observation with the shared pool fully acquired: %v", round, err)
 		}
 		var backends int
 		if err := horizon.QueryRow(waitCtx, "select count(*) from pg_stat_activity").Scan(&backends); err != nil {
-			cancel()
 			t.Fatalf("round %d: diagnosis read with the shared pool fully acquired: %v", round, err)
 		}
-		cancel()
 	}
 }
 
@@ -626,6 +623,7 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 // gives no inlined copy of Begin, a transaction opened through an interface (refs.Pool) among
 // them, then shares that single key and only the first of them ever logs a stack.
 func TestEachBeginRefusalIsKeyedToItsCaller(t *testing.T) {
+	// Not parallel: it clears and reads the process's loggedSites and swaps the default logger (logtest.SetDefault) to count the refusal lines, both of which every refusal in the process writes.
 	database := openTestStore(t)
 	// The guard logs each call site once per process, so a repeat run has nothing left to log.
 	loggedSites.Clear()
