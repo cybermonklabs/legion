@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEY, node } from "./decisions-filter/decisions-fixtures";
@@ -213,6 +214,62 @@ test("row 3: the first commit of rows draws the addressed node's screen, and the
       layout.topOf(outlineRow(container, "c30")),
       "the rows drawn above the addressed node, or its focus, moved it"
     ).toBe(top);
+  } finally {
+    outline.view.unmount();
+  }
+});
+
+// Row 3, the reader acting first. A waiting focus never takes the focus back from the reader: the
+// reader's first act - a key, a press - ends the address's landing while it still waits for the
+// rows above its node (`IssueTree.tsx`'s `landOnRow`, which calls off its wait on
+// `RowSlices.whenDrawnUpTo`), so the slices drawing the last of those rows give the node no focus,
+// wherever the reader's keys left it. The keys here end on the page itself: Tab into the tree,
+// `j` to the next row, and Escape out of it. That is where the landing's own look at the focus in
+// its frame lets a late focus through (`focusOnDocument`), so the call-off alone holds the focus
+// there; a focus the keys left on a row that look stops anyway.
+test("row 3: a key pressed while the rows above the addressed node are still to be drawn keeps the focus where the keys put it, once every slice and frame has run", async () => {
+  const user = userEvent.setup();
+  const root = issueOf(false);
+  const named = root.children[30];
+  if (named === undefined) throw new Error("the tree holds no 31st comment");
+  const outline = drawOutline({ placesSettled: false, reveal: [root, named], root });
+  const { container } = outline.view;
+  try {
+    const focuses = watchFocuses();
+    act(() => outline.redraw({ placesSettled: true }));
+    await runFrames();
+    expect(outlineRow(container, "c00"), "the first drawing drew the outline's first row").toBe(
+      null
+    );
+    expect(focusedRow(), "the addressed node took the focus with rows above it not drawn").toBe(
+      undefined
+    );
+
+    await user.keyboard("{Tab}");
+    const entered = focusedRow();
+    expect(entered, "Tab from the page entered the tree at no row").not.toBe(undefined);
+    await user.keyboard("j");
+    const ids = idsOf(40);
+    const moved = ids[ids.indexOf(entered ?? "") + 1];
+    expect(focusedRow(), "j did not move to the row after the one Tab entered at").toBe(moved);
+    await user.keyboard("{Escape}");
+    expect(document.activeElement, "Escape on a row did not leave the tree").toBe(document.body);
+    expect(
+      outlineRow(container, "c00"),
+      "the keys drew every row above the addressed node before the slices did"
+    ).toBe(null);
+
+    do await runFrames();
+    while (await tasks.runNext());
+    await runFrames();
+    expect(outlineRows(container), "the slices left rows not drawn").toEqual(ids);
+    expect(
+      focuses.given.filter((focus) => focus.id === "c30"),
+      "the address's landing focused its node after the reader's keys"
+    ).toEqual([]);
+    expect(document.activeElement, "the focus is not where the reader's keys left it").toBe(
+      document.body
+    );
   } finally {
     outline.view.unmount();
   }
