@@ -104,7 +104,7 @@ from pathlib import Path
 
 import yaml
 from bun_test_steps import Census, check_bun_test_steps, check_upload_action
-from workflow_paths import mapping_get, repeated_keys, scalar
+from workflow_paths import mapping_get, one_line, repeated_keys, scalar
 
 WORKFLOWS = Path(".github/workflows")
 SUFFIXES = {".yaml", ".yml"}
@@ -119,12 +119,6 @@ GITHUB_CALL_CAP = 50
 # Where the rule the two size refusals enforce is written down: what a workflow file holds, and
 # where the rest goes.
 RULE = ".github/ci-notes/README.md"
-
-
-def one_line(text: object) -> str:
-    """A parser's message on one line: an annotation is one line, and a traceback is noise to the
-    reader who has to fix the file."""
-    return " ".join(str(text).split())
 
 
 targets = (

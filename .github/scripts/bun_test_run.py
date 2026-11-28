@@ -17,6 +17,7 @@ the count of errors from the ` N error` line in bun's last summary block. The bl
 bun's report leaves out a file that did not load and an error between tests. When bun has ended,
 the copy goes on for at most DRAIN_SECONDS more, for a process that still holds bun's standard
 error.
+Once bun has ended and the copy has read its summary, later output cannot replace that summary.
 
 When bun exits 0 and its run breaks a clause of bun_test_record.py's rule (bun 1.4.4 exits 0 and
 writes no report when it cannot write its outfile, and when a test calls process.exit), this
@@ -172,11 +173,18 @@ def main(argv: list) -> int:
     tail = bytearray()
 
     def copy() -> None:
+        frozen = False
         while chunk := os.read(bun.stderr.fileno(), 65536):
             sys.stderr.buffer.write(chunk)
             sys.stderr.buffer.flush()
-            tail.extend(chunk)
-            del tail[:-TAIL_BYTES]
+            # wait() may return before the copier reads bun's last bytes. Keep buffering until
+            # bun has ended and the buffer has a summary, then just copy any remaining output.
+            if not frozen:
+                frozen = bun.returncode is not None and summary_errors(
+                    bytes(tail).decode(errors="replace")) is not None
+                if not frozen:
+                    tail.extend(chunk)
+                    del tail[:-TAIL_BYTES]
 
     copier = threading.Thread(target=copy, daemon=True)
     copier.start()

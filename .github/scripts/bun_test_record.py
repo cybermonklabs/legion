@@ -26,9 +26,10 @@ every test bun ran in it, exactly when:
 
   1. its `.exit` is there, as the wrapper writes it;
   2. its report is there and is bun 1.4.4's JUnit: a <testsuites> root whose `tests` is the number
-     of its <testcase> entries, with at most NESTING_LIMIT nested <testsuite> levels. Each entry is
-     a test, with a `time`, a `line` and a `file`, or one of bun's two entries with no line,
-     skipped or failed: HOOK for a beforeAll or afterAll hook, CRASH for a --parallel worker; and
+     of its <testcase> entries (the count has at most TEST_COUNT_LIMIT characters), with at most
+     NESTING_LIMIT nested <testsuite> levels. Each entry is a test, with a finite `time`, a `line`
+     and a `file`, or one of bun's two entries with no line, skipped or failed: HOOK for a
+     beforeAll or afterAll hook, CRASH for a --parallel worker; and
      the run's `.t` pattern, when it has one, is a literal name (literal_fault), which the reader
      matches as a substring, as bun's regular expression of it matches;
   3. bun started, printed its summary, and the summary counts no error;
@@ -50,6 +51,7 @@ untrusted input. So a `.t` is matched as a literal substring, never compiled, an
 bounds an artifact's size and member count before it unpacks it.
 """
 import json
+import math
 import os
 import re
 import xml.etree.ElementTree as ElementTree
@@ -76,6 +78,8 @@ PATTERN_LIMIT = 1000
 # bun nests one <testsuite> per file and one per describe. Bound the number of levels a test's
 # printed name can include.
 NESTING_LIMIT = 100
+# More digits than any report can have entries, but few enough to convert and print safely.
+TEST_COUNT_LIMIT = 64
 # The attributes bun 1.4.4 writes on every <testcase> of a test.
 CASE_ATTRIBUTES = ("time", "line", "file")
 # The names bun 1.4.4 gives its <testcase> entries with no line: a beforeAll or afterAll hook
@@ -191,8 +195,9 @@ def read_report(path: Path, report: str):
     """(rows, clause 4's reasons, clause 2's reason) for one report; `report` is its path in the
     artifact, whose directory is put before each test's file."""
     try:
+        # An unsupported XML encoding can raise LookupError or ValueError, including UnicodeError.
         root = ElementTree.parse(path).getroot()
-    except (ElementTree.ParseError, OSError) as error:
+    except (ElementTree.ParseError, OSError, ValueError, LookupError) as error:
         return None, [], f"the report does not parse: {error}"
     if root.tag != "testsuites":
         return None, [], f"the report's root is <{root.tag}>, not <testsuites>"
@@ -225,6 +230,8 @@ def read_report(path: Path, report: str):
                                       "writes with no line")
                 try:
                     seconds, line = float(case.get("time")), int(case.get("line"))
+                    if not math.isfinite(seconds):
+                        raise ValueError
                 except ValueError:
                     return None, [], (f"the report does not parse: its test {' > '.join(names)!r} has time "
                                       f"{case.get('time')!r} and line {case.get('line')!r}, not numbers")
@@ -233,6 +240,8 @@ def read_report(path: Path, report: str):
     except ReportNestingError as error:
         return None, [], str(error)
     declared = root.get("tests")
+    if declared is not None and len(declared) > TEST_COUNT_LIMIT:
+        return None, [], f"the report's test count is longer than {TEST_COUNT_LIMIT} characters"
     if declared is None or not declared.isdecimal() or int(declared) != entries:
         return None, [], f"the report says {declared} tests and holds {entries} entries"
     return rows, failed, None

@@ -44,7 +44,7 @@ from pathlib import Path
 
 import yaml
 from bun_test_record import NAME, PREFIX, REPORTS_DIR, UPLOAD_ACTION, UPLOAD_ACTION_DIR, UPLOAD_STEP, WRAPPER
-from workflow_paths import mapping_get, scalar
+from workflow_paths import mapping_get, one_line, scalar
 
 BUN_TEST = re.compile(r"(?<![\w./$-])bun\s+(?:test(?![\w:.-])|run\s+test[\w:.-]*)")
 UNDER_WRAPPER = re.compile(re.escape(WRAPPER) + r"\s+" + NAME.pattern + r"\s+$")
@@ -198,13 +198,13 @@ def check_upload_action(problem) -> None:
     try:
         root = yaml.compose(ACTION_FILE.read_text())
     except (OSError, UnicodeError) as error:
-        problem(ACTION_FILE, f"{ACTION_FILE} could not be read ({' '.join(str(error).split())}), and every job that "
-                             f"runs bun test uses it to keep its reports")
+        problem(ACTION_FILE, f"{ACTION_FILE} could not be read ({one_line(error)}), and every job that "
+                             "runs bun test uses it to keep its reports")
         return
     except yaml.YAMLError as error:
         mark = getattr(error, "problem_mark", None)
         line = mark.line + 1 if mark is not None else 1
-        problem(ACTION_FILE, f"{ACTION_FILE}:{line}: its YAML does not parse ({' '.join(str(error).split())}), "
+        problem(ACTION_FILE, f"{ACTION_FILE}:{line}: its YAML does not parse ({one_line(error)}), "
                              "and every job that runs bun test uses it to keep its reports", line=line)
         return
     runs = mapping_get(root, "runs")

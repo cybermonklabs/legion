@@ -54,6 +54,20 @@ store() {
 EOF
 }
 
+# two_job_store <dir>: two jobs with whole reports, before a case changes the first job's record.
+two_job_store() {
+  local dir=$1
+  store "$dir" "$work/t-ok"
+  cp -r "$dir/bun-test-reports-101" "$dir/bun-test-reports-102"
+  "$python" - "$dir/jobs.json" <<'EOF'
+import json, sys
+from pathlib import Path
+jobs = Path(sys.argv[1])
+first, _ = json.loads(jobs.read_text())
+jobs.write_text(json.dumps([first, {**first, "id": 102, "name": "ok / ok"}]))
+EOF
+}
+
 read_store() { # read_store <dir>: sets out and status
   set +e
   out=$("$python" "$reader" --store "$1" --offline 2>&1)
@@ -229,17 +243,9 @@ check "exits 1, naming clause 1" \
 
 echo "case: clause 1: an exit status file with deeply nested JSON does not stop the reader"
 deep_exit_store="$work/s-deep-exit"
-store "$deep_exit_store" "$work/t-ok"
-cp -r "$deep_exit_store/bun-test-reports-101" "$deep_exit_store/bun-test-reports-102"
-python3 - "$deep_exit_store" <<'EOF'
-import json, sys
-from pathlib import Path
-store = Path(sys.argv[1])
-jobs = store / "jobs.json"
-first, _ = json.loads(jobs.read_text())
-jobs.write_text(json.dumps([first, {**first, "id": 102, "name": "ok / ok"}]))
-(store / "bun-test-reports-101/packages/ok/test.xml.exit").write_text("[" * 200_000)
-EOF
+two_job_store "$deep_exit_store"
+"$python" -c 'print("[" * 200_000, end="")' \
+  >"$deep_exit_store/bun-test-reports-101/packages/ok/test.xml.exit"
 read_store "$deep_exit_store"
 check "deep JSON: exits 1, naming clause 1 with no traceback" \
   "$(is "$status:$(contains "$out" "\"job_id\": 101, .*\"unknown\": \"clause 1: its exit status file test.xml.exit holds .*not the wrapper's\""):$(contains "$out" Traceback)" 1:true:false)"
@@ -255,22 +261,6 @@ check "non-UTF-8 exit: exits 1, naming clause 1 with no traceback" \
   "$(is "$status:$(contains "$out" '"job_id": 101, .*"unknown": "clause 1: its exit status file test.xml.exit cannot be read:'):$(contains "$out" Traceback)" 1:true:false)"
 check "after a non-UTF-8 exit status, the reader still prints the next job's test" \
   "$(contains "$out" '"job_id": 102, .*"status": "pass"')"
-
-echo "case: a process a test leaves holding bun's standard error keeps the wrapper at most DRAIN_SECONDS"
-package holder holder.test.ts "$imports
-test(\"leaves a child\", async () => {
-  const child = Bun.spawn([\"sleep\", \"25\"], { stdout: \"ignore\", stderr: \"inherit\" });
-  await Bun.write(process.env.HOLDER_PID_FILE!, String(child.pid));
-  child.unref();
-});"
-started=$(date +%s)
-HOLDER_PID_FILE="$work/holder.pid" wrap "$work/t-holder" holder test bun test
-held=$(( $(date +%s) - started ))
-kill "$(cat "$work/holder.pid")" 2>/dev/null || true
-check "the wrapper ended within DRAIN_SECONDS (5) and a margin, not with the child ($held s)" \
-  "$(is "$wrapped:$(( held < 15 ))" 0:1)"
-check "and wrote bun's status, its summary read" \
-  "$(is "$(exit_of "$work/t-holder/bun-test-reports/packages/holder/test.xml")" '{"status": 0, "errors": 0}')"
 
 echo "case: a signal sent to the wrapper itself is passed to bun, and bun's status is still written"
 temp="$work/t-term"
@@ -295,6 +285,20 @@ cat > "$work/standin/bun" <<'EOF'
 for word in "$@"; do case $word in --reporter-outfile=*) out=${word#*=} ;; esac; done
 if [ -n "${STANDIN_REPORT:-}" ]; then cp "$STANDIN_REPORT" "$out"; fi
 printf '%b' "${STANDIN_STDERR:-}" >&2
+if [ "${STANDIN_LATE_STDERR:-}" = yes ]; then
+  # The child waits for the wrapper to reap bun, writes once, then exits and closes the pipe.
+  python3 -c '
+import os, sys, time
+parent = int(sys.argv[1])
+while True:
+    try:
+        os.kill(parent, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.01)
+sys.stderr.write("x" * 99_999 + "\n")
+' "$$" >/dev/null &
+fi
 exit "${STANDIN_EXIT:-0}"
 EOF
 chmod +x "$work/standin/bun"
@@ -304,6 +308,34 @@ printf '<testsuites name="bun test" tests="1"><testsuite name="src/ok.test.ts" f
 standin() {
   STANDIN_REPORT=$3 STANDIN_STDERR=$4 STANDIN_EXIT=$5 WRAP_PATH="$work/standin:$PATH" wrap "$1" ok "$2" bun test
 }
+
+echo "case: a process a test leaves holding bun's standard error keeps the wrapper at most DRAIN_SECONDS"
+package holder holder.test.ts "$imports
+test(\"leaves a child\", async () => {
+  const child = Bun.spawn([\"sleep\", \"25\"], { stdout: \"ignore\", stderr: \"inherit\" });
+  await Bun.write(process.env.HOLDER_PID_FILE!, String(child.pid));
+  child.unref();
+});"
+started=$(date +%s)
+HOLDER_PID_FILE="$work/holder.pid" wrap "$work/t-holder" holder test bun test
+held=$(( $(date +%s) - started ))
+kill "$(cat "$work/holder.pid")" 2>/dev/null || true
+check "the wrapper ended within DRAIN_SECONDS (5) and a margin, not with the child ($held s)" \
+  "$(is "$wrapped:$(( held < 15 ))" 0:1)"
+check "and wrote bun's status, its summary read" \
+  "$(is "$(exit_of "$work/t-holder/bun-test-reports/packages/holder/test.xml")" '{"status": 0, "errors": 0}')"
+
+echo "case: a child writes past the summary buffer's limit after bun exits"
+STANDIN_LATE_STDERR=yes standin "$work/t-late-stderr" test "$honest" "$summary_ok" 0
+check "the wrapper exits 0 despite the child's output" "$(is "$wrapped" 0)"
+check "and wrote bun's status and summary before the child could replace it" \
+  "$(is "$(exit_of "$work/t-late-stderr/bun-test-reports/packages/ok/test.xml")" '{"status": 0, "errors": 0}')"
+check "the step still receives all 100,000 bytes of the child's stderr" \
+  "$(if "$python" -c 'import sys; sys.exit("x" * 99_999 not in sys.stdin.read().splitlines())' <<<"$wrap_log"; then
+       echo true
+     else
+       echo false
+     fi)"
 
 echo "case: clause 2 (a report bun 1.4.4 writes): bun exits 0 and leaves a report that does not parse"
 standin "$work/t-cut" test "$work/cut.xml" "$summary_ok" 0
@@ -374,6 +406,52 @@ EOF
 read_store "$work/s-nondecimal-count"
 check "non-decimal count: exits 1, naming clause 2 and the two counts with no traceback" \
   "$(is "$status:$(contains "$out" '"unknown": "clause 2: the report says \\u00b2 tests and holds 1 entries"'):$(contains "$out" Traceback)" 1:true:false)"
+
+echo "case: clause 2: unsupported XML encodings, an oversized count, and non-finite times"
+for fault in utf-7 rot13 oversized-count nan inf; do
+  dir="$work/s-$fault"
+  two_job_store "$dir"
+  "$python" - "$dir" "$fault" <<'EOF'
+import sys, xml.etree.ElementTree as ET
+from pathlib import Path
+
+report, fault = Path(sys.argv[1]) / "bun-test-reports-101/packages/ok/test.xml", sys.argv[2]
+tree = ET.parse(report)
+if fault in ("utf-7", "rot13"):
+    report.write_text(f'<?xml version="1.0" encoding="{fault}"?>\n'
+                      + ET.tostring(tree.getroot(), encoding="unicode"))
+elif fault == "oversized-count":
+    tree.getroot().set("tests", "9" * 5000)
+    tree.write(report)
+else:
+    tree.find(".//testcase").set("time", fault)
+    tree.write(report)
+EOF
+  case $fault in
+    oversized-count) reason="the report's test count is longer than 64 characters\"}" ;;
+    nan|inf) reason="the report does not parse: its test 'passes' has time '$fault'.*not numbers" ;;
+    *) reason="the report does not parse:" ;;
+  esac
+  set +e
+  out=$("$python" "$reader" --store "$dir" --offline 2>"$work/read-errors")
+  status=$?
+  set -e
+  check "$fault: exits 1 with a clause 2 unknown and no traceback" \
+    "$(is "$status:$(contains "$out" "\"job_id\": 101, .*\"unknown\": \"clause 2: $reason"):$(contains "$(cat "$work/read-errors")" Traceback)" 1:true:false)"
+  check "$fault: the next job of the store still reads as a pass" \
+    "$(contains "$out" '^{"job_id": 102, .*"status": "pass"')"
+  check "$fault: every output line is strict JSON" \
+    "$(if "$python" -c '
+import json, sys
+def reject_constant(value):
+    raise ValueError(value)
+try:
+    for line in sys.stdin:
+        json.loads(line, parse_constant=reject_constant)
+except ValueError:
+    sys.exit(1)
+' <<<"$out"; then echo true; else echo false; fi)"
+done
 
 echo "case: clause 2: suite nesting beyond the bound does not stop the reader"
 store "$work/s-deep-report" "$work/t-ok"

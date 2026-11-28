@@ -192,6 +192,11 @@ def scalar(node: object) -> str | None:
     return node.value.strip() if isinstance(node, yaml.ScalarNode) else None
 
 
+def one_line(text: object) -> str:
+    """A message on one line, for a workflow annotation."""
+    return " ".join(str(text).split())
+
+
 class UniqueKeyLoader(yaml.SafeLoader):
     """yaml.SafeLoader, refusing a mapping that holds one key twice. yaml.safe_load keeps the last
     copy and reports nothing, so a second `ci_router:` holding only 'docs/**' would leave the
