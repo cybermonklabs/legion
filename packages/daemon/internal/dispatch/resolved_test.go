@@ -57,7 +57,7 @@ import (
 // keys. The PATCH body is the answer of the daemon's own status write that came next, under the
 // shared token, fenced on the sequence the detail read:
 //
-//	curl -sS -X PATCH -H "Authorization: Bearer $(< "$DISPATCH_TOKEN_FILE")" -H 'Content-Type: application/json' \
+//	curl -sS -X PATCH -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") -H 'Content-Type: application/json' \
 //	  --data '{"status":"in_progress","expected_sequence":2,"actor":{"kind":"session","id":"legion-daemon:<P>"}}' "$DISPATCH_URL/api/v1/issues/<KEY>"
 //
 // The listing went through the first filter above, the detail through the second, and the PATCH
