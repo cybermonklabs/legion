@@ -263,7 +263,9 @@ async function finishAfterClose(r: Awaited<ReturnType<typeof setup>>, code: numb
   r.first.close(code);
   r.split.resolve(splitSync(r.update, 2));
   const next = await r.socketAt(1);
-  expect(r.connection.doc._observers.get("update")?.size).toBe(2);
+  // The next socket can open before the remaining parts are applied: its reconnect waits a draw
+  // of [0, 2 s) (`reconnectDelayMs`), so the listeners are read once they are back (row 7).
+  await waitFor(() => expect(r.updateListeners()).toBe(2));
   next.receive(authenticatedFrame("read-write", r.id));
   next.receive(syncStep2Frame(r.update, r.id));
   await waitFor(() => expect(r.marks).toEqual(["synced"]));
