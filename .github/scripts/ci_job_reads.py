@@ -2151,10 +2151,10 @@ def go_top_level_spans(code: str, path) -> list:
 # The eleven static checks of internal/dispatch/api, keyed by their path in this repository: the
 # ten source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all twenty-four of their tests in the plain step; they are left out of it instead,
+# below would put all twenty-five of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
 # tells nobody anything. The exemption is held to the files it is about in three ways, so a
-# twenty-fifth such test cannot quietly rejoin the plain step: a file named here that does not
+# twenty-sixth such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -2171,6 +2171,7 @@ TEXT_CHECK_TESTS = {
         "TestOnlyTheBrokerInsertsEvents",
         "TestTheEventInsertGuardSeesAPlantedInserter"},
     f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": {
+        "TestNoServerPackageImportsTheFixtureWriters",
         "TestOnlyTheIssuePatchWritesTheRoute",
         "TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent",
         "TestTheJudgedWriterGuardSeesAPlantedWriter",
@@ -2485,12 +2486,12 @@ DAEMON_STAMPED_GATE_SCRIPT = (
     "-run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'")
 
 
-# The text-check job: the three modules' text checks, and the twenty-four tests of the Dispatch API's
+# The text-check job: the three modules' text checks, and the twenty-five tests of the Dispatch API's
 # eleven static checks - its ten source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-four out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-five out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
@@ -2551,7 +2552,7 @@ BROWSER_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
 [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
 echo "connections=$connections" >> "$GITHUB_OUTPUT\""""
-BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)"
+BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of ${{ strategy.job-total }})"
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
@@ -2842,7 +2843,7 @@ def browser_gate(filter, job):
          "before it started, which it makes a bucket in and writes, reads back and deletes one "
          "object in"),
         (".github/scripts/dispatch-browser-shard-suite.sh",
-         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's row time"),
+         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's share of the lane's row time"),
         (".github/scripts/dispatch-browser-shard-record.sh",
          f"{at_browser(BROWSER_RECORD_STEP)} runs it to print and collect the file store's log "
          "and the stacks' own logs"),

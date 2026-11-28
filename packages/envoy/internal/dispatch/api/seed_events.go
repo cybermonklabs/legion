@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -71,8 +72,8 @@ func SeedIssueClaimedPayload(ctx context.Context, tx pgx.Tx, key string, claimed
 }
 
 // SeedArtifactCreatedPayload is the payload of the artifact.created event of the artifact id, as
-// the artifact routes build it (artifactCreatedEventPayload), from the artifact tx holds and the
-// reference changes its text moved, which the caller counted.
+// the artifact routes build it (docs.ArtifactCreatedEventPayload), from the artifact tx holds
+// and the reference changes its text moved, which the caller counted.
 func SeedArtifactCreatedPayload(ctx context.Context, tx pgx.Tx, id string, changes model.ReferenceChanges) (any, error) {
 	artifact, err := loadArtifactRowByID(ctx, tx, id)
 	if err != nil {
@@ -81,7 +82,7 @@ func SeedArtifactCreatedPayload(ctx context.Context, tx pgx.Tx, id string, chang
 	if err := loadArtifactDetails(ctx, tx, []*model.Artifact{&artifact}); err != nil {
 		return nil, err
 	}
-	return artifactCreatedEventPayload(artifact, changes), nil
+	return docs.ArtifactCreatedEventPayload(artifact, changes), nil
 }
 
 // SeedAskAnsweredPayload is the payload of the ask.answered event of a first answer of ask, as
