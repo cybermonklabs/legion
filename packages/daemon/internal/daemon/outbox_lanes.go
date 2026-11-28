@@ -508,6 +508,28 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 	}
 }
 
+// leaseHolds says whether row's lease still holds, read without moving it (record's
+// OutboxLeased): false for a row deleted under its live lease (record's DropStatusWrites,
+// DropSetBacksOver, DropQueuedChanges) or leased by another lane. A status row asks it once it
+// holds its issue's lock, which an acceptance holds until its fact commits, so a set-back that fact
+// dropped while the row waited does not run on its in-memory payload. The lane's own ticks keep
+// renewing the lease meanwhile (renewLease).
+func (r *outbox) leaseHolds(ctx context.Context, row record.OutboxRow) (bool, error) {
+	var held bool
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		held, err = r.records.OutboxLeased(ctx, tx, row.ID, row.LeaseToken)
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read the lease of outbox row %d after its issue's lock: %w", row.ID, err)
+	}
+	if !held {
+		r.log.Info("outbox status write finished without reading or writing Dispatch: its row was dropped, or another lane leased it, while it waited on its issue's lock",
+			"row", row.ID, "issue", row.Issue)
+	}
+	return held, nil
+}
+
 // finishesItsOwnRow is whether row's own effect finishes the row inside its run: a left pod's close
 // check (record.IssueWorkspaceCheck.LeftPodClose: CloseRoles, or the launcher's check with Close
 // where no role runs in the pod), which finishes its row in the transaction that records what it

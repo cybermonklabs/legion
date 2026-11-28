@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -104,6 +105,63 @@ func TestASetBackSettlesItsRequestFromDispatchAlone(t *testing.T) {
 			}
 			if !slices.Equal(client.statuses, tc.writes) || len(client.acceptanceWrites) != 0 {
 				t.Fatalf("Dispatch writes %q and keyed resends %+v, want %q and no resend", client.statuses, client.acceptanceWrites, tc.writes)
+			}
+		})
+	}
+}
+
+// A set-back the lane claimed while the act held the issue's lock, and that the act's taken close
+// then deleted, runs on its in-memory payload once the lock is free. It reads its own lease first,
+// and where the row is gone it finishes with no Dispatch read or write, so the close's done stays.
+// A set-back left standing over a close the record holds writes nothing either (overAcceptance).
+// The control is a set-back left standing over a close the record does not hold (a refused close
+// whose write back failed), which writes the old status back.
+func TestASetBackClaimedBeforeTheCloseWritesNothingOverIt(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	for _, tc := range []struct {
+		name, key, recorded string
+		at                  phase.Phase
+		dropped             bool
+		writes              []string
+	}{
+		{name: "claimed, then dropped by the taken close", key: "LEGION-801", recorded: "in_progress", at: phase.Admitted, dropped: true},
+		{name: "standing over a close the record holds", key: "LEGION-802", recorded: "done", at: phase.Done},
+		{name: "control: standing over a close the record does not hold", key: "LEGION-803", recorded: "in_progress", at: phase.Admitted, writes: []string{"in_progress"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			putOutboxIssue(t, pool, records, record.Issue{Key: tc.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: tc.key, Title: tc.key, Phase: tc.at, Generation: 1, Status: tc.recorded, DispatchStatus: "done"})
+			var leased record.OutboxRow
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				id, err := records.EnqueueID(ctx, tx, mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", "done", 9), time.Now().Add(-time.Second)))
+				if err != nil {
+					return err
+				}
+				var ok bool
+				if leased, ok, err = records.ClaimRow(ctx, tx, id, time.Now(), time.Minute); err == nil && !ok {
+					err = fmt.Errorf("row %d not claimed", id)
+				}
+				return err
+			}); err != nil {
+				t.Fatalf("queue and claim the set-back: %v", err)
+			}
+			if tc.dropped {
+				if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+					return records.DropStatusWrites(ctx, tx, tc.key)
+				}); err != nil {
+					t.Fatalf("drop the status writes as the taken close does: %v", err)
+				}
+			}
+			client := &outboxDispatch{issue: dispatch.Issue{Key: tc.key, Status: "done", LastSeq: 10}}
+			runner := &outbox{pool: pool, records: records, dispatch: client, log: quietLogger(), issueLocks: &issuelock.Locks{}}
+			if err := runner.execute(ctx, leased); err != nil {
+				t.Fatalf("execute the claimed set-back: %v", err)
+			}
+			if !slices.Equal(client.statuses, tc.writes) || len(client.messages) != 0 {
+				t.Fatalf("Dispatch writes %q and messages %q, want %q and none", client.statuses, client.messages, tc.writes)
 			}
 		})
 	}

@@ -3605,8 +3605,9 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 // claim.ErrKeyOfAnotherProject. ClearGeneration and ClearTreeGeneration refuse one too: they write
 // no outbox row, since their caller queues the publication of the gates they empty (workflow's
 // Engine.ClearGeneration, through EnqueueDesignGates), but the facts they delete are that
-// project's daemon's, and so are the changes requests their forget deletes by id
-// (DropQueuedChanges), which only the clear's own read hands it. The state rows that
+// project's daemon's, and so are the rows DropQueuedChanges deletes by id: the changes requests a
+// clear's forget hands it, and the set-back of an acceptance's request the API queued itself. The
+// state rows that
 // internal/record and internal/store queue inside their own writes (package stateevent's comment
 // names them) are not among those writes: each is keyed by the bare Dispatch project key of what
 // its write names. The boot row goes in through Enqueue (workflowRuntime.queueStateBoot), and its

@@ -33,8 +33,10 @@ const (
 	// ReassertStatusRow is the daemon setting its own status back over a status that it does not
 	// take (ReassertStatusWrite names the cases): a session's write, which the workflow
 	// keeps out of the record (workflow's sessionStatusWrite), or the daemon's own stale
-	// hand-over todo (rejectStaleHandover). The write it undoes stands in Dispatch and the record
-	// kept the daemon's status, so this row is queued observing a status the issue is not meant
+	// hand-over todo (rejectStaleHandover). The write it undoes stands in Dispatch, or, for the
+	// set-back an acceptance or a close queues before its request (the API's queueSetBack), may
+	// still land, and the record kept the daemon's status, so this row is queued observing a status
+	// the issue is not meant
 	// to be at, such as done, backlog or icebox, exactly as a person's handover is. Asking the
 	// ordinary rule of it, whether the issue is still in the workflow, would drop the row for
 	// being at the status it exists to undo.

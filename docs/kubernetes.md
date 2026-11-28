@@ -3234,7 +3234,7 @@ So one project can roll back while another stays on this release, and the statem
 
 #### Rolling back the release that writes an acceptance before it records it
 
-In this release `sign_off` and `close_root` write `retro` or `done` in Dispatch before the daemon records the act, under an `Idempotency-Key` for each request.
+In this release a `sign_off` that accepts the issue, and every `close_root`, write `retro` or `done` in Dispatch before the daemon records the act, under an `Idempotency-Key` for each request; a `sign_off` its plan moves to a later step writes nothing ahead.
 Before each request, the route queues a set-back of that request: the status Dispatch showed before the act, written back over the act's status, observed at the sequence the request is fenced on (`record.ReassertStatusWrite`, the route's `queueSetBack`).
 The act's fact drops it once taken, and a refusal of the request, or a write back that landed, deletes it.
 A set-back left standing is the undo of a write the daemon sent and did not record: a daemon that stopped between the write and the fact, a write Dispatch did not settle within the act, or a write back that failed.
@@ -3250,7 +3250,7 @@ That needs a write Dispatch did not answer, a stop or a rollback while it is in 
 To see what a project carries before it rolls back, run this with `<PROJECT>` replaced by the project's key, as the block above takes it:
 
 ```sql
--- The set-backs of one project that undo an acceptance or a close the daemon sent and did not record.
+-- The set-backs of one project over a retro or a done: those an acceptance or a close the daemon sent and did not record queued, and those of a session's retro or done.
 select id, issue, payload->>'status' as back, payload->>'observedStatus' as sent, payload->>'observedSeq' as seq from outbox where kind = 'dispatch_status' and payload->>'kind' = 'reassert' and payload->>'observedStatus' in ('retro', 'done') and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 

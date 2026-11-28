@@ -2875,7 +2875,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	// which the acceptance now stands for, are dropped in this transaction (the API's queueSetBack),
 	// so no release, an earlier one after a rollback included, writes them. A sign-off its plan moves
 	// to a later step accepts nothing and keeps them: a session's retro is still set back.
-	accepts, err := e.signOffAccepts(ctx, tx, *issue)
+	accepts, err := e.signOffAccepts(ctx, tx, *issue, pr)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2919,25 +2919,34 @@ func (e *Engine) SignOffRefusal(ctx context.Context, tx pgx.Tx, fact intake.Sign
 	if refusal, err := e.signOffRefusal(ctx, tx, *issue); err != nil || refusal != nil {
 		return refusal, false, err
 	}
-	accepts, err = e.signOffAccepts(ctx, tx, *issue)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, false, err
+	}
+	accepts, err = e.signOffAccepts(ctx, tx, *issue, pr)
 	return nil, accepts, err
 }
 
 // signOffAccepts says whether the sign-off of issue moves it into a phase that shows retro, the
-// acceptance's status (PhaseStatus), by the row of its walk that transition takes. A plan can put
-// the owner's acceptance before a tester's or a reviewer's step (plan's validate), and the
-// sign-off then moves the issue to that step, which the daemon records as no acceptance.
-func (e *Engine) signOffAccepts(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+// acceptance's status (PhaseStatus), by the row of its walk that transition takes, read with the
+// snapshot transition reads it with (transitionSnapshot) and pr, the issue's pull-request row the
+// caller read. A plan can put the owner's acceptance before a tester's or a reviewer's step
+// (plan's validate), and the sign-off then moves the issue to that step, which the daemon records
+// as no acceptance.
+func (e *Engine) signOffAccepts(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) (bool, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return false, err
 	}
-	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
-	if err != nil {
-		return false, err
-	}
-	row, ok := w.row(issue.Phase, TriggerSignOff, "", Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)})
+	row, ok := w.row(issue.Phase, TriggerSignOff, "", transitionSnapshot(issue, pr))
 	return ok && PhaseStatus(row.To) == PhaseStatus(phase.Retro), nil
+}
+
+// transitionSnapshot is the snapshot a transition of issue looks its walk's row up with, pr the
+// issue's pull-request row: the one builder transition and signOffAccepts share, so the judgement
+// of whether a sign-off accepts reads the row the transition takes.
+func transitionSnapshot(issue record.Issue, pr *record.PullRequest) Snapshot {
+	return Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}
 }
 
 // signOffRefusal is SignOffRefusal of issue as the caller read it.
@@ -2975,7 +2984,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return err
 	}
-	snapshot := Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}
+	snapshot := transitionSnapshot(issue, pr)
 	row, ok := w.row(issue.Phase, trigger, target, snapshot)
 	if !ok {
 		return nil

@@ -1800,9 +1800,9 @@ func (s *server) acceptStatus(w http.ResponseWriter, r *http.Request, a acceptAc
 	}
 	back := s.writeBack(ctx, a, shown, written)
 	if back == "" {
-		// The status the write back settled is what Dispatch shows now, so the unfinished
-		// acceptance has nothing left to settle. A write back that failed leaves it to the outbox.
-		s.retireAcceptance(ctx, a, pending)
+		// The status the write back settled is what Dispatch shows now, so the request's set-back
+		// has nothing left to undo. A write back that failed leaves it to the outbox.
+		s.retireSetBack(ctx, a, pending)
 	}
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact"+back)
@@ -1843,24 +1843,26 @@ const keyedSendAttempts = 3
 //   - unsettled after keyedSendAttempts sends of the same request under its key: errUnsettled, its
 //     set-back left standing for the outbox to settle.
 func (s *server) sendAcceptance(ctx context.Context, a acceptAct, shown dispatch.Issue) (dispatch.Issue, int64, dispatch.Issue, error) {
-	read := shown
-	for range statusWriteAttempts {
+	var pending int64
+	written, read, err := s.writeAtRead(ctx, shown, func(ctx context.Context, read dispatch.Issue) (dispatch.Issue, error) {
 		write := dispatch.AcceptanceWrite{Key: acceptanceKey(a), Issue: a.issue, Status: a.status, Sequence: read.LastSeq}
 		// Dispatch naming no status, or showing the act's status already, leaves nothing to set back.
-		var pending int64
-		var err error
+		pending = 0
 		if shown.Status != "" && shown.Status != a.status {
-			pending, err = s.queueSetBack(ctx, write, shown.Status)
-		}
-		if err != nil {
-			return dispatch.Issue{}, 0, read, fmt.Errorf("%w: %w", errQueueSetBack, err)
+			id, err := s.queueSetBack(ctx, write, shown.Status)
+			if err != nil {
+				return dispatch.Issue{}, fmt.Errorf("%w: %v", errQueueSetBack, err)
+			}
+			pending = id
 		}
 		written, err := s.sendKeyed(ctx, write)
 		switch dispatch.VerdictOf(err) {
 		case dispatch.Landed:
-			return written, pending, read, nil
+			return written, nil
 		case dispatch.Unsettled:
-			return dispatch.Issue{}, pending, read, fmt.Errorf("%w: %w", errUnsettled, err)
+			// The cause is kept as text alone: an unechoed refusal is no verdict on the request, so no
+			// reader may take its code (ForeignChildrenOpen) for one.
+			return dispatch.Issue{}, fmt.Errorf("%w: %v", errUnsettled, err)
 		case dispatch.Committed:
 			// A status change of the daemon's after the request's sequence is the write landing. With
 			// none, the key's request committed something else first (a close's settlement of its
@@ -1868,24 +1870,17 @@ func (s *server) sendAcceptance(ctx context.Context, a acceptAct, shown dispatch
 			// to settle.
 			landed, ok, err := s.committedStatus(ctx, write)
 			if err != nil || !ok {
-				return dispatch.Issue{}, pending, read, fmt.Errorf("%w: KEY_COMMITTED, and the log after the request's sequence shows no status change of the daemon's yet (%v)", errUnsettled, err)
+				return dispatch.Issue{}, fmt.Errorf("%w: KEY_COMMITTED, and the log after the request's sequence shows no status change of the daemon's yet (%v)", errUnsettled, err)
 			}
-			return landed, pending, read, nil
+			return landed, nil
 		}
-		s.retireAcceptance(ctx, a, pending)
-		var refusal *dispatch.Error
-		if !errors.As(err, &refusal) || refusal.Code != "ISSUE_CHANGED" {
-			return dispatch.Issue{}, 0, read, err
-		}
-		reread, err := s.dispatch.GetIssue(ctx, a.issue)
-		if err != nil {
-			return dispatch.Issue{}, 0, read, fmt.Errorf("read %s again after Dispatch refused the write because it changed: %w", a.issue, err)
-		}
-		if read = reread; read.Status != shown.Status {
-			return dispatch.Issue{}, 0, read, errStatusMoved
-		}
-	}
-	return dispatch.Issue{}, 0, read, errChangedUnderEachRead
+		// Dispatch's verdict on this exact request: it never lands, so its set-back goes, and an
+		// ISSUE_CHANGED has writeAtRead send a new request at a fresh read's sequence.
+		s.retireSetBack(ctx, a, pending)
+		pending = 0
+		return dispatch.Issue{}, err
+	})
+	return written, pending, read, err
 }
 
 // sendKeyed sends write, and again under the same key and bytes while Dispatch's answer settles
@@ -1966,7 +1961,7 @@ func (s *server) readAndJudge(ctx context.Context, issue string, judge func(cont
 // status after write.Sequence (setBackOwed). So it never resends the request, and needs nothing of
 // its key. A sign-off that is taken drops it in its fact's transaction (Store.DropSetBacksOver), a
 // close that is taken drops every status row (workflow's closeRoot); a refusal of this exact
-// request, and a write back that landed, retire it here (retireAcceptance). It is a set-back as
+// request, and a write back that landed, retire it here (retireSetBack). It is a set-back as
 // every release decodes one, so a rollback to the release before runs it as its own.
 func (s *server) queueSetBack(ctx context.Context, write dispatch.AcceptanceWrite, observed string) (int64, error) {
 	var id int64
@@ -1981,17 +1976,17 @@ func (s *server) queueSetBack(ctx context.Context, write dispatch.AcceptanceWrit
 	return id, err
 }
 
-// retireAcceptance deletes the set-back of a's request (queueSetBack), once nothing is left to undo.
+// retireSetBack deletes the set-back of a's request (queueSetBack), once nothing is left to undo.
 // A row it could not delete runs in the outbox, which finds Dispatch at the status the row writes,
 // or past the request, and writes nothing over it.
-func (s *server) retireAcceptance(ctx context.Context, a acceptAct, row int64) {
+func (s *server) retireSetBack(ctx context.Context, a acceptAct, row int64) {
 	if row == 0 {
 		return
 	}
 	if err := store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return s.records.DropQueuedChanges(ctx, tx, []int64{row})
 	}); err != nil {
-		s.log.Warn("could not retire a settled acceptance; the outbox settles it under its key and writes nothing over what Dispatch shows",
+		s.log.Warn("could not delete the set-back of a settled request; the outbox runs it, finds Dispatch at its status or past the request, and writes nothing",
 			"issue", a.issue, "act", a.act, "row", row, "error", err)
 	}
 }
@@ -2049,8 +2044,8 @@ var (
 // answers the issue as Dispatch answered the write and the last read. It answers errStatusMoved,
 // with the read that shows another status, where someone moved the issue since, which no write
 // here lands over; errChangedUnderEachRead after statusWriteAttempts refusals; and any other error
-// as write or the read answered it. An acceptance's own write goes through sendAcceptance instead,
-// a key to each request.
+// as write or the read answered it. sendAcceptance calls it with a write that makes each request
+// under a key of its own.
 func (s *server) writeAtRead(ctx context.Context, read dispatch.Issue, write func(context.Context, dispatch.Issue) (dispatch.Issue, error)) (dispatch.Issue, dispatch.Issue, error) {
 	from := read.Status
 	for range statusWriteAttempts {

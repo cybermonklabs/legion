@@ -198,8 +198,8 @@ func TestAnAcceptanceWhoseFactDoesNotTakeWritesTheStatusBack(t *testing.T) {
 // again under the same key and bytes, which Dispatch's keyed layer answers with how the first
 // attempt ended. A write whose answer was lost after Dispatch took it is answered landed by the
 // repeat, which runs nothing again, and the act goes on to its fact. A write Dispatch never
-// settles within the act is answered 502 with nothing applied, and its unfinished acceptance stands
-// for the outbox to settle under the same key.
+// settles within the act is answered 502 with nothing applied, and its set-back stands, for the
+// outbox to fence the request and undo it if it landed.
 func TestAnAcceptanceWhoseAnswerWasLostIsSentAgainUnderItsKey(t *testing.T) {
 	h, facts, statuses := newAcceptanceHarness(t, nil, nil)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -217,7 +217,7 @@ func TestAnAcceptanceWhoseAnswerWasLostIsSentAgainUnderItsKey(t *testing.T) {
 		t.Fatalf("acceptance writes %q, facts %#v and %d keyed runs; want the one retro, run once, and its sign-off applied", statuses.acceptances, facts.recorded(), statuses.keyedRuns)
 	}
 
-	// Dispatch settles nothing within the act: nothing is applied, and the unfinished acceptance stands.
+	// Dispatch settles nothing within the act: nothing is applied, and the request's set-back stands.
 	h, facts, statuses = newAcceptanceHarness(t, nil, nil)
 	architect = newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	statuses.err = errors.New("dial tcp 127.0.0.1:8080: i/o timeout")
@@ -225,7 +225,7 @@ func TestAnAcceptanceWhoseAnswerWasLostIsSentAgainUnderItsKey(t *testing.T) {
 	if len(facts.recorded()) != 0 || len(statuses.acceptances) != 0 || !strings.Contains(message, "did not settle") || !strings.Contains(message, "writes needs_review back if it landed") {
 		t.Fatalf("with Dispatch settling nothing, facts %#v, writes %q and the answer %q; want nothing applied and the answer naming the settling", facts.recorded(), statuses.acceptances, message)
 	}
-	acceptanceQueued(t, h, "LEGION-208", "retro", "needs_review", 7)
+	setBackQueued(t, h, "LEGION-208", "retro", "needs_review", 7)
 }
 
 // A message lands between the act's read and its repeat. The repeat carries the first request's
@@ -279,10 +279,10 @@ func TestAMessageBetweenTheReadAndTheRepeatChangesNothingAKeySettles(t *testing.
 	}
 }
 
-// acceptanceQueued fails the test unless the one outbox row of issue is the set-back of an act's
+// setBackQueued fails the test unless the one outbox row of issue is the set-back of an act's
 // request (queueSetBack): old written back over act, a record.ReassertStatusRow observed at seq,
 // the sequence the request was fenced on, and carrying nothing of the request's key.
-func acceptanceQueued(t *testing.T, h *harness, issue, act, old string, seq int64) {
+func setBackQueued(t *testing.T, h *harness, issue, act, old string, seq int64) {
 	t.Helper()
 	if rows := outboxRowsOf(t, h, issue); rows != 1 {
 		t.Fatalf("outbox rows of %s = %d, want the one set-back of the act's request", issue, rows)
@@ -292,6 +292,18 @@ func acceptanceQueued(t *testing.T, h *harness, issue, act, old string, seq int6
 	if err := h.store.Pool().QueryRow(t.Context(), "select payload->>'kind', payload->>'status', payload->>'observedStatus', (payload->>'observedSeq')::bigint from outbox where issue = $1", issue).
 		Scan(&kind, &writes, &over, &at); err != nil || kind != string(record.ReassertStatusRow) || writes != old || over != act || at != seq {
 		t.Fatalf("the queued row of %s = kind %q writing %q over %q at %d (%v), want the set-back of %s over %s at %d", issue, kind, writes, over, at, err, old, act, seq)
+	}
+}
+
+// An acceptance's key fits Dispatch's bound on a key (dispatch.IdempotencyKeyMax, generated from
+// packages/contracts), for the longest act name and a long issue key, and two keys of one act
+// differ, since each names one request.
+func TestAnAcceptanceKeyFitsDispatchsBound(t *testing.T) {
+	t.Parallel()
+	act := acceptAct{act: "close_root", issue: "LONGPROJECTKEY-1234567"}
+	first, second := acceptanceKey(act), acceptanceKey(act)
+	if len(first) > dispatch.IdempotencyKeyMax || first == second {
+		t.Fatalf("acceptance keys %q and %q: want each at most %d characters and the two different", first, second, dispatch.IdempotencyKeyMax)
 	}
 }
 
@@ -311,29 +323,28 @@ func TestAKeyCommittedWithNoStatusChangeKeepsTheSetBack(t *testing.T) {
 	if len(facts.recorded()) != 0 || !strings.Contains(message, "KEY_COMMITTED") || !strings.Contains(message, "fences that write") {
 		t.Fatalf("with KEY_COMMITTED and no status change, facts %#v and the answer %q; want nothing applied and the answer naming the fence", facts.recorded(), message)
 	}
-	acceptanceQueued(t, h, "LEGION-208", "retro", "needs_review", 7)
+	setBackQueued(t, h, "LEGION-208", "retro", "needs_review", 7)
 }
 
-// A refusal of the exact request settles it, so its unfinished acceptance is retired: left, the
-// outbox would send it again only to read the same refusal.
-func TestAnAcceptanceRetiresItsRecordWhereDispatchRefusedTheWrite(t *testing.T) {
+// Dispatch's refusal of the exact request means it never lands, so its set-back is deleted: left,
+// the outbox would post a fence on the issue for a write that is not coming.
+func TestAnAcceptanceDeletesItsSetBackWhereDispatchRefusedTheWrite(t *testing.T) {
 	h, _, statuses := newAcceptanceHarness(t, nil, nil)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	statuses.foreignOpen = map[string][]dispatch.ForeignChild{"LEGION-208": {{Key: "OTHR-5", Project: "OTHR", Status: "triage"}}}
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
 		http.StatusConflict, "SIGNOFF_CHILD_OPEN")
 	if rows := outboxRowsOf(t, h, "LEGION-208"); rows != 0 {
-		t.Fatalf("outbox rows of LEGION-208 after Dispatch refused the write = %d, want its unfinished acceptance retired", rows)
+		t.Fatalf("outbox rows of LEGION-208 after Dispatch refused the write = %d, want its set-back deleted", rows)
 	}
 }
 
-// The unfinished acceptance is recorded before the act's write, so the write never lands with
-// nothing to settle it. A close_root whose fact is refused and whose write back fails too leaves
+// The set-back of each request is queued before the act's write, so the write never lands with
+// nothing to undo it. A close_root whose fact is refused and whose write back fails too leaves
 // Dispatch at done for an issue the daemon still runs, which the status repair passes over: the
-// unfinished acceptance stands, for the outbox to settle once the act releases the issue. A write
-// back that lands retires it, and a sign-off sees it recorded already when its write has landed
-// (the seam).
-func TestAnAcceptanceRecordsItsRequestBeforeItsWrite(t *testing.T) {
+// set-back stands, for the outbox to run once the act releases the issue. A write back that lands
+// deletes it, and a sign-off sees it queued already when its write has landed (the seam).
+func TestAnAcceptanceQueuesItsSetBackBeforeItsWrite(t *testing.T) {
 	h, facts, statuses := newAcceptanceHarness(t, nil, nil)
 	facts.refusal = &intake.Refusal{Status: http.StatusConflict, Code: "CLOSE_AFTER_PHASE_STARTED", Message: "LEGION-208 started its first phase"}
 	statuses.writeBackErr = errors.New("dial tcp 127.0.0.1:8080: i/o timeout")
@@ -347,7 +358,7 @@ func TestAnAcceptanceRecordsItsRequestBeforeItsWrite(t *testing.T) {
 	if want := []string{"LEGION-208=done"}; !slices.Equal(statuses.acceptances, want) || statuses.issues["LEGION-208"].Status != "done" {
 		t.Fatalf("acceptance writes %q, Dispatch at %s; want the close's done standing, its write back failed (%s)", statuses.acceptances, statuses.issues["LEGION-208"].Status, message)
 	}
-	acceptanceQueued(t, h, "LEGION-208", "done", "needs_review", 7)
+	setBackQueued(t, h, "LEGION-208", "done", "needs_review", 7)
 
 	h, facts, statuses = newAcceptanceHarness(t, nil, nil)
 	facts.refusal = &intake.Refusal{Status: http.StatusConflict, Code: "CLOSE_AFTER_PHASE_STARTED", Message: "LEGION-208 started its first phase"}
@@ -367,7 +378,7 @@ func TestAnAcceptanceRecordsItsRequestBeforeItsWrite(t *testing.T) {
 		t.Fatalf("the sign-off = %d: %s, want 200", answer.Code, answer.Body)
 	}
 	if queued != 1 {
-		t.Fatalf("outbox rows of LEGION-208 once the sign-off's write landed = %d, want its unfinished acceptance recorded before the write", queued)
+		t.Fatalf("outbox rows of LEGION-208 once the sign-off's write landed = %d, want its set-back queued before the write", queued)
 	}
 }
 
@@ -389,8 +400,7 @@ func TestASignOffBeforeAnotherStepWritesNothingAhead(t *testing.T) {
 
 // The judgement meets the fences of the architect's request before anything is written: a
 // sign-off on a generation the issue left since its route read it is refused
-// SIGNOFF_STALE_GENERATION, and Dispatch is not written, where before the route wrote retro, the
-// fact refused it and the route wrote the old status back.
+// SIGNOFF_STALE_GENERATION, and Dispatch is not written.
 func TestAnAcceptanceTheRequestFenceRefusesWritesNothing(t *testing.T) {
 	h, statuses := newWorkflowAcceptanceHarness(t, func(context.Context, *harness, *workflow.Engine) {})
 	// The route reads generation 1; a generation of 0 is one the fence does not judge.

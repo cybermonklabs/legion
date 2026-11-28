@@ -143,8 +143,7 @@ func TestTheSignOffAndCloseJudgementsReadTheirFactsRefusalsReadOnly(t *testing.T
 // The two judgements meet the fences every architect's request meets (requestRefusal) before
 // anything of the act is written, as the fact itself does: a sign-off or a close by an architect of
 // no tree of the issue, on a generation the issue left, or on a run of accepting that no longer
-// stands, is refused as the fact would refuse it. Before this the routes judged the key alone, and
-// such an act wrote its status in Dispatch first.
+// stands, is refused as the fact would refuse it.
 func TestTheAcceptanceJudgementsMeetTheRequestFences(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)

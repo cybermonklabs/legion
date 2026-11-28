@@ -60,7 +60,7 @@ body: |-
   list. From its Dispatch write on, the act runs
   to its end whether or not its caller is still there: a caller that goes away does not stop its
   fact or its write back. A write Dispatch did not settle within the act is answered
-  `502 DISPATCH_FAILED`, its unfinished acceptance left to the outbox. A coded refusal keeps its
+  `502 DISPATCH_FAILED`, its set-back left to the outbox. A coded refusal keeps its
   code, and a refusal that names no code, such as a proxy's 5xx, answers `502 DISPATCH_FAILED`.
   While Dispatch cannot be reached, `sign_off` and
   `close_root` answer a coded `502` (`DISPATCH_FAILED`) and record nothing; the plugin does not
@@ -69,7 +69,10 @@ body: |-
   route's own `done` write, while the record holds the root in the workflow, takes nothing out of
   it: the close's fact decides, taken or refused, and a refused close has its status written back.
   The daemon's Dispatch client gains `SetAcceptanceStatus`, which needs a Dispatch that holds the
-  refusal `FOREIGN_CHILD_OPEN`: an older Dispatch writes the status with no check.
+  refusal `FOREIGN_CHILD_OPEN` (an older Dispatch writes the status with no check) and that names
+  a keyed request's `Idempotency-Key` back on its answer: a Dispatch that does not reads every
+  acceptance as unsettled, so each `sign_off` and `close_root` answers 502 and the outbox sets
+  the status back.
 time: 2026-11-21T19:22:37.000000000Z
 custom:
     Issue: parent-across-projects

@@ -3407,11 +3407,13 @@ type Store interface {
 	// lock and finds the acceptance recorded, so it writes nothing back (the outbox's
 	// overAcceptance).
 	DropSetBacksOver(ctx context.Context, tx pgx.Tx, issue, status string) error
-	// DropQueuedChanges deletes each outbox row of rows, a row a runner has leased included: the
-	// changes requests a clear's forget found that the person's approval followed (KeptForget,
-	// QueuedChanges), whose gates the clear then deletes. A runner mid-attempt reads its lease in
-	// the snapshot it asks the gates in (OutboxLeased), so it finishes such a row unpublished, and
-	// its finish then finds nothing to delete.
+	// DropQueuedChanges deletes each outbox row of rows by id, a row a runner has leased included:
+	// the changes requests a clear's forget found that the person's approval followed (KeptForget,
+	// QueuedChanges), whose gates the clear then deletes; and the set-back of an acceptance's
+	// request that the request's refusal, or a landed write back, leaves nothing to undo (the API's
+	// retireSetBack). A runner mid-attempt reads its lease (the outbox's leaseHolds, or OutboxLeased
+	// in the snapshot it asks the gates in), so it finishes such a row with nothing written, and its
+	// finish then finds nothing to delete.
 	DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error
 	// DropUnfencedCheckWakes deletes every check_wake row of issue the outbox still holds that
 	// carries no wake of its own (CheckWakeDue.WakeAt): a row a release before that field queued,

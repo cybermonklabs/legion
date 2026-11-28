@@ -85,12 +85,10 @@ type statusRecorder struct {
 	foreignOpen map[string][]dispatch.ForeignChild
 	acceptances []string
 	// lostAnswer, when set, is the answer of an acceptance write the fake took all the same, as a
-	// write whose answer was lost on its way back (a timeout, a body cut short); lostRead, when
-	// set, is the answer of every issue read made after the fake took an acceptance write; and
-	// writeBackErr, when set, is the answer of every write fenced on a sequence that is no
-	// acceptance write, an acceptance's write back.
+	// write whose answer was lost on its way back (a timeout, a body cut short); and writeBackErr,
+	// when set, is the answer of every write fenced on a sequence that is no acceptance write, an
+	// acceptance's write back.
 	lostAnswer   error
-	lostRead     error
 	writeBackErr error
 	// keys is each key the fake's keyed layer holds with its first run's answer, and keyedRuns
 	// how many keyed requests ran (SetAcceptanceStatus).
@@ -216,9 +214,6 @@ func (r *statusRecorder) GetIssue(ctx context.Context, key string) (dispatch.Iss
 		r.beforeRead(ctx, key)
 	}
 	r.reads = append(r.reads, "issue:"+key)
-	if r.lostRead != nil && len(r.acceptances) > 0 {
-		return dispatch.Issue{}, r.lostRead
-	}
 	if err, fails := r.readFails[key]; fails {
 		return dispatch.Issue{}, err
 	}
@@ -1510,8 +1505,8 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	// is. Nothing is written or recorded: Dispatch takes no write, no fact reached the intake, and
 	// no outbox row carries the close.
 	overBlock := strings.Repeat("x", dispatchbody.BlockUnits)
-	// The first close's unfinished acceptance stands, since this harness's fact handler records
-	// the fact and retires nothing; the refused close adds no row to it.
+	// The first close's set-back stands, since this harness's fact handler records the fact and
+	// drops nothing; the refused close adds no row to it.
 	before := outboxRowsOf(t, h, "LEGION-208")
 	refusal := refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-208", "reason": overBlock,

@@ -1222,8 +1222,8 @@ func crossProjectRigs(t *testing.T, admissionCap int) (legion, other *personHand
 
 // linkAcross writes child's Dispatch parent as parent, "" for none, straight into the scratch
 // Dispatch's database, as a link across projects stands in a Dispatch that refuses one on every
-// route, the release before the change that takes it: so the proof holds the daemon's part on such
-// a Dispatch too. It makes no event, so the daemon of neither project hears of the link. It
+// route: so the proof holds the daemon's part on such a Dispatch too. It makes no event, so the
+// daemon of neither project hears of the link. It
 // answers an error rather than failing the test, so a seam the daemon runs on a goroutine of its
 // own can call it.
 func (r *personHandoverRig) linkAcross(ctx context.Context, child, parent string) error {
