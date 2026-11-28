@@ -264,19 +264,23 @@ type dispatchLookedUpCluster struct {
 // whether or not the cluster's network policy setting is on.
 const advancedDatapath = "ADVANCED_DATAPATH"
 
-// lookupDispatchCluster looks existing, the cluster existingCluster names, up with the plain
-// getCluster invoke, through gcpProvider, the consumer's gcp provider, and refuses a cluster
+// lookupDispatchCluster looks s.existingCluster, the cluster existingCluster names, up with the
+// plain getCluster invoke, through gcpProvider, the consumer's gcp provider, and refuses a cluster
 // Dispatch cannot run in, each refusal a core.InputError naming existingCluster whose message
 // names the cluster and its location: one the lookup fails for; one with no endpoint or no CA
 // certificate, which the component's Kubernetes provider reaches and trusts it by; one with no
-// Workload Identity pool, where the pods' principal and the NATS seed's grant to it live; one with
-// the Secret Manager add-on off, through which every pod mounts the NATS seed; and one that
-// enforces no NetworkPolicy (neither Dataplane V2 nor network policy on), since the component's
-// NetworkPolicies are its only fence. NewDispatch calls it after the providers checks and before
-// it registers anything, so a refused cluster leaves nothing registered. Whether the cluster runs
-// on the component's network can be judged only once that network's name resolves, so
-// newDispatchExistingCluster judges it.
-func lookupDispatchCluster(ctx *pulumi.Context, existing *DispatchClusterArgs, gcpProvider pulumi.ProviderResource) (*dispatchLookedUpCluster, error) {
+// Workload Identity pool, where the pods' principal lives, and without natsAudience the NATS seed's
+// grant to it too; one with the Secret Manager add-on off while a pod mounts a Secret Manager
+// secret through the add-on's CSI driver, as every pod mounts the NATS seed without natsAudience,
+// and as with natsAudience the app's pod alone mounts azureEmbedKeySecret, with the Azure
+// embedder's key form, and chatTokenSecret, with the endpoint answerer, so with natsAudience and
+// neither of those a cluster with the add-on off is taken; and one that enforces no NetworkPolicy
+// (neither Dataplane V2 nor network policy on), since the component's NetworkPolicies are its only
+// fence. NewDispatch calls it after the providers checks and before it registers anything, so a
+// refused cluster leaves nothing registered. Whether the cluster runs on the component's network
+// can be judged only once that network's name resolves, so newDispatchExistingCluster judges it.
+func lookupDispatchCluster(ctx *pulumi.Context, s dispatchSettings, gcpProvider pulumi.ProviderResource) (*dispatchLookedUpCluster, error) {
+	existing := s.existingCluster
 	cluster, err := container.LookupCluster(ctx, &container.LookupClusterArgs{Name: existing.Name, Location: pulumi.StringRef(existing.Location)}, pulumi.Provider(gcpProvider))
 	if err != nil {
 		return nil, core.InputErrorf("existingCluster", "existingCluster: look up cluster %s in %s: %w", existing.Name, existing.Location, err)
@@ -284,15 +288,37 @@ func lookupDispatchCluster(ctx *pulumi.Context, existing *DispatchClusterArgs, g
 	refuse := func(why string) error {
 		return core.InputErrorf("existingCluster", "existingCluster: cluster %s in %s %s", existing.Name, existing.Location, why)
 	}
+	// What the pool holds and what the add-on mounts, in the refusals' words. The add-on's CSI
+	// driver mounts each SecretProviderClass newDispatchKubernetes registers (secretClass), and
+	// with natsAudience the NATS seed has none, and no grant (newDispatchNATSCredential), so
+	// mounted is then "" unless the app's pod mounts azureEmbedKeySecret or chatTokenSecret. No
+	// SecretProviderClass syncs a Kubernetes Secret: the GitHub App's key is a Secret GKE's Secret
+	// Sync makes, a feature of its own, which the lookup does not judge.
+	pool := "the pods' principal, and the NATS seed's grant to it, live in that pool"
+	mounted := "every pod mounts the NATS seed through it"
+	if s.natsAudience != "" {
+		pool = "the pods' principal lives in that pool"
+		var inputs []string
+		if s.azure.key {
+			inputs = append(inputs, "azureEmbedKeySecret")
+		}
+		if s.answerer.place == dispatchAnswererEndpoint {
+			inputs = append(inputs, "chatTokenSecret")
+		}
+		mounted = ""
+		if len(inputs) > 0 {
+			mounted = "the app's pod mounts " + strings.Join(inputs, " and ") + " through it"
+		}
+	}
 	switch {
 	case cluster.Endpoint == "":
 		return nil, refuse("has no endpoint, which the component's Kubernetes provider reaches it at")
 	case len(cluster.MasterAuths) == 0 || cluster.MasterAuths[0].ClusterCaCertificate == "":
 		return nil, refuse("has no CA certificate, which the component's Kubernetes provider trusts its endpoint by")
 	case len(cluster.WorkloadIdentityConfigs) == 0 || cluster.WorkloadIdentityConfigs[0].WorkloadPool == "":
-		return nil, refuse("has no Workload Identity pool: the pods' principal, and the NATS seed's grant to it, live in that pool")
-	case len(cluster.SecretManagerConfigs) == 0 || !cluster.SecretManagerConfigs[0].Enabled:
-		return nil, refuse("has the Secret Manager add-on off: every pod mounts the NATS seed through it")
+		return nil, refuse("has no Workload Identity pool: " + pool)
+	case mounted != "" && (len(cluster.SecretManagerConfigs) == 0 || !cluster.SecretManagerConfigs[0].Enabled):
+		return nil, refuse("has the Secret Manager add-on off: " + mounted)
 	case cluster.DatapathProvider != advancedDatapath && (len(cluster.NetworkPolicies) == 0 || !cluster.NetworkPolicies[0].Enabled):
 		return nil, refuse(fmt.Sprintf("enforces no NetworkPolicy: its datapathProvider is %q, not %s, and its network policy is off; the component's NetworkPolicies are its only fence",
 			cluster.DatapathProvider, advancedDatapath))

@@ -16,8 +16,11 @@ body: |-
   refused beside `natsSeedSecret`, with `clusterOnly`, holding whitespace or a control character,
   and equal to another audience the component renders: `agentSecretsAudience`, the listener's own
   audience, `oidcAudience`, or the keyless Azure form's. With neither of the two set, the refusal
-  names `natsSeedSecret`: `natsSeedSecret is required unless natsAudience is set`. A Dispatch with
-  `natsSeedSecret` renders as before.
+  names `natsSeedSecret`: `natsSeedSecret is required unless natsAudience is set`. With
+  `natsAudience` and `existingCluster`, the lookup refuses a cluster with no Workload Identity pool
+  for the pods' principal alone, and refuses one with the Secret Manager add-on off only where the
+  app's pod still mounts `azureEmbedKeySecret` or `chatTokenSecret` through it, naming each. A
+  Dispatch with `natsSeedSecret` renders, and refuses an existing cluster, as before.
 time: 2026-11-28T13:31:12Z
 custom:
     Issue: dispatch-nats-audience

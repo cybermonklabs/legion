@@ -2525,7 +2525,7 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	// network both read.
 	newCluster := newDispatchCluster
 	if s.existingCluster != nil {
-		existing, err := lookupDispatchCluster(ctx, s.existingCluster, gcpProvider)
+		existing, err := lookupDispatchCluster(ctx, s, gcpProvider)
 		if err != nil {
 			return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
 		}

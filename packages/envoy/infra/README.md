@@ -156,18 +156,18 @@ named after `<n>` rather than after the hub's own name:
 | Kubernetes provider `<n>-kubernetes` | The hub's own provider, built from `kubeconfig` with server-side apply and mutable ConfigMaps (see [Its own Kubernetes provider](#its-own-kubernetes-provider)). Every resource below runs on it. |
 | PriorityClass read `<n>-priority-class` (only with `priorityClassName`) | Reads the class. The chart, the tailnet hosts and the session listener wait on the read, so a missing class fails the preview rather than the rollout. |
 | Helm chart `<n>` (`kubernetes:helm.sh/v4:Chart`) | The chart `nats` 2.15.1 from `https://nats-io.github.io/k8s/helm/charts/`, release `<n>`. It renders the StatefulSet `<n>`, which the hub protects (see [The protected StatefulSet](#the-protected-statefulset)); the client Service `serviceName`, on the client port 4222 alone; the headless Service `<n>-headless`; the ConfigMap `<n>-config`, holding `nats.conf` and the users' `auth.conf`; and the PodDisruptionBudget `<n>`, `maxUnavailable: 1`. It renders no nats-box Deployment and no test Pod. |
-| NetworkPolicy `<n>` | An Ingress policy on the hub pods: TCP 4222 from every pod of each `clientNamespaces` namespace and, with `tailnet`, from the tailnet hosts, which forward the tailnet's 4222, and from the session listener's pod; TCP 6222, the route port, from the hub pods alone; TCP 8222, monitoring, from each `monitorNamespaces` namespace, and from none without one; TCP 7777, the exporter, from each `metricsNamespaces` namespace. |
+| NetworkPolicy `<n>` | An Ingress policy on the hub pods: TCP 4222 from every pod of each `clientNamespaces` namespace, with `tailnet` from the tailnet hosts, which forward the tailnet's 4222, and with a session listener from the listener's pod; TCP 6222, the route port, from the hub pods alone; TCP 8222, monitoring, from each `monitorNamespaces` namespace, and from none without one; TCP 7777, the exporter, from each `metricsNamespaces` namespace. |
 | PodMonitoring `<n>` (`monitoring.googleapis.com/v1`) | Google Managed Prometheus scrapes each hub pod's exporter on its port `prom-metrics` every 30 seconds. |
 | Secret `<n>-tailnet-authkey` (only with `tailnet`) | `tailnetAuthKey`, under the key `TS_AUTHKEY`. |
 | ConfigMap `<n>-tailnet` (only with `tailnet`) | The tailnet hosts' serve config, `serve.json`: the Service's port 4222 forwarded as TCP to `<serviceName>.<namespace>.svc.cluster.local:4222`, and its port 9020 to the session listener's own Service, `<n>-listener.<namespace>.svc.cluster.local:9020`. |
 | ServiceAccount `<n>-tailnet` (only with `tailnet`) | The tailnet hosts' account, which mounts no token: no container of theirs calls the Kubernetes API. |
 | Deployment `<n>-tailnet` (only with `tailnet`) | `tailnet.replicas` tailnet hosts (see [The tailnet hosts](#the-tailnet-hosts)), rolled with `maxUnavailable: 0` and `maxSurge: 1`. It waits on the Secret, the ConfigMap, the ServiceAccount and the priority class read. |
 | PodDisruptionBudget `<n>-tailnet` (only with `tailnet`) | `maxUnavailable: 1` over the tailnet hosts. |
-| ServiceAccount `<n>-listener` (only with `tailnet`) | The session listener's account, which automounts no token: the listener calls no Kubernetes API. With `natsAudience` the listener pod projects one token of it, for that audience, as its NATS credential ([The session listener](#the-session-listener)). |
-| Deployment `<n>-listener` (only with `tailnet`) | One session listener pod (see [The session listener](#the-session-listener)), rolled with `maxUnavailable: 0` and `maxSurge: 1`; with `listener.replaceUnderHold: true` or `tailnet.listener.replaceUnderHold: true`, `Recreate` with no `rollingUpdate` block, and `pulumi.com/skipAwait: "true"` ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). It waits on the ServiceAccount and the priority class read. |
-| Service `<n>-listener` (only with `tailnet`) | Port 9020 to the listener pod's port 9020. Each tailnet host forwards the Tailscale Service's port 9020 to it. |
-| NetworkPolicy `<n>-listener` (only with `tailnet`) | An Ingress policy on the listener's pods with exactly one rule: TCP 9020 from the tailnet hosts' pods. Every other port of that pod is admitted to nobody. |
-| PodDisruptionBudget `<n>-listener` (only with `tailnet`) | `maxUnavailable: 1` over the one listener pod, so a node drain or an Autopilot upgrade moves it rather than stalling on it. |
+| ServiceAccount `<n>-listener` (only with a session listener: `listener` or `tailnet.listener`) | The session listener's account, which automounts no token: the listener calls no Kubernetes API. With `natsAudience` the listener pod projects one token of it, for that audience, as its NATS credential ([The session listener](#the-session-listener)). |
+| Deployment `<n>-listener` (only with a session listener: `listener` or `tailnet.listener`) | One session listener pod (see [The session listener](#the-session-listener)), rolled with `maxUnavailable: 0` and `maxSurge: 1`; with `listener.replaceUnderHold: true` or `tailnet.listener.replaceUnderHold: true`, `Recreate` with no `rollingUpdate` block, and `pulumi.com/skipAwait: "true"` ([The consumer-name mode and the writer hold's update rule](#the-consumer-name-mode-and-the-writer-holds-update-rule)). It waits on the ServiceAccount and the priority class read. |
+| Service `<n>-listener` (only with a session listener: `listener` or `tailnet.listener`) | Port 9020 to the listener pod's port 9020. Each tailnet host, with `tailnet`, forwards the Tailscale Service's port 9020 to it, and the pods of the listener's `clientNamespaces` dial it. |
+| NetworkPolicy `<n>-listener` (only with a session listener: `listener` or `tailnet.listener`) | An Ingress policy on the listener's pods with one rule per source: TCP 9020 from the tailnet hosts' pods with `tailnet`, then TCP 9020 from every pod of each namespace the listener's `clientNamespaces` names, when it names one. A listener with neither is refused. Every other port of that pod is admitted to nobody. |
+| PodDisruptionBudget `<n>-listener` (only with a session listener: `listener` or `tailnet.listener`) | `maxUnavailable: 1` over the one listener pod, so a node drain or an Autopilot upgrade moves it rather than stalling on it. |
 
 Each hub pod runs nats-server at `natsCpu` and `natsMemory`, each its request and its limit, under
 a `GOMEMLIMIT` (see [Sizing](#sizing)), beside the chart's config reloader at `50m` and `64Mi` and
@@ -910,9 +910,17 @@ refusal is a `core.InputError` naming `existingCluster`, after the prefix
 - No CA certificate: `existingCluster: cluster <name> in <location> has no CA certificate, which
   the component's Kubernetes provider trusts its endpoint by`.
 - No Workload Identity pool: `existingCluster: cluster <name> in <location> has no Workload
-  Identity pool: the pods' principal, and the NATS seed's grant to it, live in that pool`.
-- The Secret Manager add-on off: `existingCluster: cluster <name> in <location> has the Secret
-  Manager add-on off: every pod mounts the NATS seed through it`.
+  Identity pool: the pods' principal, and the NATS seed's grant to it, live in that pool`. With
+  `natsAudience`, which grants no seed, the message ends `has no Workload Identity pool: the pods'
+  principal lives in that pool`.
+- The Secret Manager add-on off, while a pod mounts a Secret Manager secret through the add-on's
+  CSI driver: `existingCluster: cluster <name> in <location> has the Secret Manager add-on off:
+  every pod mounts the NATS seed through it`. With `natsAudience` no pod mounts the seed, and only
+  the app's pod mounts a secret through the add-on: `azureEmbedKeySecret` when it is set, and
+  `chatTokenSecret` when it is set. The message then ends `has the Secret Manager add-on off: the
+  app's pod mounts <inputs> through it`, where `<inputs>` is each of the two that is set, joined
+  by `and`. With `natsAudience` and neither of the two, the lookup takes a cluster with the add-on
+  off.
 - No NetworkPolicy enforcement, which is neither Dataplane V2 (`datapathProvider`
   `ADVANCED_DATAPATH`) nor network policy on: `existingCluster: cluster <name> in <location>
   enforces no NetworkPolicy: its datapathProvider is "<provider>", not ADVANCED_DATAPATH, and its
@@ -986,9 +994,10 @@ domain-scoped one as <domain>:<project>, a region, and the instance's name, each
 echoed)`. Neither refusal quotes the value, which can come from another stack as a secret.
 
 **Where the pods run.** The lookup checks each cluster feature that the component relies on:
-Workload Identity, the Secret Manager add-on, NetworkPolicy enforcement and the component's own
-network. It does not check where the pods can run. A Standard cluster with node
-auto-provisioning off needs a node pool or a compute class that fits the pods. A namespace's
+Workload Identity, the Secret Manager add-on where a pod mounts a secret through it, NetworkPolicy
+enforcement and the component's own network. It does not check where the pods can run. A
+Standard cluster with node auto-provisioning off needs a node pool or a compute class that fits
+the pods. A namespace's
 `cloud.google.com/default-compute-class` label gives the pods a compute class, with no input here.
 The component still holds the app pod to Autopilot's size bounds (`appCpu`, [Inputs](#inputs-1)),
 which an Autopilot-mode compute class applies too.
