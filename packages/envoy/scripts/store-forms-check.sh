@@ -10,24 +10,27 @@
 #
 #   create (the value piped in), show, list --json, set, retag --tier human, delete, restore
 #
-# Each row passes when the form exits 0 and prints what it must: after a write, the line in which
-# it reports the broker's answer to the reread of the name it asked for
-# (POST /v1/secrets/NAME/reread): `broker: serving NAME from `, `broker: NAME is deleted in `
-# after delete, or `broker: rereading NAME from ` where the broker could not be asked with a
-# session and answered 202; on show, the secret; on list --json, the secret in its array. A
-# broker's 202 says only that it took the reread, not what it now serves, so a write row also
-# reads its effect back before it passes: `secret show NAME --json` must show the tier retag set,
-# the deletion delete scheduled and restore cleared (a restore passes only after a delete that
-# was seen), and the store itself, read without the CLI (the memory secrets file, or Secret
-# Manager through gcloud), must hold the value create and set wrote. It asks no reread of its own:
-# the broker holds rereads to a budget (secretstore.DefaultRereadBudget), and a second reread per
-# write would spend it on the check rather than on the forms.
+# Each row passes when the form exits 0 and prints what it must; on show, the secret; on list
+# --json, the secret in its array. A write's row reads its effect back before it passes: `secret
+# show NAME --json` must show the tier retag set, the deletion delete scheduled and restore cleared
+# (a restore passes only after a delete that was seen), and the store itself, read without the CLI
+# (the memory secrets file, or Secret Manager through gcloud), must hold the value create and set
+# wrote. A write's row also needs the line in which the form reports the broker's answer to the
+# reread of the name it asked for (POST /v1/secrets/NAME/reread), and its PASS line says which it
+# was: `broker: serving NAME from `, or `broker: NAME is deleted in ` after delete, is the broker
+# answering the reread; `broker: rereading NAME from `, where the broker could not be asked with a
+# session and answered 202, is the broker accepting the reread only, and says nothing of what it
+# serves. That the broker serves the value a reread found is the broker's own behaviour, which its
+# own tests hold; this check observes the store. It asks no reread of its own: the broker holds
+# rereads to a budget (secretstore.DefaultRereadBudget), and a second reread per write would spend
+# it on the check rather than on the forms.
 #
 # --control vanished removes the secret behind the CLI's back after create (memory: from the
 # memory secrets file the broker follows; gcp: `gcloud secrets delete`), and the run must then fail
 # on show: a check that still passes there reads no store at all.
 #
-# It prints one `PASS <row>` or `FAIL <row>: <why>` per form and then
+# It prints one `PASS <row>` (for a write, `PASS <row>: <what it observed>`) or `FAIL <row>: <why>`
+# per form and then
 # `store-forms-check: <n> rows ran, <m> passed`, and exits 0 only when all seven rows ran and
 # passed; a stack that never printed its banner's exports runs no row and exits 1. It stops the
 # stack when it ends.
@@ -97,7 +100,7 @@ passed=0
 pass() {
   ran=$((ran + 1))
   passed=$((passed + 1))
-  echo "PASS $1"
+  echo "PASS $1${2:+: $2}"
 }
 fail() {
   ran=$((ran + 1))
@@ -186,18 +189,22 @@ stored_value() {
   esac
 }
 # write_row ROW WANT EFFECT VALUE ARGS...: a write form, which passes when it exits 0, prints the
-# broker's answer to its reread (WANT, or the line of a reread the broker took with no proof), and
-# its effect reads back: `secret show --json` answers true to the jq filter EFFECT, and, when VALUE
-# is set, the store itself holds VALUE.
+# broker's answer to its reread (WANT) or the line of a reread the broker only accepted, and its
+# effect reads back: `secret show --json` answers true to the jq filter EFFECT, and, when VALUE is
+# set, the store itself holds VALUE. Its PASS line says which of the two reread lines it saw.
 write_row() {
-  local row="$1" want="$2" effect="$3" value="$4"
+  local row="$1" want="$2" effect="$3" value="$4" reread
   shift 4
   form "$row" "$@"
   if [ "$(cat "$work/$row.exit")" != 0 ]; then
     fail "$row" "$(why "$row")"
     return
   fi
-  if ! said "$row" "$want" && ! said "$row" "broker: rereading $name from "; then
+  if said "$row" "$want"; then
+    reread="the broker answered its reread"
+  elif said "$row" "broker: rereading $name from "; then
+    reread="the broker accepted its reread (HTTP 202), which says nothing of what it serves"
+  else
     fail "$row" "no reread line ($want): $(why "$row")"
     return
   fi
@@ -210,7 +217,7 @@ write_row() {
     fail "$row" "the store does not hold the value the form wrote"
     return
   fi
-  pass "$row"
+  pass "$row" "$reread; the store holds the write"
 }
 
 printf 'store-check-value-1\n' >"$work/create.in"

@@ -7,14 +7,18 @@
 # does, `show --json` among them. Each control must fail as it states, beside a
 # run that must pass:
 #
-#   1. every form answering as it should passes: `7 rows ran, 7 passed`, exit 0;
+#   1. every form answering as it should passes: `7 rows ran, 7 passed`, exit 0, and a write's PASS
+#      line says the broker answered its reread;
 #   2. a show that fails (STUB_FAIL=show) prints `FAIL show`, fails each row that reads its effect
 #      back through show, `7 rows ran, 1 passed`, and exits 1;
 #   3. a banner that lacks the exports runs no form: `0 rows ran`, exit 1;
 #   4. --control vanished, which removes the secret from the memory file after create, fails on
 #      show;
 #   5. set, retag, delete and restore that change nothing (STUB_NOOP=1) and print only the line of
-#      a reread the broker took: each of the four fails, `7 rows ran, 3 passed`, exit 1.
+#      a reread the broker took: each of the four fails, `7 rows ran, 3 passed`, exit 1;
+#   6. writes that take effect while the broker only accepts each reread (STUB_ACCEPTED=1) pass on
+#      the store's read-back, and each of the five write rows says it saw an acceptance (HTTP 202),
+#      never an answer.
 #
 # It prints a PASS: or FAIL: line per property and then `store-forms-check.test.sh: passed` or
 # `store-forms-check.test.sh: failed (<n> of <m>)`, and exits 0 or 1.
@@ -62,7 +66,8 @@ EOF
 # would, under the slug of the name, and prints the real form's lines; `show --json` answers the
 # fields the check reads. STUB_FAIL names a form that exits 1. STUB_NOOP=1 makes set, retag,
 # delete and restore change nothing and print the line of a reread the broker took, which the
-# real CLI prints where the broker answers 202.
+# real CLI prints where the broker answers 202. STUB_ACCEPTED=1 makes every write take effect and
+# print that line in place of the broker's answer.
 cat >"$WORK/bin/agent-secrets" <<'EOF'
 #!/usr/bin/env bash
 shift
@@ -71,6 +76,9 @@ file="$DEV_BROKER_DIR/memory-secrets.json"
 id="example/agent-secrets/$(echo "$name" | tr '[:upper:]_' '[:lower:]-')"
 held() { jq -e --arg id "$id" 'any(.secrets[]; .name == $id)' "$file" >/dev/null; }
 change() { jq --arg id "$id" "$1" "$file" >"$file.new" && mv "$file.new" "$file"; }
+answer() {
+  if [ -n "${STUB_ACCEPTED:-}" ]; then echo "broker: rereading $name from the memory store"; else echo "$1"; fi
+}
 if [ "${STUB_FAIL:-}" = "$form" ]; then echo "agent-secrets secret $form: failed" >&2; exit 1; fi
 if [ -n "${STUB_NOOP:-}" ]; then
   case "$form" in
@@ -81,7 +89,7 @@ case "$form" in
 create)
   value="$(head -n1)"
   jq --arg id "$id" --arg v "$value" '.secrets += [{name: $id, value: $v, tags: {tier: "agent"}}]' "$file" >"$file.new" && mv "$file.new" "$file"
-  echo "broker: serving $name from the memory store" ;;
+  answer "broker: serving $name from the memory store" ;;
 show)
   held || { echo "agent-secrets secret show: $name: not found" >&2; exit 1; }
   if [ "${3:-}" = --json ]; then
@@ -94,10 +102,10 @@ set)
   held || exit 1
   value="$(head -n1)"
   jq --arg id "$id" --arg v "$value" '.secrets |= map(if .name == $id then .value = $v else . end)' "$file" >"$file.new" && mv "$file.new" "$file"
-  echo "broker: serving $name from the memory store" ;;
-retag) held || exit 1; change '.secrets |= map(if .name == $id then .tags.tier = "human" else . end)'; echo "broker: serving $name from the memory store" ;;
-delete) held || exit 1; change '.secrets |= map(if .name == $id then .deleted_at = "2026-11-28T00:00:00Z" else . end)'; echo "broker: $name is deleted in the memory store" ;;
-restore) held || exit 1; change '.secrets |= map(if .name == $id then del(.deleted_at) else . end)'; echo "broker: serving $name from the memory store" ;;
+  answer "broker: serving $name from the memory store" ;;
+retag) held || exit 1; change '.secrets |= map(if .name == $id then .tags.tier = "human" else . end)'; answer "broker: serving $name from the memory store" ;;
+delete) held || exit 1; change '.secrets |= map(if .name == $id then .deleted_at = "2026-11-28T00:00:00Z" else . end)'; answer "broker: $name is deleted in the memory store" ;;
+restore) held || exit 1; change '.secrets |= map(if .name == $id then del(.deleted_at) else . end)'; answer "broker: serving $name from the memory store" ;;
 esac
 EOF
 chmod +x "$WORK/bin/dev-broker.sh" "$WORK/bin/agent-secrets"
@@ -121,8 +129,9 @@ seen() { printf 'exit %s, printed %s' "$(cat "$WORK/$1.exit")" "$(tr '\n' '|' <"
 has() { grep -qxF -- "$2" "$WORK/$1.out"; }
 
 run full -- --store memory
-judge "$([ "$(cat "$WORK/full.exit")" = 0 ] && has full 'store-forms-check: 7 rows ran, 7 passed' && echo 0 || echo 1)" \
-  "control 1: every form answering as it should passes" "$(seen full)"
+judge "$([ "$(cat "$WORK/full.exit")" = 0 ] && has full 'store-forms-check: 7 rows ran, 7 passed' &&
+  has full 'PASS set: the broker answered its reread; the store holds the write' && echo 0 || echo 1)" \
+  "control 1: every form answering as it should passes, each write naming the broker's answer" "$(seen full)"
 
 run failed STUB_FAIL=show -- --store memory
 judge "$([ "$(cat "$WORK/failed.exit")" = 1 ] && grep -q '^FAIL show: ' "$WORK/failed.out" && has failed 'store-forms-check: 7 rows ran, 1 passed' && echo 0 || echo 1)" \
@@ -133,14 +142,20 @@ judge "$([ "$(cat "$WORK/no-exports.exit")" = 1 ] && has no-exports 'store-forms
   "control 3: a banner without its exports runs no form and fails" "$(seen no-exports)"
 
 run vanished -- --store memory --control vanished
-judge "$([ "$(cat "$WORK/vanished.exit")" = 1 ] && has vanished 'PASS create' && grep -q '^FAIL show: ' "$WORK/vanished.out" && echo 0 || echo 1)" \
+judge "$([ "$(cat "$WORK/vanished.exit")" = 1 ] && grep -q '^PASS create: ' "$WORK/vanished.out" && grep -q '^FAIL show: ' "$WORK/vanished.out" && echo 0 || echo 1)" \
   "control 4: a secret removed behind the CLI's back fails the check on show" "$(seen vanished)"
 
 run noop STUB_NOOP=1 -- --store memory
-judge "$([ "$(cat "$WORK/noop.exit")" = 1 ] && has noop 'PASS create' && has noop 'PASS show' && has noop 'PASS list' &&
+judge "$([ "$(cat "$WORK/noop.exit")" = 1 ] && grep -q '^PASS create: ' "$WORK/noop.out" && has noop 'PASS show' && has noop 'PASS list' &&
   grep -q '^FAIL set: ' "$WORK/noop.out" && grep -q '^FAIL retag: ' "$WORK/noop.out" && grep -q '^FAIL delete: ' "$WORK/noop.out" &&
   grep -q '^FAIL restore: ' "$WORK/noop.out" && has noop 'store-forms-check: 7 rows ran, 3 passed' && echo 0 || echo 1)" \
   "control 5: writes that change nothing fail their rows, though each prints a reread the broker took" "$(seen noop)"
+
+run accepted STUB_ACCEPTED=1 -- --store memory
+judge "$([ "$(cat "$WORK/accepted.exit")" = 0 ] && has accepted 'store-forms-check: 7 rows ran, 7 passed' &&
+  [ "$(grep -c '^PASS [a-z]*: the broker accepted its reread (HTTP 202), which says nothing of what it serves; the store holds the write$' "$WORK/accepted.out")" = 5 ] &&
+  ! grep -q 'the broker answered its reread' "$WORK/accepted.out" && echo 0 || echo 1)" \
+  "control 6: a broker that only accepts each reread passes on the store's read-back, and each write says it saw an acceptance, never an answer" "$(seen accepted)"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "store-forms-check.test.sh: failed ($FAILED of $((PASSED + FAILED)))"

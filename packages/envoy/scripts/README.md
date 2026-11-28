@@ -852,22 +852,27 @@ DEV_BROKER_GCP_PREFIX=projects/<number>/secrets/<id prefix> DEV_BROKER_GCP_KMS_K
 It starts `dev-broker.sh` in that store's mode, takes its banner's exports, and with the
 `agent-secrets` the stack built runs, on a fresh name `STORE_CHECK_<hex>`: `secret create` (the
 value piped in), `show`, `list --json`, `set`, `retag --tier human`, `delete` and `restore`. A
-write's row passes when the form exits 0, prints the broker's answer to the reread it asked for,
-and its effect reads back: `secret show --json` shows the tier retag set, the deletion delete
-scheduled and restore cleared (a restore only after a deletion was seen), and the store itself,
-read without the CLI (the memory secrets file, or Secret Manager through `gcloud`), holds the
-value create and set wrote. A broker's 202 to a reread says only that it took it, so it is never
-the proof of a write. `show` and `list --json` must name the secret. It prints `PASS <row>` or
-`FAIL <row>: <why>` per form and `store-forms-check: <n> rows ran, <m> passed`, and exits 0 only
-when all seven passed; a stack that printed no banner runs no row and exits 1. `--control
-vanished` removes the secret behind the CLI's back after `create` (memory: from the file the
-broker follows; gcp: `gcloud secrets delete`), and the run must then fail on `show`. The GCP run
-leaves its secret deleted in Secret Manager's own sense (an expire time 30 days out); `gcloud
-secrets delete` removes it outright.
-`store-forms-check.test.sh` holds it to five controls behind stand-ins for `dev-broker.sh` and
+write's row passes when the form exits 0, prints a line about the reread it asked the broker
+for, and its effect reads back: `secret show --json` shows the tier retag set, the deletion
+delete scheduled and restore cleared (a restore only after a deletion was seen), and the store
+itself, read without the CLI (the memory secrets file, or Secret Manager through `gcloud`), holds
+the value create and set wrote. Its PASS line says which reread line it saw: the broker answering
+the reread (`broker: serving ...`, `broker: ... is deleted in ...`), or the broker accepting it
+with HTTP 202 (`broker: rereading ...`), which says nothing of what it serves. The check observes
+the store; that the broker serves what a reread found is the broker's own behaviour, which its
+own tests hold. `show` and `list --json` must name the secret. It prints `PASS <row>` (a write's
+with what it observed) or `FAIL <row>: <why>` per form and `store-forms-check: <n> rows ran, <m>
+passed`, and exits 0 only when all seven passed; a stack that printed no banner runs no row and
+exits 1. `--control vanished` removes the secret behind the CLI's back after `create` (memory:
+from the file the broker follows; gcp: `gcloud secrets delete`), and the run must then fail on
+`show`. The GCP run leaves its secret deleted in Secret Manager's own sense (an expire time 30
+days out); `gcloud secrets delete` removes it outright.
+`store-forms-check.test.sh` holds it to six controls behind stand-ins for `dev-broker.sh` and
 `agent-secrets` on `PATH`, which `envoy-go-checks` runs as "Isolation test for
-store-forms-check.sh": a full pass, a failed `show`, a banner without its exports, the vanished
-control, and writes that change nothing while printing a reread the broker took.
+store-forms-check.sh": a full pass whose writes name the broker's answer, a failed `show`, a
+banner without its exports, the vanished control, writes that change nothing while printing a
+reread the broker took, and writes that take effect while the broker only accepts each reread,
+whose rows say so.
 
 ## aws-moto-check.sh
 
