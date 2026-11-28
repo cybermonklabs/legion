@@ -517,7 +517,8 @@ func session(sessionID, replies string) Permissions {
 // entries that carry it (packages/envoy/infra/README.md, "Permission sets").
 //
 // A Legion controller session needs nothing added for its project's notice lane
-// (notifications.legion.<project>.controller, the daemon's notify.ControllerTopic): it registers
+// (notifications.legion.<project>.controller, where a Legion daemon of an earlier release
+// publishes its controller notices): it registers
 // that lane as an interest while it holds the project's controller role
 // (bus.ReachesPrivateStreamSubject), and the listener's relay hands it the notices on the relay
 // subject, as it hands it every other message. No session subscribes to the lane itself, which

@@ -87,6 +87,7 @@ export * from "./page-words-m";
 export * from "./page-words-n";
 export * from "./page-words-s";
 export * from "./page-words-t";
+export * from "./page-words-threads";
 export * from "./page-words-u";
 export * from "./page-words-w";
 export * from "./page-words-x";
@@ -292,6 +293,7 @@ export const PRESET_ORDER = freeze([
   "verification",
   "plan",
   "decisions",
+  "threads",
 ] as const);
 
 /** One control of the filter row, by its own token: `dashboard`, `conversation`, which turns
@@ -307,6 +309,7 @@ export const PRESET_NAMES = joinWords("PRESET_NAMES", {
   decisions: "Decisions",
   plan: "Plan",
   spec: "Spec",
+  threads: "Threads",
   verification: "Verification",
 } as const satisfies Record<Preset, string>);
 
@@ -1223,6 +1226,8 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The one block a plan task stands directly under (`parent`, read from this release). */
+  parent: "stands under",
   program: "program",
   run: "run",
   selected: "selected",

@@ -34,8 +34,8 @@ interface OpenedApprovalRequest {
   readonly version: number;
 }
 
-// Reserved here, at the file's module scope: the file's own `afterAll` removes each once the
-// `describe` below has stopped the server writing into it.
+// Reserved here, at the file's module scope: the file's own `afterAll` removes the state directory
+// once the `describe` below has ended, and hands the stack's to a removal it does not wait for.
 const directories = useDispatchCliDirectories();
 
 describe.skipIf(!dispatchStackEnabled)(
