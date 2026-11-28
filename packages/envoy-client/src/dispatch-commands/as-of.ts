@@ -195,8 +195,8 @@ export class ReadCut implements AsOfRead {
   }
 
   /** The cut's instant in epoch milliseconds, read from the cut an answer named in
-   *  `Dispatch-As-Of` and never from `asOf`: Dispatch reads RFC 3339 spellings that `Date.parse`
-   *  does not, such as a comma before the fraction of a second, and names the cut in one form. */
+   *  `Dispatch-As-Of` and never from `asOf`: that header names the cut Dispatch read at, in one
+   *  form (UTC with six fractional digits), and `asOf` is the caller's own spelling of it. */
   instant(): number {
     const answered = this.#answeredAt;
     if (answered === undefined) {

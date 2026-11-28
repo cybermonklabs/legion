@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  `dispatch results --project` refuses `--as-of`, with exit 2 and before any request: Dispatch
+  keeps no history of the results that CI jobs store for checks of the spec files
+  (`GET /api/v1/projects/{key}/results`), so it cannot answer them as they stood at a past time.
+  `dispatch results --issue` takes `--as-of` as before.
+time: 2026-11-28T04:53:20Z
+custom:
+    Issue: pr4336

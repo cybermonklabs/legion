@@ -10968,6 +10968,7 @@ each issue's pod (every role of it alike) and the image probe's.
   Percent-encode such a credential's `/`, `?` and `#`, or give the dashboard address with no credential.
   A refused value with an `@`, a `?` or a `#` is named without its userinfo, query and fragment.
   A query or a fragment loads: an agent's links then fall back to `dispatch://` references.
+  Beside the `dispatch` command's token files (`DISPATCH_BROKER_TOKEN_FILE` and `DISPATCH_BROKER_DPOP_KEY_FILE`), the origin of `DISPATCH_PUBLIC_URL` is also the one each proof names when the command's `DISPATCH_URL` is a Kubernetes Service name (a host that ends in `.svc.cluster.local`), and any other `DISPATCH_URL` off that origin stops the command at start ([the token files](../packages/envoy-client/README.md#the-dispatch-commands-token-files)).
   The controller's `slack_post` refuses a reply linking an address inside the cluster.
   Like every `pod.env` variable, it reaches an agent with the start command of its next generation, so set it in the same restart that installs this release, which relaunches the controller once.
   To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session.
