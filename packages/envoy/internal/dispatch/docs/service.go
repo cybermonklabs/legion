@@ -1558,6 +1558,7 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	// service's owner holds the service, and the service keeps an armed room's state
 	// (unusedLocked).
 	owner, record := weak.Make(s), weak.Make(state)
+	due := time.Now().Add(delay)
 	timer := time.AfterFunc(delay, func() {
 		s := owner.Value()
 		if s == nil {
@@ -1579,7 +1580,7 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 		}
 		s.settleRoom(room, generation)
 	})
-	state.settle = timer
+	state.settle, state.settleDue = timer, due
 	s.attachSettleTimer(timerID, timer)
 }
 

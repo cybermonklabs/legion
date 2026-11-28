@@ -47,6 +47,7 @@ func TestTheQuietWaitWaitsForEachBackgroundWriter(t *testing.T) {
 		{"a settlement owed", quietWaitSettlementOwed},
 		{"a settlement owed, not asked", quietWaitSettlementNotAsked},
 		{"a settlement armed, not asked", quietWaitSettlementArmed},
+		{"a settlement due before the deadline, armed earlier", quietWaitSettlementDueBeforeTheDeadline},
 		{"a settlement armed past the deadline, not asked", quietWaitSettlementArmedPastTheDeadline},
 		{"another backend holding an xid", quietWaitOtherBackend},
 		{"a writer that starts after a first idle read", quietWaitLaterWriter},
@@ -366,19 +367,44 @@ func quietWaitSettlementArmed(t *testing.T) {
 	run.returned(t)
 }
 
-// quietWaitSettlementArmedPastTheDeadline: a settlement armed to fire an hour after the wait gives
-// up (testwait.GiveUpAt: the binary's deadline less testwait's margin) fires after the binary's
-// deadline under any -timeout, as a settlement of the fixtures that settle nothing during their
-// test does (xidFixtureSettlesNothing), so it is no work a measurement meets: a wait not asked to
-// wait for settlements returns with it still armed and its document still owing it. Under
-// -timeout 0, whose wait has no deadline, a settlement of any delay counts as work (docs'
-// settlesBeforeForTest), so the row has nothing to show there and skips.
-func quietWaitSettlementArmedPastTheDeadline(t *testing.T) {
-	deadline, bounded := testwait.GiveUpAt(t)
-	if !bounded {
-		t.Skip("under -timeout 0 an armed settlement of any delay is work the quiet wait waits for")
+// quietWaitSettlementDueBeforeTheDeadline: an armed settlement counts by when it is due - the
+// moment its timer was armed plus its delay (docs' settlesBeforeForTest) - not by now plus its
+// delay. The timer is armed a minute out. Once a read of the wait has found it armed, the row
+// reads the wait again under a deadline a minute after that read: the settlement is due before
+// that deadline, while now plus a minute is past it, and the read finds it busy. The row then
+// settles the document at once (SettleIssueDocuments), as quietWaitSettlementArmed does.
+func quietWaitSettlementDueBeforeTheDeadline(t *testing.T) {
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{settle: time.Minute})
+	issue := createInteractionIssue(t, handler, "QWD", "A settlement due before the deadline", "A spec.\n")
+	name := database.Pool.Config().ConnConfig.Database
+	armed := readBusy("a settlement of document " + issue.PrimaryArtifactID + " is armed")
+	ignore := func(quietRead) {}
+	testwait.Until(t, "a read of the quiet wait to find the spec's settlement armed", func() (string, bool) {
+		busy := quietBusy(t, testwait.Context(t), database, name, false, ignore)
+		return busy, armed(quietRead{busy: busy})
+	})
+	ctx, cancel := context.WithDeadline(testwait.Context(t), time.Now().Add(time.Minute))
+	defer cancel()
+	if busy := quietBusy(t, ctx, database, name, false, ignore); !armed(quietRead{busy: busy}) {
+		t.Fatalf("a read under a deadline a minute after the spec's settlement was found armed found %q busy, want that settlement, due before the deadline", busy)
 	}
-	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{settle: time.Until(deadline) + time.Hour})
+	if err := deps.Docs.(*docs.Service).SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+		t.Fatalf("settle the spec now: %v", err)
+	}
+}
+
+// quietWaitSettlementArmedPastTheDeadline: a settlement due an hour after the wait gives up
+// (testwait.GiveUpAt: the binary's deadline less testwait's margin), or under -timeout 0 a day
+// out, past the 10 minutes docs' settlesBeforeForTest looks ahead of each read there, is no work a
+// measurement meets, as a settlement of the fixtures that settle nothing during their test is
+// not (xidFixtureSettlesNothing): a wait not asked to wait for settlements returns with it still
+// armed and its document still owing it.
+func quietWaitSettlementArmedPastTheDeadline(t *testing.T) {
+	settle := xidFixtureSettlesNothing
+	if deadline, bounded := testwait.GiveUpAt(t); bounded {
+		settle = time.Until(deadline) + time.Hour
+	}
+	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{settle: settle})
 	issue := createInteractionIssue(t, handler, "QWH", "A settlement armed past the deadline", "A spec.\n")
 	run := startQuietWait(t, database, false, func() error {
 		owed, err := settlementOwed(database, issue.PrimaryArtifactID)
