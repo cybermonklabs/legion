@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import type { Browser, BrowserContext, Page, TestInfo } from "@playwright/test";
 import type { IssueAskRow } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
@@ -166,6 +167,7 @@ export type LoadActKind =
   | "details"
   | "edit"
   | "fold"
+  | "indent"
   | "keys"
   | "menu"
   | "next"
@@ -185,7 +187,8 @@ export interface LoadAct {
   /** The view a press on a view turns on. */
   readonly view?: Preset;
   /** The view an act after the load is made in, where it is not Conversation: it follows the
-   *  press on that view (`afterLoadOrder`). */
+   *  press on that view (`afterLoadOrder`), or, for the Indent, its row loads that view's address
+   *  (`AFTER_LOAD_INDENT`). */
   readonly on?: Preset;
   /** The paging control an act after the load presses first. It draws another page of rows from
    *  the tree the view already holds. Row 5 fails with this selector if the control is absent. */
@@ -363,6 +366,98 @@ export const AFTER_LOAD_ENTERS: readonly LoadAct[] = [
   enterOn("Enter in Graph on a node of the first page", "graph", null),
   enterOn("Enter in Graph on a row of a later page", "graph", ROWS_PAGE_CONTROL),
 ];
+
+/** The rows of the outline, Conversation's or Graph's (`NodeRow.tsx`), each at its `aria-level`,
+ *  in the order drawn: a node's children follow its row, one level deeper, before the row of its
+ *  next sibling. */
+const OUTLINE_ROW_SELECTOR = "[data-issue-body] [data-node-row]";
+
+/** The node kinds Graph indents, as the root's editing rule says, by the `data-node-type` each
+ *  row carries (`NodeRow.tsx`): a criterion, a statement (`requirement`), a check, a plan task and
+ *  a prose node. */
+const INDENTED_TYPES = ["criterion", "requirement", "check", "plan_task", "prose"] as const;
+
+/** The name of Row 5's Indent, in its row's title. */
+const INDENT_ACT = "an Indent in Graph";
+
+/** The title of the Indent's row: a test of its own beside Row 5's (`AFTER_LOAD_TITLE`), since
+ *  `owedUnless` skips the whole test it is called in. */
+export const INDENT_TITLE = `${INDENT_ACT} shows its result within 200 ms after the load`;
+
+/**
+ * Row 5's Indent in Graph (spec v23's R2, Verification v35's Row 5, decision 597 amended), made
+ * once in each load of its own row, once the load of Graph's address has ended. A press outside
+ * its words puts the focus on the first row the page draws whose node Graph indents and which has
+ * a sibling above it (the nearest row before it at its level, under the same parent), and `Enter`
+ * puts the caret in its text, both untimed; `Tab`, the act measured, draws the node as a child of
+ * that sibling before the server answers (decision 595). After the reading `Shift+Tab` puts the
+ * node back and `Escape` leaves its text, so each load starts from the seed's tree. It is in
+ * neither `LOAD_ACTS` nor `afterLoadOrder`'s list, so Row 4, the production script and
+ * `issue-page-load-longest.e2e.ts` make no Indent: the production check sends no write.
+ */
+export const AFTER_LOAD_INDENT: LoadAct = {
+  after: [
+    stroke(
+      "Shift+Tab",
+      "Shift+Tab",
+      { kind: "indent", rows: OUTLINE_ROW_SELECTOR, step: -1 },
+      false
+    ),
+    LEAVE_TEXT,
+  ],
+  kind: "indent",
+  name: INDENT_ACT,
+  on: "graph",
+  steps: [
+    press(
+      "a press on the row",
+      {
+        drawn: "any",
+        kind: "row",
+        outsideWords: "[data-node-words]",
+        row: INDENTED_TYPES.map((type) => `${OUTLINE_ROW_SELECTOR}[data-node-type="${type}"]`).join(
+          ", "
+        ),
+        sibling: OUTLINE_ROW_SELECTOR,
+        words: ROW_WORDS,
+      },
+      { kind: "focus" },
+      false
+    ),
+    { ...ENTER, measured: false },
+    stroke(INDENT_ACT, "Tab", { kind: "indent", rows: OUTLINE_ROW_SELECTOR, step: 1 }, true),
+  ],
+  when: "rows",
+};
+
+/** The store of each change of Graph from its press to its answer, which the fast-changes part
+ *  brings, by its path in this package: the module INFRA-1196's architect fixed for it
+ *  (dispatch://INFRA-6327/comment/f221c026-f3ca-4252-a4dd-24c486864e04). */
+const PENDING_CHANGES_MODULE = "web/src/features/issue-page/graph-edit/pending-changes.ts";
+
+/** Whether a file of the page, by its path under `packages/dispatch`, holds `pattern`: a copy of
+ *  the two lines of `pageSourceHolds` of `e2e/issue-page-t-tree.ts`, which part T's file does not
+ *  export. */
+function pageSourceHolds(path: string, pattern: RegExp): boolean {
+  const file = new URL(`../${path}`, import.meta.url);
+  return existsSync(file) && pattern.test(readFileSync(file, "utf8"));
+}
+
+/**
+ * The fast-changes part (dispatch://INFRA-6327), which draws an Indent in Graph before the server
+ * answers, under this branch's head: the tree under test holds `PENDING_CHANGES_MODULE`, and it
+ * exports something. It reads the files the build is made from, as `partUGate` of
+ * `e2e/issue-page-t-tree.ts` reads its module, so the Indent's row turns on by itself at the head
+ * that holds that part. Where that part renames the module, it says so in its thread first, and
+ * this gate reads the new name.
+ */
+export const fastChangesGate: Gate = {
+  met: pageSourceHolds(PENDING_CHANGES_MODULE, /^export /m),
+  owed:
+    "owed until dispatch://INFRA-6327, the fast-changes part that draws an Indent in Graph " +
+    `before the server answers, is under this branch's head: ${PENDING_CHANGES_MODULE} is not ` +
+    `in this tree or exports nothing here; ${OWED_BY}`,
+};
 
 /**
  * The acts every width makes on Conversation's rows: a fold and an unfold of the first row that

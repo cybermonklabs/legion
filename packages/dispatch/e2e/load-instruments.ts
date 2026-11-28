@@ -94,6 +94,10 @@ export interface ClsReport {
   readonly delta: number;
   readonly shifts: readonly {
     readonly hadRecentInput: boolean;
+    /** Each element the shift moved: its tag and `data-testid`, its first words, and its box
+     *  before and after (`width x height @ x,y`), so a row that fails on a shift names what moved
+     *  in the run that failed it. */
+    readonly sources: readonly string[];
     readonly startTime: number;
     readonly value: number;
   }[];
@@ -588,7 +592,11 @@ function isActRead(address: string, view: Preset | undefined, page: boolean): bo
  *  dispatch://INFRA-5939/comment/90452577-dd0c-419a-b7cb-cc29a65016a8) - each matching request
  *  answered by the callback of the frame that found the result counts toward the three read
  *  bounds, with `sent` equal to 0 where a matching read was already out at the event. Only a read
- *  answered before the event leaves the act read once, from the event to the result. */
+ *  answered before the event leaves the act read once, from the event to the result. Only a
+ *  press on a view, an unfold and a press on a paging control draw from a read: every other act
+ *  is read once, from its event to its result, whatever the page read in that window - the
+ *  Indent's (`indent`) among them, which the page draws before the server answers (decision
+ *  595), so it takes one limit of 200 ms and no read's three. */
 export function actReading(
   record: Pick<LoadRecord, "acts" | "frames" | "resource">,
   index: number
@@ -684,9 +692,11 @@ export interface ControlTarget {
  *  or in the whole document (`within: "document"`, which `reveal` scrolls into view first); the
  *  fold control of the row the step before folded; or a row itself (`kind: "row"`): the first row
  *  `row` finds, or with `drawn: "since"` the first of them the document did not hold at the
- *  event of the step before (a row that step drew), pressed on the words of its first line (the
- *  element `words` finds in it) where nothing that takes a press of its own stands, which puts
- *  the focus on the row. */
+ *  event of the step before (a row that step drew), and with `sibling` the first of them that has
+ *  a sibling above it among the rows `sibling` finds (the nearest row before it at its
+ *  `aria-level`, with no row of a lower level, its parent, between), pressed on the words of its
+ *  first line (the element `words` finds in it) where nothing that takes a press of its own
+ *  stands, which puts the focus on the row. */
 export type ActTarget =
   | ControlTarget
   | {
@@ -703,6 +713,9 @@ export type ActTarget =
       readonly words: string;
       /** Aim at the row rather than at words that now open the block editor. */
       readonly outsideWords?: string;
+      /** The rows the pressed row's sibling above is found among: a row with none is not
+       *  pressed. */
+      readonly sibling?: string;
     };
 
 /** How a step is made: the mouse at its target's box, or a key. */
@@ -720,7 +733,12 @@ export type ActInput =
  *  focus is on the row itself that the step pressed, or for a key the row the focus was in at the
  *  event. `caret`: the caret is in the text of the row that held the focus at the event: the
  *  focused element is an editable inside the box `box` finds in that row, which the row's editor
- *  is drawn in, and the selection is collapsed inside it. */
+ *  is drawn in, and the selection is collapsed inside it. `indent`: among the rows `rows` finds,
+ *  in the order drawn, each at its `aria-level`, the node of the row that held the focus at the
+ *  event is drawn as a child of the row that was its sibling above then (`step` 1, an Indent): a
+ *  row of that node one level deeper than the sibling, inside the sibling's group of rows (the
+ *  rows after it, each deeper than it); or as the sibling after the row that was its parent then
+ *  (`step` -1, an Outdent): a row of that node at the parent's level, after the parent's group. */
 export type ActResult =
   | { readonly kind: "absent"; readonly selector: string }
   | { readonly kind: "present"; readonly selector: string }
@@ -729,7 +747,8 @@ export type ActResult =
   | { readonly kind: "ring"; readonly step: -1 | 1 }
   | { readonly kind: "more" }
   | { readonly kind: "focus" }
-  | { readonly box: string; readonly kind: "caret" };
+  | { readonly box: string; readonly kind: "caret" }
+  | { readonly kind: "indent"; readonly rows: string; readonly step: -1 | 1 };
 
 /** One step of an act. */
 export interface ActStep {
@@ -850,6 +869,9 @@ export function instrumentPage(config: PageConfig): void {
     before: WeakSet<Element>;
     focused: { readonly label: string; readonly row: Element } | null;
     readonly index: number;
+    // For an indent: the node of the row the focus was in at the event, and the row it is read
+    // against there, its sibling above for an Indent and its parent for an Outdent (`rowAbove`).
+    moved: { readonly label: string; readonly node: string; readonly row: Element } | null;
     readonly pressSince: WeakSet<Element> | undefined;
     row: { readonly label: string; readonly row: Element } | null;
     readonly step: ActStep;
@@ -982,6 +1004,21 @@ export function instrumentPage(config: PageConfig): void {
         delta: metric.delta,
         shifts: metric.entries.map((shift) => ({
           hadRecentInput: shift.hadRecentInput,
+          sources: shift.sources.map((source) => {
+            const node = source.node;
+            const element = node instanceof Element ? node : (node?.parentElement ?? null);
+            // The test id the element held at the shift, read in the shift's own report: a name
+            // for the record, and no Playwright probe of a state still to come.
+            const testId = element?.getAttribute("data-testid");
+            const name =
+              element === null
+                ? "#text"
+                : `${element.tagName.toLowerCase()}${testId ? `[data-testid=${testId}]` : ""}`;
+            const words = (node?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
+            const box = (rect: DOMRectReadOnly) =>
+              `${Math.round(rect.width)}x${Math.round(rect.height)}@${Math.round(rect.x)},${Math.round(rect.y)}`;
+            return `${name} "${words}" ${box(source.previousRect)} -> ${box(source.currentRect)}`;
+          }),
           startTime: shift.startTime,
           value: shift.value,
         })),
@@ -1096,12 +1133,37 @@ export function instrumentPage(config: PageConfig): void {
   const PRESSABLE =
     'a, button, input, select, textarea, summary, [role="button"], [role="link"], [contenteditable="true"]';
   type RowAim = Extract<ActTarget, { readonly kind: "row" }>;
+  // A row's level in its tree, its `aria-level`: NaN where it carries none, which equals no level.
+  const levelOf = (row: Element): number => Number(row.getAttribute("aria-level") ?? Number.NaN);
+  // The row above `row` in `drawn`, rows in the order drawn, that an Indent or an Outdent of it is
+  // read against: going up from it, the first row of a lower level is its parent (`step` -1), and
+  // the first row at its level, where its parent does not come first, is its sibling above
+  // (`step` 1). Null where it has none.
+  const rowAbove = (row: Element, drawn: readonly Element[], step: -1 | 1): Element | null => {
+    const level = levelOf(row);
+    for (let at = drawn.indexOf(row) - 1; at >= 0; at -= 1) {
+      const above = drawn[at];
+      if (above === undefined) continue;
+      const depth = levelOf(above);
+      if (depth < level) return step === -1 ? above : null;
+      if (step === 1 && depth === level) return above;
+    }
+    return null;
+  };
   // With `drawn: "since"`, choose a row that wasn't drawn at the preceding step's input (for
-  // example, a paging press). Keep that baseline through arming and dispatch.
-  const aimedRow = (aim: RowAim, before: WeakSet<Element> | undefined): Element | null =>
-    [...document.querySelectorAll(aim.row)].find(
-      (row) => row.getClientRects().length > 0 && !(aim.drawn === "since" && before?.has(row))
-    ) ?? null;
+  // example, a paging press). Keep that baseline through arming and dispatch. With `sibling`,
+  // choose a row that has a sibling above it among the rows `sibling` finds (`rowAbove`).
+  const aimedRow = (aim: RowAim, before: WeakSet<Element> | undefined): Element | null => {
+    const outline = aim.sibling === undefined ? [] : [...document.querySelectorAll(aim.sibling)];
+    return (
+      [...document.querySelectorAll(aim.row)].find(
+        (row) =>
+          row.getClientRects().length > 0 &&
+          !(aim.drawn === "since" && before?.has(row)) &&
+          (aim.sibling === undefined || rowAbove(row, outline, 1) !== null)
+      ) ?? null
+    );
+  };
   // Where a press on `row`'s first line lands on its words: a point of the line under the header
   // and in the viewport whose topmost element is the row's own and inside nothing in it that
   // takes a press of its own. Null where the line has no such point on screen.
@@ -1233,6 +1295,30 @@ export function instrumentPage(config: PageConfig): void {
           active.contains(selection.anchorNode)
         );
       }
+      case "indent": {
+        // The node's row among the rows in the order drawn, against the row it was read against
+        // at the event: an Indent draws it one level deeper inside that sibling's group of rows,
+        // and an Outdent at that parent's level, after the parent's group.
+        const moved = on.moved;
+        const reference = moved === null ? null : resolve(moved);
+        if (moved === null || reference === null) return false;
+        const rows = [...document.querySelectorAll(result.rows)];
+        const from = rows.indexOf(reference);
+        if (from === -1) return false;
+        const depth = levelOf(reference);
+        for (const row of rows.slice(from + 1)) {
+          const inGroup = levelOf(row) > depth;
+          // The script reads the DOM in the page itself: the node is the row's own, as the page
+          // drew it in this frame, and no Playwright probe of a state still to come.
+          if (row.getAttribute("data-node-id") === moved.node) {
+            return result.step === 1
+              ? inGroup && levelOf(row) === depth + 1
+              : levelOf(row) === depth;
+          }
+          if (!inGroup) return false;
+        }
+        return false;
+      }
     }
   };
   const loadsHolds = (on: Armed): boolean => {
@@ -1267,6 +1353,15 @@ export function instrumentPage(config: PageConfig): void {
     const row = document.activeElement?.closest(config.viewRows) ?? null;
     armed.focused = row === null ? null : { label: rowLabel(row), row };
     armed.before = new WeakSet(document.querySelectorAll(config.viewRows));
+    const result = armed.step.result;
+    if (result.kind === "indent" && row !== null) {
+      const above = rowAbove(row, [...document.querySelectorAll(result.rows)], result.step);
+      // The script reads the DOM in the page itself: the node is the row's own, as the page drew
+      // it when the key reached it, and no Playwright probe of a state still to come.
+      const node = row.getAttribute("data-node-id");
+      armed.moved =
+        above === null || node === null ? null : { label: rowLabel(above), node, row: above };
+    }
   };
   window.addEventListener("pointerdown", input, { capture: true });
   window.addEventListener("keydown", input, { capture: true });
@@ -1335,7 +1430,16 @@ export function instrumentPage(config: PageConfig): void {
         result: null,
       };
       acts[index] = act;
-      armed = { act, before: new WeakSet(), focused: null, index, pressSince, row: null, step };
+      armed = {
+        act,
+        before: new WeakSet(),
+        focused: null,
+        index,
+        moved: null,
+        pressSince,
+        row: null,
+        step,
+      };
       return true;
     },
     firstScreen: () => {

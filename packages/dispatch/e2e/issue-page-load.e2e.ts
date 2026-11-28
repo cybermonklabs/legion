@@ -5,7 +5,7 @@
  *  live socket's events and the edit notices of the seed's documents decide */
 
 import { setTimeout as sleep } from "node:timers/promises";
-import type { BrowserContext } from "@playwright/test";
+import type { BrowserContext, Request } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { Preset } from "../web/src/features/issue-page/page-words";
@@ -23,6 +23,7 @@ import {
 } from "./block-editor";
 import {
   ACT_MS,
+  AFTER_LOAD_INDENT,
   AFTER_LOAD_TITLE,
   actAddress,
   actRowTitle,
@@ -30,10 +31,12 @@ import {
   answeredQuestion,
   boundWord,
   FIRST_SCREEN_MS,
+  fastChangesGate,
   fiveLoads,
   holdAct,
   holdBound,
   holdTasks,
+  INDENT_TITLE,
   LAYOUT_SHIFT,
   LOAD_ACTS,
   LOAD_VIEWS,
@@ -78,6 +81,31 @@ import { refuseASharedRun } from "./main-thread-hold";
 import { expect } from "./test";
 
 /**
+ * Prints, for each load whose layout shift is over half of its limit, the shifts of the window
+ * that read it, each with the elements it moved, and when the page's typefaces finished loading
+ * (`fontsDone`), so a row that fails on a shift names what moved in the run that failed it.
+ */
+function printShifts(
+  bound: string,
+  loads: readonly { readonly record: Pick<LoadRecord, "cls" | "fontsDone"> }[]
+): void {
+  for (const [at, load] of loads.entries()) {
+    const window = load.record.cls.at(-1);
+    if (window === undefined || window.value <= LAYOUT_SHIFT / 2) continue;
+    const fonts = load.record.fontsDone.map((time) => time.toFixed(0)).join(",");
+    printReading(
+      `${bound}.window load=${at + 1} value=${window.value.toFixed(3)} fonts-done=${fonts || "none"}`
+    );
+    for (const shift of window.shifts) {
+      printReading(
+        `${bound}.shift load=${at + 1} at=${shift.startTime.toFixed(0)} ` +
+          `value=${shift.value.toFixed(4)} recent=${shift.hadRecentInput} ${shift.sources.join(" | ")}`
+      );
+    }
+  }
+}
+
+/**
  * The load rows of `c-load-1440` and `c-load-390`, in the projects `chromium-load` (1440 by 900,
  * the processor slowed by 2) and `iphone-load` (390 px, slowed by 4), one worker and no retry.
  * Each bound is read over five loads of the seed (`seedLargestShape`), each in a new browser
@@ -117,6 +145,13 @@ import { expect } from "./test";
  *   Conversation and in Graph, on a row already drawn and on one that the view's root paging
  *   control draws. Each row is pressed on its words first and left with Escape after. A control
  *   an earlier act scrolled out of reach is scrolled back into view first (`revealStep`).
+ * - Row 5's Indent (R2), a row of its own beside Row 5, since `owedUnless` skips the whole row it
+ *   is called in: in each of five loads of Graph, once the load has ended, `Enter` on the first
+ *   row whose node Graph indents and which has a sibling above it, then `Tab`, which draws the
+ *   node as a child of that sibling within 200 ms (`AFTER_LOAD_INDENT`), read once, since the
+ *   page draws it before the server answers; `Shift+Tab` puts it back after the reading, and the
+ *   row waits for that write's answer. It is owed while dispatch://INFRA-6327 is not under this
+ *   branch's head (`fastChangesGate`).
  *
  * The rows of one worker share its seed (`test` of `e2e/issue-page-load.ts`), so they run in the
  * order they are written, and Row 2, whose first focus seeds an ask that waits on the reader in
@@ -213,6 +248,16 @@ for (const view of LOAD_VIEWS) {
       rate,
       readings: loads.map((load) => layoutShift(load.record.cls)),
     });
+    printShifts(`${prefix}.layout-shift`, loads);
+    // Whether the typeface landed before the first screen was painted: a swap after it moves
+    // the rows it wraps again (dispatch://INFRA-5939/comment/82020255-8eaf-4d3d-841e-bdb51d0bf410).
+    for (const [at, load] of loads.entries()) {
+      const fonts = load.record.fontsDone.map((time) => time.toFixed(0)).join(",");
+      printReading(
+        `${prefix}.typeface rate=${rate} load=${at + 1} fonts-done=${fonts || "none"} ` +
+          `first-screen-paint=${paints[at]?.reading ?? "none"}`
+      );
+    }
     for (const [at, load] of loads.entries()) {
       const which = `load ${at + 1} of ${LOADS}`;
       if (load.shape !== null) {
@@ -270,6 +315,7 @@ test("a load with the typeface held back for 3 s moves nothing", async ({
     rate,
     readings: loads.map((load) => layoutShift(load.record.cls)),
   });
+  printShifts("typeface-held.layout-shift", loads);
   for (const [at, load] of loads.entries()) {
     // A load whose typeface came on time read no held typeface, and would pass for nothing.
     const held = load.record.resource.find((entry) => entry.name === font);
@@ -450,6 +496,75 @@ test(AFTER_LOAD_TITLE, async ({ browser, loadSeeds }, testInfo) => {
   }
   holdTasks(
     "after-load",
+    rate,
+    loads.map((load) => load.record)
+  );
+});
+
+/** How long the Indent's row may take: five loads of Graph, each waited out, then the Indent made
+ *  once the page is quiet again after its `Enter`, put back, its write's answer waited for, and
+ *  the page waited out again. */
+const INDENT_ROW_MS = 600_000;
+
+/** How long the write that puts the Indent's node back may take to be answered. */
+const MOVE_ANSWER_MS = 30_000;
+
+/** The path of the write of a node's place that Graph sends for an Indent or an Outdent: the
+ *  `PATCH` of a move (`PATCH /api/v1/issues/{key}/nodes/{id}`, dispatch://INFRA-6327's R3 and
+ *  R6). */
+const NODE_MOVE_PATH = /^\/api\/v1\/issues\/[^/]+\/nodes\/[^/]+$/;
+
+// SLOW(>=2s): five cold loads of Graph, each waited out, then an Indent made, put back and its
+// write's answer waited for in each.
+test(INDENT_TITLE, async ({ browser, loadSeeds }, testInfo) => {
+  owedUnless(fastChangesGate);
+  refuseASharedRun();
+  test.setTimeout(INDENT_ROW_MS);
+  const rate = loadCpuRate(testInfo.project.name);
+  const seeded = await loadSeeds.shape();
+  const loads = await fiveLoads(
+    browser,
+    rate,
+    { address: presetPath(seeded.key, "graph"), boxes: "none" },
+    async ({ page, requests }) => {
+      // Each move of a node's place the page sends, in the order sent: the Tab's is the first.
+      const moves: Request[] = [];
+      page.on("request", (request) => {
+        if (request.method() === "PATCH" && NODE_MOVE_PATH.test(new URL(request.url()).pathname)) {
+          moves.push(request);
+        }
+      });
+      await waitForLoadEnd(page, requests);
+      // The Tab, the step measured, is made once the page has gone quiet again after the Enter,
+      // as Row 5 makes each step it measures after its first act.
+      const made = await makeSteps(page, 0, AFTER_LOAD_INDENT.steps, "now", () =>
+        waitForLoadEnd(page, requests)
+      );
+      // Untimed, `after`'s first step, Shift+Tab, puts the node back, and the row waits for its
+      // write's answer, a move sent after the Tab's, set before the key so it cannot be missed,
+      // and then `after`'s Escape leaves the row's text.
+      const [, putBack] = await Promise.all([
+        page.waitForResponse((response) => moves.indexOf(response.request()) > 0, {
+          timeout: MOVE_ANSWER_MS,
+        }),
+        makeSteps(page, made.next, AFTER_LOAD_INDENT.after.slice(0, 1), "now"),
+      ]);
+      await makeSteps(page, putBack.next, AFTER_LOAD_INDENT.after.slice(1), "now");
+      await waitForLoadEnd(page, requests);
+      return { last: made.last, record: await recordOf(page) };
+    }
+  );
+  holdAct(
+    "indent",
+    rate,
+    loads.map((load) => actReading(load.record, load.last))
+  );
+  printUnshown(
+    "indent",
+    loads.map((load) => ({ index: load.last, record: load.record }))
+  );
+  holdTasks(
+    "indent",
     rate,
     loads.map((load) => load.record)
   );
@@ -637,6 +752,7 @@ function holdNamedRow(
     rate,
     readings: loads.map((load) => layoutShift(load.record.cls)),
   });
+  printShifts(`${prefix}.layout-shift`, loads);
   for (const [at, load] of loads.entries()) {
     const which = `load ${at + 1} of ${LOADS}`;
     const rows = load.record.frames.findIndex((frame) => frame.rows);

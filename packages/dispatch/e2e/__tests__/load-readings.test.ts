@@ -11,7 +11,9 @@ import { readFileSync } from "node:fs";
 import { errors, type Page } from "@playwright/test";
 
 import {
+  ACT_MS,
   AFTER_LOAD_ENTERS,
+  AFTER_LOAD_INDENT,
   answeredQuestion,
   DOCUMENT_ROW_SELECTOR,
   EDITOR_BOX_SELECTOR,
@@ -516,7 +518,7 @@ test("the longest task counts only tasks after the first drawing, and the longes
       { delta: 0, shifts: [], value: 0 },
       {
         delta: 0.04,
-        shifts: [{ hadRecentInput: false, startTime: 1200, value: 0.04 }],
+        shifts: [{ hadRecentInput: false, sources: [], startTime: 1200, value: 0.04 }],
         value: 0.04,
       },
     ])
@@ -1533,6 +1535,139 @@ test.each([
     ]);
     expect(actReading(record, made.last).act).toBe(name);
     expect(active).toBe(drawn.row);
+  });
+});
+
+// Row 5's Indent in Graph (`AFTER_LOAD_INDENT`), on a stand-in Graph outline of rows whose nodes
+// Graph indents: A at level 1; B under it at level 2, with C under B; and two more under A after
+// them, D and X, at level 2. A, B and C have no sibling above them, so the press goes to D,
+// whose sibling above is B. After the Tab the page draws D one level deeper but after X, under X,
+// for two frames, and then after C, inside B's group of rows, which is the result. In that window
+// the move's write and a read of Graph's tree answer, which a press on Graph would be read on in
+// three parts; the Indent is drawn before the server answers (decision 595), so it is read once.
+// Shift+Tab then draws D back at B's level after B's group, and Escape leaves D's text.
+test("an Indent is read against one limit of 200 ms and no read's three", async () => {
+  const [onRow, enter, tab] = AFTER_LOAD_INDENT.steps;
+  const [back, leave] = AFTER_LOAD_INDENT.after;
+  const target = onRow?.input.kind === "press" ? onRow.input.target : undefined;
+  if (
+    onRow === undefined ||
+    target?.kind !== "row" ||
+    target.sibling === undefined ||
+    enter === undefined ||
+    tab?.result.kind !== "indent" ||
+    back === undefined ||
+    leave === undefined
+  ) {
+    throw new Error(
+      "Row 5's Indent presses no row with a sibling above it before its Enter, or its Tab reads " +
+        "no Indent"
+    );
+  }
+  let active: StandInElement | null = null;
+  let selection: StandInSelection | null = null;
+  const outlineRow = (name: string, block: string, level: number, top: number) => {
+    const drawn = editedRow(name, block, () => boxAt(378, top, 1000, 40));
+    drawn.row.attributes["aria-level"] = String(level);
+    return drawn;
+  };
+  const a = outlineRow("A", "c1", 1, 100);
+  const b = outlineRow("B", "r1", 2, 140);
+  const c = outlineRow("C", "k1", 3, 180);
+  const d = outlineRow("D", "r2", 2, 220);
+  const x = outlineRow("X", "r3", 2, 260);
+  let order = [a.row, b.row, c.row, d.row, x.row];
+  const browser = standInBrowser({
+    active: () => active,
+    drawn: () => order,
+    height: 900,
+    // Tab and Shift+Tab draw nothing at once: the case draws D's place frame by frame below.
+    key: (key) => {
+      if (key === "Enter") {
+        active = d.editable;
+        selection = { anchorNode: d.editable, isCollapsed: true, rangeCount: 1 };
+      }
+      if (key === "Escape") {
+        active = d.row;
+        selection = null;
+      }
+    },
+    press: (hit) => {
+      if (hit !== null && order.includes(hit)) active = hit;
+    },
+    selected: {
+      [target.row]: () => order,
+      [target.sibling]: () => order,
+      [tab.result.rows]: () => order,
+      [VIEW_ROW_SELECTOR]: () => order,
+    },
+    selection: () => selection,
+  });
+  await withStandIns(browser.globals, async (instruments) => {
+    const frames = (count: number) =>
+      browser.page.waitForFunction(
+        (at) => (window.__loadInstruments?.record().frames.length ?? 0) >= at,
+        count
+      );
+    const entered = await makeSteps(browser.page, 0, [onRow, enter], "now");
+    expect(browser.pressed, "the press went to another row than D").toEqual(["D"]);
+    expect(instruments.shown(entered.last), "Enter put no caret in D's text").toBe(true);
+    const indented = entered.next;
+    await armStep(browser.page, indented, tab, "now");
+    await makeInput(browser.page, tab);
+    const event = instruments.record().acts[indented]?.event?.timeStamp;
+    const resource = QueuedObserver.observing.get("resource");
+    if (event === undefined || resource === undefined) {
+      throw new Error("the page heard no Tab, or the init script observes no resources");
+    }
+    resource.queue(read("/api/v1/issues/LAY-1/nodes/spec%23b-r2", event, performance.now()));
+    resource.queue(read("/api/v1/issues/LAY-1/tree", event, performance.now()));
+    const at = instruments.record().frames.length;
+    d.row.attributes["aria-level"] = "3";
+    order = [a.row, b.row, c.row, x.row, d.row];
+    await frames(at + 2);
+    expect(instruments.shown(indented), "D drawn under X read as a child of B").toBe(false);
+    order = [a.row, b.row, c.row, d.row, x.row];
+    await frames(at + 4);
+    const record = instruments.record();
+    expect(record.acts[indented]?.result).toBe(at + 2);
+    const reading = actReading(record, indented);
+    expect(reading.act).toBe(tab.name);
+    expect(reading.read).toBeNull();
+    expect(reading.shown).not.toBeNull();
+    // The same window read as a press on Graph is read on Graph's tree read, in three parts.
+    const asPress = record.acts.map((act, index) =>
+      index === indented ? { ...act, name: "a press on Graph" } : act
+    );
+    expect(actReading({ ...record, acts: asPress }, indented).read?.url).toBe(
+      "/api/v1/issues/LAY-1/tree"
+    );
+    // The Indent's five loads are held to one limit of 200 ms, the time to its result; the two
+    // bounds of a read read n/a in each.
+    expect(
+      actBounds("indent", 2, ACT_MS, Array(5).fill(reading)).map((bound) => [
+        bound.bound,
+        bound.limit,
+        bound.readings,
+      ])
+    ).toEqual([
+      ["indent.result-ms", 200, Array(5).fill(reading.shown)],
+      ["indent.read-sent-ms", 200, Array(5).fill(NOT_APPLICABLE)],
+      ["indent.read-drawn-ms", 200, Array(5).fill(NOT_APPLICABLE)],
+    ]);
+
+    const outdented = indented + 1;
+    await armStep(browser.page, outdented, back, "now");
+    await makeInput(browser.page, back);
+    const since = instruments.record().frames.length;
+    await frames(since + 2);
+    expect(instruments.shown(outdented), "D still under B read as put back").toBe(false);
+    d.row.attributes["aria-level"] = "2";
+    await frames(since + 4);
+    expect(instruments.record().acts[outdented]?.result).toBe(since + 2);
+    await makeSteps(browser.page, outdented + 1, [leave], "now");
+    expect(instruments.shown(outdented + 1), "Escape left D's text").toBe(true);
+    expect(active).toBe(d.row);
   });
 });
 
