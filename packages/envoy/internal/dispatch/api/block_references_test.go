@@ -881,35 +881,67 @@ func TestTheReferencesReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testin
 		reference, around...)
 }
 
-// The reference graph's read answers the node of a fenced code block in a list item the tree of
-// its stored text alone, as the batched reference read answers that block
-// (TestTheReferenceTargetsReadKeepsTheTreeOfACodeBlockThatLeavesItsFenceOpen), though a line of
-// its code writes `[^1]` and its document defines the note 1 outside the block. The node's text is
-// the block's stored text, whose lines after the first carry the item's indentation, so, read
-// alone, its closing fence, four spaces in, closes nothing: the stand-in definitions the read
-// resolves a call with, read after that text, stand inside the code, and no tree of them can have
-// them taken out. The node's text is no cut, but it ends the way a cut can, so the node keeps the
-// tree of its text alone, as an edge's excerpt cut inside a code block does, rather than
-// answering no tree at all.
-func TestTheReferencesReadKeepsTheTreeOfACodeBlockThatLeavesItsFenceOpen(t *testing.T) {
+// The reference graph's read answers the node of a document block that stands in a list item or a
+// quote the tree that its document draws for it, as the batched reference read answers its member
+// (TestTheReferenceTargetsReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes): the tree it
+// answers for the node of the same block written with no prefix at the top level of a document of
+// its own. The node's text is the block's stored text, each of whose lines after the first carries
+// the prefix that the block's containers write, and read alone that prefix changes the block: a
+// code block's closing fence four columns in, or after a `>`, closes nothing, and a paragraph's
+// line in a quote that starts with `>` opens a quote of its own. So the read takes the
+// containers' prefix off each line after the first, outermost first, and reads the block as its
+// document does; the requirement in a quote answers the tree that the node of the same
+// requirement written at the top level answers. A pin draws the text its version recorded the
+// same way: the pin of the code block in a list item to its first version, after a second version
+// that changes only the paragraph at the top level, answers the tree of that code block written
+// with no prefix.
+func TestTheReferencesReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
-	const line = "The graph's fence writes [^1] in its code."
-	reference, stored := uploadOpenFenceCode(t, handler, database, issue.Key, "graph-fence.md",
-		"The graph's intro reads the note[^1].", line)
-	alone := treeOfOpenFence(t, stored, line)
+	const words = "shearwater"
+	placed := uploadBlocksInContainers(t, handler, database, issue.Key, words)
+	node := func(t *testing.T, reference string) graphNodeRead {
+		t.Helper()
+		return decodeBody[graphReferencesRead](t, treesRequest(t, handler,
+			"/api/v1/references?"+url.Values{"to": {reference}}.Encode(), true)).Node
+	}
 
-	read := decodeBody[graphReferencesRead](t, treesRequest(t, handler,
-		"/api/v1/references?"+url.Values{"to": {reference}}.Encode(), true))
-	if read.Node.Text != stored {
-		t.Fatalf("the node's text is %q, want the code block's stored text %q", read.Node.Text, stored)
+	twins := make([]json.RawMessage, len(placed.rows))
+	for index, row := range placed.rows {
+		twin := node(t, placed.twins[index])
+		if twin.Text != row.bare || twin.TextTree == nil {
+			t.Fatalf("%s: the twin's node is %#v, want its text %q with its text_tree", row.name, twin.GraphNode, row.bare)
+		}
+		twins[index] = json.RawMessage(twin.TextTree)
 	}
-	if read.Node.TextTree == nil {
-		t.Fatalf("the code block's node %s carries no text_tree, want the tree of its stored text %q alone", read.Node.Ref, stored)
+	for index, row := range placed.rows {
+		t.Run(row.name, func(t *testing.T) {
+			read := node(t, placed.blocks[index])
+			if read.Text != row.stored() || read.TextTree == nil {
+				t.Fatalf("the node is %#v, want the block's stored text %q with its text_tree", read.GraphNode, row.stored())
+			}
+			requireTreeWithoutPrefix(t, "the node's text_tree", row, json.RawMessage(read.TextTree), twins[index], false)
+		})
 	}
-	requireTreeOfOpenFence(t, "the node's text_tree", json.RawMessage(read.Node.TextTree), alone, line)
+
+	// The second version rewrites words of the paragraph at the top level alone, so the code
+	// block in a list item holds the same text in both versions, and the pin names the first.
+	if version := editIssueDocument(t, handler, issue.Key, placed.document.Slug, []map[string]any{
+		{"op": "replace", "find": words + " paragraph opens with these words", "with": words + " paragraph opens with other words"},
+	}); version.Number != 2 {
+		t.Fatalf("the edit wrote version %d, want 2", version.Number)
+	}
+	first := placed.rows[0]
+	t.Run("row 1 at @v1: the pin of "+strings.TrimPrefix(first.name, "row 1: "), func(t *testing.T) {
+		pin := node(t, placed.blocks[0]+"@v1").Pin
+		if pin == nil || pin.Version != 1 || pin.Text != first.stored() || pin.State != "unchanged" || pin.TextTree == nil {
+			t.Fatalf("the node of %s@v1 carries the pin %#v, want version 1's stored text %q, unchanged since, with its text_tree",
+				placed.blocks[0], pin, first.stored())
+		}
+		requireTreeWithoutPrefix(t, "the pin's text_tree", first, json.RawMessage(pin.TextTree), twins[0], false)
+	})
 }
 
 // The reference graph's read reads the notes of at most 16 documents in one request, as the

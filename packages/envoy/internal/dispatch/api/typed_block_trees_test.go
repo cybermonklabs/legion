@@ -406,96 +406,184 @@ func TestTheReferenceTargetsReadCarriesTheFootnoteReferencesTheDocumentHolds(t *
 		&footnotedReference{label: "k1", follows: "A plain paragraph reads the note"}, "A plain paragraph reads the note", " too.")
 }
 
-// openFenceCode is a fenced code block that stands in the item after the marker `10. ` of
-// openFenceDocument, as the block index stores it: the block's slice of the document's rendering,
-// whose lines after the first carry the item's four columns of indentation. Read alone, its
-// closing fence stands four spaces in, where it closes nothing (blockTextContent), so the code
-// runs to the end of the text. Its one line of code is line, which writes a call of the note 1.
-func openFenceCode(line string) string {
-	return "```\n    " + line + "\n    ```"
+// blockInContainers is one row of check c-open-fence: a block that a document writes in its
+// containers, a list item or a quote, or at its top level for the control. name is the subtest the
+// row is read in. opener is what the document writes before the block's first byte, its
+// containers' markers among it, and prefix is what those containers write before each of the
+// block's lines after the first: the four columns of an item after the marker `10. `, a quote's
+// `> `, or the two columns of a list item and the two of the list item nested in it. bare is the
+// block written with no prefix, as its twin stands at the top level of a document of its own.
+// code is the one line of a code block's code, which writes `[^1]`, and "" for a block that is no
+// code block; follows is the text right before the call of the note 1 in a block that reads it as
+// a footnote reference. typed is true for the requirement.
+type blockInContainers struct {
+	name, opener, prefix, bare string
+	code, follows              string
+	typed                      bool
 }
 
-// openFenceDocument is a document of intro, a paragraph, then a list whose item after the marker
-// `10. ` holds openFenceCode(line), its first line four spaces in as the others are, then the
-// definition of the note 1, which stands outside the code block.
-func openFenceDocument(intro, line string) string {
-	return intro + "\n\n10. An item holds code.\n\n    " + openFenceCode(line) + "\n\n[^1]: The note.\n"
+// stored is the text the block index stores for the block: the document's markdown from the
+// block's first byte to its last, whose lines after the first carry the prefix.
+func (row blockInContainers) stored() string {
+	return strings.ReplaceAll(row.bare, "\n", "\n"+row.prefix)
 }
 
-// uploadOpenFenceCode uploads openFenceDocument(intro, line) as the document name of the issue
-// key, and answers the reference of its code block and the text the block index stores for that
-// block, once the index lists the code block as a block of its own and stores it as
-// openFenceCode(line), its lines after the first four spaces in.
-func uploadOpenFenceCode(t *testing.T, handler http.Handler, database *store.Store, key, name, intro, line string) (reference, stored string) {
-	t.Helper()
-	document := uploadIssueDocument(t, handler, key, name, openFenceDocument(intro, line))
-	code := openFenceCode(line)
-	blocks := blockIDsByText(t, handler, document.ID)
-	id := blocks[code]
-	if id == "" {
-		t.Fatalf("the document lists the blocks %v, want its code block %q as a block of its own", blocks, code)
+// blocksInContainers is the six rows of check c-open-fence, in the check's order, each holding
+// words, which no block of another test holds, so no two tests share a document's markdown, nor
+// what the process keeps of its parse (footnoteParses) or of a text's tree. A paragraph's two lines
+// are split by a hard break, which the rendering writes as a backslash at the end of the first:
+// it writes a soft break as a space, and the paragraph on one line.
+func blocksInContainers(words string) []blockInContainers {
+	line := func(row string) string { return "The " + words + " fence of " + row + " writes [^1] in its code." }
+	fenced := func(line string) string { return "```\n" + line + "\n```" }
+	requirement := "The " + words + " requirement calls"
+	return []blockInContainers{
+		{name: "row 1: a fenced code block in a list item",
+			opener: "10. The " + words + " item holds code.\n\n    ", prefix: "    ",
+			code: line("row 1"), bare: fenced(line("row 1"))},
+		{name: "row 2: a fenced code block in a quote", opener: "> ", prefix: "> ",
+			code: line("row 2"), bare: fenced(line("row 2"))},
+		{name: "row 3: a paragraph of two lines in a quote", opener: "> ", prefix: "> ",
+			follows: "Its second line calls",
+			bare:    "The " + words + " quote opens with these words.\\\nIts second line calls[^1] the note."},
+		{name: "row 4: a fenced code block in a list nested in a list item",
+			opener: "- The " + words + " outer item.\n\n  - The " + words + " inner item.\n\n    ", prefix: "    ",
+			code: line("row 4"), bare: fenced(line("row 4"))},
+		{name: "row 5: a paragraph of two lines at the top level, the control",
+			follows: "Its next line calls",
+			bare:    "The " + words + " paragraph opens with these words.\\\nIts next line calls[^1] the note."},
+		{name: "row 6: a requirement in a quote", opener: "> ", prefix: "> ", typed: true,
+			follows: requirement, bare: ":::requirement{#r6}\n" + requirement + "[^1] the note.\n:::"},
 	}
-	if stored = storedBlockText(t, database, document.ID, id); stored != code {
-		t.Fatalf("the code block's stored text is %q, want %q, its lines after the first carrying the item's four spaces", stored, code)
-	}
-	return refs.BlockRef("dispatch://"+key+"/artifact/"+document.Slug, id), stored
 }
 
-// treeOfOpenFence is the tree a read gives text, an open fence's code block as the block index
-// stores it (openFenceCode), where it reads that text alone: pmdoc.DisplayJSON in the latest mode,
-// the reading of a text a read registers as it stands (displayTreeReader.text). It fails unless
-// that tree is one code block whose code holds line and, after it, the closing fence, which the
-// text leaves open.
-func treeOfOpenFence(t *testing.T, text, line string) json.RawMessage {
+// placedBlocks is what uploadBlocksInContainers uploads: rows, the blocks of check c-open-fence;
+// document, the document that writes each row's block in its containers; and, for each row in
+// order, the reference of that block and the reference of its twin, the block written with no
+// prefix at the top level of a second document.
+type placedBlocks struct {
+	rows          []blockInContainers
+	document      model.Artifact
+	blocks, twins []string
+}
+
+// uploadBlocksInContainers uploads two documents of the issue key, each of which defines the note
+// 1 at its end: one that writes the block of each row of blocksInContainers(words) after the
+// row's opener, and one that writes each row's block with no prefix at its top level. It fails
+// unless each document lists each block as a block of its own and the block index stores the
+// first document's block with its lines after the first carrying its containers' prefix, and the
+// twin as it is written, so that no row is read in a shape the check does not describe.
+func uploadBlocksInContainers(t *testing.T, handler http.Handler, database *store.Store, key, words string) placedBlocks {
 	t.Helper()
-	tree := pmdoc.DisplayJSON(text, pmdoc.DisplayLatest)
+	placed := placedBlocks{rows: blocksInContainers(words)}
+	written, bare := make([]string, len(placed.rows)), make([]string, len(placed.rows))
+	for index, row := range placed.rows {
+		written[index], bare[index] = row.opener+row.stored(), row.bare
+	}
+	const note = "\n\n[^1]: The note.\n"
+	placed.document = uploadIssueDocument(t, handler, key, words+"-in-containers.md", strings.Join(written, "\n\n")+note)
+	twins := uploadIssueDocument(t, handler, key, words+"-at-the-top-level.md", strings.Join(bare, "\n\n")+note)
+	ids, twinIDs := blockIDsByText(t, handler, placed.document.ID), blockIDsByText(t, handler, twins.ID)
+	for _, row := range placed.rows {
+		id, twin := ids[row.stored()], twinIDs[row.bare]
+		if id == "" || twin == "" {
+			t.Fatalf("%s: the documents list the blocks %v and %v, want %q in the first and %q in the second",
+				row.name, ids, twinIDs, row.stored(), row.bare)
+		}
+		if stored := storedBlockText(t, database, placed.document.ID, id); stored != row.stored() {
+			t.Fatalf("%s: the block's stored text is %q, want %q, its lines after the first carrying its containers' prefix %q",
+				row.name, stored, row.stored(), row.prefix)
+		}
+		if stored := storedBlockText(t, database, twins.ID, twin); stored != row.bare {
+			t.Fatalf("%s: the twin's stored text is %q, want %q", row.name, stored, row.bare)
+		}
+		placed.blocks = append(placed.blocks, refs.BlockRef("dispatch://"+key+"/artifact/"+placed.document.Slug, id))
+		placed.twins = append(placed.twins, refs.BlockRef("dispatch://"+key+"/artifact/"+twins.Slug, twin))
+	}
+	return placed
+}
+
+// requireTreeWithoutPrefix fails unless got, the text_tree a read answers for row's block, which
+// a failure names what, is twin, the one the same read answers for the block written with no
+// prefix, byte for byte, and is the tree check c-open-fence names for the row. A code block's is
+// exactly the tree of the code block written with no prefix: one code block whose code is its one
+// line, with no container's indentation, no `>` and no closing fence, and whose `[^1]` is code
+// text. A paragraph's is one paragraph whose call is a footnote reference. content is true for a
+// read that draws a typed block's content, the batched reference read, where the requirement's
+// tree is one paragraph whose call is a footnote reference, with no directive line and no closing
+// fence; the reference graph's read draws a typed block's whole text, so there the requirement is
+// held to its twin's tree alone.
+func requireTreeWithoutPrefix(t *testing.T, what string, row blockInContainers, got, twin json.RawMessage, content bool) {
+	t.Helper()
+	if !bytes.Equal(got, twin) {
+		t.Errorf("%s of the block stored as %q is\n\t%s\nwant the one the same read answers for its twin %q\n\t%s",
+			what, row.stored(), got, row.bare, twin)
+	}
 	var root footnotedTreeNode
-	if err := json.Unmarshal(tree, &root); err != nil {
-		t.Fatalf("decode the tree %s: %v", tree, err)
+	if err := json.Unmarshal(got, &root); err != nil {
+		t.Fatalf("decode the tree %s: %v", got, err)
 	}
-	if len(root.Content) != 1 || root.Content[0].Type != "code_block" ||
-		!strings.Contains(readFootnotedTree(t, tree).text, line+"\n    ```") {
-		t.Fatalf("the tree of %q alone is\n\t%s\nwant one code block whose code holds %q and the closing fence after it", text, tree, line)
+	switch {
+	case row.code != "":
+		if want := sameShape(t, pmdoc.DisplayJSON(row.bare, pmdoc.DisplayLatest)); !bytes.Equal(sameShape(t, got), want) {
+			t.Errorf("%s is\n\t%s\nwant the tree of the code block written with no prefix %q\n\t%s", what, got, row.bare, want)
+		}
+		if code := readFootnotedTree(t, got).text; len(root.Content) != 1 || root.Content[0].Type != "code_block" || code != row.code {
+			t.Errorf("%s holds the text %q, want one code block whose code is %q alone:\n\t%s", what, code, row.code, got)
+		}
+		requireFootnotedTree(t, what, got, nil, row.code)
+	case row.typed && !content:
+		// The node's tree is of the requirement's whole text, which the twin's comparison holds.
+	default:
+		if len(root.Content) != 1 || root.Content[0].Type != "paragraph" {
+			t.Errorf("%s is\n\t%s\nwant one paragraph", what, got)
+		}
+		requireFootnotedTree(t, what, got, &footnotedReference{label: "1", follows: row.follows}, row.follows, " the note.")
+		for _, opening := range []string{":::", "requirement{"} {
+			if strings.Contains(string(got), opening) {
+				t.Errorf("%s holds %q, of a directive line or a closing fence:\n\t%s", what, opening, got)
+			}
+		}
 	}
-	return tree
 }
 
-// requireTreeOfOpenFence fails unless got, the text_tree a read answers for what, is want, the
-// tree of the code block's text alone (treeOfOpenFence), byte for byte, and holds line, the code's
-// call of the note 1 included, as text: no footnote reference, no footnote definition and no
-// stand-in's `x`.
-func requireTreeOfOpenFence(t *testing.T, what string, got, want json.RawMessage, line string) {
-	t.Helper()
-	if !bytes.Equal(got, want) {
-		t.Errorf("%s is\n\t%s\nwant the tree of its text alone\n\t%s", what, got, want)
-	}
-	requireFootnotedTree(t, what, got, nil, line)
-}
-
-// The batched reference read answers a fenced code block in a list item the tree of its stored
-// text alone, though a line of its code writes `[^1]` and its document defines the note 1 outside
-// the block. The block's stored text carries the item's indentation on each line but its first,
-// so, read alone, its closing fence, four spaces in, closes nothing (blockTextContent): the
-// stand-in definitions the read resolves a call with, read after that text, stand inside the code,
-// and no tree of them can have them taken out. The call is code, which the document reads as text
-// too, so the block keeps the tree of its text alone, as a block whose document cannot be read
-// does, rather than answering no tree at all.
-func TestTheReferenceTargetsReadKeepsTheTreeOfACodeBlockThatLeavesItsFenceOpen(t *testing.T) {
+// The batched reference read answers a document block that stands in a list item or a quote the
+// tree that its document draws for it, which is the tree it answers for the same block written
+// with no prefix at the top level of a document of its own that defines the note 1 as the first
+// does. The block's stored text is the document's markdown from the block's first byte to its
+// last, so each of its lines after the first carries the prefix that the block's containers
+// write: the four columns of an item after the marker `10. `, a quote's `> `, or the columns of a
+// list item and of the list item nested in it. Read alone, that prefix changes the block: a fenced
+// code block's closing fence four columns in, or after a `>`, closes nothing, so the code would
+// hold the prefix and the fence as code lines, and the second line of a paragraph in a quote,
+// which starts with `>`, would open a quote of its own. So the read takes the containers' prefix
+// off each line after the first, outermost first, and reads the block as its document does: a
+// code block's code is its one line, whose `[^1]` is code text, the paragraph is one paragraph,
+// whose call is a footnote reference, and the requirement in a quote answers its content, with no
+// directive line and no closing fence, whose call is a footnote reference, as the same requirement
+// at the top level does. A paragraph of two lines at the top level carries no prefix and answers
+// the tree it always did.
+func TestTheReferenceTargetsReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "TBO")
 	issue := createReferenceAPIIssue(t, handler, "TBO")
-	const line = "The batched fence writes [^1] in its code."
-	reference, stored := uploadOpenFenceCode(t, handler, database, issue.Key, "batched-fence.md",
-		"The batched intro reads the note[^1].", line)
-	content := blockTextContent(stored, true)
-	alone := treeOfOpenFence(t, content, line)
+	placed := uploadBlocksInContainers(t, handler, database, issue.Key, "kittiwake")
 
-	member := referenceTargetOf(t, handler, reference)
-	if member.TextTree == nil {
-		t.Fatalf("the code block's member %#v carries no text_tree, want the tree of its stored text %q alone", member, content)
+	read := decodeBody[model.ReferenceTargets](t, treesRequest(t, handler,
+		referenceTargetsOf(slices.Concat(placed.blocks, placed.twins)...), true)).Targets
+	if len(read) != 2*len(placed.rows) {
+		t.Fatalf("the read answered %d members, want one for each of the %d blocks and one for each twin", len(read), len(placed.rows))
 	}
-	requireTreeOfOpenFence(t, "the code block's text_tree", json.RawMessage(member.TextTree), alone, line)
+	for index, row := range placed.rows {
+		member, twin := read[index], read[len(placed.rows)+index]
+		if member.TextTree == nil || twin.TextTree == nil {
+			t.Fatalf("%s: the members %#v and %#v, want each with a text_tree", row.name, member, twin)
+		}
+		t.Run(row.name, func(t *testing.T) {
+			requireTreeWithoutPrefix(t, "the member's text_tree", row, json.RawMessage(member.TextTree), json.RawMessage(twin.TextTree), true)
+		})
+	}
 }
 
 // The batched reference read reads the notes of at most 16 documents in one request, so one
