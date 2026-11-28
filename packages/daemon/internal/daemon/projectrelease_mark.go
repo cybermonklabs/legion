@@ -238,8 +238,8 @@ func projectReleaseRound(id int64) string {
 // with no attempt counted, and read again every releaseHoldSpacing (outbox.holdForRelease). The
 // wait is routine (wait.Routine): the operator who released the project knows what it holds, so a
 // row held for the whole bound stays at debug after its first line, and a decision of a claim's
-// machine that answers it is logged at debug, not as a failure (supervise's fire and startSend,
-// supervisor.decisionFailed).
+// machine that answers it, with no fault beside it, is logged at Debug rather than Error
+// (supervise's fire and startSend, supervisor.decisionFailed, supervise.DecisionErrorLevel).
 var errProjectReleased = wait.Routine(wait.New(api.ProjectReleaseHeldSentence))
 
 // roleTakenMargin is how long past config.ClaimFirstTurnBound a session that stands ready is given

@@ -4011,7 +4011,7 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 // The refusal is the release's hold the launch check answers as a routine wait (internal/daemon's
 // errProjectReleased), met one step later, and nobody has to act on it either: this line is at
 // Info, and the decision answers the refusal marked routine (wait.Routine), which the machine's
-// own goroutines and the daemon's feeder of a worker's events log at Debug (decisionErrorLevel,
+// own goroutines and the daemon's feeder of a worker's events log at Debug (DecisionErrorLevel,
 // internal/daemon's supervisor.decisionFailed). The mark changes nothing else: it unwraps to the
 // refusal, which stays no wait (wait.ErrWaiting) for every other reader, the outbox and the API
 // among them. A stop of the process or a write of the claim that failed as well is answered
@@ -5369,30 +5369,35 @@ func (m *Machine) nextTimer(kind TimerKind, deliveryID string) Timer {
 // fire hands the machine ev, a timer of its own firing, on the goroutine it fires on: the
 // clock's, for a timer the clock holds (arm), and the one the pod gate posts the grant of a launch
 // parked at its gate on (askPod, PodStarts.post). That goroutine holds no lock, so its decision
-// runs on a fresh context. The decision's error is logged at the level decisionErrorLevel gives.
+// runs on a fresh context. The decision's error is logged at the level DecisionErrorLevel gives.
 func (m *Machine) fire(ev Timer) {
 	ctx := m.worker()
 	if err := m.Handle(ctx, ev); err != nil {
-		m.log.Log(ctx, decisionErrorLevel(err), timerLine, "timer", string(ev.Kind), "error", err)
+		m.log.Log(ctx, DecisionErrorLevel(err), timerLine, "timer", string(ev.Kind), "error", err)
 	}
 }
 
 // timerLine is the line fire writes for the error a timer's decision answered.
 const timerLine = "supervise: timer"
 
-// decisionErrorLevel is the level a goroutine the machine starts logs its decision's error at
-// (fire, startSend), as the daemon's feeder of a worker's events logs it (internal/daemon's
-// supervisor.decisionFailed): Debug for an error that holds a routine wait (wait.IsRoutine), which
-// nobody has to act on, and Error for every other. The routine wait such a decision answers is the
-// project release's hold of every start until the daemon's next boot, met in the launch check
-// (internal/daemon's errProjectReleased) by a decision that holds the claim's process rather than
-// let it go — the registration deadline (registrationDeadline), which meets it again at each probe
-// interval for as long as the release holds, a prompt retirement (chargePrompt), the stale-plugin
-// relaunch (relaunchStale), a parked launch's turn over a claim that records its process (runWake,
+// DecisionErrorLevel is the level a decision's error is logged at where it goes back to no caller:
+// by a goroutine the machine starts (fire, startSend) and by the daemon's feeder of a worker's
+// events (internal/daemon's supervisor.decisionFailed), held in one place because two packages
+// log by it. It is Debug for an error made of nothing but routine waits (wait.OnlyRoutine), which
+// nobody has to act on, and Error for every other. A decision's error joins the row's answer with
+// what settle and the row-move check met (handle), so a routine wait joined to a fault — a store
+// that did not answer, a row that moved outside its states — is logged at Error, as the fault
+// alone would be, where wait.IsRoutine, true wherever the mark is in the chain, would keep it at
+// Debug. The routine wait such a decision answers is the project release's hold of every start
+// until the daemon's next boot, met in the launch check (internal/daemon's errProjectReleased) by
+// a decision that holds the claim's process rather than let it go — the registration deadline
+// (registrationDeadline), which meets it again at each probe interval for as long as the release
+// holds, a prompt retirement (chargePrompt), the stale-plugin lane's relaunch (refreshPlugin,
+// relaunchStale), a parked launch's turn over a claim that records its process (runWake,
 // relaunchRefused) — or met at the runtime by a start that passed the check
 // (startWaitsForRelease).
-func decisionErrorLevel(err error) slog.Level {
-	if wait.IsRoutine(err) {
+func DecisionErrorLevel(err error) slog.Level {
+	if wait.OnlyRoutine(err) {
 		return slog.LevelDebug
 	}
 	return slog.LevelError

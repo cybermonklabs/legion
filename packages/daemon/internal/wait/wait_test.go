@@ -92,3 +92,45 @@ func TestARoutineWaitIsTheWaitItMarks(t *testing.T) {
 			IsRoutine(marked), errors.Is(marked, ErrWaiting), errors.Is(marked, refusal))
 	}
 }
+
+// An error is only routine where every error in its chain is marked: a routine wait alone,
+// wrapped with %w, or joined to another routine wait. A routine wait joined to a failure or to a
+// wait nobody marked is not, though IsRoutine still finds its mark there; nor are an unmarked
+// wait, a failure and nil.
+func TestOnlyRoutineIsEveryErrorInTheChainMarked(t *testing.T) {
+	held := Routine(New("the project release holds every start until the daemon's next boot"))
+	parked := Routine(Until(time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC), "a delivery waits for its launch's turn"))
+	for name, err := range map[string]error{
+		"a routine wait":                        held,
+		"a routine wait wrapped with %w":        fmt.Errorf("launch LEGION-209: %w", held),
+		"a routine wait joined":                 errors.Join(held),
+		"a routine wait joined to another":      errors.Join(held, parked),
+		"two routine waits joined and wrapped":  fmt.Errorf("retire LEGION-209: %w", errors.Join(fmt.Errorf("check: %w", held), parked)),
+		"two routine waits wrapped with two %w": fmt.Errorf("%w; %w", held, parked),
+	} {
+		if !OnlyRoutine(err) {
+			t.Errorf("OnlyRoutine(%s) = false, want true: every error in it is marked", name)
+		}
+	}
+	for name, err := range map[string]error{
+		"a routine wait joined to a failure":         errors.Join(held, errors.New("the store did not answer")),
+		"a routine wait joined to a plain wait":      errors.Join(held, New("start waits for a turn")),
+		"a wrapped routine wait joined to a failure": fmt.Errorf("retire LEGION-209: %w", errors.Join(errors.New("the store did not answer"), held)),
+		"a routine wait and a failure with two %w":   fmt.Errorf("%w; %w", held, errors.New("the store did not answer")),
+	} {
+		if OnlyRoutine(err) || !IsRoutine(err) {
+			t.Errorf("%s: OnlyRoutine = %t, IsRoutine = %t; want false and true: a mark is in the chain, beside an error without one",
+				name, OnlyRoutine(err), IsRoutine(err))
+		}
+	}
+	for name, err := range map[string]error{
+		"a plain wait":         New("start waits for a turn"),
+		"a wrapped plain wait": fmt.Errorf("launch LEGION-209: %w", Errorf("start of %s waits", "LEGION-209")),
+		"a failure":            errors.New("GitHub refused"),
+		"nil":                  nil,
+	} {
+		if OnlyRoutine(err) {
+			t.Errorf("OnlyRoutine(%s) = true, want false: nothing marked it", name)
+		}
+	}
+}

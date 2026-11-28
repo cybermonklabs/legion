@@ -5,6 +5,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // PodUpdateContract is the daemon contract that introduced ready_for_update (api/version.go's
@@ -488,6 +489,12 @@ func (m *Machine) refreshOverturned() bool {
 // (launchWaits, StartsProcess): the refresh lane's relaunch of this same claim is exactly the
 // launch this registration must not raise a second one over.
 //
+// A registration whose uncharged relaunch the launch check refuses with nothing but routine waits
+// (wait.OnlyRoutine), the project release's hold of every start (internal/daemon's
+// errProjectReleased), is refused as every stale one is and charged nothing, with one line at
+// Info saying the release holds the relaunch (staleRelaunchHeldLine), since relaunchStale
+// returned having changed nothing; every other error of either relaunch is answered as it was.
+//
 // The relaunch this path raises keeps the launch kind, where the refresh lane's carries one of
 // its own (WakePluginRefresh, refreshPlugin). It is this claim's own launch, answering the
 // registration in front of it rather than working through a fleet, and a reader of the daemon's
@@ -524,12 +531,21 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 		err = m.relaunchAfterFailure(ctx, runtime.OutcomeStalePlugin, endStalePlugin, nil)
 	} else {
 		err = m.relaunchStale(ctx, WakeLaunch, "registration")
+		if wait.OnlyRoutine(err) {
+			m.log.Info(staleRelaunchHeldLine, "pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "error", err)
+			err = nil
+		}
 	}
 	if err != nil {
 		return err
 	}
 	return claim.StalePluginContract(got, m.deps.PluginContract)
 }
+
+// staleRelaunchHeldLine is the line of a stale registration whose uncharged relaunch the launch
+// check held with a routine wait (staleRegistration), at Info, the registration refused as every
+// other stale one is.
+const staleRelaunchHeldLine = "supervise: a registration on another plugin contract reached a claim whose relaunch the project release holds; nothing is relaunched or charged here"
 
 // StaleRefusesCalls is the stale-plugin refusal's own rule, held in one place because two
 // packages decide by it: whether a daemon speaking daemonContract would refuse this claim's own

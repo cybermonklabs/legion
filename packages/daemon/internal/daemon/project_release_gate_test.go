@@ -147,8 +147,9 @@ func TestProjectReleaseHoldsEveryLaunchCheck(t *testing.T) {
 
 // A launch that passed the launch check just before the mark was set meets it at the runtime
 // (runtime.ErrProjectReleased): that refusal charges no launch failure, and the claim waits to be
-// launched again, its process recorded nowhere. Any other refusal of the runtime is charged, so
-// what this reads is the sentinel's.
+// launched again, its process recorded nowhere. The decision answers the refusal marked routine
+// (wait.IsRoutine) and still no wait (wait.ErrWaiting). Any other refusal of the runtime is
+// charged, so what this reads is the sentinel's.
 func TestProjectReleaseRuntimeRefusalChargesNoLaunchFailure(t *testing.T) {
 	t.Parallel()
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -166,7 +167,11 @@ func TestProjectReleaseRuntimeRefusalChargesNoLaunchFailure(t *testing.T) {
 	t.Run("the release's refusal", func(t *testing.T) {
 		m := create(claim.RoleArchitect)
 		rt.ScriptSpawn(fake.SpawnResult{Err: fmt.Errorf("sandbox runtime: create sandbox: %w", runtime.ErrProjectReleased)})
-		_ = m.Handle(ctx, supervise.RequestSpawn{Claim: m.Claim().Token})
+		err := m.Handle(ctx, supervise.RequestSpawn{Claim: m.Claim().Token})
+		if !wait.IsRoutine(err) || errors.Is(err, wait.ErrWaiting) || !errors.Is(err, runtime.ErrProjectReleased) {
+			t.Fatalf("the spawn the runtime refused for the release answered %v (routine %t, a wait %t), want the release's refusal marked routine and no wait",
+				err, wait.IsRoutine(err), errors.Is(err, wait.ErrWaiting))
+		}
 		got := m.Claim()
 		if got.Budgets.LaunchFailures != 0 || got.State != supervise.StateLaunching || got.Locator != nil {
 			t.Fatalf("after the release's refusal the claim is %s on %v with %d launch failures, want launching, no process and none charged",

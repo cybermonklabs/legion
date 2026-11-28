@@ -507,25 +507,18 @@ func TestARelaunchTheLaunchCheckRefusesWithAWaitLogsTheWaitOnceAtInfo(t *testing
 	h.reach(StateRegistered)
 	store := &heldCheckStore{memStore: h.store}
 	h.m.deps.Store = store
-	levels := func(message string) []slog.Level {
-		var got []slog.Level
-		for _, r := range h.records.of(message) {
-			got = append(got, r.level)
-		}
-		return got
-	}
 	want := func(when string, waits, refusals []slog.Level) {
 		t.Helper()
-		if got := levels(relaunchWaitLine); !slices.Equal(got, waits) {
+		if got := h.records.levels(relaunchWaitLine); !slices.Equal(got, waits) {
 			t.Fatalf("%s, the wait's lines are at %v; want %v", when, got, waits)
 		}
-		if got := levels(relaunchRefusedLine); !slices.Equal(got, refusals) {
+		if got := h.records.levels(relaunchRefusedLine); !slices.Equal(got, refusals) {
 			t.Fatalf("%s, the refusal's lines are at %v; want %v", when, got, refusals)
 		}
 	}
 	// quiet fails where a record from the from'th on is at Warn or above, or is the timer's line
 	// (timerLine), which fire writes only for a decision that answered an error, at Debug where
-	// that error holds a routine wait (decisionErrorLevel).
+	// that error holds nothing but routine waits (DecisionErrorLevel).
 	quiet := func(when string, from int) {
 		t.Helper()
 		for _, r := range h.records.since(from) {
@@ -597,7 +590,7 @@ func TestARelaunchTheLaunchCheckRefusesWithAWaitLogsTheWaitOnceAtInfo(t *testing
 // A registration deadline whose own launch check the project release refuses keeps the process,
 // retires nothing, and tries the deadline again at each probe interval for as long as the release
 // holds (registrationDeadline), answering the release's routine wait to the timer that fired it
-// every time. The timer logs that wait at Debug (fire, decisionErrorLevel), so nothing of the wait
+// every time. The timer logs that wait at Debug (fire, DecisionErrorLevel), so nothing of the wait
 // is logged at Warn or above, at the deadline or at any of its retries: the operator who released
 // the project asked for it, and a line at Error every probe interval for each such claim would
 // send whoever reads the log to look at nothing.
@@ -617,19 +610,45 @@ func TestARegistrationDeadlineTheReleaseHoldsLogsNothingAtWarnAtAnyRetry(t *test
 
 	h.wantCalls("Suspend", 0)
 	h.wantState(StateRegistered)
-	fired := h.records.of(timerLine)
-	if len(fired) != 4 {
-		t.Fatalf("the timer wrote %d lines, want 4: one at the deadline and one at each of its three retries at the probe interval", len(fired))
+	debug := slog.LevelDebug
+	if got := h.records.levels(timerLine); !slices.Equal(got, []slog.Level{debug, debug, debug, debug}) {
+		t.Fatalf("the timer wrote its lines at %v, want 4 at Debug: one at the deadline and one at each of its three retries at the probe interval, the release's wait being routine", got)
 	}
-	for _, r := range fired {
-		if kind, _ := r.attr("timer"); r.level != slog.LevelDebug || kind.String() != string(TimerRegistration) {
-			t.Fatalf("the timer wrote its line at %s for the %q timer, want Debug for the registration deadline: the release's wait is routine", r.level, kind)
+	for _, r := range h.records.of(timerLine) {
+		if kind, _ := r.attr("timer"); kind.String() != string(TimerRegistration) {
+			t.Fatalf("the timer wrote its line for the %q timer, want the registration deadline", kind)
 		}
 	}
 	for _, r := range h.records.since(from) {
 		if r.level >= slog.LevelWarn {
 			t.Fatalf("the log holds %q at %s; want nothing at Warn or above while the release holds the deadline's retirement", r.message, r.level)
 		}
+	}
+}
+
+// A registration deadline whose launch check answers the release's routine wait joined to a fault,
+// a store that did not answer beside it, is logged as the fault: the timer writes its line at
+// Error at the deadline and at its retry (fire, DecisionErrorLevel). A decision's error joins
+// whatever the decision met (handle joins the row's answer with settle's and the row-move
+// check's), so the mark of a routine wait somewhere in it says nothing of the rest; only an error
+// made of nothing but routine waits is kept at Debug (wait.OnlyRoutine). A store outage during a
+// release would otherwise write no line at Error at all, the deadline meeting the release's wait
+// at every probe interval.
+//
+// The negative control is DecisionErrorLevel reading wait.IsRoutine, as it did before: the timer
+// then writes its lines at Debug.
+func TestARegistrationDeadlineWhoseCheckJoinsTheReleasesWaitToAFaultLogsTheTimerAtError(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateRegistered)
+	h.m.deps.Store = &heldCheckStore{memStore: h.store, refusal: errors.Join(errReleaseHolds, errUnanswered)}
+
+	h.advance(deadline)
+	h.advance(testProbe)
+
+	h.wantCalls("Suspend", 0)
+	h.wantState(StateRegistered)
+	if got := h.records.levels(timerLine); !slices.Equal(got, []slog.Level{slog.LevelError, slog.LevelError}) {
+		t.Fatalf("the timer wrote its lines at %v, want 2 at Error: one at the deadline and one at its retry, the store's fault beside the release's wait", got)
 	}
 }
 
@@ -660,14 +679,8 @@ func TestARelaunchTheLaunchCheckRefusesWithAWaitThatIsNotRoutineIsLoggedAtWarn(t
 		t.Fatalf("the refusal wrote the routine wait's line %d times, want none: the wait is not routine", len(waits))
 	}
 	for line, want := range map[string]slog.Level{relaunchRefusedLine: slog.LevelWarn, timerLine: slog.LevelError} {
-		got := h.records.of(line)
-		if len(got) != 2 {
-			t.Fatalf("the log holds %q %d times, want twice: at the refusal and at its retry", line, len(got))
-		}
-		for _, r := range got {
-			if r.level != want {
-				t.Fatalf("the log holds %q at %s, want %s", line, r.level, want)
-			}
+		if got := h.records.levels(line); !slices.Equal(got, []slog.Level{want, want}) {
+			t.Fatalf("the log holds %q at %v, want it twice at %s: at the refusal and at its retry", line, got, want)
 		}
 	}
 }

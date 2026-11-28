@@ -70,8 +70,11 @@ const (
 	messageReadSkew = 5 * time.Second
 	// waitWarnAttempts is when a waiting row is logged as a warning: past the backoff's climb to
 	// its cap, a wait of about two minutes, what it waits on is not ending on its own, and an
-	// operator should look. A routine wait (wait.Routine, wait.IsRoutine), one nobody has to act
-	// on for Legion, stays debug at every attempt. These waits are routine. A Dispatch claim
+	// operator should look. A routine wait (wait.Routine), one nobody has to act on for Legion, is
+	// logged at Info at its first attempt, as settle logs the first attempt of every wait, and stays
+	// at debug after it, however long it lasts. The rule finds the mark with wait.IsRoutine,
+	// anywhere in the error, since settle reads it only of a row that waits already
+	// (wait.ErrWaiting). These waits are routine. A Dispatch claim
 	// release waiting on the claim's holder or on a contended answer (claimHeldWait,
 	// claimContendedWait), which the hour claimReleaseWait caps rather than an operator. A
 	// child's architect's first start waiting for its tree to run again

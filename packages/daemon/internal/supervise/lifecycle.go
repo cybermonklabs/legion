@@ -139,24 +139,24 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // retire. Any other refusal is not the tree's — a store that did not answer, or the project
 // release's hold of every start until the daemon's next boot (internal/daemon's
 // errProjectReleased) — and ends nothing: the relaunch waits (relaunchLater), as a stop that
-// fails does. The release's refusal is a routine wait (wait.IsRoutine), which lasts as long as
-// the release holds, up to its bound, and which nobody has to act on: the operator who released
-// the project asked for it. So a refusal that is a routine wait is logged at Info where the wait
-// begins and at Debug at each retry it refuses after that (relaunchWaitLine, launchCheckWaiting),
-// and every other refusal, a wait that is not routine included, at Warn at each retry
-// (relaunchRefusedLine).
+// fails does. The release's refusal is a routine wait (wait.IsRoutine, the test of an error that
+// is this one refusal alone), which lasts as long as the release holds, up to its bound, and which
+// nobody has to act on: the operator who released the project asked for it. So a refusal that is
+// a routine wait is logged at Info where the wait begins and at Debug at each retry it refuses
+// after that (relaunchWaitLine, launchCheckWaiting), and every other refusal, a wait that is not
+// routine included, at Warn at each retry (relaunchRefusedLine).
 //
 // A routine wait is answered to no caller: once its retry is armed, the decision answers only the
-// claim's write. A routine wait that does reach a decision's caller is kept below Error, at Debug,
-// where a decision's error is logged: by the machine's own goroutines (fire, startSend,
-// decisionErrorLevel) and by the daemon's feeder of a worker's events (internal/daemon's
-// supervisor.decisionFailed). So no Warn or Error line is written there for the wait this answers
-// over a claim it leaves as it was (one that records its process, the first return here), nor for
-// the wait a decision meets in its own launch check (registrationDeadline, chargePrompt,
-// relaunchStale). The routes of a turn's outcome and of an operator's retry still answer every
-// error as a failure (api's claimFailure, operationFailure), so this refusal answers them nothing.
-// The retry is the one such answer a person reads, and it meets the wait only where the release
-// marked after the route's own check had let it through (api's releaseRefused,
+// claim's write. A routine wait that does reach a decision's caller, with no fault joined to it,
+// is kept below Error, at Debug, where a decision's error is logged: by the machine's own
+// goroutines (fire, startSend, DecisionErrorLevel) and by the daemon's feeder of a worker's events
+// (internal/daemon's supervisor.decisionFailed). So no Warn or Error line is written there for the
+// wait this answers over a claim it leaves as it was (one that records its process, the first
+// return here), nor for the wait a decision meets in its own launch check (registrationDeadline,
+// chargePrompt, relaunchStale). The routes of a turn's outcome and of an operator's retry still
+// answer every error as a failure (api's claimFailure, operationFailure), so this refusal answers
+// them nothing. The retry is the one such answer a person reads, and it meets the wait only where
+// the release marked after the route's own check had let it through (api's releaseRefused,
 // runDroppedLaunchForRetry): it is answered as a start that wrote no launch, the claim waiting
 // launching with its retry armed, which the release's stop then lets go as it lets go every start
 // it holds. A refusal that is no routine wait is still answered with its error.

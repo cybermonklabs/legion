@@ -1630,7 +1630,8 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   after the start's own check, which writes **`supervise: the project release holds every pod of
   the project; this start charges nothing and waits`** at Info. The supervision's lines for those
   steps, `supervise: timer`, `supervise: prompt outcome` and `supervise: an event failed`, are at
-  Debug rather than Error, with the release's refusal in `error=`.
+  Debug rather than Error, with the release's refusal in `error=`. A line that also carries a
+  fault in `error=`, such as a database that did not answer, stays at Error.
 - **`supervise: the launch could not be written; trying it again at the probe interval`** means
   the daemon's Postgres did not take a launch's write, after the launch had let the claim's process
   go. The process is stopped and nothing is started; the claim waits `launching` with no process,

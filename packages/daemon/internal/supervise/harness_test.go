@@ -759,6 +759,16 @@ func (l *logRecords) since(from int) []loggedRecord {
 	return slices.Clone(l.kept[from:])
 }
 
+// levels is the level of every record whose message is exactly message (of), in the order they
+// were written: what a test of the level a line is logged at compares whole.
+func (l *logRecords) levels(message string) []slog.Level {
+	var got []slog.Level
+	for _, r := range l.of(message) {
+		got = append(got, r.level)
+	}
+	return got
+}
+
 func (l *logRecords) add(r loggedRecord) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
