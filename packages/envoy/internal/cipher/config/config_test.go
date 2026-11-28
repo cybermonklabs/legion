@@ -2099,6 +2099,85 @@ func TestThePodTokenAudienceSettingIsAList(t *testing.T) {
 	}
 }
 
+// TestLoadRefusesTheIssuerAsAudience pins the refusal of an audience of the cluster issuer's
+// tokens equal to BROKER_K8S_OIDC_ISSUER, naming its setting and BROKER_K8S_OIDC_ISSUER, for each
+// setting that names one: an audience BROKER_K8S_OIDC_AUDIENCE lists beside another,
+// BROKER_EXCHANGE_K8S_AUDIENCE, BROKER_NATS_K8S_AUDIENCE and BROKER_POD_REGISTRATION_AUDIENCE. A
+// trailing / on either side does not make the two differ. Every audience set to a value of its
+// own that begins with the issuer's URL loads: a shared prefix is no refusal.
+func TestLoadRefusesTheIssuerAsAudience(t *testing.T) {
+	user, account, curve, _ := natsSeeds(t)
+	// issuer is the cluster issuer withK8sIssuer sets.
+	issuer := withK8sIssuer()["BROKER_K8S_OIDC_ISSUER"]
+	// own is withK8sIssuer with each of the four audiences set to a value of its own that begins
+	// with the issuer's URL, the NATS auth service on with its hub and its three seeds, and set
+	// over them. So a row is refused for the one audience it makes the issuer and nothing else.
+	own := func(set map[string]string) map[string]string {
+		e := withK8sIssuer()
+		e["BROKER_K8S_OIDC_AUDIENCE"] = "agent-secrets " + issuer + "/broker"
+		e["BROKER_EXCHANGE_K8S_AUDIENCE"] = issuer + "/exchange"
+		e["BROKER_NATS_URLS"] = "nats://hub-a:4222"
+		e["BROKER_NATS_SEED_FILE"], e["BROKER_NATS_ISSUER_SEED_FILE"], e["BROKER_NATS_XKEY_SEED_FILE"] = user, account, curve
+		e["BROKER_NATS_K8S_AUDIENCE"] = issuer + "/nats"
+		e["BROKER_POD_REGISTRATION_AUDIENCE"] = issuer + "/registration"
+		maps.Copy(e, set)
+		return e
+	}
+	for _, row := range []struct {
+		name string
+		env  map[string]string
+		// refused is the setting the refusal names beside BROKER_K8S_OIDC_ISSUER; none for the
+		// environment that loads.
+		refused string
+	}{
+		{
+			name: "a listed audience beside another", env: own(map[string]string{"BROKER_K8S_OIDC_AUDIENCE": "agent-secrets " + issuer}),
+			refused: "BROKER_K8S_OIDC_AUDIENCE",
+		},
+		{
+			name: "the token exchange's audience", env: own(map[string]string{"BROKER_EXCHANGE_K8S_AUDIENCE": issuer}),
+			refused: "BROKER_EXCHANGE_K8S_AUDIENCE",
+		},
+		{
+			name: "the NATS auth service's audience", env: own(map[string]string{"BROKER_NATS_K8S_AUDIENCE": issuer}),
+			refused: "BROKER_NATS_K8S_AUDIENCE",
+		},
+		{
+			name: "the registration audience", env: own(map[string]string{"BROKER_POD_REGISTRATION_AUDIENCE": issuer}),
+			refused: "BROKER_POD_REGISTRATION_AUDIENCE",
+		},
+		{
+			name: "the NATS auth service's audience with a trailing /", env: own(map[string]string{"BROKER_NATS_K8S_AUDIENCE": issuer + "/"}),
+			refused: "BROKER_NATS_K8S_AUDIENCE",
+		},
+		{
+			name:    "the issuer with a trailing / and the token exchange's audience without",
+			env:     own(map[string]string{"BROKER_K8S_OIDC_ISSUER": issuer + "/", "BROKER_EXCHANGE_K8S_AUDIENCE": issuer}),
+			refused: "BROKER_EXCHANGE_K8S_AUDIENCE",
+		},
+		{name: "every audience its own, each beginning with the issuer's URL", env: own(nil)},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cfg, err := Load(env(row.env))
+			if row.refused != "" {
+				if err == nil || !strings.Contains(err.Error(), row.refused) || !strings.Contains(err.Error(), "BROKER_K8S_OIDC_ISSUER") {
+					t.Fatalf("Load = %v, want a refusal naming %s and BROKER_K8S_OIDC_ISSUER", err, row.refused)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load = %v, want no refusal", err)
+			}
+			listed := []string{"agent-secrets", issuer + "/broker"}
+			if !slices.Equal(cfg.K8sOIDCAudiences, listed) || cfg.ExchangeK8sAudience != issuer+"/exchange" ||
+				cfg.NATS.K8sAudience != issuer+"/nats" || cfg.PodRegistrationAudience != issuer+"/registration" {
+				t.Fatalf("Load read the listed audiences %q, the exchange audience %q, the NATS audience %q and the registration audience %q, want %q and the issuer's URL with /exchange, /nats and /registration",
+					cfg.K8sOIDCAudiences, cfg.ExchangeK8sAudience, cfg.NATS.K8sAudience, cfg.PodRegistrationAudience, listed)
+			}
+		})
+	}
+}
+
 // The accounts the session account pair tests pair: the shared account a deployment's pods ran
 // as, the project's own account it moves them to, and a third. Each pair below is written with
 // its later account first in sorted order, so a reader that sorted a pair would be caught.

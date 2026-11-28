@@ -437,8 +437,10 @@ that no other route takes.
 The broker refuses to start, naming `BROKER_POD_REGISTRATION_AUDIENCE` and the other setting, when
 the audience equals an audience `BROKER_K8S_OIDC_AUDIENCE` lists, `BROKER_EXCHANGE_K8S_AUDIENCE` or
 `BROKER_NATS_K8S_AUDIENCE`, since a token of it would then be spendable on that setting's routes
-too. It also refuses the audience set without `BROKER_K8S_OIDC_ISSUER`. Unset, the route accepts the
-audiences `BROKER_K8S_OIDC_AUDIENCE` lists, and no other.
+too. It also refuses the audience equal to `BROKER_K8S_OIDC_ISSUER`, a trailing `/` on either
+aside, naming both settings, since the Kubernetes API server takes a token whose audience is its
+issuer. It refuses the audience set without `BROKER_K8S_OIDC_ISSUER` too. Unset, the route accepts
+the audiences `BROKER_K8S_OIDC_AUDIENCE` lists, and no other.
 
 The request carries the pod's own projected ServiceAccount token, which the broker verifies
 against the cluster's issuer as it verifies an enrolling pod's, bar the one check it does not make
@@ -1635,6 +1637,12 @@ With `BROKER_K8S_OIDC_ISSUER` set, the broker refuses to start:
 - on a listed audience that `BROKER_EXCHANGE_K8S_AUDIENCE`, `BROKER_POD_REGISTRATION_AUDIENCE` or
   `BROKER_NATS_K8S_AUDIENCE` names too, naming both settings. A token of that audience would be
   spendable on the routes of both settings. This holds for one listed audience too.
+- on a listed audience equal to `BROKER_K8S_OIDC_ISSUER`, a trailing `/` on either aside, naming
+  both settings. The Kubernetes API server takes a ServiceAccount token whose audience is its
+  issuer, since its `--api-audiences` defaults to its `--service-account-issuer`, so a token of
+  that audience would be a Kubernetes API token of its account too. The broker refuses
+  `BROKER_EXCHANGE_K8S_AUDIENCE`, `BROKER_NATS_K8S_AUDIENCE` and `BROKER_POD_REGISTRATION_AUDIENCE`
+  equal to the issuer the same way.
 
 A deployment lists a second audience only while it moves its callers from one audience to another.
 The move takes three steps:

@@ -783,8 +783,10 @@ type Config struct {
 	// and is spendable nowhere else. Read trimmed. Refused at start, naming it and the other
 	// setting, when it equals an audience BROKER_K8S_OIDC_AUDIENCE lists,
 	// BROKER_EXCHANGE_K8S_AUDIENCE or BROKER_NATS_K8S_AUDIENCE, each compared when it is set, since
-	// a token of it would then be spendable on that setting's routes too. Unset, the route accepts
-	// the listed audiences alone.
+	// a token of it would then be spendable on that setting's routes too; and refused naming it
+	// and BROKER_K8S_OIDC_ISSUER when it equals that issuer, a trailing / on either aside, since
+	// the Kubernetes API server takes a token whose audience is its issuer. Unset, the route
+	// accepts the listed audiences alone.
 	PodRegistrationAudience string
 	// BROKER_POD_OPERATORS: the Kubernetes accounts whose pods act for a person,
 	// whitespace-separated <email>=system:serviceaccount:<namespace>:<name> entries, such as
@@ -886,12 +888,14 @@ type Config struct {
 	//
 	// With BROKER_K8S_OIDC_ISSUER set, the broker refuses to start on a value of white space
 	// alone, naming the setting; on an audience listed twice, naming the setting and the
-	// audience; and on a listed audience that BROKER_EXCHANGE_K8S_AUDIENCE,
+	// audience; on a listed audience that BROKER_EXCHANGE_K8S_AUDIENCE,
 	// BROKER_POD_REGISTRATION_AUDIENCE or BROKER_NATS_K8S_AUDIENCE names too, one listed alone
 	// included, naming both settings, since a token of it would be spendable on both settings'
-	// routes. A deployment lists a second audience only while it moves its callers from one
-	// audience to another, and removes the old one once no pod projects a token of it. Held in
-	// the order given; nil with neither setting.
+	// routes; and on a listed audience equal to BROKER_K8S_OIDC_ISSUER, a trailing / on either
+	// aside, naming both settings, since the Kubernetes API server takes a token whose audience
+	// is its issuer. A deployment lists a second audience only while it moves its callers from
+	// one audience to another, and removes the old one once no pod projects a token of it. Held
+	// in the order given; nil with neither setting.
 	K8sOIDCAudiences []string
 	// BROKER_GOOGLE_OIDC_ISSUER: the issuer of the Google identity tokens machines present,
 	// https://accounts.google.com when unset, which is where every real one comes from. It is a
@@ -973,7 +977,9 @@ type Config struct {
 	// the broker is told about, BROKER_K8S_OIDC_ISSUER, which this needs; the audience is its own
 	// because an exchanging pod projects a token for it beside the one it enrolls with, of an
 	// audience BROKER_K8S_OIDC_AUDIENCE lists, so neither token is spendable where the other is:
-	// an audience that list holds too refuses the start, naming both settings. Unset, no pod
+	// an audience that list holds too refuses the start, naming both settings. So does the issuer
+	// itself, a trailing / on either aside, naming this setting and BROKER_K8S_OIDC_ISSUER, since
+	// the Kubernetes API server takes a token whose audience is its issuer. Unset, no pod
 	// exchanges.
 	ExchangeK8sAudience string
 	// BROKER_EXCHANGE_GITHUB_ISSUER: the issuer of the token a continuous-integration workflow
@@ -1167,10 +1173,13 @@ type Config struct {
 	// start, naming the entry. The auth service answers an edge listener's connection with
 	// natsgrant.Edge for the projects its entry lists. BROKER_NATS_K8S_AUDIENCE is the audience a
 	// service's projected Kubernetes token must carry, verified against BROKER_K8S_OIDC_ISSUER,
-	// which it needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token
-	// must carry, verified against BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a
-	// service entry, an edge listener's included, whose kind of token has no audience is refused at
-	// start naming it. A session presents its broker access token and needs neither.
+	// which it needs; it is refused at start, naming it and BROKER_K8S_OIDC_ISSUER, when it equals
+	// that issuer, a trailing / on either aside, since the Kubernetes API server takes a token
+	// whose audience is its issuer. BROKER_NATS_GOOGLE_AUDIENCE is the audience a service's
+	// Google identity token must carry, verified against BROKER_GOOGLE_OIDC_ISSUER; while the auth
+	// service runs, a service entry, an edge listener's included, whose kind of token has no
+	// audience is refused at start naming it. A session presents its broker access token and
+	// needs neither.
 	// BROKER_NATS_ACCOUNT is the hub account every client the service admits is placed in, the
 	// operator and the hold's probe included, the audience of each user it answers: $G, the global
 	// account, when unset, where a hub whose configuration names no account keeps every user; a hub
@@ -2126,8 +2135,18 @@ func exchangeListingRefusal(cfg *Config) error {
 	return nil
 }
 
-// clusterAudienceRefusal refuses an audience of the cluster issuer's tokens that two settings
-// name, naming both: an audience BROKER_K8S_OIDC_AUDIENCE lists that
+// clusterAudienceRefusal refuses an audience of the cluster issuer's tokens that is the issuer
+// itself, or that two settings name.
+//
+// First it compares each audience BROKER_K8S_OIDC_AUDIENCE lists, BROKER_EXCHANGE_K8S_AUDIENCE,
+// BROKER_NATS_K8S_AUDIENCE and BROKER_POD_REGISTRATION_AUDIENCE, each where it is set, with
+// BROKER_K8S_OIDC_ISSUER, any trailing / removed from both, since a trailing / names the same
+// issuer URL, and refuses the first equal one, naming the setting and BROKER_K8S_OIDC_ISSUER. The
+// Kubernetes API server takes a ServiceAccount token whose audience is its issuer (its
+// --api-audiences defaults to its --service-account-issuer), so each token of that audience a pod
+// sends the broker or the hub would be a Kubernetes API token of its account too.
+//
+// Then it refuses, naming both settings, an audience BROKER_K8S_OIDC_AUDIENCE lists that
 // BROKER_POD_REGISTRATION_AUDIENCE, BROKER_EXCHANGE_K8S_AUDIENCE or BROKER_NATS_K8S_AUDIENCE
 // names too, one audience listed alone included, and a registration audience equal to the
 // exchange's or the NATS auth service's, each compared where it is set. A listed audience is
@@ -2135,9 +2154,29 @@ func exchangeListingRefusal(cfg *Config) error {
 // its own routes alone: the exchange's at the token exchange, the NATS auth service's at that
 // service and the NATS writer hold, and the registration audience at POST
 // /v1/oauth/exchange/pod-sessions. So a token of an audience two settings name would be spendable
-// on both settings' routes. A refusal of the registration audience quotes it; the others name the
-// settings alone. Load calls it once, after it reads all four settings.
+// on both settings' routes. A refusal of the registration audience that another setting names
+// too quotes it; every other refusal names the settings alone. Load calls it once, after it reads
+// all four settings.
 func clusterAudienceRefusal(cfg *Config) error {
+	issuer := strings.TrimRight(cfg.K8sOIDCIssuer, "/")
+	isIssuer := func(audience string) bool { return audience != "" && strings.TrimRight(audience, "/") == issuer }
+	issuerRefusal := func(setting string) error {
+		return fmt.Errorf("%s the issuer BROKER_K8S_OIDC_ISSUER names, a trailing / aside: the Kubernetes API server takes a ServiceAccount token whose audience is its issuer, so a token of it would be a Kubernetes API token of its account too; give the setting an audience of its own", setting)
+	}
+	for _, listed := range cfg.K8sOIDCAudiences {
+		if isIssuer(listed) {
+			return issuerRefusal("BROKER_K8S_OIDC_AUDIENCE lists")
+		}
+	}
+	for _, single := range []struct{ setting, audience string }{
+		{"BROKER_EXCHANGE_K8S_AUDIENCE", cfg.ExchangeK8sAudience},
+		{"BROKER_NATS_K8S_AUDIENCE", cfg.NATS.K8sAudience},
+		{"BROKER_POD_REGISTRATION_AUDIENCE", cfg.PodRegistrationAudience},
+	} {
+		if isIssuer(single.audience) {
+			return issuerRefusal(single.setting + " is")
+		}
+	}
 	others := []struct{ setting, audience, routes string }{
 		{"BROKER_EXCHANGE_K8S_AUDIENCE", cfg.ExchangeK8sAudience, "the token exchange"},
 		{"BROKER_NATS_K8S_AUDIENCE", cfg.NATS.K8sAudience, "the NATS auth service and the NATS writer hold"},
