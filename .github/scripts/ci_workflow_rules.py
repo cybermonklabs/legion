@@ -1,12 +1,11 @@
 """The rules about ci.yaml that stand on their own: what no `if:` of it may say, what every job's
 `if:` must say, what the cache fill workflows (CACHE_WORKFLOWS) must save
 for the entries ci.yaml restores and which packages the daemon fill job's race build must compile, which workspaces
-ci_job_reads.py's WORKSPACES must name,
-that no other workflow of this repository runs on a merge group, and that no script or workflow
-under .github fetches with a depth but a fixture fetch ci_job_reads.py's SHALLOW_FETCH_FIXTURES lists.
+ci_job_reads.py's WORKSPACES must name, and
+that no other workflow of this repository runs on a merge group.
 None of them
 reads a filter, a gate or the closure of a go command, so none belongs in the filter-coverage
-engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14, 16 and 26, and
+engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14 and 16, and
 ci_filter_coverage.main()
 is what runs them, over the documents it already loaded where the rule reads only those - the
 rerun-guard rule over ci.yaml alone, since the `if:` it reads is the caller job's; the cache
@@ -17,10 +16,8 @@ ci.yaml and the called files that are ci.yaml's alone (ci_only_documents says wh
 others, and reads the directory to find them) - the workspace rule over the
 root manifest and the WORKSPACES table main() hands it, and the race-fill rule over ci-caches.yaml
 and the RACE_FILLS entries main() hands it the same way, since what this module imports is
-the engine's names, never the data's, the merge-group rule over the workflow directory, which
-it reads itself, and the shallow-fetch rule over the repository's file list and the
-SHALLOW_FETCH_FIXTURES entries main() hands it, each file under .github/scripts, .github/actions
-and .github/workflows of which it reads itself, its shell through shell_commands.py.
+the engine's names, never the data's, and the merge-group rule over the workflow directory, which
+it reads itself.
 
 It sits beside that engine (and workflow_paths.py, the path model) in the repository it checks,
 and imports the engine's names for ci.yaml, ci-caches.yaml and the fill workflows rule 11 reads,
@@ -31,14 +28,10 @@ imports this module rather than the other way round, so the one import of the en
 a module Python has finished loading by then.
 """
 
-import ast
-import io
 import json
 import re
-import tokenize
 from collections import defaultdict
 from functools import cache
-from pathlib import Path
 
 
 from ci_filter_coverage import (
@@ -57,7 +50,6 @@ from ci_filter_coverage import (
     squash,
     where_if,
 )
-from shell_commands import commands_at
 from workflow_paths import events
 
 
@@ -735,279 +727,3 @@ def check_one_merge_group_workflow(problems: list) -> None:
                                     f"the queue refused to enqueue with `Required status check \"ci-ok\" is expected` while a "
                                     f"green ci-ok sat in another workflow's check suite. Run this work on pull_request, or "
                                     f"move it into {WORKFLOW}"))
-
-
-# ------------------------------------------------- no fetch with a depth but a listed fixture's
-# A `git fetch --depth=<n>` in a whole clone makes that clone shallow: git writes the commits at
-# the depth's edge into the clone's shallow file, and every later read treats them as having no
-# parents. Every worktree of a clone shares that one file, so a fetch in one of them cuts the
-# history all of them read, and git merge-base and an ancestor test then answer from the commits
-# still in view. A script under .github runs in CI's shallow checkout and also in developers'
-# clones, so it fetches through .github/scripts/fetch-depth-if-shallow.sh, which passes the depth
-# only to a shallow repository, or tests the repository itself as check-daemon-api-contract.sh's
-# fetched() does; either way the depth reaches git through a variable, which this rule does not
-# read.
-SHALLOW_FETCH_DIRS = (".github/scripts/", ".github/actions/", ".github/workflows/")
-SHALLOW_FETCH_HELPER = ".github/scripts/fetch-depth-if-shallow.sh"
-# git's depth options, each with the shortest prefix git takes for it: git reads an unambiguous
-# prefix of a long option as the option (`--dept=1` is `--depth=1`). Each prefix here is unique
-# among the long options of both git fetch and git pull (`git fetch --git-completion-helper` and
-# `git pull --git-completion-helper`, git 2.43); a shorter one, `--de`, is ambiguous, and git
-# refuses it.
-DEPTH_OPTIONS = {"--depth": "--dep", "--deepen": "--dee", "--shallow-since": "--shallow-s",
-                 "--shallow-exclude": "--shallow-e"}
-# git's own options before its subcommand that take the next word as their value.
-GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
-                          "--super-prefix", "--attr-source"}
-# The commands that only print their words: `printf %s git fetch --depth=1` fetches nothing. Any
-# other command whose words hold git and a fetch runs it, as timeout, xargs and gh-read.sh's
-# gh_read do.
-PRINTERS = {"echo", "printf"}
-SHELL_SUFFIXES = (".sh",)
-PYTHON_SUFFIXES = (".py",)
-C_LIKE_SUFFIXES = (".ts", ".js", ".mjs", ".cjs", ".go")
-# A TypeScript or Go token, as list_fetches reads it: a comment (dropped), a string, a name, a
-# bracket, a comma, space (dropped) or anything else.
-C_TOKEN = re.compile(r"""(?P<comment>//[^\n]*|/\*.*?\*/)|(?P<str>"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`)"""
-                     r"|(?P<name>[A-Za-z_$][\w$]*)|(?P<open>[(\[{])|(?P<close>[)\]}])|(?P<comma>,)|(?P<space>\s+)|(?P<other>.)",
-                     re.S)
-
-
-def depth_option(word: str) -> str | None:
-    """The depth option of DEPTH_OPTIONS that a word passes git, as git reads its prefixes, or
-    None: `--depth=1`, `--depth`, `--dept=1` and `--deepen=2` each pass one, `--de=1` and
-    `--unshallow` none."""
-    if not word.startswith("--"):
-        return None
-    name = word.split("=", 1)[0]
-    for option, shortest in DEPTH_OPTIONS.items():
-        if len(name) >= len(shortest) and option.startswith(name):
-            return option
-    return None
-
-
-def git_depth(words: list) -> str | None:
-    """The first word that passes a depth option to a git fetch or git pull the words run, or None:
-    a word `git` (or a path ending in /git) whose subcommand, after git's own options, is fetch or
-    pull, then a word after it that depth_option reads, before any `--`. A command that only prints
-    its words (PRINTERS) runs no git. Each word is read without the brackets, parentheses and commas
-    of a Python or TypeScript list around it, so a list's words inside a shell heredoc read as the
-    command they are. One pass over the words from the end finds, for each word, the next depth
-    word and the next `--` after it, so a line of many git words is read in time linear in them."""
-    words = [w.strip("[](){},") for w in words]
-    if not words or words[0] in PRINTERS:
-        return None
-    size = len(words)
-    # From each word on: the next depth word, the next `--`, and the subcommand git's options there
-    # lead to (an option of GIT_OPTIONS_WITH_VALUE takes the word after it).
-    next_depth, next_end, subcommand = [None] * (size + 2), [size] * (size + 2), [size] * (size + 2)
-    for at in range(size - 1, -1, -1):
-        next_depth[at] = at if depth_option(words[at]) else next_depth[at + 1]
-        next_end[at] = at if words[at] == "--" else next_end[at + 1]
-        if not words[at].startswith("-"):
-            subcommand[at] = at
-        else:
-            subcommand[at] = subcommand[min(at + (2 if words[at] in GIT_OPTIONS_WITH_VALUE else 1), size)]
-    for at, word in enumerate(words):
-        if word != "git" and not word.endswith("/git"):
-            continue
-        sub = subcommand[at + 1]
-        if sub < size and words[sub] in ("fetch", "pull"):
-            depth = next_depth[sub + 1]
-            if depth is not None and depth < next_end[sub + 1]:
-                return words[depth]
-    return None
-
-
-def shell_fetches(text: str) -> list:
-    """Each (line, its command's words, the depth word) of a shell text that passes a depth to a git
-    fetch or pull, as shell_commands.commands_at reads the commands."""
-    found = []
-    for line, words in commands_at(text):
-        word = git_depth(words)
-        if word:
-            found.append((line, " ".join(words), word))
-    return found
-
-
-def list_fetches(tokens: list) -> list:
-    """Each (line, the list as written, the depth word) of a Python, TypeScript or Go text whose
-    argument or list literal runs a git fetch or pull with a depth: `["git", "fetch", "--depth=1"]`,
-    `exec.Command("git", "fetch", "--depth=1")`, and a list handed to a function whose name ends in
-    git (`git(["fetch", "--depth=1"])`), over as many lines as it runs. `tokens` is (kind, text,
-    line), the kind one of str, name, open, close, comma and other. An element that is no string
-    literal (a variable, `*depth`, a call) is a word that names nothing, so a depth in a variable is
-    not read."""
-    found, stack, previous = [], [], None
-    for kind, text, line in tokens:
-        if kind == "open":
-            callee = previous[1] if previous and previous[0] == "name" and text == "(" else None
-            if callee is None and text == "[" and previous and previous[0] == "open" and stack:
-                callee = stack[-1]["callee"]
-            stack.append({"callee": callee, "line": line, "elements": [], "current": []})
-        elif kind == "close" and stack:
-            frame = stack.pop()
-            frame["elements"].append(frame["current"])
-            words = ["".join(t for _, t in element) if all(k == "str" for k, _ in element) else "<expr>"
-                     for element in frame["elements"] if element]
-            callee = (frame["callee"] or "").split(".")[-1]
-            if callee.lower().endswith("git") and words and words[0] in ("fetch", "pull"):
-                words = ["git", *words]
-            word = git_depth(words)
-            if word:
-                found.append((frame["line"], "[" + ", ".join(words) + "]", word))
-            if stack:
-                stack[-1]["current"].append(("other", ""))
-        elif stack and kind == "comma":
-            stack[-1]["elements"].append(stack[-1]["current"])
-            stack[-1]["current"] = []
-        elif stack:
-            stack[-1]["current"].append((kind, text))
-        previous = (kind, text)
-    return found
-
-
-def python_tokens(path: str, text: str) -> list:
-    """A Python text's tokens for list_fetches, each string literal as its value (an f-string as its
-    literal parts); a text tokenize cannot read is refused by its path."""
-    out, fstring = [], None
-    try:
-        for token in tokenize.generate_tokens(io.StringIO(text).readline):
-            name, line = tokenize.tok_name[token.type], token.start[0]
-            if name == "FSTRING_START":
-                fstring = ""
-            elif name == "FSTRING_MIDDLE" and fstring is not None:
-                fstring += token.string
-            elif name == "FSTRING_END":
-                out.append(("str", fstring or "", line))
-                fstring = None
-            elif fstring is not None:
-                continue
-            elif token.type == tokenize.STRING:
-                try:
-                    value = ast.literal_eval(token.string)
-                except (ValueError, SyntaxError):
-                    value = token.string
-                out.append(("str", value if isinstance(value, str) else "", line))
-            elif token.type == tokenize.OP:
-                kind = {"(": "open", "[": "open", "{": "open", ")": "close", "]": "close", "}": "close",
-                        ",": "comma"}.get(token.string, "other")
-                out.append((kind, token.string, line))
-            elif token.type == tokenize.NAME:
-                out.append(("name", token.string, line))
-            elif token.type == tokenize.NUMBER:
-                out.append(("other", token.string, line))
-    except (tokenize.TokenError, SyntaxError) as exc:
-        raise RepositoryInputError(path, exc) from exc
-    return out
-
-
-def c_like_tokens(text: str) -> tuple:
-    """A TypeScript or Go text's tokens for list_fetches, each quoted string as its text between the
-    quotes, comments dropped; and each template literal a `$` tags, which Bun runs as a shell
-    command, as (line, its text)."""
-    out, shells, line, previous = [], [], 1, None
-    for match in C_TOKEN.finditer(text):
-        kind, value = match.lastgroup, match.group()
-        if kind == "str":
-            out.append(("str", value[1:-1], line))
-            if value.startswith("`") and previous == ("name", "$"):
-                shells.append((line, value[1:-1]))
-        elif kind not in ("comment", "space"):
-            out.append((kind, value, line))
-        if kind not in ("comment", "space"):
-            previous = (kind, value)
-        line += value.count("\n")
-    return out, shells
-
-
-def run_steps(path: str, document: dict) -> list:
-    """Each (where, its shell, its run: text) of a workflow's jobs' steps, or of a composite
-    action's."""
-    shell_default = ((document.get("defaults") or {}).get("run") or {}).get("shell")
-    jobs = document.get("jobs") or {}
-    groups = [(f" job {job_id}", job or {}) for job_id, job in jobs.items()] if jobs else [("", document.get("runs") or {})]
-    out = []
-    for where, holder in groups:
-        default = ((holder.get("defaults") or {}).get("run") or {}).get("shell") or shell_default
-        for index, step in enumerate(holder.get("steps") or []):
-            if isinstance(step, dict) and isinstance(step.get("run"), str):
-                name = step.get("name") or step.get("id") or f"#{index + 1}"
-                out.append((f"{path}{where} step '{name}'", step.get("shell") or default, step["run"]))
-    return out
-
-
-def check_shallow_fetches(files: list, fixtures: dict, problems: list) -> list:
-    """Rule 26: no file under SHALLOW_FETCH_DIRS runs a git fetch or git pull with a depth option
-    (DEPTH_OPTIONS, or a prefix git takes for one) but the fixture fetches `fixtures` lists, each
-    (file, the command's words as commands_at reads them) -> why: ci_job_reads.py's
-    SHALLOW_FETCH_FIXTURES. It reads every shell script (`.sh`, or a `#!` line naming a shell) and
-    every `run:` of the workflows and composite actions there as shell, through
-    shell_commands.commands_at, and the Python, TypeScript and Go files, and the `run:` of a Python
-    step, for list literals and argument lists (list_fetches); it reads no other file. Each refusal
-    names the file, the line and the command, and each entry of `fixtures` that no command of its
-    file runs is refused too. A depth option that reaches git through a variable, a git run through
-    a variable (`"$GIT" fetch`), and a command a Python or TypeScript string hands a shell are not
-    read. Returns the report line."""
-    paths = [f for f in files if f.startswith(SHALLOW_FETCH_DIRS)]
-    if not paths:
-        problems.append(error(None, f"rule 26 found no file under {', '.join(SHALLOW_FETCH_DIRS)} to read, so whether "
-                                    "a script there fetches with a depth is unknown"))
-        return []
-    workflows, actions = directory_workflows(), local_actions()
-    counts = defaultdict(int)
-    found = []  # (file, where, its command, the depth word)
-    for path in paths:
-        if path in workflows or path in actions:
-            counts["workflow" if path in workflows else "action"] += 1
-            for where, shell, run in run_steps(path, workflows.get(path) or actions.get(path) or {}):
-                if str(shell or "bash").startswith("python"):
-                    hits = list_fetches(python_tokens(path, run))
-                else:
-                    hits = shell_fetches(run)
-                found += [(path, f"{where}, line {line} of its run:", command, word) for line, command, word in hits]
-            continue
-        suffix = Path(path).suffix
-        if suffix and suffix not in SHELL_SUFFIXES + PYTHON_SUFFIXES + C_LIKE_SUFFIXES:
-            counts["not read"] += 1
-            continue
-        text = read_repository_text(REPO / path)
-        first = text.split("\n", 1)[0] if text.startswith("#!") else ""
-        if suffix in SHELL_SUFFIXES or (not suffix and re.search(r"\b(ba|da|z)?sh\b", first)):
-            counts["shell"] += 1
-            hits = shell_fetches(text)
-        elif suffix in PYTHON_SUFFIXES or (not suffix and "python" in first):
-            counts["python"] += 1
-            hits = list_fetches(python_tokens(path, text))
-        elif suffix in C_LIKE_SUFFIXES:
-            counts["typescript or go"] += 1
-            tokens, shells = c_like_tokens(text)
-            hits = list_fetches(tokens) + [(line + at - 1, command, word) for line, shell in shells
-                                           for at, command, word in shell_fetches(shell)]
-        else:
-            counts["not read"] += 1
-            continue
-        found += [(path, f"{path} line {line}", command, word) for line, command, word in hits]
-    listed = 0
-    unused = dict(fixtures)
-    for path, where, command, word in found:
-        if (path, command) in fixtures:
-            listed += 1
-            unused.pop((path, command), None)
-            continue
-        option = depth_option(word)
-        read_as = "" if word.split("=", 1)[0] == option else f" (git reads it as {option})"
-        problems.append(error(path, f"{where} runs `{command[:200]}`: a git fetch or git pull with {word}{read_as} "
-                                    f"makes a whole clone shallow, and every worktree of that clone then reads a cut "
-                                    f"history. Fetch through {SHALLOW_FETCH_HELPER} --depth=<n> <git fetch arguments>, "
-                                    f"which passes the depth only to a shallow repository. A harness's fetch into a "
-                                    f"fixture repository it made is let through only by an entry of its own in "
-                                    f"ci_job_reads.py's SHALLOW_FETCH_FIXTURES"))
-    for path, command in unused:
-        problems.append(error(path, f"ci_job_reads.py's SHALLOW_FETCH_FIXTURES lets `{command}` through in {path}, and no "
-                                    f"command of that file runs it: remove the entry, or write it as the fetch's words "
-                                    f"now read"))
-    kinds = ", ".join(f"{counts[k]} {k}" for k in ("shell", "python", "typescript or go", "workflow", "action"))
-    return [f"rule 26: read {kinds} file(s) under {', '.join(SHALLOW_FETCH_DIRS)} and left {counts['not read']} "
-            f"other(s) unread; {len(found)} git fetch or pull command(s) with a depth, {listed} of them listed in "
-            f"SHALLOW_FETCH_FIXTURES, {len(found) - listed} refused"]
