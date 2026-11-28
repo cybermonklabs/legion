@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // finalWords is how every refusal ends: that the request will not be granted, and whom to tell.
@@ -646,9 +647,9 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(pending())
 
-	waitFor(t, "the run Consider started to apply its decision", 10*time.Second, func() bool {
+	testwait.Until(t, "the run Consider started to apply its decision", func() (int, bool) {
 		applied, _ := machine.rows()
-		return len(applied) == 1
+		return len(applied), len(applied) == 1
 	})
 }
 

@@ -138,6 +138,7 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 		loginKeyByAddress: true,
 		verificationURI:   edge.VerificationURL,
 		pingLogsItself:    true,
+		clock:             deps.timers(),
 	}
 	for _, route := range routes() {
 		pattern := route.Method + " " + route.Pattern

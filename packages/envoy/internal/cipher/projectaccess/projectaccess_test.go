@@ -580,11 +580,7 @@ func TestAnOlderAnswerDoesNotReplaceANewerOne(t *testing.T) {
 		_, err := client.Access(context.Background(), "PRIV", "carol@example.com")
 		first <- err
 	}()
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first question never reached Dispatch")
-	}
+	testwait.Receive(t, "the first question to reach Dispatch", entered)
 	clock.advance(time.Second)
 	if answer, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil || answer.Visible {
 		t.Fatalf("the later question = %+v, %v; want not visible", answer, err)
@@ -601,8 +597,8 @@ func TestAnOlderAnswerDoesNotReplaceANewerOne(t *testing.T) {
 // TestOnePersonsMemberKindReadsInFlightTogetherShareOneCall: reads of one person's member kind
 // that are in flight together make one call to Dispatch, and each gets its answer. No clock
 // decides it: the stand-in holds the first call until every other read has joined it (SetJoined)
-// or, where reads do not share, until a second call reaches it, and answers only then; the bound
-// is for a box too stalled to get there at all, and can only fail the test.
+// or, where reads do not share, until a second call reaches it, and answers only then; the shared
+// wait's bound is for a box too stalled to get there at all, and can only fail the test.
 func TestOnePersonsMemberKindReadsInFlightTogetherShareOneCall(t *testing.T) {
 	const readers = 8
 	var mu sync.Mutex
@@ -635,9 +631,10 @@ func TestOnePersonsMemberKindReadsInFlightTogetherShareOneCall(t *testing.T) {
 			reads <- read{kind, err}
 		}()
 	}
-	if !testwait.Holds(time.Minute, 5*time.Millisecond, func() bool { return joined.Load() == readers-1 || called() > 1 }) {
-		t.Fatalf("in a minute %d of %d reads joined the one in flight and Dispatch had %d calls", joined.Load(), readers-1, called())
-	}
+	testwait.Until(t, fmt.Sprintf("the other %d reads to join the one in flight, or a second call to reach Dispatch", readers-1), func() (string, bool) {
+		joinedReads, made := joined.Load(), called()
+		return fmt.Sprintf("%d of %d reads joined, %d calls to Dispatch", joinedReads, readers-1, made), joinedReads == readers-1 || made > 1
+	})
 	free()
 	for range readers {
 		if got := <-reads; got.err != nil || got.kind != projectaccess.MemberRestricted {
@@ -655,7 +652,8 @@ func TestOnePersonsMemberKindReadsInFlightTogetherShareOneCall(t *testing.T) {
 // own; each gets their own kind. A key shared between people would hand carol bob's
 // "restricted", or, the other way round, a restricted member a full member's "full". No clock
 // decides it: bob's call is released only once carol's read has answered or joined his (SetJoined),
-// and the minute bounds a box too stalled to get there at all, which can only fail the test.
+// and the shared wait's bound is for a box too stalled to get there at all, which can only fail the
+// test.
 func TestOnePersonsCallInFlightIsNoOtherPersonsAnswer(t *testing.T) {
 	kinds := map[string]string{"bob@example.com": projectaccess.MemberRestricted, "carol@example.com": projectaccess.MemberFull}
 	var mu sync.Mutex
@@ -691,27 +689,21 @@ func TestOnePersonsCallInFlightIsNoOtherPersonsAnswer(t *testing.T) {
 		kind, err := client.MemberKind(context.Background(), "bob@example.com")
 		bob <- read{kind, err}
 	}()
-	select {
-	case <-bobHeld:
-	case <-time.After(time.Minute):
-		t.Fatal("bob's call did not reach the stand-in in a minute")
-	}
+	testwait.Receive(t, "bob's call to reach the stand-in", bobHeld)
 	go func() {
 		kind, err := client.MemberKind(context.Background(), "carol@example.com")
 		carol <- read{kind, err}
 	}()
 	var carolRead read
 	carolAnswered := false
-	if !testwait.Holds(time.Minute, 5*time.Millisecond, func() bool {
+	testwait.Until(t, "carol's read to answer or to join a call in flight", func() (string, bool) {
 		select {
 		case carolRead = <-carol:
 			carolAnswered = true
 		default:
 		}
-		return carolAnswered || joined.Load() > 0
-	}) {
-		t.Fatalf("in a minute carol's read neither answered nor joined a call in flight (calls: bob %d, carol %d)", called("bob@example.com"), called("carol@example.com"))
-	}
+		return fmt.Sprintf("calls: bob %d, carol %d; joined %d", called("bob@example.com"), called("carol@example.com"), joined.Load()), carolAnswered || joined.Load() > 0
+	})
 	free()
 	bobRead := <-bob
 	if !carolAnswered {
@@ -757,7 +749,7 @@ func TestAFailedMemberKindReadIsTheAnswerForTwoSecondsAndNoLonger(t *testing.T) 
 // starts the one call and then gives up (its context is cancelled) while a second reader waits
 // on the same call. The second reader gets Dispatch's answer, and a third read is answered from
 // the cache with no new call. The stand-in holds the call until the first reader has given up,
-// so no clock decides it; the bounds can only fail.
+// so no clock decides it; the shared wait's bound can only fail.
 func TestAReaderThatGivesUpFailsNoOtherReadOfThatPerson(t *testing.T) {
 	var calls atomic.Int32
 	release := make(chan struct{})
@@ -781,9 +773,10 @@ func TestAReaderThatGivesUpFailsNoOtherReadOfThatPerson(t *testing.T) {
 		_, err := client.MemberKind(ctx, "bob@example.com")
 		first <- err
 	}()
-	if !testwait.Holds(time.Minute, 5*time.Millisecond, func() bool { return calls.Load() == 1 }) {
-		t.Fatal("the first read's call did not reach Dispatch in a minute")
-	}
+	testwait.Until(t, "the first read's call to reach Dispatch", func() (int32, bool) {
+		n := calls.Load()
+		return n, n == 1
+	})
 	type read struct {
 		kind string
 		err  error
@@ -793,28 +786,14 @@ func TestAReaderThatGivesUpFailsNoOtherReadOfThatPerson(t *testing.T) {
 		kind, err := client.MemberKind(context.Background(), "bob@example.com")
 		second <- read{kind, err}
 	}()
-	select {
-	case <-joined:
-	case <-time.After(time.Minute):
-		t.Fatal("the second read did not join the call in flight in a minute")
-	}
+	testwait.Receive(t, "the second read to join the call in flight", joined)
 	cancel()
-	select {
-	case err := <-first:
-		if err == nil {
-			t.Fatal("the first read, cancelled, answered nil; want its context's error")
-		}
-	case <-time.After(time.Minute):
-		t.Fatal("the cancelled first read did not return in a minute")
+	if err := testwait.Receive(t, "the cancelled first read to return", first); err == nil {
+		t.Fatal("the first read, cancelled, answered nil; want its context's error")
 	}
 	free()
-	select {
-	case got := <-second:
-		if got.err != nil || got.kind != projectaccess.MemberRestricted {
-			t.Fatalf("the second read, beside a first that gave up, = %q, %v; want restricted", got.kind, got.err)
-		}
-	case <-time.After(time.Minute):
-		t.Fatal("the second read did not return in a minute")
+	if got := testwait.Receive(t, "the second read to return", second); got.err != nil || got.kind != projectaccess.MemberRestricted {
+		t.Fatalf("the second read, beside a first that gave up, = %q, %v; want restricted", got.kind, got.err)
 	}
 	if kind, err := client.MemberKind(context.Background(), "bob@example.com"); err != nil || kind != projectaccess.MemberRestricted || calls.Load() != 1 {
 		t.Fatalf("a third read = %q, %v after %d calls; want restricted from the cache and one call", kind, err, calls.Load())

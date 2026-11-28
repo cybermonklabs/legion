@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/wire"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -209,6 +210,11 @@ type Deps struct {
 	// projectaccess presents). Nil is a broker that reads no Dispatch, where that route answers
 	// every listed edge listener 503 REPOSITORIES_UNKNOWN.
 	ProjectRepositories ProjectRepositoriesReader
+	// Clock is the time a held read of GET /v1/requests/{id}?wait= counts its wait on (readHeld),
+	// from the request's arrival, which the answer recorder reads on the clock
+	// answer.MiddlewareOn is given: the two are one clock. nil is clock.Real(), as cmd/cipherd
+	// leaves both (answer.Middleware); a test of the hold hands one clocktest.Fake to both.
+	Clock clock.Clock
 }
 
 // pingDatabase pings Postgres: DatabasePing when set, and the store's pool otherwise.
@@ -217,6 +223,14 @@ func (d Deps) pingDatabase(ctx context.Context) error {
 		return d.DatabasePing(ctx)
 	}
 	return d.Enroll.Store.Pool.Ping(ctx)
+}
+
+// timers is Clock, or clock.Real() when it names none.
+func (d Deps) timers() clock.Clock {
+	if d.Clock == nil {
+		return clock.Real()
+	}
+	return d.Clock
 }
 
 type server struct {
@@ -274,6 +288,8 @@ type server struct {
 	// ownOnlyLogged lets MachineLoginsOwnOnlyMessage be written once per person per
 	// ownOnlyLogEvery (machineLoginsOwnOnly).
 	ownOnlyLogged *ratelimit.Keyed
+	// clock is Deps.Clock, clock.Real() when it names none (Deps.timers).
+	clock clock.Clock
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -330,6 +346,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		address:         address,
 		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
 		ownOnlyLogged:   ratelimit.NewKeyed(ratelimit.Limit{Every: ownOnlyLogEvery, Burst: 1}),
+		clock:           deps.timers(),
 	}
 	if s.holdRowFloor == nil {
 		s.holdRowFloor = &signedrecord.Floor{}

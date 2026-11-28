@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // giveBackFixture is a broker with one live box session of checkOperator and two agent-tier
@@ -267,6 +268,10 @@ func TestAReleaseDoesNotWaitOnItsGiveBack(t *testing.T) {
 		t.Run(fmt.Sprintf("a release that fails: %t", failing), func(t *testing.T) {
 			f := newGiveBackFixture(t, appBehind)
 			held := make(chan struct{})
+			// let lets the give-back go once the release has answered, or as the row ends, so a
+			// row that fails leaves no give-back held.
+			let := sync.OnceFunc(func() { close(held) })
+			defer let()
 			var gaveBack []string
 			f.GiveBacks = map[string]requests.GiveBack{policy.TypeGitHubApp: func(ctx context.Context, name, value, form string) {
 				<-held
@@ -280,16 +285,10 @@ func TestAReleaseDoesNotWaitOnItsGiveBack(t *testing.T) {
 				_, err := f.Values(t.Context(), f.grantID, f.enrollmentID, requests.ReleaseCall{})
 				answered <- err
 			}()
-			select {
-			case err := <-answered:
-				if (err != nil) != failing {
-					t.Fatalf("the release answered %v, want a failure %t", err, failing)
-				}
-			case <-time.After(10 * time.Second):
-				close(held)
-				t.Fatal("the release did not answer while its give-back was held")
+			if err := testwait.Receive(t, "the release to answer while its give-back is held", answered); (err != nil) != failing {
+				t.Fatalf("the release answered %v, want a failure %t", err, failing)
 			}
-			close(held)
+			let()
 			f.WaitGiveBacks()
 			if len(gaveBack) != 1 || gaveBack[0] != "APP_KEY" {
 				t.Fatalf("the give-back ran for %q, want APP_KEY once", gaveBack)

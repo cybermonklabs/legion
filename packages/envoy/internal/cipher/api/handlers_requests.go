@@ -389,7 +389,8 @@ const requestWaitStep = 500 * time.Millisecond
 // read while the request is pending (readHeld) and answers the first state that is not pending, or
 // pending once N seconds have passed since the request reached the broker
 // (answer.Recorder.Arrived), so a slow proof check shortens the hold rather than lengthening it.
-// The state it reads is the database's, so a decision made on either broker process — the
+// Both are read on the server's clock (Deps.Clock), the one the answer recorder reads the arrival
+// on. The state it reads is the database's, so a decision made on either broker process — the
 // approval page's, the model judge's, the sweeper's expiry, the session's own cancel — is seen
 // within one step of its commit. Any other wait is refused REQUEST_WAIT_INPUT before any read; an
 // absent or empty one answers at once, as before the parameter.
@@ -420,7 +421,7 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 		return
 	}
 	recorder := answer.FromContext(ctx)
-	deadline := recorder.Arrived().Add(wait)
+	deadline := recorder.Arrived(s.clock).Add(wait)
 	req, err := s.readHeld(ctx, id, enrollmentID, deadline)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -432,7 +433,7 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
 		writeProjectAccessUnavailable(w, "read request", err)
 		return
-	case err != nil && wait > 0 && errors.Is(ctx.Err(), context.Canceled) && time.Now().Before(deadline.Add(requestWaitStep)):
+	case err != nil && wait > 0 && errors.Is(ctx.Err(), context.Canceled) && s.clock.Now().Before(deadline.Add(requestWaitStep)):
 		recorder.NoteCallerEnded()
 		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the read finished; send it again")
 		return
@@ -469,13 +470,14 @@ func requestWait(w http.ResponseWriter, raw string) (time.Duration, bool) {
 // then the caller's owner once (Machine.EnrollmentOwner), then the request's owner, state and
 // whether the model judge holds it (Machine.OwnerAndState, one statement), refusing
 // requests.ErrNotOwner when the request's owner is not the caller's; while the state is pending
-// and deadline has not passed, it reads them again every requestWaitStep; then it reads the whole
-// request (Machine.Get) once. A request the judge held at the first read and holds no more has
-// been handed to its person, still pending: that ends the hold too, so the caller learns at once
-// who decides it now and where. A deadline already passed is the one read. The owner is checked
-// at every step, so a request that moves to an enrollment of another owner while the read is held
-// is refused at the next step, as a new read of it is. Any other error is the store's, or ctx's
-// when ctx ended first.
+// and deadline has not passed, it reads them again every requestWaitStep, on the server's clock,
+// the last step cut to end at deadline; then it reads the whole request (Machine.Get) once. A
+// request the judge held at the first read and holds no more has been handed to its person, still
+// pending: that ends the hold too, so the caller learns at once who decides it now and where. A
+// deadline already passed is the one read. The owner is checked at every step, so a request that
+// moves to an enrollment of another owner while the read is held is refused at the next step, as a
+// new read of it is. Any other error is the store's, or ctx's when ctx ended first, which stops the
+// step it waited on.
 func (s *server) readHeld(ctx context.Context, id, enrollmentID string, deadline time.Time) (requests.Request, error) {
 	if err := s.deps.Machine.HideRequestFromSession(ctx, id, enrollmentID); err != nil {
 		return requests.Request{}, err
@@ -496,14 +498,16 @@ func (s *server) readHeld(ctx context.Context, id, enrollmentID string, deadline
 		if first {
 			first, heldByJudge = false, judging
 		}
-		left := time.Until(deadline)
+		left := deadline.Sub(s.clock.Now())
 		if state != "pending" || left <= 0 || (heldByJudge && !judging) {
 			return s.deps.Machine.Get(ctx, id)
 		}
+		step := s.clock.NewTimer(min(requestWaitStep, left))
 		select {
 		case <-ctx.Done():
+			step.Stop()
 			return requests.Request{}, ctx.Err()
-		case <-time.After(min(requestWaitStep, left)):
+		case <-step.C():
 		}
 	}
 }

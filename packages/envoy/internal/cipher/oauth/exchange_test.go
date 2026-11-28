@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -891,30 +892,25 @@ func postToken(tokenURL string, form url.Values, proof string) tokenAnswer {
 }
 
 // waitForBlocked returns once a backend running a statement matching like waits on a lock that
-// blocker holds, failing after ten seconds. Matching on the blocker, not only the statement,
-// keeps a test of another package sharing the database from answering for this one.
+// blocker holds. Matching on the blocker, not only the statement, keeps a test of another
+// package sharing the database from answering for this one.
 func waitForBlocked(t *testing.T, pool *pgxpool.Pool, blocker uint32, like string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.Until(t, fmt.Sprintf("a statement matching %s to wait on a lock backend %d holds", like, blocker), func() (int, bool) {
 		var waiting int
 		if err := pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity
 			where $1 = any(pg_blocking_pids(pid)) and query like $2`, int32(blocker), like).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("no statement matching %s waited on a lock backend %d holds", like, blocker)
+		return waiting, waiting > 0
+	})
 }
 
 // waitForWaiting returns once backend pid waits on a lock in a statement matching like, failing
-// at once if the operation running there returns first, and after ten seconds.
+// at once if the operation running there returns first.
 func waitForWaiting(t *testing.T, pool *pgxpool.Pool, pid uint32, like string, returned <-chan error) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, 5*time.Millisecond, func() bool {
+	testwait.Until(t, fmt.Sprintf("backend %d to wait on a lock in a statement matching %s", pid, like), func() (int, bool) {
 		select {
 		case err := <-returned:
 			t.Fatalf("the operation returned (%v) before it waited on a lock in a statement matching %s", err, like)
@@ -925,10 +921,8 @@ func waitForWaiting(t *testing.T, pool *pgxpool.Pool, pid uint32, like string, r
 			where pid = $1 and `+lockwaittest.Waiting+` and query like $2`, int32(pid), like).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
-		return waiting > 0
-	}) {
-		t.Fatalf("backend %d never waited on a lock in a statement matching %s", pid, like)
-	}
+		return waiting, waiting > 0
+	})
 }
 
 // TestAMachineExchangeHoldsItsCredentialAgainstARevoke: an exchange of a machine access token
@@ -1155,16 +1149,22 @@ func TestAnUnregisteredPodSessionIsRetryable(t *testing.T) {
 // same session and is refused, because the lapse of a token hands no name over. The first pod's
 // next renewal is answered under its own person and project.
 func TestAnotherPrincipalIsRefusedANameAfterItsHoldersTokenLapses(t *testing.T) {
+	// A second, because fosite's own clock decides when an access token has lapsed and no
+	// clock of Envoy's reaches it: the row waits for the lapse itself below rather than for a
+	// quarter of an hour of the production lifetime.
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.AccessLifetime = time.Second })
 	key := newKey(t)
 	const role = "019a-role-session"
 	f.registers(t, account, "pod-uid-1", role)
 	f.registers(t, otherAccount, "pod-uid-other", role)
 	first := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, role), key)
-	time.Sleep(time.Second + 500*time.Millisecond)
-	if answer, err := f.provider.Introspect(context.Background(), first); err != nil || answer.Active {
-		t.Fatalf("Introspect of the holder's token past its lifetime = %+v, %v, want it lapsed", answer, err)
-	}
+	testwait.Until(t, "the holder's access token to lapse (its active flag)", func() (bool, bool) {
+		answer, err := f.provider.Introspect(context.Background(), first)
+		if err != nil {
+			t.Fatalf("Introspect of the holder's token: %v", err)
+		}
+		return answer.Active, !answer.Active
+	})
 	status, body := f.exchange(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-other"), oauthwire.SubjectTokenTypeKubernetes, role), key)
 	refusedTheName(t, status, body, role)
 	renewed := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, role), key)
@@ -1967,9 +1967,7 @@ func TestEveryTradeChecksAgainBecauseThereIsNoRefreshToken(t *testing.T) {
 func capturedLog(t *testing.T) *lockedBuffer {
 	t.Helper()
 	buffer := &lockedBuffer{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(buffer, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewJSONHandler(buffer, nil))
 	return buffer
 }
 

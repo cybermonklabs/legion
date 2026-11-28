@@ -181,7 +181,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
 	return &rig{
 		url: srv.URL, srv: srv, st: st, issuer: issuer, machine: reqMachine, page: page, enrollments: enr,
-		sweeper:      &requests.Sweeper{Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthstore.New(st.Pool), Interval: time.Hour},
+		sweeper:      &requests.Sweeper{Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthstore.New(st.Pool)},
 		accountToken: issuer.Mint(t, key, claims),
 	}
 }

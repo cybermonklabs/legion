@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -126,9 +127,23 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	return newProfiledTestServer(t, "", adjust)
 }
 
+// newTestServerOn is newTestServerWith on clk: the clock the answer recorder reads each request's
+// arrival on (answer.MiddlewareOn) and the server counts a held read's wait on (api.Deps.Clock),
+// nil for clock.Real(). A test of the hold hands it a clocktest.Fake.
+func newTestServerOn(t *testing.T, clk clock.Clock, adjust func(*api.Deps)) *testServer {
+	t.Helper()
+	return newTestServerOf(t, "", clk, adjust)
+}
+
 // newProfiledTestServer is newTestServerWith whose deployment's profiles file is file, or that has
 // none for "", as the broker's BROKER_PROFILES_FILE is set or not.
 func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *testServer {
+	t.Helper()
+	return newTestServerOf(t, file, nil, adjust)
+}
+
+// newTestServerOf is newProfiledTestServer on clk (newTestServerOn).
+func newTestServerOf(t *testing.T, file string, clk clock.Clock, adjust func(*api.Deps)) *testServer {
 	t.Helper()
 	st := storetest.Open(t)
 
@@ -149,7 +164,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	// withRequestDeadline, counting on a registry of the server's own, so every answer a test reads
 	// is the one a deployment sends.
 	registry := metrics.New()
-	handler := answer.Middleware(mux, answer.NewAnswers(registry))
+	handler := answer.MiddlewareOn(mux, answer.NewAnswers(registry), clk)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -215,6 +230,8 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// The page signs people in at the same local issuer, which stands in for every provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, podKey), srv.URL, st, reqMachine),
+		// The recorder above reads each arrival on the same clock.
+		Clock: clk,
 	}
 	adjust(&deps)
 	api.Register(mux, deps)
@@ -1628,7 +1645,13 @@ func TestRenewAndReadSelf(t *testing.T) {
 	renewed := decode[struct {
 		LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	}](t, body)
-	if renewed.LeaseExpiresAt.Before(time.Now()) {
+	// Judged by the clock that decides whether a lease is live, which is the database's own
+	// now() and never this process's.
+	var live bool
+	if err := ts.Store.Pool.QueryRow(context.Background(), `select $1::timestamptz > now()`, renewed.LeaseExpiresAt).Scan(&live); err != nil {
+		t.Fatalf("read the renewed lease against the database's clock: %v", err)
+	}
+	if !live {
 		t.Fatalf("renewed lease %v is not in the future", renewed.LeaseExpiresAt)
 	}
 

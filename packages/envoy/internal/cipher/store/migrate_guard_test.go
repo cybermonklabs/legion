@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
@@ -107,7 +109,6 @@ func TestMigrateRefusesNonTransactionalFilesBeforeApplyingAnything(t *testing.T)
 // out, naming itself, the lock and its holder, rather than waiting for as long as the holder lives
 // with every broker request on that table queued behind it.
 func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
-	lockTimeout := pgmigrate.LockTimeout
 	ctx := context.Background()
 	s := emptySchemaStore(t)
 	if _, err := s.Pool.Exec(ctx, "create table guard_held (id integer)"); err != nil {
@@ -130,22 +131,21 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 		"migrations/0001_widen_held.up.sql": {Data: []byte("alter table guard_held add column wider integer")},
 	}
 
-	bound := 6 * lockTimeout
-	bounded, cancel := context.WithTimeout(ctx, bound)
-	defer cancel()
-	started := time.Now()
+	bounded := testwait.Context(t)
 	err = s.migrate(bounded, set)
-	waited := time.Since(started)
 	if bounded.Err() != nil {
-		t.Fatalf("migrate waited %s for the held lock, until the test's own %s bound cancelled it (%v): nothing bounds a migration's lock wait", waited.Round(time.Millisecond), bound, err)
+		t.Fatalf("migrate waited for the held lock until the shared wait's own bound cancelled it (%v): nothing bounds a migration's lock wait", err)
 	}
 	if err == nil {
-		t.Fatalf("migrate applied a migration whose lock another transaction held, after %s", waited.Round(time.Millisecond))
+		t.Fatal("migrate applied a migration whose lock another transaction held")
 	}
-	if waited < lockTimeout || waited > lockTimeout+10*time.Second {
-		t.Errorf("migrate gave up after %s, want about the %s lock timeout", waited.Round(time.Millisecond), lockTimeout)
+	// Postgres's own lock_timeout cancelled it, the one Exec sets to pgmigrate.LockTimeout
+	// before every migration: a wait that ended any other way — the holder letting go, a
+	// statement timeout, this test's context — is not the bound this row is about.
+	var lockTimeout *pgmigrate.LockTimeoutError
+	if !errors.As(err, &lockTimeout) {
+		t.Fatalf("migrate gave up with %v; want a *pgmigrate.LockTimeoutError, Postgres cancelling it at the %s lock_timeout Exec sets", err, pgmigrate.LockTimeout)
 	}
-	t.Logf("migrate gave up after %s: %v", waited.Round(time.Millisecond), err)
 	holderPID := strconv.FormatUint(uint64(holder.PgConn().PID()), 10)
 	for _, want := range []string{"0001_widen_held.up.sql", "AccessExclusiveLock", "guard_held", "pid " + holderPID, "pg_stat_activity"} {
 		if !strings.Contains(err.Error(), want) {
@@ -175,8 +175,9 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 // A boot that gives up fails with a lock-timeout error (SQLSTATE 55P03) rather than wait for as
 // long as the holder lives, and the error does not read as a refusal of the recorded rows.
 //
-// Control: remove the pgmigrate.Pin call from lockAndPin, and migrate waits until the test's own
-// deadline cancels it. Remove the retry, and the third row fails on the first attempt's timeout.
+// Control: remove the pgmigrate.Pin call from lockAndPin, and migrate waits until the shared
+// wait's own bound cancels it. Remove the retry, and the third row fails on the first attempt's
+// timeout.
 func TestMigrateBoundsTheWaitOfItsFirstVersionTableStatement(t *testing.T) {
 	lockTimeout := pgmigrate.LockTimeout
 	attempts := time.Duration(pgmigrate.LockTimeoutAttempts)
@@ -209,30 +210,38 @@ func TestMigrateBoundsTheWaitOfItsFirstVersionTableStatement(t *testing.T) {
 			if _, err := held.Exec(ctx, "lock table broker_schema_migrations in access exclusive mode"); err != nil {
 				t.Fatalf("hold the version table: %v", err)
 			}
-			released := make(chan struct{})
-			if tc.release {
-				go func() {
-					defer close(released)
-					time.Sleep(lockTimeout + pgmigrate.LockTimeoutRetryPause/2)
-					_ = held.Rollback(context.Background())
-				}()
-			} else {
-				close(released)
+			if !tc.release {
 				defer held.Rollback(ctx)
 			}
-			defer func() { <-released }()
+			// A holder that ends after the first attempt lets go of the table once that attempt has
+			// given up on it, as a pg_dump that ends between two attempts does. The runner's WARN
+			// that its step on the version table gave up waiting for a lock, attempt 1, is that
+			// fact: it logs it as the attempt's lock_timeout ends it, before its pause and its next
+			// attempt.
+			logs := &logtest.Buffer{}
+			if tc.release {
+				logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
+			}
 			set := fstest.MapFS{
 				"migrations/0001_guard_first.up.sql": {Data: []byte("create table guard_first (id integer)")},
 			}
 
-			bound := 6 * lockTimeout
-			bounded, cancel := context.WithTimeout(ctx, bound)
-			defer cancel()
+			bounded := testwait.Context(t)
 			started := time.Now()
-			err = s.migrate(bounded, set)
+			migrated := make(chan error, 1)
+			go func() { migrated <- s.migrate(bounded, set) }()
+			if tc.release {
+				testwait.Next(t, "the runner's WARN that its first attempt on the version table gave up waiting for the lock", logs.Stream(), func(line string) bool {
+					return strings.Contains(line, "gave up waiting for a lock") && strings.Contains(line, " attempt=1 ")
+				})
+				if err := held.Rollback(ctx); err != nil {
+					t.Fatalf("end the holder's transaction after the first attempt: %v", err)
+				}
+			}
+			err = testwait.Receive(t, "migrate to return", migrated)
 			waited := time.Since(started)
 			if bounded.Err() != nil {
-				t.Fatalf("migrate waited %s for the held version table, until the test's own %s bound cancelled it (%v): nothing bounds the runner's first statement on the version table", waited.Round(time.Millisecond), bound, err)
+				t.Fatalf("migrate waited %s for the held version table, until the shared wait's own bound cancelled it (%v): nothing bounds the runner's first statement on the version table", waited.Round(time.Millisecond), err)
 			}
 			if tc.release {
 				if err != nil {
@@ -246,14 +255,21 @@ func TestMigrateBoundsTheWaitOfItsFirstVersionTableStatement(t *testing.T) {
 				}
 				return
 			}
+			// Postgres's own lock_timeout cancelled it, the one Pin sets to pgmigrate.LockTimeout
+			// right after the runner's advisory lock (lockAndPin): a wait that ended any other way
+			// — the holder letting go, a statement timeout, this test's context — is not the bound
+			// this row is about.
 			var pgErr *pgconn.PgError
 			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
-				t.Fatalf("migrate returned %v after %s; want a lock-timeout error (SQLSTATE 55P03)", err, waited.Round(time.Millisecond))
+				t.Fatalf("migrate returned %v after %s; want a lock-timeout error (SQLSTATE 55P03), Postgres cancelling it at the %s lock_timeout Pin sets", err, waited.Round(time.Millisecond), pgmigrate.LockTimeout)
 			}
-			if waited < tc.wait || waited > tc.wait+10*time.Second {
-				t.Errorf("migrate gave up after %s, want about %s", waited.Round(time.Millisecond), tc.wait)
+			// And the wait is tc.wait and no shorter: LockTimeout, or every attempt of the retry. A
+			// loaded machine only makes the wait longer, so this check cannot fail for load. A check
+			// that the wait ended soon after tc.wait could, so the shared wait's bound above is what
+			// holds the wait from above.
+			if waited < tc.wait {
+				t.Errorf("migrate gave up after %s, before %s: the runner's first statement on the version table ran under a shorter lock_timeout, or was tried fewer times", waited.Round(time.Millisecond), tc.wait)
 			}
-			t.Logf("migrate gave up after %s: %v", waited.Round(time.Millisecond), err)
 			if pgmigrate.IsRefusal(err) || strings.Contains(err.Error(), "migrations refused") {
 				t.Errorf("migrate = %v; a lock timeout reads as a refusal of the recorded rows, whose remedy is a reset", err)
 			}
@@ -506,8 +522,7 @@ func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing
 		t.Fatalf("a new connection already reads the migration's settings (%q, %q), so the row proves nothing", wantTimeout, wantSearchPath)
 	}
 
-	acquire, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	acquire := testwait.Context(t)
 	held := make([]*pgxpool.Conn, 0, s.Pool.Config().MaxConns)
 	t.Cleanup(func() {
 		for _, conn := range held {
