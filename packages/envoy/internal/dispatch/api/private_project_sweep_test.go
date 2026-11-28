@@ -14,15 +14,20 @@ package api
 //     is written; and the same write by a token that names the private project is never 403
 //     PROJECT_SCOPE.
 //
-// Each route is sent objects of its own, of the one kind its path names, so a write that deletes
-// one leaves every other route its own, and the routes run beside each other: in the walk at a
-// public project, every route on the one server; in the walk at a private project, whose check
-// that nothing is written counts whole tables, each kind of object on a server of its own, its
-// routes one after another. A route that needs the person scope answers a broker token
-// OAUTH_SCOPE_REQUIRED before the project check reads anything, for a missing object as for a held
-// one. The walk at a private project counts those routes and holds them to one answer all the
-// same; the walk at a public project sends each route at a missing object first, and files nothing
-// for a route that answers so.
+// Each route but a project route is sent objects of its own, of the one kind its path names, so a
+// write that deletes one leaves every other route its own. The project routes share one object,
+// the project, since its key is the object their path names: in the walk at a public project they
+// all write PUB, which holds every other route's objects too. The project check reads of a project
+// only whether it exists and whether it is private, and no route's write changes either: no route
+// deletes a project or calls access.SetVisibility, the only Go function that writes a project's
+// visibility, and each walk sends every route an empty JSON body. So the routes run beside each
+// other: in the walk at a public project, every route on the one server; in the walk at a private
+// project, whose check that nothing is written counts whole tables, each kind of object on a
+// server of its own, its routes one after another. A route that needs the person scope answers a
+// broker token OAUTH_SCOPE_REQUIRED before the project check reads anything, for a missing object
+// as for a held one. The walk at a private project counts those routes and holds them to one
+// answer all the same; the walk at a public project sends each route at a missing object first,
+// and files nothing for a route that answers so.
 
 import (
 	"encoding/json"
