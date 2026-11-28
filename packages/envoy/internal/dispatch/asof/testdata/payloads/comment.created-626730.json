@@ -1,0 +1,61 @@
+{
+  "id": 626730,
+  "issue_key": null,
+  "artifact_id": "987ca4ea-4bfd-407a-910e-2d6b673b1bfd",
+  "project": "ACME",
+  "seq": 134,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a1e546-2aab-707f-9b80-4053a7fbe039"
+  },
+  "notify": false,
+  "created_at": "2026-11-16T17:59:19.176978Z",
+  "payload": {
+    "id": "7da4c9b5-dbe8-4e6e-9ed7-3333b2404a86",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "01a1e546-2aab-707f-9b80-4053a7fbe039",
+      "kind": "session"
+    },
+    "answers": "875ecf7d-873e-4e08-8c03-28bb315b3f92",
+    "mentions": [
+      {
+        "target": "role:lorem ipsum dolor sit amet lorem ",
+        "delivery": "steer",
+        "session_id": "01a1c47a-1b85-74a2-99bb-dbd45a04cc8e"
+      }
+    ],
+    "reply_to": "875ecf7d-873e-4e08-8c03-28bb315b3f92",
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": null,
+    "created_at": "2026-11-16T17:59:19.187103Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": "987ca4ea-4bfd-407a-910e-2d6b673b1bfd",
+    "project_key": "ACME",
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "artifact_slug": "lorem ipsum dolor si",
+    "thread_logins": [],
+    "suppress_route": false,
+    "thread_root_id": "875ecf7d-873e-4e08-8c03-28bb315b3f92",
+    "references_changed": [
+      {
+        "id": "ACME-1",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      }
+    ],
+    "mentions_decide_routes": true
+  }
+}

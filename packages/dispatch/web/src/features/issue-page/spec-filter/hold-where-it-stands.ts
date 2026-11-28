@@ -1,6 +1,6 @@
 import type { RefObject } from "react";
 
-import { abortOnReaderAct } from "../useNodeEditing";
+import { abortOnReaderAct } from "../reader-acts";
 
 /** A decision cell's words (`SpecFilterBody`'s `DecisionCell`), which stay at the top of the
  *  screen while the cell, as tall as its whole run of statements, runs past it. */

@@ -4,6 +4,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
+import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // `dispatch doc-read` of an uploaded file or picture names the version it read by its hash in the
 // header, on the line under the header's first: the latest version's token in a `Document token:`
@@ -125,6 +126,8 @@ beforeEach(() => {
 const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) => {
   const request = new Request(input, init);
   const { pathname } = new URL(request.url);
+  // Every read command reads whoami first (`whoami-stand-in.ts`); it is not recorded.
+  if (asksWhoami(pathname)) return Response.json(WHOAMI_NO_CUT);
   requests.push(`${request.method} ${pathname}`);
   if (request.method === "GET" && pathname === "/api/v1/issues/DSP-1") {
     return Response.json(issue);

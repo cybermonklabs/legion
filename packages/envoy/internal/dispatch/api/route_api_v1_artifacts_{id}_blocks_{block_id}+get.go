@@ -15,6 +15,6 @@ var _ = declareRoute(routeDecl{
 	// The path names a block of the document too, and TARGET_NOT_FOUND is the answer for a block
 	// id the document does not hold.
 	ID:    &idRoute{Kind: "artifact", Blocks: true, NotFound: "ARTIFACT_NOT_FOUND", BlockNotFound: "TARGET_NOT_FOUND"},
-	Read:  readEntry{Writes: readWritesNothing, WriteNote: docsCompactionNote},
+	Read:  readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory, WriteNote: docsCompactionNote},
 	Shape: routeShape{Status: http.StatusOK, Response: model.BlockPath{}},
 })
