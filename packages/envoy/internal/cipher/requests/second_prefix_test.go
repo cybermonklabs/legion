@@ -60,8 +60,8 @@ const (
 // The named reverts: count with the setting empty, and its rows count; have readSource answer
 // the frozen source, and the read rows read the second prefix.
 func TestSourceCountsThroughTheSecondPrefix(t *testing.T) {
-	moved := sourceRule{prefix: movedConfigured, second: movedSecond}
-	unset := sourceRule{prefix: movedConfigured}
+	moved := gcpRule(t, movedConfigured, movedSecond)
+	unset := gcpRule(t, movedConfigured, "")
 	app := func(store string) string { return policy.TypeSource(policy.TypeGitHubApp, store) }
 	installations := func(store string) string { return policy.TypeSource(policy.TypeGitHubInstallations, store) }
 	// A real policy on Secret Manager resource names: a stored secret, and a github-app secret

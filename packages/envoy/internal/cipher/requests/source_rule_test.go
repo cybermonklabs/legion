@@ -5,6 +5,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
@@ -12,9 +13,10 @@ import (
 // between two projects reaches.
 const movedOtherProject = "projects/111111111111/secrets/cipher-"
 
-// TestSourceRuleOnSecretManagerSourcesIsMains holds sourceRule.counts, on Secret Manager resource
-// names alone (projects/<number>/secrets/<id>: the sources a GCP deployment serves and its
-// Postgres holds), to the answers main gave: every row passed against the requests package of main
+// TestSourceRuleOnSecretManagerSourcesIsMains holds sourceRule.counts, built as the broker builds it
+// on Google Cloud Secret Manager (gcpRule), on Secret Manager resource names alone
+// (projects/<number>/secrets/<id>: the sources a GCP deployment serves and its Postgres holds),
+// to the answers main gave: every row passed against the requests package of main
 // aa3eaba7c3b2, whose counts cut the configured prefix from the start of the served source. The
 // rows are TestSourceCountsThroughTheSecondPrefix's own, which this table took over, and five more.
 //
@@ -34,9 +36,9 @@ const movedOtherProject = "projects/111111111111/secrets/cipher-"
 // the "configured against second" row counts; drop the guard against an empty remainder, and the
 // two rows of the bare prefixes count; compare no type, and the rows of another type count.
 func TestSourceRuleOnSecretManagerSourcesIsMains(t *testing.T) {
-	moved := sourceRule{prefix: movedConfigured, second: movedSecond}
-	unset := sourceRule{prefix: movedConfigured}
-	acrossProjects := sourceRule{prefix: movedConfigured, second: movedOtherProject}
+	moved := gcpRule(t, movedConfigured, movedSecond)
+	unset := gcpRule(t, movedConfigured, "")
+	acrossProjects := gcpRule(t, movedConfigured, movedOtherProject)
 	app := func(store string) string { return policy.TypeSource(policy.TypeGitHubApp, store) }
 	installations := func(store string) string { return policy.TypeSource(policy.TypeGitHubInstallations, store) }
 	const idOfSecond = "agent-secrets-deel-api-key"
@@ -143,6 +145,28 @@ func memoryRule(t *testing.T, prefix, second string) sourceRule {
 	})
 	if err != nil {
 		t.Fatalf("the memory store's ParseConfig(%q, second %q): %v", prefix, second, err)
+	}
+	configured, moved := cfg.SourcePrefixes()
+	return sourceRule{prefix: configured, second: moved}
+}
+
+// gcpRule is the rule a broker on Google Cloud Secret Manager holds frozen sources to, for the
+// prefix BROKER_SECRETS_PREFIX and the second prefix second ("" for none): the GCP store's
+// configuration parsed as the broker parses it, and its source prefixes, as cmd/cipherd hands them
+// the machine.
+func gcpRule(t *testing.T, prefix, second string) sourceRule {
+	t.Helper()
+	cfg, err := gcp.Backend{}.ParseConfig(prefix, func(name string) string {
+		switch name {
+		case secretstore.SecondPrefixVariable:
+			return second
+		case "BROKER_SECRETS_KMS_KEY_NAME":
+			return "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("the GCP store's ParseConfig(%q, second %q): %v", prefix, second, err)
 	}
 	configured, moved := cfg.SourcePrefixes()
 	return sourceRule{prefix: configured, second: moved}
