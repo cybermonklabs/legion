@@ -49,7 +49,7 @@ import {
 import { changedWords, type WordPart } from "../doc/change-set";
 import { AssigneeEditor } from "../issue/AssigneeControl";
 import { IssueLabels } from "../issue/IssueLabels";
-import { issuePriority, type PriorityView } from "../issue/issue-priority";
+import { issuePriorityOf, type PriorityView } from "../issue/issue-priority";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { StatusMenu } from "../issue-page/StatusMenu";
 import { issueStatuses } from "../project/board-model";
@@ -440,8 +440,7 @@ function FieldValue({
     return <LabelChips marks={labelMarks(against ?? value, value)} />;
   }
   if (field === "priority") {
-    const own = typeof value === "number" ? value : null;
-    return <PriorityValue priority={priority ?? issuePriority({ priority: own })} />;
+    return <PriorityValue priority={priority ?? issuePriorityOf({ priority: value })} />;
   }
   const holder = objectOf(value);
   if (field === "claim" && holder.kind === "session") {
@@ -599,7 +598,7 @@ function FieldChange({
             failed: false,
             pending: false,
             retry: undefined,
-            shown: issuePriority({ priority: typeof next === "number" ? next : null }),
+            shown: issuePriorityOf({ priority: next }),
             stopped: undefined,
             submit,
           }}

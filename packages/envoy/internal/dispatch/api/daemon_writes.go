@@ -22,8 +22,9 @@ import (
 // dispatch.DaemonSession, dispatch.WritesAs). So a person's sign-in, whose actor is the person,
 // and a person's token that names its own session or proves one are refused; a bearer that proves
 // no session and names the daemon's in its body is taken for the daemon, as each route's
-// description says, and a project's proven-sessions setting is what refuses that one on the
-// role-holder publication.
+// description says, except on the role-holder publication with Deps.LegionStatusScope on, which
+// passes only a credential that holds legion-status (roleHolderDaemonProven). A project's
+// proven-sessions setting also refuses that bearer on the role-holder publication.
 type daemonWrite struct {
 	// Check is the check that tells the daemon apart. The routes differ in it, so each
 	// declaration names its own.
@@ -56,25 +57,19 @@ const (
 // (daemonRoleHolderPublisher).
 const codeRoleHolderForbidden = "ROLE_HOLDER_FORBIDDEN"
 
-// code is the code of the 403 the route's gate answers every caller that is not the daemon: the
-// code the route's handler answered such a caller with before the gate took the check over from
-// it, so a caller reads the refusal it read before.
-func (write daemonWrite) code() string {
-	if write.Check == daemonRoleHolderPublisher {
-		return codeRoleHolderForbidden
-	}
-	return codeStepWriter
-}
-
 // refuseNonDaemon is the gate register mounts every route that states DaemonWrites behind
 // (routeHandler): it answers every caller that is not the Legion daemon 403 with the route's code
-// (daemonWrite.code), naming the session that writes the route, and next does not run. It reads
-// the writer as the route's handler reads it: the body's actor, read as the handler decodes its
-// body (bodyActor), and the caller optionalActor resolves (actorFrom, requestWriter). A body the
-// handler's decode refuses runs next, which refuses it as it always did, and a writer that does
-// not resolve is answered as requireActor answers it, so every caller is answered in the order,
-// with the status and the code, it was answered before the gate. The caller it resolves rides on
-// the request (withResolvedCaller), so the handler resolves no credential a second time.
+// (requireIssueDaemon, requireRoleHolderPublisher), naming the session that writes the route, and
+// next does not run. It reads the writer as the route's handler reads it: the body's actor, read
+// as the handler decodes its body (bodyActor), and the caller optionalActor resolves (actorFrom,
+// requestWriter). A body that is not sent as JSON, is too large, is not one JSON value, holds
+// U+0000 in a string or whose actor does not decode runs next, which refuses it as it always did,
+// and a writer that does not resolve is answered as requireActor answers it. Of any other body
+// only the actor is read here, so a caller that is not the daemon is answered the gate's 403
+// before any other member of its body is judged: one the handler's decode refuses, such as a
+// role-holders body's "holders": 5, was answered 400 INVALID_JSON before the gate. The caller it
+// resolves rides on the request (withResolvedCaller), so the handler resolves no credential a
+// second time.
 func (s *server) refuseNonDaemon(write daemonWrite, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.withResolvedCaller(r)

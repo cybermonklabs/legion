@@ -127,10 +127,12 @@ func (shown goingRowShown) written() json.RawMessage {
 
 // unchanged reports whether other shows all that shown does: the same item, issue, fields, whole
 // value now - the priority an issue works at among it, which same leaves out - claim, reasons to
-// wait and mark of a row that waits again.
+// wait and mark of a row that waits again. The same fields and the same whole value now are the
+// same value now of the fields the row writes (written), so it does not ask same.
 func (shown goingRowShown) unchanged(other goingRowShown) bool {
-	return shown.same(other) && goingJSONEqual(shown.Now, other.Now) && shown.Item == other.Item && shown.Issue == other.Issue &&
-		shown.Changed == other.Changed && slices.Equal(shown.Fields, other.Fields) && slices.Equal(shown.Waits, other.Waits)
+	return shown.Item == other.Item && shown.Issue == other.Issue && shown.Changed == other.Changed &&
+		slices.Equal(shown.Fields, other.Fields) && slices.Equal(shown.Waits, other.Waits) &&
+		goingJSONEqual(shown.Now, other.Now) && reflect.DeepEqual(shown.Claim, other.Claim)
 }
 
 // goingRowApproval is what let a row run (going_plan_rows.approval): the person, with any values

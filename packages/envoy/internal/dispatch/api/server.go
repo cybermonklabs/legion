@@ -1129,10 +1129,12 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	handler := route.Handler
 	if route.DaemonWrites != nil {
 		// Around the row's handler alone, so its gate answers a caller that is not the Legion
-		// daemon at the step its handler's own check answered it before the gate: past every
-		// layer below, the keyed one among them, and once the body and the writer are read as the
-		// handler reads them, so every caller reads the status and the code it read before
-		// (refuseNonDaemon). Nothing the handler does with the write runs for such a caller.
+		// daemon past every layer below, the keyed one among them, once the body's actor and the
+		// writer are read as the handler reads them. A body that is not sent as JSON, is too
+		// large, is not one JSON value, holds U+0000 in a string or whose actor does not decode
+		// still reaches the handler, which refuses it; of any other body such a caller is answered
+		// 403 before any member beside the actor is judged (refuseNonDaemon). Nothing the handler
+		// does with the write runs for such a caller.
 		handler = s.refuseNonDaemon(*route.DaemonWrites, handler)
 	}
 	if keyedMethod(route.Method) {

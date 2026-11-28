@@ -318,7 +318,9 @@ type routeDecl struct {
 	// handler does anything with the write, so the declaration is what refuses, as ResultsScope
 	// is for a results token. The daemon is told apart by the session its write names, the one
 	// fact every credential it may present carries, so a bearer that proves no session of its own
-	// and names the daemon's session in its body is taken for it (daemonWrite).
+	// and names the daemon's session in its body is taken for it (daemonWrite), except on the
+	// role-holder publication with Deps.LegionStatusScope on, which passes only a credential that
+	// holds legion-status.
 	//
 	// The routes that state it are the step record writes, the plan write and the role-holder
 	// publication. The design-gate and gated-step publications state none: their declarations

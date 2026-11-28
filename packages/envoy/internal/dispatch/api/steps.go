@@ -126,7 +126,7 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.writeIssueStep(w, r, input.write(), actor, r.PathValue("key"))
+	s.writeIssueStep(w, r, input.write(), actor)
 }
 
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
@@ -157,7 +157,7 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	if input.RatingReason != nil {
 		write.Rating.Reason = *input.RatingReason
 	}
-	s.writeIssueStep(w, r, write, actor, r.PathValue("key"))
+	s.writeIssueStep(w, r, write, actor)
 }
 
 // putIssueStepExperiment writes the experiment and the variant of a run's issue, with every field
@@ -191,14 +191,15 @@ func (s *server) putIssueStepExperiment(w http.ResponseWriter, r *http.Request) 
 	if input.Variant != nil {
 		write.Experiment.Variant = *input.Variant
 	}
-	s.writeIssueStep(w, r, write, actor, r.PathValue("key"))
+	s.writeIssueStep(w, r, write, actor)
 }
 
 // writeIssueStep is the one write of a step record behind the three routes, by actor to the issue
-// key, a writer each route's gate has passed (refuseNonDaemon, requireIssueDaemon): the issue is
-// read, write (its ID, Issue and Project filled here from the path and the issue row) is written,
-// and the record is answered as the read lists it.
-func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string) {
+// key r's path names, a writer each route's gate has passed (refuseNonDaemon, requireIssueDaemon):
+// the issue is read, write (its ID, Issue and Project filled here from the path and the issue row)
+// is written, and the record is answered as the read lists it.
+func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor) {
+	key := r.PathValue("key")
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

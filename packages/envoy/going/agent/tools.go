@@ -755,16 +755,17 @@ func mendNote(call agentwire.CallRequest, answer agentwire.CallAnswer) string {
 // one and Dispatch holds no phase of the issue from it, which is so whether that daemon was never
 // read, its reads failed, or its newest read records nothing of the issue - and its tail: what the
 // answer does not say, which sessions hold a claim on the issue, and the read that does
-// (dispatch_read_role_holders). A model told only what Legion does not run of an issue answered
-// that no Legion role held a claim on it, from no read (run 853a5617). Each names the issue (%[1]s)
-// and its project (%[2]s).
+// (dispatch_read_role_holders), whose fixed end every note ends with (legionNoteEnd). A model
+// told only what Legion does not run of an issue answered that no Legion role held a claim on it,
+// from no read (run 853a5617). Each names the issue (%[1]s) and its project (%[2]s).
 const (
 	legionNotePrefix = "\n[Legion runs no phase of "
 	legionNoteHead   = legionNotePrefix + "%[1]s and holds no place in any line for it: %[1]s has no slot and no place in a waiting line. " +
 		"This answer holds no Legion state (state is null) because "
 	legionNoDaemon = "the project %[2]s names no Legion daemon (configured is false)."
 	legionNoPhase  = "Dispatch holds no phase of %[1]s from the Legion daemon the project %[2]s names (configured is true)."
-	legionNoteTail = " It says nothing of which sessions hold a claim on %[1]s: dispatch_read_role_holders answers that.]"
+	legionNoteEnd  = ": dispatch_read_role_holders answers that.]"
+	legionNoteTail = " It says nothing of which sessions hold a claim on %[1]s" + legionNoteEnd
 )
 
 // legionNote is what the model is told after call's answer where it is a read of an issue's Legion
@@ -794,8 +795,12 @@ func legionNote(call agentwire.CallRequest, answer agentwire.CallAnswer) string 
 
 // cutLegionNote is rest, a saved result after its head, without the legionNote that ends it: the
 // note legionNote writes of the answer before it, whose status is status. Any other rest is
-// answered as it is.
+// answered as it is: one of an answer whose status is not 200, which legionNote writes no note
+// of, and one that does not end as every note does (legionNoteEnd), without a search.
 func cutLegionNote(rest string, status int) string {
+	if status != http.StatusOK || !strings.HasSuffix(rest, legionNoteEnd) {
+		return rest
+	}
 	at := strings.LastIndex(rest, legionNotePrefix)
 	if at < 0 {
 		return rest

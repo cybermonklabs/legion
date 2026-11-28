@@ -2378,7 +2378,7 @@ func TestThePlanCallGivesTheRunNoWordOfAPostItsRowsRead(t *testing.T) {
 	}
 }
 
-// TestAPriorityRowShowsThePriorityItsIssueWorksAt: since main's #5854 an issue with no priority of
+// TestAPriorityRowShowsThePriorityItsIssueWorksAt: since #5854 an issue with no priority of
 // its own works at the priority of the nearest issue above it that has one, and every read of an
 // issue answers that priority and the issue it comes from (resolved_priority, priority_from). A
 // plan row that changes the priority of a sub-issue with none of its own shows them beside its own,

@@ -142,3 +142,13 @@ func TestADaemonRouteRefusesAPersonAheadOfItsHandler(t *testing.T) {
 		})
 	}
 }
+
+// code is the code of the 403 the route's gate answers every caller that is not the daemon: the
+// code the route's handler answered such a caller with before the gate took the check over from
+// it, so a caller reads the refusal it read before.
+func (write daemonWrite) code() string {
+	if write.Check == daemonRoleHolderPublisher {
+		return codeRoleHolderForbidden
+	}
+	return codeStepWriter
+}

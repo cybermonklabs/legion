@@ -10,7 +10,11 @@ import type {
   IssueDetails,
 } from "../../api/types";
 import { changedWords, type WordPart } from "../doc/change-set";
-import { inheritedPriorityWords, issuePriority, type PriorityView } from "../issue/issue-priority";
+import {
+  inheritedPriorityWords,
+  issuePriorityOf,
+  type PriorityView,
+} from "../issue/issue-priority";
 import { PROPERTY_LABELS } from "../issue-page/page-structure";
 import { CONTROL_LABELS, issueStatusWord } from "../issue-page/page-words";
 import { laneLabel } from "../project/board-model";
@@ -178,7 +182,7 @@ export function valueWords(
   newIssues: ReadonlyMap<number, string> = NO_NEW_ISSUES
 ): string {
   if (field === "priority") {
-    return laneLabel(issuePriority({ priority: typeof value === "number" ? value : null }).level);
+    return laneLabel(issuePriorityOf({ priority: value }).level);
   }
   if (field === "claim") {
     if (value === undefined || value === null) return "Nobody";
@@ -406,10 +410,10 @@ export function rowChanges(
         now: valueNow,
         ...(field === "priority"
           ? {
-              priorityNow: issuePriority({
-                priority: typeof valueNow === "number" ? valueNow : null,
-                priority_from: typeof priorityFrom === "string" ? priorityFrom : null,
-                resolved_priority: typeof resolvedPriority === "number" ? resolvedPriority : null,
+              priorityNow: issuePriorityOf({
+                priority: valueNow,
+                priority_from: priorityFrom,
+                resolved_priority: resolvedPriority,
               }),
             }
           : {}),

@@ -474,8 +474,7 @@ func TestALegionReadThatHoldsNoStateSaysLegionRunsNothingOfTheIssue(t *testing.T
 		if shown, want := shownResult(told, now), shownTimes.Replace(told); shown != want {
 			t.Errorf("the model is given %s's Legion read as %q, want %q", row.issue, shown, want)
 		}
-		step, _ := json.Marshal(toolBody{Call: toolCall{Tool: toolCallTool, Arguments: json.RawMessage(`{"tool":"` + dispatchReadIssueLegion + `","arguments":` + string(arguments) + `}`)}, Result: told})
-		saved, err := ReadSavedResult(step)
+		saved, err := ReadSavedResult(savedTool(t, dispatchReadIssueLegion, told))
 		if err != nil || saved.Tool != dispatchReadIssueLegion || saved.Status != answer.Status || string(saved.Body) != string(answer.Body) {
 			t.Errorf("the saved step of %s's Legion read reads as %s, status %d, with %q (%v), want status %d with the route's answer", row.issue, saved.Tool, saved.Status, saved.Body, err, answer.Status)
 		}

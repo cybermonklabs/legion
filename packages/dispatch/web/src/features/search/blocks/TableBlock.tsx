@@ -8,7 +8,7 @@ import {
   textSecondaryOnSurface,
 } from "../../../theme/classes";
 import { PriorityValue } from "../../going/PriorityValue";
-import { issuePriority, type PriorityView } from "../../issue/issue-priority";
+import { issuePriorityOf } from "../../issue/issue-priority";
 import { ItemChip } from "../../refs/ItemChip";
 import { buildReferencePath } from "../../refs/routes";
 import { type BlockOf, columnText, columnWords } from "./block-cells";
@@ -24,20 +24,6 @@ export const TABLE_ROWS = 8;
 /** An issue key, as a read names an issue: a row whose first column holds one is that issue,
  *  and that cell draws the issue as an item chip. */
 const ISSUE_KEY = /^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$/u;
-
-/** The priority of a table's row as every surface draws one (`issuePriority`): its own, the
- *  number in its `priority` column, and, where the row carries them - a table of issues the
- *  server read whose columns name them - the priority it works at and the issue that comes from
- *  (`resolved_priority`, `priority_from`), so a row that inherits its priority shows the one it
- *  works at and where from. A row that carries neither shows its own. */
-function rowPriority(row: Readonly<Record<string, unknown>>): PriorityView {
-  const { priority, priority_from, resolved_priority } = row;
-  return issuePriority({
-    priority: typeof priority === "number" ? priority : null,
-    priority_from: typeof priority_from === "string" ? priority_from : null,
-    resolved_priority: typeof resolved_priority === "number" ? resolved_priority : null,
-  });
-}
 
 /**
  * A table (design v2, state 5): in a card as wide as the answer, as a chart's is, one column for
@@ -98,9 +84,9 @@ export function TableBlock({
                       ? value
                       : undefined;
                   // A priority reads as the issue page's badge, as every priority the bar shows
-                  // does, with the issue it comes from where the row inherits it (`rowPriority`);
-                  // none reads as the page's words (`columnText`).
-                  const priority = column === "priority" ? rowPriority(row) : undefined;
+                  // does, with the issue it comes from where the row inherits it
+                  // (`issuePriorityOf`); none reads as the page's words (`columnText`).
+                  const priority = column === "priority" ? issuePriorityOf(row) : undefined;
                   let cell: ReactNode = columnText(column, value);
                   if (issue !== undefined) {
                     cell = (

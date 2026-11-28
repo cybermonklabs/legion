@@ -41,6 +41,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -968,7 +969,8 @@ func goingCarryWrite(seen goingRowShown, after goingObservation) (goingRowShown,
 // whether that changed now. A write of the issue's priority or of its parent moves both, so where
 // its answer does not say one of them, now holds none of it rather than the one the write made
 // untrue; any other write whose answer says neither, such as an edit of an ask on the issue,
-// leaves them as the row read them.
+// leaves them as the row read them. A member now holds and one after says are each decoded from
+// JSON into any (the row's read, goingPriorityNowOf), so they are compared as decoded.
 func goingCarryPriorityNow(now map[string]any, fields []string, after goingObservation) bool {
 	moves := slices.Contains(after.fields, goingPriority) || slices.Contains(after.fields, "parent")
 	if !slices.Contains(fields, goingPriority) || (after.priorityNow == nil && !moves) {
@@ -979,7 +981,7 @@ func goingCarryPriorityNow(now map[string]any, fields []string, after goingObser
 		value, said := after.priorityNow[member]
 		held, holds := now[member]
 		switch {
-		case said && (!holds || !goingJSONEqual(goingJSONOrNull(held), goingJSONOrNull(value))):
+		case said && (!holds || !reflect.DeepEqual(held, value)):
 			now[member], changed = value, true
 		case !said && holds:
 			delete(now, member)

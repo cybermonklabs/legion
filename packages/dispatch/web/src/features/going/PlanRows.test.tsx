@@ -266,7 +266,7 @@ test("a change row names its item and each field in the page's words, the values
   }
 });
 
-// Since main's #5854 an issue with no priority of its own works at the priority of the nearest
+// Since #5854 an issue with no priority of its own works at the priority of the nearest
 // issue above it that has one, and the plan's read of the issue answers that priority and the
 // issue it comes from beside its own (`resolved_priority`, `priority_from`). A change of the
 // priority draws its value now as the issue page draws the issue's priority (`issuePriority`): an

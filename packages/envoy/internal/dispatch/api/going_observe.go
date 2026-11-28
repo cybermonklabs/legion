@@ -252,7 +252,7 @@ type goingAdvancesValue struct {
 // goingPriority is the field an issue's own priority is recorded under: the one an update writes
 // and its undo writes back. goingPriorityNow are the members of an issue's read that say the
 // priority the issue works at - its own, else that of the nearest issue above it that has one -
-// and the key of the issue that comes from (resolved_priority, priority_from; main's #5854). Every
+// and the key of the issue that comes from (resolved_priority, priority_from; #5854). Every
 // surface draws a priority with them, and a plan row of an issue's priority shows them beside it
 // (goingObservation.shownValue); no write sets them, so neither is a field a write changes or its
 // undo writes back.

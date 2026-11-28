@@ -283,7 +283,7 @@ test("a row's fields hold the value now and the new value; a claim's new holder 
   ).toEqual([]);
 });
 
-// Since main's #5854 the plan's read of an issue answers, beside its own priority, the priority
+// Since #5854 the plan's read of an issue answers, beside its own priority, the priority
 // the issue works at and the issue that comes from (going_observe.go `goingPriorityNow`). A change
 // of the priority keeps the own one as its value now - the one it replaces, and its Undo writes
 // back - with the one the issue works at beside it, which the row draws and says; and a change of

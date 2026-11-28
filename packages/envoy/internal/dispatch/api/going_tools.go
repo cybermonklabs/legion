@@ -1090,7 +1090,8 @@ const (
 	// daemon's, before the route's handler does anything with the write. A person's sign-in is
 	// refused, and so is a person's token that proves its own session or names any other; a
 	// bearer that proves no session and names the daemon's in its body is taken for the daemon
-	// (daemonWrite).
+	// (daemonWrite), except on the role-holder publication with Deps.LegionStatusScope on, which
+	// passes only a credential that holds legion-status.
 	goingExcludedDaemon = "only the Legion daemon writes it: every other caller is refused (403)"
 	// goingExcludedDaemonUngated is the reason of PUT /api/v1/issues/{key}/design-gates and PUT
 	// /api/v1/projects/{key}/gated-steps, the two publications R12 names beside the role-holder
@@ -1108,8 +1109,8 @@ const (
 )
 
 // goingExcludedDaemonRefusing is goingExcludedDaemon for a route whose daemon's gate refuses
-// every other writer with code, such as STEP_WRITER (codeStepWriter): the code its declaration's
-// DaemonWrites names (daemonWrite.code).
+// every other writer with code, such as STEP_WRITER (codeStepWriter): the code the check its
+// declaration's DaemonWrites names answers (requireIssueDaemon, requireRoleHolderPublisher).
 func goingExcludedDaemonRefusing(code string) string {
 	return goingExcludedDaemon + " " + code
 }
