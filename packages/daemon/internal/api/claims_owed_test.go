@@ -11,10 +11,13 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // askOwed posts the owed route's body as the caller names it, so a refusal can be asked for.
@@ -185,6 +188,41 @@ func TestClaimOwedAtAStepIsTheRunningStepsRoles(t *testing.T) {
 		if got := owedBy(supervise.Claim{Role: role}, position, ""); got.Owes || got.Work != "" {
 			t.Errorf("the %s at the checker's step owes %+v, want nothing", role, got)
 		}
+	}
+}
+
+// POST /legion/v1/claims/owed at a step, through the server and the store: the route takes a
+// role the deployment defines as a phase worker (isPhaseWorker), and reads the role of the running
+// step from the issue's plan rows (record.Issue.StepRole). In `implementer checker` at step 2, the
+// checker's claim owes its step's work, and the claim of the critic, another role of the
+// deployment, owes nothing; each is named the architect that owns it, as every phase worker on a
+// recorded issue is. A gate that took Legion's six alone would answer both with nothing at all,
+// no architect named, and a rule that read the phase alone would owe the checker nothing.
+func TestTheOwedRouteAtAStepOwesTheRunningStepsRoleItsWork(t *testing.T) {
+	const key = "LEGION-208"
+	deployment := checkerDeployment()
+	deployment.Roles["critic"] = plan.RoleDef{Name: "critic", Type: plan.TypeReview}
+	h, _, _ := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Deployment: deployment})
+	seedIssueAt(t, h, key, phase.Step)
+	seedCheckerStep(t, h, key)
+	architect := newLiveClaim(t, h, key, claim.RoleArchitect)
+	for _, tc := range []struct {
+		role claim.Role
+		owes bool
+	}{{"checker", true}, {"critic", false}} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			seedEntry(t, h, key, tc.role, 1)
+			worker := newLiveClaim(t, h, key, tc.role)
+			takeTask(t, h, worker.token, "outbox:77", "the step of "+key, 1, 1)
+
+			got := worker.owed(t)
+
+			if got.Owes != tc.owes || (got.Work != "") != tc.owes || got.Architect != architect.token {
+				t.Fatalf("the %s at the checker's running step is told %+v; want owes %t, work named exactly when owed, and the architect %s",
+					tc.role, got, tc.owes, architect.token)
+			}
+		})
 	}
 }
 

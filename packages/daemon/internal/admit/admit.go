@@ -4448,9 +4448,10 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 // runs a row, but a row waiting for a slot may never be run at all, and one that could never act
 // would keep its issue in the waiting line for ever and take a slot from work that could use it.
 // Finishing the row deletes it, exactly as the outbox's own fence would. The daemon's store reads
-// the same phase and generation fence where a waiting start silences a backstop
-// (store.PodRecords.WaitsForItsSlot), since a row this repair will finish brings no worker back: a
-// change to this fence changes that one too.
+// the same phase, generation and step-role fence where a waiting start silences a backstop
+// (store.PodRecords.WaitsForItsSlot, which reads the role of the running step as the issue's
+// record reads StepRole), since a row this repair will finish brings no worker back: a change to
+// this fence changes that one too.
 //
 // A tree that lingers is read by the absence of its root rather than by its root's deadline: a
 // lingering root is in phase done at a status that is not todo, which is exactly what the

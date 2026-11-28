@@ -814,8 +814,9 @@ func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) e
 // issueStepRoleColumn is the role of the step the task of issue i's generation stands at, "" where
 // its plan rows hold none or the task stands at no step: the subquery record.issueColumns ends
 // with, written here a second time over the alias i, since store and record import neither each
-// other. The idle view, a release's cancel and an update round's keep (PodKeepOf) read it, so each
-// names the worker of a step's open phase as the issue's own record does (record.Issue.StepRole).
+// other. The idle view, a release's cancel, an update round's keep (PodKeepOf) and the fence of a
+// start that waits for its slot (PodRecords.WaitsForItsSlot) read it, so each names the worker of
+// a step's open phase as the issue's own record does (record.Issue.StepRole).
 const issueStepRoleColumn = `coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position
 			where t.issue = i.key and t.generation = i.generation and t.running_kind = 'step'), '')`
 

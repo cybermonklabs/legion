@@ -961,6 +961,78 @@ func TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot(t *testing.T) {
 	}
 }
 
+// WaitsForItsSlot reads admission's fence (record.Issue.HoldsQueued) at the phase step too: every
+// role a deployment defines runs as the one phase, so a start of the checker's step that waits for
+// its slot, at the issue's phase and generation, is one admission finishes without acting once the
+// task stands at the linter's step, and it silences no backstop. The same start of the linter's
+// step waits. The issue stands at step 2 of `checker linter`; its record reading the linter as its
+// step's role is the test's premise.
+func TestAStartOfAStepTheTaskHasLeftWaitsForNoSlot(t *testing.T) {
+	t.Parallel()
+	const checker, linter = claim.Role("checker"), claim.Role("linter")
+	for _, tc := range []struct {
+		role  claim.Role
+		waits bool
+	}{
+		{role: checker, waits: false},
+		{role: linter, waits: true},
+	} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			t.Parallel()
+			st := migratedStore(t)
+			ctx := context.Background()
+			records := record.NewStore()
+			inTx(t, st, func(tx pgx.Tx) error {
+				if err := records.PutIssue(ctx, tx, record.Issue{Key: rootIssue, Tree: rootIssue, Project: "LEGION", Title: rootIssue, Phase: phase.Step,
+					Generation: 1, Status: "in_progress", Rank: "A", LastDispatchSeq: 1,
+					Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
+					return err
+				}
+				v := record.PlanVersion{Issue: rootIssue, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+					GivenBy: claim.Token("legion-legion-legion-208-architect"), GivenAt: time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC)}
+				task := record.PlanTask{Issue: rootIssue, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+				steps := []record.PlanStep{
+					{Issue: rootIssue, Generation: 1, Task: "a", Position: 1, Role: string(checker), Type: "testing"},
+					{Issue: rootIssue, Generation: 1, Task: "a", Position: 2, Role: string(linter), Type: "review"},
+				}
+				if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
+					return err
+				}
+				return records.MoveTask(ctx, tx, rootIssue, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+			})
+			row, err := record.NewOutboxRow(rootIssue, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: tc.role,
+				Generation: 1, Phase: phase.Step, Task: "Continue.", NeedsSlot: true}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			slotRecords := podRecords(t, st)
+			var issue *record.Issue
+			var waits bool
+			inTx(t, st, func(tx pgx.Tx) error {
+				if err := records.Enqueue(ctx, tx, row); err != nil {
+					return err
+				}
+				var err error
+				if issue, err = records.Issue(ctx, tx, rootIssue); err != nil {
+					return err
+				}
+				waits, err = slotRecords.WaitsForItsSlot(ctx, tx, rootIssue)
+				return err
+			})
+			if issue == nil || issue.Phase != phase.Step || issue.Generation != 1 || issue.StepRole != linter {
+				t.Fatalf("UNKNOWN: %s reads %+v, want it at step at generation 1 with the linter's step running: the test's premise", rootIssue, issue)
+			}
+			if issue.HoldsQueued(tc.role, phase.Step) != tc.waits {
+				t.Fatalf("UNKNOWN: admission's fence holds the %s's start = %t, want %t: the test's premise", tc.role, !tc.waits, tc.waits)
+			}
+			if waits != tc.waits {
+				t.Fatalf("with the linter's step running, a slot-waiting start of the %s's step at the issue's phase and generation waits for its slot = %t, want %t",
+					tc.role, waits, tc.waits)
+			}
+		})
+	}
+}
+
 // A step record is history: its row reaches no session of the pod, so a record Dispatch has not
 // taken yet, due now or backing off for an hour behind a Dispatch that is down, keeps no idle pod
 // standing and cancels no release at its boundary, whether it was queued before the release's rows

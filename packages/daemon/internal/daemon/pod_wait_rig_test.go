@@ -160,8 +160,9 @@ func (r *idleWakeRig) countPodWaitHeld(issue idleRigIssue) func() int {
 // or for a pod other than before to stand in its place,
 // while every claim of the issue but role's stays as it was — as awaitUnownedReleased waits, with
 // role's line left out, since the start that waits for the pod makes role's claim the moment the
-// Sandbox has left the store — then for role's claim to register in a new pod of the issue, other
-// than the pod before.
+// Sandbox has left the store — then for the daemon's line of the teardown of the issue's pod, the
+// one main's rule for a pod no claim owns writes (idleRigUnownedTeardown), then for role's claim to
+// register in a new pod of the issue, other than the pod before.
 //
 // The first wait keeps the pod quiet, since the release measures the idle period from the claim
 // rows. It back-dates every claim of the project but role's (quietExcept). The start of role runs
@@ -169,6 +170,13 @@ func (r *idleWakeRig) countPodWaitHeld(issue idleRigIssue) func() int {
 // the pod gone would let the idle rule release the new pod as idle at once, so the role would be
 // suspended and never registered in it. A slow poll, as when the package's other tests load the
 // machine, makes that moment wide.
+//
+// A pod other than before says the old pod went, and not what took it: a launch that replaced the
+// pod after the quiet reads the same. The teardown's line is what says main's rule took it, and
+// it is counted from before the first wait, as releasedWithNoLiveClaim counts it. The line is
+// written only after the runtime has deleted the pod, its Sandbox and its disk (the outbox's
+// releaseIssue), so a poll that read them gone can come before it, and it is waited for rather
+// than read once.
 func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role claim.Role, before string) {
 	r.t.Helper()
 	token := string(r.roleToken(issue, role))
@@ -176,6 +184,7 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 		return slices.DeleteFunc(r.claimLines(issue), func(line string) bool { return strings.HasPrefix(line, token+":") })
 	}
 	held := others()
+	teardowns := r.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key})
 	seen := "never read"
 	defer func() {
 		if r.t.Failed() {
@@ -195,10 +204,13 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 		}
 		// The release takes the pod, its Sandbox and its disk, and the start that waited builds the
 		// next pod at once: a poll that comes after both reads a pod standing, so a pod other than
-		// before, the one the release took, is that release too.
+		// before stands for the release here, and the wait below holds it to the release's line.
 		pod, sandbox, disk, uid := r.kube.pod(issue.pod), r.kube.sandbox(issue.pod) != nil, r.kube.disk(issue.pod), r.podUID(issue)
 		seen = fmt.Sprintf("pod %t, sandbox %t, disk %t, uid %q", pod, sandbox, disk, uid)
 		return !pod && !sandbox && !disk || uid != "" && uid != before
+	})
+	idleRigEventually(r.t, "the daemon's line of the teardown of "+issue.key+"'s pod "+before+" by main's rule for a pod no claim owns", func() bool {
+		return r.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key}) > teardowns
 	})
 	idleRigEventually(r.t, "the "+string(role)+" of "+issue.key+" registered in a new pod", func() bool {
 		uid := r.podUID(issue)

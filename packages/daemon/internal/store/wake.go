@@ -741,20 +741,26 @@ func (p *PodRecords) OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue strin
 // backstop of such an issue wakes no one (the workflow's podBackstopDue): a wake would put the
 // worker to its phase's work while the admission cap says the issue may not run.
 //
-// Only a start of the issue's current phase and generation counts. An older one stays in the
-// outbox until admission finishes it without acting (admit's finishFencedStarts), which a pause
-// defers and a dead lane's lease delays, so it brings no worker back; a backstop it silenced
-// would leave the released worker with nothing to wake it once that row goes. Phase and
-// generation are the whole fence here although finishFencedStarts also finishes a row whose
-// issue left the workflow or whose tree lingers, and one a retired claim's stop outlived: the
-// backstop's wake refuses the first two itself (the workflow's wakeReleased reads
-// InWorkflowNotLingering), and a retired claim is never the released claim the backstop wakes.
+// Only a start of the issue's current phase and generation counts, and at the phase step only a
+// start of the role of the step the issue's task stands at (issueStepRoleColumn, as the issue's
+// record reads Issue.StepRole): every role a deployment defines runs as the one phase step, so a
+// task moved from one such role's step to another's in one generation leaves the first role's
+// start at the same phase and generation. Any other start stays in the outbox until admission
+// finishes it without acting (admit's finishFencedStarts, whose fence is record.Issue.HoldsQueued),
+// which a pause defers and a dead lane's lease delays, so it brings no worker back; a backstop it
+// silenced would leave the released worker with nothing to wake it once that row goes. Phase,
+// generation and the step's role are the whole fence here although finishFencedStarts also
+// finishes a row whose issue left the workflow or whose tree lingers, and one a retired claim's
+// stop outlived: the backstop's wake refuses the first two itself (the workflow's wakeReleased
+// reads InWorkflowNotLingering), and a retired claim is never the released claim the backstop
+// wakes.
 func (p *PodRecords) WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
 	var waits bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+slotWaitingStart+`
 		and exists (select 1 from issues i where i.key = outbox.issue
 			and i.phase = outbox.payload->>'phase'
-			and i.generation = coalesce((outbox.payload->>'generation')::bigint, 0)))`,
+			and i.generation = coalesce((outbox.payload->>'generation')::bigint, 0)
+			and (i.phase <> 'step' or outbox.payload->>'role' = `+issueStepRoleColumn+`)))`,
 		issue).Scan(&waits); err != nil {
 		return false, fmt.Errorf("read whether %s waits for its admission slot: %w", issue, err)
 	}
