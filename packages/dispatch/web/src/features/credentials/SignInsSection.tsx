@@ -48,10 +48,17 @@ export function SignInsSection(): ReactNode {
     <RevocableList
       className="mt-10"
       columns={columns}
+      // The browser draws a confirm question as plain text, so the command is in quotes there.
       confirm={(signIn) =>
-        `Revoke your sign-in on ${signIn.machine}? Every agent session running there loses Dispatch and its secrets at once, and the machine needs you to run \`agent-secrets login\` again.`
+        `Revoke your sign-in on ${signIn.machine}? Every agent session running there loses Dispatch and its secrets at once, and the machine needs you to run “agent-secrets login” again.`
       }
-      description="Every machine you have signed in on with `agent-secrets login`. Revoking one ends it now: that machine gets nothing more as you, and the sessions running on it lose their access. Your sign-ins on other machines are untouched."
+      description={
+        <>
+          Every machine you have signed in on with <code>agent-secrets login</code>. Revoking one
+          ends it now: that machine gets nothing more as you, and the sessions running on it lose
+          their access. Your sign-ins on other machines are untouched.
+        </>
+      }
       empty="No sign-ins."
       heading="Sign-ins"
       headingId="signins-heading"
