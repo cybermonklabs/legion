@@ -80,7 +80,13 @@ func TestFifteenProjectsInSlowReadsLeaveTheWindowAMessageOfAnotherProject(t *tes
 	} else {
 		t.Logf("QUICK's message was applied %s after its publish", time.Since(published).Round(time.Millisecond))
 	}
-	if held := rig.consumerInfo().NumAckPending; held != window {
+	// The intake acknowledges QUICK's message after applyMessage commits QUICK's cursor (deliver), so
+	// the window can still count that message when the cursor reads 11: the test waits for the count.
+	held := 0
+	if !testwait.Holds(usual, 25*time.Millisecond, func() bool {
+		held = rig.consumerInfo().NumAckPending
+		return held == window
+	}) {
 		t.Errorf("the slow projects hold %d messages of the window, want %d: %d waiting on each runner and one held each", held, window, stateMaxWaiting)
 	}
 	if holds := rig.logRecords(heldLine); len(holds) != slow {

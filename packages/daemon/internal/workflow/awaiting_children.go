@@ -855,7 +855,8 @@ func (w Walk) returnPlace(start phase.Phase) (record.TaskPlace, phase.Phase, boo
 }
 
 // waitStart is one start a wait on children names: the place of the issue's task it runs at on
-// the walk of the issue's run, the phase that place runs as, and the role of the step there.
+// the walk of the issue's run, the phase that place runs as, and at step the role of the step there
+// (startAt).
 type waitStart struct {
 	Place record.TaskPlace
 	At    phase.Phase
@@ -890,22 +891,26 @@ func (r childrenReturn) moves() bool {
 }
 
 // childrenReturn is the start held at start on w, where the issue's task stands through the wait
-// (placeIn), and where the return takes it (returnPlace), each with the role of the step at its
-// place: the role w names there (RoleAt), and on a walk with no plan rows the role of the phase, as
-// the return reads the role it starts (ReturnFromChildren).
+// (placeIn), and where the return takes it (returnPlace), each with the role of its step where that
+// step runs as step (startAt). A walk with no plan rows names no role, since none of its places
+// runs as step.
 func (w Walk) childrenReturn(start phase.Phase) childrenReturn {
 	held, _ := w.placeIn(start)
 	back, returned, past := w.returnPlace(start)
 	return childrenReturn{Held: w.startAt(held, start), Back: w.startAt(back, returned), Past: past}
 }
 
-// startAt is the start at place on w, which runs as at (childrenReturn).
+// startAt is the start at place on w, which runs as at (childrenReturn). At step its role is the
+// role of w's step at place, a role the deployment defines, by which the texts of the wait name it
+// (waitStart.named); every other start names none, since the texts name it by its phase. It reads
+// the step's own role and no phase's worker (RoleAt), so it answers no role for a phase the
+// architect works.
 func (w Walk) startAt(place record.TaskPlace, at phase.Phase) waitStart {
-	role := RoleFor(at)
-	if w.Stored {
-		role = w.RoleAt(place)
+	start := waitStart{Place: place, At: at}
+	if step, ok := w.planStepAt(place); ok && at == phase.Step {
+		start.Role = claim.Role(step.Role)
 	}
-	return waitStart{Place: place, At: at, Role: role}
+	return start
 }
 
 // returnClause is what the move's notice says of where the return takes the held start of r: the
