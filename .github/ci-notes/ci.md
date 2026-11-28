@@ -2514,11 +2514,21 @@ its own headed by its exit status, wall seconds, CPU seconds and seconds waiting
 fails with an `::error` naming each that failed, and writes the same table to the job summary.
 It runs after a failed step too (`!cancelled()`), so a harness queued before the failure is
 still judged. A cancel or the job's timeout during the wait signals it: the step `exec`s it, and
-the runner signals a running step only when its condition no longer holds, which with
-`always()` it would always hold. The wait then names each harness still running with its log so
-far; a job cancelled before the wait began runs "Name the script harnesses a cancelled job left"
-(`wait --now`) instead. A recorder killed before its harness ended is a failure, and the pool
-ends that harness's session before its slot goes to another. `start
+the runner signals a running step only when its condition no longer holds (on a cancel or the
+job's timeout), which with `always()` it would always hold; on its own shutdown and on a step's
+own timeout, whatever its condition. The runner sends an INT first when it cancels a step, when
+the step times out and when the runner itself shuts down (actions/runner's ProcessInvoker,
+CancelAndKillProcessTree). An INT stops the wait: it names each harness still running with its
+log so far and exits 1. A TERM that reaches the wait while it still waits ends it at once, with
+status 143 and no report, as a TERM ends the shell of a plain step; once the report has begun,
+the wait ignores INT and TERM. The runner records no exit status for a step it stopped itself,
+so .github/scripts/runner-shutdown.sh can read a shutdown, during the wait as during any step,
+only where a TERM from outside the runner ended the step before the runner cancelled it. A wait
+that trapped that TERM would report and exit 1, and the shutdown of a job whose suites the pool
+runs would read as a failure of the change. A job cancelled before the wait began runs "Name the
+script harnesses a cancelled job left" (`wait --now`, which exits 1) instead. A recorder killed
+before its harness ended is a failure, and the pool ends that harness's session before its slot
+goes to another. `start
 --minutes <n>` bounds one harness as a step's timeout-minutes did and hands it
 HARNESS_POOL_DEADLINE_MS. The runner ends a step's leftover processes only at the job's end, so
 a harness outlives the step that queued it and the job's timeout-minutes still bounds it.
@@ -2531,7 +2541,10 @@ of them and ci-router-outputs.test.sh after the
 step that fetches the filters the run's changes job computed, whose path each takes in its step's
 env). In envoy-go-checks they are queued right after the Go cache restore and the helm install
 (the cluster test's nats.yaml render runs that helm, and a pooled harness takes the PATH of the
-step that queued it), longest first.
+step that queued it), longest first. envoy-session-stall queues its thirteen stack suites the
+same way, after the contracts build they all import and the build of the Go commands they build
+that the go-envoy entry does not hold
+(#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack).
 
 Each job that queues harnesses also keeps a record of when each line of each harness's log was
 written. GitHub stamps a job's log by the line, and a pooled harness's log reaches GitHub only
@@ -2559,9 +2572,9 @@ failure to write it cannot end the recorder, the harness runs in a subshell of i
 `times` is the harness's CPU alone (`?` where that cannot be read, never 0), and a stamper that
 fails leaves an incomplete record, which the reader reports as UNKNOWN, and its error output in
 the entry's recorder log, which the wait prints in the harness's group. The upload step has
-`continue-on-error: true` in both jobs: an upload that fails is a red mark on that step, the job
-and its ci-ok report keep the harnesses' verdict, and the reader's UNKNOWN for a job with no
-artifact covers the lost record. The one thing the
+`continue-on-error: true` in each job that queues harnesses: an upload that fails is a red mark
+on that step, the job and its ci-ok report keep the harnesses' verdict, and the reader's UNKNOWN
+for a job with no artifact covers the lost record. The one thing the
 pool changes for a harness is PYTHONUNBUFFERED=1, so that a Python program's lines reach the log
 when it prints them rather than when it ends and carry their own times.
 
@@ -3350,6 +3363,41 @@ so it needs a PostgreSQL and a Go, which this job is the only envoy-client lane 
 envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK would skip
 there for ever. The filter envoy_session_stall already selects packages/envoy/** and
 packages/envoy-client/**, so the suite brings no new path into this job's closure.
+
+Each of these suites, the role topics and CI-result suites and the role takeover smoke beside
+them starts a stack of its own (test/envoy-stack.ts, test/dispatch-stack.ts,
+test/ci-results-stack.ts, packages/pi-envoy/scripts/smoke-role-takeover.sh): its binaries built
+into a scratch directory of its own that also keeps its servers' state, its servers on ports the
+kernel chose for them, and each Dispatch server and the CI-result stack's brokers on a database
+of their own. They share the checkout, the Postgres service and the Go module and build caches.
+Most of each suite's time is a real window or timer it is about (nats.js's ping and dial timers,
+the listener's live window, gone horizon and reap interval): as one step after another the
+thirteen were 628 s of the job's 673 s median (31 green merge-group jobs, runs 46065919629 to
+46103162044, 2026-11-27 and 28), and over the ten of them that ran on 2026-11-27 the runner's
+four cores were 9.6 to 10.5 % busy (vmstat every 5 s, four jobs of probe run 46024057392). So
+the job queues them through the harness pool (#the-harness-pool), and its wait step is their
+verdict.
+
+The go-envoy entry holds no objects of ./cmd/dispatch, of the NATS auth service or of the four
+commands the CI-result stack builds (./cmd/cipherd, ./cmd/dev-oidc-issuer, ./cmd/dev-proxy-stands
+and ./cmd/cipher), and each suite that runs one builds its own, so the first build of each in a
+run compiles it. One step after another, only the first suite that built each paid that compile:
+22.6 s to the first Dispatch suite's first row against 5.9 s for the next (job 140522567454), and
+49.5 s to the first CI-result suite's first row against 11.3 s for the second (job 140850240061).
+Queued in the pool, the four Dispatch suites of 2026-11-27 started within 16 s of each other and
+each compiled ./cmd/dispatch again (66.8, 31.2, 16.3 and 16.6 s of CPU, job 140590752284), and a
+compile beside the suites shares the processors with rows that read real clocks. So the job
+compiles each command once, before the pool starts any suite.
+
+The suites are queued longest first by each suite's wall in the pool after that build, so that
+the shorter ones fill the other cores around the longest. For ten of them that wall is the
+median of six jobs of probe run 46030395172: the smoke 117 s, envoy-client's NATS stall 107 s,
+the session state rig 88 s, claude-envoy's stall 77 s, the broker credential tests 30 s (27.5 to
+49.9 s, queued ahead of pi-envoy for that longest reading), pi-envoy's stall 32 s, the comment
+mention 17 s, the design-gate advice 9 s, the keyed resend 8 s and the moved-approval advice 7 s.
+The three that joined the job after that probe are placed by their walls in job 140859710731:
+the CI-result suite 56.3 s, queued after claude-envoy's stall, and the role topics 16.4 s and the
+refused result 17.0 s, queued after the comment mention.
 
 ## What the refill live proof shows
 
