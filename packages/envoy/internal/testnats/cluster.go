@@ -13,7 +13,6 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 
 	"github.com/sjawhar/envoy/internal/testport"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered
@@ -172,11 +171,10 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // every running member, and no stopped one, as an online peer, every running member is current
 // with it, JetStream answers an account info request on every running member, and every running
 // member's routes hold the reply wildcard that request made on every other running member
-// (replyRoutesReady), through the shared wait, whose one bound is the test binary's deadline: a
+// (replyRoutesReady), each until the end of a wait on a server's own fact (testDeadline): a
 // cluster's JetStream start on a loaded machine can take longer than any fixed wait allows. A test
 // calls it after it starts a stopped member again, or after it stops one, before it asks JetStream
-// for anything that needs
-// the meta group.
+// for anything that needs the meta group.
 //
 // A member that no other running member's meta group hears from within muteAfter is restarted, at
 // most muteRestarts times in one call. Each restart starts the listening over for every member,
@@ -205,10 +203,10 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 	c.awaitReplyRoutes(t)
 }
 
-// awaitReplyRoutes waits, through the shared wait, for replyRoutesReady.
+// awaitReplyRoutes waits, until testDeadline (until), for replyRoutesReady.
 func (c *Cluster) awaitReplyRoutes(t testing.TB) {
 	t.Helper()
-	testwait.Until(t, "every running member's routes to hold every other running member's JetStream reply wildcard", func() (error, bool) {
+	until(t, boundOf(t), "every running member's routes to hold every other running member's JetStream reply wildcard", func() (error, bool) {
 		err := c.replyRoutesReady()
 		return err, err == nil
 	})
@@ -300,13 +298,14 @@ func routedSubjects(srv *natsserver.Server) (map[string]bool, error) {
 	return routed, nil
 }
 
-// awaitMeta is AwaitReady's wait for the meta group, restarting a mute member as AwaitReady says.
+// awaitMeta is AwaitReady's wait for the meta group, until testDeadline (until), read once as it
+// begins, restarting a mute member as AwaitReady says.
 func (c *Cluster) awaitMeta(t testing.TB) {
 	t.Helper()
 	// listening is when the wait began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
-	testwait.Until(t, "the JetStream meta group to be ready on every running member", func() (error, bool) {
+	until(t, boundOf(t), "the JetStream meta group to be ready on every running member", func() (error, bool) {
 		err := c.metaReady()
 		if err == nil {
 			return nil, true

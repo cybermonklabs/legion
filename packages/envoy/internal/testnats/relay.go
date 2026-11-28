@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // relay holds the port a server's URL names for the test's life and joins each connection it
@@ -297,8 +295,8 @@ func (r *relay) shut(gate *chan struct{}) func() {
 // reaching the client. hold fails at once on a relay that is frozen or holds the server's replies,
 // whose PONGs barrier could not read, and on a connection the relay cannot read as NATS protocol,
 // and the func it returns must run all the same; a connection that stays part-way through an
-// operation is waited for through the shared wait (await), which fails t when it gives up.
-func (r *relay) hold(t testing.TB) (func(), error) {
+// operation is waited for until end (await), which fails t when it comes.
+func (r *relay) hold(t testing.TB, end waitEnd) (func(), error) {
 	t.Helper()
 	r.mu.Lock()
 	r.holds++
@@ -313,7 +311,7 @@ func (r *relay) hold(t testing.TB) (func(), error) {
 	if frozen {
 		return release, errors.New("the relay is frozen or holds the server's replies, so the server's answer to the relay's PING could not reach it")
 	}
-	return release, r.await(t, "every client's bytes to the server to stop at the end of an operation", func() (string, bool, error) {
+	return release, r.await(t, end, "every client's bytes to the server to stop at the end of an operation", func() (string, bool, error) {
 		var partway []string
 		for j := range r.joins {
 			if j.sent.broken != nil {
@@ -355,12 +353,12 @@ func (r *relay) leave(j *joined, written []byte) {
 
 // barrier sends the server a PING of the relay's own on each connection whose client has sent its
 // CONNECT, with a hold in force, and returns once the server has answered each with its PONG or
-// closed the connection, waiting through the shared wait (await). The server reads a connection in
-// order and answers a PING only once it has processed everything before it, so every request a
-// client sent before the hold has been processed: the server's unlocked read of a service import's
-// account (Server.Reload), and the importing account's lock it takes after that read, are behind
-// it, which orders them before a reload's write under that lock. The client never sees that PONG.
-func (r *relay) barrier(t testing.TB) error {
+// closed the connection, waiting until end (await). The server reads a connection in order and
+// answers a PING only once it has processed everything before it, so every request a client sent
+// before the hold has been processed: the server's unlocked read of a service import's account
+// (Server.Reload), and the importing account's lock it takes after that read, are behind it, which
+// orders them before a reload's write under that lock. The client never sees that PONG.
+func (r *relay) barrier(t testing.TB, end waitEnd) error {
 	t.Helper()
 	type ping struct {
 		j      *joined
@@ -382,7 +380,7 @@ func (r *relay) barrier(t testing.TB) error {
 		// A write that fails is a connection the server has closed, which the wait below sees.
 		_, _ = p.j.upstream.Write([]byte("PING\r\n"))
 	}
-	return r.await(t, "the server's answer to the relay's PING on every connection", func() (string, bool, error) {
+	return r.await(t, end, "the server's answer to the relay's PING on every connection", func() (string, bool, error) {
 		var unanswered []string
 		for _, p := range pings {
 			if _, open := r.joins[p.j]; open && p.j.pongs < p.number {
@@ -393,14 +391,14 @@ func (r *relay) barrier(t testing.TB) error {
 	})
 }
 
-// await waits through the shared wait (testwait.Until) for settled, called under the relay's mu, to
-// say the relay's connections are where it wants them, or to answer an error, and returns that
-// error. A relay that has closed has nothing to wait for. A try that finds the connections not yet
-// there reads what settled names of them.
-func (r *relay) await(t testing.TB, what string, settled func() (reading string, done bool, err error)) error {
+// await waits until end (until), the end of the caller's Reload (testDeadline), for settled, called
+// under the relay's mu, to say the relay's connections are where it wants them, or to answer an
+// error, and returns that error. A relay that has closed has nothing to wait for. A try that finds
+// the connections not yet there reads what settled names of them.
+func (r *relay) await(t testing.TB, end waitEnd, what string, settled func() (reading string, done bool, err error)) error {
 	t.Helper()
 	var failed error
-	testwait.Until(t, what, func() (string, bool) {
+	until(t, end, what, func() (string, bool) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		reading, done, err := settled()

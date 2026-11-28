@@ -351,21 +351,22 @@ const (
 
 // A bucket create that nothing answers fails the test naming its sends before the test binary's
 // deadline: a send under way as the shared wait gives up is its last, and ends inside the margin.
-// The child sets up the stand-in and the creating client on the wall clock, under the shared
-// wait's own bound, and then takes the give-up as a step of its own (testwait.SetUpDone), so the
-// create's wait asks once and its one send runs on the child's step clock, bounded there as a
-// whole to createSendWait past the give-up (sendWithin). The step clock fires that bound's timer
-// once a wait is blocked on it and no earlier timer is armed, and the send's first request reaches
-// the stand-in over a socket, so the bound can pass before the stand-in has read the request: the
-// send then ends createSendWait into the step with nats.go's timeout, 20 s before the deadline on
-// that clock, and the stand-in's late answer never comes. When the stand-in reads the request
-// first, its answer comes accountInfoDelay into the step, the create of the bucket's stream never,
-// and the send ends at the same moment. Either way nothing answers the create, and the row reads
-// only the give-up's text. A send held past the 30 s margin would end the child at the deadline,
-// as go test's alarm does, and the row fails. The parent starts the server under its own deadline
-// and passes its URL to the child, so a server whose start is slow costs the parent time and not
-// the child. Under a fixed -timeout of 48 s the child's waits gave up 18 s in, and a setup still
-// running then failed the child with a wait of its setup's own rather than the create's.
+// The child sets up the stand-in and the creating client on the wall clock, each connect until the
+// end of its own wait (testDeadline), and then takes the give-up as a step of its own
+// (testwait.SetUpDone), so the create's wait asks once and its one send runs on the child's step
+// clock, bounded there as a whole to createSendWait past the give-up (sendWithin). The step clock
+// fires that bound's timer once a wait is blocked on it and no earlier timer is armed, and the
+// send's first request reaches the stand-in over a socket, so the bound can pass before the
+// stand-in has read the request: the send then ends createSendWait into the step with nats.go's
+// timeout, 20 s before the deadline on that clock, and the stand-in's late answer never comes. When
+// the stand-in reads the request first, its answer comes accountInfoDelay into the step, the create
+// of the bucket's stream never, and the send ends at the same moment. Either way nothing answers
+// the create, and the row reads only the give-up's text. A send held past the 30 s margin would end
+// the child at the deadline, as go test's alarm does, and the row fails. The parent starts the
+// server under its own deadline and passes its URL to the child, so a server whose start is slow
+// costs the parent time and not the child. Under a fixed -timeout of 48 s the child's waits gave up
+// 18 s in, and a setup still running then failed the child with a wait of its setup's own rather
+// than the create's.
 func TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline(t *testing.T) {
 	if uri := os.Getenv(unansweredBucketChildEnv); uri != "" {
 		createUnansweredBucket(t, uri)
@@ -410,16 +411,17 @@ func createUnansweredBucket(t *testing.T, uri string) {
 	t.Fatal("the create of a bucket nothing answers returned")
 }
 
-// connectWithoutJetStream connects who to the server at uri through the shared wait, as Connect
-// does, each dial carrying the wait's give-up (giveUpDial), and closes the connection when the test
-// ends. Unlike Connect it waits for no JetStream: the unanswered-bucket child's server has none,
-// and its stand-in answers JetStream's account reads late on purpose. A connect whose 2 s of
+// connectWithoutJetStream connects who to the server at uri as Connect does, until the end of its
+// wait (until, testDeadline), each dial carrying that end (endDial), and closes the connection when
+// the test ends. Unlike Connect it waits for no JetStream: the unanswered-bucket child's server has
+// none, and its stand-in answers JetStream's account reads late on purpose. A connect whose 2 s of
 // nats.go's own ran out on a loaded machine is made again, where a bare connect would fail the
 // child's setup.
 func connectWithoutJetStream(t testing.TB, uri, who string) *natsgo.Conn {
 	t.Helper()
-	dial := testwait.Until(t, fmt.Sprintf("a connection of %s to the NATS server at %s", who, uri), func() (dialAttempt, bool) {
-		conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), giveUpDial(t))
+	end := boundOf(t)
+	dial := until(t, end, fmt.Sprintf("a connection of %s to the NATS server at %s", who, uri), func() (dialAttempt, bool) {
+		conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), endDial(end))
 		return dialAttempt{conn: conn, err: err}, err == nil
 	})
 	t.Cleanup(dial.conn.Close)

@@ -41,6 +41,66 @@ func TestWaitForJetStreamRetriesTheOperationUntilItIsReady(t *testing.T) {
 	}
 }
 
+// shortDeadline is how far off TestTheWaitsOnAServersOwnFactEndHalfwayToAShortDeadline puts each
+// wait's deadline: less than the shared wait's 30 s margin, so its give-up has passed when the wait
+// begins, and less than a minute, so testDeadline is halfway to it.
+const shortDeadline = 4 * time.Second
+
+// The waits on a server's own fact keep main's end (testDeadline): with less than a minute of the
+// test binary's deadline left they wait halfway to it, where the shared wait has given up 30 s
+// before it (testwait.GiveUpAt) and asks once. The row gives each wait a deadline of its own,
+// shortDeadline away. until returns a fact that holds 100 ms in, receive takes a value sent 100 ms
+// in, and the span a request of MaxWait or RequestTimeout waits (left) is about half of what is
+// left, where the shared give-up would leave a millisecond. A fact that never holds fails until at
+// its end, halfway to the deadline and not before, naming what it waited for and testDeadline.
+func TestTheWaitsOnAServersOwnFactEndHalfwayToAShortDeadline(t *testing.T) {
+	began := time.Now()
+	short := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: began.Add(shortDeadline)}
+	if giveUp, _ := testwait.GiveUpAt(short); giveUp.After(began) {
+		t.Fatalf("control: the shared wait gives up at %s, after the row began at %s: the row's deadline leaves it time, and the row proves nothing", giveUp, began)
+	}
+	if span := left(short); span < shortDeadline/4 {
+		t.Errorf("left gives a request %s with less than %s of the deadline left, want about half of it", span, shortDeadline)
+	}
+	const comes = 100 * time.Millisecond
+	sent := make(chan struct{})
+	time.AfterFunc(comes, func() { close(sent) })
+	waited := make(chan struct{})
+	go func() {
+		defer close(waited)
+		until(short, boundOf(short), "a fact that holds 100 ms in", func() (time.Duration, bool) {
+			since := time.Since(began)
+			return since, since >= comes
+		})
+		receive(short, boundOf(short), "a value sent 100 ms in", sent)
+	}()
+	testwait.Receive(t, "the waits on a fact that comes 100 ms in to end", waited)
+	if short.message != "" {
+		t.Fatalf("a wait with %s of its deadline left failed on a fact that comes 100 ms in: %s", shortDeadline, short.message)
+	}
+
+	set := time.Now()
+	never := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: set.Add(shortDeadline)}
+	end := boundOf(never)
+	if halfway := set.Add(shortDeadline / 2); end.end.Before(halfway) {
+		t.Errorf("a wait with %s of its deadline left ends at %s, before halfway to it, %s", shortDeadline, end, halfway.Format(time.RFC3339Nano))
+	}
+	failed := make(chan struct{})
+	go func() {
+		defer close(failed)
+		until(never, end, "a fact that never holds", func() (string, bool) { return "not yet", false })
+	}()
+	testwait.Receive(t, "the wait on a fact that never holds to fail", failed)
+	if at := time.Now(); at.Before(end.end) {
+		t.Errorf("the wait on a fact that never holds failed at %s, before its end %s", at.Format(time.RFC3339Nano), end)
+	}
+	for _, want := range []string{"gave up waiting for a fact that never holds at ", "short of the test binary's deadline (testDeadline); last read: not yet"} {
+		if !strings.Contains(never.message, want) {
+			t.Errorf("the wait on a fact that never holds failed with %q, want it to say %q", never.message, want)
+		}
+	}
+}
+
 // noDeadline is t as testwait sees a test binary run under -timeout 0: with no deadline.
 type noDeadline struct{ testing.TB }
 
@@ -213,7 +273,7 @@ func openConnections(t *testing.T, cid uint64) int {
 }
 
 // fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does, and with its
-// test's deadline, which the shared wait reads.
+// test's deadline, which the shared wait and testDeadline read.
 type fatalRecorder struct {
 	testing.TB
 	message string
@@ -461,10 +521,10 @@ const (
 // waits for its answer: a minute, the step main gave it, twice main's connectTimeout of 30 s, which
 // there capped each of the two waits through which one Reload holds a connection's bytes
 // (relay.hold's wait for every connection to stop at a message boundary, and relay.barrier's wait
-// for the server's answers to the relay's PINGs). Here those waits go through the shared wait
-// (relay.await), which has no cap of its own, so the step is a hang guard, not a proof that an
-// answer was lost: the hold also lasts while the server reloads, and a request can wait through
-// more than one reload in a row. Requests the holds only delay are answered far sooner: in
+// for the server's answers to the relay's PINGs). Here those waits end at testDeadline as the
+// Reload begins (relay.await), with no cap of their own, so the step is a hang guard, not a proof
+// that an answer was lost: the hold also lasts while the server reloads, and a request can wait
+// through more than one reload in a row. Requests the holds only delay are answered far sooner: in
 // INFRA-3904's build Jobs, 32,520 runs of a copy of this row with a 15 s wait per request, plain,
 // under -race and beside up to 16 busy loops, ran out of that wait only in the one run whose
 // answers nats-server had dropped (below).
@@ -480,16 +540,16 @@ const reloadRequestStep = time.Minute
 // changes the user's grant, so each one runs the server's authorization reload, and the server's
 // log says so.
 //
-// Each request waits reloadRequestStep for its answer, cut to what is left before the shared wait
-// gives up (left). A request that draws none in its step fails the test by name at once, and its
-// requester sends another, so the reloads still run under requests; one whose step the give-up cut
-// fails the test naming the give-up. No request and no reload starts past the give-up
-// (testwait.GiveUpAt), and each Reload's hold and barrier wait through the shared wait, which gives
-// up there too. So a lost answer costs this test about one step, where a request with no step of
-// its own waits to the give-up and holds every later test of the package until then, as one that
-// waited to the binary's deadline did before main gave each request a step (dispatch://INFRA-3904:
-// CI run 45724862942 lost two answers, this test ran 1,111 s, and the package's last tests failed
-// for want of time).
+// Each request waits reloadRequestStep for its answer, cut to what is left of the row's end,
+// testDeadline read once as the requesters start (boundOf, left). A request that draws none in its
+// step fails the test by name at once, and its requester sends another, so the reloads still run
+// under requests; one whose step that end cut fails the test naming the end. No request and no
+// reload starts past it, and each Reload's hold and barrier wait until testDeadline as that Reload
+// begins, which is no earlier. So a lost answer costs this test about one step, where a request
+// with no step of its own waits to that end and holds every later test of the package until then,
+// as one that waited to the binary's deadline did before main gave each request a step
+// (dispatch://INFRA-3904: CI run 45724862942 lost two answers, this test ran 1,111 s, and the
+// package's last tests failed for want of time).
 //
 // Before the requesters start, one request is sent until it is answered, each send bounded by
 // readWait and retried through the shared wait. That works around a race in nats-server, not a
@@ -527,9 +587,8 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 		}
 		return err, err == nil
 	})
-	giveUp, bounded := testwait.GiveUpAt(t)
-	pastGiveUp := func() bool { return bounded && !time.Now().Before(giveUp) }
-	byGiveUp := giveUp.Format(time.RFC3339Nano)
+	end := boundOf(t)
+	pastEnd := func() bool { return end.bounded && !time.Now().Before(end.end) }
 	stop := make(chan struct{})
 	var answered atomic.Int64
 	var requesters sync.WaitGroup
@@ -556,17 +615,17 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 		for r := range reloadRequesters {
 			requesters.Go(func() {
 				for !stopped() {
-					if pastGiveUp() {
-						t.Errorf("connection %d, requester %d: the reloads did not end by %s, where the shared wait gives up", c, r, byGiveUp)
+					if pastEnd() {
+						t.Errorf("connection %d, requester %d: the reloads did not end by %s, short of the test binary's deadline (testDeadline)", c, r, end)
 						return
 					}
-					step := min(reloadRequestStep, left(t))
+					step := min(reloadRequestStep, end.left())
 					_, err := conn.Request("$JS.API.INFO", nil, step)
 					switch {
 					case err == nil:
 						answered.Add(1)
 					case errors.Is(err, natsgo.ErrTimeout) && step < reloadRequestStep:
-						t.Errorf("connection %d, requester %d: a request across the reloads was not answered by %s, where the shared wait gives up", c, r, byGiveUp)
+						t.Errorf("connection %d, requester %d: a request across the reloads was not answered by %s, short of the test binary's deadline (testDeadline)", c, r, end)
 						return
 					case errors.Is(err, natsgo.ErrTimeout):
 						t.Errorf("connection %d, requester %d: a request across the reloads drew no answer within %s", c, r, step)
@@ -581,8 +640,8 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 		}
 	}
 	for n := 1; n <= reloadCount; n++ {
-		if pastGiveUp() {
-			t.Fatalf("completed only %d of %d reloads by %s, where the shared wait gives up", n-1, reloadCount, byGiveUp)
+		if pastEnd() {
+			t.Fatalf("completed only %d of %d reloads by %s, short of the test binary's deadline (testDeadline)", n-1, reloadCount, end)
 		}
 		if err := server.Reload(t, grant(n)); err != nil {
 			t.Fatalf("reload %d: %v", n, err)

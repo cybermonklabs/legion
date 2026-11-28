@@ -84,8 +84,9 @@ func connectCluster(t *testing.T, cluster *Cluster) *natsgo.Conn {
 
 // dialCluster dials cluster's server list with options until a dial connects and connected holds
 // of its connection, closing each other connection, and returns that one, closed at the test's
-// end. A dial that fails or lands elsewhere is made again by the shared wait, as Connect's is, so
-// a dial that nats.go's own two seconds ran out on costs the test time and not its result.
+// end. A dial that fails or lands elsewhere is made again by the shared wait, as Connect's own wait
+// makes its dial again, so a dial that nats.go's own two seconds ran out on costs the test time and
+// not its result.
 func dialCluster(t *testing.T, cluster *Cluster, what string, connected func(*natsgo.Conn) bool, options ...natsgo.Option) *natsgo.Conn {
 	t.Helper()
 	dial := testwait.Until(t, what, func() (dialAttempt, bool) {

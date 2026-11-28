@@ -129,16 +129,16 @@ func (h *HandshakeHold) HoldReconnectUntilEnded(t testing.TB, conn *natsgo.Conn)
 	h.HoldReconnect(t, conn)
 }
 
-// OwnConnectTimeout sets conn's connect timeout to what is left of the test binary's deadline less
-// testwait's margin, and with no deadline (-timeout 0) to no bound a test can reach, as
-// RequestTimeout bounds a JetStream request. nats.go's connect timeout (Options.Timeout, v1.55.0)
-// bounds two things. One is the TCP dial, through the net.Dialer that Options.Connect builds from it
-// once (nats.go:2017-2021); this leaves that dial's bound as Connect set it, since the proxy accepts
-// every dial at once. The other is each connect and reconnect attempt's whole handshake, read at each
-// attempt: processConnectInit sets the socket's deadline that far ahead (nats.go:2944) for the
-// server's INFO, any TLS handshake, and the CONNECT and PING through the server's PONG
-// (sendConnect). A hold keeps that PONG, so the handshake's deadline is what ends a held attempt, at
-// the client's own timeout: nats.go's DefaultTimeout (2 s), or a bus client's connectTimeout (5 s).
+// OwnConnectTimeout sets conn's connect timeout to what is left until testDeadline (left), and with
+// no deadline (-timeout 0) to no bound a test can reach, as RequestTimeout bounds a JetStream
+// request. nats.go's connect timeout (Options.Timeout, v1.55.0) bounds two things. One is the TCP
+// dial, through the net.Dialer that Options.Connect builds from it once (nats.go:2017-2021); this
+// leaves that dial's bound as Connect set it, since the proxy accepts every dial at once. The other
+// is each connect and reconnect attempt's whole handshake, read at each attempt: processConnectInit
+// sets the socket's deadline that far ahead (nats.go:2944) for the server's INFO, any TLS
+// handshake, and the CONNECT and PING through the server's PONG (sendConnect). A hold keeps that
+// PONG, so the handshake's deadline is what ends a held attempt, at the client's own timeout:
+// nats.go's DefaultTimeout (2 s), or a bus client's connectTimeout (5 s).
 // A row that reads a held attempt then turns on which of two real timers fires first, that one or
 // the bound under test (an intake stop's callNATS, bus.ConnLockWait, 100 ms), and a loaded runner
 // can reverse them. With the test's own timeout a held attempt ends only when the row ends it, so
@@ -215,7 +215,11 @@ func (h *HandshakeHold) Release() {
 // than the test's (takeConnLock), and returns a func that only thaws the proxy. Since the lock is
 // the row's own, no reset or close of the connection's socket lets it go: a row that measures what
 // such a reset ends holds the lock with a write of nats.go's own (HoldStalledWrite).
-// HoldWriteLockUnfrozen holds the lock with the proxy left moving.
+// HoldWriteLockUnfrozen differs from it in three things: it leaves the proxy moving; it takes the
+// lock through TakeWriteLock, which asks TryLock through the shared wait's helper form
+// (testwait.InHelper), where this form waits with Lock on a goroutine of its own; and when that take
+// gives up it fails the test with t.Fatal, where this form calls Errorf and its goroutine goes on.
+// So a hook on a goroutine of its own that moves off this form moves onto TakeWriteLock.
 func (h *HandshakeHold) HoldWriteLock(t testing.TB, conn *natsgo.Conn) (release func()) {
 	t.Helper()
 	h.Freeze()
@@ -292,8 +296,11 @@ func takeConnLock(t testing.TB, conn *natsgo.Conn) (*sync.RWMutex, bool) {
 // take's give-up fails the test with t.Fatal, so a row calls it on the test's goroutine; a hook on
 // a goroutine of its own calls TakeWriteLock. Since the lock is the row's own, no reset or close of
 // the connection's socket lets it go: a row that measures what such a reset ends holds the lock
-// with a write of nats.go's own (HoldStalledWrite). It is the form a row moves onto from
-// HoldWriteLock once a later change rewrites the row to hold the lock with the proxy left moving.
+// with a write of nats.go's own (HoldStalledWrite). It is the form a row on the test's goroutine
+// moves onto from HoldWriteLock once a later change rewrites the row to hold the lock with the
+// proxy left moving; the move also changes how the lock is taken and how a take that gives up
+// fails (HoldWriteLock says how), so a hook that calls HoldWriteLock on a goroutine of its own, as
+// the hand-back rows' hooks do, moves onto TakeWriteLock instead.
 func (h *HandshakeHold) HoldWriteLockUnfrozen(t testing.TB, conn *natsgo.Conn) (release func()) {
 	t.Helper()
 	release, err := h.TakeWriteLock(conn)
@@ -593,14 +600,15 @@ func AnswersWithin(t testing.TB, within time.Duration, what string, calls ...fun
 // AwaitLockFree waits until nats.go lets conn's connection lock go, as main's AwaitLockFree does: a
 // read of conn's status begun now (lockLetGo) is handed the lock at its holder's Unlock, ahead of the
 // next writer, so the wait sees the lock let go however briefly nats.go leaves it free. It waits
-// through the shared wait (testwait.Receive), whose one end is its give-up. A handshake held through
-// HoldReconnect ends at the client's connect timeout; one held through HoldReconnectUntilEnded ends
-// only when the row ends it, and once Cut has dropped its connection each attempt nats.go makes
-// while the proxy is cut ends at once. Either way nats.go then reads the connection as reconnecting
-// and waits between attempts (ReconnectWait, 1 s for a bus client) with its lock free.
+// until the end of a wait on a server's own fact (receive, testDeadline), as main's did. A handshake
+// held through HoldReconnect ends at the client's connect timeout; one held through
+// HoldReconnectUntilEnded ends only when the row ends it, and once Cut has dropped its connection
+// each attempt nats.go makes while the proxy is cut ends at once. Either way nats.go then reads the
+// connection as reconnecting and waits between attempts (ReconnectWait, 1 s for a bus client) with
+// its lock free.
 func AwaitLockFree(t testing.TB, conn *natsgo.Conn) {
 	t.Helper()
-	testwait.Receive(t, "nats.go to let its connection lock go: the held attempt to end", lockLetGo(conn))
+	receive(t, boundOf(t), "nats.go to let its connection lock go: the held attempt to end", lockLetGo(conn))
 }
 
 // Attempts is how many handshake attempts have reached the server under a hold: each CONNECT the

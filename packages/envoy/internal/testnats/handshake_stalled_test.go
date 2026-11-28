@@ -34,7 +34,7 @@ func TestHoldStalledWriteReturnsWithAWriteStillInTheSocket(t *testing.T) {
 }
 
 // writeCountingDialer dials as nats.go's own dialer does, with nats.go's default timeout (as
-// giveUpDialer dials), and counts the writes begun on the sockets it hands out and those that
+// endDialer dials), and counts the writes begun on the sockets it hands out and those that
 // returned.
 type writeCountingDialer struct {
 	begun, returned atomic.Int64

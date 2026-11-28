@@ -9,11 +9,16 @@ import (
 // This file holds the waits and constants main had before the one wait of testwait.go, with
 // main's behaviour, for the tests of the Envoy module that have not moved to that wait yet. Their
 // callers are tests of other packages (this package's own tests only hold UntilPolling to its pace
-// and sleep a Poll): the change that moves a package's tests onto the one wait moves its callers
-// off these, and each goes with its last caller.
+// and sleep a Poll), and internal/testnats, whose waits on a server's own fact keep main's end
+// through Holds at Poll's pace: 30 s before the test binary's deadline, or halfway to it when less
+// than a minute is left (testnats' testDeadline), which is then later than the moment every wait of
+// testwait.go but Eventually gives up.
+// The change that moves a package's tests onto the one wait moves its callers off these, and each
+// goes with its last caller.
 
 // Poll is how often a condition is asked.
-// Callers not yet moved still use this; it goes with its last caller.
+// Callers not yet moved, internal/testnats's waits on a server's own fact among them, still use
+// this; it goes with its last caller.
 const Poll = pace
 
 // Margin is how long before the test binary's deadline every wait of testwait.go but Eventually
@@ -80,7 +85,8 @@ func WithinPolling(t *testing.T, bound, poll time.Duration, what string, conditi
 
 // Holds reports whether condition held before bound passed, asking it every poll, and fails
 // nothing itself.
-// Callers not yet moved still use this; it goes with its last caller.
+// Callers not yet moved, internal/testnats's waits on a server's own fact among them, still use
+// this; it goes with its last caller.
 func Holds(bound, poll time.Duration, condition func() bool) bool {
 	return waitUntil(time.Now().Add(bound), poll, condition)
 }
@@ -88,7 +94,7 @@ func Holds(bound, poll time.Duration, condition func() bool) bool {
 // waitUntil asks condition every poll until it holds or deadline passes, reporting which. It
 // asks once more after the deadline, so a condition that came true during the last sleep is not
 // reported false.
-// Callers not yet moved still use this, through the three above; it goes with its last caller.
+// Callers not yet moved still use this, through the two above; it goes with its last caller.
 func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bool {
 	for time.Now().Before(deadline) {
 		if condition() {

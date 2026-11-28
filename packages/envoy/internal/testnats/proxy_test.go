@@ -17,7 +17,7 @@ import (
 
 // proxiedClient connects to the proxy's URL as a deployed client does, reconnecting for as long as
 // the test runs, and reports each disconnect and reconnect on the returned channels. A dial that
-// fails is made again by the shared wait, as Connect's is.
+// fails is made again by the shared wait, as Connect's own wait makes its dial again.
 func proxiedClient(t *testing.T, proxy *Proxy) (conn *natsgo.Conn, disconnected, reconnected <-chan struct{}) {
 	t.Helper()
 	down, up := make(chan struct{}, 8), make(chan struct{}, 8)
@@ -49,7 +49,7 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 
 	proxy.Cut()
 	testwait.Receive(t, "the client's disconnect after the cut", disconnected)
-	// The dial's own timer is what is left of the shared wait (left), so only the cut proxy's
+	// The dial's own timer is what is left until testDeadline (left), so only the cut proxy's
 	// refusal, which comes at once, ends it with an error: a dial that would get through, however
 	// slowly, does.
 	if refused, err := natsgo.Connect(proxy.URL(), natsgo.NoReconnect(), natsgo.Timeout(left(t))); err == nil {

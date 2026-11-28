@@ -7,8 +7,6 @@ import (
 	"testing"
 
 	"github.com/nats-io/nkeys"
-
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // CalloutAuthTimeout is how long a server CalloutConfig describes waits for the auth service's
@@ -282,12 +280,13 @@ func StartClusterWithCallout(t testing.TB, n int, keys CalloutKeys, static ...St
 // cannot be probed with a client that has no credential, as awaitAuth probes one, because the
 // server holds such a client for its authorization timeout while it waits for an answer no
 // service gives yet. A server can answer a dial before the NATS protocol handshake, so a refused
-// connect is tried again through the shared wait, whose reading is the last refusal; each
-// connect's dial carries the wait's give-up (giveUpDial).
+// connect is tried again until the end of a wait on a server's own fact (until, testDeadline),
+// whose reading is the last refusal; each connect's dial carries that end (endDial).
 func awaitSeed(t testing.TB, uri, seed string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("NATS at %s to admit the auth service's user", uri), func() (error, bool) {
-		conn, err := ConnectSeed(t, uri, seed, giveUpDial(t))
+	end := boundOf(t)
+	until(t, end, fmt.Sprintf("NATS at %s to admit the auth service's user", uri), func() (error, bool) {
+		conn, err := ConnectSeed(t, uri, seed, endDial(end))
 		if err != nil {
 			return err, false
 		}

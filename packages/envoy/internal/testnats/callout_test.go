@@ -90,9 +90,9 @@ func TestTheCalloutClusterSendsUnknownClientsToTheServiceFromEveryMember(t *test
 // request for each of its tries that reached the server, and the static user whose seed is
 // staticSeed is admitted with none.
 //
-// The client with no credential connects through the shared wait (AwaitConnectSeed), which makes
-// a try again when nats.go's own timeout ends one, and a try that timed out after its CONNECT
-// reached the server was asked about all the same. So each try carries a name of its own
+// The client with no credential connects through AwaitConnectSeed's wait, which makes a try again
+// when nats.go's own timeout ends one, and a try that timed out after its CONNECT reached the
+// server was asked about all the same. So each try carries a name of its own
 // (connectTries), which the server copies into the try's request, and the requests are counted by
 // the try each names: the try the service refused reached the server, which asked the service
 // before it refused, so it is asked about exactly once; a try that timed out is asked about at most
@@ -200,10 +200,10 @@ func readCalloutRequest(xkey nkeys.KeyPair, msg *natsgo.Msg) calloutRequest {
 	return request
 }
 
-// connectTries names each try of a connect made through the shared wait. AwaitConnectSeed applies
-// the options it is given anew at each try, as natsgo.Connect applies each option once, so the
-// option's func runs once a try, on the test goroutine the wait asks on: it counts the try in made
-// and names the try's connection prefix-<its number>.
+// connectTries names each try of a connect made through AwaitConnectSeed's wait. AwaitConnectSeed
+// applies the options it is given anew at each try, as natsgo.Connect applies each option once, so
+// the option's func runs once a try, on the test goroutine the wait asks on: it counts the try in
+// made and names the try's connection prefix-<its number>.
 type connectTries struct {
 	prefix string
 	made   int

@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	natsgo "github.com/nats-io/nats.go"
-
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The server writes a KV record itself when a request names that record's subject as its reply
@@ -77,7 +75,7 @@ func ServerCopyRefused(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBu
 	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush %s: %v", request, err)
 	}
-	if _, err := copies.NextMsgWithContext(testwait.Context(t)); err != nil {
+	if _, err := copies.NextMsgWithContext(Context(t)); err != nil {
 		t.Fatalf("the server's copy of %s onto %s never reached its subject: %v", KVSubject(srcBucket, srcKey), KVSubject(dstBucket, dstKey), err)
 	}
 	js, err := conn.JetStream(MaxWait(t))
@@ -127,11 +125,12 @@ func NoWaitPull(t testing.TB, conn *natsgo.Conn, bucket string) (string, []byte)
 }
 
 // ServerWritesKey sends request with data, its reply subject key's subject in bucket, so the
-// server's own answer is stored as key's newest record. It waits through the shared wait
-// (awaitStored) until the bucket's stream holds a message on that subject newer than the one it
-// held before, and returns that message's stream sequence. Both are read from the stream's leader
-// (a stream message get), never with a direct get: a direct get of a copied record reports the
-// sequence its copied headers name, the source record's, and not the one the copy is stored at.
+// server's own answer is stored as key's newest record. It waits, until the end of a wait on a
+// server's own fact (awaitStored), until the bucket's stream holds a message on that subject newer
+// than the one it held before, and returns that message's stream sequence. Both are read from the
+// stream's leader (a stream message get), never with a direct get: a direct get of a copied record
+// reports the sequence its copied headers name, the source record's, and not the one the copy is
+// stored at.
 func ServerWritesKey(t testing.TB, conn *natsgo.Conn, bucket, key, request string, data []byte) uint64 {
 	t.Helper()
 	before := LastSequence(t, conn, bucket, key)
@@ -150,9 +149,9 @@ func ServerWritesKey(t testing.TB, conn *natsgo.Conn, bucket, key, request strin
 // subject, so the server stores body there with that stream's Nats-Stream, Nats-Subject and
 // Nats-Sequence headers, the last naming that stream's sequence (1) and not the one the bucket
 // stores it at. Any user that may create a stream and publish to it can write one this way. It
-// waits through the shared wait (awaitStored) until the bucket's stream holds a message on key's
-// subject newer than the one it held before, read from the stream's leader, and returns that
-// message's stream sequence.
+// waits, until the end of a wait on a server's own fact (awaitStored), until the bucket's stream
+// holds a message on key's subject newer than the one it held before, read from the stream's
+// leader, and returns that message's stream sequence.
 func RepublishesKey(t testing.TB, conn *natsgo.Conn, bucket, key string, body []byte) uint64 {
 	t.Helper()
 	js, err := conn.JetStream(MaxWait(t))
@@ -173,13 +172,13 @@ func RepublishesKey(t testing.TB, conn *natsgo.Conn, bucket, key string, body []
 		conn, bucket, key, before)
 }
 
-// awaitStored waits through the shared wait (testwait.Until) until bucket's stream holds a message
-// on key's subject newer than before, read from the stream's leader (LastSequence), and returns that
-// message's stream sequence. what names the write the wait is for, and its last reading is the
-// newest sequence it read.
+// awaitStored waits, until the end of a wait on a server's own fact (until, testDeadline), until
+// bucket's stream holds a message on key's subject newer than before, read from the stream's leader
+// (LastSequence), and returns that message's stream sequence. what names the write the wait is for,
+// and its last reading is the newest sequence it read.
 func awaitStored(t testing.TB, what string, conn *natsgo.Conn, bucket, key string, before uint64) uint64 {
 	t.Helper()
-	return uint64(testwait.Until(t, what, func() (newestSequence, bool) {
+	return uint64(until(t, boundOf(t), what, func() (newestSequence, bool) {
 		stored := LastSequence(t, conn, bucket, key)
 		return newestSequence(stored), stored > before
 	}))

@@ -172,14 +172,15 @@ func (h *LeaderlessStream) Restart(t testing.TB) {
 // left running has answered a read naming no leader. A member can take leadership alone while the
 // others first stop; that attempt is restored and selected again. readWait is the caller's read
 // limit, so a test keeps the limit its behaviour asserts rather than duplicating election setup.
-// Each attempt is one try of the shared wait (testwait.Until), so the attempts have no count and
-// no bound of their own: the wait's give-up names the stream and prints the last attempt's
-// stopped members, the copy it left running and the leader that copy named.
+// Each attempt is one try of a wait on a server's own fact (until, testDeadline), so the attempts
+// have no count and no bound of their own: the wait's failure at its end names the stream and
+// prints the last attempt's stopped members, the copy it left running and the leader that copy
+// named.
 func HoldStreamWithoutLeader(t testing.TB, cluster *Cluster, stream string, readWait time.Duration) *LeaderlessStream {
 	t.Helper()
 	var attempt leaderlessAttempt
 	what := fmt.Sprintf("the copy of stream %s left running, once its leader and one peer stop, to answer a read naming no leader", stream)
-	return testwait.Until(t, what, func() (leaderlessAttempt, bool) {
+	return until(t, boundOf(t), what, func() (leaderlessAttempt, bool) {
 		attempt.number++
 		read := AwaitStreamCopies(t, cluster.JetStream(t), stream, 3)
 		members := []int{cluster.Member(read.Cluster.Leader)}
@@ -195,8 +196,8 @@ func HoldStreamWithoutLeader(t testing.TB, cluster *Cluster, stream string, read
 		}
 		js := cluster.MemberJetStream(t, kept)
 		// Each read of the copy left running is bounded by readWait, and a read that draws no
-		// answer is sent again through the shared wait (awaitInfo) until one is answered, with no
-		// bound of its own: its give-up prints the last read and its error.
+		// answer is sent again (awaitInfo) until one is answered, with no bound of its own but that
+		// wait's end: its failure prints the last read and its error.
 		answer := awaitInfo(t, fmt.Sprintf("a read of %s on member %d, the copy left running, to be answered", stream, kept),
 			func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream, natsgo.MaxWait(readWait)) },
 			func(*natsgo.StreamInfo) bool { return true },
@@ -631,16 +632,16 @@ type infoRead[T any] struct {
 
 func (r infoRead[T]) String() string { return fmt.Sprintf("%s (%v)", r.describe(r.info), r.err) }
 
-// awaitInfo reads an info through the shared wait until a read succeeds and done holds for it, and
-// returns that info. Each caller bounds its read by readWait, whatever the wait of the context it
-// was given, so a read sent across a leader change that draws no answer is sent again: a member
-// that still counts a stream's or a consumer's leader that is gone answers nothing for it
-// (nats-server v2.15.1, jsStreamInfoRequest, jsConsumerInfoRequest, isGroupLeaderless). The
-// failure of a wait that ran out prints what describe says of the info it read last and the last
-// error.
+// awaitInfo reads an info, until the end of a wait on a server's own fact (until, testDeadline),
+// until a read succeeds and done holds for it, and returns that info. Each caller bounds its read
+// by readWait, whatever the wait of the context it was given, so a read sent across a leader change
+// that draws no answer is sent again: a member that still counts a stream's or a consumer's leader
+// that is gone answers nothing for it (nats-server v2.15.1, jsStreamInfoRequest,
+// jsConsumerInfoRequest, isGroupLeaderless). The failure of a wait that ran out prints what describe
+// says of the info it read last and the last error.
 func awaitInfo[T any](t testing.TB, what string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
 	t.Helper()
-	return testwait.Until(t, what, func() (infoRead[T], bool) {
+	return until(t, boundOf(t), what, func() (infoRead[T], bool) {
 		info, err := read()
 		return infoRead[T]{info: info, err: err, describe: describe}, err == nil && done(info)
 	}).info

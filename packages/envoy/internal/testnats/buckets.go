@@ -40,7 +40,7 @@ import (
 // that is not a stream's or a consumer's leader answers nothing for it while it still counts a
 // leader that is gone (jsStreamInfoRequest, jsConsumerInfoRequest, isGroupLeaderless). So a read
 // sent across a leader change or a member's restart can draw no answer at all, and one that runs
-// out is sent again by the shared wait, whose one bound is the test binary's deadline.
+// out is sent again until the end of the wait (until, testDeadline).
 const readWait = 10 * time.Second
 
 // createSendWait bounds each request of a test fixture's own create of a stream or a bucket
@@ -71,7 +71,9 @@ const bucketSendWait = 4 * createSendWait
 // and its own request's bound for a create a test sends as a raw request. The sends are the shared
 // wait's (testwait.Until), and each ends inside the margin that wait leaves before the test
 // binary's deadline (sendWithin), so a create never answered fails naming its sends, never in go
-// test's timeout panic.
+// test's timeout panic. A send whose sendWait would end later than createSendWait past the shared
+// wait's give-up, and every send in a child whose waits read a step clock, runs on a goroutine of
+// its own (sendWithin), so send calls no method of t that ends the test.
 //
 // nats-server v2.15.1 leaves a stream create unanswered on several paths, which internal/bus's
 // sentAgain lists with their source lines, and sends no answer later: a fixture that waited two
@@ -172,9 +174,9 @@ func refusalOf(conn *natsgo.Conn, before error, subjects []string) error {
 // running member of the cluster answers for the bucket's stream (AwaitBucket), and returns its
 // handle opened afresh on conn under MaxWait (openKeyValue), not taken from the create, whose
 // JetStream context createSendWait bounds: so each request a caller makes on it is bounded by what
-// is left of the shared wait, and not by createSendWait, which bounds only the create's own sends.
-// conn is the connection whose grant the create is made under, so a test of a client's permissions
-// creates the bucket as that client.
+// is left until testDeadline (MaxWait), and not by createSendWait, which bounds only the create's
+// own sends. conn is the connection whose grant the create is made under, so a test of a client's
+// permissions creates the bucket as that client.
 func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo.KeyValueConfig) natsgo.KeyValue {
 	t.Helper()
 	CreateKeyValueOn(t, conn, config)
@@ -222,13 +224,13 @@ func CreateKeyValueOn(t testing.TB, conn *natsgo.Conn, config *natsgo.KeyValueCo
 // openKeyValue opens bucket's handle on js, and returns it. The open reads the bucket's stream
 // once (nats.go v1.55.0 js.KeyValue, kv.go:405) on js's own wait, which the open takes no option
 // to shorten, so it waits for each open readWait at most, as awaitInfo waits for each read, and
-// the shared wait opens again when no answer came by then or the answer was an error: a member
-// that still counts the stream's gone leader answers nothing for it (awaitInfo). An open it no
-// longer waits for goes on until its answer comes, js's wait ends or the connection closes, and its
-// handle is dropped.
+// opens again, until the end of a wait on a server's own fact (until, testDeadline), when no answer
+// came by then or the answer was an error: a member that still counts the stream's gone leader
+// answers nothing for it (awaitInfo). An open it no longer waits for goes on until its answer
+// comes, js's wait ends or the connection closes, and its handle is dropped.
 func openKeyValue(t testing.TB, js natsgo.JetStreamContext, bucket string) natsgo.KeyValue {
 	t.Helper()
-	return testwait.Until(t, fmt.Sprintf("an open of KV bucket %s to be answered with its handle", bucket), func() (bucketOpen, bool) {
+	return until(t, boundOf(t), fmt.Sprintf("an open of KV bucket %s to be answered with its handle", bucket), func() (bucketOpen, bool) {
 		answer := make(chan bucketOpen, 1)
 		go func() {
 			kv, err := js.KeyValue(bucket)
@@ -260,10 +262,11 @@ func (o bucketOpen) String() string {
 }
 
 // AwaitBucket waits until every running member of the cluster both answers for the stream of
-// bucket and holds the interest a write to the bucket is routed by. A member answers a lookup out
-// of the metadata it has applied, and routes a write by the subscription the bucket's stream holds
-// on its subjects, which reaches a member that does not host the stream over the cluster's routes;
-// the two arrive on their own clocks, and a write through a member that has neither yet is
+// bucket and holds the interest a write to the bucket is routed by, each member until the end of a
+// wait on a server's own fact (testDeadline), read as its wait begins. A member answers a lookup
+// out of the metadata it has applied, and routes a write by the subscription the bucket's stream
+// holds on its subjects, which reaches a member that does not host the stream over the cluster's
+// routes; the two arrive on their own clocks, and a write through a member that has neither yet is
 // answered "no responders", which nats.go gives a caller as `nats: no response from stream`.
 func (c *Cluster) AwaitBucket(t testing.TB, bucket string) {
 	t.Helper()
@@ -289,7 +292,7 @@ func (c *Cluster) awaitBucketOn(t testing.TB, i int, server *Server, stream, sub
 	if err != nil {
 		t.Fatalf("open JetStream on member %s: %v", c.Name(i), err)
 	}
-	testwait.Until(t, fmt.Sprintf("member %s to answer for stream %s and route %s", c.Name(i), stream, subject),
+	until(t, boundOf(t), fmt.Sprintf("member %s to answer for stream %s and route %s", c.Name(i), stream, subject),
 		func() (string, bool) {
 			_, err := js.StreamInfo(stream)
 			routed := false

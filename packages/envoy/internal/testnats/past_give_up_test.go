@@ -32,26 +32,28 @@ const (
 // both succeeded.
 var pastGiveUpDone = regexp.MustCompile(`published and flushed \S+ past the shared wait's give-up`)
 
-// A connection a wait made keeps working once the shared wait's give-up has passed: the give-up
-// the dial sets as the connection's deadline (giveUpDial) bounds the connect alone, as nats.go's
+// A connection a wait made keeps working once the wait's end has passed: the end the dial sets as
+// the connection's deadline (endDial, testDeadline) bounds the connect alone, as nats.go's
 // processConnectInit sets its own deadline over it and clears both before the connect returns.
 // Left on the connection, that deadline would end the read of every connection a test made through
-// Connect at the give-up, the last 30 s of every test binary: nats.go closes a connection with no
-// reconnect on that read's i/o timeout, and every later publish and flush on it fails. Main's
-// TestAConnectionAWaitMadeKeepsWorkingPastTheWaitsEnd held the same of main's wait.
+// Connect at its wait's end, 30 s before the test binary's deadline or halfway to it: nats.go
+// closes a connection with no reconnect on that read's i/o timeout, and every later publish and
+// flush on it fails. Main's TestAConnectionAWaitMadeKeepsWorkingPastTheWaitsEnd held the same of
+// main's wait.
 //
-// The row runs as its own child. The child connects through Connect on the wall clock, under the
-// shared wait's own bound, and reads two values the connection keeps (deadlineConn): the deadline
-// its dial gave it, which must be the give-up, and the read deadline it carries once the connect
-// has returned, which must be none. It then takes the give-up as a step of its own
+// The row runs as its own child. The child connects through Connect on the wall clock, under that
+// wait's own end, and reads two values the connection keeps (deadlineConn): the deadline its dial
+// gave it, which must be that end, and the read deadline it carries once the connect has returned,
+// which must be none. It then takes the shared wait's give-up as a step of its own
 // (testwait.SetUpDone) and publishes and flushes past it. The kernel keeps a socket's deadline on
 // the wall clock, which a step clock does not move, so a read that a deadline left on the
-// connection would fail at the give-up comes only once the wall clock gets there; the row reads
-// the deadline itself instead, the state that would fail that read, so its verdict follows from
-// what the dial and nats.go did with the deadline, not from how long a loaded machine took over
-// the connect. Under a fixed -timeout of 50 s the give-up came 20 s in, and a connect that returned
-// less than nats.go's default timeout before it failed the child, since its dial could have given
-// it that timeout in place of the give-up. The parent starts the server, under its own deadline,
+// connection would fail at that end comes only once the wall clock gets there; the row reads the
+// deadline itself instead, the state that would fail that read, so its verdict follows from what
+// the dial and nats.go did with the deadline, not from how long a loaded machine took over the
+// connect. An earlier form of this row ran the child under a fixed -timeout of 50 s, where the
+// dial's deadline, then the shared wait's give-up, came 20 s in, and a connect that returned less
+// than nats.go's default timeout before it failed the child, since its dial could have given it
+// that timeout in place of the give-up. The parent starts the server, under its own deadline,
 // before it runs the child. In the child, nothing the row picks bounds the publish or the flush:
 // the publish appends its few bytes to the connection's buffer and writes nothing itself, and the
 // flush waits for the server's answer at most nats.go's own 10 s (Conn.Flush, nats.go v1.55.0
@@ -70,26 +72,34 @@ func TestAConnectionAWaitMadeKeepsWorkingPastTheGiveUp(t *testing.T) {
 
 // publishPastTheGiveUp is the child of TestAConnectionAWaitMadeKeepsWorkingPastTheGiveUp: it
 // connects through Connect to the real server the parent started at uri, requires the dial to have
-// given the connection the shared wait's give-up as its deadline and the connect to have left it no
-// read deadline, takes the give-up as its next step, then publishes and flushes on the connection,
-// and fails unless both succeed.
+// given the connection the end of Connect's wait (testDeadline) as its deadline and the connect to
+// have left it no read deadline, takes the shared wait's give-up as its next step, then publishes
+// and flushes on the connection, and fails unless both succeed.
 func publishPastTheGiveUp(t *testing.T, uri string) {
 	end, bounded := testwait.GiveUpAt(t)
 	if !bounded {
 		t.Fatal("the child runs with no deadline: no wait of its gives up, and its dial gives its connection no deadline")
 	}
+	first := boundOf(t)
 	conn := Connect(t, uri)
+	last := boundOf(t)
 	t.Cleanup(conn.Close)
 	dialed := dialedConn(t, conn)
-	// A dial begun more than nats.go's default timeout before the give-up gives its connection the
-	// give-up as its deadline, and one begun later that timeout from the dial (giveUpDialer.Dial).
-	want := end
-	if own := dialed.dialedAt.Add(natsgo.DefaultTimeout); own.After(want) {
-		want = own
+	// Connect read its wait's end (testDeadline) once, between first and last, and that end never
+	// moves earlier as time passes. A dial begun more than nats.go's default timeout before the end
+	// gives its connection the end as its deadline, and one begun later that timeout from the dial
+	// (endDialer.Dial).
+	lowest, highest := first.end, last.end
+	if own := dialed.dialedAt.Add(natsgo.DefaultTimeout); own.After(lowest) {
+		lowest = own
+		if own.After(highest) {
+			highest = own
+		}
 	}
-	if !dialed.deadline.Equal(want) {
-		t.Fatalf("the dial gave its connection the deadline %s, want %s: the shared wait's give-up, %s, or nats.go's default timeout from a dial made later than that before it, at %s",
-			dialed.deadline.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano), dialed.dialedAt.Format(time.RFC3339Nano))
+	if dialed.deadline.Before(lowest) || dialed.deadline.After(highest) {
+		t.Fatalf("the dial gave its connection the deadline %s, want one from %s to %s: the end of Connect's wait, read from %s to %s, or nats.go's default timeout from a dial made later than that before it, at %s",
+			dialed.deadline.Format(time.RFC3339Nano), lowest.Format(time.RFC3339Nano), highest.Format(time.RFC3339Nano),
+			first, last, dialed.dialedAt.Format(time.RFC3339Nano))
 	}
 	if read := dialed.readDeadline(); !read.IsZero() {
 		t.Fatalf("the connection still carries the read deadline %s once its connect returned: past it every read of the connection fails, and nats.go closes a connection with no reconnect on that read's i/o timeout", read.Format(time.RFC3339Nano))
@@ -104,7 +114,7 @@ func publishPastTheGiveUp(t *testing.T, uri string) {
 	t.Logf("published and flushed %s past the shared wait's give-up", testwait.Now().Sub(end))
 }
 
-// dialedConn is the connection giveUpDialer dialed under conn (deadlineConn). nats.go does not
+// dialedConn is the connection endDialer dialed under conn (deadlineConn). nats.go does not
 // export it, so it is read through reflect, with nats.go's connection lock held, as connLock reads
 // that lock (Conn.conn, nats.go v1.55.0 nats.go:667); a nats.go whose Conn holds no such field, or
 // a connection some other dialer made, fails the test, naming it.
@@ -120,7 +130,7 @@ func dialedConn(t testing.TB, conn *natsgo.Conn) *deadlineConn {
 	held := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Interface()
 	dialed, ok := held.(*deadlineConn)
 	if !ok {
-		t.Fatalf("the connection under the client is a %T, not one giveUpDialer dialed", held)
+		t.Fatalf("the connection under the client is a %T, not one endDialer dialed", held)
 	}
 	return dialed
 }

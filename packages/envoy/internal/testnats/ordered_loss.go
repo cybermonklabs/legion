@@ -138,10 +138,10 @@ func (h *ConsumerHold) Release() {
 // the server sent before its call, so none is left unread.
 func (h *ConsumerHold) Replaced(t testing.TB) bool {
 	t.Helper()
-	// nats.go's flush takes only a context that carries a deadline. Context gives it the shared
-	// wait's (testwait.Context), and under -timeout 0, where that one has none, shows it the farthest
-	// deadline, which bounds nothing a test reaches: the flush ends on the server's answer, or where
-	// the shared wait gives up, and decides nothing a server that answers late would.
+	// nats.go's flush takes only a context that carries a deadline. Context gives it testDeadline,
+	// and under -timeout 0, where there is none, shows it the farthest deadline, which bounds
+	// nothing a test reaches: the flush ends on the server's answer, or at testDeadline, and decides
+	// nothing a server that answers late would.
 	if err := h.conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("read the consumer creates on %s: %v", h.stream, err)
 	}

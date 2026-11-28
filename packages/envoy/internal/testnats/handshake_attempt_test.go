@@ -43,9 +43,8 @@ const (
 // A call that needs no connection lock answers within the attempt held when it began, and
 // AnswersWithinAttempt passes it: the lock is taken once the call has answered, nats.go did not let
 // it go, and no later attempt reached the hold. The client's connect timeout is what is left until
-// the test's waits give up (left), the one HoldReconnectUntilEnded gives it again
-// (OwnConnectTimeout), so no span of the attempt ends the row; the cleanup's Release ends the
-// attempt.
+// testDeadline (left), the one HoldReconnectUntilEnded gives it again (OwnConnectTimeout), so no
+// span of the attempt ends the row; the cleanup's Release ends the attempt.
 func TestAnswersWithinAttemptPassesACallThatNeedsNoLock(t *testing.T) {
 	hold := StartHandshakeHold(t, URL(t))
 	conn := heldAttemptConn(t, hold, left(t))
@@ -67,11 +66,11 @@ const attemptHeld = "the child's handshake attempt is held"
 // whenever a read of the status is slow passes the call when that read is descheduled, and so does
 // one that reads the attempt count before the lock when the check is held up past the gap; the child
 // then passes, which fails this row. The child runs in a binary of its own, so its failure is read
-// rather than taken as this row's. Its -timeout ends where this row's waits give up
-// (testwait.GiveUpAt), so the child's own waits give up testwait's margin before that and name
-// what they waited for; the context that ends it is this row's shared wait's (testwait.Context),
-// which kills a child still running at the give-up, and the row then fails on what it printed.
-// Under -timeout 0 neither has an end.
+// rather than taken as this row's. Its -timeout ends where this row's shared wait gives up
+// (testwait.GiveUpAt), so the child's own waits end before that, at testwait's margin or at
+// testnats' testDeadline, and name what they waited for; the context that ends it is this row's
+// shared wait's (testwait.Context), which kills a child still running at the give-up, and the row
+// then fails on what it printed. Under -timeout 0 neither has an end.
 func TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt(t *testing.T) {
 	childTimeout := "0"
 	if end, bounded := testwait.GiveUpAt(t); bounded {

@@ -83,8 +83,8 @@ type storedConsumer struct {
 // write to wait for. It fails the test when conn reaches no server this package started and
 // registered, when the server holds no connection by conn's client id, when the file is missing
 // or does not read that way (a consumer in memory storage, another format), naming the path, and
-// when the file has not caught up with the info by the time the shared wait gives up
-// (testwait.Until), whose failure prints the last position each held.
+// when the file has not caught up with the info by the end of a wait on a server's own fact
+// (until, testDeadline), whose failure prints the last position each held.
 func AwaitConsumerStored(t testing.TB, conn *natsgo.Conn, stream, consumer string) {
 	t.Helper()
 	path := consumerStatePath(t, conn, stream, consumer)
@@ -92,7 +92,7 @@ func AwaitConsumerStored(t testing.TB, conn *natsgo.Conn, stream, consumer strin
 	if err != nil {
 		t.Fatalf("testnats: open JetStream to read consumer %s on stream %s: %v", consumer, stream, err)
 	}
-	testwait.Until(t, fmt.Sprintf("%s to hold the position the server reports for consumer %s", path, consumer), func() (string, bool) {
+	until(t, boundOf(t), fmt.Sprintf("%s to hold the position the server reports for consumer %s", path, consumer), func() (string, bool) {
 		info, err := js.ConsumerInfo(stream, consumer)
 		if errors.Is(err, natsgo.ErrConsumerNotFound) || errors.Is(err, natsgo.ErrStreamNotFound) {
 			return "the server holds no such consumer", true
@@ -138,16 +138,16 @@ func positionOf(ackFloorConsumer, ackFloorStream, deliveredConsumer, deliveredSt
 // it holds what the server reports; the flusher writes again only when the state changes.
 //
 // It reads each consumer from the server itself (Jsz), so it needs no connection, and it skips a
-// consumer in memory storage, which keeps no state file. It fails the test when the shared wait
-// gives up (testwait.Until), whose failure names the files that had not caught up, or the error
-// that kept the consumers from being read.
+// consumer in memory storage, which keeps no state file. It fails the test at the end of a wait on
+// a server's own fact (until, testDeadline), whose failure names the files that had not caught up,
+// or the error that kept the consumers from being read.
 func (s *Server) awaitConsumersStored(t testing.TB, stream string) {
 	t.Helper()
 	srv := s.natsServer()
 	if srv == nil {
 		return
 	}
-	testwait.Until(t, fmt.Sprintf("the state files of the consumers of stream %s to hold the positions the server reports before the cut", stream), func() (string, bool) {
+	until(t, boundOf(t), fmt.Sprintf("the state files of the consumers of stream %s to hold the positions the server reports before the cut", stream), func() (string, bool) {
 		behind, err := s.consumersNotStored(srv, stream)
 		if err != nil {
 			return fmt.Sprintf("the consumers of stream %s could not be read: %v", stream, err), false
