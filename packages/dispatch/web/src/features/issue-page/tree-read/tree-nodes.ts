@@ -4,7 +4,6 @@ import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import type { TreeFilter } from "../../../api/queries";
 import type {
   ArtifactBlock,
-  BlockAttributeValue,
   CheckBlock,
   CheckResult,
   Decision,
@@ -475,11 +474,11 @@ function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
 /** A requirement, with the counts and the gaps the coverage read holds for it, and a statement of
  *  the issue where it is one (`isStatementNode`). Where that read holds it, its gaps are the ones
  *  that read carries (`requirementGaps`); a statement lacks a check by the answer's own count of
- *  them, and a plan task where that read counts none serving it once the Plan view holds a plan
- *  task (`KeptReads.planned`). */
+ *  them while the answer names no document that owes its block index, and a plan task where that
+ *  read counts none serving it once the Plan view holds a plan task (`KeptReads.planned`). */
 function draftRequirement(
   node: TreeAnswerNode,
-  _answer: TreeAnswer,
+  answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   if (node.supertag !== "requirement") return undefined;
@@ -493,11 +492,15 @@ function draftRequirement(
   }
   // Where the answer counts the checks that serve it (`checks`, which every read of the route
   // answers on a requirement), a statement lacks a check by that count, whatever the coverage
-  // read says (R9).
+  // read says (R9). While a document of the issue owes its block index that count may not hold
+  // every check yet, and the server names no requirement as lacking one then (`api/coverage.go`,
+  // r-owed-coverage); the read that counts names those documents (`owed_documents`), so the page
+  // draws none either, whether or not the coverage read has answered.
   const { checks: served } = node;
   if (draft.statement === true && typeof served === "number") {
     const others = draft.gaps.filter((gap) => gap !== "no_check");
-    draft.gaps = served === 0 ? [...others, "no_check"] : others;
+    const owed = (answer.owed_documents ?? []).length > 0;
+    draft.gaps = served === 0 && !owed ? [...others, "no_check"] : others;
   }
   // The coverage read counts the plan tasks of this issue and of every issue under it that serve
   // the statement (`plan_tasks`). While a document of the issue is still being indexed that count
@@ -1348,10 +1351,11 @@ export function askNodeIds(
   return new Map([...places].filter(([, id]) => drafts.has(id)));
 }
 
-/** A block as the blocks read answers one, with the words the tree read answers beside it, so a
- *  reader of the blocks read reads a block of the tree read with no change, and a reader of the
- *  words finds them here. */
-export interface TreeBlock extends ArtifactBlock {
+/** A block as the blocks read answers one, but its `attributes` and `references`, which no reader
+ *  of these blocks reads, with the words the tree read answers beside it, so a reader of the
+ *  blocks read reads a block of the tree read with no change, and a reader of the words finds
+ *  them here. */
+export interface TreeBlock extends Omit<ArtifactBlock, "attributes" | "references"> {
   readonly text: string;
   readonly text_tree?: DisplayTree;
 }
@@ -1387,42 +1391,16 @@ function roleDocumentId(
  *  as a pointer list whatever the attribute declares. */
 const POINTER_ITEMS: readonly BlockItemKind[] = ["ask", "comment", "message", "issue"];
 
-/** A node's attributes as the blocks read lists a block's, in the order the node gives them,
- *  each its value as the read answers it, the text the block's opening line writes, with its kind
- *  read from that value: a list of pointers - references joined by one space, as
- *  `parseBlockPointerValue` reads one - is `block[]`, which is what a reader follows as pointers,
- *  and anything else reads as text. This module reads no block schema - the e2e helpers reach
- *  it through `issue-tree.ts` and cannot load the schema's JSON - and no reader of these blocks
- *  on the issue page reads any other kind: a drawing that needs the schema's own kind reads the
- *  schema itself (`typed-block-drawing.ts`, `ReferencedBy.tsx`). */
-function attributesOf(node: TreeAnswerNode): BlockAttributeValue[] {
-  return Object.entries(node.attributes ?? {}).map(([name, value]) => ({
-    kind:
-      value !== "" && parseBlockPointerValue(value, POINTER_ITEMS) !== undefined
-        ? "block[]"
-        : "string",
-    name,
-    value,
-  }));
-}
-
 /**
  * One node as the blocks read answers a block. The tree read answers no markdown range and no
  * edit token: both ends of the range are the block's place (its `document.position`, else its
  * place in the walk), which keeps the order a reader sorts the blocks by (`from`), and the token
- * is empty, so a block from here is never an edit's precondition. The comments and asks that
- * reference it are the ones the read hangs under it (`hungUnder`).
+ * is empty, so a block from here is never an edit's precondition.
  */
-function blockOf(
-  node: TreeAnswerNode,
-  place: number,
-  hung: ReadonlyMap<TreeAnswerNode, { asks: number; comments: number }>
-): TreeBlock {
+function blockOf(node: TreeAnswerNode, place: number): TreeBlock {
   return {
-    attributes: attributesOf(node),
     from: place,
     id: blockIdOfNode(node),
-    references: hung.get(node) ?? { asks: 0, comments: 0 },
     text: node.text,
     text_tree: node.text_tree,
     to: place,
@@ -1431,26 +1409,11 @@ function blockOf(
   };
 }
 
-/** How many asks and comments the read hangs under each node, by the node itself: each under
- *  the node its `parent` names (`parentsIn`), so a comment on one document's block is not counted
- *  on another document's block of the same id. */
-function hungUnder(answer: TreeAnswer): Map<TreeAnswerNode, { asks: number; comments: number }> {
-  const counts = new Map<TreeAnswerNode, { asks: number; comments: number }>();
-  for (const [node, parent] of parentsIn(answer.nodes ?? [])) {
-    if (node.supertag !== "ask" && node.supertag !== "comment") continue;
-    const count = counts.get(parent) ?? { asks: 0, comments: 0 };
-    if (node.supertag === "ask") count.asks += 1;
-    else count.comments += 1;
-    counts.set(parent, count);
-  }
-  return counts;
-}
-
 /**
  * The typed blocks of the document that plays `role` for the issue, from the tree read, in the
- * shape the blocks read of that document (`artifactBlocksQuery`) answered them, so a reader of
- * that read reads these with no change; undefined while there is no answer, as that read's data
- * is before it answers.
+ * shape the blocks read of that document (`artifactBlocksQuery`) answered them, less the two
+ * members no reader of these reads (`TreeBlock`); undefined while there is no answer, as that
+ * read's data is before it answers.
  *
  * A node's role is read node by node. The tree read answers each typed block of a role document
  * once, with a `document` member naming its document and its place there, so a node that names
@@ -1468,7 +1431,6 @@ export function blocksOfRole(
   issue: IssueDetails
 ): TreeBlock[] | undefined {
   if (answer === undefined) return undefined;
-  const hung = hungUnder(answer);
   const documentId = roleDocumentId(answer, role, issue);
   const kinds = ROLE_KINDS[role];
   const inRoleDocument = (node: TreeAnswerNode): node is PlacedNode =>
@@ -1485,9 +1447,9 @@ export function blocksOfRole(
   if (placed.length === members.length) {
     return placed
       .sort((left, right) => left.document.position - right.document.position)
-      .map((node) => blockOf(node, node.document.position, hung));
+      .map((node) => blockOf(node, node.document.position));
   }
-  return members.map(({ node, place }) => blockOf(node, place, hung));
+  return members.map(({ node, place }) => blockOf(node, place));
 }
 
 /**

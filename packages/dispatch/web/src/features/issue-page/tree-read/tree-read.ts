@@ -447,9 +447,9 @@ export function useStartOutlineRead(key: string): () => void {
 }
 
 /** One role's blocks from the read that holds them (`TreeRead.blocksOf`), answered as the blocks
- *  read of that role's document answered them (`artifactBlocksQuery`), so a caller's lines that
- *  read these members stay as they are. The state is that read's own; whether that read runs is
- *  read apart, by the views that draw it (`useBlocksRunning`). */
+ *  read of that role's document answered them (`artifactBlocksQuery`), less the members no caller
+ *  reads (`TreeBlock`). The state is that read's own; whether that read runs is read apart, by
+ *  the views that draw it (`useBlocksRunning`). */
 export interface TreeBlocksRead {
   readonly data: TreeBlock[] | undefined;
   readonly errorUpdateCount: number;

@@ -771,6 +771,25 @@ test("no statement is marked for a missing plan task while a document of the iss
   expect(statementGaps(tree, reads, ["r1"])).toEqual([[]]);
 });
 
+// While a document of the issue owes its block index, the answer's count of the checks that serve
+// a statement may not hold them yet, and the server names no requirement as lacking one: nor does
+// the page. The read that counts the checks names the documents it owes (`owed_documents`), so
+// the page reads that there, whether or not the coverage read has answered.
+test("no statement is marked for a missing check while a document of the issue is still being indexed", () => {
+  const owed =
+    "verification.md version 2 is still being indexed; its coverage shows once that ends.";
+  const tree = answer([block("r1", "requirement", KEY, SPEC, 0, { checks: 0 })], [], {
+    owed_documents: [{ artifact_id: VERIFICATION.id, version: 2 }],
+  });
+  const covered: IssueTreeReads = {
+    coverage: { ...coverage([{ ...requirement("r1"), checks: 0 }]), gaps: [owed] },
+    issue: issueDetails(),
+  };
+
+  expect(statementGaps(tree, covered, ["r1"])).toEqual([[]]);
+  expect(statementGaps(tree, { issue: issueDetails() }, ["r1"])).toEqual([[]]);
+});
+
 // R10, R27: a proposed statement is a question still open and an overtaken one is closed, so
 // neither draws a gap - neither for a missing check, which the answer counts as none on an
 // overtaken statement, nor for a missing plan task - where a live one draws both.
@@ -1169,20 +1188,15 @@ test("drawing the same decisions read twice hands a section's row the same words
 });
 
 // R5: a role's blocks come from the tree read in the shape the blocks read answered them: the
-// blocks of that role's document in their `document.position` order, each with its attributes -
-// a list of pointers as `block[]` - and the asks and comments the read hangs under it; and, on an
-// issue that has converted whose blocks name no document, the nodes of this issue the role's
-// query takes, in the walk's order.
+// blocks of that role's document in their `document.position` order, and, on an issue that has
+// converted whose blocks name no document, the nodes of this issue the role's query takes, in the
+// walk's order.
 test("blocksOf answers a role's typed blocks in the blocks read's shape", () => {
   const issue = issueDetails();
   const unconverted = answer(
     [
-      block("r2", "requirement", KEY, SPEC, 1, {
-        attributes: { serves: `dispatch://${KEY}/spec#b-r1` },
-      }),
+      block("r2", "requirement", KEY, SPEC, 1),
       block("r1", "requirement", KEY, SPEC, 0),
-      personsComment("c1", "r1", "2026-11-05T00:00:00Z"),
-      node("q1", "ask", "r1"),
       block("t1", "plan_task", KEY, PLAN, 0),
     ],
     [],
@@ -1196,10 +1210,8 @@ test("blocksOf answers a role's typed blocks in the blocks read's shape", () => 
   // Each block carries its words beside the blocks read's members, which `ArtifactBlock` lacks.
   expect<unknown>(blocksOfRole(unconverted, "spec", issue)).toEqual([
     {
-      attributes: [],
       from: 0,
       id: "r1",
-      references: { asks: 1, comments: 1 },
       text: "Words of r1.",
       text_tree: reading("Words of r1."),
       to: 0,
@@ -1207,10 +1219,8 @@ test("blocksOf answers a role's typed blocks in the blocks read's shape", () => 
       type: "requirement",
     },
     {
-      attributes: [{ kind: "block[]", name: "serves", value: `dispatch://${KEY}/spec#b-r1` }],
       from: 1,
       id: "r2",
-      references: { asks: 0, comments: 0 },
       text: "Words of r2.",
       text_tree: reading("Words of r2."),
       to: 1,
@@ -1515,33 +1525,6 @@ test("two documents' blocks with one block id are two rows, each its own documen
     `${blockNodeId("plan-md", "a1")} plan_task`,
     "-c1 comment",
   ]);
-});
-
-// The same two blocks, and a comment the read hangs under the plan's task: the blocks of each
-// role count the comments hung under that very node, so the spec's statement of the same id
-// counts none.
-test("a role's block counts the comments hung under it, never another document's block of its id", () => {
-  const tree = answer(
-    [
-      block("a1", "requirement", KEY, SPEC, 0),
-      block("a1", "plan_task", KEY, PLAN, 0),
-      personsComment("c1", "a1", "2026-11-06T00:00:00Z"),
-    ],
-    [],
-    {
-      converted: false,
-      documents: { plan: PLAN.id, spec: SPEC.id, verification: null },
-      tree: null,
-    }
-  );
-  const issue = issueDetails();
-  const comments = (role: "plan" | "spec") =>
-    blocksOfRole(tree, role, issue)?.map((one) => [one.id, one.references.comments]);
-
-  expect({ plan: comments("plan"), spec: comments("spec") }).toEqual({
-    plan: [["a1", 1]],
-    spec: [["a1", 0]],
-  });
 });
 
 // A child's Verification document carries its parent's slug, and the parent's read holds the

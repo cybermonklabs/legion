@@ -9,10 +9,12 @@ import type { TreeAnswer } from "./tree-read";
  */
 
 /**
- * Where the next older comment page of an outline read's answer starts (`comments_before`,
- * `<made_at>,<id>` of the oldest comment the answer holds), which `?comments_before=` reads the
- * 200 comments older than; undefined where no older comment remains: null, left out, or empty, as
- * a view's answer, which answers none, leaves it.
+ * Where the next older comment page of a tree read's answer starts (`comments_before`,
+ * `<made_at>,<id>` of the oldest comment the answer holds), which `?comments_before=` beside the
+ * same view or kinds reads the 200 comments older than; undefined where no older comment remains:
+ * null, left out, or empty. A view's answer names one too, where more than 200 comments stand on
+ * the text of its nodes; the page reads older pages of an outline read alone
+ * (`tree-read.ts`' `readOlderComments`), since no view draws a comment.
  */
 export function olderCommentsBefore(answer: TreeAnswer): string | undefined {
   const before = answer.comments_before;
