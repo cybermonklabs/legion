@@ -388,6 +388,11 @@ type Issue struct {
 	// StandingToldAt is when the owning architect was last told of the terms that still hold the
 	// close (the daily notice), nil for never.
 	StandingToldAt *time.Time
+	// MergeReadWaits says that a request for new work on the issue waits for its merge read: a
+	// merge_read outbox row of the issue stands (Store.PendingMergeRead). It is read beside the
+	// record and never written by PutIssue. Such a root is no queued root (QueuedRoot), since its
+	// record stands at done and nothing of its tree may open before the read places it.
+	MergeReadWaits bool
 }
 
 // Merge is one merge of an issue's work as the record keeps it: the pull request's number, the
