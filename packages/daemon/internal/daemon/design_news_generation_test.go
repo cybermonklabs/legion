@@ -246,6 +246,9 @@ func TestAMembersCreditCountsNothingOnceItsTreesRootIsSetBackToTodo(t *testing.T
 	if root := readIssue(t, r.pool, pathRoot); !root.Lingers() {
 		t.Fatalf("%s = %+v after a person closed it, want its tree lingering: the case's own premise", pathRoot, root)
 	}
+	// The root closed with no merge in its record: a person's confirmation that its work never
+	// merged (D17) is what lets the todo take today's re-admission.
+	confirmOutboxNeverMerged(t, r.pool, pathRoot)
 	r.statusEvent(pathRoot, "todo")
 	root, child := readIssue(t, r.pool, pathRoot), readIssue(t, r.pool, pathChild)
 	if root.Generation != 2 || child.Generation != 1 || child.Tree != pathRoot {

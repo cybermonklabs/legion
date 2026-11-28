@@ -533,6 +533,9 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 		r.seedMember(ungated, root, root, phase.Done, "done", "C", 1)
 		r.wantPublished("the seeded records", r.published())
 
+		// The root closed with no merge in its record: a person's confirmation that its work never
+		// merged (D17) is what lets the todo take today's re-admission.
+		confirmOutboxNeverMerged(t, r.pool, root)
 		r.apply("root-todo", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 4,
 			Type: "issue.updated", Status: "todo", Title: root, Rank: "A", HandedOver: true})
 		if got := readIssue(t, r.pool, root); got == nil || got.Generation != 2 {

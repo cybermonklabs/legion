@@ -541,6 +541,9 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	// recorded session. The fixture
 	// runs no controller, so the launch ends at its wait for a pod; what it asked of the API is
 	// what the assertion reads.
+	// The child closed with no merge in its record: a person's confirmation that its work never
+	// merged (D17) is what lets its todo take today's re-entry.
+	confirmOutboxNeverMerged(t, pool, done.Key)
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "child-todo", intake.DispatchIssue{Key: done.Key, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: done.Title, Parent: root.Key, Rank: "V"}, engine, admission); err != nil {
 		t.Fatal(err)
 	}

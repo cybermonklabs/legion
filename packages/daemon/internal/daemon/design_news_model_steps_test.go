@@ -591,6 +591,9 @@ func (m *newsModel) readmit() {
 	m.observe()
 	before := readIssue(m.t, m.r.pool, pathRoot)
 	m.r.statusEvent(pathRoot, record.DoneStatus)
+	// The root closed with no merge in its record: a person's confirmation that its work never
+	// merged (D17) is what lets the todo take today's re-admission.
+	confirmOutboxNeverMerged(m.t, m.r.pool, pathRoot)
 	m.r.statusEvent(pathRoot, "todo")
 	if root := readIssue(m.t, m.r.pool, pathRoot); root.Generation != before.Generation+1 || root.Lingers() {
 		m.fail("%s = %+v after it was closed and set back to todo, want generation %d and no linger", pathRoot, root, before.Generation+1)
