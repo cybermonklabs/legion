@@ -90,10 +90,14 @@ const DAEMON: Actor = { id: DAEMON_SESSION, kind: "session" };
 const HEAD_SHA = "d".repeat(40);
 const PULL_NUMBER = 7;
 
-/** The head of a second pull request of the issue, opened before `PULL_NUMBER`'s: a `before_merge`
- *  check compares with every head the issue holds, so a result recorded here stands at its
- *  check's basis too, and its check reads Passed on its own row. Every result here is recorded
- *  before any at `HEAD_SHA`, so `HEAD_SHA` is the commit the page names. */
+/** The head of a second pull request of the issue, opened before `PULL_NUMBER`'s and open too. A
+ *  `before_merge` check compares with every head the issue holds, and with two pull requests open
+ *  each open head is a subject: a pass stands only where one stands at each of them
+ *  (`results_pass_stands.go`'s `passStandsOf`, "one head's fail is never hidden by a pass at
+ *  another"), and the page's row takes that answer (`checkStanding`). So a check meant to read
+ *  Passed holds a pass here and at `HEAD_SHA`, and one with a pass here alone reads Failed. Every
+ *  result at `HEAD_SHA` is recorded after every result here, so `HEAD_SHA` is the commit the page
+ *  names. */
 const EARLIER_SHA = "e".repeat(40);
 const EARLIER_PULL_NUMBER = 8;
 
@@ -378,15 +382,19 @@ export interface DashboardSeed {
     readonly children: TileCount;
     readonly questions: TileCount;
   };
-  /** The statement whose two checks passed at different commits, each standing at its check's
-   *  basis: `older` at the earlier pull request's head, recorded first, and `newer` at
-   *  `HEAD_SHA`, the commit the page names. The statement counts in no Met tile and `older` in no
-   *  passed tile, while `older` reads Passed on its own row (R6). */
+  /** The statement whose two checks passed at different commits: `older`'s newest pass is at the
+   *  earlier pull request's head, and `newer`'s at `HEAD_SHA`, the commit the page names. Each
+   *  passed at both open heads, so each reads Passed on its own row; the statement counts in no
+   *  Met tile and `older` in no passed tile, since `older`'s newest pass is at another commit
+   *  (R6). */
   readonly twoCommits: {
     readonly statement: string;
     readonly older: string;
     readonly newer: string;
   };
+  /** The check that passed at one open head of two, the earlier, and nowhere else: no pass of it
+   *  stands, so its own row never reads Passed (`results_pass_stands.go`'s `passStandsOf`). */
+  readonly oneHead: string;
   /** The names a record of this issue carries, which Dashboard may draw: logins, sessions and
    *  their titles, keys, and the roles of its Legion state. */
   readonly names: readonly string[];
@@ -424,19 +432,22 @@ function specText(): string {
     .join("\n\n")}\n`;
 }
 
-/** A check of the Verification document: what it serves, how its one result reads, and the
- *  commit that result is recorded at, `HEAD_SHA` where it names none. */
+/** A check of the Verification document: what it serves, the verdict of its results, the commits
+ *  they are recorded at, each one result, in the order they are recorded (both heads, the earlier
+ *  first, where it names none), and the state its own row reads (`checkStanding`). */
 interface SeededCheck {
   readonly id: string;
   readonly serves: readonly (keyof typeof REQUIREMENTS)[];
   readonly verdict: "fail" | "pass" | null;
-  readonly commit?: string;
+  readonly commits?: readonly string[];
   readonly words: string;
 }
 
 /** Met: r1 (c1 and c5 passed) and r4 (c3 and c5 passed); not met: r2 (c2 failed); unknown: r3
- *  (c4 has no result) and r5 (c6 passed at `EARLIER_SHA`, which is not the commit the page names,
- *  and c7 at `HEAD_SHA`). Passed at that commit: c1, c3, c5 and c7 of seven. */
+ *  (c4 has no result, and c8 passed at one open head of two) and r5 (c6's newest pass is at
+ *  `EARLIER_SHA`, which is not the commit the page names, and c7's at `HEAD_SHA`). Passed at that
+ *  commit: c1, c3, c5 and c7 of eight. c8 is the control of the subject rule: a pass at one open
+ *  head of two does not stand, so its row reads Failed, never Passed (`passStandsOf`). */
 const CHECKS: readonly SeededCheck[] = [
   { id: "c1", serves: ["r1"], verdict: "pass", words: "The list holds each seeded item once." },
   { id: "c2", serves: ["r2"], verdict: "fail", words: "Each item takes its act in place." },
@@ -449,7 +460,8 @@ const CHECKS: readonly SeededCheck[] = [
     words: "The newest item stands first and is counted.",
   },
   {
-    commit: EARLIER_SHA,
+    // Its pass at `HEAD_SHA` first, so its newest pass is at `EARLIER_SHA`.
+    commits: [HEAD_SHA, EARLIER_SHA],
     id: "c6",
     serves: ["r5"],
     verdict: "pass",
@@ -461,16 +473,36 @@ const CHECKS: readonly SeededCheck[] = [
     verdict: "pass",
     words: "The met tile counts the statements met at the named commit.",
   },
+  {
+    commits: [EARLIER_SHA],
+    id: "c8",
+    serves: ["r3"],
+    verdict: "pass",
+    words: "A pass at one open head of two does not stand.",
+  },
 ];
 
-/** The commit `check`'s result is recorded at. */
-function commitOf(check: SeededCheck): string {
-  return check.commit ?? HEAD_SHA;
+/** The commits `check`'s results are recorded at, in order: a passing check's at both open heads,
+ *  the earlier first, and a failing one's at `HEAD_SHA`, where it names none. */
+function commitsOf(check: SeededCheck): readonly string[] {
+  return check.commits ?? (check.verdict === "pass" ? [EARLIER_SHA, HEAD_SHA] : [HEAD_SHA]);
+}
+
+/** The state `check`'s own row reads (`checkStanding`): Passed only where it passed at both open
+ *  heads, and Failed for a fail or for a pass at one open head of two. */
+function rowStateOf(check: SeededCheck): "passed" | "failed" | undefined {
+  if (check.verdict === null) return undefined;
+  const commits = commitsOf(check);
+  return check.verdict === "pass" && commits.includes(EARLIER_SHA) && commits.includes(HEAD_SHA)
+    ? "passed"
+    : "failed";
 }
 
 const MET = ["r1", "r4"] as const;
 /** The statement of `DashboardSeed.twoCommits` and its two checks. */
 const TWO_COMMITS = { newer: "c7", older: "c6", statement: "r5" } as const;
+/** The check of `DashboardSeed.oneHead`. */
+const ONE_HEAD = "c8";
 const VERIFICATION_LEAD = "How the Dashboard is proved.";
 const VERIFICATION_LEAD_AGAIN = "How the Dashboard is proved, check by check.";
 const RUN = "bun run e2e -- e2e/issue-dashboard-today.e2e.ts";
@@ -610,15 +642,10 @@ export async function awaitDecisions(
   }
 }
 
-/** Waits until every check reads the state its result seeds, by the page's own reading
- *  (`checkStanding`). */
+/** Waits until every check reads the state its results seed, by the page's own reading
+ *  (`checkStanding`, `rowStateOf`). */
 async function awaitCheckStates(key: string): Promise<void> {
-  const wanted = new Map(
-    CHECKS.map((check) => [
-      check.id,
-      check.verdict === "pass" ? "passed" : check.verdict === "fail" ? "failed" : undefined,
-    ])
-  );
+  const wanted = new Map(CHECKS.map((check) => [check.id, rowStateOf(check)]));
   const deadline = Date.now() + 20_000;
   for (;;) {
     const checks = (await getIssueResults(key)).checks ?? [];
@@ -662,9 +689,10 @@ async function awaitApproval(
  *
  * - its Legion state (`SEEDED_LEGION`, or `legion`) and the rounds of `ROUNDS`;
  * - seven children, three of them done;
- * - a Verification document of seven checks, each serving its statements by their full
- *   `dispatch://<KEY>/spec#b-<id>` address, with a result for six: one at the head of a second
- *   pull request of the issue, recorded first, and five at `HEAD_SHA`, the commit the page names;
+ * - a Verification document of eight checks, each serving its statements by their full
+ *   `dispatch://<KEY>/spec#b-<id>` address, with results for seven: each pass at the heads of
+ *   both open pull requests, but c8's at the earlier one alone, and each result at `HEAD_SHA`, the
+ *   commit the page names, recorded last;
  * - questions that wait on the reader (one with options, one without, and one whose thread the
  *   reader wrote in and the planner wrote in last), one whose turn is the planner's and one
  *   handed on to bob, and one the reader answered;
@@ -822,26 +850,32 @@ export async function seedDashboard(
   );
   const verificationArtifactId = verification.artifact.id;
   await reviewArtifact(verificationArtifactId, { state: "approved" }, { login: READER });
-  // The result at the earlier pull request's head first, so the newest result of the issue is at
-  // `HEAD_SHA`, the commit the page names.
-  const earlierFirst = [
-    ...CHECKS.filter((check) => commitOf(check) !== HEAD_SHA),
-    ...CHECKS.filter((check) => commitOf(check) === HEAD_SHA),
+  // Each check's results in its own order, and every result at `HEAD_SHA` after every one at the
+  // earlier pull request's head but c6's, whose newest pass is at that head, so the newest result
+  // of the issue is at `HEAD_SHA`, the commit the page names.
+  const results = CHECKS.flatMap((check) => {
+    const verdict = check.verdict;
+    return verdict === null ? [] : commitsOf(check).map((commit) => ({ check, commit, verdict }));
+  });
+  const lastAtHead = (result: (typeof results)[number]) =>
+    result.commit === HEAD_SHA && result.check.commits === undefined;
+  const ordered = [
+    ...results.filter((result) => !lastAtHead(result)),
+    ...results.filter(lastAtHead),
   ];
-  for (const check of earlierFirst) {
-    if (check.verdict === null) continue;
+  for (const { check, commit, verdict } of ordered) {
     await recordCheckResult(
       key,
       {
         check: check.id,
-        commit: commitOf(check),
-        failed: check.verdict === "fail" ? 1 : 0,
+        commit,
+        failed: verdict === "fail" ? 1 : 0,
         negative_control: "Drew no Dashboard and the row failed.",
-        observed: check.verdict === "fail" ? "1 failed" : "1 passed",
+        observed: verdict === "fail" ? "1 failed" : "1 passed",
         role: "tester",
         run: RUN,
         surface: "browser",
-        verdict: check.verdict,
+        verdict,
       },
       asTester
     );
@@ -941,13 +975,14 @@ export async function seedDashboard(
       children: { ids: done, whole: children.length },
       met: { ids: MET, whole: Object.keys(REQUIREMENTS).length },
       passed: {
-        ids: CHECKS.filter((check) => check.verdict === "pass" && commitOf(check) === HEAD_SHA).map(
-          (check) => check.id
-        ),
+        ids: CHECKS.filter(
+          (check) => rowStateOf(check) === "passed" && commitsOf(check).at(-1) === HEAD_SHA
+        ).map((check) => check.id),
         whole: CHECKS.length,
       },
       questions: { ids: [agentsTurn.id, handedOn.id], whole: 6 },
     },
+    oneHead: ONE_HEAD,
     twoCommits: TWO_COMMITS,
     verificationArtifactId,
   };

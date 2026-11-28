@@ -633,6 +633,21 @@ test("the four tiles count what the reads hold and open their lists", async ({ p
   expect(linking(linked.met ?? [], statement), `the met list links ${statement}`).toEqual([]);
   expect(linking(linked.passed ?? [], older), `the passed list links ${older}`).toEqual([]);
 
+  // The subject rule's control: with two pull requests open, each open head is a subject, and a
+  // pass stands only where one stands at each (`results_pass_stands.go`'s `passStandsOf`: "one
+  // head's fail is never hidden by a pass at another"). The seed's one check that passed at the
+  // earlier head alone holds no pass that stands, so its own row never reads Passed, and it counts
+  // in no passed tile.
+  const oneHeadCheck = ((await getIssueResults(seed.key)).checks ?? []).find(
+    (check) => check.block_id === seed.oneHead
+  );
+  expect(oneHeadCheck?.pass_stands?.answer, `${seed.oneHead}'s pass stands`).toBe("no");
+  expect(
+    oneHeadCheck === undefined ? undefined : checkStanding(oneHeadCheck).state,
+    `${seed.oneHead}, passed at one open head of two, reads Passed on its own row`
+  ).toBe("failed");
+  expect(counted.passed.ids, `${seed.oneHead} counts as passed`).not.toContain(seed.oneHead);
+
   // The new page's Verification view reads each statement by the same rule: that statement
   // Unknown while both its checks read Passed on their rows, and Met exactly the statements the
   // Met tile counts.
