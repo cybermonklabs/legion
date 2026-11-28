@@ -111,8 +111,8 @@ function noVersionLine(name: string): string {
  * The texts that Dispatch read in `form`'s version, a part that an answer prints after its other
  * lines: each text by its kind and its node, in the order of the document (`nodes`), then each
  * term that the version itself defines (`definitions`), from the one reading that judged the
- * version. The reviewer of skill://spec-statement-review reads these texts and no others. A
- * version with no text adds no line.
+ * version. The reviewer of skill://spec-statement-review finds each statement, check and term by
+ * these lines, and reads the prose outside them too. A version with no text adds no line.
  */
 function textLines(form: SpecFormRead): string[] {
   const texts = [
@@ -128,8 +128,9 @@ function textLines(form: SpecFormRead): string[] {
 }
 
 /**
- * The last line of an answer about a document that an approval request is judged on: a program
- * decides the form, and skill://spec-statement-review tells a reviewer what no program decides.
+ * The last line of an answer about a covered document, a change request under a root, and not
+ * about the root's own terms.md: a program decides the form, and skill://spec-statement-review
+ * tells a reviewer of the request what no program decides.
  */
 const REVIEWER_LINE =
   "Before you request approval, have a fresh reviewer read it with skill://spec-statement-review.";
@@ -229,7 +230,7 @@ async function issueForms(client: DispatchClient, issue: string): Promise<Dispat
       ? [noVersionLine(artifact.name)]
       : [`${form.name} version ${form.version}:`, ...documentLines(form), ...textLines(form)]
   );
-  if (read.some(({ form }) => form?.in_scope === true)) lines.push(REVIEWER_LINE);
+  if (read.some(({ form }) => form?.scope === "covered")) lines.push(REVIEWER_LINE);
   return {
     text:
       read.length === 0
@@ -391,7 +392,7 @@ export async function specFormCommand(context: CommandContext): Promise<Dispatch
     text: [
       ...documentLines(form),
       ...textLines(form),
-      ...(form.in_scope ? [REVIEWER_LINE] : []),
+      ...(form.scope === "covered" ? [REVIEWER_LINE] : []),
     ].join("\n"),
     details: {
       ...documentOwnerDetails,

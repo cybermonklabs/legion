@@ -1,7 +1,8 @@
 kind: Changed
 body: |-
-  `dispatch spec-form` ends an answer about a document under The Spec with "Before you request
-  approval, have a fresh reviewer read it with skill://spec-statement-review." With no
-  `--artifact`, the line comes once. `--terms` and `--root` print no such line.
+  `dispatch spec-form` ends an answer about a covered document, a change request under a root of The
+  Spec, with "Before you request approval, have a fresh reviewer read it with
+  skill://spec-statement-review." With no `--artifact`, the line comes once. An answer about the
+  root's own `terms.md`, `--terms` and `--root` print no such line.
 custom:
     Issue: pr4210

@@ -74,6 +74,13 @@ const verification = (key: string): StubArtifact => ({
   role: "verification",
   latest: 1,
 });
+const terms = (key: string): StubArtifact => ({
+  id: `${key}-terms`,
+  slug: "terms-md",
+  name: "terms.md",
+  primary: false,
+  latest: 2,
+});
 const notes = (key: string): StubArtifact => ({
   id: `${key}-notes`,
   slug: "notes-md",
@@ -83,7 +90,13 @@ const notes = (key: string): StubArtifact => ({
 });
 
 const ISSUES: readonly StubIssue[] = [
-  { key: "ACME-1", title: "The Spec", status: "in_progress", parent: null, artifacts: [] },
+  {
+    key: "ACME-1",
+    title: "The Spec",
+    status: "in_progress",
+    parent: null,
+    artifacts: [terms("ACME-1")],
+  },
   {
     key: "ACME-2",
     title: "The queue",
@@ -414,7 +427,7 @@ const REFUSAL = {
   findings_total: 1,
 };
 
-/** The last line of an answer about a document that an approval request is judged on. */
+/** The last line of an answer about a covered document, a change request under a root. */
 const REVIEWER_LINE =
   "Before you request approval, have a fresh reviewer read it with skill://spec-statement-review.";
 
@@ -431,6 +444,19 @@ describe("dispatch spec-form", () => {
         `${REVIEWER_LINE}\n`
     );
     expect(formReads()).toEqual(["/api/v1/artifacts/ACME-2-spec/spec-form"]);
+  });
+
+  // The root's terms.md is in scope as the list, and no change request: the reviewer of
+  // skill://spec-statement-review reads a change request under the root.
+  test("the root's terms.md, in scope as the list, ends with no reviewer line", async () => {
+    forms["ACME-1-terms"] = formRead("ACME-1-terms", "terms.md", 2, "list", { definition: 3 });
+
+    const { code, stdout } = await run(["spec-form", "ACME-1", "--artifact", "terms.md"]);
+
+    expect(code).toBe(0);
+    expect(stdout).toBe(
+      "Dispatch read the form of 0 statements, 0 claims, 0 purposes and 3 definitions: no text breaks it.\n"
+    );
   });
 
   test("a document that holds no text of The Spec says that Dispatch decided nothing about its form", async () => {
@@ -783,8 +809,8 @@ describe("dispatch spec-form", () => {
 
 // After its other lines, an answer names each text that Dispatch read in the version, by its kind
 // and its node, then each term that the version itself defines, from the route's `nodes` and
-// `definitions`. So the reviewer of a change request reads the texts that Dispatch read, and no
-// line that an earlier part prints changes.
+// `definitions`. So the reviewer of a change request finds each text by its node, and no line
+// that an earlier part prints changes.
 describe("dispatch spec-form names each text that Dispatch read", () => {
   const DOORS = {
     nodes: [

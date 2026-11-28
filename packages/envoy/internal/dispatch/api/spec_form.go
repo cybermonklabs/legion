@@ -279,10 +279,10 @@ type specFormRead struct {
 	// RefusesApproval is whether an approval request or an approval of this version is refused.
 	RefusesApproval bool `json:"refuses_approval"`
 
-	// Nodes is each text that the judgment read, by its kind and its node, in the order of the
-	// document, and Definitions is each term that the document defines under Terms, which is no
-	// part of the root's list (spec_form_nodes.go). Texts counts them: each kind as Nodes lists it,
-	// and definitions as Definitions does.
+	// Nodes is each text that Texts counts, by its kind and its node, in the order of the document,
+	// and Definitions is each term that the document defines under Terms, which is part of the
+	// root's list only where a person approved this version (spec_form_nodes.go). Texts counts
+	// them: each kind as Nodes lists it, and definitions as Definitions does.
 	Nodes       []specFormText       `json:"nodes"`
 	Definitions []specFormDefinition `json:"definitions"`
 }
@@ -295,13 +295,12 @@ type specFormDocument struct {
 	artifact model.Artifact
 	version  int
 	specScope
-	texts      map[specform.Kind]int
 	findings   []specFormFinding
 	list       specFormList
 	unreadable *specFormFinding
 
-	// extracted is the reading that texts counts, kept for the read route's nodes and
-	// definitions (textsRead), once judged.
+	// extracted is the reading of the version, once judged: its Counts are the count of each kind
+	// of text, and the read route's nodes and definitions come from it (textsRead).
 	extracted specform.Extracted
 }
 
@@ -390,7 +389,7 @@ func (r specFormResult) summary(artifactID string) *specFormSummary {
 	}
 	for _, document := range r.documents {
 		if document.inScope() {
-			for kind, count := range document.texts {
+			for kind, count := range document.extracted.Counts {
 				summary.Texts[kind] += count
 			}
 		}
@@ -663,7 +662,6 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, e
 		document.list = approved.read()
 		refusing = approved.refusingDefinitions(j.skip)
 	}
-	document.texts = extracted.Counts
 	document.extracted = extracted
 	document.findings = []specFormFinding{}
 	if document.unreadable != nil {

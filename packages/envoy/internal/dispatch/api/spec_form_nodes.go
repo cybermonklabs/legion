@@ -9,8 +9,9 @@ type specFormText struct {
 }
 
 // specFormDefinition is one term that a document defines under Terms, with its definition, as
-// the reader read them. It is the document's own proposal, and no part of the root's list of
-// terms (specFormTerm), which holds only what a person approved.
+// the reader read them. The root's list of terms (specFormTerm) holds the term lines of the latest
+// approved version of each document under the root, so a definition is part of it only where a
+// person approved this version, and a proposal of the document until then.
 type specFormDefinition struct {
 	Term       string `json:"term"`
 	Definition string `json:"definition"`
@@ -18,7 +19,8 @@ type specFormDefinition struct {
 
 // textsRead is each text of extracted by its kind and its node, and each definition under Terms,
 // each in the order of the document: what texts counts by kind (specform.Extracted.Counts). A line
-// of the term-line form outside Terms adds no term and no count, so it is neither. The read route
+// of the term-line form outside Terms, which the reader reads only for a second definition, adds
+// no term and no count, so it is neither. The read route
 // answers them from the one reading that judged the version, so a reader of the answer, such as
 // the reviewer of a change request, reads no second copy of the rules of the form.
 func textsRead(extracted specform.Extracted) ([]specFormText, []specFormDefinition) {

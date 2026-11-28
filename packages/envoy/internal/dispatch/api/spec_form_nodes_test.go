@@ -66,7 +66,8 @@ func TestSpecFormReadNamesEachTextAndEachDefinition(t *testing.T) {
 			t.Errorf("texts counts %d of %s, and the answer lists %d", count, kind, listed[kind])
 		}
 	}
-	// The document's own terms are no part of the root's list, which holds only approved terms.
+	// This version's own terms are no part of the root's list: nobody approved it, and the list
+	// holds the terms of approved versions alone.
 	if len(read.Terms) != 0 {
 		t.Fatalf("terms = %#v, want the root's list, which holds no term", read.Terms)
 	}

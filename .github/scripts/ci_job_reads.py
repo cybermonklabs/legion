@@ -526,8 +526,8 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         ("packages/envoy-client/test/**", "`packages/claude-envoy/tests/envoy-channel-stall.test.ts#@legion/envoy-client/test/envoy-stack` and tests/agent-stream-reply-grant.test.ts import modules of that directory, `packages/claude-envoy/tests/envoy-channel-server.test.ts#keyedLayer` imports keyed-layer.ts, and tsc puts them in the claude-envoy program"),
         ("packages/pi-shared/test/image-manifest.ts", "`packages/claude-envoy/tests/legion-tool.test.ts#withImageManifest` imports it from @legion/pi-shared/test/image-manifest"),
         ("packages/pi-shared/test/shared-dispatch-text.ts", "`packages/claude-envoy/tests/packed-skills.test.ts#sharedDispatchSkillNames` imports it from "
-                                                            "@legion/pi-shared/test/shared-dispatch-text, and `packages/pi-shared/test/shared-dispatch-text.ts#COMMANDS` "
-                                                            "reads envoy-client's dispatch commands"),
+                                                            "@legion/pi-shared/test/shared-dispatch-text, and `packages/pi-shared/test/shared-dispatch-text.ts#SOURCE` "
+                                                            "reads envoy-client's source"),
         (f"{FIX}/daemon-api/**", "`packages/claude-envoy/tests/legion-claim.test.ts#daemonFixture`, `packages/claude-envoy/tests/legion-pane-mcp.test.ts#daemonFixture` "
                                  "and `packages/claude-envoy/tests/legion-tool.test.ts#daemonFixture` read its responses; "
                                  "`packages/claude-envoy/tests/daemon-api-version.test.ts#package.json names no daemon API contract, and the plugin speaks this tree's` "

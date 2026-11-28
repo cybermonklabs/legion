@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  GET /api/v1/artifacts/{id}/spec-form answers `nodes`, each text that Dispatch read in the
+  GET /api/v1/artifacts/{id}/spec-form answers `nodes`, each text that `texts` counts in the
   version as `{kind, node}` in the order of the document, and `definitions`, each term that the
   version itself defines as `{term, definition}`. Both come from the reading that judges the
   version, and `texts` counts them. The catalogue of operations gives `dispatch_spec_form` the

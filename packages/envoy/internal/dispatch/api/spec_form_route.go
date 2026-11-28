@@ -80,7 +80,7 @@ func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 		Scope:           document.scope,
 		Plays:           plays,
 		Root:            document.root,
-		Texts:           document.texts,
+		Texts:           document.extracted.Counts,
 		Nodes:           nodes,
 		Definitions:     definitions,
 		Findings:        findings,
