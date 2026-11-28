@@ -235,16 +235,16 @@ func olderUnreadLine(document string, version int, issue string) string {
 // reads the latest approved version of each document, so an older approved version is no source
 // of it: it only orders the definitions of a term that two documents define. When Dispatch cannot
 // read one, it holds no term for that order, each answer names it, and it refuses no request: a
-// request with a new term opens, also after the next version of its document is approved (the
-// reviewer's probe U1b). A defines lease in its first two approved versions, and B, approved
-// outside the root with another definition, moves in. When B moves in after A's second approval,
-// A keeps lease. When B moves in before it (the reviewer's probe U1), A's definition joins at its
-// second approval once its first version cannot be read, so B's governs: the choice that the
-// README states ("an older approved version that Dispatch cannot read holds no term"). Then A's
-// next version that keeps lease is a second definition. The way out that keeps A's definition is
-// B's next version without lease: once the person approves it, A's definition governs again. The
-// root's terms.md is no way out, since a definition of lease there is a second definition too. The
-// control of each row: before the first version is made unreadable, A keeps lease.
+// request with a new term opens, also after the next version of its document is approved. A
+// defines lease in its first two approved versions, and B, approved outside the root with another
+// definition, moves in. When B moves in after A's second approval, A keeps lease. When B moves in
+// before it, A's definition joins at its second approval once its first version cannot be read,
+// so B's governs: the choice that the README states ("an older approved version that Dispatch
+// cannot read holds no term"). Then A's next version that keeps lease is a second definition. The
+// way out that keeps A's definition is B's next version without lease: once the person approves
+// it, A's definition governs again. The root's terms.md is no way out, since a definition of lease
+// there is a second definition too. The control of each row: before the first version is made
+// unreadable, A keeps lease.
 func TestAnUnreadableOlderApprovedVersionOnlyOrdersTheList(t *testing.T) {
 	const second, third = "The hold of one session on one work unit.", "The hold that one session keeps on one work unit."
 	for _, row := range []struct {
@@ -376,12 +376,13 @@ func namesUnread(unread []specFormUnread, artifactID string, version int, line s
 // R50: "The Spec holds a list of defined terms." The list reads the latest approved version of each
 // document, so when Dispatch cannot read that version, the list lacks its terms. Each answer that
 // gives the list then names that version in unread, with the line that says so, also when the
-// answer judges that same document (the reviewer's probe H1): the read at its newer version, which
-// `dispatch spec-form --terms` prints, and the read at the unreadable version itself, the answer of
-// its approval request, the refusal of its request and of the person's approval, and the reason
-// that a reopen writes on its request that breaks the form. The gate keeps its own view: the
-// version that a request names stands in for the approved one, so the request of that document
-// with a definition opens. The control: the read of another document names that version too.
+// answer judges that same document: the read at its newer version, which
+// `dispatch spec-form --terms` prints, and the read at the unreadable version itself, the answer
+// of its approval request, the refusal of its request and of the person's approval, and the
+// reason that a reopen writes on its request that breaks the form. The gate keeps its own view:
+// the version that a request names stands in for the approved one, so the request of that
+// document with a definition opens. The control: the read of another document names that version
+// too.
 func TestEachAnswerThatGivesTheListNamesEachApprovedVersionThatDispatchCannotRead(t *testing.T) {
 	fault := formFaults[0]
 	spec := "# Spec\n\n" + formRequirement(fault.node, fault.clean) + "\n## Terms\n\n" + termList([]string{termLine("lease", leaseDefinition)})

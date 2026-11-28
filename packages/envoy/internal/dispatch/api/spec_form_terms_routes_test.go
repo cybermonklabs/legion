@@ -556,8 +556,9 @@ func TestTheListHoldsTheDefinitionThatJoinedFirst(t *testing.T) {
 	requireTerms(t, tree.handler, first.PrimaryArtifactID, specFormTerm{Term: "lease", Definition: changedLease, Document: "spec.md", Version: 2, Issue: first.Key})
 }
 
-// A request that names the document of a listed definition is judged against the definition that
-// would govern once the person approves it (R50). A's spec holds the listed definition of lease,
+// A request that names the document of a listed definition is judged against the first approved
+// definition of the term in join order whose document the request does not name, or names at a
+// version that still defines the term (R50). A's spec holds the listed definition of lease,
 // and B, which the person approved outside the root, brought a second definition of lease when it
 // moved in. One request names A's spec, whose new version drops lease, and A's Verification
 // document, which adds it. After the approval B's definition would govern and the Verification

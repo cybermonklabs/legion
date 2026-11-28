@@ -7238,7 +7238,9 @@ Each item below names a path with its method and identity, then its purpose.
       A component is a heading of a component or an interface with the paragraph under it.
       It is also a row of the components table, by its Name and Purpose cells.
       A term is a term line under a heading `Terms`.
-      Dispatch judges no other prose of a document, such as a paragraph outside a block, another heading, another table or the title of a callout.
+      Dispatch also judges three texts that a reader can take for a part of a list of terms (How the rules read a term line, below).
+      These are each other paragraph, list item or table row under a heading `Terms`, a heading whose text reads as `Terms` in another form, and a line of the term-line form outside `Terms`.
+      Dispatch judges no other prose of a document, such as another paragraph outside a block, another heading, another table or the title of a callout.
       R49 leaves that prose to the reviewer of R25.
 
     - How Dispatch reads a document: it reads the blocks as each other reader does, also in a block quote, a list item or a callout.
@@ -7500,10 +7502,13 @@ Each item below names a path with its method and identity, then its purpose.
       So its move and an approval at one time can join the list in either order.
       An earlier release also judges no approval, so an approval that it takes during a roll can put a second definition under the root.
 
-    - What a judgment compares a definition with: a definition of a term of the list also breaks the form, unless its own document holds the definition that governs.
-      A judgment compares each definition with the definition of its term that governs once the person approves the request.
-      That is the first definition of the term in the order of the list whose document the request does not name, or names at a version that still defines the term.
+    - What a judgment compares a definition with: a definition of a term of the list also breaks the form, unless its own document holds the definition that the judgment compares it with.
+      It is the first approved definition of the term in join order whose document the request does not name, or names at a version that still defines the term.
+      Where the request names that document, the judgment reads the definition of the version that the request names.
+      Join order is the order of the approved definitions of one term in the list of terms of a root, above: the root's `terms.md` first, then the time at which each joined.
       So a request that drops a listed definition in one document and adds the term in another is compared with the definition that joined next.
+      A request of the root's `terms.md` that adds a term that another approved document defines is compared with the definition of that document, so it breaks the form too.
+      The judgment compares with approved definitions only, so the place of `terms.md` at the start of join order makes no exception for a term that it adds.
       A term that no such definition holds is compared with the first definition in the request, so a second definition of a term in the documents of one request breaks the form too.
       The finding names the term and the document that defines it.
       To change a definition, change the document that defines it, and request approval of that document.

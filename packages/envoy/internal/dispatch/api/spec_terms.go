@@ -21,7 +21,7 @@ import (
 
 // The list of terms of The Spec (R50): what the approved covered documents under a root define,
 // every definition of each term in join order (approvedSpecTexts), the definition of each term that
-// governs once the person approves the documents a judgment names (governingUnder), and the lock
+// a judgment compares the definitions of its documents with (governingUnder), and the lock
 // that a person's approval and a move into a root take before they change the list. The judgment
 // that reads it is in spec_form.go, and the parent history that orders an arrival is in
 // spec_parent_history.go.
@@ -529,15 +529,17 @@ func termKeys(terms []specform.Term) map[string]bool {
 	return keys
 }
 
-// governingUnder is the definition of each term under root that governs once the person approves
-// the call (R50), each with its document: of the term's approved definitions in join order
-// (approvedSpec.definitions), the first whose document the call does not name, or names at a
-// version that still defines the term, and then that version's definition; and of a term that no
-// such definition holds, the first definition of a document of the call, in the order of the call,
-// since each of them joins at the approval. So a request that names the document of the listed
-// definition and drops the term there is judged against the definition that joins next, and a
-// document of the call that adds the term again is refused, naming it. It is made once for the
-// call, after every document of it was read.
+// governingUnder is the definition of each term under root that a judgment compares the call's
+// definitions of the term with (R50), each with its document: of the term's approved definitions
+// in join order (approvedSpec.definitions), the first whose document the call does not name, or
+// names at a version that still defines the term, and then that version's definition; and of a
+// term that no such definition holds, the first definition of a document of the call, in the
+// order of the call, since each of them joins at the approval. So a request that names the
+// document of the listed definition and drops the term there is judged against the definition
+// that joins next, and a document of the call that adds the term again is refused, naming it.
+// Only approved definitions count, so the root's terms.md, which comes first in join order once
+// approved (orderDefinitions), is refused too when the call adds there a term that another
+// approved document defines. It is made once for the call, after every document of it was read.
 func (j *specFormJudge) governingUnder(root string, approved approvedSpec) []requestTerm {
 	if governing, made := j.governing[root]; made {
 		return governing
@@ -571,11 +573,10 @@ func (j *specFormJudge) governingUnder(root string, approved approvedSpec) []req
 	return governing
 }
 
-// firstGoverning is the first of definitions, one term's approved definitions in join order, that
-// governs once the person approves the call: one of a document that skip does not name, or the
-// definition of the version the call names (named, the call's definitions of the term) of a
-// document whose version still defines it. It answers false when the call names each of them at a
-// version that holds the term no longer.
+// firstGoverning is the first of definitions, one term's approved definitions in join order, whose
+// document the call does not name (skip), or names at a version that still defines the term
+// (named, the call's definitions of the term), and then the definition of that version.
+// It answers false when the call names each of them at a version that holds the term no longer.
 func firstGoverning(definitions []approvedTerm, named []requestTerm, skip map[string]bool) (requestTerm, bool) {
 	for _, definition := range definitions {
 		if !skip[definition.artifactID] {
