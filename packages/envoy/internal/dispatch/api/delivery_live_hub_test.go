@@ -3245,6 +3245,76 @@ func TestTheHubRecomputesUpToEvalsRecomputesEvalsViewsAtOnce(t *testing.T) {
 	t.Logf("%d evals views computed at once, one waiting; the delivery views one at a time, while the first evals view was held", mostEvals)
 }
 
+// TestAnEvalsViewFallsDueBesideTheSerialLane: ACME's evals view and a timeline are open, and the
+// timeline's recompute for a merge is held at its read, on the serial lane. A day row of ACME then
+// marks the evals view: its recompute begins once it is due and sends its delta while the
+// timeline's is still held, and the timeline's ends and sends its own once let go. A worker that
+// ran the serial lane's recompute itself began no evals view's until that one ended, so the wait
+// for the evals view's delta while the timeline is held never ends, as the evals view of the
+// Evals tab's bench began 1.0 to 1.7 s after it was due behind the merge timeline's recomputes
+// (dispatch://INFRA-2918, T33).
+func TestAnEvalsViewFallsDueBesideTheSerialLane(t *testing.T) {
+	t.Parallel()
+	var holding atomic.Bool
+	held, gate := make(chan struct{}, 1), make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		observe, lifetime := hub.observe, hub.lifetime
+		hub.observe = func(note deliveryHubNote) {
+			observe(note)
+			if note.what != "recompute position" || !strings.HasPrefix(note.view, deliveryLiveTimeline+"|") || !holding.CompareAndSwap(true, false) {
+				return
+			}
+			held <- struct{}{}
+			// The wait also ends with the hub's lifetime, so a test that fails while the read is
+			// held still stops its hub.
+			select {
+			case <-gate:
+			case <-lifetime.Done():
+			}
+		}
+	})
+	// Registered after the rig's, so it runs first: a failed test never leaves the hub held.
+	t.Cleanup(release)
+	createTestProject(t, rig.handler, "ACME")
+	saveProjectRules(t, rig.database, "ACME", deployRule("acme/widgets", "release / release"))
+	today := rig.clock.Now().UTC().Truncate(24 * time.Hour)
+	// The day row below is of acme/widgets', which a read of ACME's evals reads once the refresher's
+	// record names it (eval_days_rules, evals.DeployReposIn).
+	publishDeployRepo(t, rig.database, "ACME", deployRule("acme/widgets", "release / release"), today.AddDate(0, 0, -27))
+	timeline := newFakeLiveConn()
+	rig.hub.Subscribe(timeline, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
+	timeline.firstSnapshots(t, "t")
+	page := newFakeLiveConn()
+	rig.hub.Subscribe(page, subscribeFrame("e", evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(28)}, "")))
+	page.snapshot(t, "e")
+	page.freshness(t, "the verdict after the evals view's snapshot")
+	rig.settle(t)
+
+	start := rig.mark()
+	holding.Store(true)
+	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-time.Hour)))
+	rig.hub.catchUpNow()
+	testwait.Receive(t, "the timeline's recompute for the merge, held at its read", held)
+	if _, err := rig.database.Pool.Exec(t.Context(), `
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, counts, built_by)
+		values ('ACME', 'ACME/deploy-frequency', 'acme/widgets', 'deploys', '', $1, true, 1, 1, '{"with_prs": 1}', 'test')
+	`, today); err != nil {
+		t.Fatalf("write ACME's day row of deploy-frequency: %v", err)
+	}
+	rig.hub.catchUpNow()
+	page.delta(t, "e")
+	if n := rig.count(start, func(note deliveryHubNote) bool {
+		return note.what == "recompute end" && strings.HasPrefix(note.view, deliveryLiveTimeline+"|")
+	}); n != 0 {
+		t.Fatalf("the timeline's held recompute ended %d times before it was let go", n)
+	}
+	release()
+	if _, ok := timeline.next(t, "the timeline's delta for the merge").(DeliveryLiveDelta); !ok {
+		t.Fatal("want the timeline's delta for the merge")
+	}
+}
+
 func TestAChangeOutsideAWindowRecomputesNothing(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)

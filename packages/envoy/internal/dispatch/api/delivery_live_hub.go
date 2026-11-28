@@ -202,7 +202,7 @@ const deliveryHubFeedBuffer = 1024
 // relay's feed, the live paths' one reader of the event log; marks dirty only the views the change
 // can touch; recomputes each dirty view once per burst, as the GET routes' population read and
 // pure compute, one at a time but for the evals views, up to evalsRecomputes of which run at once
-// beside it; re-runs the compute alone, reading nothing, when something leaves a preset window;
+// beside them; re-runs the compute alone, reading nothing, when something leaves a preset window;
 // and sends each subscriber only the keys whose revision differs from what it holds.
 //
 // Each run of the hub is a generation (hubGeneration): the first Subscribe of a hub with no sub
@@ -210,13 +210,14 @@ const deliveryHubFeedBuffer = 1024
 // with no open page holds no connection for the hub and reads neither log for it. A generation
 // runs three goroutines on a context of its own: the listener; the intake, which alone moves the
 // change log's cursor, applies the relay's events and marks views dirty; and the worker, which
-// alone starts a recompute: it runs each recompute of a delivery view, a Legion view or an expiry
-// itself, one at a time, and each of an evals view on a goroutine of its own, up to
-// evalsRecomputes at once (recomputeAside). Its relay subscription, which waits for a safe
-// horizon, is taken on another goroutine that ends once it has (seedEvents), at the start and
-// after a feed closes. A generation owns its views and conns, and
-// the drop of its last conn is what stops it, so a goroutine of a stopped generation reaches only
-// its own empty maps, never the next generation's, and returns once its context ends.
+// alone starts a recompute, each on a goroutine of its own, and waits for none (runDue): each
+// recompute of a delivery view, a Legion view or an items view, and each delivery view's expiry,
+// on the serial lane, one at a time, and each recompute of an evals view, its expiry's among them,
+// up to evalsRecomputes at once. Its relay
+// subscription, which waits for a safe horizon, is taken on another goroutine that ends once it
+// has (seedEvents), at the start and after a feed closes. A generation owns its views and conns,
+// and the drop of its last conn is what stops it, so a goroutine of a stopped generation reaches
+// only its own empty maps, never the next generation's, and returns once its context ends.
 type deliveryHub struct {
 	server   *server
 	clock    hubClock
@@ -231,9 +232,9 @@ type deliveryHub struct {
 	observe func(deliveryHubNote)
 
 	// running counts every generation's goroutines. A generation's own are added under mu and only
-	// while closed is false, so no such Add can follow the Wait in wait; an evals view's recompute
-	// is added by the worker (recomputeAside), a goroutine running already counts, so its Add
-	// starts while the count is above zero, which sync.WaitGroup allows at any moment.
+	// while closed is false, so no such Add can follow the Wait in wait; a recompute's is added by
+	// the worker (runDue), a goroutine running already counts, so its Add starts while the count is
+	// above zero, which sync.WaitGroup allows at any moment.
 	running sync.WaitGroup
 
 	mu sync.Mutex
@@ -243,19 +244,26 @@ type deliveryHub struct {
 	generation *hubGeneration
 }
 
-// evalsRecomputes is the most recomputes of evals views a generation runs at once
-// (recomputeAside). One rewrite of a delivery settings change marks every evals view of each
-// project whose rows it moves, and each recompute is one snapshot read of the shared pool: on the
-// build farm, 168 evals views marked at once were answered one after another for 1.0-1.6 s, 6-10
-// ms each, which with the rewrite's own commit passed the 2 s R14 gives a settings write. Four at
-// once brought a project's 52 open views to 13 rounds, and at ten times the stated run rate the
-// last of the 8 views a change of the production job names moved was sent 290 ms after the
-// rewrite's commit (dispatch://INFRA-2916); eight at once bring them to 7 rounds. Each recompute's
-// read holds one connection (readContext), so the recomputes hold at most eight of the shared
-// pool's 64 connections (store's sharedPoolSize), as many as a Delivery timeline request holds for
-// its reads side by side (readDeliveryRows) and twice the four a broadcast's delivery holds for the
-// same reason (broadcastDeliveryWorkers). Evals views alone run aside: they judge no freshness,
-// where the delivery views' reads set the one verdict in the order they run.
+// evalsRecomputes is the most recomputes of evals views a generation runs at once (runDue). One
+// rewrite of a delivery settings change marks every evals view of each project whose rows it
+// moves, and each recompute is one snapshot read of the shared pool: on the build farm, 168 evals
+// views marked at once were answered one after another for 1.0-1.6 s, 6-10 ms each, which with
+// the rewrite's own commit passed the 2 s R14 gives a settings write. Four at once brought a
+// project's 52 open views to 13 rounds, and at ten times the stated run rate the last of the 8
+// views a change of the production job names moved was sent 290 ms after the rewrite's commit
+// (dispatch://INFRA-2916); eight at once bring them to 7 rounds. Each recompute's read holds one
+// connection (readContext), so the recomputes hold at most eight of the shared pool's 64
+// connections (store's sharedPoolSize), as many as a Delivery timeline request holds for its reads
+// side by side (readDeliveryRows) and twice the four a broadcast's delivery holds for the same
+// reason (broadcastDeliveryWorkers). Evals views alone run beside each other: they judge no
+// freshness, where the delivery views' reads set the one verdict in the order they run, one at a
+// time on the serial lane.
+//
+// Neither lane waits for the other. While the worker ran each serial recompute itself, an evals
+// view that fell due meanwhile began only once that recompute ended; in the Evals tab's bench at
+// 38b18cb26112, with the merge timeline open beside the tab, the delivery evals view's recompute
+// began 1.0 to 1.7 s after it was due in the slowest writes of every phase, at both rates
+// (dispatch://INFRA-2918, T33).
 const evalsRecomputes = 8
 
 // hubGeneration is one run of the hub. ctx, stop and the channels are set once at its start; the
@@ -276,9 +284,10 @@ type hubGeneration struct {
 	// could hold one the intake never took past g's end, which neither would cancel, and the relay
 	// would keep its generation, its LISTEN connection and its reads of the event log for it.
 	feeds chan hubEventFeed
-	// evalsSlots holds one token for each recompute of an evals view under way, at most
-	// evalsRecomputes (recomputeAside).
-	evalsSlots chan struct{}
+	// evalsRunning counts the recomputes of evals views under way, at most evalsRecomputes, and
+	// serialBusy is set while the serial lane runs a recompute or an expiry (runDue).
+	evalsRunning int
+	serialBusy   bool
 
 	views map[string]*deliveryView // by canonical view key
 	conns map[deliveryLiveConn]map[string]*deliverySub
@@ -490,15 +499,27 @@ type deliveryHubNote struct {
 
 const (
 	// A dirty view is recomputed once no change has marked it for viewQuiet, or viewMaxWait after
-	// the first did, whichever comes first, but for a mark that waits for no quiet
-	// (markDirtyLocked). The quiet coalesces a burst of marks into one recompute. viewMaxWait bounds
-	// what marks that keep coming less than viewQuiet apart can hold a view back: under a stream of
-	// changes the refresher answers each at once (evals.RefresherGap), so its passes and their
-	// echoes mark a view every few hundred milliseconds, and R14 gives a change 2 s from its commit
-	// to every view, which its passes and the recompute itself share. A second leaves them the
-	// other second.
-	viewQuiet   = 250 * time.Millisecond
-	viewMaxWait = time.Second
+	// the first did (evalsViewMaxWait for an evals view no facet narrows), whichever comes first,
+	// but for a mark that waits for no quiet (markDirtyLocked). The quiet coalesces a burst of marks
+	// into one recompute. viewMaxWait bounds what marks that keep coming less than viewQuiet apart
+	// can hold a view back: under a stream of changes the refresher answers each at once
+	// (evals.RefresherGap), so its passes and their echoes mark a view every few hundred
+	// milliseconds, and R14 gives a change 2 s from its commit to every view, which its passes and
+	// the recompute itself share.
+	//
+	// A delivery view, and an evals view a facet narrows, which a delivery row's change marks
+	// itself (touchedByDeliveryRow), is marked as the change commits, and a second leaves the
+	// recompute the other second. An evals view no facet narrows is marked only once the refresher
+	// has rewritten its day rows (touchedBy), and that pass is most of the 2 s: in the Evals tab's
+	// bench at 38b18cb26112 (dispatch://INFRA-2918, T33) the slowest writes' day rows committed 0.6
+	// to 0.9 s after the write at the stated rate and 1.2 to 1.3 s at ten times it, and the
+	// recompute, its frame and the page's presentation took 70 to 130 ms after the recompute began.
+	// So such a view waits evalsViewMaxWait at most, a quarter of a second, which leaves the slowest
+	// of them some 300 ms; a burst of its marks less than that apart costs a recompute each quarter
+	// second, 12 to 25 ms each in that bench.
+	viewQuiet        = 250 * time.Millisecond
+	viewMaxWait      = time.Second
+	evalsViewMaxWait = 250 * time.Millisecond
 	// deliveryLiveRetry is how long a view whose read failed waits before the next.
 	deliveryLiveRetry = 5 * time.Second
 	// deliveryLivePage is how many changes one catch-up read takes.
@@ -541,12 +562,11 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 		ctx: ctx, stop: stop,
 		ready:    make(chan struct{}),
 		wakeWork: make(chan struct{}, 1), wakeChanges: make(chan struct{}, 1), connected: make(chan struct{}, 1),
-		barrier:    make(chan chan struct{}),
-		feeds:      make(chan hubEventFeed),
-		evalsSlots: make(chan struct{}, evalsRecomputes),
-		views:      map[string]*deliveryView{},
-		conns:      map[deliveryLiveConn]map[string]*deliverySub{},
-		p0:         map[string]struct{}{},
+		barrier: make(chan chan struct{}),
+		feeds:   make(chan hubEventFeed),
+		views:   map[string]*deliveryView{},
+		conns:   map[deliveryLiveConn]map[string]*deliverySub{},
+		p0:      map[string]struct{}{},
 	}
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",

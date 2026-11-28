@@ -1305,7 +1305,11 @@ const (
 // recompute makes it. The view is in a generation of its own, which reads nothing, so what each
 // step makes due is read from the view (dueAt) without a database.
 func markEvalsView(start time.Time, steps []evalsMarkStep) *deliveryView {
-	view := evalsViewOf("INFRA", 28, time.Time{}, time.Time{})
+	return markEvalsViewOf(evalsViewOf("INFRA", 28, time.Time{}, time.Time{}), start, steps)
+}
+
+// markEvalsViewOf is markEvalsView of view, an evals view of INFRA.
+func markEvalsViewOf(view *deliveryView, start time.Time, steps []evalsMarkStep) *deliveryView {
 	hub := &deliveryHub{}
 	g := &hubGeneration{wakeWork: make(chan struct{}, 1), views: map[string]*deliveryView{"INFRA": view}}
 	today := measures.Midnight(start)
@@ -1343,7 +1347,7 @@ func markEvalsView(start time.Time, steps []evalsMarkStep) *deliveryView {
 			case evalsDefaults:
 				change = delivery.Change{Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenByDefaults, Repo: "INFRA"}
 			default:
-				panic("markEvalsView: a step of unknown kind " + strconv.Quote(step.kind))
+				panic("markEvalsViewOf: a step of unknown kind " + strconv.Quote(step.kind))
 			}
 			change.Seq = seq
 			hub.mu.Lock()
@@ -1419,11 +1423,12 @@ func TestASettingsRewriteIsRecomputedAtOnce(t *testing.T) {
 }
 
 // TestEveryOtherEvalsViewMarkWaitsTheQuiet: every other mark of an evals view coalesces, due
-// viewQuiet after the last one, cause change: two of each kind that marks it (readings, versions,
-// day writes that are not the rewrite's); a reading or a version after a
-// settings change, which is no rewrite of day rows; a day write that is not the rewrite's, 1.5 s
-// after a settings change that moved no day row, whose rewrite therefore committed none; and a day
-// write after the rewrite's.
+// viewQuiet after the last one and no later than evalsViewMaxWait after the first, cause change:
+// two of each kind that marks it (readings, versions, day writes that are not the rewrite's),
+// 100 ms apart, due evalsViewMaxWait after the first; a reading or a version after a settings
+// change, which is no rewrite of day rows; a day write that is not the rewrite's, 1.5 s after a
+// settings change that moved no day row, whose rewrite therefore committed none; and a day write
+// after the rewrite's, each due viewQuiet after it.
 func TestEveryOtherEvalsViewMarkWaitsTheQuiet(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
@@ -1431,40 +1436,44 @@ func TestEveryOtherEvalsViewMarkWaitsTheQuiet(t *testing.T) {
 	readings, versions := delivery.ChangeKindEvalReadings, delivery.ChangeKindEvalVersions
 	gap, pass := 100*time.Millisecond, 1500*time.Millisecond
 	cases := []struct {
-		name  string
-		steps []evalsMarkStep
-		last  time.Duration
+		name        string
+		steps       []evalsMarkStep
+		first, last time.Duration
 	}{
-		{"two readings", []evalsMarkStep{{0, readings, ""}, {gap, readings, "pr-size"}}, gap},
-		{"two versions", []evalsMarkStep{{0, versions, ""}, {gap, versions, "review-time"}}, gap},
-		{"two day writes", []evalsMarkStep{{0, days, ""}, {gap, days, evals.SlugMergeToProduction}}, gap},
-		{"a reading after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, readings, ""}}, pass},
-		{"a version after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, versions, ""}}, pass},
+		{"two readings", []evalsMarkStep{{0, readings, ""}, {gap, readings, "pr-size"}}, 0, gap},
+		{"two versions", []evalsMarkStep{{0, versions, ""}, {gap, versions, "review-time"}}, 0, gap},
+		{"two day writes", []evalsMarkStep{{0, days, ""}, {gap, days, evals.SlugMergeToProduction}}, 0, gap},
+		{"a reading after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, readings, ""}}, pass, pass},
+		{"a version after a settings change", []evalsMarkStep{{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, versions, ""}}, pass, pass},
 		{"a day write 1.5 s after a settings change that moved no day row", []evalsMarkStep{
 			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, days, ""},
-		}, pass},
+		}, pass, pass},
 		{"a day write after the rewrite's", []evalsMarkStep{
 			{0, settings, ""}, {viewQuiet, evalsAnswered, ""}, {pass, rewrite, ""},
 			{pass + 40*time.Millisecond, evalsAnswered, ""}, {pass + time.Second, days, ""},
-		}, pass + time.Second},
+		}, pass + time.Second, pass + time.Second},
 	}
 	for _, c := range cases {
 		at, cause, ok := markEvalsView(start, c.steps).dueAt()
-		if want := start.Add(c.last + viewQuiet); !ok || !at.Equal(want) || cause != deliveryCauseChange {
-			t.Errorf("%s: due %t, %s after the first mark (%s), want %s after it, viewQuiet after the last (%s)",
+		want := start.Add(min(c.last+viewQuiet, c.first+evalsViewMaxWait))
+		if !ok || !at.Equal(want) || cause != deliveryCauseChange {
+			t.Errorf("%s: due %t, %s after the first mark (%s), want %s after it, viewQuiet after the last or evalsViewMaxWait after the first (%s)",
 				c.name, ok, at.Sub(start), cause, want.Sub(start), deliveryCauseChange)
 			continue
 		}
-		t.Logf("%s: due %s after the first mark, viewQuiet after the last, cause %s", c.name, at.Sub(start), cause)
+		t.Logf("%s: due %s after the first mark, cause %s", c.name, at.Sub(start), cause)
 	}
 }
 
-// TestAViewUnderMarksLessThanTheQuietApartIsDueASecondAfterItsFirst: marks that keep coming less
-// than viewQuiet apart, as the refresher's passes and their echoes make under a stream of changes,
-// never let the view's quiet begin, and hold it no longer than viewMaxWait: it is due one second
-// after its first mark, whatever marks come after that second. Day writes 200 ms apart through
-// 0.8 s and through 3 s, and readings 100 ms apart through 0.9 s.
-func TestAViewUnderMarksLessThanTheQuietApartIsDueASecondAfterItsFirst(t *testing.T) {
+// TestAViewUnderMarksLessThanTheQuietApartIsDueItsLongestWaitAfterItsFirst: marks that keep coming
+// less than viewQuiet apart, as the refresher's passes and their echoes make under a stream of
+// changes, never let the view's quiet begin, and hold it no longer than its longest wait after its
+// first mark, whatever marks come after it: evalsViewMaxWait, a quarter second, for an evals view
+// no facet narrows, whose marks are the refresher's rewrites of the day rows it reads, which have
+// spent most of R14's 2 s already; and viewMaxWait, a second, for one a facet narrows, which a
+// delivery row's change marks as it commits. Day writes 200 ms apart through 0.8 s and through
+// 3 s, and readings 100 ms apart through 0.9 s.
+func TestAViewUnderMarksLessThanTheQuietApartIsDueItsLongestWaitAfterItsFirst(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	every := func(kind string, apart, through time.Duration) []evalsMarkStep {
@@ -1475,20 +1484,31 @@ func TestAViewUnderMarksLessThanTheQuietApartIsDueASecondAfterItsFirst(t *testin
 		return steps
 	}
 	days, readings := delivery.ChangeKindEvalDays, delivery.ChangeKindEvalReadings
-	for _, c := range []struct {
-		name  string
-		steps []evalsMarkStep
+	for _, view := range []struct {
+		name     string
+		narrowed bool
+		longest  time.Duration
 	}{
-		{"day writes 200 ms apart through 0.8 s", every(days, 200*time.Millisecond, 800*time.Millisecond)},
-		{"day writes 200 ms apart through 3 s", every(days, 200*time.Millisecond, 3*time.Second)},
-		{"readings 100 ms apart through 0.9 s", every(readings, 100*time.Millisecond, 900*time.Millisecond)},
+		{"an evals view no facet narrows", false, evalsViewMaxWait},
+		{"an evals view a facet narrows", true, viewMaxWait},
 	} {
-		at, cause, ok := markEvalsView(start, c.steps).dueAt()
-		if want := start.Add(time.Second); !ok || !at.Equal(want) || cause != deliveryCauseChange {
-			t.Errorf("%s: due %t, %s after the first mark (%s), want 1s after it (%s)", c.name, ok, at.Sub(start), cause, deliveryCauseChange)
-			continue
+		for _, c := range []struct {
+			name  string
+			steps []evalsMarkStep
+		}{
+			{"day writes 200 ms apart through 0.8 s", every(days, 200*time.Millisecond, 800*time.Millisecond)},
+			{"day writes 200 ms apart through 3 s", every(days, 200*time.Millisecond, 3*time.Second)},
+			{"readings 100 ms apart through 0.9 s", every(readings, 100*time.Millisecond, 900*time.Millisecond)},
+		} {
+			of := evalsViewOf("INFRA", 28, time.Time{}, time.Time{})
+			of.spec.narrowed = view.narrowed
+			at, cause, ok := markEvalsViewOf(of, start, c.steps).dueAt()
+			if want := start.Add(view.longest); !ok || !at.Equal(want) || cause != deliveryCauseChange {
+				t.Errorf("%s, %s: due %t, %s after the first mark (%s), want %s after it (%s)", view.name, c.name, ok, at.Sub(start), cause, view.longest, deliveryCauseChange)
+				continue
+			}
+			t.Logf("%s, %s: %d marks, due %s after the first, its last %s after it", view.name, c.name, len(c.steps), at.Sub(start), c.steps[len(c.steps)-1].after)
 		}
-		t.Logf("%s: %d marks, due %s after the first, its last %s after it", c.name, len(c.steps), at.Sub(start), c.steps[len(c.steps)-1].after)
 	}
 }
 
