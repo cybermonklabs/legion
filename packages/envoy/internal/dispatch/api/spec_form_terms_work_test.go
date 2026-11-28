@@ -126,10 +126,9 @@ func TestTheWalksOfTheListGrowInProportionToWhatTheyRead(t *testing.T) {
 			documents := make([]approvedSpecDocument, n)
 			contested := map[int][]string{}
 			for index := range documents {
-				issue := fmt.Sprintf("ACME-%d", index+2)
 				documents[index] = approvedSpecDocument{
-					artifact: model.Artifact{ID: fmt.Sprintf("document-%d", index), Name: "spec.md", IssueKey: &issue},
-					version:  1, terms: []specform.Term{{Name: "lease", Definition: "The hold of one session on one work unit."}},
+					id: fmt.Sprintf("document-%d", index), name: "spec.md", issue: fmt.Sprintf("ACME-%d", index+2),
+					version: 1, terms: []specform.Term{{Name: "lease", Definition: "The hold of one session on one work unit."}},
 				}
 				contested[index] = []string{"lease"}
 			}

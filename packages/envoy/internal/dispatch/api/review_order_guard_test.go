@@ -20,16 +20,36 @@ var (
 	// and a limit.
 	clauseMarks = regexp.MustCompile(`[()]|\blimit\b`)
 	// readsReviewTable matches the table after a from or a join, since a statement reaches it
-	// either way and a join's newest-row pick is as ordinary a shape as a plain read's.
-	readsReviewTable = regexp.MustCompile(`\b(?:from|join)\s+` + reviewTable)
+	// either way and a join's newest-row pick is as ordinary a shape as a plain read's. Its group
+	// is the word after the table, which is the table's alias unless it is a keyword of SQL.
+	readsReviewTable = regexp.MustCompile(`\b(?:from|join)\s+` + reviewTable + `(?:\s+(?:as\s+)?(\w+))?`)
 	// reviewOrderText is the leading term of docs.ReviewOrder, the one a statement written with
 	// another order cannot carry: the two after it, created_at and id, are what the wrong order
 	// is made of.
 	reviewOrderText = "event_seq desc nulls last"
-	// wrongOrderColumns names those two columns, alone or after a table or an alias, and no
-	// column that only ends in id, such as artifact_id.
-	wrongOrderColumns = regexp.MustCompile(`\b(?:created_at|id)\b`)
+	// unqualifiedOrderColumns names those two columns alone, which the guard reads as the reviews'
+	// own, and no column that only ends in id, such as artifact_id.
+	unqualifiedOrderColumns = regexp.MustCompile(`(?:^|[^\w.])(?:created_at|id)\b`)
+	// notAnAlias is each word that can follow a table in a from or a join and is no alias of it.
+	notAnAlias = map[string]bool{
+		"where": true, "on": true, "using": true, "join": true, "left": true, "right": true, "inner": true, "outer": true,
+		"full": true, "cross": true, "natural": true, "order": true, "group": true, "limit": true, "offset": true,
+		"union": true, "for": true, "window": true, "having": true, "lateral": true,
+	}
 )
+
+// wrongOrderColumns matches created_at or id of the reviews in a clause of statement: the column
+// alone, or after artifact_reviews or an alias that statement gives it. The same column after
+// another table or alias, such as covered.id of the artifacts, is no column of the reviews.
+func wrongOrderColumns(statement string) *regexp.Regexp {
+	qualifiers := []string{`"?artifact_reviews"?`}
+	for _, match := range readsReviewTable.FindAllStringSubmatch(statement, -1) {
+		if alias := match[1]; alias != "" && !notAnAlias[alias] {
+			qualifiers = append(qualifiers, regexp.QuoteMeta(alias))
+		}
+	}
+	return regexp.MustCompile(unqualifiedOrderColumns.String() + `|(?:^|[^\w.])(?:` + strings.Join(qualifiers, "|") + `)\.(?:created_at|id)\b`)
+}
 
 // The guard reads an order by clause and nothing else, so one edge is outside it: a newest-row
 // pick written with no order by at all, such as
@@ -97,12 +117,13 @@ func reviewOrderOffence(statement string) string {
 		return ""
 	}
 	clauses := orderByClauses(statement)
+	wrong := wrongOrderColumns(statement)
 	held := false
 	for _, clause := range clauses {
 		switch {
 		case strings.Contains(clause, reviewOrderText):
 			held = true
-		case wrongOrderColumns.MatchString(clause):
+		case wrong.MatchString(clause):
 			return clause
 		}
 	}
@@ -199,6 +220,26 @@ func TestTheReviewOrderGuardReadsBothOrders(t *testing.T) {
 		{
 			name:      "two windows, the second in the order 0120 replaced after a call",
 			statement: twoWindows(docs.ReviewOrder, "coalesce(version, 0) desc, "+old),
+			refused:   true,
+		},
+		{
+			// As approvedSpecTexts is written: the reviews ordered in a lateral subquery, and the
+			// statement's own rows by columns of the artifacts.
+			name: "another table's id beside the reviews in ReviewOrder",
+			statement: "select covered.id from artifacts covered cross join lateral (select artifact_reviews.version " +
+				"from artifact_reviews where artifact_reviews.artifact_id = covered.id order by " + docs.ReviewOrder + " limit 1) approved " +
+				"order by covered.issue_key, covered.id",
+		},
+		{
+			name: "the reviews' own id beside the reviews in ReviewOrder",
+			statement: "select covered.id from artifacts covered cross join lateral (select artifact_reviews.version " +
+				"from artifact_reviews where artifact_reviews.artifact_id = covered.id order by " + docs.ReviewOrder + " limit 1) approved " +
+				"order by artifact_reviews.id",
+			refused: true,
+		},
+		{
+			name:      "the order 0120 replaced, through the reviews' alias after as",
+			statement: "select r.id from artifact_reviews as r where r.artifact_id = $1 order by r.created_at desc limit 1",
 			refused:   true,
 		},
 	} {

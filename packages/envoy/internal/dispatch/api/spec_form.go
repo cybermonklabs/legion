@@ -135,35 +135,29 @@ func (s specScope) inScope() bool {
 	return s.scope == specScopeCovered || s.scope == specScopeList
 }
 
-// specScopeOf is where artifact stands for the form, by the setting: the nearest named root among
-// its issue's ancestors (refs.IssueAncestors, parent first) is its root. A root's own documents
-// other than its terms.md are not covered, nested in another root or not, and nor is any document
-// of an issue under a root other than its spec and its Verification document.
+// specScopeOf is where artifact stands for the form, by the setting: the nearest named root at or
+// above its issue (nearestSpecRoot) is its root. A root's own documents other than its terms.md
+// are not covered, nested in another root or not, and nor is any document of an issue under a root
+// other than its spec and its Verification document.
 func (f SpecForm) specScopeOf(ctx context.Context, q queryer, artifact model.Artifact) (specScope, error) {
-	roots := f.roots
-	if len(roots) == 0 {
+	if len(f.roots) == 0 {
 		return specScope{scope: specScopeNoRoot}, nil
 	}
 	if artifact.IssueKey == nil {
 		return specScope{scope: specScopeOutside}, nil
 	}
 	issue := *artifact.IssueKey
-	if slices.Contains(roots, issue) {
-		if artifact.Kind == "doc" && artifact.Slug == termsSlug {
-			return specScope{scope: specScopeList, root: &issue}, nil
-		}
-		return specScope{scope: specScopeRoot, root: &issue}, nil
-	}
-	ancestors, err := refs.IssueAncestors(ctx, q, issue)
-	if err != nil {
-		return specScope{}, fmt.Errorf("read the ancestors of %s: %w", issue, err)
-	}
-	index := slices.IndexFunc(ancestors, func(ancestor string) bool { return slices.Contains(roots, ancestor) })
-	if index < 0 {
+	root, err := f.nearestSpecRoot(ctx, q, &issue)
+	switch {
+	case err != nil:
+		return specScope{}, err
+	case root == "":
 		return specScope{scope: specScopeOutside}, nil
-	}
-	root := ancestors[index]
-	if artifact.Kind == "doc" && (isSpecDocument(artifact) || documentPlays(artifact, model.ArtifactRoleVerification)) {
+	case root == issue && artifact.Kind == "doc" && artifact.Slug == termsSlug:
+		return specScope{scope: specScopeList, root: &root}, nil
+	case root == issue:
+		return specScope{scope: specScopeRoot, root: &root}, nil
+	case artifact.Kind == "doc" && (isSpecDocument(artifact) || documentPlays(artifact, model.ArtifactRoleVerification)):
 		return specScope{scope: specScopeCovered, root: &root}, nil
 	}
 	return specScope{scope: specScopeNotSpec, root: &root}, nil
@@ -929,7 +923,8 @@ func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string)
 		issues = slices.DeleteFunc(issues, func(issue string) bool { return issue == inner || slices.Contains(below, issue) })
 	}
 	rows, err := q.Query(ctx, `
-		select `+docs.ArtifactColumns+`, approved.version, approved.number, approved.markdown
+		select covered.id::text, covered.name, covered.issue_key, covered.slug, covered.created_at,
+			approved.version, approved.number, approved.markdown
 		from artifacts covered
 		cross join lateral (
 			select latest.version, stored.number, coalesce(stored.markdown, '') as markdown
@@ -945,42 +940,37 @@ func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string)
 			(covered.issue_key = any($1::text[]) and (covered.is_primary or `+documentRolePredicate("covered", model.ArtifactRoleVerification)+`))
 			or (covered.issue_key = $2 and covered.slug = $3)
 		)
+		order by covered.issue_key, covered.id
 	`, issues, root, termsSlug)
 	if err != nil {
 		return approvedSpec{}, fmt.Errorf("read the approved documents under %s: %w", root, err)
 	}
 	type approvedVersion struct {
-		artifact model.Artifact
-		version  int
+		document approvedSpecDocument
 		stored   *int
 		markdown string
 	}
 	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (approvedVersion, error) {
 		var each approvedVersion
-		var err error
-		each.artifact, err = docs.ScanArtifact(rowThen{Row: row, then: []any{&each.version, &each.stored, &each.markdown}})
+		document := &each.document
+		err := row.Scan(&document.id, &document.name, &document.issue, &document.slug, &document.createdAt, &document.version, &each.stored, &each.markdown)
 		return each, err
 	})
 	if err != nil {
 		return approvedSpec{}, fmt.Errorf("read the approved documents under %s: %w", root, err)
 	}
-	// The documents come in the order of their issues, then of their ids. The statement orders no
-	// rows of its own, since it reads the reviews: an order by of another id in it is one that the
-	// review-order guard refuses (TestEveryReviewReadOrdersByReviewOrder).
-	slices.SortFunc(versions, func(a, b approvedVersion) int {
-		return cmp.Or(strings.Compare(deref(a.artifact.IssueKey), deref(b.artifact.IssueKey)), strings.Compare(a.artifact.ID, b.artifact.ID))
-	})
 	var (
 		approved  = approvedSpec{unread: []specFormUnread{}} // an answer with no unread version answers [], not null
 		documents []approvedSpecDocument
 	)
 	for _, each := range versions {
+		document := each.document
 		if each.stored == nil {
-			return approvedSpec{}, errorf(http.StatusNotFound, "VERSION_NOT_FOUND", "%s has no version %d", each.artifact.Name, each.version)
+			return approvedSpec{}, errorf(http.StatusNotFound, "VERSION_NOT_FOUND", "%s has no version %d", document.name, document.version)
 		}
-		extracted, err := specform.ExtractDocument(each.artifact.Name, each.version, each.markdown)
+		extracted, err := specform.ExtractDocument(document.name, document.version, each.markdown)
 		if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
-			approved.unread = append(approved.unread, unreadApproved(each.artifact, each.version, err, false))
+			approved.unread = append(approved.unread, unreadApproved(document, document.version, err, false))
 			continue
 		}
 		if err != nil {
@@ -988,13 +978,11 @@ func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string)
 		}
 		for _, text := range extracted.Texts {
 			if text.Kind == specform.KindName {
-				approved.names = append(approved.names, approvedName{artifactID: each.artifact.ID, name: text.Body})
+				approved.names = append(approved.names, approvedName{artifactID: document.id, name: text.Body})
 			}
 		}
-		documents = append(documents, approvedSpecDocument{
-			artifact: each.artifact, version: each.version, terms: extracted.Terms,
-			termsMd: *each.artifact.IssueKey == root && each.artifact.Slug == termsSlug,
-		})
+		document.terms, document.termsMd = extracted.Terms, document.issue == root && document.slug == termsSlug
+		documents = append(documents, document)
 	}
 	definers, keys := definersOf(documents)
 	joins, older, err := definitionJoins(ctx, q, root, f.roots, documents, contestedOf(documents, definers, keys))
@@ -1067,15 +1055,15 @@ func orderDefinitions(documents []approvedSpecDocument, definers map[string][]de
 				return 1
 			}
 			aJoin, bJoin := joins[definitionOf{a.document, key}], joins[definitionOf{b.document, key}]
-			aArtifact, bArtifact := documents[a.document].artifact, documents[b.document].artifact
+			aDocument, bDocument := documents[a.document], documents[b.document]
 			return cmp.Or(aJoin.joined().compare(bJoin.joined()), aJoin.approved.compare(bJoin.approved),
-				aArtifact.CreatedAt.Compare(bArtifact.CreatedAt), strings.Compare(aArtifact.ID, bArtifact.ID))
+				aDocument.createdAt.Compare(bDocument.createdAt), strings.Compare(aDocument.id, bDocument.id))
 		})
 		definitions := make([]approvedTerm, len(held))
 		for index, d := range held {
 			document := documents[d.document]
-			definitions[index] = approvedTerm{artifactID: document.artifact.ID, specFormTerm: specFormTerm{
-				Term: d.term.Name, Definition: d.term.Definition, Document: document.artifact.Name, Version: document.version, Issue: *document.artifact.IssueKey,
+			definitions[index] = approvedTerm{artifactID: document.id, specFormTerm: specFormTerm{
+				Term: d.term.Name, Definition: d.term.Definition, Document: document.name, Version: document.version, Issue: document.issue,
 			}}
 		}
 		ordered = append(ordered, definitions)
@@ -1086,47 +1074,37 @@ func orderDefinitions(documents []approvedSpecDocument, definers map[string][]de
 	return ordered
 }
 
-// unreadApproved is an approved version of artifact that the parser refuses (err, a
+// unreadApproved is version of document, an approved version that the parser refuses (err, a
 // specform.UnreadableError): it gives nothing to compare, so a judgment goes on without its texts,
 // logs it once, and names it to the writer (specFormUnread). older says that it is an older
-// approved version, which only orders the definitions of artifact; a judgment of a document that
+// approved version, which only orders the definitions of document; a judgment of a document that
 // holds a definition refuses the latest one (specform.UnreadListFinding).
-func unreadApproved(artifact model.Artifact, version int, err error, older bool) specFormUnread {
-	issue := deref(artifact.IssueKey)
+func unreadApproved(document approvedSpecDocument, version int, err error, older bool) specFormUnread {
 	slog.Warn("dispatch: the form of The Spec compares no text with an approved version that it cannot read",
-		"artifact", artifact.ID, "document", artifact.Name, "issue", issue, "version", version, "older", older, "error", err)
+		"artifact", document.id, "document", document.name, "issue", document.issue, "version", version, "older", older, "error", err)
 	cause := err.Error()
 	if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
 		cause = unreadable.Err.Error()
 	}
-	line := specform.UnreadLine(artifact.Name, version, issue)
+	line := specform.UnreadLine(document.name, version, document.issue)
 	if older {
-		line = specform.UnreadOlderLine(artifact.Name, version, issue)
+		line = specform.UnreadOlderLine(document.name, version, document.issue)
 	}
 	return specFormUnread{
-		Document: artifact.Name, ArtifactID: artifact.ID, Issue: issue, Version: version,
+		Document: document.name, ArtifactID: document.id, Issue: document.issue, Version: version,
 		Line: line, cause: cause, orders: older,
 	}
 }
 
-// approvedSpecDocument is a covered document with an approved version: the document, its latest
-// approved version, the term lines of that version, and whether it is the root's terms.md.
+// approvedSpecDocument is a covered document with an approved version, as the list reads it: its
+// id, its name, its issue, its slug and when Dispatch created it, its latest approved version, the
+// term lines of that version, and whether it is the root's terms.md.
 type approvedSpecDocument struct {
-	artifact model.Artifact
-	version  int
-	terms    []specform.Term
-	termsMd  bool
-}
-
-// rowThen is Row, whose columns after those that a caller scans go to then, so that
-// docs.ScanArtifact reads the docs.ArtifactColumns of a row that holds more (approvedSpecTexts).
-type rowThen struct {
-	pgx.Row
-	then []any
-}
-
-func (r rowThen) Scan(dest ...any) error {
-	return r.Row.Scan(append(dest, r.then...)...)
+	id, name, issue, slug string
+	createdAt             time.Time
+	version               int
+	terms                 []specform.Term
+	termsMd               bool
 }
 
 // moment is a place in the order of Dispatch's writes: the id of an event (events.id), which
@@ -1209,14 +1187,14 @@ func definitionJoins(ctx context.Context, q queryer, root string, roots []string
 		moved    []string
 		unread   []specFormUnread
 	)
-	artifacts := make(map[string]model.Artifact, len(contested))
+	byID := make(map[string]approvedSpecDocument, len(contested))
 	queued := make(map[string]bool, len(contested)) // each issue of moved once
 	for index := range contested {
 		document := documents[index]
-		ids = append(ids, document.artifact.ID)
+		ids = append(ids, document.id)
 		versions = append(versions, document.version)
-		artifacts[document.artifact.ID] = document.artifact
-		if issue := *document.artifact.IssueKey; issue != root && !queued[issue] {
+		byID[document.id] = document
+		if issue := document.issue; issue != root && !queued[issue] {
 			queued[issue] = true
 			moved = append(moved, issue)
 		}
@@ -1245,9 +1223,9 @@ func definitionJoins(ctx context.Context, q queryer, root string, roots []string
 		}
 		approvals[id] = append(approvals[id], one)
 		if markdown != nil {
-			extracted, err := specform.ExtractDocument(artifacts[id].Name, one.version, *markdown)
+			extracted, err := specform.ExtractDocument(byID[id].name, one.version, *markdown)
 			if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
-				unread = append(unread, unreadApproved(artifacts[id], one.version, err, true))
+				unread = append(unread, unreadApproved(byID[id], one.version, err, true))
 				return nil
 			}
 			if err != nil {
@@ -1273,13 +1251,13 @@ func definitionJoins(ctx context.Context, q queryer, root string, roots []string
 			if version == document.version {
 				return latest[key]
 			}
-			return held[document.artifact.ID][version][key]
+			return held[document.id][version][key]
 		}
 		var arrived *moment
-		if event, ok := history.arrival(*document.artifact.IssueKey, root, roots); ok {
+		if event, ok := history.arrival(document.issue, root, roots); ok {
 			arrived = &moment{event: event}
 		}
-		list := approvals[document.artifact.ID] // newest first
+		list := approvals[document.id] // newest first
 		for _, key := range keys {
 			order := joinOrder{arrived: arrived}
 			for at := 0; at < len(list) && holds(list[at].version, key); at++ {
@@ -1471,8 +1449,9 @@ func (f SpecForm) lockSpecTermsOfMove(ctx context.Context, tx pgx.Tx, before, af
 	return lockSpecTerms(ctx, tx, joined)
 }
 
-// nearestSpecRoot is the named root that an issue under parent has as its nearest named ancestor:
-// parent itself, or the nearest named one of its ancestors, "" for none.
+// nearestSpecRoot is the nearest named root at or above parent: parent itself, or the nearest named
+// one of its ancestors, "" for none or for no parent. So it is the root of an issue under parent,
+// which a move reads (lockSpecTermsOfMove), and the root of parent itself (specScopeOf).
 func (f SpecForm) nearestSpecRoot(ctx context.Context, q queryer, parent *string) (string, error) {
 	if parent == nil {
 		return "", nil
@@ -1515,9 +1494,9 @@ func specFormMarkdown(ctx context.Context, q queryer, artifact model.Artifact, v
 	return markdown, nil
 }
 
-// specFormStrings is the one text column query selects with args, row by row.
-func specFormStrings(ctx context.Context, q queryer, query string, args ...any) ([]string, error) {
-	rows, err := q.Query(ctx, query, args...)
+// specFormStrings is the one text column query selects, row by row.
+func specFormStrings(ctx context.Context, q queryer, query string) ([]string, error) {
+	rows, err := q.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
