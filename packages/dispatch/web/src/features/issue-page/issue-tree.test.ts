@@ -2821,6 +2821,63 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
   expect(placementsOf(root, "under-ask").map((one) => one.parent)).toEqual(["ask-1"]);
 });
 
+// Root R37: a message thread only Threads draws (`thread-address.ts`'s `isThreadsOnly`) is no node
+// of the outline, neither its root nor any reply of it: an agent's note to the issue's people,
+// whoever replied to it, and a thread between agents, which no person wrote in. A thread a person
+// began is the conversation's, an agent's reply in it included, and the thread the Legion daemon
+// began stays the history's.
+test("an agent's note and a thread between agents are no node, and a thread a person began is drawn whole", () => {
+  const planner = { id: "planner", kind: "session" as const };
+  const reviewer = { id: "reviewer", kind: "session" as const };
+  const alice = { id: "alice", kind: "user" as const };
+  const daemon = { id: "legion-daemon:CORE", kind: "session" as const };
+  /** A message `author` wrote at `at`, with the fields of `extra`. */
+  const entry = (
+    id: string,
+    at: string,
+    author: Message["author"],
+    extra: Partial<Message> = {}
+  ): Message => ({ ...thread(id, at).message, author, ...extra });
+  const messages: MessageRead[] = [
+    {
+      message: entry("note", "2026-11-04T09:00:00Z", planner),
+      replies: [
+        entry("note-agent", "2026-11-04T09:10:00Z", reviewer, { in_reply_to: "note" }),
+        entry("note-person", "2026-11-04T09:20:00Z", alice, { in_reply_to: "note" }),
+      ],
+    },
+    {
+      message: entry("between", "2026-11-04T10:00:00Z", planner, { target: "session:reviewer" }),
+      replies: [
+        entry("between-reply", "2026-11-04T10:10:00Z", reviewer, { in_reply_to: "between" }),
+      ],
+    },
+    {
+      message: entry("person", "2026-11-04T11:00:00Z", alice, { target: "session:planner" }),
+      replies: [entry("person-reply", "2026-11-04T11:10:00Z", planner, { in_reply_to: "person" })],
+    },
+    {
+      message: entry("daemon", "2026-11-04T12:00:00Z", daemon),
+      replies: [entry("daemon-reply", "2026-11-04T12:10:00Z", alice, { in_reply_to: "daemon" })],
+    },
+  ];
+  const root = buildIssueTree({ issue: issueDetails([]), messages });
+
+  for (const id of [
+    "note",
+    "note-agent",
+    "note-person",
+    "between",
+    "between-reply",
+    "daemon",
+    "daemon-reply",
+  ]) {
+    expect(nodeOf(root, id), `${id} is drawn in the outline`).toBeUndefined();
+  }
+  expect(placementsOf(root, "person").map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, "person-reply").map((one) => one.parent)).toEqual(["person"]);
+});
+
 // The tree draws no approval request, so the replies under one are in no node's thread. Those
 // only agents wrote, under a request no person answered, are no node of the outline, and the
 // address of one lands in the history, as any thread only agents wrote in does. Once a person

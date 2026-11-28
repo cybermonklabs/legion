@@ -1,10 +1,11 @@
 /**
  * Where an address opens a record of Threads (dispatch://INFRA-5704/spec#b-r-addresses, R12):
- * the choice a record opens under, the record that `/messages/<id>` opens in Threads, and the
- * entry such an address focuses as the record opens.
+ * the choice a record opens under, the record that `/messages/<id>` opens in Threads, the
+ * entry such an address focuses as the record opens, and the message threads only Threads draws,
+ * which the outline leaves out (`isThreadsOnly`).
  *
- * Pure: it makes no request, so the view and the outline's fallback (`address-target.ts`) read
- * one rule.
+ * Pure: it makes no request, so the view, the outline (`issue-tree.ts`) and the outline's
+ * fallback (`address-target.ts`) read one rule.
  */
 import type { MessageRead } from "../../../api/types";
 import { isDaemon } from "../../dashboard/useWaitingItems";
@@ -27,13 +28,18 @@ export function recordChoice(record: ThreadRecord, project: string): ThreadChoic
 }
 
 /**
- * Whether `thread` is on one of root R40's routes to Threads: a thread between agents, which
- * Agents' `person=none` lists (a root that targets an agent, and no person wrote in the thread),
- * or an agent's note to the issue's people, which All lists (a root with no target that no person
- * wrote, whoever replied). It does not read who the agent is: the caller sets the Legion daemon's
- * thread aside first.
+ * Whether `thread` is a message thread that only Threads draws, on one of root R40's routes: a
+ * thread between agents, which Agents' `person=none` lists (a root that targets an agent, and no
+ * person wrote in the thread), or an agent's note to the issue's people, which All lists (a root
+ * with no target that an agent wrote, whoever replied). A thread the Legion daemon of `project`
+ * began is neither, whoever wrote in it: the history draws it (`agents-only.ts`).
+ *
+ * The address reads it (`messageRecord`: a message of such a thread opens in Threads), and so does
+ * the outline, which draws no row for the root or any reply of such a thread (`issue-tree.ts`'s
+ * `buildIssueTree`), so the two read one rule.
  */
-function isAgentThread({ message, replies }: MessageRead): boolean {
+export function isThreadsOnly({ message, replies }: MessageRead, project: string): boolean {
+  if (isDaemon(message.author, project)) return false;
   if (message.target === null) return message.author.kind !== "user";
   return [message, ...(replies ?? [])].every((entry) => entry.author.kind !== "user");
 }
@@ -41,7 +47,7 @@ function isAgentThread({ message, replies }: MessageRead): boolean {
 /**
  * The record `/messages/<id>` opens in Threads, with the message `id` focused (R12, decision 501
  * (7)), or undefined where the message opens as on `main`. A message opens in Threads where its
- * thread is on one of root R40's routes (`isAgentThread`): Agents' `person=none`, a root that
+ * thread is on one of root R40's routes (`isThreadsOnly`): Agents' `person=none`, a root that
  * targets an agent and that no person wrote in, and All's agent's note, a root with no target
  * that an agent other than the Legion daemon wrote, whoever replied. A message of a thread the
  * Legion daemon began, and one of any other thread (a thread a person began, or a thread to an
@@ -60,8 +66,7 @@ export function messageRecord(
   const thread = messages?.find(
     ({ message, replies }) => message.id === id || (replies ?? []).some((reply) => reply.id === id)
   );
-  if (thread === undefined || isDaemon(thread.message.author, project)) return undefined;
-  if (!isAgentThread(thread)) return undefined;
+  if (thread === undefined || !isThreadsOnly(thread, project)) return undefined;
   return threadRecords(thread).find(
     (record) =>
       record.root.id === id || record.replies.some((reply: { id: string }) => reply.id === id)
