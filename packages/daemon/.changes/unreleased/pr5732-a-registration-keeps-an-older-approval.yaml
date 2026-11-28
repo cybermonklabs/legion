@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A person's approval of an earlier version of a root's spec is no longer lost when the architect
+  registers a newer version before the daemon has applied that approval's event. The design gate
+  then took the approval's late event as a review of an older version and dropped it, so the step
+  kept no record that the person had approved: its newest review read as the changes request the
+  approval had answered, a re-admission did not tell the next architect which version the person
+  approved, and a step that stood on an ancestor's approval fell back to no approval when that
+  basis ended. The registration now carries the approval its own read of Dispatch shows, whether
+  Dispatch shows it as an approval of an older version or behind a newer open approval request, on
+  a registration with a basis and on one without.

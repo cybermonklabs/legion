@@ -122,3 +122,36 @@ func TestLatestReviewReadsThePersonsOwnReviewsOnABasis(t *testing.T) {
 		t.Fatalf("a changes request reads as followed by an approval on a step no person approved")
 	}
 }
+
+// The newer of two person's approvals (NewerApproval) in each of its cases: neither, one alone, the
+// higher version of either, one review read twice kept once with the fuller mark, and at one
+// version the later mark of either. The answer is a copy, not either argument.
+func TestNewerApprovalKeepsTheNewerOfTwoApprovals(t *testing.T) {
+	at := time.Date(2026, 11, 26, 17, 0, 0, 0, time.UTC)
+	approval := func(version int, seq int64, at time.Time) *record.PersonApproval {
+		return &record.PersonApproval{Version: version, Mark: record.EventMark{Seq: seq, At: at}}
+	}
+	for _, tc := range []struct {
+		name string
+		a, b *record.PersonApproval
+		want *record.PersonApproval
+	}{
+		{"neither", nil, nil, nil},
+		{"the first alone", approval(2, 3, at), nil, approval(2, 3, at)},
+		{"the second alone", nil, approval(2, 3, at), approval(2, 3, at)},
+		{"the second of a higher version", approval(2, 9, at), approval(3, 5, at), approval(3, 5, at)},
+		{"the first of a higher version", approval(3, 5, at), approval(2, 9, at), approval(3, 5, at)},
+		{"one review, the first with its time alone", approval(2, 0, at), approval(2, 5, at), approval(2, 5, at)},
+		{"one review, the second with its sequence alone", approval(2, 5, at), approval(2, 5, time.Time{}), approval(2, 5, at)},
+		{"at one version, the second placed later", approval(2, 3, at), approval(2, 5, at.Add(time.Minute)), approval(2, 5, at.Add(time.Minute))},
+		{"at one version, the first placed later", approval(2, 5, at.Add(time.Minute)), approval(2, 3, at), approval(2, 5, at.Add(time.Minute))},
+	} {
+		got := NewerApproval(tc.a, tc.b)
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: NewerApproval(%+v, %+v) = %+v, want %+v", tc.name, tc.a, tc.b, got, tc.want)
+		}
+		if got != nil && (got == tc.a || got == tc.b) {
+			t.Errorf("%s: NewerApproval answered one of its arguments, not a copy", tc.name)
+		}
+	}
+}

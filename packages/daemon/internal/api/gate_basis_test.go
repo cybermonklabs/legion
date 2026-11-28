@@ -475,7 +475,9 @@ func setStatus(world *statusRecorder, key, status string) {
 // records one registration fact naming the basis it rests on, the requirement references R's
 // checks serve, the reason and the registering session, and the view fact naming the ancestor.
 func TestBasisGateOpenings(t *testing.T) {
-	h, facts, statuses, architect := basisHarness(t, nil)
+	// The deployment gates the spec step, as every one that keeps a person's approval does: one that
+	// gates no step reads nothing of the root's older reviews (olderReview).
+	h, facts, statuses, architect := basisHarness(t, []record.DesignStep{record.DesignStepSpec})
 	served := func(refs ...string) []string { return refs }
 	for index, tc := range []struct {
 		name   string
@@ -512,17 +514,38 @@ func TestBasisGateOpenings(t *testing.T) {
 			fact.Basis.Serves = served("dispatch://LEGION-150/spec#b-p1@v3", "dispatch://LEGION-150/spec#b-p3@v3")
 			return fact
 		}},
+		// R's newest review is the person's approval of an older version of its own document: the
+		// registration carries it (OlderApproval), as every registration does, at the place the
+		// approval read gives it, whatever request is open.
 		{name: "R holding the person's approval of an older version of its own document", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[rSpec] = dispatch.Approval{State: "stale", LatestVersion: 4, Version: new(2), By: basisAlice, Seq: 5, At: basisApprovedAt}
 			world.reviews[rSpec] = []dispatch.Review{{Version: 2, State: "approved", Actor: basisAlice}}
-		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) }},
+		}, want: func(seq int64) intake.GateRegistered {
+			fact := basisFact(seq, architect)
+			fact.OlderApproval = &record.PersonApproval{Version: 2, Mark: record.EventMark{Seq: 5, At: basisApprovedAt}}
+			return fact
+		}},
 		{name: "a changes request on R's v2 followed by the person's approval of R's v3, with R at v4", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[rSpec] = dispatch.Approval{State: "stale", LatestVersion: 4, Version: new(3), By: basisAlice, Seq: 6, At: basisApprovedAt}
 			world.reviews[rSpec] = []dispatch.Review{
 				{Version: 3, State: "approved", Actor: basisAlice},
 				{Version: 2, State: "changes_requested", Actor: basisAlice, Reason: "name the rollback path"},
 			}
-		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) }},
+		}, want: func(seq int64) intake.GateRegistered {
+			fact := basisFact(seq, architect)
+			fact.OlderApproval = &record.PersonApproval{Version: 3, Mark: record.EventMark{Seq: 6, At: basisApprovedAt}}
+			return fact
+		}},
+		{name: "the person's approval of R's v3, with R at v4 and its approval request open", change: func(world *statusRecorder, _ map[string]any) {
+			world.approvals[rSpec] = dispatch.Approval{State: "awaiting", LatestVersion: 4, Version: new(3), By: basisAlice, Seq: 6, At: basisApprovedAt,
+				AskID: "ask-r4", WaitingOn: "human"}
+			world.reviews[rSpec] = []dispatch.Review{{Version: 3, State: "approved", Actor: basisAlice}}
+		}, want: func(seq int64) intake.GateRegistered {
+			fact := basisFact(seq, architect)
+			fact.RequestAsk = "ask-r4"
+			fact.OlderApproval = &record.PersonApproval{Version: 3, Mark: record.EventMark{Seq: 6, At: basisApprovedAt}}
+			return fact
+		}},
 		// P's live text past the version the person approved drops p2: the view is judged at the
 		// approved version 3, which marks p2, so R's one check of p2 opens the step on it.
 		{name: "P's live text past its approved version: a check serving P2, which the live text drops", change: func(world *statusRecorder, _ map[string]any) {

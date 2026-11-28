@@ -193,16 +193,17 @@ func approvalShown(approval dispatch.Approval) string {
 // registration records none (R1). Each refusal writes its own code, records nothing, and names what
 // Dispatch shows.
 //
-// The reads come in a fixed order: the root's own document's reviews; the basis document; the
-// root's child_of chain up to the basis's issue, then the step's document of each ancestor below
-// it, nearest first; the ancestor's record; for a pending basis the basis document's reviews; the
-// ancestor's primary document at the version its requirements are read at; and the root's own
-// documents, which viewOf reads. None of them is in the fact's transaction, so an ancestor's
-// sign-off can commit between the read of its record and the registration's commit: the workflow
-// reads what the daemon's own store holds of the ancestor again in that transaction, and refuses
-// the registration there as here (workflow's acceptedBasis).
+// The reads come in a fixed order: the root's own document's reviews (reviews, the call's one read
+// of that list, which olderReview may have made already); the basis document; the root's child_of
+// chain up to the basis's issue, then the step's document of each ancestor below it, nearest first;
+// the ancestor's record; for a pending basis the basis document's reviews; the ancestor's primary
+// document at the version its requirements are read at; and the root's own documents, which viewOf
+// reads. None of them is in the fact's transaction, so an ancestor's sign-off can commit between
+// the read of its record and the registration's commit: the workflow reads what the daemon's own
+// store holds of the ancestor again in that transaction, and refuses the registration there as
+// here (workflow's acceptedBasis).
 func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant credential.Grant, req GateRegisterRequest, step record.DesignStep,
-	root dispatch.Issue, document string, own dispatch.Approval) (*record.GateBasis, bool) {
+	root dispatch.Issue, document string, own dispatch.Approval, reviews func() ([]dispatch.Review, error)) (*record.GateBasis, bool) {
 	ctx := r.Context()
 	refuse := func(code, format string, args ...any) (*record.GateBasis, bool) {
 		s.writeFailure(w, r, http.StatusConflict, code, fmt.Sprintf(format, args...))
@@ -221,13 +222,13 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 	if own.ApprovedLatest() != 0 && own.By.Person() {
 		return nil, true
 	}
-	reviews, err := s.dispatch.Reviews(ctx, document)
+	list, err := reviews()
 	if err != nil {
 		return failed(&readFailure{what: "the reviews of " + document, err: err})
 	}
-	if len(reviews) > 0 && reviews[0].State == "changes_requested" {
+	if len(list) > 0 && list[0].State == "changes_requested" {
 		return refuse("ROOT_CHANGES_REQUESTED", "the newest review of %s's %s (%s) is a changes request on version %d by %s, whatever its approval shows now; a root follows that request, so request a person's approval of the issue's own document rather than registering on a basis",
-			root.Key, step.Document(), document, reviews[0].Version, actorNamed(reviews[0].Actor))
+			root.Key, step.Document(), document, list[0].Version, actorNamed(list[0].Actor))
 	}
 
 	// The basis document, and where it stands on the root's chain.
