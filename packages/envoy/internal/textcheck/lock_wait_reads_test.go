@@ -32,8 +32,9 @@ const lockWaitTerm = `(?:\w*\s*\(\s*(?:\w+\.)?wait_event(?:_type)?\s*(?:,[^)]*)?
 // lockWaitValue is Lock, or one of pg_locks' locktype values, which wait_event reports for a lock.
 const lockWaitValue = `e?'(?:lock|relation|extend|frozenid|page|tuple|transactionid|virtualxid|spectoken|object|userlock|advisory|applytransaction)'`
 
-// lockWaitOperator is =, <> or !=, or like, ilike and their negations.
-const lockWaitOperator = `(?:\s*(?:=|<>|!=)\s*|\s+(?:not\s+)?i?like\s+)`
+// lockWaitOperator is =, <> or !=, is distinct from and is not distinct from, or like, ilike and
+// their negations.
+const lockWaitOperator = `(?:\s*(?:=|<>|!=)\s*|\s+is\s+(?:not\s+)?distinct\s+from\s+|\s+(?:not\s+)?i?like\s+)`
 
 var (
 	// lockWaitEvent is a lockWaitTerm compared with a lockWaitValue in either order, or tested
@@ -55,8 +56,9 @@ var (
 //     other, followed by the parenthesis that closes it or by the end of the literal, in whatever
 //     statement holds it (pid in, pid not in, exists, a with query);
 //   - a wait event compared with a lock by its exact value: wait_event_type with Lock, or
-//     wait_event with a locktype such as advisory, by =, <> or !=, or by like, ilike or their
-//     negations, in either order, or tested against a list (in, not in) that holds the value; the
+//     wait_event with a locktype such as advisory, by =, <> or !=, by is distinct from or is not
+//     distinct from, or by like, ilike or their negations, in either order, or tested against a
+//     list (in, not in) that holds the value; the
 //     column qualified (a.wait_event_type) or not, alone, as the first argument of one call
 //     (coalesce, lower) or inside one pair of parentheses, and cast after it (::text); the value
 //     as a string or as an escape string (E'Lock').
@@ -135,6 +137,8 @@ func TestTheLockWaitCheckSeesWhatItGuards(t *testing.T) {
 		{"var qualified = \"'advisory' <> a." + event + "\"", compared},
 		{"var cast = \"coalesce(a." + typed + ", '')::text = 'Lock'\"", compared},
 		{"var liked = \"" + typed + " not like 'Lock'\"", compared},
+		{"var distinct = \"" + typed + " is not distinct from 'Lock'\"", compared},
+		{"var reversedDistinct = \"'Lock' is distinct from " + typed + "\"", compared},
 		{"var lowered = \"lower(" + typed + ") = 'lock'\"", compared},
 		{"var bracketed = \"'Lock' = (" + typed + ")\"", compared},
 		{"var escaped = \"" + typed + " = E'Lock'\"", compared},

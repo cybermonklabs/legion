@@ -30,10 +30,12 @@ import (
 // passed, a caller that reads the time against Deadline reads it past, as against a real one.
 // This is the one place it differs from a real deadline on purpose, whose Deadline never changes.
 //
-// Every test clock that stands in for a production limit, budget or deadline uses it
-// (docs/testing.md). A clock built on context.WithCancelCause keeps the cause but gives Err
-// context.Canceled, which no real limit gives, so code that tells one end from another by Err
-// passes a test it should fail.
+// A test clock that stands in for a production limit, budget or deadline, where the code under
+// test reads its end by Err, context.Cause, its parent's end or Deadline, uses it
+// (docs/testing.md). PassedDeadline, beside it, is the smaller form a test uses to stop a child
+// process where nothing reads more than Done and Err. A clock built on context.WithCancelCause
+// keeps the cause but gives Err context.Canceled, which no real limit gives, so code that tells one
+// end from another by Err passes a test it should fail.
 func StandInDeadline(parent context.Context) (ctx context.Context, pass func(cause error), cancel context.CancelFunc) {
 	// causes holds the cause: context.Cause finds a cause only in the context the standard
 	// library's own cancel records it in, which it looks up through Value. It is cut from parent's
