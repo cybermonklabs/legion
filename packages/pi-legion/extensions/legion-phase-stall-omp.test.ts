@@ -9,6 +9,7 @@ import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
 import {
   type Cleanup,
   call,
+  deleteRelayCapturingStreams,
   type LegionPane,
   type LegionPaneOptions,
   ompNatsGuard,
@@ -424,6 +425,9 @@ async function stallPane(
     if (connection === undefined) {
       const opened = await connect({ servers: run.nats });
       cleanup.push(() => opened.close());
+      // No stream another suite left on this server may answer the frames
+      // (`deleteRelayCapturingStreams`).
+      await deleteRelayCapturingStreams(opened);
       connection = opened;
     }
     relayed += 1;
