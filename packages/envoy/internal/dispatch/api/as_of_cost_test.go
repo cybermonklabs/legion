@@ -170,8 +170,8 @@ type asOfCostRow struct {
 
 // asOfCostRig sends the timed reads to the server, as asOfCostReader. A rig that records refusals
 // keeps a run answered other than 200 in its row and sends the next run: a search whose meaning
-// statement the server ends at searchMeaningStatementBound answers 500, and that answer and its
-// time are what such a row measures. Any other rig stops the test at that run.
+// statement the server ends at searchStatementBound answers 503 SEARCH_TIMEOUT, and that answer
+// and its time are what such a row measures. Any other rig stops the test at that run.
 type asOfCostRig struct {
 	handler         http.Handler
 	tracer          *asOfCostTracer

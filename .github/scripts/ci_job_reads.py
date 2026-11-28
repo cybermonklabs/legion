@@ -2139,13 +2139,13 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The ten static checks of internal/dispatch/api, keyed by their path in this repository: the
-# nine source guards and one_expression_guard_test.go, which reads the module's text for the same
+# The eleven static checks of internal/dispatch/api, keyed by their path in this repository: the
+# ten source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all twenty-two of their tests in the plain step; they are left out of it instead,
+# below would put all twenty-four of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
 # tells nobody anything. The exemption is held to the files it is about in three ways, so a
-# twenty-third such test cannot quietly rejoin the plain step: a file named here that does not
+# twenty-fifth such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -2161,6 +2161,7 @@ TEXT_CHECK_TESTS = {
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": {
         "TestOnlyTheBrokerInsertsEvents"},
     f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": {
+        "TestNoServerPackageImportsTheFixtureWriters",
         "TestOnlyTheIssuePatchWritesTheRoute",
         "TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent",
         "TestTheJudgedWriterGuardSeesAPlantedWriter",
@@ -2179,6 +2180,8 @@ TEXT_CHECK_TESTS = {
         "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
+    f"{ENVOY}/internal/dispatch/api/spec_form_guard_test.go": {
+        "TestOnlyTheFormGateOpensOrAnswersAPersonsApproval"},
     f"{ENVOY}/internal/dispatch/api/spec_writer_route_guard_test.go": {
         "TestEveryRouteThatWritesADocumentChecksItsWriter",
         "TestTheSpecWriterExemptionsStillHold",
@@ -2473,12 +2476,12 @@ DAEMON_STAMPED_GATE_SCRIPT = (
     "-run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'")
 
 
-# The text-check job: the three modules' text checks, and the twenty-two tests of the Dispatch API's
-# ten static checks - its nine source guards and one_expression_guard_test.go. They read the
+# The text-check job: the three modules' text checks, and the twenty-four tests of the Dispatch API's
+# eleven static checks - its ten source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-two out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-four out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
@@ -2539,7 +2542,7 @@ BROWSER_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
 [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
 echo "connections=$connections" >> "$GITHUB_OUTPUT\""""
-BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)"
+BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of ${{ strategy.job-total }})"
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
@@ -2557,6 +2560,7 @@ BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a fail
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
+BROWSER_STORE_CHECK_STEP = "Check that no write grew the file store"
 # One name, two steps: the shard job's and the alone job's second read of the binaries artifact.
 BROWSER_FETCH_STEP = "Download the binaries again, after a first attempt that did not complete"
 # One name, two steps: the shard job's and the alone job's, each running a script of its own,
@@ -2818,10 +2822,10 @@ def browser_gate(filter, job):
          "could not complete"),
         (".github/scripts/dispatch-browser-wait-for-store.sh",
          f"{at_browser(BROWSER_WAIT_STORE_STEP)} runs it to wait for the file store the step "
-         "before it started, which it makes a bucket in and writes, reads back and deletes one "
-         "object in"),
+         "before it started, which it grows one collection of before any write, makes a bucket in, "
+         "writes, reads back and deletes one object in, and checks no write grew"),
         (".github/scripts/dispatch-browser-shard-suite.sh",
-         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's row time"),
+         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's share of the lane's row time"),
         (".github/scripts/dispatch-browser-shard-record.sh",
          f"{at_browser(BROWSER_RECORD_STEP)} runs it to print and collect the file store's log "
          "and the stacks' own logs"),
@@ -2857,6 +2861,9 @@ def browser_gate(filter, job):
         (".github/scripts/gh-read.sh",
          "`.github/scripts/dispatch-browser-run-reads.sh#$script_dir/gh-read.sh` sources it, so the merge job's read of its own attempt's "
          "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
+        (f"{ENVOY}/internal/tests3/one-collection.sh",
+         f"`.github/scripts/dispatch-browser-wait-for-store.sh#packages/envoy/internal/tests3/one-collection.sh`, which {at_browser(BROWSER_WAIT_STORE_STEP)} runs, "
+         f"and {at_browser(BROWSER_STORE_CHECK_STEP)} run it on the file store the shard job starts"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
         # the citation is the two jobs that carry that key rather than a step of either.

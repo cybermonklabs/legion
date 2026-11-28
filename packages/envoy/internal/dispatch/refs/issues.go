@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -13,11 +14,11 @@ import (
 
 // IssueDepthCap is the most links an issue may sit below its root: a create or reparent that
 // would put an issue deeper is refused (the api package's refuseParentTooDeep), so it bounds
-// every recursive issue walk — the ancestor walk below, the children subtree walk, the
-// components and repository walks that climb a whole read's chains together, the architecture
-// tree's containment walks, and the legion-label walk — so the queries terminate even if a raced
-// reparent ever commits a cycle. api's parentDepthCap is this number, and the walks it builds as
-// SQL text splice it in.
+// every recursive issue walk — the ancestor walk below, the children subtree walk and its
+// inheriting form, the components, repository and priority walks that climb a whole read's
+// chains together, the architecture tree's containment walks, and the legion-label walk — so the
+// queries terminate even if a raced reparent ever commits a cycle. api's parentDepthCap is this
+// number, and the walks it builds as SQL text splice it in.
 const IssueDepthCap = 32
 
 // issueDepthCapSQL is IssueDepthCap spliced into the walks built as SQL text.
@@ -132,27 +133,124 @@ type IssueDescendant struct {
 // cost there). The two columns follow from the key, so `union` removes the rows it removes
 // without them.
 func IssueDescendantRows(ctx context.Context, q Queryer, key string) ([]IssueDescendant, error) {
+	return readIssueDescendantRows(ctx, q, key, issueDescendantRowsStatement, "")
+}
+
+// IssueInheritingDescendantRows is every issue below the issue key on `child_of` that takes its
+// priority from it: the children whose own priority is null, their children whose own priority is
+// null, and so on, at any status and in any project, read through q. The descent stops below an
+// issue that has a priority of its own, and that issue is not in the answer either: it resolves to
+// its own priority, and every issue under it to that one or to one nearer, whatever the key's
+// issue holds. So each issue of the answer resolves to what the key's issue passes down, its own
+// priority with its key, else the priority and the source it resolves to itself
+// (IssuePriorityTerms), and a write that moves what it passes down moves the resolved priority or
+// its source of every one of them and of no other issue below it. It is IssueInheritingDescent
+// from the key's issue, in IssueDescendantRows' rows and order: each issue's parent, its status,
+// its depth and its project, nearest first, so each issue's parent comes before it and its
+// ancestors follow from the rows before it and the key's own. It is bounded by IssueDepthCap, as
+// that walk is, so the query terminates even if a raced reparent ever commits a cycle; an issue
+// deeper than that is one IssuePriorityTerms' climb never reaches the key's issue from, so the
+// bound leaves out no issue that takes its priority from it. The key itself is not in the answer.
+// An issue with no such child, an issue no row has, and the empty key answer [].
+//
+// It binds no visibility predicate and takes no acting person, for the reason IssueAncestors
+// gives: it is a rule of a write, which must reach every issue whose resolved priority the write
+// moves, seen or not, and it answers no reader. Each of those issues takes its priority from the
+// key's issue whatever project it is in, and a set that skipped one its writer may not see would
+// leave that issue's resolved priority, to every reader that keeps one from the issue's events, as
+// it was before the write. It names none of them to the writer.
+func IssueInheritingDescendantRows(ctx context.Context, q Queryer, key string) ([]IssueDescendant, error) {
+	return readIssueDescendantRows(ctx, q, key, issueInheritingDescendantRowsStatement, " that take its priority")
+}
+
+// IssueInheritingDescent is the recursive term, named term, of the descent from seeds to every
+// issue under them that takes its priority from them, at any status and in any project: the
+// children whose own priority is null, their children whose own priority is null, and so on. It
+// stops below an issue that has a priority of its own and leaves that issue out, since it resolves
+// to its own (J1 of dispatch://INFRA-5793), and it goes at most IssueDepthCap links down, the
+// farthest IssuePriorityTerms' climb takes a priority, which bounds the walk whatever the rows hold.
+// Each of seeds is a condition on the issue c, and the term holds each issue that meets one at
+// depth 0, and each issue under one at its depth below it, with c.key, then extraColumns, more
+// columns of c where it names any, then its depth. c.key is always the term's first column: the
+// recursive arm joins each issue to its parent by it (c.parent_key = d.key), so the builder writes
+// it itself and no caller can leave it out. Each seed is a select of its own, so a seed that
+// repeats a partial index's predicate lets the planner read that index whole for it, and the
+// issues under the seeds are read through issues_parent_key. It is a `union all`: an issue is
+// reached only through its one parent, one link deeper than that parent, so the term holds no row
+// twice unless two seeds hold one issue.
+//
+// It is the one descent by the priority-resolution rule: IssueInheritingDescendantRows descends
+// through it from one issue, and delivery's openP0Descent from every issue whose own priority is 0,
+// so the stop and the cap of a write's events and of the open P0 reads are one text.
+func IssueInheritingDescent(term, extraColumns string, seeds ...string) string {
+	columns := `c.key`
+	if extraColumns != "" {
+		columns += `, ` + extraColumns
+	}
+	arms := make([]string, 0, len(seeds)+1)
+	for _, seed := range seeds {
+		arms = append(arms, `select `+columns+`, 0 as depth from issues c where `+seed)
+	}
+	arms = append(arms, `select `+columns+`, d.depth + 1
+		from `+term+` d join issues c on c.parent_key = d.key
+		where c.priority is null and d.depth < `+issueDepthCapSQL)
+	return term + ` as (
+		` + strings.Join(arms, `
+		union all
+		`) + `
+	)`
+}
+
+// issueDescendantColumns are the columns of the issue c that the walks of IssueDescendantRows and
+// IssueInheritingDescendantRows carry after its key, c.key, which IssueInheritingDescent writes
+// first itself and IssueDescendantRows' walk writes before them; and issueDescendantRowsAnswer the
+// select both answer their rows by, in IssueDescendant's order, nearest first and at one depth in
+// the order of their projects and numbers, so the two answer the same rows the same way and differ
+// only in where the walk stops. The answer leaves out depth 0, the issue IssueInheritingDescent
+// starts from.
+const (
+	issueDescendantColumns    = `c.parent_key, c.status, c.project_key, c.number`
+	issueDescendantRowsAnswer = `
+		select key, parent_key, status, depth, project_key from descendants
+		where depth > 0
+		order by depth, project_key, number
+	`
+)
+
+// The statements of IssueDescendantRows and IssueInheritingDescendantRows, $1 the key each starts
+// at, built once, at start. IssueDescendantRows' walk starts at the key's children, at depth 1, and
+// passes below every issue; IssueInheritingDescendantRows' is IssueInheritingDescent from the
+// key's own issue, at depth 0.
+var (
+	issueDescendantRowsStatement = `
+		with recursive descendants as (
+			select c.key, ` + issueDescendantColumns + `, 1 as depth
+			from issues c where c.parent_key = $1
+			union
+			select c.key, ` + issueDescendantColumns + `, d.depth + 1
+			from issues c join descendants d on c.parent_key = d.key
+			where d.depth < ` + issueDepthCapSQL + `
+		)` + issueDescendantRowsAnswer
+	issueInheritingDescendantRowsStatement = `
+		with recursive ` + IssueInheritingDescent("descendants", issueDescendantColumns, "c.key = $1") +
+		issueDescendantRowsAnswer
+)
+
+// readIssueDescendantRows reads statement, the statement of IssueDescendantRows or of
+// IssueInheritingDescendantRows, from the issue key through q, and answers its rows; the empty key
+// answers [] and reads nothing. A failure names the descendants of key, followed by what, which
+// says which of them the walk keeps ("" for every one).
+func readIssueDescendantRows(ctx context.Context, q Queryer, key, statement, what string) ([]IssueDescendant, error) {
 	if key == "" {
 		return []IssueDescendant{}, nil
 	}
-	rows, err := q.Query(ctx, `
-		with recursive descendants as (
-			select c.key, c.parent_key, c.status, c.project_key, c.number, 1 as depth
-			from issues c where c.parent_key = $1
-			union
-			select c.key, c.parent_key, c.status, c.project_key, c.number, d.depth + 1
-			from issues c join descendants d on c.parent_key = d.key
-			where d.depth < $2
-		)
-		select key, parent_key, status, depth, project_key from descendants
-		order by depth, project_key, number
-	`, key, IssueDepthCap)
+	rows, err := q.Query(ctx, statement, key)
 	if err != nil {
-		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
+		return nil, fmt.Errorf("read the descendants of %s%s: %w", key, what, err)
 	}
 	descendants, err := pgx.CollectRows(rows, pgx.RowToStructByPos[IssueDescendant])
 	if err != nil {
-		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
+		return nil, fmt.Errorf("read the descendants of %s%s: %w", key, what, err)
 	}
 	return descendants, nil
 }
@@ -258,3 +356,95 @@ func IssueRepository(ctx context.Context, q Queryer, key string) (*string, error
 	}
 	return resolved, nil
 }
+
+// IssuePriorityTerms resolve the priority of every issue of `subjects`, the one-column term of
+// issue keys each statement that splices these defines before them, as IssueRepoTerms do: the
+// issue's own priority where it has one, else that of the nearest issue above it on its parent
+// chain that has one, in any project, else none (J1 of dispatch://INFRA-5793). The walk climbs
+// every subject's chain together, itself first and then parent_key, as IssueRepoTerms' does, so
+// a read of many issues pays one walk rather than one per row; but it climbs into a parent of any
+// project, as api's issueAdvancesTerms does, since work under an issue of another project is that
+// issue's work too. A chain stops climbing at the first issue whose own priority is set, or at
+// IssueDepthCap links up, which writes never let a chain pass (api's refuseParentTooDeep): at most
+// IssueDepthCap+1 rows per subject, at most one of them with a priority. A chain that reaches the
+// cap with no priority found, a loop or one a direct database write made, resolves none: unlike
+// the repository walk it marks nothing too deep and refuses nothing, since none is what an issue
+// with no priority above it reads anyway, and a refusal would fail the whole read of every page
+// that holds such an issue for want of a value that may be none.
+//
+// `priority_resolved` answers, for each subject that resolves a priority, that priority and
+// `source`, the key of the issue it comes from where that is not the subject itself; a subject
+// that resolves none has no row, which IssuePriorityJoin's left join reads as null in both
+// (IssuePriorityColumns). This is the server's one priority-resolution rule, which a read takes
+// one of two ways. The reads that climb, from an issue up to the priority it takes, splice these
+// terms: the issue read resolves one issue through them, the listing its page (api's
+// issueRowStatement and issueSummaryQuery), the p0 checks of a write one issue (api's
+// issuePriorityStandingQuery), and every other read of issue rows the rows it reads
+// (IssuePriorityJoin, IssuePriorityJoinOn); and the listing's priority filter climbs from its own
+// candidates through the same walk (IssuePriorityTermsOver), so the rows a filter keeps and what
+// they read can never disagree. The reads that descend, from the issues a priority comes from down
+// to the issues that take it, go through IssueInheritingDescent, whose stop is this walk's, an own
+// priority, and whose bound is this walk's cap: IssueInheritingDescendantRows, the issues whose
+// resolved priority a write moves, and delivery's openP0Descent, the open P0 issues. No read
+// writes the rule a third way.
+//
+// It binds no visibility predicate, as IssueRepoTerms binds none. No issue read of this release
+// holds its reader to the projects it may see, so the priority of an issue above another is
+// nothing the reads that splice these terms do not already answer of that issue: J1's rule that
+// a reader who cannot see the project of the issue a priority comes from gets none is the read
+// rule of dispatch://INFRA-3862, which no issue read binds yet, and whichever of the two merges
+// second carries it. A rule of a write that reads these terms reads the chain whole, as J2 of
+// dispatch://INFRA-5793 says the walks that decide whether a write makes work P0 do: a writer who
+// cannot see a P0 issue's project still needs p0 to move or file work under it.
+var IssuePriorityTerms = IssuePriorityTermsOver("subjects", "priority_resolved")
+
+// IssuePriorityTermsOver is IssuePriorityTerms' walk over subjects, any one-column term of issue
+// keys the statement defines before it, answering in the term named resolved, with its climb in
+// resolved + "_chain", so one statement can resolve two sets of issues by the one rule: the
+// listing resolves its page through IssuePriorityTerms and filters its candidates through these
+// (api's issuePriorityFilterTerms).
+func IssuePriorityTermsOver(subjects, resolved string) string {
+	return resolved + `_chain as (
+		select s.key as start, i.key, i.parent_key, i.priority, 0 as depth
+		from ` + subjects + ` s join issues i on i.key = s.key
+		union all
+		select c.start, p.key, p.parent_key, p.priority, c.depth + 1
+		from ` + resolved + `_chain c join issues p on p.key = c.parent_key
+		where c.priority is null and c.depth < ` + issueDepthCapSQL + `
+	), ` + resolved + ` as (
+		select c.start as key, max(c.priority) as priority,
+		       max(c.key) filter (where c.depth > 0) as source
+		from ` + resolved + `_chain c
+		where c.priority is not null
+		group by c.start
+	)`
+}
+
+// IssuePriorityJoinOn attaches IssuePriorityTerms' answer to the issue whose key is keyExpr, an
+// expression over the enclosing query's rows: one row per issue, null for an issue that resolves
+// no priority and for a key expression that is null. It is the one spelling of the join, so a
+// statement that names its issue other than as `i` reaches the terms' answer through it, never by
+// hand.
+func IssuePriorityJoinOn(keyExpr string) string {
+	return `left join priority_resolved on priority_resolved.key = ` + keyExpr
+}
+
+// IssuePriorityJoin is IssuePriorityJoinOn the issue aliased `i` in the enclosing query.
+var IssuePriorityJoin = IssuePriorityJoinOn("i.key")
+
+// IssuePriorityResolved is the priority the issue resolves to, over IssuePriorityJoin, null where
+// it resolves none: the first of IssuePriorityColumns, alone, for a statement that orders or
+// filters by the resolved priority or names the two columns apart (api's Inbox reads and open
+// asks).
+const IssuePriorityResolved = `priority_resolved.priority`
+
+// IssuePrioritySource is the key of the issue IssuePriorityResolved comes from, over
+// IssuePriorityJoin, null where it is the issue's own or there is none: the second of
+// IssuePriorityColumns.
+const IssuePrioritySource = `priority_resolved.source`
+
+// IssuePriorityColumns are the priority columns every issue read scans beside the issue's own
+// priority, over IssuePriorityJoin: the priority the issue resolves to, and the key of the issue
+// it comes from, null where it is the issue's own; both null where it resolves none. They are the
+// issue's resolved_priority and priority_from (model.Issue).
+const IssuePriorityColumns = IssuePriorityResolved + `, ` + IssuePrioritySource

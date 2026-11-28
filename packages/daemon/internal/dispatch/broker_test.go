@@ -40,13 +40,10 @@ func newBrokerRig(t *testing.T) *ciphertest.Rig {
 	return ciphertest.NewRig(t)
 }
 
-// wireRequest is one request as the stand-in for Dispatch received it: everything the daemon's
-// request carries that the change of transport could touch.
 type wireRequest struct {
 	Method, URL, Accept, Authorization, ContentType, Proof, Body string
 }
 
-// recordingDispatch is a stand-in for Dispatch that answers every request 200 `{}` and keeps it.
 type recordingDispatch struct {
 	*httptest.Server
 	mu       sync.Mutex
@@ -75,7 +72,6 @@ func newRecordingDispatch(t *testing.T) *recordingDispatch {
 	return d
 }
 
-// last is the request the stand-in received last.
 func (d *recordingDispatch) last(t *testing.T) wireRequest {
 	t.Helper()
 	d.mu.Lock()
@@ -86,13 +82,6 @@ func (d *recordingDispatch) last(t *testing.T) wireRequest {
 	return d.requests[len(d.requests)-1]
 }
 
-// TestTheDaemonCallsDispatchWithItsOwnBrokerToken: under dispatch_token_broker the daemon's client
-// presents a token the broker traded for the daemon's own pod identity, as `Authorization: DPoP
-// <token>` beside a proof of the call's own method and URL whose ath is that token's hash, and the
-// broker reads that token back as the session legion-daemon:EXAMPLE, the daemon's session of the
-// project its entry names. With the setting off, the same call reaches Dispatch with `Bearer <the
-// file's token>` and is otherwise the request it always was: method, URL, Accept, Content-Type and
-// body, and no proof.
 func TestTheDaemonCallsDispatchWithItsOwnBrokerToken(t *testing.T) {
 	rig := newBrokerRig(t)
 	server := newRecordingDispatch(t)
@@ -139,7 +128,6 @@ func TestTheDaemonCallsDispatchWithItsOwnBrokerToken(t *testing.T) {
 		t.Fatalf("the broker reads the daemon's token back as %+v, want a live token of the session legion-daemon:EXAMPLE", read)
 	}
 
-	// The control: the setting off, and the bearer dispatch_token_file names.
 	const fileToken = "dispatch-file-token"
 	if err := New(server.URL, BearerTransport(fileToken, http.DefaultTransport)).PostMessage(context.Background(), key, notice); err != nil {
 		t.Fatalf("post the notice under the file's bearer: %v", err)

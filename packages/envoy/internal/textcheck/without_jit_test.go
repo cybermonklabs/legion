@@ -16,11 +16,7 @@ import (
 
 // createdWithoutJITExempt names the functions that create a database and leave JIT as the server
 // has it, by file and function, each with why.
-var createdWithoutJITExempt = map[string]string{
-	"internal/dispatch/embedqueue/coverage_scale_test.go measureCoverageAtScale": "a measurement on the server " +
-		"DISPATCH_COVERAGE_SCALE_URL names, which CI never sets; the statement it holds to its bound runs under " +
-		"`set local jit = off` (coverageSettings), and its base is timed as main ran it",
-}
+var createdWithoutJITExempt = map[string]string{}
 
 // Every database a Go file of this module creates runs with JIT off, as production's does
 // (docs/testing.md, "A database a Go test creates"): a function whose body holds a string literal

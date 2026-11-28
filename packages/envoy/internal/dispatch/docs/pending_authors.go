@@ -443,8 +443,9 @@ func deleteCapturedPendingAuthors(ctx context.Context, tx pgx.Tx, room string, c
 
 // recordLatestEditSource records lastActor as the latest edit source on room's pending-settlement
 // row in tx, which holds the document's advisory lock, without moving the row's age: a committed
-// write, a seed, or a rebuild names who made the document's latest change. A person as lastActor
-// is also the document's latest person sender (last_person); a session leaves that as it is.
+// write, a seed that owes a settlement, or a rebuild names who made the document's latest change.
+// A person as lastActor is also the document's latest person sender (last_person); a session
+// leaves that as it is.
 func recordLatestEditSource(ctx context.Context, tx pgx.Tx, room string, lastActor *model.Actor) error {
 	person, setPerson := latestPersonOf(lastActor, false)
 	return markSettlementPending(ctx, tx, []string{room}, lastActor, true, false, person, setPerson)
@@ -680,11 +681,11 @@ type settlementRowFacts struct {
 //   - marked_at catches every append that leaves the document owing a settlement, which stamps
 //     it now() as it marks the document owed (updateOwedStatement, appendUpdateTxClass), so a row
 //     deleted and written again carries an age no reading of the row before it holds. An append
-//     that leaves nothing owed - parked bytes alone - writes no row, and nor does a prune: each
-//     moves the document's stored history and leaves standing the very row this write would put
-//     the source on;
+//     that leaves nothing owed - parked bytes alone, or a seed that owes no settlement - writes
+//     no row, and nor does a prune: each moves the document's stored history and leaves standing
+//     the very row this write would put the source on;
 //   - last_actor catches a write that names a newer edit source without moving that age: a
-//     committed write, a seed or a rebuild (recordLatestEditSource).
+//     committed write, a seed that owes a settlement or a rebuild (recordLatestEditSource).
 func (facts settlementRowFacts) unchangedSince(snapshot settlementRowFacts) bool {
 	return facts.present == snapshot.present && facts.markedAt.Equal(snapshot.markedAt) &&
 		facts.lastActor == snapshot.lastActor

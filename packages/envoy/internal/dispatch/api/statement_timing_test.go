@@ -79,10 +79,10 @@ const (
 //
 // Every before text is the text the release before this change runs, which this package already
 // holds as an oracle - issue_list_equality_test.go, agent_activity_test.go,
-// issue_children_test.go and document_search_oracle_test.go - read from there rather than
-// copied a second time: two copies of one statement drift apart, and those oracles are what the
-// package's equality tests are held to. The newest event's before text is main's, which
-// priority_newest_event_test.go holds as its oracle in the same way.
+// issue_children_test.go, document_search_oracle_test.go and search_oracle_test.go - read from
+// there rather than copied a second time: two copies of one statement drift apart, and those
+// oracles are what the package's equality tests are held to. The newest event's before text is
+// main's, which priority_newest_event_test.go holds as its oracle in the same way.
 func TestStatementTimings(t *testing.T) {
 	// Not parallel: its assertion compares two timings. Each pair fails unless the after text's
 	// median is below the before text's (benchtime.Pair, PairSeries) or within a bound of it
@@ -158,15 +158,15 @@ func TestStatementTimings(t *testing.T) {
 		subjects.RareWord, headlineOptions, 0, contracts.SearchKindDepth, searchFusionK}
 
 	// Both meaning queries run in the transaction beginMeaningScan opens, which sets
-	// hnsw.ef_search and hnsw.iterative_scan (searchMeaningScan), so a measurement without them
-	// would be of a statement production never runs. The third setting, the server's own bound on
-	// the statement (searchMeaningStatementBound), is left out here and only here: a measurement
-	// has to read what a statement costs, and the before side of this pair is the release whose
-	// cost this change is measured against - on the 15 GB database its document arm alone spanned
-	// 8.8 s to 10.4 s - so a bound that ended it at 15 s would report a cancelled statement in
-	// place of the number the pair exists to compare.
-	meaningSetup := slices.DeleteFunc(slices.Clone(searchMeaningScan),
-		func(setting string) bool { return setting == searchMeaningStatementBound })
+	// hnsw.ef_search, hnsw.iterative_scan and client_connection_check_interval
+	// (searchMeaningScan), so a measurement without them would be of a statement production never
+	// runs. The server's own bound on the statement (searchStatementBound), which beginSearchScan
+	// sets ahead of that list, is left out: a measurement has to read what a statement costs, and
+	// the before side of this pair is the release whose cost this change is measured against - on
+	// the 15 GB database its document arm alone spanned 8.8 s to 10.4 s - so a bound that ended it
+	// at 15 s would report a cancelled statement in place of the number the pair exists to
+	// compare.
+	meaningSetup := searchMeaningScan
 	searchMeaningArguments := slices.Concat(searchArguments, meaning)
 	// Search's own two statements bind the search bar's filters and the issues a query names by
 	// key beside the eight and eleven main binds (searchQueryArguments). Every one of them is
@@ -217,11 +217,12 @@ func TestStatementTimings(t *testing.T) {
 	// every pair below logs beside its after text. The two-commit run is therefore this one
 	// test against two databases rather than a second harness. The two meaning statements are
 	// the exception, and their names say so: this release deletes the whole-text rows four of
-	// main's five meaning arms read, so main's meaning text measures a statement whose arms
-	// find nothing here, and the pair and report below take a before side of their own under a
-	// name of its own. Those two have no reading common to both schemas: a reader comparing by
-	// name across two commits finds main's text under its own name on the old schema, and this
-	// schema's readings under names that say which before text they are.
+	// the older main's five meaning arms read, so that meaning text measures a statement whose
+	// arms find nothing here, and the pair and report below take main's meaning text at
+	// 497581c7 as their before side (search_oracle_test.go), under a name of its own. Those two
+	// have no reading common to both schemas: a reader comparing by name across two commits
+	// finds the older main's text under its own name on the old schema, and this schema's
+	// readings under names that say which before text they are.
 	if !thisReleasesSchema {
 		runner.Before(t, "searchQuery, keywords only",
 			benchtime.Statement{SQL: mainSearchQuery, Args: searchArguments})
@@ -242,19 +243,19 @@ func TestStatementTimings(t *testing.T) {
 	runner.Pair(t, "searchQuery, keywords only",
 		benchtime.Statement{SQL: mainSearchQuery, Args: searchArguments},
 		benchtime.Statement{SQL: searchQuery, Args: afterSearchArguments})
-	// The before side is this release's own meaning body over main's document arm
-	// (searchQueryMeaningOverMainsDocumentArm), not main's frozen meaning text: this release
-	// moved meaning search to one vector per window and deletes the whole-text rows four of
-	// main's five meaning arms read, so that text would measure a statement whose arms find
-	// nothing and the gate would compare two designs rather than the one arm this change
-	// rewrote. Main's own text still measures the pre-release schema, in the Before branch
-	// above, where the window kinds and the covers column do not exist. It opens with this
-	// release's own q, so both sides take the same arguments.
+	// The before side is main's meaning statement at 497581c7 (mainAt4975SearchQueryMeaningScoped),
+	// written out whole, not the older main's frozen meaning text: this release moved meaning
+	// search to one vector per window and deletes the whole-text rows four of the older main's
+	// five meaning arms read, so that text would measure a statement whose arms find nothing.
+	// The older main's own text still measures the pre-release schema, in the Before branch
+	// above, where the window kinds and the covers column do not exist. Main's text at 497581c7
+	// binds the same eighteen parameters as this release's, so both sides take the same
+	// arguments.
 	//
 	// Both sides are the scoped shape: afterSearchMeaningArguments binds the subject's project,
 	// and that is the statement search sends for one (runMeaningSearch, meaningProjectScope).
-	runner.Pair(t, "searchQueryMeaning, over main's document arm",
-		benchtime.Statement{SQL: searchQueryMeaningOverMainsDocumentArm, Args: afterSearchMeaningArguments},
+	runner.Pair(t, "searchQueryMeaning, main's at 497581c7",
+		benchtime.Statement{SQL: mainAt4975SearchQueryMeaningScoped, Args: afterSearchMeaningArguments},
 		benchtime.Statement{SQL: searchQueryMeaningScoped, Args: afterSearchMeaningArguments})
 	// relatedKeywordQuery and relatedMeaningQuery are gated on the document arm they share
 	// rather than on either whole statement. The arm is the piece whose text differs, and it is
@@ -287,10 +288,12 @@ func TestStatementTimings(t *testing.T) {
 	runner.Report(t, "relatedKeywordQuery, the whole statement",
 		benchtime.Statement{SQL: mainRelatedKeywordQuery, Args: relatedKeywordArguments},
 		benchtime.Statement{SQL: relatedKeywordExcludingQuery, Args: relatedKeywordExcludingArguments})
-	// The after side is the scoped excluding shape: relatedArguments binds the subject's
-	// project, which is what the check sends such a call (relatedMeaningStatementFor).
-	runner.Report(t, "relatedMeaningQuery, the whole statement, over main's document arm",
-		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: slices.Concat(relatedMeaningArguments, documentSearchSeen()),
+	// The before side is main's scoped meaning statement at 497581c7, written out whole, which
+	// binds the acting credential at $14 (documentSearchSeen), and the after side the scoped
+	// excluding shape: relatedArguments binds the subject's project, which is what the check
+	// sends such a call (relatedMeaningStatementFor).
+	runner.Report(t, "relatedMeaningQuery, the whole statement, main's at 497581c7",
+		benchtime.Statement{SQL: mainAt4975RelatedMeaningScopedQuery, Args: slices.Concat(relatedMeaningArguments, documentSearchSeen()),
 			Setup: meaningSetup},
 		benchtime.Statement{SQL: relatedMeaningScopedExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
 

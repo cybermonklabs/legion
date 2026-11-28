@@ -211,8 +211,8 @@ var asOfSyntheticQueries = []string{"issue", "dispatch", "snapshot token", "wibb
 // present, at the plan's two cuts (asOfCostCuts) and at the corpus's newest event, three runs
 // each. It prints one table: the first run and the median of the runs (the whole request), how
 // many statements the last run sent and the longest of them, and the status each run answered,
-// where a meaning statement the server ends at searchMeaningStatementBound (15 s) answers 500.
-// Then it prints the sizes of events, of the keyword table, of embeddings and of
+// where a meaning statement the server ends at searchStatementBound (15 s) answers 503
+// SEARCH_TIMEOUT. Then it prints the sizes of events, of the keyword table, of embeddings and of
 // embeddings_cosine, and the time of each step of the build.
 //
 // Why the data is synthetic: no text of production may leave production
