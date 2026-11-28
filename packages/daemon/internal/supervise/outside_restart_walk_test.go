@@ -743,7 +743,8 @@ func (w *outsideWalk) turnStart() {
 // takeBackPending clears the task's confirmation in memory before its write lands (delivery.go),
 // so a write the store refuses or loses, followed by a restart before any write of the delivery
 // lands, leaves the store's confirmation, which settle reads as a turn run to its end and retires
-// the task as served. That holds over a live process too, and the walk does not hold it.
+// the task as served. That holds over a live process too; dispatch://INFRA-6467 fixes it, and
+// once it has, the step is drawn at any point.
 func (w *outsideWalk) promptResult() {
 	h := w.h
 	id, invoked := h.claim().Pending.ID, w.results.IntN(2) == 0
