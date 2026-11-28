@@ -45,12 +45,19 @@ import (
 // first attempt, since its claim failed (roleWaitGate), so the architect's topic is sent nothing
 // however long the controller's topic keeps failing. The controller reads the notice written for
 // the architect, without the row's routing.
+//
+// The held root is the operator's tree, and the planner's run-out takes it out of the workflow
+// (admission finds it in progress with no tree of the workflow's running): that move queues the
+// release of its Dispatch claim (workflow's leaveUnderOperator, dispatch://INFRA-3144), a row of
+// the issue that reads the issue from Dispatch before it judges anything (releaseClaim). The
+// test's Dispatch shows the issue unclaimed (runOutHoldBoard), so that row ends at its first run,
+// and every row of the hold still finishes.
 func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResendTheArchitects(t *testing.T) {
 	t.Parallel()
 	listener := newNoticeListener()
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
-	cfg := workflowConfig(t, workflowNATS(t))
+	cfg := workflowConfigOn(t, workflowNATS(t), runOutHoldBoard)
 	cfg.EnvoyURL = server.URL
 	cfg.LaunchFailureLimit = 1
 	rt := fake.NewRuntime()
@@ -172,7 +179,7 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	// The architect's ready queues its catch-up, which its topic takes too, so its topic is read
 	// for the hold's two notices alone.
 	heldNotices := []string{"held on " + held, "worker-died on " + held}
-	testwait.Eventually(t, "every notice row of the hold finished and its architect told twice", func() bool {
+	testwait.Eventually(t, "every row of the hold finished, its notices and its claim release, and its architect told twice", func() bool {
 		return rowsOf(held) == 0 && len(named(listener.acceptedOn(architectTopic(held)), heldNotices...)) == 2
 	})
 	onArchitect := named(listener.acceptedOn(architectTopic(held)), heldNotices...)
@@ -245,6 +252,36 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 		Reason: strconv.Quote("launch failures ran out: pane launch failed")}); !reflect.DeepEqual(payload, want) {
 		t.Fatalf("the controller's payload = %+v, want the architect's own notice %+v", payload, want)
 	}
+}
+
+// runOutHoldBoard is workflowDispatch with the one read more that the held root's move out of the
+// workflow needs: the read of an issue of the project (GET /api/v1/issues/<key>) that the release
+// of its Dispatch claim makes first (record.ClaimRelease, releaseClaim). It shows the issue with no
+// claim, so the row finds nothing to judge and ends. Every other call of the daemon's fails the
+// test, as workflowDispatch's do.
+func runOutHoldBoard(t *testing.T, project string) string {
+	t.Helper()
+	return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+		var body any
+		key, issue := strings.CutPrefix(r.URL.Path, "/api/v1/issues/")
+		switch {
+		case servedBootCall(t, w, r, project):
+			return
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
+			body = []any{}
+		case r.Method == http.MethodGet && issue && strings.HasPrefix(key, project+"-") && !strings.Contains(key, "/"):
+			body = map[string]any{"key": key, "title": "held", "status": "in_progress", "labels": []string{},
+				"last_seq": 1, "project": project}
+		default:
+			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(body); err != nil {
+			t.Errorf("write %s: %v", r.URL.Path, err)
+		}
+	})
 }
 
 // noticeListener is the Envoy listener's publish route as the outbox uses it: it takes every

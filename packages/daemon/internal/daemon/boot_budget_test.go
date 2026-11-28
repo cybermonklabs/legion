@@ -55,7 +55,10 @@ func heldCatchUpOverrides(t *testing.T, rt runtime.Runtime) overrides {
 }
 
 // timedBootReconcile is bootReconcileStall telling, of its boot orphan reconciliation (grace
-// zero), how long the call waited for its context and why that context ended.
+// zero), when the call began and returned, the deadline of the context it was given and why that
+// context ended. The tests read these against each other and against the boot's record of its
+// start, never how long the call took, so the seconds a loaded machine spends on the boot's steps
+// before the call, or in waking the call once its deadline has passed, move nothing they read.
 type timedBootReconcile struct {
 	*bootReconcileStall
 	ended chan bootReconcileEnded
@@ -63,8 +66,8 @@ type timedBootReconcile struct {
 
 // bootReconcileEnded is how one boot orphan reconciliation of a timedBootReconcile ended.
 type bootReconcileEnded struct {
-	waited time.Duration
-	err    error
+	began, returned, deadline time.Time
+	err                       error
 }
 
 func newTimedBootReconcile(t *testing.T) *timedBootReconcile {
@@ -77,10 +80,11 @@ func newTimedBootReconcile(t *testing.T) *timedBootReconcile {
 
 func (r *timedBootReconcile) ReconcileOrphans(ctx context.Context, known []runtime.Known, grace time.Duration) error {
 	began := time.Now()
+	deadline, _ := ctx.Deadline()
 	err := r.bootReconcileStall.ReconcileOrphans(ctx, known, grace)
 	if grace == 0 {
 		select {
-		case r.ended <- bootReconcileEnded{waited: time.Since(began), err: err}:
+		case r.ended <- bootReconcileEnded{began: began, returned: time.Now(), deadline: deadline, err: err}:
 		default:
 		}
 	}
@@ -97,6 +101,11 @@ func (r *timedBootReconcile) ReconcileOrphans(ctx context.Context, known []runti
 // joined to the pacing again — here, with no pacer, made due at once (join) — and the daemon
 // starts. Before, the restore ran on what the shared budget had left, and the boot exited with
 // `read held catch-ups: context deadline exceeded` (dispatch://INFRA-4131/spec#b-r-boot-budget).
+//
+// The shared budget begins as the boot is recorded (bootBudget, just before store.RecordBoot), so
+// the test reads when it ran out off the boot's recorded start, not off how long the reconciliation
+// took: on a loaded machine the steps between the budget's start and the reconciliation take
+// seconds of it.
 func TestBootBudgetRestoresHeldCatchUpsAfterAnOrphanReconcileSpendsTheSharedBudget(t *testing.T) {
 	t.Parallel()
 	cfg, st, held := heldCatchUpBoot(t)
@@ -106,9 +115,18 @@ func TestBootBudgetRestoresHeldCatchUpsAfterAnOrphanReconcileSpendsTheSharedBudg
 	startDaemon(t, cfg, o)
 
 	ended := testwait.Receive(t, "the boot's orphan reconciliation to end", rt.ended)
-	if !errors.Is(ended.err, context.DeadlineExceeded) || ended.waited < bootTimeout-5*time.Second {
-		t.Fatalf("the boot's orphan reconciliation ended after %s with %v, want it to wait out what the shared budget of %s had left",
-			ended.waited, ended.err, bootTimeout)
+	var recorded time.Time
+	if err := st.Pool().QueryRow(context.Background(), "select started_at from daemon_boot where project = $1 order by id desc limit 1",
+		cfg.Project).Scan(&recorded); err != nil {
+		t.Fatalf("read the start of the boot the daemon recorded: %v", err)
+	}
+	// The budget ran out bootTimeout after the boot's recorded start, to within the moment between
+	// the budget's start and the clock read the record keeps: a reconciliation its context cut no
+	// earlier than that spent all of it.
+	spent := recorded.Add(bootTimeout)
+	if !errors.Is(ended.err, context.DeadlineExceeded) || ended.returned.Before(spent.Add(-time.Second)) {
+		t.Fatalf("the boot's orphan reconciliation returned at %s with %v, want it to wait out the shared budget of %s, which ran out at %s",
+			ended.returned.UTC().Format(time.RFC3339Nano), ended.err, bootTimeout, spent.UTC().Format(time.RFC3339Nano))
 	}
 	var nextAt time.Time
 	if err := st.Pool().QueryRow(context.Background(), "select next_at from outbox where id = $1", held).Scan(&nextAt); err != nil {
@@ -123,7 +141,9 @@ func TestBootBudgetRestoresHeldCatchUpsAfterAnOrphanReconcileSpendsTheSharedBudg
 // (bootOrphanReconcileBound): a reconciliation that waits until its context ends is cut there, well
 // before the shared budget of bootTimeout ends, and the daemon starts. The reconciliation ends
 // without failing the boot when its time runs out, so on the shared budget alone it could leave a
-// later step an expired context (dispatch://INFRA-4131/spec#b-r-boot-budget).
+// later step an expired context (dispatch://INFRA-4131/spec#b-r-boot-budget). The test reads the
+// deadline the call was given against the moment it began, never how long it waited, so a machine
+// late to wake the call once that deadline passed moves nothing it reads.
 func TestBootBudgetBoundsTheBootOrphanReconcile(t *testing.T) {
 	t.Parallel()
 	const bound = bootOrphanReconcileBound
@@ -131,9 +151,13 @@ func TestBootBudgetBoundsTheBootOrphanReconcile(t *testing.T) {
 	startDaemon(t, testConfig(t), fakeRuntime(rt, &built{}))
 
 	ended := testwait.Receive(t, "the boot's orphan reconciliation to end", rt.ended)
-	if !errors.Is(ended.err, context.DeadlineExceeded) || ended.waited < bound-3*time.Second || ended.waited > bound+3*time.Second {
-		t.Fatalf("the boot's orphan reconciliation ended after %s with %v, want it cut at its own bound of %s, well inside the shared budget of %s",
-			ended.waited, ended.err, bound, bootTimeout)
+	// The call is given its own bound, less the moment between the bound's start and the call, and
+	// never more; the shared budget's deadline, had it no bound of its own, is nearly all of
+	// bootTimeout off.
+	given := ended.deadline.Sub(ended.began)
+	if !errors.Is(ended.err, context.DeadlineExceeded) || given > bound || given < bound-3*time.Second {
+		t.Fatalf("the boot's orphan reconciliation was given %s and ended with %v, want it cut at its own bound of %s, well inside the shared budget of %s",
+			given, ended.err, bound, bootTimeout)
 	}
 }
 
@@ -141,13 +165,17 @@ func TestBootBudgetBoundsTheBootOrphanReconcile(t *testing.T) {
 // the last step of supervision.start before settle, first has the test's own connection take the
 // outbox table in access exclusive mode, so the restore of the held catch-ups that runs next
 // (catchUpPacing.restore) waits on that lock in Postgres. It hands the test the transaction that
-// holds the lock, once. The lock is taken on a context of the test's own, never on the call's: the
-// call's carries the boot's hold mark (store.WithTransactionTracking), and a transaction begun on
-// it and left open would have the daemon's next connection on that mark refused
-// (store.ErrNestedAcquire) rather than wait in Postgres.
+// holds the lock, once. The lock is taken on a context of the test's own (taking), never on the
+// call's: the call's carries the boot's hold mark (store.WithTransactionTracking), and a
+// transaction begun on it and left open would have the daemon's next connection on that mark
+// refused (store.ErrNestedAcquire) rather than wait in Postgres. taking is the test's own
+// (testwait.Context), with no bound of a fixed length: the lock waits behind every transaction of
+// the daemon's that holds the outbox when it is asked for, for as long as a loaded machine makes
+// those transactions take, up to the test binary's own deadline.
 type outboxLockedAtBootReconcile struct {
 	*fake.Runtime
 	pool   *store.Pool
+	taking context.Context
 	once   sync.Once
 	locked chan outboxLock
 }
@@ -161,11 +189,9 @@ type outboxLock struct {
 func (r *outboxLockedAtBootReconcile) ReconcileOrphans(ctx context.Context, known []runtime.Known, grace time.Duration) error {
 	if grace == 0 {
 		r.once.Do(func() {
-			taking, taken := context.WithTimeout(context.Background(), time.Minute)
-			defer taken()
-			tx, err := r.pool.BeginTx(taking, pgx.TxOptions{})
+			tx, err := r.pool.BeginTx(r.taking, pgx.TxOptions{})
 			if err == nil {
-				if _, err = tx.Exec(taking, "lock table outbox in access exclusive mode"); err != nil {
+				if _, err = tx.Exec(r.taking, "lock table outbox in access exclusive mode"); err != nil {
 					_ = tx.Rollback(context.Background())
 				}
 			}
@@ -183,7 +209,7 @@ func (r *outboxLockedAtBootReconcile) ReconcileOrphans(ctx context.Context, know
 func TestBootBudgetAFailingReadOfHeldCatchUpsStillFailsTheBoot(t *testing.T) {
 	t.Parallel()
 	cfg, st, _ := heldCatchUpBoot(t)
-	rt := &outboxLockedAtBootReconcile{Runtime: fake.NewRuntime(), pool: st.Pool(), locked: make(chan outboxLock, 1)}
+	rt := &outboxLockedAtBootReconcile{Runtime: fake.NewRuntime(), pool: st.Pool(), taking: testwait.Context(t), locked: make(chan outboxLock, 1)}
 	_, done, logs := runLogging(t, cfg, heldCatchUpOverrides(t, rt))
 
 	var lock outboxLock

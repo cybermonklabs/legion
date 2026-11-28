@@ -41,7 +41,9 @@ const (
 	// that ends early costs it up to this long before it publishes, and for as long its queued
 	// row holds the pod from idle release (pods.IdleView): five minutes is half the default idle
 	// period. Against that, a park that lasts the hour a wave can take costs the row about twelve
-	// attempts, each logged at debug, where its backoff's 64 s would make about 57 of them.
+	// attempts, where the capped backoff of a role wait (record.RoleWaitBackoff: one second,
+	// doubling to RoleWaitBackoffMost, 5 minutes) would make about twenty, ten of them in its first
+	// 8.5 minutes. Either way settle logs the row by its wait, not at each attempt (logWait).
 	parkedWakeBound = 5 * time.Minute
 	// deliveryWakeInRelease is how long a delivery row waits before it reads its role again while
 	// a release of its issue's pod still stands, or while a start that brings the role back is
@@ -282,12 +284,14 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // memory, and the park can end before it — an operator's request, a restart or a suspension
 // (parkedWakeBound says how) — so a row that slept to the turn could publish long after the pod
 // came back and would hold that pod from idle release the whole time; the bound caps what such an
-// early end costs. A row that climbed its backoff instead would try again every 64 s and log a
-// Warn at every attempt from the seventh (settle), about once a minute for as long as the turn is
-// away; this wait is routine (routineWaiting), so its attempts stay at debug. A turn already past
-// when the row settles — the row ran a moment before the machine's own timer — is the backoff's
-// (retry). A released claim this call resumes answers no turn, even where the resume parks: the
-// row waits on its backoff, and its next attempt reads the park.
+// early end costs. A row that climbed its backoff instead (record.RoleWaitBackoff) would read the
+// claim at 1, 2, 4 … seconds while the turn is still far off, ten reads in its first 8.5 minutes
+// where this wait makes two, and could sleep up to 5 minutes past a turn that comes sooner; either
+// way settle logs the row by its wait rather than by its attempts (logWait,
+// dispatch://INFRA-4131/spec#b-r-logged-once). A turn already past when the row settles — the row
+// ran a moment before the machine's own timer — is the backoff's (retry). A released claim this
+// call resumes answers no turn, even where the resume parks: the row waits on its backoff, and its
+// next attempt reads the park.
 //
 // A released claim is not woken while any release of its issue still stands, whether or not that
 // release has recorded this role (store.Store.TakeDeliveryWake). The resume here runs in process,

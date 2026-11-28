@@ -77,7 +77,6 @@
   - TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery  # 1.0 s
   - TestALateChangesRequestLeavesTheNewerParkedDecision  # 0.1 s
   - TestALateFirstDeliveryOfAnAdmissionEventIsPreparedAsDispatchNowShowsIt  # 0.3 s
-  - TestALateReportOfASpentCatchUpNamesWhatItsRowReleased  # 0.8 s
   - TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed  # 0.6 s
   - TestALaunchUnderARoundKeepsThePodWhereTheLaunchAPauseOwesForgetsItsSession  # 0.3 s
   - TestALeakCheckReadAnswered401MintsANewTokenAndA404DoesNot  # 0.5 s
@@ -135,7 +134,6 @@
   - TestAProviderErrorInTheTurnANewsOnlyStartReachedSendsThePhaseTaskAgain  # 0.7 s
   - TestAPullRequestGitHubLeavesOutOfAnAnswerKeepsTheOthersAnswered  # 0.2 s
   - TestAQueuedRootWhoseArchitectWasQueuedNoEntryIsSentThatEntrysTask  # 0.9 s
-  - TestAReHeldPacedCatchUpWritesItsOneWakeLineWhenItsCopyPublishes  # 0.2 s
   - TestAReadGivenUpOnRecordsDispatchsErrorWithItsNULAsAFarSidesErrorAndLogsItWhole  # 0.8 s
   - TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt  # 1.4 s
   - TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed  # 0.2 s
@@ -248,6 +246,7 @@
   - TestApprovedVersionNewsCountsOnlyTheArchitectsPublishToTheHoldersRoleTopic  # 1.9 s
   - TestApprovedVersionNewsReadsThePluginsRefusalOfADaemonAnswer  # 1.0 s
   - TestApprovedVersionNewsThePlanNamesEachStepItsArmsAndTheCountOfRuns  # 0.4 s
+  - TestBootBudgetAFailingReadOfHeldCatchUpsStillFailsTheBoot
   - TestBootQueuesEveryRecordedGatePublication  # 0.2 s
   - TestBootReconcileFailsTheListingOnARefusedEventLogRead  # 1.4 s
   - TestBootReconcileHoldsATodoUnderAnUnreleasedChildOfALiveTree  # 0.3 s
@@ -269,6 +268,9 @@
   - TestDesignGatesPublishSaysWhetherEachRowHoldsItsTree  # 0.9 s
   - TestEachRecordNamesItsOwnAgentsSessionAndModel  # 13.0 s
   - TestEachRefresherJobRunsOnItsOwnCause  # 3.7 s
+  - TestEventWaitDesignGateRunsTheMergerStartWhenItOpens
+  - TestEventWaitPendingDeliveryRunsWhenItIsRetiredOrDropped
+  - TestEventWaitPendingDeliveryRunsWhenTheTurnTakesIt
   - TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule  # 9.4 s
   - TestEveryLaunchCarriesTheNatsSeedTheDaemonResolved  # 3.8 s
   - TestEveryReaderOfARepositoryTakesItsAnswerFromOneLookup  # 0.9 s
@@ -287,7 +289,7 @@
   - TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay  # 2.9 s
   - TestNoNoticeWaitsOnASuspendedSubArchitect  # 0.2 s
   - TestNoOutboxFinishWritesTheRecordsDispatchStatus  # 0.2 s
-  - TestOneNoticePublishIsQueuedAgainOnceFromAnswersAndExceptions  # 0.6 s
+  - TestNoticeReceiptTimeoutExceptionForAKeptRowQueuesNoCopy
   - TestOnlyADeliveredStartHoldsTheDecisionsItNamed  # 0.2 s
   - TestOnlyARefusedRowThatDropsAFenceWaitsOnTheFactLock  # 0.3 s
   - TestOnlyThePhaseOwnersTaskAdoptsTheWorkingCopy  # 1.7 s
@@ -357,6 +359,16 @@
   - TestReviewBodyRateLimitedReadRetriesLater  # 0.2 s
   - TestReviewBodyRestoresATruncatedReviewAppReview  # 0.2 s
   - TestRoleHoldersLandInScratchDispatch  # 5.7 s
+  - TestRoleWaitLaunchPublishesAtMostOncePerLaunch
+  - TestRoleWaitLaunchPublishesNothingBeforeItRegisters
+  - TestRoleWaitLaunchThatFailsOrRetiresEndsTheRow
+  - TestRoleWaitLoggedEndOfARowAnotherTransactionDeletes
+  - TestRoleWaitLoggedOnceAcrossARestart
+  - TestRoleWaitLoggedOnceAtWarnForAClaimThatIsNotReady
+  - TestRoleWaitReadyDuringARunMakesTheRowDueAtOnce
+  - TestRoleWaitReadyRoleMessageEndsAtNoHolder
+  - TestRoleWaitReleasedRoleIsWokenOrKeepsTheCappedWaits
+  - TestRoleWaitSuspendedPublishesAtMostOnceUntilTheNextReady
   - TestRunBuildsTheRuntimeOverTheWorkerStream  # 0.9 s
   - TestRunClosesTheWorkflowsNATSConnectionWhenItsStopBudgetRunsOut  # 2.0 s
   - TestRunKnowsEverySuspendedClaimToTheOrphanSweep  # 0.7 s
@@ -519,7 +531,6 @@
   - TestACatchUpCopyCommittedAfterTheFreshOneIsNotPublished  # 0.1 s
   - TestACatchUpDroppedUnderItsLeaseIsNotPublished  # 0.1 s
   - TestACatchUpReadsFromACursorBelowTheLastHandout  # 0.2 s
-  - TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed  # 0.2 s
   - TestAChangeSetIsReadOnceAndReusedByTwoMembers  # 0.4 s
   - TestACheckLookRowOfALaterCheckEndsThatChecksLook  # 0.1 s
   - TestACheckLookRowOfNoCheckOrAReplacedOneAppliesNothing  # 0.5 s
@@ -557,7 +568,6 @@
   - TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent  # 0.9 s
   - TestAHandOverWritesTheStatusAndTheLabelTogether  # 1.3 s
   - TestAHandedOverChildKeepsItsArchitectsSession  # 1.1 s
-  - TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitects  # 4.8 s
   - TestAHeldRoleMessageIsOwedUntilAnEndEventOfItsDebt  # 0.3 s
   - TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt  # 0.3 s
   - TestAHelloWhoseClaimReadFailsOnceIsAcceptedOnTheRedialWithNoRefusal  # 0.0 s
@@ -596,7 +606,6 @@
   - TestANoticeOfATreeWhoseRootIsNotRecordedFinishesUndelivered  # 0.1 s
   - TestANoticeReachesAnArchitectThatTakesMinutesToRelaunch  # 0.8 s
   - TestANoticeReleaseWhoseCommitReplyComesAfterTheCancelWakesItsLanes  # 0.5 s
-  - TestANoticeToALiveClaimThatHearsNothingKeepsItsSchedule  # 0.3 s
   - TestAPairOfADocumentDispatchNoLongerHoldsIsRecordedUnavailableWithNoRetry  # 0.2 s
   - TestAParkedChildsCatchUpEndsAfterAPersonMovesItToARunningStatus  # 0.5 s
   - TestAPauseStopTheResumeOvertakesStopsNothing  # 0.2 s
@@ -767,6 +776,8 @@
   - TestApprovedVersionNewsARunLinePrintsHarnessForAFaultAfterItsStep  # 1.7 s
   - TestApprovedVersionNewsRunWhoseCleanupFails  # 0.0 s
   - TestBlockedIssuesAreNotStartedAgainstScratchDispatch  # 12.3 s
+  - TestBootBudgetBoundsTheBootOrphanReconcile
+  - TestBootBudgetRestoresHeldCatchUpsAfterAnOrphanReconcileSpendsTheSharedBudget
   - TestBootLeavesALaunchingClaimToItsRegistration  # 0.0 s
   - TestBootQueuesEveryRecentIssue  # 0.3 s
   - TestBootReconcileLeavesOutATriageRootWhoseEventLogCannotBeRead  # 0.7 s
@@ -798,6 +809,8 @@
   - TestEachIssuesActionsActOnTheRepositoryItsRecordNames  # 0.3 s
   - TestEachReadingKindWritesItsBlockers  # 1.1 s
   - TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn  # 0.2 s
+  - TestEventWaitListed
+  - TestEventWaitLoggedOnceAtWarn
   - TestEventsDuringAnOutageEndWhereTheyWouldHaveServed  # 0.4 s
   - TestEveryArchitectIsToldTheProjectsProductionCheck  # 0.7 s
   - TestEveryBuilderRecordsExactlyTheNewsItsTextNames  # 1.0 s
@@ -833,6 +846,7 @@
   - TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken  # 2.7 s
   - TestNoMergeStateIsReadWithoutAnApprovalStanding  # 0.3 s
   - TestNoNewsOnlyStartIsQueuedBehindATaskTheHolderHasNotTaken  # 1.0 s
+  - TestNoticeReceiptTimeoutExceptionCopyEndsWhenTheArchitectRetires
   - TestOnlyADeliveredCatchUpForgetsTheDecisionsItNamed  # 0.7 s
   - TestOnlyAPhaseWorkerHoldsAMembersPhase  # 0.0 s
   - TestOutboxControllerNoticeGoesToTheControllerTopicAlone  # 0.0 s
@@ -924,6 +938,10 @@
   - TestReviewBodyA401IsRetriedWithAFreshToken  # 0.2 s
   - TestReviewBodyWithRateLimitHeldMakesNoRequest  # 0.1 s
   - TestRoleConfigFilesReachEitherRuntime  # 0.1 s
+  - TestRoleWaitCapEveryPublishCarriesTheRowsKey
+  - TestRoleWaitLoggedOnceAtErrorForAReadyRoleThatTakesNothing
+  - TestRoleWaitNoClaimPublishesNothing
+  - TestRoleWaitReadyRestartsTheBackoff
   - TestRunBootRepairRevokesAStaleSecretBeforeItMintsAGrant  # 2.2 s
   - TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine  # 1.0 s
   - TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven  # 0.7 s
@@ -1014,6 +1032,7 @@
   - TestTheOperatorListingAnswersWhileRelaunchesWaitOnTheCluster  # 1.5 s
   - TestTheOperatorsDaemonLaunchesNoController  # 1.1 s
   - TestTheOperatorsPodReachesTheSandboxRuntime  # 0.1 s
+  - TestTheOrphanSweepPassesOverTheRepositoryCachesBesideTheClaims
   - TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession  # 0.0 s
   - TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession  # 0.0 s
   - TestTheOutboxWritesTheWakeLineWhenItRunsAPacedNoticeRow  # 0.2 s
@@ -1175,9 +1194,8 @@
   - TestANotInstalledRepositoryIsReadAgainAtTheNextPreparation  # 0.3 s
   - TestANoticeForAnEndedArchitectFinishesWithoutDelivery  # 0.9 s
   - TestANoticeHeldForAnAbsentArchitectArrivesInOrderOnceItReturns  # 0.3 s
-  - TestANoticeIsQueuedAgainAtMostThreeTimes  # 0.2 s
-  - TestANoticeItsArchitectsSessionDidNotConfirmIsQueuedAgainOnTheReholdSchedule  # 0.2 s
   - TestANoticeTheListenerCouldNotForwardIsQueuedAgain  # 2.3 s
+  - TestAPacedCatchUpItsArchitectsSessionDidNotConfirmWritesItsOneWakeLineWhenItPublishes
   - TestAPairConfiguredBeforeItsTransferIsLeftUntilGitHubShowsIt  # 0.2 s
   - TestAPairWhoseNewNameARoleAppIsNotInstalledOnIsLeft  # 0.2 s
   - TestAPairWhoseReadsDoNotAnswerIsLeft  # 0.3 s
@@ -1257,6 +1275,7 @@
   - TestARoundOverAGonePodIsEndedAgainAfterARestart  # 0.4 s
   - TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch  # 114.2 s
   - TestARowCopyIsQueuedOnceAndAnUnreadableReportIsRefused  # 0.1 s
+  - TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResendTheArchitects
   - TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase  # 3.3 s
   - TestAShareOfAQuarterWaitsThreeTimesTheQuerysTime  # 0.2 s
   - TestASpecDecisionNobodyInItsTreeHearsGoesToTheController  # 1.9 s
@@ -1331,6 +1350,7 @@
   - TestClearedGenerationPublishesTheEmptySetPerIssue  # 1.8 s
   - TestDeploymentRendersTheReportsOfLiveSessionsAlone  # 0.3 s
   - TestEachInstallationReadIsBoundedOnItsOwn  # 0.7 s
+  - TestEventWaitDesignGateRunsAHeldMessageWhenItOpens
   - TestFollowHeadComparesWithTheRecordAsItStandsNow  # 0.3 s
   - TestFollowHeadKeepsARecordMovedSinceTheListByWhatItReadNoLater  # 0.9 s
   - TestForgetSessionLetsTheControllerKeeperSpawnFresh  # 4.8 s
@@ -1348,6 +1368,11 @@
   - TestNoCredentialMaterialReachesAPod  # 0.1 s
   - TestNoLaunchCarriesTheDaemonSeed  # 3.5 s
   - TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst  # 3.8 s
+  - TestNoticeReceiptTimeoutCatchUpKeepsItsClaimsAndTellsThemOnce
+  - TestNoticeReceiptTimeoutEndsWhenTheArchitectRetires
+  - TestNoticeReceiptTimeoutExceptionCopiesHaveNoLimit
+  - TestNoticeReceiptTimeoutExceptionCopyIsDueAtTheArchitectsReady
+  - TestNoticeReceiptTimeoutKeepsItsRowOnTheCappedWaits
   - TestOneStartRowDoesTheWholeStart  # 0.9 s
   - TestOpenIssueSuspensionInvariantKeepsTheExceptions  # 3.1 s
   - TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind  # 1.1 s
@@ -1426,6 +1451,15 @@
   - TestReleaseClaimRow  # 5.6 s
   - TestResolveToolsRefusesAScriptAsTheRealGh  # 0.0 s
   - TestRoleHoldersExecutorRetriesARefusal  # 0.2 s
+  - TestRoleWaitCapDoublesToFiveMinutesForEveryRefusal
+  - TestRoleWaitFirstTurnBoundRunsTheRowAt30Seconds
+  - TestRoleWaitFirstTurnRunsTheRowAtTheTurnStart
+  - TestRoleWaitLaunchMarkSurvivesARestart
+  - TestRoleWaitNoClaimIsPublishedAtTheFirstReady
+  - TestRoleWaitReadyLeavesAPacedCatchUpAtItsMoment
+  - TestRoleWaitReadyMakesEveryWaitingRowDue
+  - TestRoleWaitTakenEndsTheRowAtThePublishThatWasTaken
+  - TestRoleWaitUnheldControllerTopicKeepsTheCappedWaits
   - TestRunEndsAnOperatorSpawnInFlightWithTheDrainAndNamesIt  # 3.4 s
   - TestRunExitsAtOnceWhenPostgresRefusesThePassword  # 0.1 s
   - TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots  # 2.5 s
