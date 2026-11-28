@@ -1197,31 +1197,30 @@ func TestTheSplitterReadsTheApproveList(t *testing.T) {
 	}
 }
 
-// A route whose expressions name a package no old-layout file imports is refused, and the refusal
-// names that package and every file of oldLayoutFiles, since the imports are read from each of
-// them: read_classes.go too, not the table and the shapes alone. The control is the same route
-// with the package imported, which renders.
-func TestAPackageNoOldLayoutFileImportsIsRefusedNamingEveryFile(t *testing.T) {
+// The one package renderRoute can find no import for is http, which it adds to every route: a
+// route's own packages are only names the imports map holds, since qualifiers keeps no other. So
+// an old layout whose files import no net/http is refused, and the refusal names http and every
+// file of oldLayoutFiles, since the imports map is read from each of them: read_classes.go too,
+// not the table and the shapes alone. The route is as qualifiers leaves it there, naming no
+// package of its own: no file imports the http of its method. The control is the same route with
+// net/http imported, which renders.
+func TestAnOldLayoutImportingNoNetHTTPIsRefusedNamingEveryFile(t *testing.T) {
 	t.Parallel()
-	const unimported = "unimportedpkg"
 	route := &oldRoute{
-		methodExpr: "http.MethodGet", patternExpr: `"/api/v1/adopt-test-unimported"`, authExpr: "authAny",
-		descriptionExpr: unimported + ".Description", handler: "getUnimported",
-		packages: map[string]bool{unimported: true},
+		methodExpr: "http.MethodGet", patternExpr: `"/api/v1/adopt-test-no-net-http"`, authExpr: "authAny",
+		descriptionExpr: `"Answers a route of an old layout that imports no net/http."`, handler: "getNoNetHTTP",
 	}
-	imports := map[string]string{"http": "net/http"}
-	_, err := renderRoute(route, imports)
+	_, err := renderRoute(route, map[string]string{})
 	if err == nil {
-		t.Fatalf("a route naming %s, which no old-layout file imports, rendered", unimported)
+		t.Fatal("a route rendered though no old-layout file imports net/http")
 	}
-	for _, want := range append([]string{unimported}, oldLayoutFiles...) {
+	for _, want := range append([]string{"http"}, oldLayoutFiles...) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal %q does not name %s", err.Error(), want)
 		}
 	}
-	imports[unimported] = "example.com/" + unimported
-	if _, err := renderRoute(route, imports); err != nil {
-		t.Fatalf("the control failed: the same route with %s imported does not render: %v", unimported, err)
+	if _, err := renderRoute(route, map[string]string{"http": "net/http"}); err != nil {
+		t.Fatalf("the control failed: the same route with net/http imported does not render: %v", err)
 	}
 }
 
