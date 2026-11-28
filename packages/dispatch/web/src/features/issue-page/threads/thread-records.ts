@@ -26,7 +26,7 @@ import type {
 } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { buildIssuePath } from "../../refs/routes";
-import { agentsOnlyIds } from "../agents-only";
+import { agentsOnlyIds, isThreadsOnly } from "../agents-only";
 
 /** One thread as a route answers it. A row of a page carries the thread's `last_activity_at`,
  *  and the read of one thread by its id carries none. */
@@ -354,6 +354,13 @@ function commentRecords(
   return parts.map((part) => commentRecord(part, shared));
 }
 
+/**
+ * The records of a message thread. Conversation draws no message of a thread only Threads draws
+ * (`agents-only.ts`'s `isThreadsOnly`: no person wrote in it, and the Legion daemon did not begin
+ * it), nor of one the history draws (`agentsOnlyIds`: the daemon began it), so no record of
+ * either links to a node. A record of any other thread that a reply with a quote begins links to
+ * the message that reply answers.
+ */
 function messageRecords(
   first: MessageWithTrees,
   replies: readonly MessageWithTrees[],
@@ -367,13 +374,10 @@ function messageRecords(
     quote: undefined,
   };
   const parts = partsOf(root, replies, (reply) => reply.in_reply_to ?? first.id);
-  const agentsOnly = agentsOnlyIds(
-    undefined,
-    [{ message: first, replies: [...replies] }],
-    undefined
-  );
+  const thread = { message: first, replies: [...replies] };
+  const agentsOnly = agentsOnlyIds(undefined, [thread], undefined);
   const shared: ThreadFields = {
-    entry: drawnEntry(agentsOnly, "message"),
+    entry: isThreadsOnly(thread) ? () => undefined : drawnEntry(agentsOnly, "message"),
     lastActivity,
     thread: first.id,
     threadWriters: people([first, ...replies].map((message) => message.author)),
