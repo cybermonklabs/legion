@@ -35,7 +35,7 @@
       "bun": false,
       "omp": false,
       "evidence_variable": "PRODUCTION_CHECK_LOOK_ID_EVIDENCE_DIR",
-      "timeout_minutes": 30,
+      "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/production-check-look-id.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install. The driver posts each report's request body itself, so it needs no bun.",
       "jj": true
     },

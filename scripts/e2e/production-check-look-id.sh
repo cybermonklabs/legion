@@ -54,6 +54,22 @@
 #                                  backlog (part 10, a child and then a root), queuing no issue
 #                                  close or suspension of its own; and the ready after a fresh
 #                                  session sends nothing of a look that ended (fresh session)
+#   upgrade                        c-upgrade: each part writes into the store, with the daemon
+#                                  stopped, what a daemon of the release before leaves there, its
+#                                  tester registered on that release's contract, and boots the daemon
+#                                  on it: the boot gives each open look with no look id of its own an
+#                                  id and a new task, keeping its number and the check open — an open
+#                                  look (part 1), the last look (part 2), a look whose tester the
+#                                  operator holds and resumes after the boot (part 3), an id made for
+#                                  the previous look (part 4), a look beside a start row of it that
+#                                  release queued, which runs after the boot's row and, in the
+#                                  reverse order, before it, and finishes without acting (part 6), an
+#                                  id made for the check a later merge replaced (part 7) and a task
+#                                  written with no check_opened_at (part 8) — and a look that ended at
+#                                  the operator's hold is left to its next look (part 5); no text that
+#                                  release left reaches a connection, the look's new task does once
+#                                  the tester registers on this change's contract, and a report with
+#                                  its look id is taken, one with a stale id refused 409
 #   id hidden                      c-id-hidden, the last step: no look id the run saw is in any body
 #                                  of GET /legion/v1/state, of the record route read_record calls or
 #                                  of an answer to a report, each read before a look's task is sent,
@@ -99,12 +115,16 @@
 # row of the next look waits on `a delivery is already pending`), at part 8's report (409
 # CHECK_NOT_OPEN, the re-entry closed the check), at part 9's close line (the log has no close of
 # the check the next merge's check is written over) and at the move of each half of part 10 (the
-# child's check closed at its re-entry, before the move; the root's stays open after it); that step
-# runs no other part at the base. What part 4 of late turn did there, which passes at the base too,
-# and what id hidden did, which has nothing to search at the base, are printed as they came. A
-# proof.log an earlier run left in PRODUCTION_CHECK_LOOK_ID_EVIDENCE_DIR is removed before the base
-# run, so only that run's steps are read. Its last line is `production check look id negative
-# control: PASS|FAIL …` with the base run's evidence directory.
+# child's check closed at its re-entry, before the move; the root's stays open after it), and
+# upgrade at the seeded text of parts 1, 2, 3, 5 and 8 and of each half of part 6 (the text the
+# release before left reaches the tester's connection once its claim is ready, since the base's
+# boot gives no look an id and no new task); those two steps run no other part at the base, and
+# parts 4 and 7 of upgrade, which seed a look id the base's schema has no column for, are among the
+# parts they skip. What part 4 of late turn did there, which passes at the base too, and what id
+# hidden did, which has nothing to search at the base, are printed as they came. A proof.log an
+# earlier run left in PRODUCTION_CHECK_LOOK_ID_EVIDENCE_DIR is removed before the base run, so only
+# that run's steps are read. Its last line is `production check look id negative control:
+# PASS|FAIL …` with the base run's evidence directory.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -141,9 +161,10 @@ fi
 
 test_name=TestProductionCheckLookIDLive
 driver_file=packages/daemon/internal/daemon/production_check_look_id_live_test.go
-# The driver's own deadline: every step boots a daemon of its own, and each part of late turn walks
-# a child to its merged close and its second look.
-proof_timeout=40m
+# The driver's own deadline, lib/live-daemon-proof.sh's default that the neighbouring proofs run
+# under: the six steps took 292 s and 279 s on two runs in a Legion pod, and the hosted row's 25
+# minutes (.github/e2e-scripts.json) stays above it.
+proof_timeout=20m
 
 # The steps the base must fail, each as `<step>|<assertion>|<refusal>`: the assertion it must fail
 # at (the driver's `fails`, which a step of parts names `part <n> <assertion>`), and the words of
@@ -160,6 +181,13 @@ base_failures=(
   'task ends with its look|part 9 close-line|has no line `workflow: production check closed`'
   'task ends with its look|part 10 child closed-at-move|before the move'
   'task ends with its look|part 10 root closed-at-move|open after the move'
+  'upgrade|part 1 seeded-text|reached the connection of the tester'
+  'upgrade|part 2 seeded-text|reached the connection of the tester'
+  'upgrade|part 3 seeded-text|reached the connection of the tester'
+  'upgrade|part 5 seeded-text|reached the connection of the tester'
+  'upgrade|part 6 older-row-after seeded-text|reached the connection of the tester'
+  'upgrade|part 6 older-row-first seeded-text|reached the connection of the tester'
+  'upgrade|part 8 seeded-text|reached the connection of the tester'
 )
 
 # The negative control's own state, global because its EXIT trap reads it.

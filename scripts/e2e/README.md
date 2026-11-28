@@ -579,6 +579,18 @@ Each item below names a script, then what it proves.
   its controls delete an issue's plan rows, during its planner's work and before its gate opens, give a plan with a role nobody defines, which is refused `409 PLAN_REFUSED`, and give the plan `tester implementer`, which is refused `409 PLAN_REFUSED` too.
   No GitHub, no cluster
 
+- `production-check-look-id.sh`
+
+  a production check's look report gives the look's secret id, which only that look's own task carries, and the daemon takes the look a report is of from that id and never from the turn the report came in (dispatch://INFRA-3518), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, each checking role's agent a raw shim of the driver's own on the daemon's worker stream:
+  a report made in the late turn of a look's task is recorded against that look, and the daemon stops sending that task;
+  a testing turn that starts while the first look's task is in flight is no report of that look, whatever it names;
+  a report of a look its bound ended is taken until the next look starts, and one of a look the next look replaced is refused `409 CHECK_LOOK_NOT_OPEN`;
+  a look's task ends with its look however the look ends, and a check stays open while its issue runs again and closes as not run at the run's next merge or at its leave with no merge;
+  the boot on a store the release before left gives each open look with no look id of its own an id and a new task, and no text that release left reaches a connection;
+  and no look id is in a route a role reads or in the daemon's log.
+  `--base-commit <rev>` makes the same run over a `git archive` of that commit, which is the negative control: each step but `id hidden` fails there, at the assertion its check's negative control names.
+  Needs `go`, `git`, `jj` 0.38 or later, `awk`, `tar` and `python3`; no cluster, no agent, no bun and no tmux, so a Legion pod, a devbox and `e2e.yaml`'s hosted runner all run it
+
 - `owner-steps-client.sh`
 
   the calls the `legion` tool makes for an owner's plan, made by the plugin's own daemon client (`createLegionDaemonClient` under bun, each grant from `mintClaimGrant`, each completion through the phase op `executePhaseOp`) against the whole daemon booted as [`owner-steps.sh`](#owner-stepssh) boots it, over four issues of one project:
@@ -6054,13 +6066,73 @@ The client is `executePhaseOp` with `createLegionDaemonClient`, run under Bun by
 - `control-client-look-unnamed` sends a report without `check_opened_at`.
   It must throw `409 CHECK_LOOK_NOT_SERVED`, and the operator's `legion state --json` must still show look 1 open.
 
-- `client-look-named` reads the opening time from the task the fake runtime received, never from the store.
-  A `pending` with that `check_opened_at` and a `wake_at` must answer `{}`.
+- `client-look-named` reads the opening time and the look id from the task the fake runtime received, never from the store.
+  A `pending` with that `check_opened_at`, that `look_id` and a `wake_at` must answer `{}`.
   The same CLI must show the check still open, `lookOpen: false`, and `nextWakeAt` equal to the wake.
 
 The refused call is run first.
 A daemon that chooses a report from the claim's served look records that unnamed report, so the control fails before the named call can pass.
 The proof stands in for GitHub and each worker's runtime; Dispatch, the daemon, its operator CLI, and the plugin's phase operation and HTTP client are real.
+
+## production-check-look-id.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/production-check-look-id.sh     # → "production check look id e2e: PASS in <n>s", exit 0
+LEGION_TEST_PG_DSN=… \
+  bash scripts/e2e/production-check-look-id.sh --base-commit <rev>     # → "production check look id negative control: PASS in <n>s", exit 0
+```
+
+dispatch://INFRA-3518's live proof that the report of a production check's look gives the look's secret id, which only that look's own task carries, and that the daemon takes the look a report is of from that id, never from the turn the report came in.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no bun, no agent and no tmux — so a Legion pod, CI and a devbox all run it.
+`LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
+the script starts none.
+The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+Two whole runs in a Legion worker pod took 316 s and 377 s, 23 s and 98 s of them building the driver (a warm Go build cache, and one with the driver's own package changed) and 292 s and 279 s the proof's six steps, 59 s and 57 s of those `upgrade`'s nine part runs.
+GitHub-hosted CI runs its row in `.github/e2e-scripts.json` with the `e2e` label, by manual dispatch and each night, with a limit of 25 minutes, the proportion the neighbouring rows keep to their measured runs.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | what [`conflict-no-takeover.sh`](#conflict-no-takeoversh)'s holds, in the same words and with the same refusals |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestProductionCheckLookIDLive` (`internal/daemon/production_check_look_id_live_test.go`, `-tags e2e`) |
+| `proof` | the six steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>`, or `FAIL <name> at <assertion>`; a step of parts prints each part between `-- part <n>: <what>` and `ok part <n>` or `FAIL part <n> at <assertion>`, and fails naming each part that failed |
+
+The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, afresh for each part of a step of parts and for each other step that drives a check, so a step or a part that fails ends there and the next one runs.
+Each fixture is a tree of a project of its own: a root in `accepting` and its child under `production_check: tester`, or, where a part checks a root, that root alone.
+The checked issue reaches testing as production's does, and closes merged as `internal/api/handoff_check_route_test.go`'s fixture closes it:
+GitHub's merge of its pull request arrives while it is in testing, and a person then moves it to `done` on Dispatch, which opens the check and starts its first look on the tester's claim.
+Facts enter only as production's do: GitHub's and Dispatch's envelopes on the `ENVOY_NOTIFICATIONS` stream;
+the daemon's own HTTP routes for each role's registration, readiness, grants and reports, the operator's suspension and resume and the controller's fresh session;
+and the daemon's worker stream.
+Each report is the raw JSON body the plugin's `handoff_complete` sends (`checkOpenedAt`, `lookId`, `verdict`, `summary`, `wakeAt`), and the look id it gives is read from the look's task as it reached the role's connection.
+The checking role's agent is a raw shim of the driver's own: it answers the protocol negotiation and the state probe as the real shim and Oh My Pi do, answers busy (`session_busy`) a prompt that arrives in a turn, and hands every other prompt to the step, which answers it late, busy or not at all.
+A look's bound and a look's wake are brought forward by SQL on `outbox.next_at`, and a store an older daemon would have left is written by SQL while no daemon runs.
+
+| step | what it holds |
+| :--- | :--- |
+| `late turn` | c-late-turn: a report the checking role makes in the turn of the open look's task is recorded against that look, also when the turn match fails, and the daemon then stops sending that task and clears the claim's prompt counts: a look-2 send that runs out of its deadline after the prompt reached the agent (part 1), the same with the daemon restarted between that prompt and its turn (part 2), an implementer's check seeded as one opened before the rule that the tester checks production (part 3), and, on the wall clock, an acknowledged prompt whose turn starts while its next send is in flight (part 4) |
+| `testing turn behind the close` | c-no-id: a tester's testing turn that starts while the first look's task is in flight sends a pass with no look id, with a look id it made up and with no `check_opened_at`; each is refused and records nothing, and the look's own task reaches the connection after that turn and its report is taken |
+| `ended look` | c-ended-look: a report of a look its bound ended is taken until the next look starts, and one of a look the next look replaced is refused `409 CHECK_LOOK_NOT_OPEN`, while the same report with the next look's id is taken |
+| `task ends with its look` | c-task-ends: the task of a look the turn match fails for ends with its look, however the look ends (parts 1 to 5), and the next look's task takes its place, also behind an acknowledged prompt whose turn starts late (part 6); the check of a root reopened inside its linger (part 7) and of a child that re-entered (part 8) stays open and takes the look's report from the session of its turn, after that turn; it closes as not run at the new run's next merge (part 9) and at a move to backlog (part 10, a child and then a root), queuing no issue close or suspension of its own; and the ready after a fresh session sends nothing of a look that ended |
+| `upgrade` | c-upgrade: each part writes into the store, with the daemon stopped, what a daemon of the release before leaves there, its tester's claim registered on that release's plugin contract, and boots the daemon on it, whose stale-plugin lane relaunches the tester (or the operator's resume launches it) and whose agent registers on this change's contract; the boot gives each open look with no look id of its own an id and a new task, keeping its number and the check open — an open look (part 1), the last look, whose pass closes the check (part 2), a look whose tester the operator holds and resumes after the boot, the boot's start row waiting on that hold (part 3), an id made for the previous look (part 4), a look beside a start row of it that release queued, which waits on `a delivery is already pending` and finishes without acting whether it runs after the boot's row or before it (part 6), an id made for the check a later merge replaced (part 7) and a task written with no `check_opened_at` (part 8) — and a look that ended at the operator's hold is left to its next look (part 5); no text that release left reaches a connection, the look's new task does, and a report with its look id is taken, while one with the stale id of parts 4 and 7 is refused `409 CHECK_LOOK_NOT_OPEN` |
+| `id hidden` | c-id-hidden, the last step: no look id the run saw is in any body of `GET /legion/v1/state`, of the record route `read_record` calls or of an answer to a report, each read before a look's task is sent, after a busy answer to it, after its report and after the next look starts, nor in the daemon's whole log of the run; the same search over the task texts that reached the connections finds each id |
+
+`--base-commit <rev>` takes the tree of that commit with `git archive` into a directory of the run's own under `TMPDIR`, lays this checkout's driver file over it, and makes the same four checks there in a subshell whose root is that tree, with `PRODUCTION_CHECK_LOOK_ID_BASE=1`, so the daemon the driver builds is the base's.
+The driver names no Go symbol the base lacks: it reads the routes as raw JSON and each column the change adds by SQL, and under that variable it sends no `lookId`, which the base daemon's strict decoder refuses, reads no look id, reads and writes no column the change adds, and runs only the parts each check's negative control names.
+That run must fail, and the script's `negative-control` check reads its `proof.log` for each step failing at the assertion its check's negative control names, with the refusal that control names:
+`late turn` at part 1's `report` (`409 HANDOFF_ALREADY_RECORDED`) and part 3's (`409 CHECK_LOOK_NOT_SERVED`), `testing turn behind the close` at `no-id-refusal` and `ended look` at part 1's `report` (each `409 CHECK_LOOK_NOT_SERVED`), `task ends with its look` at the `next-look` of parts 2, 3 and 4, part 8's `report`, part 9's `close-line` and the `closed-at-move` of each half of part 10, and `upgrade` at the `seeded-text` of parts 1, 2, 3, 5 and 8 and of each half of part 6, where the text the release before left reaches the tester's connection once its claim is ready.
+It prints what part 4 of `late turn` and what `id hidden`, which has nothing to search at the base, did there as they came.
+An empty `<rev>` is refused with exit 2; the DSN is read with the same loopback guard before the tree is taken, and a refusal of the base run (exit 2) is the script's own exit 2; and a `proof.log` an earlier run left in the evidence directory is removed before the base run, so only that run's steps are read.
+
+What the proof stands in for lies outside the rule:
+the broker is a native `nats-server`, GitHub is the REST stand-in the whole-daemon drivers share (`liveGitHub`, in `internal/daemon/live_issue_proof_test.go`), Dispatch is their board (`liveDispatch`), Envoy's listener is the package's `noticeListener`, the two Apps' tokens are placeholders, and no agent runs:
+every claim is launched by the package's fake runtime, whose sweep of the claims' processes the driver makes itself, and each role the proof acts as is driven over the daemon's own worker stream and HTTP routes.
+The configuration, the store and its migrations, the HTTP API, the claim supervision with its worker stream and its timers, `openWorkflow`, the boot's repair of the open checks, the JetStream consumers and the outbox lanes are the real ones.
+`PRODUCTION_CHECK_LOOK_ID_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's output, and with `--base-commit` the base run's and the negative control's own transcript;
+the run's work directory, the driver binary among it, is under `TMPDIR` too.
 
 ## owner-steps-client.sh
 
@@ -8274,7 +8346,7 @@ The run a whole-daemon live proof makes around its driver.
 Every entry script that sources this file differs from the others only in what its driver proves, so each sets its own values and makes this run.
 [`approved-version-news.sh`](#approved-version-newssh) makes it twice, once for each of its parts, each in a subshell rather than as its last command, since it reads each run's outcome and the driver's output to count the checks and the runs and to judge its negative control.
 `busy-relaunch-delivery.sh --base-commit <rev>` makes it once over a `git archive` of that commit instead, in a subshell whose `root` is that tree, so the run's exit trap is the subshell's and the script goes on to read the run's `proof.log`.
-`left-session-claims.sh --base-commit <rev>` makes it the same way.
+`left-session-claims.sh --base-commit <rev>` and `production-check-look-id.sh --base-commit <rev>` make it the same way.
 
 ```sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"     # sourced, never run
@@ -8307,10 +8379,10 @@ A run that ended before its last check with status 0 says so on the line before,
 
 | argument | is |
 | :--- | :--- |
-| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `left session claims`, or `left session claims at <sha12>` for its negative control's base run, `register gate basis`, `parent waits`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `owner steps`, `owner steps client`, `experiment`, `approved version news part one`, `approved version news part two`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion`, `sub architect` |
+| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `left session claims`, or `left session claims at <sha12>` for its negative control's base run, `register gate basis`, `parent waits`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `owner steps`, `owner steps client`, `experiment`, `approved version news part one`, `approved version news part two`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion`, `sub architect`, `production check look id`, or `production check look id at <sha12>` for its negative control's base run |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and, where the `driver` check builds one, the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LEFT_SESSION_CLAIMS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LEFT_SESSION_CLAIMS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`, `PRODUCTION_CHECK_LOOK_ID_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 | `TIMEOUT` | the driver's own deadline (`-test.timeout`), `20m` when it is not given or is empty; `approved-version-news.sh` gives part two 9 minutes for each run its pick makes and 20 more, since the driver bounds each run at eight minutes, and counts no base run of `a4` or `answers` in a run that picks no arm |
 | `DRIVER` | a driver the caller built with `build_daemon_driver` before the run, which the `driver` check notes and does not build again, and which the run does not remove; not given, or empty, the check builds one into the work directory; `approved-version-news.sh` hands both its parts the driver its `plan` check built, in a run of both parts, and every other entry script gives none |
 | `STAMP` | the merge order the check builds the driver with (`build_daemon_driver OUT STAMP`); not given, or empty, the driver numbers its entries by id; [`owner-steps-client.sh`](#owner-steps-clientsh) alone gives one, and a handed `DRIVER` is built with the order its caller chose |
