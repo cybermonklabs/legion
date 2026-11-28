@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 var _ api.Supervisor = (*supervisor)(nil)
@@ -315,15 +316,24 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 
 // decisionFailed logs err, a decision on token's claim failing (what names it: the event its
 // machine handled, or the release of an uncertain launch), as failed says: at Error, unless the
-// daemon's stop ended it, which is no fault, since the next boot takes the claim up. It reports
-// whether the failure is a fault.
+// daemon's stop ended it, which is no fault, since the next boot takes the claim up, or err holds
+// a routine wait (wait.IsRoutine), which nobody has to act on and which is logged at Debug: the
+// project release's hold of every start until the daemon's next boot (errProjectReleased), which
+// a decision met in its launch check, or met at the runtime (supervise's startWaitsForRelease),
+// and answered. It reports whether the decision failed, rather than being ended by the daemon's
+// stop: a routine wait is a failure of the decision all the same, which its caller retries as it
+// retries any other (releaseUnfinishedClaim).
 func (s *supervisor) decisionFailed(token claim.Token, what string, err error, failed string) bool {
 	if s.ctx.Err() != nil {
 		s.log.Info("supervise: the daemon's stop ended a decision; the next boot takes the claim up",
 			"claim", token, "event", what, "error", err)
 		return false
 	}
-	s.log.Error(failed, "claim", token, "event", what, "error", err)
+	level := slog.LevelError
+	if wait.IsRoutine(err) {
+		level = slog.LevelDebug
+	}
+	s.log.Log(s.ctx, level, failed, "claim", token, "event", what, "error", err)
 	return true
 }
 

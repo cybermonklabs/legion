@@ -2031,14 +2031,14 @@ type Machine struct {
 	// claim again as an unfinished launch.
 	relaunch *waitingRelaunch
 	// launchCheckWaiting is whether the relaunch relaunchRefused last left waiting was refused
-	// with a wait (wait.ErrWaiting), as the launch check refuses every relaunch while a project
-	// release holds every start: the wait is logged at Info at the refusal that begins it, and at
-	// Debug at each retry it refuses after that (relaunchWaitLine). A refusal that is no wait
-	// clears it, and so does a launch check that passes (launchAfter): the launch may then wait its
-	// turn in the pacing or at the pause's gate, and a release that marks before that turn begins
-	// a wait of its own. letGo clears it too, which a relaunch that runs (launchNow), a
-	// suspension, a retirement and a failure all pass. So the next wait logs at Info again. Memory
-	// only, as relaunch is: a restarted daemon's first refusal logs at Info.
+	// with a routine wait (wait.IsRoutine), as the launch check refuses every relaunch while a
+	// project release holds every start: the wait is logged at Info at the refusal that begins it,
+	// and at Debug at each retry it refuses after that (relaunchWaitLine). A refusal that is no
+	// routine wait clears it, and so does a launch check that passes (launchAfter): the launch may
+	// then wait its turn in the pacing or at the pause's gate, and a release that marks before
+	// that turn begins a wait of its own. letGo clears it too, which a relaunch that runs
+	// (launchNow), a suspension, a retirement and a failure all pass. So the next wait logs at Info
+	// again. Memory only, as relaunch is: a restarted daemon's first refusal logs at Info.
 	launchCheckWaiting bool
 	// cancelStart cancels the start in flight, and is nil between starts; startStopped is whether
 	// a suspension cancelled one, read once by that suspension's own row (stoppedAStart). startMu
@@ -4003,19 +4003,30 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 // before the release's mark was set — just before it, before a charged try's backoff (writeTry), or
 // before it waited at its issue pod's gate (askPod), whose grant starts it with no second check
 // (podStartDue) — and met the mark at the runtime instead. It is no fault of the claim's, so
-// nothing is charged, as for a store that could not answer, and nobody is told. The process this
-// launch let go is stopped, as after every refused start, and the launch is tried again at the
-// probe interval (relaunchLater), where the launch check refuses it, uncharged again, for as long
-// as the release holds (relaunchRefused). The release stops the claim, or the daemon's next boot
-// starts it.
+// nothing is charged, as for a store that could not answer. The process this launch let go is
+// stopped, as after every refused start, and the launch is tried again at the probe interval
+// (relaunchLater), where the launch check refuses it, uncharged again, for as long as the release
+// holds (relaunchRefused). The release stops the claim, or the daemon's next boot starts it.
+//
+// The refusal is the release's hold the launch check answers as a routine wait (internal/daemon's
+// errProjectReleased), met one step later, and nobody has to act on it either: this line is at
+// Info, and the decision answers the refusal marked routine (wait.Routine), which the machine's
+// own goroutines and the daemon's feeder of a worker's events log at Debug (decisionErrorLevel,
+// internal/daemon's supervisor.decisionFailed). The mark changes nothing else: it unwraps to the
+// refusal, which stays no wait (wait.ErrWaiting) for every other reader, the outbox and the API
+// among them. A stop of the process or a write of the claim that failed as well is answered
+// beside the refusal unmarked, and so logged at Error.
 func (m *Machine) startWaitsForRelease(ctx context.Context, cause error, charged, exempt bool) error {
-	err := errors.Join(cause, m.stopPrevious(ctx))
+	stopped := m.stopPrevious(ctx)
 	m.log.Info("supervise: the project release holds every pod of the project; this start charges nothing and waits",
-		"generation", m.claim.Generation, "retry", m.deps.Timeouts.Probe, "error", err)
+		"generation", m.claim.Generation, "retry", m.deps.Timeouts.Probe, "error", errors.Join(cause, stopped))
 	m.relaunchLater(m.deps.Timeouts.Probe, WakeLaunch, func(ctx context.Context) error {
 		return m.launchAfter(ctx, charged, exempt, false, nil, noEnd)
 	})
-	return errors.Join(err, m.persist(ctx))
+	if failed := errors.Join(stopped, m.persist(ctx)); failed != nil {
+		return errors.Join(cause, failed)
+	}
+	return wait.Routine(cause)
 }
 
 // podRoundRetry is how long a start refused for want of its pod's update round waits before
@@ -5358,11 +5369,30 @@ func (m *Machine) nextTimer(kind TimerKind, deliveryID string) Timer {
 // fire hands the machine ev, a timer of its own firing, on the goroutine it fires on: the
 // clock's, for a timer the clock holds (arm), and the one the pod gate posts the grant of a launch
 // parked at its gate on (askPod, PodStarts.post). That goroutine holds no lock, so its decision
-// runs on a fresh context.
+// runs on a fresh context. The decision's error is logged at the level decisionErrorLevel gives.
 func (m *Machine) fire(ev Timer) {
-	if err := m.Handle(m.worker(), ev); err != nil {
-		m.log.Error("supervise: timer", "timer", string(ev.Kind), "error", err)
+	ctx := m.worker()
+	if err := m.Handle(ctx, ev); err != nil {
+		m.log.Log(ctx, decisionErrorLevel(err), "supervise: timer", "timer", string(ev.Kind), "error", err)
 	}
+}
+
+// decisionErrorLevel is the level a goroutine the machine starts logs its decision's error at
+// (fire, startSend), as the daemon's feeder of a worker's events logs it (internal/daemon's
+// supervisor.decisionFailed): Debug for an error that holds a routine wait (wait.IsRoutine), which
+// nobody has to act on, and Error for every other. The routine wait such a decision answers is the
+// project release's hold of every start until the daemon's next boot, met in the launch check
+// (internal/daemon's errProjectReleased) by a decision that holds the claim's process rather than
+// let it go — the registration deadline (registrationDeadline), which meets it again at each probe
+// interval for as long as the release holds, a prompt retirement (chargePrompt), the stale-plugin
+// relaunch (relaunchStale), a parked launch's turn over a claim that records its process (runWake,
+// relaunchRefused) — or met at the runtime by a start that passed the check
+// (startWaitsForRelease).
+func decisionErrorLevel(err error) slog.Level {
+	if wait.IsRoutine(err) {
+		return slog.LevelDebug
+	}
+	return slog.LevelError
 }
 
 // worker is the context a goroutine the machine starts runs its decision on: the machine's own,

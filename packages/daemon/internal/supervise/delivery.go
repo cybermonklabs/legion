@@ -1739,7 +1739,7 @@ func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
 			ev = PromptRefused{Claim: token, Generation: generation, DeliveryID: d.ID, Err: err}
 		}
 		if err := m.Handle(working, ev); err != nil {
-			m.log.Error("supervise: prompt outcome", "delivery", d.ID, "error", err)
+			m.log.Log(working, decisionErrorLevel(err), "supervise: prompt outcome", "delivery", d.ID, "error", err)
 		}
 		m.mu.Lock()
 		m.goroutines--

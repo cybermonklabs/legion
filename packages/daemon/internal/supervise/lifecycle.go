@@ -139,22 +139,27 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // retire. Any other refusal is not the tree's — a store that did not answer, or the project
 // release's hold of every start until the daemon's next boot (internal/daemon's
 // errProjectReleased) — and ends nothing: the relaunch waits (relaunchLater), as a stop that
-// fails does. The release's refusal is a wait (wait.ErrWaiting), which lasts as long as the
-// release holds, up to its bound, and which nobody has to act on: the operator who released the
-// project asked for it. So a refusal that is a wait is logged at Info where the wait begins and at
-// Debug at each retry it refuses after that (relaunchWaitLine, launchCheckWaiting), and every
-// other refusal at Warn at each retry (relaunchRefusedLine).
+// fails does. The release's refusal is a routine wait (wait.IsRoutine), which lasts as long as
+// the release holds, up to its bound, and which nobody has to act on: the operator who released
+// the project asked for it. So a refusal that is a routine wait is logged at Info where the wait
+// begins and at Debug at each retry it refuses after that (relaunchWaitLine, launchCheckWaiting),
+// and every other refusal, a wait that is not routine included, at Warn at each retry
+// (relaunchRefusedLine).
 //
-// A wait is answered to no caller: once its retry is armed, the decision answers only the claim's
-// write. Every caller that got it would log it at Error or answer it as a failure: the timer that
-// retries it, at each probe interval for as long as the release holds (fire), the daemon's feeder
-// of a worker's events (internal/daemon's supervisor.decisionFailed), and the routes of a turn's
-// outcome and of an operator's retry (api's claimFailure, operationFailure). The retry is the one
-// such answer a person reads, and it meets the wait only where the release marked after the
-// route's own check had let it through (api's releaseRefused, runDroppedLaunchForRetry): it is
-// answered as a start that wrote no launch, the claim waiting launching with its retry armed,
-// which the release's stop then lets go as it lets go every start it holds. A refusal that is no
-// wait is still answered with its error.
+// A routine wait is answered to no caller: once its retry is armed, the decision answers only the
+// claim's write. A routine wait that does reach a decision's caller is kept below Error, at Debug,
+// where a decision's error is logged: by the machine's own goroutines (fire, startSend,
+// decisionErrorLevel) and by the daemon's feeder of a worker's events (internal/daemon's
+// supervisor.decisionFailed). So no Warn or Error line is written there for the wait this answers
+// over a claim it leaves as it was (one that records its process, the first return here), nor for
+// the wait a decision meets in its own launch check (registrationDeadline, chargePrompt,
+// relaunchStale). The routes of a turn's outcome and of an operator's retry still answer every
+// error as a failure (api's claimFailure, operationFailure), so this refusal answers them nothing.
+// The retry is the one such answer a person reads, and it meets the wait only where the release
+// marked after the route's own check had let it through (api's releaseRefused,
+// runDroppedLaunchForRetry): it is answered as a start that wrote no launch, the claim waiting
+// launching with its retry armed, which the release's stop then lets go as it lets go every start
+// it holds. A refusal that is no routine wait is still answered with its error.
 func (m *Machine) relaunchRefused(ctx context.Context, kind WakeKind, relaunch func(context.Context) error, err error) error {
 	if m.claim.Locator != nil || !slices.Contains(live, m.claim.State) {
 		return err
@@ -164,7 +169,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, kind WakeKind, relaunch f
 		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
 	}
 	m.relaunchLater(m.deps.Timeouts.Probe, kind, m.retryHolding(m.pluginRelaunch, relaunch))
-	if errors.Is(err, wait.ErrWaiting) {
+	if wait.IsRoutine(err) {
 		level := slog.LevelDebug
 		if !m.launchCheckWaiting {
 			level = slog.LevelInfo
@@ -178,13 +183,14 @@ func (m *Machine) relaunchRefused(ctx context.Context, kind WakeKind, relaunch f
 	return errors.Join(err, m.persist(ctx))
 }
 
-// relaunchWaitLine is the line of a relaunch the launch check refused with a wait other than a
-// reserved cleanup's, which suspends the claim instead (relaunchRefused): at Info at the refusal
-// that begins the wait, and at Debug at each retry it refuses after that (launchCheckWaiting).
+// relaunchWaitLine is the line of a relaunch the launch check refused with a routine wait
+// (wait.IsRoutine, relaunchRefused): at Info at the refusal that begins the wait, and at Debug at
+// each retry it refuses after that (launchCheckWaiting).
 const relaunchWaitLine = "supervise: the relaunch waits: the launch check holds it; trying it again at the probe interval"
 
-// relaunchRefusedLine is the line of a relaunch the launch check refused with anything but a wait
-// (relaunchRefused), at Warn at each retry it refuses.
+// relaunchRefusedLine is the line of a relaunch the launch check refused with anything but a
+// routine wait (relaunchRefused), a wait of another kind included, at Warn at each retry it
+// refuses.
 const relaunchRefusedLine = "supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval"
 
 // watchAgain arms again what watches the process the claim records, where that is not armed: the

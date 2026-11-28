@@ -70,8 +70,25 @@ const (
 	messageReadSkew = 5 * time.Second
 	// waitWarnAttempts is when a waiting row is logged as a warning: past the backoff's climb to
 	// its cap, a wait of about two minutes, what it waits on is not ending on its own, and an
-	// operator should look. A wait that ends on its own (routineWait) stays debug at every
-	// attempt.
+	// operator should look. A routine wait (wait.Routine, wait.IsRoutine), one nobody has to act
+	// on for Legion, stays debug at every attempt. These waits are routine. A Dispatch claim
+	// release waiting on the claim's holder or on a contended answer (claimHeldWait,
+	// claimContendedWait), which the hour claimReleaseWait caps rather than an operator. A
+	// child's architect's first start waiting for its tree to run again
+	// (childArchitectFirstStart), which a person's move of the tree or of the child ends rather
+	// than an operator, and then for the branch row a re-admission queued for the child
+	// (startRoot), whose own failures that row logs. A delivery row waiting for a launch the wake
+	// pacing parked (parkedWait), which that launch's turn ends, or for a release of the claim's
+	// pod still standing, or a start queued to bring the role back (wakeForDelivery), which ends
+	// as that release or start does. A controller notice of a project with no controller
+	// registered (controllerHolds), which the controller liveness sweep already reports. A role
+	// message a pause held waiting for the role a pause stopped to hold its topic (roleMessage's
+	// wait on notify.ErrNoHolder), which the role's return or an end of its debt ends
+	// (heldMessageOwed). And the project release's refusal of a start until the daemon's next boot
+	// (errProjectReleased), which the operator who released the project asked for: a row that
+	// meets it while it runs, because the release set its mark after the row began, is retried
+	// under this rule, and a row the release holds before it runs is put back with no attempt
+	// counted and logged at debug after its first line (outbox.holdForRelease).
 	waitWarnAttempts = 7
 	// issueBranchTimeout bounds one issue_branch row's GitHub calls, its token's mint with them:
 	// the row runs on its issue's lifecycle lane, one row at a time, so a call GitHub never
@@ -490,7 +507,7 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 			switch {
 			case row.Attempts == 0:
 				level = slog.LevelInfo
-			case row.Attempts >= waitWarnAttempts && !routineWait(err):
+			case row.Attempts >= waitWarnAttempts && !wait.IsRoutine(err):
 				level = slog.LevelWarn
 			}
 			r.logWait(ctx, level, row, kept)
@@ -1005,39 +1022,6 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		return false
 	}
 }
-
-// routineWait is a wait nobody has to act on for Legion (routineWaiting). Five waits are routine.
-// A Dispatch claim release waiting on the claim's holder or on a contended answer
-// (claimHeldWait, claimContendedWait), which the hour claimReleaseWait caps rather than an
-// operator. A child's architect's first start waiting for its tree to run again
-// (childArchitectFirstStart), which a person's move of the tree or of the child ends rather than
-// an operator, and then for the branch row a re-admission queued for the child (startRoot), whose
-// own failures that row logs. A delivery row waiting for a launch the wake pacing parked
-// (parkedWait), which that launch's turn ends. A role message a pause held waiting for the role a
-// pause stopped to hold its topic (roleMessage's wait on notify.ErrNoHolder), which the role's
-// return or an end of its debt ends (heldMessageOwed). And the project release's refusal of a
-// start until the daemon's next boot (errProjectReleased), which the operator who released the
-// project asked for: a row that meets it while it runs, because the release set its mark after
-// the row began, is retried under this rule, and a row the release holds before it runs is put
-// back with no attempt counted and logged at debug after its first line (outbox.holdForRelease).
-func routineWait(err error) bool {
-	var routine interface{ Routine() bool }
-	return errors.As(err, &routine) && routine.Routine()
-}
-
-// routineWaiting is a wait that is routine (routineWait), so every attempt of its row stays at
-// debug after the first rather than turning into a warning from the seventh (waitWarnAttempts),
-// however long the wait lasts. err is the wait itself (wait.Errorf, wait.New, or wait.Until for a
-// wait that names its moment, as parkedWait's does), which it unwraps to, so settle still reads
-// the row as waiting (wait.ErrWaiting) and retries it on its backoff, or at that moment
-// (wait.UntilAt).
-type routineWaiting struct{ err error }
-
-func (w routineWaiting) Error() string { return w.err.Error() }
-
-func (w routineWaiting) Unwrap() error { return w.err }
-
-func (routineWaiting) Routine() bool { return true }
 
 // execute runs one row, and is the one place each row's run passes, so the rule for a Dispatch
 // that has no route for a write is here: its router's 404 (dispatch.NoRoute), which a Dispatch
@@ -2294,7 +2278,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // (store.StoppedByAPause), and without the pause the role would have had it. The row waits for the
 // role to come back, and is published to the role's session once it is back. Its publish is what
 // brings the role back: the listener answers that the role has no live holder
-// (notify.ErrNoHolder), which for this row is a routine wait (routineWaiting), and reports the
+// (notify.ErrNoHolder), which for this row is a routine wait (wait.Routine), and reports the
 // role's wake beside that answer, and the workflow's wake of a role the pause stopped is that
 // pause's held wake, whose task says the pause stopped the session (workflow.WakeTask). The row
 // takes no wake of its own, since a delivery wake resumes the role with no task. While the wake
@@ -2348,12 +2332,12 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	if stopped != 0 && errors.Is(err, notify.ErrNoHolder) {
 		// A wait as well: the role is coming back for the row, the listener reporting its wake
 		// beside this answer, or its session is up and has not claimed the role's topic yet. It is
-		// routine (routineWaiting): the role's return ends it, or one of the debt's end events
+		// routine (wait.Routine): the role's return ends it, or one of the debt's end events
 		// (heldMessageOwed) does, so nobody has to act on it, and a return that outlasts the
 		// backoff's climb to its cap, about two minutes, would otherwise be logged as a warning at
 		// every attempt from the seventh (waitWarnAttempts).
-		return routineWaiting{err: wait.Errorf("%s's role message for %s waits for the role's session to hold its topic: pause %d stopped the role, which is coming back or has not claimed its topic yet: %w",
-			row.Issue, payload.Role, stopped, err)}
+		return wait.Routine(wait.Errorf("%s's role message for %s waits for the role's session to hold its topic: pause %d stopped the role, which is coming back or has not claimed its topic yet: %w",
+			row.Issue, payload.Role, stopped, err))
 	}
 	var refused notify.ErrRefusedByHolder
 	var denied notify.ErrPublishDenied
@@ -2899,7 +2883,7 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 // The wait on a registered controller is the one settle logs at INFO, then DEBUG, and at WARN from
 // attempt waitWarnAttempts on, which is the operator's sign that a registered controller does not
 // hold its role. The wait on a project with no controller registered stays at DEBUG after its first
-// attempt (routineWaiting): the controller liveness sweep already says so once per boot timeout
+// attempt (wait.Routine): the controller liveness sweep already says so once per boot timeout
 // (watchController, controllerNotRegistered), and every waiting row of such a project would
 // otherwise repeat it each minute. Both retry on the outbox's own backoff (outbox.retry,
 // record.RetryBackoff: one second, doubling to
@@ -2926,7 +2910,7 @@ func (r *outbox) controllerHolds(ctx context.Context, row record.OutboxRow, role
 		return fmt.Errorf("read the controller session the controller notice for %s is for: %w", row.Issue, err)
 	}
 	if session == "" {
-		return routineWaiting{err: wait.Errorf("the controller notice for %s waits for a controller to register", row.Issue)}
+		return wait.Routine(wait.Errorf("the controller notice for %s waits for a controller to register", row.Issue))
 	}
 	holder, state, err := r.notices.RoleHolder(ctx, string(role))
 	if err != nil {
@@ -3369,7 +3353,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			if waitsFor != "" {
-				return routineWaiting{err: wait.Errorf("the first start of the own architect of %s waits for %s", issue.Key, waitsFor)}
+				return wait.Routine(wait.Errorf("the first start of the own architect of %s waits for %s", issue.Key, waitsFor))
 			}
 			if root != nil && root.Lingers() {
 				r.log.Info("outbox start of a member of a lingering tree; finished without acting", "row", row.ID, "issue", issue.Key,

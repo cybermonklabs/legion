@@ -1623,7 +1623,14 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   asked for it. It stops when the release's stop lets the claim go, when a release whose start
   failed has cleared its mark and the next try starts the claim, or when the daemon's next boot
   ends the release and launches the claim again. A try the store did not answer writes the line
-  above instead and ends the wait, so a wait that follows logs at Info again.
+  above instead and ends the wait, so a wait that follows logs at Info again. The release holds
+  other steps of a claim the same way: a registration deadline whose process the release keeps
+  running, tried again every `probe_interval_seconds`; a prompt retirement it holds, tried again
+  at the next prompt failure; and a start the runtime refused because the release's mark came
+  after the start's own check, which writes **`supervise: the project release holds every pod of
+  the project; this start charges nothing and waits`** at Info. The supervision's lines for those
+  steps, `supervise: timer`, `supervise: prompt outcome` and `supervise: an event failed`, are at
+  Debug rather than Error, with the release's refusal in `error=`.
 - **`supervise: the launch could not be written; trying it again at the probe interval`** means
   the daemon's Postgres did not take a launch's write, after the launch had let the claim's process
   go. The process is stopped and nothing is started; the claim waits `launching` with no process,

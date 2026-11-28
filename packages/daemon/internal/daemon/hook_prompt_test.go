@@ -600,7 +600,7 @@ func (p *parkedWake) waiting() (tries int, waited string, due time.Time) {
 // keptAfterTheParkedWake drives one role-message row for role's released claim on LEGION-208
 // through a resume the wake pacing parks (parkTheWake) and the park's whole wait. The attempt
 // that finds the park makes the row due parkedWakeBound on, not at the wake's turn, and what it
-// waits on is routine (routineWait), so settle logs none of its attempts as a warning. A drain
+// waits on is routine (wait.IsRoutine), so settle logs none of its attempts as a warning. A drain
 // before the bound does not run the row; an attempt past the bound, the park still holding,
 // waits to the next bound; and an attempt past the turn while the wake still waits for its timer
 // falls back to the backoff. Once the test fires the wake's turn and the resume launches, the
@@ -616,8 +616,8 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 	// The drain keeps no error, so the wait is read from the executor run once more on the same
 	// clock: over a claim parked with no process it reads the claim's view and writes nothing.
 	waited := p.runner.execute(context.Background(), p.row)
-	if at, named := wait.UntilAt(waited); !errors.Is(waited, wait.ErrWaiting) || !routineWait(waited) || !named || !at.Equal(p.found.Add(parkedWakeBound)) {
-		t.Fatalf("the parked attempt answers %v, naming %s (%t), want a routine wait (routineWait) naming the bound, %s: settle warns at every attempt from the seventh of a wait that is not routine, about once a minute over an hour's park",
+	if at, named := wait.UntilAt(waited); !errors.Is(waited, wait.ErrWaiting) || !wait.IsRoutine(waited) || !named || !at.Equal(p.found.Add(parkedWakeBound)) {
+		t.Fatalf("the parked attempt answers %v, naming %s (%t), want a routine wait (wait.IsRoutine) naming the bound, %s: settle warns at every attempt from the seventh of a wait that is not routine, about once a minute over an hour's park",
 			waited, at, named, p.found.Add(parkedWakeBound))
 	}
 	drainAt(p.t, p.runner, parkFound+parkedWakeBound/2, "a drain before the bound")

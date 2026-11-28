@@ -299,7 +299,7 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // would hold that pod from idle release the whole time; the bound caps what such an early end
 // costs. A row that climbed its backoff instead would try again every 64 s and log a Warn at
 // every attempt from the seventh (settle), about once a minute for as long as the turn is away;
-// this wait is routine (routineWaiting), so its attempts stay at debug. A turn already past when
+// this wait is routine (wait.Routine), so its attempts stay at debug. A turn already past when
 // the row settles — the row ran a moment before the machine's own timer — is the backoff's
 // (retry). A released claim this call resumes is waited for on the backoff even where the resume
 // parks, and the row's next attempt reads the park.
@@ -314,7 +314,7 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // the release pass over that wake (store's releaseOvertaken) and tear the pod down under it. The
 // store reads the mark under the take's own lock, in the take's own transaction, so nothing comes
 // between the read and the take. While a mark stands, the call takes nothing and answers, as its
-// error, a routine wait of deliveryWakeInRelease (routineWaiting, wait.Until), whose text names
+// error, a routine wait of deliveryWakeInRelease (wait.Routine, wait.Until), whose text names
 // the release it waits for: the attempts stay at debug, and the text is not the wake pacing's.
 // Once the teardown has cleared the mark, the row's next attempt takes the wake against the
 // newest release recorded (store.LatestPodRelease): the release the teardown recorded, or the
@@ -471,12 +471,12 @@ func (r *outbox) deliveryWake(ctx context.Context, token claim.Token, wake claim
 		return err
 	}
 	if took.InRelease {
-		return routineWaiting{err: wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
-			fmt.Sprintf("a wake for %s waits for the release of %s's pod to finish", detail, issue.Key))}
+		return wait.Routine(wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
+			fmt.Sprintf("a wake for %s waits for the release of %s's pod to finish", detail, issue.Key)))
 	}
 	if took.StartQueued {
-		return routineWaiting{err: wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
-			fmt.Sprintf("a wake for %s waits for the start queued for %s's %s, which brings the role back", detail, issue.Key, held.Role))}
+		return wait.Routine(wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
+			fmt.Sprintf("a wake for %s waits for the start queued for %s's %s, which brings the role back", detail, issue.Key, held.Role)))
 	}
 	// The record no longer holds the claim released: a start resumed it, or a path took it over,
 	// after the machine's view above. The row waits on its backoff and reads the claim again.
@@ -630,7 +630,7 @@ func parkedLaunch(view supervise.ClaimView) (turn time.Time, parked bool) {
 // process (launchParked), with text as its message: the row runs again at turn, the launch's
 // turn, or parkedWakeBound from now when that comes first, and reads the claim again then. A turn
 // already past is the backoff's, as every moment a wait.Until names is once it has passed
-// (retry). The wait is routine (routineWaiting): the launch's turn ends it, or an earlier end of
+// (retry). The wait is routine (wait.Routine): the launch's turn ends it, or an earlier end of
 // the park the row's next read finds, so nobody has to act on it, and a park of an hour would
 // otherwise be logged as a warning at every attempt from the seventh (waitWarnAttempts).
 func (r *outbox) parkedWait(turn time.Time, text string) error {
@@ -638,7 +638,7 @@ func (r *outbox) parkedWait(turn time.Time, text string) error {
 	if turn.Before(at) {
 		at = turn
 	}
-	return routineWaiting{err: wait.Until(at, text)}
+	return wait.Routine(wait.Until(at, text))
 }
 
 // logRefusedByOpenResume says why a delivery wake whose take the role's open resume refused

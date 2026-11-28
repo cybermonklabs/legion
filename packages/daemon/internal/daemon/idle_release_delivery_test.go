@@ -154,8 +154,7 @@ func TestADeliveryWakeWaitsForTheTeardownOfAReleaseThatRecordedItsRole(t *testin
 	err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
 	latest := rig.runner.now().Add(30 * time.Second)
 	at, until := wait.UntilAt(err)
-	var routine interface{ Routine() bool }
-	if !until || at.Before(earliest) || at.After(latest) || !errors.As(err, &routine) || !routine.Routine() ||
+	if !until || at.Before(earliest) || at.After(latest) || !wait.IsRoutine(err) ||
 		!strings.Contains(err.Error(), "waits for the release of "+rig.issue.Key+"'s pod to finish") {
 		t.Fatalf("the wake while the release runs = %v; want no wake and a routine wait until 30 seconds on: the release recorded the role", err)
 	}
@@ -236,8 +235,7 @@ func TestADeliveryWakeAfterACancelWaitsForTheCancelsStartAndRecordsNoResume(t *t
 	err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
 	latest := rig.runner.now().Add(30 * time.Second)
 	at, until := wait.UntilAt(err)
-	var routine interface{ Routine() bool }
-	if !until || at.Before(earliest) || at.After(latest) || !errors.As(err, &routine) || !routine.Routine() ||
+	if !until || at.Before(earliest) || at.After(latest) || !wait.IsRoutine(err) ||
 		!strings.Contains(err.Error(), "waits for the start queued for "+rig.issue.Key+"'s implementer") {
 		t.Fatalf("the wake while the cancel's start is queued = %v; want no wake and a routine wait of 30 seconds for that start", err)
 	}

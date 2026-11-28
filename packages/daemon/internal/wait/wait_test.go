@@ -40,3 +40,55 @@ func TestUntilIsAWaitThatNamesItsMoment(t *testing.T) {
 		}
 	}
 }
+
+// A wait marked routine is the wait it marks: errors.Is matches ErrWaiting and the wait's own
+// sentinel, UntilAt reads the moment of a routine Until, and the message is the wait's. IsRoutine
+// finds the mark through %w and errors.Join, beside a failure too; a plain wait, a plain Until, a
+// failure and nil are not routine. A refusal that is no wait stays no wait once marked.
+func TestARoutineWaitIsTheWaitItMarks(t *testing.T) {
+	held := New("the project release holds every start until the daemon's next boot")
+	routine := Routine(held)
+	if !errors.Is(routine, ErrWaiting) || !errors.Is(routine, held) {
+		t.Fatalf("a routine wait matches ErrWaiting %t and its own sentinel %t, want both", errors.Is(routine, ErrWaiting), errors.Is(routine, held))
+	}
+	if routine.Error() != held.Error() {
+		t.Fatalf("a routine wait's message = %q, want the wait's, %q", routine.Error(), held.Error())
+	}
+	at := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	parked := Routine(Until(at, "a delivery waits for its launch's turn"))
+	if got, ok := UntilAt(parked); !ok || !got.Equal(at) {
+		t.Fatalf("UntilAt of a routine Until = %s, %v; want %s, true", got, ok, at)
+	}
+	for name, err := range map[string]error{
+		"a routine wait":                   routine,
+		"a routine Until":                  parked,
+		"a routine wait wrapped with %w":   fmt.Errorf("launch LEGION-209: %w", routine),
+		"a routine wait joined":            errors.Join(routine),
+		"a routine wait joined to a fault": errors.Join(errors.New("the store did not answer"), routine),
+		"a joined routine wait wrapped":    fmt.Errorf("retire LEGION-209: %w", errors.Join(parked)),
+		"a wrapped routine wait wrapped":   fmt.Errorf("outbox row 7: %w", fmt.Errorf("start: %w", routine)),
+	} {
+		if !IsRoutine(err) || !errors.Is(err, ErrWaiting) {
+			t.Errorf("%s: IsRoutine = %t, a wait = %t; want both", name, IsRoutine(err), errors.Is(err, ErrWaiting))
+		}
+	}
+	if got, ok := UntilAt(fmt.Errorf("retire LEGION-209: %w", errors.Join(parked))); !ok || !got.Equal(at) {
+		t.Fatalf("UntilAt of a routine Until joined and wrapped = %s, %v; want %s, true", got, ok, at)
+	}
+	for name, err := range map[string]error{
+		"a plain wait":         held,
+		"a wrapped plain wait": fmt.Errorf("launch LEGION-209: %w", Errorf("start of %s waits", "LEGION-209")),
+		"a plain Until":        Until(at, "a delivery waits for its launch's turn"),
+		"a failure":            errors.New("GitHub refused"),
+		"nil":                  nil,
+	} {
+		if IsRoutine(err) {
+			t.Errorf("IsRoutine(%s) = true, want false: nothing marked it", name)
+		}
+	}
+	refusal := errors.New("the project release holds every pod of the project until the daemon's next boot")
+	if marked := Routine(refusal); !IsRoutine(marked) || errors.Is(marked, ErrWaiting) || !errors.Is(marked, refusal) {
+		t.Fatalf("a marked refusal is routine %t, a wait %t, the refusal %t; want routine, no wait, the refusal",
+			IsRoutine(marked), errors.Is(marked, ErrWaiting), errors.Is(marked, refusal))
+	}
+}

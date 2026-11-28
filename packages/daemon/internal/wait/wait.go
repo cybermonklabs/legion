@@ -56,3 +56,31 @@ type until struct {
 	waiting
 	at time.Time
 }
+
+// Routine marks err, a wait, routine: a wait nobody has to act on, because what it waits for
+// comes on its own or was asked for already — a holder that has not stopped yet, a launch the
+// wake pacing parked, the hold of every start that an operator's project release asked for. An
+// outbox row's attempts at a routine wait stay at Debug after its first, however long it lasts,
+// where those at any other wait turn into a warning once it has lasted; and the supervise
+// machine's logs of a decision's error keep it below Error. The mark changes nothing else: it
+// wraps err and unwraps to it, so it is a wait exactly where err is one (errors.Is(err,
+// ErrWaiting)), names err's moment (UntilAt), and matches every sentinel err matches. A refusal a
+// caller already retries as a wait of its own without being one, such as the runtime's refusal of
+// a start the project release holds, may be marked as well, and stays no wait for every other
+// reader. IsRoutine finds the mark anywhere in a chain.
+func Routine(err error) error {
+	return &routine{err: err}
+}
+
+// IsRoutine is whether err's chain holds a wait marked routine (Routine), through every %w and
+// errors.Join.
+func IsRoutine(err error) bool {
+	var r *routine
+	return errors.As(err, &r)
+}
+
+type routine struct{ err error }
+
+func (r *routine) Error() string { return r.err.Error() }
+
+func (r *routine) Unwrap() error { return r.err }

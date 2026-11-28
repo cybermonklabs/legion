@@ -264,7 +264,7 @@ func TestAControllerNoticeWaitsWhileTheRolesLiveHolderIsNotTheRegisteredSession(
 // listener names a live holder, so a wait the registration did not decide would publish.
 //
 // The control (the pull request records the run): the wait on no registration made a plain wait
-// rather than a routine one (routineWaiting) logs the row's eighth attempt at WARN.
+// rather than a routine one (wait.Routine) logs the row's eighth attempt at WARN.
 func TestAControllerNoticeWithNoControllerRegisteredWaitsAtDebug(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
