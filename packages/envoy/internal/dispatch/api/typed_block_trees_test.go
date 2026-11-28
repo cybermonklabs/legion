@@ -411,12 +411,14 @@ func TestTheReferenceTargetsReadCarriesTheFootnoteReferencesTheDocumentHolds(t *
 // block written with no prefix, as its twin stands at the top level of a document of its own.
 // code is the one line of a code block's code, which writes `[^1]`, and "" for a block that is no
 // code block; follows is the text right before the call of the note 1 in a block that reads it as
-// a footnote reference. typed is true for the requirement. items is the text of each item of a
-// list, in order, each the one paragraph of its item, and nil for a block that is no list.
+// a footnote reference. typed is true for the requirement. ambiguous is true for a block whose
+// opener holds the block's stored bytes at a start that a lead allows, after a lead that writes
+// another prefix (requireAmbiguousBlocks). items is the text of each item of a list, in order,
+// each the one paragraph of its item, and nil for a block that is no list.
 type blockInContainers struct {
 	name, opener, prefix, bare string
 	code, follows              string
-	typed                      bool
+	typed, ambiguous           bool
 	items                      []string
 }
 
@@ -446,18 +448,29 @@ func listInAListItem(words, row, name string) blockInContainers {
 		items: items, bare: bare}
 }
 
-// blocksInContainers is the eight rows of check c-open-fence that one document holds, in the
-// check's order, each holding words, which no block of another test holds, so no two tests share a
-// document's markdown, nor what the process keeps of its parse (footnoteParses) or of a text's
-// tree. A paragraph's two lines are split by a hard break, which the rendering writes as a
-// backslash at the end of the first: it writes a soft break as a space, and the paragraph on one
-// line. The list of rows 7 and 8 is its own block, of two items whose lines the rendering writes
-// one after the other with no blank line between them.
+// blocksInContainers is the nine rows of check c-open-fence that one document holds, rows 1 to 8
+// and 12, in the check's order, each holding words, which no block of another test holds, so no
+// two tests share a document's markdown, nor what the process keeps of its parse (footnoteParses)
+// or of a text's tree. A paragraph's two lines are split by a hard break, which the rendering
+// writes as a backslash at the end of the first: it writes a soft break as a space, and the
+// paragraph on one line. The list of rows 7 and 8 is its own block, of two items whose lines the
+// rendering writes one after the other with no blank line between them.
+//
+// Row 12's block is a fenced code block in a quote whose one line of code starts with `> `, so
+// the second line of its stored text is the quote's `> ` and then that line. Before it the same
+// quote holds a code block whose code is that block with a `> ` before its first line, fenced
+// with four backticks, since its code holds a run of three. From that code block's second line,
+// after the lead `> > `, the quote's `> ` and the code's own, its three lines of code are the
+// block's stored bytes: the block's opening fence, its line of code after the quote's `> `, and
+// its closing fence after the quote's `> `. So the block's bytes stand at two starts that a lead
+// allows in its quote's text, and the first start's lead writes the prefix `> > `, where the
+// block's own writes `> `: taken off with `> > `, its code would lose its `> `.
 func blocksInContainers(words string) []blockInContainers {
 	line := func(row string) string { return "The " + words + " fence of " + row + " writes [^1] in its code." }
 	fenced := func(line string) string { return "```\n" + line + "\n```" }
 	requirement := "The " + words + " requirement calls"
 	quoted, quotedList := listOf(words, "row 8", "x", "y")
+	quotedCode := "> " + line("row 12")
 	return []blockInContainers{
 		{name: "row 1: a fenced code block in a list item",
 			opener: "10. The " + words + " item holds code.\n\n    ", prefix: "    ",
@@ -477,6 +490,9 @@ func blocksInContainers(words string) []blockInContainers {
 			follows: requirement, bare: ":::requirement{#r6}\n" + requirement + "[^1] the note.\n:::"},
 		listInAListItem(words, "row 7", "row 7: a list nested in a list item"),
 		{name: "row 8: a list in a quote", opener: "> ", prefix: "> ", items: quoted, bare: quotedList},
+		{name: "row 12: an ambiguous block, a fenced code block in a quote whose bytes the code block before it holds after another lead",
+			opener: "> ````\n> > ```\n> " + quotedCode + "\n> ```\n> ````\n>\n> ", prefix: "> ", ambiguous: true,
+			code: quotedCode, bare: fenced(quotedCode)},
 	}
 }
 
@@ -592,6 +608,76 @@ func requireTreeWithoutPrefix(t *testing.T, what string, row blockInContainers, 
 	}
 }
 
+// requireAmbiguousBlocks fails unless each ambiguous row of placed (row 12 of check c-open-fence)
+// stands as the row says, in the texts the block index stores and in the markdown the document's
+// version 1 stores. The block's stored text is the row's, and its outermost container's stored
+// text, the quote's, is the row's opener and then that text. The block's text stands in its
+// container's text at two or more starts that a lead allows, where the bytes before the start on
+// its line are container syntax (containerPrefix): the last of them the block's own, right after
+// the opener, whose lead writes the row's prefix, and the first one after a lead that writes
+// another prefix. Taken off with that other prefix, the block's text is another text than with
+// its own, so a read that places the block at the first start draws another tree than the row's.
+// The rendering of the document's own parse (pmdoc.ParseRendering, pmdoc.RenderWithBlockOffsets)
+// is the markdown its version 1 stores, byte for byte, and not that markdown with one more final
+// newline, so that parse names each block's range in the markdown.
+func requireAmbiguousBlocks(t *testing.T, handler http.Handler, database *store.Store, placed placedBlocks) {
+	t.Helper()
+	ids := blockIDsByText(t, handler, placed.document.ID)
+	for _, row := range placed.rows {
+		if !row.ambiguous {
+			continue
+		}
+		block := refs.DocumentBlock{ArtifactID: placed.document.ID, BlockID: ids[row.stored()]}
+		text := storedBlockText(t, database, block.ArtifactID, block.BlockID)
+		outermost, err := refs.OutermostContainers(context.Background(), database.Pool, []refs.DocumentBlock{block})
+		if err != nil {
+			t.Fatalf("%s: read the block's outermost container: %v", row.name, err)
+		}
+		outer, held := outermost[block]
+		if text != row.stored() || !held || outer != row.opener+text {
+			t.Fatalf("%s: the block's stored text is %q and its outermost container's %q (held %t), want %q and %q",
+				row.name, text, outer, held, row.stored(), row.opener+row.stored())
+		}
+		var starts []int
+		var leads, prefixes []string
+		for from := 1; from <= len(outer)-len(text); {
+			found := strings.Index(outer[from:], text)
+			if found < 0 {
+				break
+			}
+			start := from + found
+			lead := outer[lineStart(outer, start):start]
+			if prefix, allowed := containerPrefix(lead); allowed {
+				starts, leads, prefixes = append(starts, start), append(leads, lead), append(prefixes, prefix)
+			}
+			from = start + 1
+		}
+		last := len(starts) - 1
+		if last < 1 || starts[last] != len(row.opener) || prefixes[last] != row.prefix || prefixes[0] == row.prefix {
+			t.Fatalf("%s: the block's text stands in its outermost container at the starts %v, after the leads %q, which write the prefixes %q; want two or more, the last at %d, the block's own, writing %q, and the first writing another prefix",
+				row.name, starts, leads, prefixes, len(row.opener), row.prefix)
+		}
+		// At this head placedPrefix places the block at the first start that a lead allows, so it
+		// answers the prefix the first start's lead writes, which is not the block's own.
+		if placedAt := placedPrefix(outer, text); placedAt != prefixes[0] {
+			t.Fatalf("%s: placedPrefix answers %q, want %q, the prefix the lead %q of the first start writes",
+				row.name, placedAt, prefixes[0], leads[0])
+		}
+		if first, own := withoutPrefix(text, prefixes[0]), withoutPrefix(text, row.prefix); first == own {
+			t.Fatalf("%s: the block's text taken off with %q is %q, as with its own prefix %q; want another text",
+				row.name, prefixes[0], first, row.prefix)
+		}
+		markdown := versionText(t, database, placed.document.ID, 1)
+		tree, err := pmdoc.ParseRendering(markdown)
+		if err != nil {
+			t.Fatalf("%s: parse the document's markdown %q: %v", row.name, markdown, err)
+		}
+		if rendering, _, err := pmdoc.RenderWithBlockOffsets(tree); err != nil || rendering != markdown {
+			t.Fatalf("%s: the rendering of the document's parse is %q (%v), want its markdown %q", row.name, rendering, err, markdown)
+		}
+	}
+}
+
 // The batched reference read answers a document block that stands in a list item or a quote the
 // tree that its document draws for it, which is the tree it answers for the same block written
 // with no prefix at the top level of a document of its own that defines the note 1 as the first
@@ -613,13 +699,21 @@ func requireTreeWithoutPrefix(t *testing.T, what string, row blockInContainers, 
 // holding a list of y. A list's own text cannot tell its containers' prefix from the indentation
 // of a list it holds, so the read learns the block's containers from the block index, which
 // records the block that holds each block, and the texts it stores for them. A paragraph of two
-// lines at the top level carries no prefix and answers the tree it always did.
+// lines at the top level carries no prefix and answers the tree it always did. An ambiguous block,
+// whose stored bytes stand earlier in its outermost container at a start that a lead allows,
+// after a lead that writes another prefix (requireAmbiguousBlocks), answers the tree of the block
+// written with its own prefix taken off: a fenced code block in a quote, whose one line of code
+// starts with `> `, after a code block of the same quote whose code holds the block's bytes after
+// a `> ` of its own, answers the tree of the code block written with no prefix, whose code starts
+// with `> `, and not the tree of its text with the prefix `> > ` taken off, which the lead of that
+// first start writes.
 func TestTheReferenceTargetsReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "TBO")
 	issue := createReferenceAPIIssue(t, handler, "TBO")
 	placed := uploadBlocksInContainers(t, handler, database, issue.Key, "kittiwake", blocksInContainers("kittiwake"))
+	requireAmbiguousBlocks(t, handler, database, placed)
 
 	read := decodeBody[model.ReferenceTargets](t, treesRequest(t, handler,
 		referenceTargetsOf(slices.Concat(placed.blocks, placed.twins)...), true)).Targets

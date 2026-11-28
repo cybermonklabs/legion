@@ -909,7 +909,14 @@ func TestTheReferencesReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testin
 // version is its document's latest and a read of the block as it stands comes before it: that
 // read parses the document's markdown, the latest version's, for the notes the block calls, so
 // when the pin is read the process already keeps what that read parsed of the markdown
-// (footnoteParses).
+// (footnoteParses). A block whose stored bytes stand earlier in its outermost container at a
+// start that a lead allows, after a lead that writes another prefix (requireAmbiguousBlocks), a
+// fenced code block in a quote whose one line of code starts with `> `, after a code block of the
+// same quote whose code holds the block's bytes after a `> ` of its own, answers the tree of the
+// code block written with no prefix, whose code starts with `> `, and not the tree of its text
+// with the prefix `> > ` taken off, which the lead of that first start writes: its node does, and
+// so does its pin to the first version, after the second version that changes only the paragraph
+// at the top level.
 func TestTheReferencesReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
@@ -917,6 +924,7 @@ func TestTheReferencesReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *tes
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	const words, olderWords = "shearwater", "fulmar"
 	placed := uploadBlocksInContainers(t, handler, database, issue.Key, words, blocksInContainers(words))
+	requireAmbiguousBlocks(t, handler, database, placed)
 	node := func(t *testing.T, reference string) graphNodeRead {
 		t.Helper()
 		return decodeBody[graphReferencesRead](t, treesRequest(t, handler,
@@ -961,19 +969,22 @@ func TestTheReferencesReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *tes
 	}
 
 	// The second version rewrites words of the paragraph at the top level alone, so the code
-	// block in a list item and the list nested in a list item hold the same texts in both
-	// versions, and each pin names the first.
+	// block in a list item, the list nested in a list item and the ambiguous block in a quote hold
+	// the same texts in both versions, and each pin names the first.
 	if version := editIssueDocument(t, handler, issue.Key, placed.document.Slug, []map[string]any{
 		{"op": "replace", "find": words + " paragraph opens with these words", "with": words + " paragraph opens with other words"},
 	}); version.Number != 2 {
 		t.Fatalf("the edit wrote version %d, want 2", version.Number)
 	}
-	first, seventh := placed.rows[0], placed.rows[6]
+	first, seventh, twelfth := placed.rows[0], placed.rows[6], placed.rows[8]
 	t.Run("row 1 at @v1: the pin of "+strings.TrimPrefix(first.name, "row 1: "), func(t *testing.T) {
 		pinned(t, first, placed.blocks[0], twins[0])
 	})
 	t.Run("row 9: the pin at @v1 of "+strings.TrimPrefix(seventh.name, "row 7: "), func(t *testing.T) {
 		pinned(t, seventh, placed.blocks[6], twins[6])
+	})
+	t.Run("row 13: the pin at @v1 of "+strings.TrimPrefix(twelfth.name, "row 12: "), func(t *testing.T) {
+		pinned(t, twelfth, placed.blocks[8], twins[8])
 	})
 
 	// Row 10's document holds a list nested in a list item, as row 7's does, in words of its own,
