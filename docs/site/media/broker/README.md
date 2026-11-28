@@ -24,7 +24,8 @@ private hostname or production service is involved.
 DATABASE_URL=<url> bash docs/site/media/broker/rig.sh
 ```
 
-It builds the broker, `dev-oidc-issuer`, `agent-secrets` and `agent-secrets-helper`; creates the
+It builds the broker, `dev-oidc-issuer`, `agent-secrets` and `agent-secrets-helper`, and the
+contracts package and Dispatch dashboard when a clone has no build of them; creates the
 broker's database beside `DATABASE_URL`'s; starts `dev-oidc-issuer`, the local stand-in for a
 cluster's ServiceAccount token issuer, which keeps Dispatch's own token in a file, and for the
 Workspace's identity provider, serving the broker's sign-in client through `--code-flow` (whose
@@ -115,11 +116,7 @@ for the harness's `ALICE_DEPLOY_KEY`. A rig run replaces them with the `DEMO_API
 ## The walkthrough
 
 The narrated video is `docs/site/public/media/broker/walkthrough.mp4`; its sources, the rebuild
-steps and its review are in `walkthrough/README.md`. Its take predates the broker's approval page
-and shows the approval flow from before it, until a new take records
-`walkthrough.record.ts`'s current flow (the Inbox row, then the broker's page) and its narration
-(`walkthrough/narration.json`) is revised to match. Recording
-the raw footage again:
+steps and its review are in `walkthrough/README.md`. Recording the raw footage again:
 
 ```bash
 bash docs/site/media/broker/walkthrough.sh
