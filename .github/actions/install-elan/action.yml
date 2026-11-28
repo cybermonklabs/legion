@@ -4,8 +4,8 @@ description: >-
   packages/envoy/internal/cipher/proxyrules/lean with, and puts ELAN_HOME and its bin on the job's
   environment for the later steps. ELAN_HOME is $RUNNER_TEMP/elan, which ci.yaml's airlock-lean job
   caches on the content of that project's lean-toolchain: with the cache restored this step finds
-  elan and the Lean toolchain already there and downloads nothing, and with it missed `lake`
-  installs the toolchain lean-toolchain names on its first build.
+  elan and the Lean toolchain already there and downloads nothing, and with it missed the
+  job's next step installs the toolchain lean-toolchain names, retried, before `lake` builds.
 
   The `elan` row of .github/ci-tools.yaml, or its `elan-aarch64` row on an arm64 runner, names the
   version, the one sha256 of the whole release tarball that both sources are checked against, and

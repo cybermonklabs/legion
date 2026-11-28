@@ -80,6 +80,7 @@ env:
       "envoy-refill": "envoy_refill",
       "ci-filters": "ci_filters",
       "ci-images": "ci_images",
+      "download-retry": "download_retry",
       "tool-fallback": "tool_fallback",
       "tool-fallback-arm": "tool_fallback",
       "proof-sdk-offline": "proof_sdk_offline",
@@ -109,12 +110,9 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
-    # Above the sum of its steps' own timeouts, 38 minutes: the filter generation's 9
-    # (ci-filters-generate.sh stops this tree's run at 300 s and kills it 15 s later, and bounds the
-    # base's fetch at 65 s and its install at 125 s, so it ends within 505 s), 3 each for the two
-    # cache restores, the checkout, the Go install, Bun's setup and install, the merge base, the
-    # upload and the paths filter, and 1 each for the ref and the scope.
-    timeout-minutes: 40
+    # why: .github/ci-notes/ci.md#the-changes-jobs-budget
+    # 2400 + 3416 = 5816 s -> 97 min.
+    timeout-minutes: 97
     outputs:
       # why, for each output below with a `lane:` term: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
       # and .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
@@ -150,8 +148,6 @@ jobs:
       pi_legion: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:pi_legion')) && steps.filter.outputs.pi_legion || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
       pi_legion_build: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.pi_legion_build }}
-      # The dashboard's and the proof editor's fast checks: no `full-ci` term, only the
-      # every-job one above, so they come back on every push.
       dispatch_ui: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_ui }}
       # why: .github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane
       dispatch_browser: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_browser')) && steps.filter.outputs.dispatch_browser || 'false' }}
@@ -167,8 +163,6 @@ jobs:
       envoy_infra_go: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_infra_go')) && steps.filter.outputs.envoy_infra_go || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
       envoy_infra_build: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.envoy_infra_build }}
-      # The checks whose subject is text, in a job with no database: no `full-ci` term, only
-      # the every-job one above, since it is one of the cheapest jobs of the file.
       text_checks: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.text_checks }}
       envoy_go_race: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
@@ -182,8 +176,6 @@ jobs:
       dispatch_two_builds_go: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_two_builds_go }}
       listener_server_change: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.listener_server_change }}
       broker_multiprocess: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.broker_multiprocess }}
-      # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
-      # so it comes back on every push that selects it, as the two suites above do.
       airlock_lean: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.airlock_lean }}
       envoy_smoke: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_smoke')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.envoy_e2e_local }}
@@ -192,6 +184,10 @@ jobs:
       go_notices: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.go_notices }}
       ci_filters: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.ci_filters }}
       ci_images: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.ci_images }}
+      # why: .github/ci-notes/ci.md#the-three-jobs-that-prove-the-retries-and-why-none-runs-in-a-merge-group
+      download_retry: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && 'false' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:download_retry')) && steps.filter.outputs.download_retry || 'false' }}
+      download_retry_sites: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && 'false' || steps.filter.outputs.download_retry_sites }}
+      download_retry_images: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && 'false' || steps.filter.outputs.download_retry_images }}
       # why: .github/ci-notes/ci.md#why-the-tool-fallback-proof-carries-no-full-ci-term
       tool_fallback: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.tool_fallback }}
       proof_sdk_offline: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.proof_sdk_offline }}
@@ -231,16 +227,24 @@ jobs:
       # why: .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs (no Go cache)
       - name: Install the Go packages/daemon/go.mod names
         continue-on-error: true
-        timeout-minutes: 3
+        # Its own retry arithmetic, go-install-archive.sh's two fetches: the listing,
+        # 5 x 15 + 150 = 225 s, and the archive, 5 x 60 + 150 = 450 s. 225 + 450 = 675 s -> 12 min.
+        timeout-minutes: 12
         run: .github/scripts/go-install-archive.sh packages/daemon/go.mod
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - name: Setup Bun
         continue-on-error: true
-        timeout-minutes: 3
+        timeout-minutes: 57
         uses: ./.github/actions/setup-bun
-      - name: Install dependencies
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
         continue-on-error: true
-        timeout-minutes: 3
-        run: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       # why: .github/ci-notes/ci.md#the-commit-a-change-is-measured-against
       - name: Find the commit this run's change is measured against
         id: base
@@ -258,9 +262,11 @@ jobs:
         with:
           path: ${{ runner.temp }}/ci-filters-base
           key: ci-filters-${{ runner.os }}-${{ runner.arch }}-${{ github.event.merge_group.base_sha || steps.base.outputs.sha }}
+      # why: .github/ci-notes/ci.md#the-changes-jobs-budget
+      # 315 + 65 + 1050 = 1430 s -> 24 min.
       - name: Compute every filter from what each job reads
         id: generate
-        timeout-minutes: 9
+        timeout-minutes: 24
         env:
           CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || steps.base.outputs.sha }}
           CI_FILTERS_BASE_COMPUTED: ${{ runner.temp }}/ci-filters-base
@@ -283,7 +289,6 @@ jobs:
           base: ${{ github.event_name == 'workflow_dispatch' && 'main' || '' }}
           ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || '' }}
 
-  # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
   lint:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
@@ -307,9 +312,17 @@ jobs:
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # Budget (.github/ci-budgets.md#the-budgets-note): its measured run, 154 s, plus its slowest
+    # retried step alone, the ci-ok report at 2460 s (ci-budgets.md's Budgets note, "The ci-ok
+    # report"), above the check step's four ladders, 1400 s. The measured run is the 13 s of the
+    # slowest of its 18 successful runs on 2026-11-26 (job 139937626624; none of them fetched, as
+    # no priority pull request was approved or queued), with that run's 8 s check step replaced by
+    # the 149 s the check step's comment measures. The time before the report step is 152 s,
+    # that run's 3 s before its check step and the 149 s, and the report step's rounded limit is
+    # 43 minutes, 2580 s, so that note's larger sum is 152 + 2580 = 2732 s -> 46 min.
+    timeout-minutes: 46
     env:
-      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 46 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # why: .github/ci-notes/ci.md#what-the-priority-conflicts-jobs-scopes-are-for
     permissions:
       contents: read
@@ -317,18 +330,33 @@ jobs:
       actions: read
       checks: write
     steps:
-      # The job reads nothing of the tree but priority-conflicts.sh, the gh-read.sh it sources and
-      # the ci-ok-report action, so the .github cone is the whole checkout it needs.
+      # The job reads nothing of the tree but priority-conflicts.sh, the ci-retry.sh and gh-read.sh
+      # it sources, the ci-log-guard.sh those two source, and the ci-ok-report action, so the
+      # .github cone is the whole checkout it needs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github
           persist-credentials: false
       - name: Check this change against every approved or queued priority pull request
+        # The script's whole arithmetic, since this `run:` is one call of it: its four ladders,
+        # the label read's two pages (7 open pull requests carried the label on 2026-11-26, and
+        # the script fails past 200) and the read of the queue's branches at 5 x 30 + 150 = 300 s
+        # each, the fetch's at 5 x 70 + 150 = 500 s, and its measured run, 149 s. The script took
+        # that from a development pod on 2026-11-26 with all seven taken as approved, 6 s of it
+        # the fetch and the rest the merges; its 18 runs in CI took 8 s at most (job
+        # 139937626624), each finding no priority pull request approved or queued.
+        # 2 x 300 + 500 + 300 + 149 = 1549 s -> 26 min.
+        timeout-minutes: 26
         env:
           GH_TOKEN: ${{ github.token }}
+          STEP_TIMEOUT_MINUTES: 26 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         run: .github/scripts/priority-conflicts.sh
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           changes: ${{ toJSON(needs.changes) }}
@@ -481,8 +509,6 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The shared test fixtures package has no build: nothing imports it at run time, and its
-  # consumers read its sources through the workspace.
   test-fixtures:
     needs: changes
     if: needs.changes.outputs.test_fixtures == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -517,8 +543,6 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The secrets broker's TypeScript client, which packages/envoy-client's broker credential
-  # imports. It has no build: its consumers read its sources through the workspace.
   broker-client:
     needs: changes
     if: needs.changes.outputs.broker_client == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -668,8 +692,10 @@ jobs:
       contents: read
       actions: read
       checks: write
-    uses: ./.github/workflows/ci-job-envoy-go-build.yaml
+    uses: ./.github/workflows/ci-job-envoy-go-checks.yaml
     with:
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
+      job: envoy-go-build
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       migration-base: ${{ inputs.migration-base }}
 
@@ -683,6 +709,8 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-envoy-go-checks.yaml
     with:
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
+      job: envoy-go-checks
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # why: .github/ci-notes/ci.md#what-the-envoy-go-job-runs
@@ -923,6 +951,20 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # why: .github/ci-notes/ci.md#the-download-retry-job-the-retries-against-the-two-faults-they-answer
+  download-retry:
+    needs: changes
+    if: needs.changes.outputs.download_retry == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-download-retry.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+      download_retry_sites: ${{ needs.changes.outputs.download_retry_sites }}
+      download_retry_images: ${{ needs.changes.outputs.download_retry_images }}
+
   # why: .github/ci-notes/ci.md#what-the-proof-editors-offline-proof-shows
   proof-sdk-offline:
     needs: changes
@@ -935,8 +977,6 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The worker image's pull-request build: worker-image.yaml builds the head and publishes its
-  # sha- tag only. Main's image builds are release.yaml's call of the same workflow.
   worker-image:
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.worker_image == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -973,11 +1013,12 @@ jobs:
     # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
     name: ${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}
     if: ${{ !github.event.pull_request.draft }}
-    # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # why: .github/ci-notes/ci.md#the-pr-title-jobs-budget
+    # 600 + 9660 = 10260 s -> 172 min.
+    timeout-minutes: 172
     env:
-      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 172 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # why: .github/ci-notes/ci.md#what-the-pr-title-jobs-scopes-are-for
     permissions:
       contents: read
@@ -1000,12 +1041,15 @@ jobs:
           sparse-checkout: .github
           persist-credentials: false
 
-      # why: .github/ci-notes/ci.md#what-the-pr-title-check-step-maps-and-how-it-runs-its-scripts
       - name: Check the pull request's title, body, branch name, commits, comments and reviews
+        # why: .github/ci-notes/ci.md#what-the-pr-title-check-step-maps-and-how-it-runs-its-scripts
+        # 300 + 900 + 300 + 300 + 600 + 7200 = 9600 s -> 161 min.
+        timeout-minutes: 161
         if: github.event_name != 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+          STEP_TIMEOUT_MINUTES: 161 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         run: |
           payload=$("$GITHUB_WORKSPACE/.github/scripts/find-pr-payload.sh")
           GITHUB_EVENT_PATH="$payload" "$GITHUB_WORKSPACE/.github/scripts/check-pr-text.sh"
@@ -1013,11 +1057,12 @@ jobs:
   # why: .github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top
   cancel-started:
     if: ${{ github.event_name == 'merge_group' && github.run_attempt == '1' }}
-    # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # why: .github/ci-notes/ci.md#the-cancel-started-jobs-budget
+    # 600 + 720 = 1320 s -> 23 min.
+    timeout-minutes: 23
     env:
-      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 23 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       actions: write
     steps:
@@ -1026,10 +1071,15 @@ jobs:
         with:
           sparse-checkout: .github
           persist-credentials: false
-      - env:
+      - name: Force-cancel the runs of the groups the queue removed
+        env:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.ref_name }}
           RUN_ID: ${{ github.run_id }}
+          STEP_TIMEOUT_MINUTES: 12 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+        # why: .github/ci-notes/ci.md#the-cancel-started-jobs-budget
+        # 300 + 300 = 600 s of ladders, 720 s with the step's own calls -> 12 min.
+        timeout-minutes: 12
         run: .github/scripts/cancel-started-act.sh
 
   # why: .github/ci-notes/ci.md#the-verdict-and-one-of-the-two-checks-mains-ruleset-requires-of
@@ -1085,17 +1135,17 @@ jobs:
       - envoy-session-stall
       - envoy-refill
       - ci-filters
+      - download-retry
       - proof-sdk-offline
       - worker-image
       - browser-image
     if: ${{ always() }}
-    # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    # The verdict step's 10 and the hold step's 175 (the reconcile step's 10 runs only when the
-    # hold does not), with three over for the checkout and the two refusals.
-    timeout-minutes: 188
+    # why: .github/ci-notes/ci.md#the-ci-ok-jobs-budget
+    # 600 + 10530 = 11130 s -> 186 min.
+    timeout-minutes: 186
     env:
-      JOB_TIMEOUT_MINUTES: 188 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 186 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       actions: read
       checks: write
@@ -1122,12 +1172,13 @@ jobs:
           echo "::error::ci-ok is failure on attempt $RUN_ATTEMPT of this merge-group run, whatever the jobs of it did: a merge group is tested once, the queue builds a new group rather than re-running one, and this attempt judges a tree the queue is no longer waiting on."
           exit 1
 
-      # why: .github/ci-notes/ci.md#needs-is-tojsonneeds-changes-result-and-outputs-with-every-other-jobs-result
       - name: Judge every job of this run
         id: verdict
-        timeout-minutes: 10
+        # why: .github/ci-notes/ci.md#needs-is-tojsonneeds-changes-result-and-outputs-with-every-other-jobs-result
+        # 300 + 480 = 780 s -> 14 min.
+        timeout-minutes: 14
         env:
-          STEP_TIMEOUT_MINUTES: 10 # this step's timeout-minutes, for gh-read.sh's wait
+          STEP_TIMEOUT_MINUTES: 14 # this step's timeout-minutes, for gh-read.sh's wait
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
           SELECTED_BY: ${{ env.CI_OK_SELECTED_BY }}
@@ -1137,32 +1188,29 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: .github/scripts/ci-ok.sh
 
-      # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
       - name: Hold a failing verdict until this group is the front of the queue
         if: ${{ !cancelled() && steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1' }}
-        timeout-minutes: 175
+        # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
+        # 10200 + 30 + 300 = 10530 s -> 176 min.
+        timeout-minutes: 176
         env:
-          STEP_TIMEOUT_MINUTES: 175 # this step's timeout-minutes, for gh-read.sh's wait
+          STEP_TIMEOUT_MINUTES: 176 # this step's timeout-minutes, for gh-read.sh's wait
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
           BASE_REF: ${{ github.event.merge_group.base_ref }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           HEAD_REF: ${{ github.event.merge_group.head_ref }}
-          # 170 minutes from the run's creation: main's merge_queue rule assumes a check failed
-          # 180 minutes into the group, and the last pause, the last read's ladder and the job's
-          # end fit in the 10 left.
           CI_OK_HOLD_AGE_SECONDS: 10200
-          # The longest merge-group run of 2026-11-22, 55.5 minutes (44966798236): taken off the
-          # age when the run's creation cannot be read and the hold counts from its own start.
           CI_OK_HOLD_RUN_SECONDS: 3330
         run: .github/scripts/ci-ok-hold.sh
 
-      # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion
       - name: Set every other ci-ok on this head to this job's conclusion
         if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') && !(steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1') }}
-        timeout-minutes: 10
+        # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion
+        # 300 + 3 x 300 = 1200 s -> 21 min.
+        timeout-minutes: 21
         env:
-          STEP_TIMEOUT_MINUTES: 10 # this step's timeout-minutes, for gh-read.sh's wait
+          STEP_TIMEOUT_MINUTES: 21 # this step's timeout-minutes, for gh-read.sh's wait
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CHECK_RUN_ID: ${{ job.check_run_id }}

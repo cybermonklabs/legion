@@ -6,26 +6,39 @@
 # Each case writes the one slurped page a stand-in `gh` answers with - the array of page objects
 # `gh api --paginate --slurp` prints - and how many calls that stand-in refuses first, then runs
 # the real script with the stand-in first on PATH and reads the file it wrote, the arguments the
-# stand-in recorded and the lines the script printed. The ladder's waits are the case's own,
-# `retry_seconds` seconds for the first and twice that for the second, which `fixture` resets to
-# 0. A stand-in `sleep` records each wait the ladder asks for through the `sleep` on PATH, and
-# the cases read those records, not how long the drive took: two cases set the knob to 1 and read
-# the waits 1 s and 2 s, or 1 s. The control runs the drive of a gh answering at once under
-# strace and holds it to none of the calls TIMED_WAITS lists, the census of the kernel's calls
-# that wait out a time their caller gives them, arm a clock their caller sets, or wait for a
-# signal or a lock (a futex, an fcntl or an ioctl counted only where it waits, leases or sets a
-# terminal's attributes or a timed break). A `sleep` by any path, a `read -t`, a timed futex or
-# futex_wait, semtimedop, mq_timedreceive, io_uring, a timerfd, alarm and pause, flock, a lock
-# wait by fcntl, any setsockopt (SO_RCVTIMEO, SO_LINGER and the rest) and a terminal's VTIME set
-# by any of its setters each make one. The waits the comment above TIMED_WAITS names as not
-# seen - a `timeout N cmd` wait, which makes only the calls the drive's own `timeout` bounds
-# make, a blocking call a timer_create timer or a process outside the drive's tree ends, a timer
-# the kernel keeps itself (TCP's SYN and retransmission timers), and a busy loop in user space -
-# make none.
+# stand-in recorded and the lines the script printed. The ladder is
+# `.github/scripts/ci-retry.sh#retry_fetch`: five attempts, with waits of 10, 20, 40 and 80 s
+# between them, and no knob that shortens them. Those waits are ci-retry.test.sh's to prove, by
+# measuring them; paying for them here would add 150 s to every case that exhausts the ladder,
+# so `sleep` is a no-op stand-in on this PATH, as the retry delay this file used to set to zero
+# was. It records the seconds each call asked for, so a case still reads which waits the ladder
+# made without waiting them. Two checks are what catch a stand-in lost from this PATH: with the real
+# `sleep` running, nothing is written under `$work/sleeps`, so `waited` answers an empty line
+# where the case `every attempt refused with HTTP 502` holds it to `10 20 40 80` and the case
+# `refused once, answered on the second attempt` holds it to `10` - named by their own
+# `echo "case: …"` labels, since a line number moves with the next edit of this file and these
+# two moved with the lines this paragraph itself added. Both fail the moment a case
+# drives the ladder, whatever else the machine is busy with, and they name the ladder rather
+# than the 150 s the suite would have spent on it. `sleeps` is no such guard: the only check of
+# it holds the negative control to 0, which a lost stand-in also gives. The exhausting-timeout
+# case below holds no `waited` of its own, so it rests on those two.
 #
-# NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
-# four cases opt into call by call and that otherwise execs the real one, a stand-in `sleep` that
-# records and returns, and the script.
+# The control runs the drive of a gh answering at once under strace and holds it to none of the
+# calls TIMED_WAITS lists, the census of the kernel's calls that wait out a time their caller
+# gives them, arm a clock their caller sets, or wait for a signal or a lock (a futex, an fcntl or
+# an ioctl counted only where it waits, leases or sets a terminal's attributes or a timed break).
+# A `sleep` by any path but the stand-in's (whose calls `sleeps` counts instead), a `read -t`, a
+# timed futex or futex_wait, semtimedop, mq_timedreceive, io_uring, a timerfd, alarm and pause,
+# flock, a lock wait by fcntl, any setsockopt (SO_RCVTIMEO, SO_LINGER and the rest) and a
+# terminal's VTIME set by any of its setters each make one. The waits the comment above
+# TIMED_WAITS names as not seen - a `timeout N cmd` wait, which makes only the calls the drive's
+# own `timeout` bounds make, a blocking call a timer_create timer or a process outside the
+# drive's tree ends, a timer the kernel keeps itself (TCP's SYN and retransmission timers), and a
+# busy loop in user space - make none.
+#
+# NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `sleep`, a
+# stand-in `timeout` that four cases opt into call by call and that otherwise execs the real
+# one, and the script.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.test.sh
 # CI runs it in ci.yaml's test job.
@@ -132,7 +145,7 @@ real_timeout=$(type -P timeout) ||
 # host without `/proc` is refused here by name too, in the same shape. Measured 2026-11-08 with
 # this guard taken off a scratch copy and the kill given a `/proc` path that is not there, the
 # awk cannot open the file, the kill is given no pid and fails, and both cases that stage a
-# killed wrapper go red: 5 checks fail, three in the first and two in the second. Two of those
+# killed wrapper go red: 6 checks fail, four in the first and two in the second. Two of those
 # reds name the staging, and none of them names the host this was run on, which is what this
 # line is for.
 [ -r /proc/self/stat ] ||
@@ -191,10 +204,11 @@ real_strace=$(type -P strace) ||
 #
 # Not listed, with why:
 # - timer_create, timer_settime, rt_sigsuspend, sigsuspend (i386), wait4, waitid and waitpid
-#   (i386): the drive's own `timeout` bounds arm their clock with timer_settime and wait in
-#   rt_sigsuspend and wait4 (2, 2 and 40 of them traced at this head on 2026-11-21), so a
-#   `timeout N cmd` wrapping a blocking command, or any blocking call a timer_create timer's
-#   signal ends, makes only calls the drive makes too, and is not seen.
+#   (i386): the drive's own `timeout` bounds - the control's 120 s, the ladder's 40 s around the
+#   wrapper and the wrapper's 30 s around gh - arm their clock with timer_settime and wait in
+#   rt_sigsuspend and wait4 (3, 3 and 56 of them traced at this head on 2026-11-21, in an x86_64
+#   gVisor pod), so a `timeout N cmd` wrapping a blocking command, or any blocking call a
+#   timer_create timer's signal ends, makes only calls the drive makes too, and is not seen.
 # - read, readv, pread64, preadv, preadv2, write and its kin, recvfrom, recvmsg, accept, accept4,
 #   connect, sendto, sendmsg, sendmmsg, sendfile, splice, tee, vmsplice, msgrcv, msgsnd, semop,
 #   getrandom and ptrace: they wait on a pipe, a socket, a device, a queue or another process,
@@ -202,10 +216,10 @@ real_strace=$(type -P strace) ||
 #   time. Such a call can still wait out a timer the kernel keeps itself: a blocking connect to a
 #   loopback listener whose accept queue is full waits out TCP's SYN retransmission timeout (1 s
 #   at first), and a send waits out TCP's retransmission timer. Those kernel-internal timers are
-#   a class no list of calls can see. In 3 traced runs on 2026-11-21 the drive made 8 connect
-#   calls per run, all AF_UNIX to the absent nscd socket, non-blocking, none a TCP connect.
-#   Another process in the drive's tree is traced under -f; one outside it, such as a network
-#   peer, is not seen.
+#   a class no list of calls can see. In 3 traced runs in that pod on 2026-11-21 the drive made
+#   10 connect calls per run, all AF_UNIX to the absent nscd socket, non-blocking, none a TCP
+#   connect. Another process in the drive's tree is traced under -f; one outside it, such as a
+#   network peer, is not seen.
 # - close and shutdown: they wait out SO_LINGER's time, and the setsockopt that set it is
 #   counted; the drive closes files all the time.
 # - restart_syscall: it resumes an interrupted wait, whose first call is already traced.
@@ -246,13 +260,13 @@ TIMED_WAITS='/^(nanosleep|clock_nanosleep(_time64)?|select|_newselect|pselect6(_
 # no timeout at all. An fcntl or fcntl64 counts only where it is F_SETLKW (F_SETLKW64 on i386),
 # F_OFD_SETLKW or F_SETLEASE, and an ioctl only where it is one of the terminal requests above
 # (TCSET followed by S, A or X, TCSBRK, TCSBRKP or TIOCSSERIAL). Every call of the other names
-# counts. The drive at this file's head makes none that counts: traced on 2026-11-21, in each of
-# 3 runs it made 0 of every listed call but futex, fcntl and ioctl, 27 futex(FUTEX_WAKE_PRIVATE)
-# calls, none of them timed, 51 fcntl calls (F_GETFD, F_SETFD, F_DUPFD, F_DUPFD_CLOEXEC and
-# F_GETFL), none of them a lock wait or a lease, and 26 ioctl calls (TCGETS, TIOCGPGRP and
-# TIOCGWINSZ), none of them a setter. A `/usr/bin/sleep 1` after gh answered made
-# clock_nanosleep, a `read -t 1` on a FIFO pselect6, and a 1 s FUTEX_WAIT_PRIVATE futex with
-# `{tv_sec=1, tv_nsec=0}`.
+# counts. The drive at this file's head makes none that counts: traced on 2026-11-21 in an x86_64
+# gVisor pod, in each of 3 runs it made 0 of every listed call but futex, fcntl and ioctl, 36
+# futex(FUTEX_WAKE_PRIVATE) calls, none of them timed, 73 fcntl calls (F_GETFD, F_SETFD,
+# F_DUPFD, F_DUPFD_CLOEXEC and F_GETFL), none of them a lock wait or a lease, and 38 ioctl calls
+# (TCGETS, TIOCGPGRP and TIOCGWINSZ), none of them a setter. A `/usr/bin/sleep 1` after gh
+# answered made clock_nanosleep, a `read -t 1` on a FIFO pselect6, and a 1 s FUTEX_WAIT_PRIVATE
+# futex with `{tv_sec=1, tv_nsec=0}`.
 timed_waits() {
   { grep -E '^[0-9]+[[:space:]]+[a-z_0-9]+\(' "$1" || true; } |
     { grep -Ev '^[0-9]+[[:space:]]+(futex(_time64|_waitv|_wait)?|fcntl(64)?|ioctl)\(' || true; }
@@ -261,11 +275,13 @@ timed_waits() {
   grep -E '^[0-9]+[[:space:]]+ioctl\([^,]*, (TCSET[SAX]|TCSBRK|TIOCSSERIAL)' "$1" || true
 }
 
-# The stand-in `timeout`, beside the stand-in `gh` and opted into per call. It records the
-# whole argument list of every call it is given but gh-read.sh's own rate_limit read (the last
-# paragraph here), one file per call, whether or not it stands in for that call, so
-# `timeout_calls` and `timeout_args` read the bound and the command that was wrapped in every
-# drive in this file.
+# The stand-in `timeout`, beside the stand-in `gh` and opted into per call. Each attempt of the
+# ladder calls `timeout` twice, because the attempt carries two bounds: the ladder's own 40 s
+# around the wrapper, and the wrapper's `timeout 30` around gh. This stand-in records the whole
+# argument list of both, one file per call, whether or not it stands in for that call, so
+# `timeout_calls` and `ladder_args` read the ladder's bound and `gh_bounds` and `gh_bound_args`
+# read the wrapper's, in every drive in this file. gh-read.sh's own rate_limit read is the one
+# call it does not record (the last paragraph here).
 #
 # Standing in is what is opt-in, and the reason is not the recording: a stand-in every case
 # used would still catch a dropped bound through `timeout_calls`. It is that a call it stands
@@ -274,11 +290,16 @@ timed_waits() {
 # case in this file needs gh's answer: the page it writes, the stderr of the calls it refuses,
 # the arguments it records.
 #
-# A case asks for call `<n>` to be stood in for by writing `$work/stub-timeout.<n>`, counting
-# from 0, so `stub-timeout.<n>` names attempt n + 1 of the ladder: this stand-in is called
-# once for every attempt, whether it stands in for that call or execs the real timeout. An
-# empty file is the bound firing, which is 124, and a file holding a status is answered with
-# that status instead, which is how the case about an attempt exiting 127 is staged.
+# It stands in for the wrapper's bound alone, never the ladder's, and the wrapper's is the one
+# the cases are about: a 124 the wrapper's own `timeout` returns is what writes 124 to that
+# attempt's status file, which is the only thing describe_attempt reads the bound off. The
+# call that is stood in for is picked by the command being bounded - `gh` is the wrapper's
+# bound and `bash` the ladder's - so a case asks for the bound of attempt n + 1 by writing
+# `$work/stub-timeout.<n>`, counting gh's bounds from 0. There is one of those per attempt,
+# whether this stand-in answers it or execs the real timeout, so `stub-timeout.<n>` names
+# attempt n + 1 and nothing drifts. An empty file is the bound firing, which is 124, and a
+# file holding a status is answered with that status instead, which is how the case about an
+# attempt exiting 127 is staged.
 #
 # The stand-in gh's `stderr.<n>` counts from 0 too and counts something else - gh's own calls,
 # which hold no call for an attempt this stand-in answered itself. So `stderr.<n>` names gh's
@@ -287,8 +308,9 @@ timed_waits() {
 # for runs the real timeout this execs, so that attempt's gh is bounded as the script asked.
 #
 # gh-read.sh's own read of the rate_limit route, `timeout 30 gh api rate_limit ...`, is no
-# attempt: the helper makes it after an attempt that exited 1, since a paginated read leaves it
-# no answer to read. It goes to the real timeout unrecorded, and the stand-in gh answers it apart.
+# attempt: the helper makes it once, after a ladder whose last attempt exited 1, since a paginated
+# read leaves it no answer to read. It goes to the real timeout unrecorded, and the stand-in gh
+# answers it apart.
 cat > "$work/bin/timeout" <<TIMEOUT
 #!/usr/bin/env bash
 set -euo pipefail
@@ -297,26 +319,28 @@ if [ "\${2:-} \${3:-} \${4:-}" = "gh api rate_limit" ]; then
 fi
 calls=\$(find "$work/timeout-calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/timeout-calls/call.\$calls"
-if [ ! -f "$work/stub-timeout.\$calls" ]; then
+if [ "\${2:-}" != gh ]; then
   exec $real_timeout "\$@"
 fi
-answered=\$(cat "$work/stub-timeout.\$calls")
+bounds=\$(find "$work/gh-bounds" -maxdepth 1 -type f | wc -l)
+printf '%s\n' "\$*" > "$work/gh-bounds/call.\$bounds"
+if [ ! -f "$work/stub-timeout.\$bounds" ]; then
+  exec $real_timeout "\$@"
+fi
+answered=\$(cat "$work/stub-timeout.\$bounds")
 exit "\${answered:-124}"
 TIMEOUT
 chmod +x "$work/bin/timeout"
 
-# The stand-in `sleep`, which the ladder in gh-read.sh calls between attempts. It records the
-# seconds of each call, one file per call, and returns at once: what the cases read is the wait
-# the ladder asked for, not how long it took, so no case waits it out. The cases about the waits
-# read these records and not the drive's wall-clock time, which a loaded host stretches. Two
-# checks here held a drive to at most 1 s of SECONDS: measured 2026-11-21 on a shared 288-CPU dev
-# box, one of them failed in an unforced run with nothing wrong in the script, and with each `cat`
-# delayed both did.
+# The stand-in `sleep`: the ladder's four waits, 150 s of them, return at once, and each call's
+# seconds are recorded so that `waited` reads the ladder a case drove without paying for it.
+# The head says why the waits themselves are not this file's to measure. `sleep` is no bash
+# builtin, so this file on PATH is the one the helper runs.
 cat > "$work/bin/sleep" <<SLEEP
 #!/usr/bin/env bash
 set -euo pipefail
-calls=\$(find "$work/sleep-calls" -maxdepth 1 -type f | wc -l)
-printf '%s\n' "\$*" > "$work/sleep-calls/call.\$calls"
+calls=\$(find "$work/sleeps" -maxdepth 1 -type f | wc -l)
+printf '%s\n' "\$*" > "$work/sleeps/sleep.\$calls"
 SLEEP
 chmod +x "$work/bin/sleep"
 
@@ -356,29 +380,30 @@ happy_page() {
 }
 
 # fixture <refused calls> [<stderr of a refused call>]: a fresh call log and no out-file, a
-# stand-in that refuses that many calls and then answers, and the happy page for the answer. It
-# also puts the ladder's wait back to 0, so a case that does not ask for one waits not at all
-# and the three that do set `retry_seconds` themselves after calling it. Any per-call `stderr.<n>`
-# an earlier case wrote goes with it, so one case's faults never answer another's call, and so
-# do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log, and the
-# stand-in gh's per-call `kill-wrapper.<n>` files, and the stand-in `sleep`'s call log.
+# stand-in that refuses that many calls and then answers, and the happy page for the answer.
+# Any per-call `stderr.<n>` an earlier case wrote goes with it, so one case's faults never
+# answer another's call, and so do the stand-in `timeout`'s per-call `stub-timeout.<n>` files
+# and its two call logs, the stand-in gh's per-call `kill-wrapper.<n>` files and the stand-in
+# `sleep`'s record of the waits the last case's ladder made.
 fixture() {
-  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
+  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/gh-bounds" "$work/sleeps" \
+    "$work/rate-calls"
   rm -f "$work"/stderr.* "$work"/stub-timeout.* "$work"/kill-wrapper.*
-  mkdir -p "$work/calls" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
+  mkdir -p "$work/calls" "$work/timeout-calls" "$work/gh-bounds" "$work/sleeps" "$work/rate-calls"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
   printf '0\n' > "$work/reset"
-  retry_seconds=0
   happy_page
 }
 
 # drive <argument>...: the real script with the stand-in first on PATH. Sets `out` to its
-# combined output and `status` to its exit code. Not a subshell, so both survive the call.
+# combined output and `status` to its exit code. Not a subshell, so both survive the call. It
+# times nothing: what a case reads of the ladder's waits is `waited` and `sleeps`, which the
+# stand-in records, and a wall clock under a loaded machine measured only the machine.
 drive() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-    GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=$retry_seconds "$read_script" "$@" 2>&1)
+    GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" "$@" 2>&1)
   status=$?
   set -e
 }
@@ -396,8 +421,7 @@ drive_limited() {
   shift
   set +e
   out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES PATH="$work/bin:$PATH" GH_TOKEN=t \
-    GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 GITHUB_RUN_ATTEMPT=$run_attempt \
-    GH_RETRY_SECONDS=$retry_seconds "${assignments[@]}" \
+    GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 GITHUB_RUN_ATTEMPT=$run_attempt "${assignments[@]}" \
     "$work/bin/Runner.Worker" -c '"$@"; exit $?' worker "$read_script" "$@" 2>&1)
   status=$?
   set -e
@@ -408,23 +432,26 @@ utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 calls() { find "$work/calls" -maxdepth 1 -type f | wc -l | tr -d ' '; }
 args() { cat "$work/calls/call.0"; }
 timeout_calls() { find "$work/timeout-calls" -maxdepth 1 -type f | wc -l | tr -d ' '; }
-timeout_args() { cat "$work/timeout-calls/call.0"; }
+ladder_args() { cat "$work/timeout-calls/call.0"; }
+gh_bounds() { find "$work/gh-bounds" -maxdepth 1 -type f | wc -l | tr -d ' '; }
+gh_bound_args() { cat "$work/gh-bounds/call.0"; }
+sleeps() { find "$work/sleeps" -maxdepth 1 -type f | wc -l | tr -d ' '; }
+# waited: the seconds the ladder asked `sleep` for, in the order it asked, as one line.
+waited() {
+  local n total said=""
+  total=$(sleeps)
+  for ((n = 0; n < total; n++)); do said="$said $(cat "$work/sleeps/sleep.$n")"; done
+  echo "${said# }"
+}
 entries() { jq -r 'length' "$work/out.json"; }
 field() { jq -r --argjson id "$1" ".[] | select(.id == \$id) | $2" "$work/out.json"; }
+# Every `::error::` line the drive printed. A refused jobs read prints two: the ladder's own
+# exhaustion line, which ci-retry.sh writes and ci-retry.test.sh holds, and the script's
+# refusal line, which is the one that names the route and the attempt that decided the failure.
 errors() { grep -c '::error::' <<<"$out" || true; }
-error_line() { grep '::error::' <<<"$out" || true; }
+# The script's own line of those two: the ladder's is the one that says it failed to download.
+error_line() { grep '::error::' <<<"$out" | grep -v 'failed to download after' || true; }
 wrote_out_file() { [ -e "$work/out.json" ] && echo yes || echo no; }
-# sleeps: the arguments of each call the ladder made to the stand-in `sleep`, in order and joined
-# by `|`, so one call given two arguments (`1 2`) reads apart from two calls; nothing where it made
-# none.
-sleeps() {
-  local n=0 waits=""
-  while [ -f "$work/sleep-calls/call.$n" ]; do
-    waits="$waits${waits:+|}$(cat "$work/sleep-calls/call.$n")"
-    n=$((n + 1))
-  done
-  echo "$waits"
-}
 
 echo "case: this attempt's jobs become the four fields the readings consume"
 fixture 0
@@ -490,34 +517,35 @@ check "reads one leg, not three" "$(is "$(entries)" 1)"
 check "holding the project whole" "$(is "$(field 21 .leg)" 'alone-Edge 2 alone')"
 
 echo "case: every attempt refused with HTTP 502"
-fixture 3 "HTTP 502"
-retry_seconds=1
+fixture 5 "HTTP 502"
 drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
-check "tried three times" "$(is "$(calls)" 3)"
-check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "tried five times" "$(is "$(calls)" 5)"
+check "prints its own ::error:: line and the ladder's, and no third" "$(is "$(errors)" 2)"
 check "naming the endpoint it read" \
   "$(contains "$(error_line)" 'GET repos/o/r/actions/runs/41/attempts/4/jobs?per_page=100')"
 check "the status gh last printed" "$(contains "$(error_line)" 'HTTP 502')"
 check "the ladder's attempts and this run attempt" \
-  "$(contains "$(error_line)" '3 attempts, all on run attempt 4')"
+  "$(contains "$(error_line)" '5 attempts, all on run attempt 4')"
 check "and that this error is a failed read and not a failed row" \
   "$(contains "$(error_line)" 'This error is a failed read of the jobs API, not a failed browser row\. Re-running this job reads the list again\.$')"
 check "nor that no row failed, which this job did not read" \
   "$(is "$(contains "$(error_line)" 'no row of the suite failed')" false)"
+check "while the ladder's own line says it exhausted the five" \
+  "$(contains "$out" "^::error::this run's attempt's jobs failed to download after 5 attempts")"
 check "every attempt's gh output still reaches the log" \
-  "$(is "$(grep -c '^HTTP 502$' <<<"$out" || true)" 3)"
-check "and the ladder waited 1 s and then 2 s" "$(is "$(sleeps)" "1|2")"
+  "$(is "$(grep -c '^HTTP 502$' <<<"$out" || true)" 5)"
+check "and the ladder waited 10, 20, 40 and 80 s between them" "$(is "$(waited)" '10 20 40 80')"
 
 echo "case: a refusal gh printed no HTTP status for"
 # A resolution failure prints no status line, and a line that named one anyway would send a
 # reader looking for a 502 that never happened.
-fixture 3 "could not resolve host: api.github.com"
+fixture 5 "could not resolve host: api.github.com"
 drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
-check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "prints its own ::error:: line and the ladder's, and no third" "$(is "$(errors)" 2)"
 check "which names the exit status and says gh printed none" \
   "$(contains "$(error_line)" 'exited 1, printing no HTTP status')"
 check "and names no status of its own" \
@@ -526,19 +554,19 @@ check "while gh's own words reach the log" \
   "$(contains "$out" '^could not resolve host: api.github.com$')"
 
 echo "case: an earlier attempt answered a status and the last attempt did not"
-# The ladder's three attempts need not fail for one reason: during the 2026-11-08 incident the
+# The ladder's five attempts need not fail for one reason: during the 2026-11-08 incident the
 # jobs API answered 502 and GitHub's hosts were also refusing connections, and a refused
 # connection prints no status at all. The line reports the attempt that decided the failure,
 # which is the last one, so it must not hand that attempt a status an earlier attempt
 # answered: a reader sent to GitHub's API health by a 502 that did not decide the failure is
 # exactly the mis-reading this lane's messages exist to end.
-fixture 3 "error connecting to api.github.com"
+fixture 5 "error connecting to api.github.com"
 printf '%s\n' 'gh: Server Error (HTTP 502)' > "$work/stderr.0"
 drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
-check "tried three times" "$(is "$(calls)" 3)"
-check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "tried five times" "$(is "$(calls)" 5)"
+check "prints its own ::error:: line and the ladder's, and no third" "$(is "$(errors)" 2)"
 check "does not hand the deciding attempt a status only an earlier one answered" \
   "$(is "$(contains "$(error_line)" 'decided the failure, answered HTTP 502')" false)"
 check "says that attempt exited with no status of its own" \
@@ -548,7 +576,7 @@ check "and names the earlier attempt that was answered one, with its own attempt
 check "while every attempt's own words still reach the log" \
   "$(contains "$out" '^gh: Server Error (HTTP 502)$')"
 check "the later attempts' too" \
-  "$(is "$(grep -c '^error connecting to api.github.com$' <<<"$out" || true)" 2)"
+  "$(is "$(grep -c '^error connecting to api.github.com$' <<<"$out" || true)" 4)"
 
 echo "case: an attempt the 30 s bound ended is reported as a timeout and not as a bare refusal"
 # The first of the three cases that read the script's own `timeout 30` as the bound firing,
@@ -556,88 +584,107 @@ echo "case: an attempt the 30 s bound ended is reported as a timeout and not as 
 # in this file held the bound: `timeout 30` taken out of a scratch copy of the script on
 # 2026-11-08 failed no check. The two cases that stage a killed wrapper now fail without it
 # as well, the kill they stage reaching the wrapper only through the `timeout` process between
-# gh and the wrapper, and with `timeout 30` taken out of a scratch copy on 2026-11-08 32 checks
+# gh and the wrapper, and with `timeout 30` taken out of a scratch copy on 2026-11-08 26 checks
 # fail, in this case and the five after it, the two killed-wrapper cases among them. The
-# stand-in answers 124 at once, so this case costs none of the 90 s a hanging gh under the real
-# bound would, and it bites either way the bound could go - dropped, and the stand-in is never
-# called at all; changed, and the 30 it recorded is not a 30. The gh here would answer, so the
-# bound is the only thing that can fail this drive.
+# stand-in answers 124 at once, so this case costs none of the 150 s a hanging gh under the
+# real bound would, and it bites either way the bound could go - dropped, and the stand-in is
+# never called at all; changed, and the 30 it recorded is not a 30. The gh here would answer,
+# so the bound is the only thing that can fail this drive.
 #
-# All three calls are asked for, so every attempt ends at the bound and the line has one thing
-# to say about all three. That is why this case alone holds nothing about which attempt the
+# It is also where this file holds both of the attempt's bounds at once: the wrapper's 30 s
+# around gh, which is the one these cases stand in for, and the ladder's 40 s around the
+# wrapper, which the stand-in records and never answers for. The script's comment says why
+# the inner one has to be there - it is the only bound whose firing reaches that attempt's
+# status file, and so the only one describe_attempt can tell from a refusal gh printed no
+# status for.
+#
+# All five calls are asked for, so every attempt ends at the bound and the line has one thing
+# to say about all five. That is why this case alone holds nothing about which attempt the
 # line read: with every attempt the same, a script reading `status.1`, or reading a 124 on any
 # attempt as the deciding one, answers the same words. The cases after this one are where
 # the attempts differ.
 fixture 0
-touch "$work/stub-timeout.0" "$work/stub-timeout.1" "$work/stub-timeout.2"
+touch "$work/stub-timeout.0" "$work/stub-timeout.1" "$work/stub-timeout.2" \
+  "$work/stub-timeout.3" "$work/stub-timeout.4"
 drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
-check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
-check "with 30 seconds" "$(is "$(cut -d' ' -f1 <<<"$(timeout_args)")" 30)"
-check "and gh as the command it wraps" "$(is "$(cut -d' ' -f2 <<<"$(timeout_args)")" gh)"
+check "bounds gh on each of the ladder's five attempts" "$(is "$(gh_bounds)" 5)"
+check "with 30 seconds" "$(is "$(cut -d' ' -f1 <<<"$(gh_bound_args)")" 30)"
+check "and gh as the command it wraps" "$(is "$(cut -d' ' -f2 <<<"$(gh_bound_args)")" gh)"
 check "which is this run's attempt read itself" \
-  "$(contains "$(timeout_args)" '^30 gh api --paginate --slurp repos/o/r/actions/runs/41/')"
+  "$(contains "$(gh_bound_args)" '^30 gh api --paginate --slurp repos/o/r/actions/runs/41/')"
+check "while the ladder bounds the wrapper around each of them, ten calls in all" \
+  "$(is "$(timeout_calls)" 10)"
+check "at 40 seconds, above the bound inside it" \
+  "$(contains "$(ladder_args)" '^40 bash -c ')"
 check "so no gh call is made outside the bound" "$(is "$(calls)" 0)"
-check "and the ladder's two waits are this case's 0 s" "$(is "$(sleeps)" "0|0")"
-check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "prints its own ::error:: line and the ladder's, and no third" "$(is "$(errors)" 2)"
 check "naming the bound that ended the attempt that decided the failure" \
-  "$(contains "$(error_line)" 'attempt 3, which decided the failure, stopped at its 30 s bound')"
+  "$(contains "$(error_line)" 'attempt 5, which decided the failure, stopped at its 30 s bound')"
 check "and not the words an exit with no status of its own gets" \
   "$(is "$(contains "$(error_line)" 'printing no HTTP status')" false)"
 check "and says nothing of the earlier attempts, which ended the same way" \
   "$(is "$(contains "$(error_line)" 'where attempt')" false)"
+# The ladder reads any 124 as its own bound having fired, so the line it prints for an attempt
+# the inner bound ended names the outer bound's seconds. The refusal line above is read from
+# that attempt's own status file and names the bound that actually fired, which is why the two
+# say different seconds about the same attempt.
+check "while the ladder's own line reads that 124 as its own bound" \
+  "$(contains "$out" 'attempt 5 of 5 reached its 40s bound (exit 124)')"
 
-echo "case: the bound ended the first two attempts and the third answered a status"
+echo "case: the bound ended the first four attempts and the fifth answered a status"
 # What the line reports is what the attempt that decided the failure did, and that attempt is
-# the last one the ladder made. Here the first two calls are bounded and gh answers the third
+# the last one the ladder made. Here the first four calls are bounded and gh answers the fifth
 # with HTTP 502, so a script that read the deciding attempt's words from `status.1`, or that
 # took a 124 on any attempt as the one that decided, would call this read a timeout it was
 # not. Both mutations were made of a scratch copy of the script on 2026-11-08: the copy
-# reading `status.1` fails 8 checks and the copy taking a 124 on any attempt as the deciding
-# one fails 3, all of them in this case. With this case and the one after it taken out of the
-# file, measured the same day, the second copy fails nothing that is left, while the first is
-# still caught in two later cases, failing 4 checks: two in the 127 case and two in the first
-# killed-wrapper case.
-fixture 3 "HTTP 502"
-touch "$work/stub-timeout.0" "$work/stub-timeout.1"
+# reading `status.1` fails 16 checks, three of them in this case, and the copy taking a 124 on
+# any attempt as the deciding one fails 3, all of them in this case. With this case and the
+# one after it taken out of the file, measured the same day, the second copy fails nothing
+# that is left, while the first is still caught in four later cases, failing 10 checks: three
+# where an earlier attempt answered a status and the last did not, two in the 127 case, three
+# in the first killed-wrapper case and two in the second.
+fixture 5 "HTTP 502"
+touch "$work/stub-timeout.0" "$work/stub-timeout.1" "$work/stub-timeout.2" \
+  "$work/stub-timeout.3"
 drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
-check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
+check "bounds gh on each of the ladder's five attempts" "$(is "$(gh_bounds)" 5)"
 check "and gh runs only on the attempt the bound did not end" "$(is "$(calls)" 1)"
-check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "prints its own ::error:: line and the ladder's, and no third" "$(is "$(errors)" 2)"
 check "naming the status the deciding attempt was answered" \
-  "$(contains "$(error_line)" 'attempt 3, which decided the failure, answered HTTP 502')"
+  "$(contains "$(error_line)" 'attempt 5, which decided the failure, answered HTTP 502')"
 check "and not saying that attempt stopped at the bound" \
   "$(is "$(contains "$(error_line)" 'decided the failure, stopped at its 30 s bound')" false)"
-check "while the two that did stop at it are named, each with its own attempt number" \
+check "while the four that did stop at it are named, each with its own attempt number" \
   "$(contains "$(error_line)" \
-    'where attempt 1 stopped at its 30 s bound and attempt 2 stopped at its 30 s bound')"
+    'where attempt 1 stopped at its 30 s bound and attempt 2 stopped at its 30 s bound and attempt 3 stopped at its 30 s bound and attempt 4 stopped at its 30 s bound')"
 
-echo "case: the first two attempts answered a status and the bound ended the third"
+echo "case: the first four attempts answered a status and the bound ended the fifth"
 # The reverse, and a shape the bound exists for rather than one this lane has measured: the
 # jobs API answering 502 while a later attempt is left hanging until the bound ends it. The
-# 2026-11-08 incident was not that shape - its three attempts failed on 502s in 17, 19 and 18
-# seconds, which the script's own comment reads as answered rather than left hanging. The
-# attempt the bound ended is the one that decided the failure, so the line must not hand it the
-# status the earlier two were answered, and must still say what those two did, since they did
-# something else.
-fixture 3 "HTTP 502"
-touch "$work/stub-timeout.2"
+# 2026-11-08 incident was not that shape - the three attempts of the ladder this read had that
+# day failed on 502s in 17, 19 and 18 seconds, which the script's own comment reads as answered
+# rather than left hanging. The attempt the bound ended is the one that decided the failure, so
+# the line must not hand it the status the earlier four were answered, and must still say what
+# those four did, since they did something else.
+fixture 5 "HTTP 502"
+touch "$work/stub-timeout.4"
 drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
-check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
-check "and gh runs on the two the bound did not end" "$(is "$(calls)" 2)"
-check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "bounds gh on each of the ladder's five attempts" "$(is "$(gh_bounds)" 5)"
+check "and gh runs on the four the bound did not end" "$(is "$(calls)" 4)"
+check "prints its own ::error:: line and the ladder's, and no third" "$(is "$(errors)" 2)"
 check "naming the bound for the attempt that decided the failure" \
-  "$(contains "$(error_line)" 'attempt 3, which decided the failure, stopped at its 30 s bound')"
-check "and not handing that attempt the status only the earlier two were answered" \
+  "$(contains "$(error_line)" 'attempt 5, which decided the failure, stopped at its 30 s bound')"
+check "and not handing that attempt the status only the earlier four were answered" \
   "$(is "$(contains "$(error_line)" 'decided the failure, answered HTTP 502')" false)"
-check "while those two are named with it, each with its own attempt number" \
+check "while those four are named with it, each with its own attempt number" \
   "$(contains "$(error_line)" \
-    'where attempt 1 answered HTTP 502 and attempt 2 answered HTTP 502')"
+    'where attempt 1 answered HTTP 502 and attempt 2 answered HTTP 502 and attempt 3 answered HTTP 502 and attempt 4 answered HTTP 502')"
 
 echo "case: the deciding attempt exited a status that is neither 1 nor 124"
 # The third branch names the status it read rather than calling the attempt refused, and the
@@ -649,23 +696,23 @@ echo "case: the deciding attempt exited a status that is neither 1 nor 124"
 # case taken out of the file it fails none, which is what the file as it stands fails without
 # this case too. The stand-in timeout answers with the status the case wrote in its file, 127
 # here, and with 124 where a case wrote no status at all.
-fixture 3 "HTTP 502"
-printf '%s\n' 127 > "$work/stub-timeout.2"
+fixture 5 "HTTP 502"
+printf '%s\n' 127 > "$work/stub-timeout.4"
 drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
-check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
-check "and gh runs on the two the stand-in did not answer for" "$(is "$(calls)" 2)"
-check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "bounds gh on each of the ladder's five attempts" "$(is "$(gh_bounds)" 5)"
+check "and gh runs on the four the stand-in did not answer for" "$(is "$(calls)" 4)"
+check "prints its own ::error:: line and the ladder's, and no third" "$(is "$(errors)" 2)"
 check "naming the status the deciding attempt exited" \
   "$(contains "$(error_line)" 'decided the failure, exited 127, printing no HTTP status')"
 check "and not the 1 that the attempts gh refused exited" \
   "$(is "$(contains "$(error_line)" 'decided the failure, exited 1,')" false)"
 check "nor the bound, which no call in this drive was answered with" \
   "$(is "$(contains "$(error_line)" 'stopped at its 30 s bound')" false)"
-check "while the two that were answered a status are named with their own numbers" \
+check "while the four that were answered a status are named with their own numbers" \
   "$(contains "$(error_line)" \
-    'where attempt 1 answered HTTP 502 and attempt 2 answered HTTP 502')"
+    'where attempt 1 answered HTTP 502 and attempt 2 answered HTTP 502 and attempt 3 answered HTTP 502 and attempt 4 answered HTTP 502')"
 
 echo "case: an attempt whose wrapper was killed leaves no exit status on record"
 # describe_attempt's fourth branch, the one shape no stand-in gh can reach by answering
@@ -680,33 +727,38 @@ echo "case: an attempt whose wrapper was killed leaves no exit status on record"
 #
 # The kill is held as well, because a kill that does not reach the wrapper leaves a case that
 # holds nothing: the stand-in then says it could not stage the case and exits 70, the wrapper
-# writes that 70 to `status.3`, and the line reads `exited 70, printing no HTTP status`. With
+# writes that 70 to `status.5`, and the line reads `exited 70, printing no HTTP status`. With
 # the kill pointed at pid 999999 in a scratch copy on 2026-11-08, both cases that stage a
-# killed wrapper go red - three checks here and two in the one after it, 5 in all.
+# killed wrapper go red - four checks here and two in the one after it, 6 in all.
 #
 # The attempt is still counted, because the wrapper counts it before it runs gh, so the line
-# says three attempts and names the two that answered.
-fixture 3 "HTTP 502"
-touch "$work/kill-wrapper.2"
+# says five attempts and names the four that answered.
+fixture 5 "HTTP 502"
+touch "$work/kill-wrapper.4"
 drive jobs "$work/out.json" "$caller"
 check "the harness staged the kill" \
   "$(is "$(contains "$out" 'could not stage a killed wrapper')" false)"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
-check "tried three times" "$(is "$(calls)" 3)"
-check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "tried five times" "$(is "$(calls)" 5)"
+check "prints its own ::error:: line and the ladder's, and no third" "$(is "$(errors)" 2)"
 check "says the deciding attempt left no exit status on record and printed no HTTP status" \
   "$(contains "$(error_line)" \
-    'attempt 3, which decided the failure, left no exit status on record, printing no HTTP status')"
+    'attempt 5, which decided the failure, left no exit status on record, printing no HTTP status')"
 check "and names no exit status for it, there being none to name" \
   "$(is "$(contains "$(error_line)" 'decided the failure, exited')" false)"
 check "nor hands it a status an earlier attempt was answered" \
   "$(is "$(contains "$(error_line)" 'decided the failure, answered HTTP 502')" false)"
-check "while the two that were answered are named, each with its own attempt number" \
+check "while the four that were answered are named, each with its own attempt number" \
   "$(contains "$(error_line)" \
-    'where attempt 1 answered HTTP 502 and attempt 2 answered HTTP 502')"
+    'where attempt 1 answered HTTP 502 and attempt 2 answered HTTP 502 and attempt 3 answered HTTP 502 and attempt 4 answered HTTP 502')"
 check "and the attempt the wrapper never finished is still counted" \
-  "$(contains "$(error_line)" 'the ladder made 3 attempts')"
+  "$(contains "$(error_line)" 'the ladder made 5 attempts')"
+# What the ladder saw of that attempt, which is what holds the kill: a wrapper killed with
+# SIGKILL leaves the `timeout` above it exiting 137, and the ladder names that status on its
+# own line while nothing wrote `status.5` for the refusal line to read.
+check "and the ladder saw the killed wrapper exit 137" \
+  "$(contains "$out" 'attempt 5 of 5 failed (exit 137)')"
 
 echo "case: a killed wrapper whose gh had printed a status before it died"
 # The other half of that shape. The wrapper dies with no `status.<n>` written either way, but
@@ -717,13 +769,13 @@ echo "case: a killed wrapper whose gh had printed a status before it died"
 # left no exit status on record, and fails 2 checks, both in this case.
 #
 # The order is held only while the kill reaches the wrapper. A kill that failed leaves the
-# `HTTP 503` in `stderr.3` and a 70 in `status.3`, and the line still reads `answered HTTP
+# `HTTP 503` in `stderr.5` and a 70 in `status.5`, and the line still reads `answered HTTP
 # 503`, so this case holds the staging twice over: that the stand-in printed none of its own
-# words, and that nothing echoed `stderr.3` to the log, which the wrapper does after gh
+# words, and that nothing echoed `stderr.5` to the log, which the wrapper does after gh
 # returns and a killed wrapper never reaches.
-fixture 3 "HTTP 502"
-printf '%s\n' 'gh: Server Error (HTTP 503)' > "$work/stderr.2"
-touch "$work/kill-wrapper.2"
+fixture 5 "HTTP 502"
+printf '%s\n' 'gh: Server Error (HTTP 503)' > "$work/stderr.4"
+touch "$work/kill-wrapper.4"
 drive jobs "$work/out.json" "$caller"
 check "the harness staged the kill" \
   "$(is "$(contains "$out" 'could not stage a killed wrapper')" false)"
@@ -731,50 +783,52 @@ check "and the killed wrapper never echoed the stderr its gh had written" \
   "$(is "$(grep -c '^gh: Server Error (HTTP 503)$' <<<"$out" || true)" 0)"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
-check "tried three times" "$(is "$(calls)" 3)"
-check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "tried five times" "$(is "$(calls)" 5)"
+check "prints its own ::error:: line and the ladder's, and no third" "$(is "$(errors)" 2)"
 check "reads the deciding attempt from the stderr its gh had written" \
-  "$(contains "$(error_line)" 'attempt 3, which decided the failure, answered HTTP 503')"
+  "$(contains "$(error_line)" 'attempt 5, which decided the failure, answered HTTP 503')"
 check "rather than from the status file nothing wrote" \
   "$(is "$(contains "$(error_line)" 'decided the failure, left no exit status')" false)"
-check "while the two earlier attempts keep the status they were answered" \
+check "while the four earlier attempts keep the status they were answered" \
   "$(contains "$(error_line)" \
-    'where attempt 1 answered HTTP 502 and attempt 2 answered HTTP 502')"
+    'where attempt 1 answered HTTP 502 and attempt 2 answered HTTP 502 and attempt 3 answered HTTP 502 and attempt 4 answered HTTP 502')"
 check "and the attempt the wrapper never finished is still counted" \
-  "$(contains "$(error_line)" 'the ladder made 3 attempts')"
+  "$(contains "$(error_line)" 'the ladder made 5 attempts')"
 
 echo "case: refused once, answered on the second attempt"
 fixture 1
-retry_seconds=1
 drive jobs "$work/out.json" "$caller"
 check "exits 0" "$(is "$status" 0)"
 check "tried twice" "$(is "$(calls)" 2)"
 check "writes the attempt that answered" "$(is "$(entries)" 7)"
 check "with its legs" "$(is "$(field 13 .leg)" alone-webkit-alone)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
-check "and waited the ladder's first second" "$(is "$(sleeps)" 1)"
+check "and waited the ladder's first 10 s before the attempt that answered" \
+  "$(is "$(waited)" 10)"
 
 echo "case: the negative control, a gh that answers at once"
-# The two cases above read the waits the ladder asked of `sleep`, and this one holds that a gh
-# answering at once makes the drive make none of the calls TIMED_WAITS lists, as timed_waits
-# counts them. A wait the stand-in does not record - a sleep binary by its absolute path,
+# The two cases above that read `waited` would pass for a script that waited whether or not an
+# attempt was refused, and this one holds that a gh answering at once makes the drive wait for
+# nothing. A wait through the `sleep` on PATH is a call the stand-in records, and `sleeps` must
+# count none. A wait the stand-in does not record - a sleep binary by its absolute path,
 # `read -t`, a timed futex or futex_wait, semtimedop, mq_timedreceive, io_uring_enter with a
 # timeout, a timerfd, alarm and pause, flock, an F_OFD_SETLKW lock wait, SO_RCVTIMEO, a close that
 # waits out SO_LINGER, a terminal read that waits out a VTIME set by TCSETS, TCSETA or TCSETS2,
-# any of them after the answer, of any length - makes one, so the drive runs under strace and
-# timed_waits must find none. The waits the comment above TIMED_WAITS names as not seen pass. The
-# knob is 100000 and the real `timeout 120` still bounds the drive, so a wait the size of the
-# knob also ends it with 124.
+# any of them after the answer, of any length - makes one of the calls TIMED_WAITS lists, so the
+# drive runs under strace and timed_waits must find none. The waits the comment above
+# TIMED_WAITS names as not seen pass, the two `timeout` bounds of retry_fetch's attempt among
+# them. The real `timeout 120` still bounds the drive, so a wait longer than that also ends it
+# with 124, which `exits 0` reads.
 fixture 0
 set +e
 out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-  GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=100000 "$real_strace" -f -qq -e signal=none \
+  GITHUB_RUN_ATTEMPT=$run_attempt "$real_strace" -f -qq -e signal=none \
   -e trace="$TIMED_WAITS" -o "$work/waits" "$real_timeout" 120 "$read_script" jobs "$work/out.json" "$caller" 2>&1)
 status=$?
 set -e
 check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
-check "and asks sleep for no wait" "$(is "$(sleeps)" "")"
+check "and asks sleep for no wait" "$(is "$(sleeps)" 0)"
 waits=$(timed_waits "$work/waits")
 check "and makes none of the calls the trace lists" "$(is "$(grep -c . <<<"$waits" || true)" 0)"
 [ -z "$waits" ] || sed 's/^/    traced: /' <<<"$waits"
@@ -863,50 +917,67 @@ TRACE
 # RATE_LIMITED: the jobs read refused for the repository's spent API budget, as run 44995550797's
 # merge job was at 07:10:31Z on 2026-11-22 (`gh: API rate limit exceeded for installation (HTTP
 # 403)`), where main's ladder made its three attempts in seconds and decided the read failed. The
-# read goes through gh_read and so through gh-read.sh's gh_wait_reset. A paginated read leaves it
-# no answer of its own to read, so it reads the spent budget and its reset from `gh api
-# rate_limit`, not from gh's words, and waits for the reset when it falls at least 30 s before the
-# job's limit. The stand-in `sleep` records the wait and returns at once, so no case waits it out.
+# read is retry_fetch's ladder run through gh-read.sh's gh_wait_reset. A paginated read leaves it
+# no answer of its own to read, so once the ladder's five attempts are refused it reads the spent
+# budget and its reset from `gh api rate_limit`, not from gh's words, and waits for the reset only
+# when the reset, one more ladder (5 x 40 + 150 = 350 s) and 30 s end before the job's limit. The
+# stand-in `sleep` records every wait, the ladder's and the reset's, and returns at once, so no
+# case waits either out; `waited` reads their seconds in the order they were asked.
 rate_limited="gh: API rate limit exceeded for installation (HTTP 403)"
 
-echo "case: RATE_LIMITED, the reset before the job's limit: the read waits for it and answers"
-fixture 1 "$rate_limited"
+echo "case: RATE_LIMITED, the reset and one more ladder before the job's limit: the read waits and answers"
+fixture 5 "$rate_limited"
 reset=$(($(date +%s) + 20))
 echo "$reset" > "$work/reset"
 drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json" "$caller"
-wait_asked=$(sleeps)
+read -r -a asked <<<"$(waited)"
 check "exits 0" "$(is "$status" 0)"
 check "reads the reset from the rate_limit route once" "$(is "$(rate_calls)" 1)"
-check "calls the jobs route twice: refused, then answered" "$(is "$(calls)" 2)"
+check "calls the jobs route six times: the ladder's five, refused, then one answered after the wait" \
+  "$(is "$(calls)" 6)"
 check "writes the attempt that answered" "$(is "$(entries)" 7)"
-check "logs the wait, naming the reset and the job's limit" \
-  "$(contains "$out" "^::warning::the API budget is spent until $(utc "$reset"); waiting [0-9]* s for it, within this job's limit at ")"
-check "asks sleep once, for the seconds to a second past the reset" \
-  "$([[ $wait_asked =~ ^[0-9]+$ ]] && [ "$wait_asked" -ge 15 ] && [ "$wait_asked" -le 21 ] && echo true || echo false)"
-check "prints no ::error:: line" "$(is "$(errors)" 0)"
+check "logs the wait, naming the reset, the ladder it runs again and the job's limit" \
+  "$(contains "$out" "^::warning::the API budget is spent until $(utc "$reset"); waiting [0-9]* s for it, then one more run of its ladder, 5 x 40 + 150 = 350 s, and 30 s after it, within this job's limit at ")"
+check "asks sleep for the ladder's four waits, then once for the seconds to a second past the reset" \
+  "$([ "${#asked[@]}" -eq 5 ] && [ "${asked[*]:0:4}" = '10 20 40 80' ] && [ "${asked[4]}" -ge 15 ] &&
+    [ "${asked[4]}" -le 21 ] && echo true || echo false)"
+check "prints no ::error:: line but the first ladder's exhaustion" \
+  "$(is "$(errors)|$(error_line)" '1|')"
 
-echo "case: RATE_LIMITED, the reset past the job's limit: the read fails by name at once"
-fixture 3 "$rate_limited"
+echo "case: RATE_LIMITED, the reset and one more ladder past the job's limit: the read fails by name at once"
+fixture 5 "$rate_limited"
 echo "$(($(date +%s) + 3600))" > "$work/reset"
 drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
-check "calls the jobs route once: no ladder after a wait past the limit" "$(is "$(calls)" 1)"
-check "asks sleep for nothing" "$(is "$(sleeps)" '')"
-check "names the reset and the job's limit it falls past" \
-  "$(contains "$out" "^::error::the API budget is spent until .*, past this job's limit at ")"
+check "calls the jobs route five times: one ladder, and none after a wait past the limit" \
+  "$(is "$(calls)" 5)"
+check "asks sleep for the ladder's four waits and nothing for the reset" "$(is "$(waited)" '10 20 40 80')"
+check "names the reset, the ladder and the job's limit they fall past" \
+  "$(contains "$out" "^::error::the API budget is spent until .*, and that time with one more run of its ladder, 5 x 40 + 150 = 350 s, and 30 s after it ends at .*, past this job's limit at ")"
 check "and the read's own line names the attempt that decided it" \
-  "$(contains "$out" "attempt 1, which decided the failure, answered HTTP 403")"
+  "$(contains "$out" "attempt 5, which decided the failure, answered HTTP 403")"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 
-echo "case: RATE_LIMITED, no limit set: no wait, and the ladder still makes its three attempts"
-fixture 3 "$rate_limited"
+echo "case: RATE_LIMITED, a reset before the job's limit but with no room for one more ladder: no wait"
+# 120 s to the reset fits a 5-minute job's limit with the 30 s margin a single call takes, and
+# does not with the ladder's 350 s on top: a margin that left the ladder out would wait here.
+fixture 5 "$rate_limited"
+echo "$(($(date +%s) + 120))" > "$work/reset"
+drive_limited JOB_TIMEOUT_MINUTES=5 -- jobs "$work/out.json" "$caller"
+check "fails the step" "$(is "$status" 1)"
+check "after one ladder" "$(is "$(calls)" 5)"
+check "asks sleep for nothing beyond the ladder's own waits" "$(is "$(waited)" '10 20 40 80')"
+check "names the job's limit" "$(contains "$out" "^::error::the API budget is spent until .*, past this job's limit at ")"
+
+echo "case: RATE_LIMITED, no limit set: no wait, after the ladder's five attempts"
+fixture 5 "$rate_limited"
 echo "$(($(date +%s) + 3600))" > "$work/reset"
 drive_limited -- jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
-check "after the ladder's three attempts" "$(is "$(calls)" 3)"
-check "each naming the limit it lacks" \
-  "$(is "$(grep -c 'names no time limit to wait within' <<<"$out")" 3)"
-check "asks sleep only for the ladder's two waits" "$(is "$(sleeps)" '0|0')"
+check "after the ladder's five attempts" "$(is "$(calls)" 5)"
+check "naming the limit it lacks, once, after the ladder" \
+  "$(is "$(grep -c 'names no time limit to wait within' <<<"$out")" 1)"
+check "asks sleep only for the ladder's four waits" "$(is "$(waited)" '10 20 40 80')"
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.

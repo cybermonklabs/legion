@@ -57,7 +57,12 @@ jobs:
     # The unit step's -timeout must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 2 minutes of setup, then the unit step's own timeout-minutes of
     # 30 (its comment below says why 30), then the connections report's own 1, within 35.
-    timeout-minutes: 35
+    #
+    # Budget (ci-budgets.md's Budgets note): 2100 s, the 35 minutes main's #5576 gives this job,
+    # plus its slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls,
+    # 3416 s, above packages/envoy's `go mod download` and the workspace install at
+    # 5 x 180 + 150 = 1050 s each and the ci-ok report's 2460 s. 2100 + 3416 = 5516 s -> 92 min.
+    timeout-minutes: 92
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -76,7 +81,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 35 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 92 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
@@ -86,8 +91,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -105,11 +119,21 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # The module the steps below test and build, downloaded once and retried before the
+      # first of them (ci-budgets.md's Retries note; the retried unit is the download, never the
+      # build and never the test). 180 s per attempt, as that note derives.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
         timeout-minutes: 2
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      # why: .github/ci-notes/ci.md#why-a-lanes-sizing-step-comes-after-its-retried-module-download
       - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
@@ -158,32 +182,12 @@ jobs:
       # what xargs got; .github/scripts/ci_job_reads.py's
       # hold_envoy_legs holds the file's `elsewhere` to the jobs those packages' steps are built
       # for, so what the legs leave out and what the other jobs run cannot drift apart.
-      # Each leg's packages run in one `go test -json` through database-skips.sh --count-table,
-      # which also answers c8's ask that the database broker suites run with
-      # BROKER_TEST_DATABASE_URL set and that none skips: go test reports a skip as a pass, so the
-      # script counts the skips of the broker's packages among the leg's, ./internal/cipher/...,
-      # its command, ./cmd/cipherd/, and the writer hold's client, ./internal/holdrecord/, and fails
-      # on any there but the airlock's model comparisons, which the script's EXPECTED_SKIPS names
-      # (each needs a built Lean model of the airlock, and the airlock-lean job runs them). The auth
-      # service's natscallout runs in a leg here too, beside its race run in envoy-go-race, since
-      # its hold rows open the broker's Postgres and skip without it: this run counts their skips
-      # (`.github/go-legs.yaml#twice`). A report that shows no run of one of those packages prints
-      # database_skips=UNKNOWN and fails too, a leg that holds none of them prints
-      # database_skips=NONE, and a failed test of any package of the leg fails it. The skips of the
-      # rest of the module are not counted; hold_envoy_legs holds every package of the broker's
-      # table to a leg here, so each is counted in one. The -timeout 20m bounds each package's
-      # test binary, and a leg's packages run several at a time, so one that starts late ends up to
-      # 20 minutes after its own start: the step's own limit of 30 leaves a package that starts
-      # within the first 10 minutes its whole -timeout, and so its dump, and no leg's packages sum
-      # to 40 minutes of package time (.github/go-legs.yaml's times), so each starts before then. The
-      # two tests of the web app's display-tree fixture are skipped: without `--check`
-      # TestWebDisplayFixture writes the committed fixture rather than checking it, so a run here
-      # would ask nothing of it, and TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same
-      # file, which would make it a read of this job; envoy-go-build runs both, the first with the
-      # check, and both texts are built from the same list. So are the backend count's tests of
-      # cmd/cipher and internal/cipher/api, which envoy-go-skips' count step runs in the same build
-      # and env (BACKEND_COUNT_TESTS), and the rows whose bound is on time, which envoy-go-alone
-      # runs on a runner nothing else loads (UNIT_ALONE_TESTS).
+      # The -timeout 20m bounds each package's test binary, and a leg's packages run several at a
+      # time, so one that starts late ends up to 20 minutes after its own start: the step's own
+      # limit of 30 leaves a package that starts within the first 10 minutes its whole -timeout,
+      # and so its dump, and no leg's packages sum to 40 minutes of package time
+      # (.github/go-legs.yaml's times), so each starts before then.
+      # why: .github/ci-notes/ci-job-envoy-go.md#the-unit-steps-skip-count-and-the-tests-it-skips
       - name: Unit test envoy Go package
         timeout-minutes: 30
         run: |
@@ -211,6 +215,10 @@ jobs:
           fi
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go
@@ -226,7 +234,12 @@ jobs:
     # the dump that names it. The lines run one after another, each under its own 10-minute
     # -timeout: twelve of the rows whose bound is on time and five of the race-impossible rows,
     # 170 minutes at most after about 2 of setup, so 175.
-    timeout-minutes: 175
+    #
+    # Budget (ci-budgets.md's Budgets note): 10500 s, the 175 minutes main's #5576 gives this job,
+    # plus its slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls,
+    # 3416 s, above packages/envoy's `go mod download` and the workspace install at
+    # 5 x 180 + 150 = 1050 s each and the ci-ok report's 2460 s. 10500 + 3416 = 13916 s -> 232 min.
+    timeout-minutes: 232
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -245,7 +258,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 175 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 232 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
@@ -255,8 +268,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -274,11 +296,20 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # The module the steps below test and build, downloaded once and retried before the first
+      # of them, as envoy-go-legs' step of this name says (ci-budgets.md's Retries note).
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
         timeout-minutes: 2
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      # why: .github/ci-notes/ci.md#why-a-lanes-sizing-step-comes-after-its-retried-module-download
       - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
@@ -341,6 +372,10 @@ jobs:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go
@@ -353,8 +388,15 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # The step's three lines run one after another, each under its own 10-minute -timeout, 30
     # minutes at most after about 2 of setup and the pg_stat_statements Postgres's own
-    # timeout-minutes of 3, so 35.
-    timeout-minutes: 35
+    # timeout-minutes of 3, so 35 (2100 s).
+    #
+    # Its key is the larger sum of .github/ci-budgets.md#the-budgets-note, and its slowest
+    # retried step is the ci-ok report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"),
+    # above packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. The first sum is
+    # 2100 + 2460 = 4560 s. The steps before the report are the 2100 s above, derived with no
+    # module download step, so that step counts at its 1050 s: 3150 s, and with the report's
+    # rounded limit of 43 minutes, 2580 s, the second sum is the larger. 3150 + 2580 = 5730 s -> 96 min.
+    timeout-minutes: 96
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -373,7 +415,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 35 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 96 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -397,11 +439,20 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # The module the steps below test and build, downloaded once and retried before the first
+      # of them, as envoy-go-legs' step of this name says (ci-budgets.md's Retries note).
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
         timeout-minutes: 2
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      # why: .github/ci-notes/ci.md#why-a-lanes-sizing-step-comes-after-its-retried-module-download
       - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
@@ -409,61 +460,14 @@ jobs:
       - name: Postgres service version
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
-      # The priorities read's four tests over its corpus of production's counts run on a Postgres
-      # that preloads pg_stat_statements (PG_STAT_STATEMENTS_TESTS in
-      # .github/scripts/ci_job_reads.py): the bound's test reads each statement's database time from
-      # it, and INFRA-5791's checks run the four on such a server. A server loads that module only
-      # at its start, and the service above starts on the one command line
-      # .github/scripts/postgres-service-settings.sh --command prints, which check-workflow-files.sh's
-      # rule 7 holds every Postgres service to and which preloads nothing, so this step starts one
-      # more Postgres, from the service's own image, which the runner already holds, on port 5433,
-      # with the settings those checks name, and holds it to preloading the module before the step
-      # below, "Test what the race build cannot run at all or at full size", runs the four on it.
-      # Its 3 minutes bound the seconds a server takes to start.
+      # why: .github/ci-notes/ci.md#why-envoy-go-race-impossible-runs-three-plain-suites-and-a-second-postgres
       - name: Start a Postgres that preloads pg_stat_statements
         timeout-minutes: 3
         run: |
           docker run -d --name pg-stat-statements -e POSTGRES_PASSWORD=ci -p 5433:5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 -c shared_preload_libraries=pg_stat_statements -c max_connections=200
           for _ in $(seq 1 60); do docker exec pg-stat-statements pg_isready -q -U postgres -h 127.0.0.1 && break; sleep 2; done
           docker exec pg-stat-statements psql -U postgres -h 127.0.0.1 -Atc 'show shared_preload_libraries' | grep -qx pg_stat_statements
-      # The tests the race detector makes impossible that measure no time, which the race job of
-      # each of these packages therefore cannot make, so envoy-go keeps a plain run of exactly
-      # them: internal/bus counts HoldsSeed's allocations, which the race runtime's own
-      # allocations would be counted into; the API's priorities read's four tests run over a corpus
-      # of production's counts (13,298 issues, 678,943 events), whose seed is heavy work, and the
-      # bound's test prints read times, which the detector stretches; and the documents package
-      # measures the heap a room keeps, which the detector's shadow memory and instrumentation move.
-      # Those are out of the race build altogether (//go:build !race), and the two render-reuse
-      # storms run fewer seeds and fewer edits under it (raceEnabled), so this is their full-size
-      # run. The API's line runs the four on the Postgres the step above starts
-      # (DISPATCH_TEST_DATABASE_URL): the bound's test reads each statement's database time from
-      # pg_stat_statements, which a server loads only at its start, and the service starts on the
-      # one command line every Postgres service is held to, which preloads nothing. The four assert
-      # no time: the bound's test holds the answers of the reads it times and their shape under
-      # each plan (the statements, the round trips and the event probes) and prints their times,
-      # which c-both-forms' step, outside CI, holds to the bound, and the other three hold answers,
-      # walks and buffer ratios on clones of the corpus
-      # the first of them builds once per test binary (storetest.OpenFrom),
-      # so they run in its go test, on the same server. On a four-CPU build pod (c4d-highmem-8,
-      # INFRA-5791), the bound's test (TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan) took
-      # 47.1 s for the corpus's build and its 840 reads,
-      # TestThePrioritiesReadKeepsItsPlansWithAProjectNamed 1.4 s,
-      # TestThePrioritiesReadWalksIssuesOnceOnTheCorpus 1.3 s and
-      # TestThePrioritiesReadAnswersAsTheMergeBaseAnswers 4.5 s, 54.4 s for the package's run. The
-      # documents package's line runs under Go's cleanup detector (GODEBUG=checkfinalizers=1), as
-      # envoy-go-race-docs' run of the rest of it does, since it is the one package that registers
-      # a cleanup (ci_job_reads.py's CLEANUP_DETECTOR), and with -v, so its TestMain's count of
-      # services left alive prints. The rows of that run that measure time (the xid window tests,
-      # the xid rig, the API's issue-list bound and the auth service's restart storm) run alone in
-      # envoy-go-alone. The API's mention sender claim model is out of the race build too, and
-      # runs in a job of its own, envoy-go-claim-model; the API's ten source guards, and
-      # one_expression_guard_test.go beside them, carry that tag as well and are deliberately not
-      # here: they read the module's source, the text-check job runs their twenty-three tests by
-      # name, and ci_job_reads.py's CLAIM_MODEL_TESTS and TEXT_CHECK_TESTS leave exactly those
-      # tests out of this step rather than have each of them run twice. The -run lists are derived
-      # in .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
-      # //go:build !race and raceEnabled, so a test added to either and missing here fails the
-      # ci-filters job naming this step. 10 minutes each is ample.
+      # why: .github/ci-notes/ci.md#why-envoy-go-race-impossible-runs-three-plain-suites-and-a-second-postgres
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
@@ -472,6 +476,10 @@ jobs:
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go
@@ -487,7 +495,17 @@ jobs:
     # starts at once, so its -timeout bounds the step), the skip counter's test's own
     # timeout-minutes of 15, the two vets' minutes and the route adopter's own 5 after install-jj's
     # seconds, so 35.
-    timeout-minutes: 35
+    #
+    # Budget (.github/ci-budgets.md#the-budgets-note): 2100 s, the 35 minutes main's #5576 gives
+    # this job, plus its slowest retried step alone — install-jj, which main's #5409 added, whose
+    # two `ci_tools_fetch` calls and whose `mise install` of the jj release are
+    # 3416 + 450 = 3866 s, above the ci-ok report's 2460 s and packages/envoy's `go mod download`
+    # at 5 x 180 + 150 = 1050 s. The steps before install-jj took 223 s at most in three
+    # merge-group runs on 2026-11-27 (the slowest, job 140285945576, at main's e40deb10), which
+    # had no module download step, so that step counts at its 1050 s: 1273 s, and with
+    # install-jj's rounded limit of 65 minutes, 3900 s, the second sum is 1273 + 3900 = 5173 s,
+    # under the first. 2100 + 3866 = 5966 s -> 100 min.
+    timeout-minutes: 100
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -506,7 +524,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 35 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 100 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -530,11 +548,20 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # The module the steps below test and build, downloaded once and retried before the first
+      # of them, as envoy-go-legs' step of this name says (ci-budgets.md's Retries note).
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
         timeout-minutes: 2
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      # why: .github/ci-notes/ci.md#why-a-lanes-sizing-step-comes-after-its-retried-module-download
       - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
@@ -588,13 +615,20 @@ jobs:
       # `elsewhere`, with this job, so no leg runs it and this is its one run (ADOPTER_PACKAGES in
       # .github/scripts/ci_job_reads.py). The package took 4.5 s in job 139022226359; the -timeout
       # fires before the step's limit.
+      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - uses: ./.github/actions/install-jj
+        timeout-minutes: 65
       - name: Test the route adopter under git and jj
         timeout-minutes: 5
         run: go test -count=1 -v -timeout 4m ./cmd/dispatch-route-adopt/
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go
@@ -610,7 +644,12 @@ jobs:
     # grant's own 5 and the edge listener's own 10 (its relay socket's rows wait out a 30 s token
     # twice and a consumer's 60 s ack wait), which is 37, the integration step's 5 and the callout
     # check's own 6, so 50.
-    timeout-minutes: 50
+    #
+    # Budget (ci-budgets.md's Budgets note): 3000 s, the 50 minutes main's #5576 gives this job,
+    # plus its slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls,
+    # 3416 s, above packages/envoy's `go mod download` and the workspace install at
+    # 5 x 180 + 150 = 1050 s each and the ci-ok report's 2460 s. 3000 + 3416 = 6416 s -> 107 min.
+    timeout-minutes: 107
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -629,7 +668,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 50 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 107 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
@@ -639,8 +678,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -658,11 +706,20 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # The module the steps below test and build, downloaded once and retried before the first
+      # of them, as envoy-go-legs' step of this name says (ci-budgets.md's Retries note).
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
         timeout-minutes: 2
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      # why: .github/ci-notes/ci.md#why-a-lanes-sizing-step-comes-after-its-retried-module-download
       - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
@@ -742,6 +799,10 @@ jobs:
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go
@@ -757,9 +818,11 @@ jobs:
     needs: [envoy-go-legs, envoy-go-alone, envoy-go-race-impossible, envoy-go-skips, envoy-go-natslive]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # Budget (ci-budgets.md's Budgets note): the 5 minutes main's #5576 gives this job, 300 s, plus
+    # its slowest retried step alone, the ci-ok report's 2460 s. 300 + 2460 = 2760 s -> 47 min.
+    timeout-minutes: 47
     env:
-      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 47 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       # The ci-ok report below is an action of this repository's .github.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -788,6 +851,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go

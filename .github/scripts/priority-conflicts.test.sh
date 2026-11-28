@@ -18,6 +18,11 @@
 # Every case writes the event it runs on (run_pr, run_group), and run_check sets the label read's
 # answer back to the standard one after every run, so a case reads no other case's fixture.
 #
+# The script's three reads go through retry_fetch's ladder (.github/scripts/ci-retry.sh), five
+# attempts with sleeps of 10, 20, 40 and 80 s between them. Those waits are ci-retry.test.sh's to
+# prove, by measuring them; here they would add 150 s to each case whose read is refused, so
+# `sleep` is a no-op on the script's PATH, as ci-ok-report.test.sh makes it.
+#
 # Run from anywhere: .github/scripts/priority-conflicts.test.sh
 # CI runs it in ci.yaml's test job.
 set -euo pipefail
@@ -235,6 +240,11 @@ fi
 cat "$work/answer-\$(jq -r '.variables.after // "first"' "\$4").json"
 GH
 chmod +x "$work/bin/gh"
+cat > "$work/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$work/bin/sleep"
 
 # pull <number> <head> <reviewDecision as JSON> <isInMergeQueue>: one node of the label read.
 pull() {
@@ -274,7 +284,7 @@ answer "${standard[@]}"
 run_check() {
   rm -rf "$work/gh-calls" "$work/temp"/*
   set +e
-  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GH_RETRY_SECONDS=0 GITHUB_REPOSITORY=o/r \
+  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r \
     GITHUB_SERVER_URL="file://$server" RUNNER_TEMP="$work/temp" GITHUB_EVENT_NAME="$1" \
     GITHUB_EVENT_PATH="$work/event.json" GITHUB_SHA="$2" GIT_CONFIG_GLOBAL=/dev/null \
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow \
@@ -301,6 +311,12 @@ run_group() {
 }
 
 gh_calls() { cat "$work/gh-calls" 2> /dev/null || true; }
+# bare_stderr: the script's stderr without the ladders' stop-commands blocks' own lines, each
+# attempt's `::stop-commands::<token>` and `::<token>::` and the empty line before the close, so
+# what is left is what the script and the commands it ran wrote there.
+bare_stderr() {
+  grep -v -x -E -e '::stop-commands::[0-9a-f]{32}' -e '::[0-9a-f]{32}::' -e '' <<<"$err" || true
+}
 read_once='graphql PriorityPulls {"owner":"o","repo":"r","after":null}'
 fetched() { compgen -G "$work/temp/priority-conflicts.*/repo.git" > /dev/null && echo yes || echo no; }
 # clean_line <number> <change>: the regex of the line naming a priority pull request that merges
@@ -343,7 +359,7 @@ check "it passes" "$(is "$status" 0)"
 check "it merged each" "$(contains "$out" "$(clean_line 11 "pull request #20")")"
 check "it counts the twelve it checked" \
   "$(has_line "$out" "pull request #20 lands no conflict on an approved or queued priority pull request: 12 checked.")"
-check "it writes no error" "$(is "$err" "")"
+check "it writes no error" "$(is "$(bare_stderr)" "")"
 
 echo "case: a pull request that edits a priority pull request's file away from its lines passes"
 run_pr "$m_far"
@@ -485,7 +501,7 @@ run_pr "$m_new"
 check "it fails" "$(is "$status" 1)"
 check "it says it could not read" \
   "$(has_line "$err" "::error::GitHub's GraphQL API refused the read of the open pull requests labelled priority at every attempt, so this check cannot tell whether pull request #20 conflicts with a priority pull request, and fails rather than pass unread")"
-check "it tried three times" "$(is "$(gh_calls | wc -l)" 3)"
+check "it tried five times, retry_fetch's ladder" "$(is "$(gh_calls | wc -l)" 5)"
 check "it fetches nothing" "$(is "$(fetched)" no)"
 
 echo "case: a priority pull request on the label read's second page is checked against"
@@ -496,6 +512,16 @@ check "it fails" "$(is "$status" 1)"
 check "it names the one on the second page" "$(has_line "$err" "$(conflict_line 14 q.txt)")"
 check "it read both pages" \
   "$(is "$(gh_calls)" "$read_once"$'\n''graphql PriorityPulls {"owner":"o","repo":"r","after":"c1"}')"
+
+echo "case: a second page that says a third follows fails the check, which reads two pages"
+page answer-first.json true '"c1"' "$(pull 11 "$p11" '"APPROVED"' false)"
+page answer-c1.json true '"c2"' "$(pull 14 "$p14" null true)"
+run_pr "$m_new"
+check "it fails" "$(is "$status" 1)"
+check "it read two pages and no third" \
+  "$(is "$(gh_calls)" "$read_once"$'\n''graphql PriorityPulls {"owner":"o","repo":"r","after":"c1"}')"
+check "it fails in one ::error:: line of its own" "$(is "$(bare_stderr | grep -c '^::error::')" 1)"
+check "it fetches nothing" "$(is "$(fetched)" no)"
 
 echo "case: a page that says another follows and names no cursor fails the check"
 page answer-first.json true null "$(pull 11 "$p11" '"APPROVED"' false)"

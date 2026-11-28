@@ -232,7 +232,8 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/ci-gates" "$root/mod/cmd/app" \
     "$root/mod/lib" "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
   for linked in check-ci-filters.sh ci_filter_coverage.py ci_filter_sources.py ci_workflow_rules.py workflow_paths.py \
-    go_build_tags.py ci-filters-generate.sh fetch-depth-if-shallow.sh ci_ts_listing.py audited_scripts.py; do
+    go_build_tags.py ci-filters-generate.sh fetch-depth-if-shallow.sh ci_ts_listing.py audited_scripts.py ci-retry.sh \
+    ci-log-guard.sh; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'PROGRAMS = []\nBUNDLES = []\nLISTED = []\n' > "$root/.github/scripts/ci_ts_programs.py"
@@ -914,13 +915,13 @@ replace "$root/.github/scripts/ci_job_reads.py" 'READ_SETS = {}' $'READ_SETS = {
 run_check "$root"
 check_input_parse_error ".github/scripts/ci_job_reads.py"
 check "names the table and the converter" \
-  "$(contains "$out" 'binds RULES, which this module no longer holds: .*Run .github/scripts/ci-reads-convert')"
+  "$(contains "$out" 'binds RULES, which this module no longer holds: .*Run .github/scripts/ci-reads-convert.py')"
 root=$(fixture leftover-filters-file)
 printf 'app:\n  - mod/**\n' > "$root/.github/ci-filters.yaml"
 run_check "$root"
 check "fails on the old filters file" "$(is "$status" 1)"
 check "names it and the converter" \
-  "$(contains "$out" '::error file=.github/ci-filters.yaml::no job reads this file any more: .*Run .github/scripts/ci-reads-convert')"
+  "$(contains "$out" '::error file=.github/ci-filters.yaml::no job reads this file any more: .*Run .github/scripts/ci-reads-convert.py')"
 run_generate "$root"
 check "and the generation falls open" "$(contains "$(head -1 <<<"$generated")" '^# FAIL-OPEN: ')"
 
@@ -930,7 +931,7 @@ check "and the generation falls open" "$(contains "$(head -1 <<<"$generated")" '
 convert() {
   (cd "$1" && PYTHONDONTWRITEBYTECODE=1 python3 -c "
 import importlib.machinery, importlib.util
-loader = importlib.machinery.SourceFileLoader('cv', '$script_dir/ci-reads-convert')
+loader = importlib.machinery.SourceFileLoader('cv', '$script_dir/ci-reads-convert.py')
 spec = importlib.util.spec_from_loader('cv', loader)
 cv = importlib.util.module_from_spec(spec)
 loader.exec_module(cv)
@@ -1450,10 +1451,10 @@ echo "case: the converter exits 1 when the write of the push paths is refused, a
 root=$(fixture convert-exit)
 old_filters "$root" $'app:\n  - mod/**\n' $'# the branch\napp:\n  - mod/**\n'
 set +e
-(cd "$root" && python3 "$script_dir/ci-reads-convert" --base "$base" --from "$branch" --filters) >/dev/null 2>&1
+(cd "$root" && python3 "$script_dir/ci-reads-convert.py" --base "$base" --from "$branch" --filters) >/dev/null 2>&1
 passed=$?
 replace "$root/.github/workflows/ci.yaml" "CI_OK_ALWAYS_RUN: '[\"changes\", \"lint\"]'" "CI_OK_ALWAYS_RUN: '[\"changes\"]'"
-out=$(cd "$root" && python3 "$script_dir/ci-reads-convert" --base "$base" --from "$branch" --filters 2>&1)
+out=$(cd "$root" && python3 "$script_dir/ci-reads-convert.py" --base "$base" --from "$branch" --filters 2>&1)
 refused=$?
 set -e
 check "exits 0 when the write goes through (control)" "$(is "$passed" 0)"
@@ -1681,7 +1682,7 @@ done
 
 echo "case: the converter's --help says what it stages, what it leaves unmerged and what --filters does"
 root=$(fixture convert-help)
-out=$(cd "$root" && python3 "$script_dir/ci-reads-convert" --help)
+out=$(cd "$root" && python3 "$script_dir/ci-reads-convert.py" --help)
 check "names the files it leaves unmerged in the index" \
   "$(contains "$out" '^leaves unmerged in the index each path it leaves in conflict')"
 check "says the stages of a conflict it makes are the texts it merged" \
@@ -2115,6 +2116,136 @@ run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "reads the one gate on app" \
   "$(contains "$out" '^report: called step "Test the library": 6 files (filter app)$')"
+
+# A gate on a whole job of a called file (Gate.called_job), the shape ci-job-download-retry.yaml's
+# two lanes take: the caller job runs both, and each lane's own if: tests an input the caller
+# passes that lane's changes output in. called_job_gate <root> <lane's if:> adds a lane job of
+# called.yaml under that if: and a gate of filter app on it.
+called_job_gate() {
+  called_input_gate "$1"
+  replace "$1/.github/workflows/called.yaml" "  called:" \
+    $'  called-lane:\n'"$2"$'\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo the lane\n  called:'
+  cat > "$1/.github/ci-gates/called-lane.app.py" <<'PY'
+GATE = gate("app", "called", called_job="called-lane", workflow=".github/workflows/called.yaml")
+PY
+}
+
+echo "case: a called job gated on an input the caller passes the gate's changes output in"
+root=$(fixture called-job-gate)
+called_job_gate "$root" "    if: inputs.app == 'true'"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and refuses nothing of the lane" "$(is "$(contains "$out" 'called-lane')" false)"
+
+echo "case: a called job whose if: tests another input than its gate's"
+root=$(fixture called-job-other-input)
+called_job_gate "$root" "    if: inputs.other == 'true'"
+replace "$root/.github/workflows/called.yaml" "      ci-ok-changes:" \
+  $'      other:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:'
+replace "$root/.github/workflows/ci.yaml" "      app: \${{ needs.changes.outputs.app }}" \
+  $'      app: ${{ needs.changes.outputs.app }}\n      other: ${{ needs.changes.outputs.image }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the gate, the called job, its file and its caller" \
+  "$(contains "$out" "::error file=.github/workflows/called.yaml::gate app names job called-lane of .github/workflows/called.yaml, which job called calls, but that job's own if: does not test needs.changes.outputs.app through an input its caller passes")"
+
+echo "case: a called job with no if: of its own"
+root=$(fixture called-job-no-if)
+called_job_gate "$root" "    timeout-minutes: 5"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the gate, the called job, its file and its caller" \
+  "$(contains "$out" "::error file=.github/workflows/called.yaml::gate app names job called-lane of .github/workflows/called.yaml, which job called calls, but that job's own if: does not test needs.changes.outputs.app through an input its caller passes")"
+
+# A lane gate whose filter is not the one its caller's own if: tests: what the called-job rule's
+# refusal and its fold are about (ci_filter_coverage.py: the called_job branch of the gate rule,
+# and gate_read_sets), which the three cases above never reach, since each gives the lane the
+# filter the caller's if: tests (dispatch://INFRA-1545, round 64). lane_gate <root> adds to
+# called_input_gate's tree a changes output lane, an input of called.yaml the caller passes it in,
+# a called-lane job gated on that input, and a gate of filter lane on that job that reads
+# docs/readme.md, which no other gate of the tree reads.
+lane_gate() {
+  called_input_gate "$1"
+  replace "$1/.github/workflows/ci.yaml" "$(every_job_output image)" \
+    "$(every_job_output image)"$'\n'"$(every_job_output lane)"
+  replace "$1/.github/workflows/called.yaml" "      ci-ok-changes:" \
+    $'      lane:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:'
+  replace "$1/.github/workflows/called.yaml" "  called:" \
+    $'  called-lane:\n    if: inputs.lane == \'true\'\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo the lane\n  called:'
+  replace "$1/.github/workflows/ci.yaml" "      app: \${{ needs.changes.outputs.app }}" \
+    $'      app: ${{ needs.changes.outputs.app }}\n      lane: ${{ needs.changes.outputs.lane }}'
+  cat > "$1/.github/ci-gates/called-lane.lane.py" <<'PY'
+GATE = gate("lane", "called", reads=[Read("docs/readme.md", "the lane reads it")],
+            called_job="called-lane", workflow=".github/workflows/called.yaml")
+PY
+}
+
+echo "case: a called job gated on a filter its caller's if: neither tests nor folds in"
+# The caller's if: tests app, and no gate on that if: folds lane's reads into app, so a change
+# only lane matches would start neither job.
+root=$(fixture called-job-unfolded)
+lane_gate "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the gate, the called job, its caller, what the caller tests, and the remedy" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::gate lane gates job called-lane of .github/workflows/called.yaml, which runs only inside a run of job called, but job called's if: tests needs.changes.outputs.app, and no filter of those is computed from what lane reads, so a change only lane matches starts neither job; declare a gate on job called's own if:")"
+
+echo "case: a called job's gate is folded into the filter of the gate on its caller's own if:"
+# The same tree with that gate declared, of filter app on job called itself: the caller's if:
+# tests app, and app's filter is computed from what the lane's gate reads too.
+root=$(fixture called-job-folded)
+lane_gate "$root"
+cat > "$root/.github/ci-gates/called.py" <<'PY'
+GATE = gate("app", "called", workflow=".github/workflows/called.yaml")
+PY
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+run_generate "$root"
+check "the generate mode exits 0" "$(is "$status" 0)"
+# The generation writes the one file under docs/ as the glob of that directory.
+check "the lane's filter holds what its gate reads" "$(contains "$(filter_of lane)" '^docs/\*\*$')"
+check "and so does the filter the caller's if: tests, which no gate of app reads it for but the fold" \
+  "$(contains "$(filter_of app)" '^docs/\*\*$')"
+check "with the lane's gate file beside it" "$(contains "$(filter_of app)" '^\.github/ci-gates/called-lane\.lane\.py$')"
+
+# The called-job rule's two refusals of the declaration itself (ci_filter_coverage.py's
+# check_table, the called_job branch), which no case reached before round 64's search for the
+# class of review round 38's finding: a called job's gate is a whole job of a file its caller
+# calls, so it names no step and no file but that one.
+echo "case: a called job's gate that names a step, or no file but ci.yaml"
+root=$(fixture called-job-step)
+lane_gate "$root"
+cat > "$root/.github/ci-gates/called-lane.lane.py" <<'PY'
+GATE = gate("lane", "called", reads=[Read("docs/readme.md", "the lane reads it")],
+            called_job="called-lane", step="Test the library", workflow=".github/workflows/called.yaml")
+PY
+run_check "$root"
+check "fails with a step" "$(is "$status" 1)"
+check "names the step and the remedy" \
+  "$(contains "$out" "gate lane names called job called-lane with step \"Test the library\", and a called job's gate is a whole job of a file job called calls: drop the step, or name the file")"
+root=$(fixture called-job-no-file)
+lane_gate "$root"
+cat > "$root/.github/ci-gates/called-lane.lane.py" <<'PY'
+GATE = gate("lane", "called", reads=[Read("docs/readme.md", "the lane reads it")], called_job="called-lane")
+PY
+run_check "$root"
+check "fails with no file" "$(is "$status" 1)"
+check "names ci.yaml as the only file and the remedy" \
+  "$(contains "$out" "gate lane names called job called-lane with no file but .github/workflows/ci.yaml, and a called job's gate is a whole job of a file job called calls")"
+
+echo "case: a called job's gate on a ci.yaml job that does not call its file"
+# app is a job of ci.yaml that calls no file, and called.yaml is a file ci.yaml calls through job
+# called, so only the called-job rule's own test of the caller's uses: refuses it.
+root=$(fixture called-job-wrong-caller)
+lane_gate "$root"
+cat > "$root/.github/ci-gates/called-lane.lane.py" <<'PY'
+GATE = gate("lane", "app", reads=[Read("docs/readme.md", "the lane reads it")],
+            called_job="called-lane", workflow=".github/workflows/called.yaml")
+PY
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the called job, its file and the caller that does not call it" \
+  "$(contains "$out" "gate lane names job called-lane of .github/workflows/called.yaml, but job app of .github/workflows/ci.yaml does not call that file")"
 
 # list_gate <root>: the called step reads its filter out of the changes job's one list of the
 # filters that matched, as the test job's harness steps do: ci.yaml's changes job hands on the
@@ -4537,6 +4668,58 @@ check "fails" "$(is "$status" 1)"
 check "names the family and both keys" \
   "$(contains "$out" 'job fill saves family go-app under key .*, but job app of .github/workflows/ci.yaml restores it under .*-v2')"
 
+# A key may read a pin from the env, as ci-job-dispatch-two-builds.yaml keys the first-rollout
+# build on `${{ env.FIRST_ROLLOUT_COMMIT }}`; this fixture gives a fill and a restore each its own
+# copy of such a pin, the shape ci-caches.yaml's dispatch-builds job had before main's #5182. The
+# rule reads each reference as the value its step's own env, else its job's, else its workflow's,
+# sets, so two keys that say the same text and name two values are a drift.
+#
+# env_keys <root> <value>: cache_workflow's three go-app keys read that pin in place of the
+# runner's OS; ci-caches.yaml's fill job sets it to edb69e0d in its own env, and ci.yaml sets it
+# to <value> in its workflow env, which the app job holding the restore sets nothing over.
+env_keys() {
+  replace "$1/.github/workflows/ci-caches.yaml" $'  fill:\n    runs-on: ubuntu-24.04' \
+    $'  fill:\n    runs-on: ubuntu-24.04\n    env:\n      FIRST_ROLLOUT_COMMIT: edb69e0d'
+  # Twice, since replace takes the first of the lookup's key and the save's.
+  replace "$1/.github/workflows/ci-caches.yaml" 'key: go-app-${{ runner.os }}' 'key: go-app-${{ env.FIRST_ROLLOUT_COMMIT }}'
+  replace "$1/.github/workflows/ci-caches.yaml" 'key: go-app-${{ runner.os }}' 'key: go-app-${{ env.FIRST_ROLLOUT_COMMIT }}'
+  replace "$1/.github/workflows/ci.yaml" 'key: go-app-${{ runner.os }}' 'key: go-app-${{ env.FIRST_ROLLOUT_COMMIT }}'
+  replace "$1/.github/workflows/ci.yaml" $'env:\n  CI_OK_SELECTED_BY' $'env:\n  FIRST_ROLLOUT_COMMIT: '"$2"$'\n  CI_OK_SELECTED_BY'
+}
+
+echo "case: a save and a restore whose keys read one env name their workflows set alike"
+root=$(fixture cache-env-same)
+cache_workflow "$root"
+env_keys "$root" edb69e0d
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a save and a restore whose keys read one env name their workflows set apart"
+root=$(fixture cache-env-drift)
+cache_workflow "$root"
+env_keys "$root" 67659e61
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names both keys, each with the value its env sets" \
+  "$(contains "$out" 'job fill saves family go-app under key `go-app-edb69e0d`, but job app of .github/workflows/ci.yaml restores it under `go-app-67659e61`')"
+
+# GitHub reads a step's own env: before its job's: the save step here sets the pin to 67659e61
+# over its job's edb69e0d, so it saves under go-app-67659e61, while ci.yaml restores under the
+# edb69e0d its workflow sets. Everything else is the case above whose two envs agree and that
+# passes, so this refusal holds only when the step's env comes first: a rule that read the job's
+# env first would resolve the save to go-app-edb69e0d and pass it.
+echo "case: a save whose own step env sets the key's env name over its job's, against a restore of the job's value"
+root=$(fixture cache-env-step-first)
+cache_workflow "$root"
+env_keys "$root" edb69e0d
+replace "$root/.github/workflows/ci-caches.yaml" \
+  $'        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n' \
+  $'        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        env:\n          FIRST_ROLLOUT_COMMIT: 67659e61\n'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the save's key with its step's value and the restore's with the workflow's" \
+  "$(contains "$out" 'job fill saves family go-app under key `go-app-67659e61`, but job app of .github/workflows/ci.yaml restores it under `go-app-edb69e0d`')"
+
 echo "case: a restore path the save of that family does not name"
 root=$(fixture cache-path-drift)
 cache_workflow "$root"
@@ -5557,6 +5740,48 @@ run_check "$root"
 check "and reads the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/scan.yml::")"
 
+echo "case: every workflow file stays under the size GitHub starts a run from"
+# The size GitHub needs to start a run, in the rule that reads every workflow of the directory
+# rather than in a case of this suite alone: the file that grows is not the file whose filter
+# would select the check, so a pull request growing only dispatch-browser.yaml would never have
+# run the case below. The fixture writes a workflow of its own past the limit and reads the
+# message for the file and its size, because a run with zero jobs gives a reader nothing else.
+root=$(fixture workflow-size)
+run_check "$root"
+check "passes while every workflow is under the limit" "$(is "$status" 0)"
+{
+  printf 'name: Fat\non: [pull_request]\njobs:\n  fat:\n    runs-on: ubuntu-24.04\n    steps:\n'
+  printf '      - run: echo %s\n' "$(head -c 500000 /dev/zero | tr '\0' 'x')"
+} > "$root/.github/workflows/fat.yaml"
+run_check "$root"
+check "fails once one is over it" "$(is "$status" 1)"
+fat_size=$(wc -c < "$root/.github/workflows/fat.yaml")
+check "naming the file, its size and the limit" \
+  "$(contains "$out" "::error file=.github/workflows/fat.yaml::.github/workflows/fat.yaml is $fat_size bytes, over the 500000")"
+check "and what a run over it does" \
+  "$(contains "$out" "creates a run with zero jobs that concludes failure at once")"
+mv "$root/.github/workflows/fat.yaml" "$root/.github/workflows/fat.yml"
+run_check "$root"
+check "reading the .yml spelling GitHub reads too" \
+  "$(contains "$out" "::error file=.github/workflows/fat.yml::")"
+
+# For .github/scripts/check-ci-filters.test.sh, beside "every workflow file stays under the size
+# GitHub starts a run from". The tester drove it at 3abd0ef6f3f8 (dispatch://INFRA-1545, round 33):
+# it passes there, it fails when escape_property returns its value unchanged, and the branch's old
+# plain-string append fails it with AttributeError in print_annotation.
+echo "case: a workflow over the size limit whose file name holds % : , and ##[ is escaped"
+root=$(fixture workflow-size-unsafe-name)
+unsafe='fat%25:x,y##[warning]z.yaml'
+{
+  printf 'name: Fat\non: [pull_request]\njobs:\n  fat:\n    runs-on: ubuntu-24.04\n    steps:\n'
+  printf '      - run: echo %s\n' "$(head -c 500000 /dev/zero | tr '\0' 'x')"
+} > "$root/.github/workflows/$unsafe"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+size=$(wc -c < "$root/.github/workflows/$unsafe")
+expected="::error file=.github/workflows/fat%2525%3Ax%2Cy%23%23%5Bwarning]z.yaml::.github/workflows/fat%2525:x,y%23%23%5Bwarning]z.yaml is $size bytes, over the 500000"
+check "the size refusal carries the escaped file property and message" "$(contains "$out" "$expected")"
+
 # references_lane <root>: a dispatch-browser.yaml whose shard job's browser step runs, from web,
 # a .github/scripts/dispatch-browser-shard-suite.sh whose `references)` arm names the two spec
 # files under web/e2e, and a dispatch_references filter naming both, kept by hand in its file of
@@ -5652,7 +5877,6 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "naming the filter and where it is declared" \
   "$(contains "$out" "::error file=.github/ci-gates::no file of .github/ci-gates declares the filter dispatch_references")"
-
 # ci_job_reads.py builds envoy-go's plain step - the tests a race build cannot run at all or at
 # full size - by reading packages/envoy's own source rather than from a list a table could hold,
 # so the cases below run that walk itself, over a tree of this test's making and a lane of its
@@ -6103,6 +6327,32 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names both quantifiers" \
   "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's paths-filter steps read the generated filters (check-ci-filters.sh generate) under predicate-quantifier some and some-with-excludes, so one filter of it means two things")"
+
+echo "case: every workflow file is small enough for GitHub to start a run"
+# A workflow file over GitHub's documented limit starts NO run, and the failure is silent exactly
+# where a reader looks for it: the run is created, it holds zero jobs, every required check is
+# ABSENT rather than red, and the only words GitHub gives are "This run likely failed because of a
+# workflow file issue". https://docs.github.com/actions/reference/limits, "Workflow file size":
+# "Each workflow file in the .github/workflows directory must be 500 KB or smaller to trigger a
+# run."
+#
+# Measured on this branch, which grew .github/workflows/ci.yaml by about 150 KB of budget
+# comments: at 0ddb1151db30 that file was 501,500 bytes and run 42710088044 ran the whole lane,
+# ci-ok included; at e6d27187f974, the forward merge of main's 909a79b8cb9e, it was 525,100 bytes
+# and run 42739729814 reported that message with zero jobs and no check of ci.yaml at all. So the
+# threshold this repository has met lies between those two sizes, and 500,000 bytes is the figure
+# the documentation states and the only one a reader can cite. A file that passes this case by a
+# few hundred bytes is one forward merge from stopping CI again, so the margin is the point.
+limit=500000
+oversized=""
+for workflow in "$script_dir"/../workflows/*.yaml; do
+  size=$(wc -c < "$workflow")
+  if [ "$size" -gt "$limit" ]; then
+    oversized="$oversized${workflow##*/} is $size bytes, over $limit; "
+  fi
+done
+check "no workflow file is over the 500 KB that starts no run at all" \
+  "$(is "$oversized" "")"
 
 echo "case: the files a table lists from a directory are the repository's, not the disk's"
 # ci_job_reads.py's files_but_tests lists a directory's files but its Go tests for the reads no

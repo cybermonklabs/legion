@@ -19,15 +19,56 @@ that cannot report is no proof of anything. An empty --hosts faults every host.
 
 --port 0 takes a free port from the kernel and --port-file writes it, so a workflow step starts
 the proxy, reads the port and sets http_proxy and https_proxy for the step under test. The file
-is written whole, by rename, so a reader never sees half a port; the recovery window starts the
-moment it appears, which is the first moment a caller can use the proxy.
+is written whole, by rename, so a reader never sees half a port; by default the recovery window
+starts the moment it appears, which is the first moment a caller can use the proxy, and is one
+window for every host.
+
+--per-host-window gives --mode recover one window per host instead. Each host the --hosts list
+faults answers 504 for --recover-after seconds counted from that host's own first request, and is
+passed on at every request after its window closes: a window opens once per host and never
+again. "A host" is the host a request names, lower-cased: the host of a CONNECT's authority or of
+a plain request's absolute URI, without its port, and not the --hosts entry it matched. An entry
+covers every host under it (golang.org covers proxy.golang.org, sum.golang.org and
+google.golang.org), and one window per entry would open at the first of them and could close
+before a client first asks for the next, which would then never meet the fault. A step that first
+reaches a host minutes in, as a docker build reaches the hosts of its last RUN, still meets that
+host's fault on its first request. When a host's window opens it logs one line,
+`window <host> opened <seconds>s after the proxy started`, on the same clock as the window. The
+other two modes have no window, so they refuse the flag, and a caller that does not pass it keeps
+the one window.
+
+--coalesce-outage-gap <G> gives --mode recover outages that the hosts of one call share, in
+place of a window per host. A real outage is one stretch of time, and a retried call that first
+reaches its later hosts only after it recovers (`go mod download` asks the module proxy, then
+sum.golang.org, then the hosts its modules name) would meet a fresh window at each of them: one
+outage turned into a series that the call runs out of attempts in. So the first request of a
+faulted host (the host a request names, lower-cased, as above) opens an outage when none is
+open: outage 1, then 2, each --recover-after seconds long from that request. A host first
+reached while an outage is open joins it: it answers 504 until that outage ends and is passed on
+after. A host first reached less than G seconds after an outage ended is the same call going on:
+it is passed on at every request, and its line names it. The first host reached G seconds or
+more after an outage ended opens the next one. A host's first request decides it for the whole
+run: no later request faults it again, extends an outage, or extends the G seconds. Each first
+request logs the `window` line above, then `outage <N> opened <t>s after the proxy started,
+ending <u>s after` when it opens one, then `host <host> joined outage <N>` or `host <host> not
+faulted: after outage <N>, within <G>s`. It needs a --hosts list, since with every host faulted
+any request at all would open an outage, and it refuses --per-host-window. With --probe-host
+<name>, it answers that one host 504 at every request and leaves the outages alone: the host opens
+and joins none, and the proxy logs no line for it but its 504. A rig's probe then proves the
+proxy before the site runs, and outage 1 opens at the site's own first request.
 
 --bind is the address it listens on, 127.0.0.1 by default. A `RUN` of a docker build runs in a
 network namespace of its own, where 127.0.0.1 is the build container and not the runner, so a
 build reaches this proxy only on an address the container can route to: the docker bridge
-gateway, which .github/workflows/ci.yaml's download-retry-images job binds to and passes into
-the build as http_proxy. Nothing else changes: a caller that names no --bind listens where it
-always did.
+gateway, which the download-retry-images job and the five runs of the download-retry-images-worker
+job of .github/workflows/ci-job-download-retry.yaml bind to and pass into the build as http_proxy.
+Nothing else changes: a caller that names no --bind listens where it always did.
+
+It reaches an origin as apt does. It resolves the name once, starts the first address, and starts
+the next one 0.25 s later while none has connected, or at once when every one it started has
+failed. The first address that connects carries the request, and the attempt gives up after 30 s
+in all. So an address that drops the SYN costs a request 0.25 s here, as it does on apt's own
+path, and not the 30 s that one address after another would cost.
 
 It makes no fetch of its own: every byte it sends upstream is one a client sent it. It is Python
 3 from the runner image, with nothing to install.
@@ -36,15 +77,29 @@ It makes no fetch of its own: every byte it sends upstream is one a client sent 
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import select
 import socket
 import socketserver
 import sys
+import threading
 import time
+from collections.abc import Callable
 
 READ_SIZE = 65536
 HEADER_LIMIT = 65536
+# How long the proxy gives an origin to take a connection in all. It is also the socket timeout of
+# the connection that then carries the request, as socket.create_connection(timeout=30) gave it.
+CONNECT_TIMEOUT = 30.0
+# How long the proxy waits on the attempts it has started before it starts the origin's next
+# address as well. It is apt's own wait: Acquire::http::ConnectionAttemptDelayMsec, 250 ms by
+# default, in apt's methods/connect.cc. On apt's own path an address that drops the SYN costs a
+# request 250 ms. The proxy used to connect with socket.create_connection, which gives each
+# address the whole timeout in turn. There the same address cost each request 30 s. In job
+# 139835657575 of run 45797742953 that made apt-get update run past its 120 s bound on
+# security.ubuntu.com, whose name has nine addresses, after the outage had ended.
+CONNECT_STAGGER = 0.25
 
 
 def log(message: str) -> None:
@@ -52,22 +107,162 @@ def log(message: str) -> None:
     sys.stderr.flush()
 
 
+def plain_seconds(value: float) -> str:
+    """A number of seconds as a person writes it: 5 for 5.0, and 2.5 for 2.5."""
+    return str(int(value)) if value.is_integer() else str(value)
+
+
+def connect_staggered(addresses: list[tuple], timeout: float, stagger: float) -> socket.socket:
+    """A connection to the first of the addresses that takes one, with the addresses tried as
+    apt tries them.
+
+    The addresses are getaddrinfo's tuples, started in its order. The first is started at once.
+    Each next one is started stagger seconds after the one before while no attempt has
+    connected, or at once when every attempt started so far has failed. An attempt that fails as
+    it starts has failed at once. The first attempt that connects wins, and every other socket is
+    closed. The call gives up with TimeoutError once timeout seconds have passed. It gives up with
+    the last error once every address has failed. The winner has timeout as its socket timeout,
+    as socket.create_connection gives its connection.
+    """
+    deadline = time.monotonic() + timeout
+    waiting = list(addresses)
+    attempts: list[socket.socket] = []
+    error: OSError = OSError("getaddrinfo returned no address")
+    next_start = 0.0
+    winner: socket.socket | None = None
+    try:
+        while winner is None:
+            now = time.monotonic()
+            if not waiting and not attempts:
+                raise error
+            if now >= deadline:
+                raise TimeoutError("timed out")
+            if waiting and (not attempts or now >= next_start):
+                family, kind, proto, _name, address = waiting.pop(0)
+                try:
+                    attempt = socket.socket(family, kind, proto)
+                except OSError as failed:
+                    error = failed
+                    continue
+                attempts.append(attempt)
+                attempt.setblocking(False)
+                code = attempt.connect_ex(address)
+                if code == 0:
+                    winner = attempt
+                elif code == errno.EINPROGRESS:
+                    next_start = now + stagger
+                else:
+                    error = OSError(code, os.strerror(code))
+                    attempts.remove(attempt)
+                    attempt.close()
+                continue
+            wait = deadline - now
+            if waiting:
+                wait = min(wait, next_start - now)
+            _, ready, _ = select.select([], attempts, [], wait)
+            for attempt in ready:
+                code = attempt.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                if code == 0:
+                    winner = attempt
+                    break
+                error = OSError(code, os.strerror(code))
+                attempts.remove(attempt)
+                attempt.close()
+    finally:
+        for attempt in attempts:
+            if attempt is not winner:
+                attempt.close()
+    winner.settimeout(timeout)
+    return winner
+
+
 class Fault:
     """Which hosts fail, how they fail, and until when."""
 
-    def __init__(self, mode: str, hosts: list[str], recover_after: float) -> None:
+    def __init__(
+        self,
+        mode: str,
+        hosts: list[str],
+        recover_after: float,
+        per_host_window: bool = False,
+        coalesce_gap: float | None = None,
+        probe_host: str | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.mode = mode
         self.hosts = [h.lower() for h in hosts]
         self.recover_after = recover_after
-        self.started = time.monotonic()
+        self.per_host_window = per_host_window
+        # The clock every window and outage is read on. The proxy keeps time.monotonic; a test
+        # passes a clock it sets by hand, so it can read each decision at the second it names.
+        self.clock = clock
+        self.started = clock()
+        # Under --per-host-window, the moment of each faulted host's first request, on the clock
+        # of `started`. A window is read from it and never reset, so a host's window opens once.
+        # The server runs a thread per connection, so two first requests for one host can arrive
+        # together: the lock makes exactly one of them the first.
+        self.first_request: dict[str, float] = {}
+        self.lock = threading.Lock()
+        # Under --coalesce-outage-gap: the gap, the host --probe-host leaves out of every outage,
+        # the number of the latest outage (0 before the first opens) and its end on the clock of
+        # `started`, and each host's decision, made at its first request and kept for the run: the
+        # number of the outage it joined, or ("grace", N, gap) for a host first reached within the
+        # gap after outage N ended. The lock above guards all of it.
+        self.coalesce_gap = coalesce_gap
+        self.probe_host = probe_host.lower() if probe_host else None
+        self.outage = 0
+        self.outage_end = 0.0
+        self.decision: dict[str, int | tuple[str, int, float]] = {}
 
     def faults(self, host: str) -> bool:
         host = host.lower()
+        if host == self.probe_host:
+            # Refused at every request, and no part of any outage: it opens, joins and logs none.
+            return True
         if self.hosts and not any(host == h or host.endswith("." + h) for h in self.hosts):
             return False
-        if self.mode == "recover":
-            return (time.monotonic() - self.started) < self.recover_after
-        return True
+        if self.mode != "recover":
+            return True
+        if self.coalesce_gap is not None:
+            return self.in_outage(host)
+        if not self.per_host_window:
+            return (self.clock() - self.started) < self.recover_after
+        with self.lock:
+            now = self.clock()
+            opened = self.first_request.get(host)
+            if opened is None:
+                opened = self.first_request[host] = now
+                # Logged under the lock, so this line comes before the line of any request this
+                # window answers, the first among them.
+                log(f"window {host} opened {now - self.started:.1f}s after the proxy started")
+        return (now - opened) < self.recover_after
+
+    def in_outage(self, host: str) -> bool:
+        """Under --coalesce-outage-gap: whether this request of a faulted host falls in the outage
+        that the host's first request joined. That first request decides the host for the run."""
+        with self.lock:
+            now = self.clock()
+            decision = self.decision.get(host)
+            if decision is None:
+                # Every state change and its line happen under the lock, so a decision's line
+                # comes before the line of any request it answers, the first among them.
+                log(f"window {host} opened {now - self.started:.1f}s after the proxy started")
+                if self.outage and self.outage_end <= now < self.outage_end + self.coalesce_gap:
+                    decision = ("grace", self.outage, self.coalesce_gap)
+                    log(f"host {host} not faulted: after outage {self.outage}, "
+                        f"within {plain_seconds(self.coalesce_gap)}s")
+                else:
+                    if not self.outage or now >= self.outage_end + self.coalesce_gap:
+                        self.outage += 1
+                        self.outage_end = now + self.recover_after
+                        log(f"outage {self.outage} opened {now - self.started:.1f}s after the proxy started, "
+                            f"ending {self.outage_end - self.started:.1f}s after")
+                    decision = self.outage
+                    log(f"host {host} joined outage {decision}")
+                self.decision[host] = decision
+            # A host that joined an earlier outage is passed on: that outage ended before the
+            # latest one opened, since the next opens only a gap after the last one ended.
+            return decision == self.outage and now < self.outage_end
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -162,9 +357,11 @@ class Handler(socketserver.StreamRequestHandler):
         return True
 
     def connect_upstream(self, host: str, port: int, what: str) -> socket.socket | None:
-        """The connection to the origin, or None once a 502 has answered for its refusal."""
+        """The connection to the origin, or None once a 502 has answered for its refusal. The
+        name is resolved once, and its addresses are tried as connect_staggered tries them."""
         try:
-            upstream = socket.create_connection((host, port), timeout=30)
+            addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            upstream = connect_staggered(addresses, CONNECT_TIMEOUT, CONNECT_STAGGER)
         except OSError as error:
             log(f"502 {what}: {error}")
             self.answer(502, f"ci-fault-proxy: {error}\n".encode())
@@ -257,7 +454,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=("fail", "recover", "stall"), required=True)
     parser.add_argument("--hosts", default="", help="comma-separated hosts to fault; empty faults every host")
     parser.add_argument("--recover-after", type=float, default=60.0,
-                        help="seconds of 504s before --mode recover passes requests on, counted from the port file")
+                        help="seconds of 504s before --mode recover passes requests on, counted from the port file, "
+                             "or under --per-host-window from each host's own first request, "
+                             "or under --coalesce-outage-gap from the request that opens each outage")
+    parser.add_argument("--per-host-window", action="store_true",
+                        help="--mode recover only: give each faulted host (the host a request names, lower-cased) "
+                             "a window of its own, opened at that host's first request and never again, in place "
+                             "of one window for every host from the port file; logs a line as each window opens")
+    parser.add_argument("--coalesce-outage-gap", type=float, metavar="SECONDS",
+                        help="--mode recover only, with --hosts: one outage for every faulted host first reached "
+                             "while it is open, from the first request no outage covers; a host first reached less "
+                             "than SECONDS after an outage ended is passed on, and the first one reached later opens "
+                             "the next outage; logs a line as each outage opens and as each host is decided")
+    parser.add_argument("--probe-host", metavar="NAME",
+                        help="--coalesce-outage-gap only: a host answered 504 at every request and kept out of "
+                             "every outage, which it opens, joins and logs none of, so a rig's probe leaves outage 1 "
+                             "to the site's first request")
     parser.add_argument("--stall-seconds", type=float, default=600.0,
                         help="how long --mode stall holds one connection open before dropping it")
     parser.add_argument("--bind", default="127.0.0.1",
@@ -265,8 +477,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=0, help="0 takes a free port from the kernel")
     parser.add_argument("--port-file", default="", help="where to write the port it listens on")
     args = parser.parse_args(argv)
+    if args.per_host_window and args.mode != "recover":
+        parser.error(f"--per-host-window gives --mode recover a window per host, and --mode {args.mode} has no window")
 
     hosts = [h.strip() for h in args.hosts.split(",") if h.strip()]
+    if args.coalesce_outage_gap is not None:
+        if args.mode != "recover":
+            parser.error(f"--coalesce-outage-gap joins the windows of --mode recover into outages, "
+                         f"and --mode {args.mode} has no window")
+        if args.per_host_window:
+            parser.error("--coalesce-outage-gap gives the hosts of one call one outage they share and "
+                         "--per-host-window gives each host a window of its own: pass one of them")
+        if not args.coalesce_outage_gap > 0:
+            parser.error(f"--coalesce-outage-gap is a number of seconds more than 0, not {args.coalesce_outage_gap:g}")
+        if not hosts:
+            parser.error("--coalesce-outage-gap needs a --hosts list: an empty --hosts faults every host, "
+                         "so any request at all would open an outage")
+    elif args.probe_host is not None:
+        parser.error("--probe-host keeps one host out of the outages of --coalesce-outage-gap, "
+                     "and this run does not pass that flag")
     Handler.stall_seconds = args.stall_seconds
     server = Proxy((args.bind, args.port), Handler)
     port = server.server_address[1]
@@ -274,9 +503,18 @@ def main(argv: list[str] | None = None) -> int:
         write_port_file(args.port_file, port)
     # The clock of --mode recover starts here, after the port is announced and before a single
     # request is served: between bind and serve_forever a connection waits in the backlog, so no
-    # request can be answered out of the window it belongs to.
-    Handler.fault = Fault(args.mode, hosts, args.recover_after)
-    log(f"mode={args.mode} bind={args.bind} port={port} hosts={','.join(hosts) or 'every host'} pid={os.getpid()}")
+    # request can be answered out of the window it belongs to. Under --per-host-window each
+    # window opens later, at its host's first request, and under --coalesce-outage-gap each outage
+    # at the request that opens it; their lines give those moments on this clock.
+    Handler.fault = Fault(
+        args.mode, hosts, args.recover_after, args.per_host_window,
+        coalesce_gap=args.coalesce_outage_gap, probe_host=args.probe_host,
+    )
+    if args.coalesce_outage_gap is not None:
+        window = f" window=coalesced gap={plain_seconds(args.coalesce_outage_gap)}s"
+    else:
+        window = " window=per-host" if args.per_host_window else ""
+    log(f"mode={args.mode}{window} bind={args.bind} port={port} hosts={','.join(hosts) or 'every host'} pid={os.getpid()}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

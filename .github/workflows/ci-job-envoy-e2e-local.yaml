@@ -45,15 +45,29 @@ jobs:
   envoy-e2e-local:
     if: inputs.job == 'envoy-e2e-local'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 92 s
+    # measured maximum, plus its slowest retried step alone — the setup-bun step's two
+    # `ci_tools_fetch` calls, 3416 s, above packages/envoy's `go mod download` and the
+    # workspace install at 5 x 180 + 150 = 1050 s each and the ci-ok report's 2460 s.
+    # 600 + 3416 = 4016 s -> 67 min.
+    timeout-minutes: 67
     env:
-      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 67 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -70,6 +84,18 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The module e2e-local.sh builds the listener and natsd from, downloaded once and retried
+      # before it (ci-budgets.md's Retries note; the retried unit is the download, never the build).
+      # 180 s per attempt, 1.6 times the 113 s of the slowest cold run measured
+      # (packages/envoy/infra; packages/envoy 77 s, on an empty module cache on 2026-11-07), and
+      # an attempt the bound kills leaves what it fetched for the next one; the restore above
+      # makes the common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # scripts/e2e-local.test.sh drives the driver's refusals, which the acceptance run below
       # never reaches: an unknown option, --help, and an E2E_NATS_PORT, E2E_PORT or E2E_SESSION_PORT
       # another process already holds, which the driver uses as given and fails on rather than
@@ -88,6 +114,10 @@ jobs:
           path: packages/envoy/out/e2e
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-e2e-local
@@ -105,8 +135,16 @@ jobs:
     # twice the sum, which leaves room for a cold Go cache. recreate-live runs a shape again when
     # its verdict is INVALID, up to 3 attempts in all. Timed later in such a pod, one attempt took
     # 74 to 76 s, so the 4 attempts this can add (2 shapes, 2 more attempts each) take up to about
-    # 5 minutes. The budget adds 6 minutes for them.
-    timeout-minutes: 46
+    # 5 minutes. The budget adds 6 minutes for them, 46 in all, 2760 s.
+    # Its key is the larger sum of .github/ci-budgets.md#the-budgets-note, and its slowest retried
+    # step is the ci-ok report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"), above
+    # packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. The first sum is
+    # 2760 + 2460 = 5220 s. The steps before the report are the 2760 s above, timed with no module
+    # download step, so that step counts at its 1050 s: 3810 s, and with the report's rounded
+    # limit of 43 minutes, 2580 s, the second sum is the larger. 3810 + 2580 = 6390 s -> 107 min.
+    timeout-minutes: 107
+    env:
+      JOB_TIMEOUT_MINUTES: 107 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -120,6 +158,7 @@ jobs:
           cache: false
       # go-envoy: the listener and natsd e2e-refill.sh builds, as envoy-e2e-local's e2e-local.sh
       # does.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -127,6 +166,16 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The module e2e-refill.sh builds refillrig, the listener and natsd from, downloaded once and
+      # retried before it (ci-budgets.md's Retries note; the retried unit is the download, never
+      # the build), at the 180 s per attempt envoy-e2e-local's same download carries; the restore
+      # above makes the common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # Every scenario of the proof (INFRA-261): reread, interrupt (stop and restart),
       # recreate-live (both shapes) and refuse. The script needs curl, flock, go, jq and setsid,
       # which the runner image carries and setup-go adds. Its evidence directory is the runner's
@@ -144,6 +193,10 @@ jobs:
             !${{ runner.temp }}/envoy-e2e-refill/bin
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-refill

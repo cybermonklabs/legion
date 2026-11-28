@@ -112,7 +112,14 @@ jobs:
     # run, 2.7 minutes (161 s in run 46069045387, its first green run), its pull of PostgreSQL 16,
     # 13 s there, and its 10-minute -timeout, so 73. A leg runs a share of the plain step, so no leg
     # needs more.
-    timeout-minutes: 73
+    #
+    # Budget (ci-budgets.md's Budgets note): those 73 minutes, 4380 s, plus its slowest retried
+    # step alone — install-jj, whose two `ci_tools_fetch` calls and whose `mise install` of the
+    # jj release are 3416 + 450 = 3866 s, above the ci-ok report's 2460 s, install-uv's one call
+    # of 1708 s, the tmux step's 625 + 775 = 1400 s, the Go module download's and the
+    # nats-server pre-fetch's 1050 s each and install-omp's fetch of the release archive at
+    # 450 s. 4380 + 3866 = 8246 s -> 138 min.
+    timeout-minutes: 138
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -131,7 +138,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 73 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 138 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
       # cipher contract tests drive (ciphertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL; internal/cipher runs in the plain step), and the Stage 1
@@ -173,27 +180,64 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
+      # The modules this job's Go steps build, downloaded once and retried before the first of
+      # them (ci-budgets.md's Retries note; the retried unit is the download, never the build and
+      # never the test). One call: the root go.work binds packages/daemon and packages/envoy,
+      # and a download in either reads both modules' requirements.
+      #
+      # 180 s per attempt, as ci-budgets.md's Retries note derives. The restore above makes the
+      # common run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the Go workspace's modules" 180 -- go -C packages/daemon mod download
+
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
       # proof's boot needs (`scripts/e2e/stage1-skeleton.sh#tmux is required`).
+      # Both apt phases retry through .github/scripts/ci-retry.sh, in e2e.yaml's spelling; their
+      # bounds, and why the index read carries `-o APT::Update::Error-Mode=any`: ci-budgets.md's
+      # Retries note.
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+        # Its own retry arithmetic, so an exhausted phase fails this step by name rather than
+        # being cut part way by the job: the index read's 5 x 95 + 150 = 625 s and the package
+        # download's 5 x 125 + 150 = 775 s, 1400 s -> 24 min.
+        timeout-minutes: 24
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "apt's package lists" 95 -- \
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any >&2
+          retry_fetch "tmux" 125 -- \
+            sudo timeout 120 apt-get install -y --no-install-recommends -d tmux >&2
+          sudo apt-get install -y --no-install-recommends tmux
 
       # The workspace and boundary tests drive a real jj, the one the worker image ships (its
       # working-copy filters are among what they plant), and the daemon resolves jj at boot and
       # refuses to start without it.
+      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - uses: ./.github/actions/install-jj
+        timeout-minutes: 65
 
       # internal/podsafety's baseline test and the pod agent's argv test run the Oh My Pi the worker
       # image ships, and refuse on GitHub Actions without one. The pin is read from
       # .omp-pin, the repository's one copy of it (.github/actions/install-omp).
+      # install-omp's own retry arithmetic: its fetch of the release archive,
+      # 5 x 60 + 150 = 450 s -> 8 min.
       - uses: ./.github/actions/install-omp
+        timeout-minutes: 8
 
       # internal/runtime/sandbox's uv link-mode test installs a wheel with the uv the worker image
       # ships, and refuses on GitHub Actions without one (.github/actions/install-uv). The action
       # takes that uv from the `uv` row of .github/ci-tools.yaml, which check-ci-tools.sh holds to
       # the image's own ARG UV_VERSION; main's #3280 moved the address and the checksum there.
+      # install-uv's own retry arithmetic: one `ci_tools_fetch` of the release tarball, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
       - uses: ./.github/actions/install-uv
+        timeout-minutes: 29
 
       # The NATS tests of the plain step's packages (internal/admit, internal/natsauth,
       # internal/workflow and the testnats package itself) start testnats.Image, the hub's 2.15.1,
@@ -319,6 +363,22 @@ jobs:
           go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
 
+      # forced-order.sh reads the nats-server it hooks from the module cache with `go list -m
+      # -json`, and downloads it with `go mod download -json` only where no cache holds that
+      # version's tree, from a directory with no go.mod, where go asks sum.golang.org for the
+      # module even when the module download above cached its zip. So this step runs that read
+      # first, under the one retry (ci-budgets.md's Retries note): the script's own -download, with
+      # the test step's arguments, which makes every check before the read, and the read, and
+      # builds and tests nothing. envoy-go-race's step of this name says how it was measured
+      # (dispatch://INFRA-1545, round 57).
+      - name: Download the nats-server version forced-order.sh hooks
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the nats-server the daemon links, for forced-order.sh" 180 -- \
+            packages/envoy/scripts/forced-order.sh -download -C packages/daemon ./internal/testnats/ >&2
+
       # The daemon's forced-order tests (packages/envoy/scripts/forced-order.sh -C packages/daemon):
       # every TestForcedOrder test of the packages named, built with -tags odatrace and -race
       # against the nats-server the workspace links, with the hold points
@@ -345,6 +405,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: daemon-go
@@ -360,9 +424,11 @@ jobs:
     needs: daemon-go-legs
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # Budget (ci-budgets.md's Budgets note): the 5 minutes main's #5519 gives this job, 300 s, plus
+    # its slowest retried step alone, the ci-ok report's 2460 s. 300 + 2460 = 2760 s -> 47 min.
+    timeout-minutes: 47
     env:
-      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 47 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       # The ci-ok report below is an action of this repository's .github.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -385,6 +451,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: daemon-go
@@ -416,7 +486,12 @@ jobs:
     # and, before the service took its settings on its command line, the service's restart, as
     # envoy-go-race's job 137890840698 took them), then the race step's 36.3 and its 30 minutes,
     # then the connections report's own minute. That is under 70 minutes, and 70 is the limit.
-    timeout-minutes: 70
+    #
+    # Budget (ci-budgets.md's Budgets note): those 70 minutes, 4200 s, plus its slowest retried
+    # step alone — install-jj, 3416 + 450 = 3866 s, above the ci-ok report's 2460 s, the tmux
+    # step's 625 + 775 = 1400 s, the Go module download's 1050 s and install-omp's 450 s.
+    # 4200 + 3866 = 8066 s -> 135 min.
+    timeout-minutes: 135
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -435,7 +510,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 70 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 135 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # internal/daemon's, internal/launcher's and internal/intake's store (testpg).
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # internal/daemon's broker tests (release_broker_test.go, dispatchcredential_test.go) drive
@@ -471,6 +546,17 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
+      # The modules the race step builds, downloaded once and retried before it, as daemon-go's
+      # step of this name says (ci-budgets.md's Retries note; the retried unit is the download,
+      # never the build and never the test).
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the Go workspace's modules" 180 -- go -C packages/daemon mod download
+
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
@@ -490,16 +576,35 @@ jobs:
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
 
       # internal/daemon's tests boot the daemon on the tmux runtime, which resolves tmux.
+      # Both apt phases retry through .github/scripts/ci-retry.sh, as daemon-go's do; their
+      # bounds, and why the index read carries `-o APT::Update::Error-Mode=any`: ci-budgets.md's
+      # Retries note.
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+        # Its own retry arithmetic, so an exhausted phase fails this step by name rather than
+        # being cut part way by the job: the index read's 5 x 95 + 150 = 625 s and the package
+        # download's 5 x 125 + 150 = 775 s, 1400 s -> 24 min.
+        timeout-minutes: 24
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "apt's package lists" 95 -- \
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any >&2
+          retry_fetch "tmux" 125 -- \
+            sudo timeout 120 apt-get install -y --no-install-recommends -d tmux >&2
+          sudo apt-get install -y --no-install-recommends tmux
 
       # internal/launcher's workspace-bundle and git-lock tests drive the real jj and its
       # working-copy filters (testbin.RequireJJFilters).
+      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
       - uses: ./.github/actions/install-jj
+        timeout-minutes: 65
 
       # internal/daemon's TestThePromptReferenceProbeOnTheRealOhMyPi runs the pinned Oh My Pi
       # (testbin.OMP), and refuses on GitHub Actions without one.
+      # install-omp's own retry arithmetic: its fetch of the release archive,
+      # 5 x 60 + 150 = 450 s -> 8 min.
       - uses: ./.github/actions/install-omp
+        timeout-minutes: 8
 
       # internal/daemon's and internal/intake's NATS tests start testnats.Image, internal/intake's
       # refusal test SkippingImage (nats:2.10), and internal/daemon's grant test Envoy's HubImage
@@ -599,6 +704,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: daemon-go
@@ -614,9 +723,11 @@ jobs:
     needs: daemon-go-race-legs
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # Budget (ci-budgets.md's Budgets note): the 5 minutes main's #5519 gives this job, 300 s, plus
+    # its slowest retried step alone, the ci-ok report's 2460 s. 300 + 2460 = 2760 s -> 47 min.
+    timeout-minutes: 47
     env:
-      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 47 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       # The ci-ok report below is an action of this repository's .github.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -639,6 +750,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: daemon-go

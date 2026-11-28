@@ -350,7 +350,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (ENVOY_GO, ENVOY_UNIT_STEP),
-            (".github/workflows/ci-job-envoy-go-build.yaml", "Test pmdoc's tables in a build without inlining"),
+            (".github/workflows/ci-job-envoy-go-checks.yaml", "Test pmdoc's tables in a build without inlining"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/pmdoc",
         functions=None,

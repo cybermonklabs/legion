@@ -10,7 +10,7 @@ filters. A branch made before that takes one forward merge of main, which delete
 .github/ci-filters.yaml and leaves ci_job_reads.py in conflict. This script finishes that merge:
 
   git merge origin/main          # stops on the conflicts
-  .github/scripts/ci-reads-convert
+  .github/scripts/ci-reads-convert.py
   # resolve what it reports and `git add` each file you resolved, then commit the merge
 
 It reads the old table at the merge base and at the branch's tip (HEAD, the merge's first parent)

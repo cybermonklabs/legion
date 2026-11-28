@@ -138,6 +138,10 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/state"
   ln -s "$mirror_script" "$root/.github/scripts/mirror-ci-images.sh"
   ln -s "$script_dir/ci_images.py" "$root/.github/scripts/ci_images.py"
+  # The script sources the retry helper from the tree it runs in, and the helper the stop-commands
+  # library beside it, so the fixture holds both.
+  ln -s "$script_dir/ci-retry.sh" "$root/.github/scripts/ci-retry.sh"
+  ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
   cat > "$root/.github/ci-images.yaml" <<YAML
 registry: $REGISTRY
 

@@ -28,10 +28,11 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 # The Biome that bun.lock pins, which is what `bunx biome` runs after `bun install`. Without the
-# install, `bunx biome` would fetch whatever npm serves under that name.
-biome=node_modules/.bin/biome
-if [ ! -x "$biome" ]; then
-  echo "check-biome-tree: $biome is missing, so this check cannot run the Biome bun.lock pins; run bun install first" >&2
+# install, `bunx biome` would fetch whatever npm serves under that name. Its path is written out at
+# each use rather than held in a variable: the lint job's download check reads a command only where
+# its literal path is written (.github/scripts/check-download-retry.sh, rule 8).
+if [ ! -x node_modules/.bin/biome ]; then
+  echo "check-biome-tree: node_modules/.bin/biome is missing, so this check cannot run the Biome bun.lock pins; run bun install first" >&2
   exit 2
 fi
 
@@ -39,7 +40,7 @@ log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 
 set +e
-"$biome" check . --colors=off --max-diagnostics=none 2>&1 | tee "$log"
+node_modules/.bin/biome check . --colors=off --max-diagnostics=none 2>&1 | tee "$log"
 biome_status=${PIPESTATUS[0]}
 set -e
 

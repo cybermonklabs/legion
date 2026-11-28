@@ -1,14 +1,16 @@
-# Notes for the cache fills
+# Notes for the cache filler's workflow
 
 The derivations and the history behind `.github/workflows/ci-caches.yaml` and
 `.github/workflows/ci-caches-changes.yaml`, the workflows that fill the Actions caches ci.yaml's
-jobs restore. A `# why:` line of either file that names this file names the section here that
-holds the derivation or the record its text rests on; its other `# why:` lines name sections of
-`.github/ci-notes/ci.md`.
-A derivation or a history of ci-caches.yaml comes here, and the workflow keeps a line or two beside
-the value or the step it is about, with a `# why:` line that names the section. Its longer comment
-blocks moved here when it neared the 64,000 bytes .github/scripts/check-workflow-files.sh holds each
-workflow file to.
+jobs restore: what the two workflows fill and why, and the derivations behind their budgets. A
+`# why:` line of either file that names this file names the section here that holds the derivation
+or the record its text rests on, as `.github/ci-notes/README.md` says; its other `# why:` lines name
+sections of `.github/ci-notes/ci.md`. Each value's own arithmetic stays on its line in the workflow
+file, and the budgets of those files' other jobs are still derived in the comments above their
+keys. A derivation or a history of ci-caches.yaml comes here, and the workflow keeps a line or two
+beside the value or the step it is about, with a `# why:` line that names the section. Its longer
+comment blocks moved here when it neared the 64,000 bytes .github/scripts/check-workflow-files.sh
+holds each workflow file to.
 
 ## Why a workflow of its own fills the caches, on a push to main
 
@@ -29,10 +31,8 @@ workflow): a cancelled leg saves nothing, and one architecture's fill has no rea
 other's.
 
 ci-caches.yaml does not fill go-docs: docs-pages.yaml saves it on this same push, from the build job
-it shares with ci.yaml's docs job. Nor the Bun cache: .github/actions/setup-bun reads and writes it
-on main, and the workflows that run there call it, ci-caches.yaml's dispatch-builds job too. The
-entries it fills that are no Go family are in
-.github/ci-notes/ci-caches.md#the-entries-that-are-no-go-family.
+it shares with ci.yaml's docs job. The entries it fills that are no Go family, the bun family among
+them, are in .github/ci-notes/ci-caches.md#the-entries-that-are-no-go-family.
 
 ## When the workflow runs, and why it has no paths
 
@@ -41,8 +41,11 @@ hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`:
 on every push hold the build of many packages of a module and of the modules it imports, so nearly
 any change to Go code is theirs, and a push that changes none of it compiles nothing on the restored
 entry; the other keys hold a Go version, that toolchain file's hash, the hash of
-packages/envoy/go.sum, a Dispatch release's commit or, for go-envoy-infra, the hash of the infra
-workspace's module files, not a file list, so what the push touched decides nothing for them.
+packages/envoy/go.sum, the Bun version .bun-version pins, a release's commit beside the hash of the
+script that builds it or, for go-envoy-infra, the hash of the infra workspace's module files, not a
+file list, so what the push touched decides nothing for them, and a run whose keys are all there is
+seconds for them, but for the dispatch-builds job's checkout of the whole history, which its key
+needs.
 
 A release is tagged minutes after its push to main (release-envoy-listener.yaml builds first), so
 the push's own fill resolves the release before it, and the pull requests and merge groups after the
@@ -62,13 +65,13 @@ A dispatch-builds run has a group of its own, so it never replaces a waiting pus
 families it would not fill; it can run beside a push fill, and dispatch-builds-superseded deletes no
 main entry newer than the one it keeps, so neither run's deletes take the other's new entry.
 
-## Why three jobs alone may delete entries
+## Why four jobs alone may delete entries
 
-Reading the tree and the caches is all ci-caches.yaml does but in three jobs: the cache scope needs
+Reading the tree and the caches is all ci-caches.yaml does but in four jobs: the cache scope needs
 no token scope of its own, and nothing in it reports a check or writes an artifact. The
-refill-superseded, envoy-infra-superseded and dispatch-builds-superseded jobs alone take
-`actions: write`, to delete the entries a fill replaced or this repository keeps no more, and build
-nothing.
+refill-superseded, envoy-infra-superseded, dispatch-builds-superseded and bun-superseded jobs
+alone take `actions: write`, to delete the entries a fill replaced or this repository keeps no
+more, and build nothing.
 
 ## The Go families, their readers and their runners
 
@@ -120,15 +123,15 @@ A fill's restore asks for the readers' key, with that key and a `-` as its resto
 matches the key itself as a prefix too, so an entry of another Go version is restored only when
 that version's text starts with this one's (go1.27.30 for go1.27.3), and Go keys every object of
 its build cache on the toolchain that compiled it, so such an entry costs only its download. No
-entry carries the readers' key itself, so GitHub's matching gives a reader the newest entry whose
-key starts with it: the last fill's.
+entry carries the readers' key itself any more, so GitHub's matching gives a reader the newest
+entry whose key starts with it: the last fill's.
 
 ## Why each fill builds on the newest entry of its family
 
 Every Go family but go-envoy-infra is filled again on every push to main: the fill restores the
-newest entry of its family, runs on it the build its readers run, and saves the result under the
-readers' key followed by the commit (`-${{ github.sha }}`), so a reader's prefix match finds the
-last fill's entry.
+newest entry of its family, runs on it the build its readers run, which compiles only what changed
+since that entry was saved, and saves the result under the readers' key followed by the commit
+(`-${{ github.sha }}`), so a reader's prefix match finds the last fill's entry.
 
 These keys used to name the Go version alone, and the fill saved only when that exact key was
 missing, so each family was filled once per Go version. The go-daemon, go-envoy and go-envoy-test
@@ -136,10 +139,12 @@ entries every job restored on 2026-11-22 had been saved on 2026-11-18 between 13
 (go-notices' on 2026-11-19), and at main's e7381b7d4c9 a job that restored them had to compile
 again 312 of the daemon module's 335 packages and 573 of the envoy module's 618 (`go list -test
 -deps -f {{.Stale}}`); from an entry filled five merges earlier, 135 and 321. The
-refill-superseded job deletes every other entry of the family once the new one is listed, so each
-family keeps one entry per runner, as it did before. A job that is downloading a deleted entry at
-that moment gets a cache miss: actions/cache/restore warns and the job goes on, compiling what the
-entry would have given it, so it is slower, not failed.
+refill-superseded job deletes the other entries of the family once the new one is listed, three a
+run at most, newest first, so that its deletes are three priced ladders inside the job's budget
+(#the-refill-superseded-job); a common run supersedes one,
+so each family keeps one entry per runner, as it did before. A job that is downloading a deleted
+entry at that moment gets a cache miss: actions/cache/restore warns and the job goes on, compiling
+what the entry would have given it, so it is slower, not failed.
 
 ## Why each fill keeps only what its own build used
 
@@ -220,10 +225,8 @@ The fill runs no go vet, on purpose (PR #5289): with one, full or -stdmethods al
 entry was 475 MB against 202 MB without, so a go-envoy reader that vets reruns cgo for net, os/user
 and runtime/cgo, and that is the chosen cost.
 
-The envoy job's time limit. Warm, on its newest entry: 37 s a leg (jobs 138290290861, 138290290676).
-Cold, from an empty module and build cache: 61 s and 48 s, the build 37 s and 25 s, before a save of
-about 0.5 GB (probe run 45375660275, jobs 138381154486 and 138381153841). 10 minutes is about nine
-times the cold.
+The envoy job's time limit, from its measured runs and its retried module download, is derived in
+.github/ci-notes/ci-caches.md#the-envoy-and-envoy-test-jobs-budgets.
 
 ## Why go-envoy-test is filled in a job of its own
 
@@ -273,9 +276,11 @@ with internal/oidc's product code changed compiled exactly internal/oidc and its
 the test binary ran the changed code (job 139794597881).
 
 The entry's size. The race build of the whole lane leaves 1.52 GB of build cache and 1.03 GB of
-module cache on disk, 327 MB and, without the module zips the fill deletes, 129 MB compressed
-(probe run 45779631560, job 139771656168): about 0.46 GB saved, one entry, kept alone by
-refill-superseded.
+module cache on disk, 327 MB and, without the module zips, 129 MB compressed (probe run
+45779631560, job 139771656168): about 0.46 GB saved, one entry, kept alone by
+refill-superseded. That probe ran #5662's fill, which deleted the zips; the fill keeps them now
+(#why-the-fills-keep-the-module-zips), so the entry is larger by their compressed size, which
+that probe did not measure.
 The repository held 18.6 GB in 369 entries on 2026-11-26 at 08:20Z, above the 10 GB GitHub's
 default allows, and the limit set for it is not readable with a workflow's token
 (actions/cache/storage-limit answers 403). Over its limit GitHub evicts the least recently used
@@ -349,9 +354,12 @@ job's own entry. The tests themselves took the same time in every row (the live 
 and subtests, none failed or skipped: the entry removes compile, not test. What the job has left
 is mostly waits: once compiled, the live package ran at 19 to 25% of the VM's CPU.
 
-The fill is go-envoy-test's: it restores the newest entry, marks it unused, builds and starts the
-two test binaries as the job's go test does (`-run '^$'`, so no image or Docker is needed) and
-builds the plugin, deletes what those builds did not use and the module zips, and saves under the
+The fill is go-envoy-test's: it restores the newest entry, downloads both workspaces' modules
+through the retry (.github/ci-notes/ci-caches.md#the-go-module-downloads-before-each-fills-builds),
+marks the entry unused, builds and starts the two test binaries as the job's go test does
+(`-run '^$'`, so no image or Docker is needed) and builds the plugin, deletes the build cache's
+entries those builds did not use, keeping its module zips
+(.github/ci-notes/ci-caches.md#why-the-fills-keep-the-module-zips), and saves under the
 readers' key and the commit; refill-superseded deletes the entry it replaced. It runs on
 ubuntu-24.04 alone, envoy-smoke's runner. Its key holds no module-file hash, as go-envoy-test's
 holds none: the fill runs on every push, and Go's build cache is content-addressed. The scratch
@@ -405,69 +413,56 @@ reads. The job runs on ubuntu-24.04 alone, the runner envoy-go-build runs on, an
 that runner's architecture as every family's does. A job of its own, so neither this fill nor the
 envoy jobs' can stop the other.
 
-## Why the fills delete the module zips
+## Why the fills keep the module zips
 
-Go reads a module it has extracted from its tree, ~/go/pkg/mod/<module>@<version>. The zip that
-tree came from, under ~/go/pkg/mod/cache/download/<module>/@v/, is read only to extract the tree
-again when it is missing, and by `go mod download` and `go mod verify`: a build checks that the
-tree and its .ziphash exist (cmd/go/internal/modfetch/fetch.go, DownloadDir), and the .info, .mod
-and .ziphash files beside the zip stay. No job that restores these entries runs `go mod verify`.
-One script ran `go mod download` on a module they hold: packages/envoy/scripts/forced-order.sh,
-in daemon-go's leg 2, which restores go-daemon, and in envoy-go-race's two forced-order steps,
-which restore go-envoy-race. The script took nats-server's tree from
-`go mod download -json`, which fetches the zip whenever the cache holds none
-(cmd/go/internal/modcmd/download.go calls DownloadZip), so on an entry without zips it would have
-fetched that zip on every run. The script now reads the tree's directory from `go list -m -json`,
-which fetches nothing, and keeps `go mod download` for a version no cache holds (its -server
-2.10.29 run). So every fill that saves a module cache deletes its zips before the save: the end
-command of .github/scripts/go-cache-working-set.sh does it for go-daemon, go-notices, go-envoy,
-go-envoy-test, go-envoy-smoke and go-envoy-race, and its zips command alone for go-envoy-infra, which builds from nothing and runs
-no begin. The go-envoy-darwin-vet fill runs end too, on the go-envoy entry it restores for its
-module cache; its save holds only its own darwin build cache directory, so the zips it deletes
-are in no entry and the delete changes nothing it saves. A job that does need a zip downloads it
-again, as it downloads a module the entry never held.
+Main's #5600 deleted `~/go/pkg/mod/cache/download/**/*.zip` before saving `go-envoy-test`, on the
+premise that no job restoring this entry runs `go mod download` or `go mod verify`. On this
+branch that premise is false: under R1, the fill itself and every job that restores this entry
+(such as `envoy-go`) run a retried `go mod download` step before their Go builds, so that no
+download happens inside a build or test step (dispatch://INFRA-1545).
 
-go-envoy-test's were measured first, in its scratch runs above: 160 zips and 272 MB of the arm64
-entry's module cache (150 and 210 MB on x64), stored as they are, since a zip does not compress
-again. The saved entry went from 939 MB to 708 MB on arm64 and from 859 MB to 690 MB on x64,
-though that fill also kept about 330 more build cache entries, and envoy-go's restore from 20 s to
-16 s. On the entry without zips, `GOPROXY=off go list -deps -test ./...` passed, so every package
-of the module and of its tests is served from the trees; with one tree removed from a copy of
-that cache it failed, naming the module it had to download, and on the entry with zips the same
-removal passed, since the zip extracted the tree again.
+Go 1.27.3's `DownloadModule` calls `DownloadZip`, which requires both the `.zip` and its
+`.ziphash` for a cache hit. In the [single-module control](https://github.com/cybermonklabs/legion/pull/2918#pullrequestreview-6068305306),
+`GOPROXY=off go mod download` succeeded with the zip present. After deletion of the zip,
+`GOPROXY=off go build ./...` still succeeded from the extracted tree, but `go mod download`
+failed until the proxy served the zip again. The same result held in the worker pod on Go 1.27.3.
+Without the zips, each reader's `go mod download` step would need the proxy again.
 
-The other four families, measured in scratch run 45743937976: each fill ran as written here, and
-for each family one job restored main's newest entry before any fill there saved (before) and
-one restored the entry the fill saved (after), on the same runner type. Saved entries, in bytes:
+This branch removes #5600's zip-deletion step. The retained zip files total 272 MB on arm64
+(160 files) and 210 MB on x64 (150 files), measured in scratch runs 45722872667 and 45722872215.
+Across those fills, the saved entries fell from 939 to 708 MB on arm64 and from 859 to 690 MB
+on x64. The `envoy-go` restore fell from 20 to 16 s. These comparisons do not isolate the
+effect of removing the zips: #5600's fill also keeps about 330 more build-cache entries.
 
-| family | runner | zips deleted | before | after | restore, before / after |
-|---|---|---|---|---|---|
-| go-daemon | x64 | 202, 275 MB | 1,240,276,083 | 972,221,494 | 34 s / 15 s |
-| go-daemon | arm64 | 202, 275 MB | 811,184,022 | 543,878,606 | |
-| go-notices | arm64 | 306, 485 MB | 2,444,774,162 | 1,974,345,271 | 63 s / 61 s |
-| go-envoy | x64 | 32, 65 MB | 185,401,062 | 122,633,397 | 3 s / 3 s |
-| go-envoy | arm64 | 39, 77 MB | 201,671,639 | 129,748,341 | |
-| go-envoy-infra | x64 | 202, 310 MB | 1,465,443,294 | 1,167,226,291 | 28 s / 26 s |
-| go-envoy-infra | arm64 | 202, 310 MB | 1,892,710,447 | 1,594,620,716 | |
+This branch's reviewed head, 9d30c11dc2, deleted no other zip: every other fill saved its module
+cache as its build left it. Main's #5621 then added the deletion to four more families that save
+a module cache: the end command of .github/scripts/go-cache-working-set.sh deleted the zips of
+go-daemon, go-notices and go-envoy, and took over #5600's step for go-envoy-test, and a zips
+command of the script did it alone for go-envoy-infra, which builds from nothing and runs no
+begin. Each of those fills runs a retried `go mod download` before its build too, as most jobs
+that restore its entry do, so the premise fails for them as it does for go-envoy-test. This
+branch's merge of main removes that deletion and keeps main's build-cache trimming: the script
+trims GOCACHE alone, and every fill that saves `~/go/pkg/mod` saves its zips. #5621's scratch
+run 45743937976 counted the zips those four fills deleted, which their entries keep again: 202
+(275 MB) in go-daemon's on each runner, 306 (485 MB) in go-notices' on arm64, 32 (65 MB) on x64
+and 39 (77 MB) on arm64 in go-envoy's, and 202 (310 MB) in go-envoy-infra's on each runner.
+go-envoy-darwin-vet saves only its own darwin build cache directory, so its entry holds no
+module cache.
 
-Each restore is one sample. go-notices' restore is mostly the extraction of its 12 GB build
-cache, so its zips' 470 MB moved it little. On each entry without zips the fill's own set listed
-with GOPROXY=off: `go list -deps -test ./...` with and without the e2e tag for go-daemon,
-go-release-notices.sh itself for go-notices, `go list -deps` of the listener and natsd for
-go-envoy, and `go list -deps -test ./...` plain, with pulumilive,natslive and for darwin/arm64 for
-go-envoy-infra. That set, not `./...` of the module, since go-envoy holds only the listener's and
-natsd's modules. On a hardlinked copy of each entry with one of those modules' trees removed, the
-same command failed, naming the module (jobs 139656698136, 139656780003, 139655579434 and
-139659218601); on each entry with zips it passed, since the zip extracted the tree again.
+Main's #5662 added go-envoy-race, whose fill ran that end command too, so its entry was saved
+without zips; the merge of main at c62975ce keeps its zips as well. Its envoy-race fill runs a
+retried `go mod download` before its build, and every leg of the race lane that restores the
+entry runs one before its first Go step, so the premise fails for it as for the others.
+envoy-go-race's two forced-order steps, which restore it, read nats-server's tree through
+`go list -m -json` (packages/envoy/scripts/forced-order.sh), which fetches nothing, and keep
+`go mod download` for a version no cache holds.
 
-The zips are not left out by a `!` line in the save's path list. actions/cache resolves its path
-list with @actions/glob and `implicitDescendants: false`
-(@actions/cache's internal/cacheUtils.ts, resolvePaths), so `~/go/pkg/mod` yields that one
-directory, tar archives it whole, and a `!~/go/pkg/mod/cache/download/**/*.zip` line matches no
-path the glob yields and excludes nothing: a save and restore of a module cache with that line
-brought back both of its 2 zips (scratch run 45722872215, job 139585272669). It still changes the
-entry's version, which hashes the path list (getCacheVersion), so every restore of the family
-would have to carry the same line or miss.
+Main's #5843 added go-envoy-smoke, whose fill main wrote to run that end command and so to save
+its entry without zips; the merge of main at b44c810e keeps its zips as well, and names the
+fill's step that runs end for what end does on this branch, the build cache's entries alone. Its
+envoy-smoke fill runs a retried `go mod download` of both workspaces before its builds, and
+envoy-smoke, the job that restores the entry, runs the same two calls before its first Go step,
+so the premise fails for it as for the others.
 
 ## Why a lookup's save takes the lookup's key
 
@@ -502,7 +497,6 @@ not a composite action's, so it holds nothing of these two families; the "Caches
 .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs is the record
 of their restores and saves.
 
-
 On a hit the action restores the entry and compiles only the command's own packages that changed
 since the entry was saved; on a miss, as after a go.sum change, it builds the command from the
 newest entry of that Go version, or cold when there is none, and saves the entry. The
@@ -518,10 +512,18 @@ refused spec tree on main cannot stop the note check.
 
 ## The entries that are no Go family
 
-Three entries ci-caches.yaml fills are no Go family: the elan home the airlock-lean job restores,
-whose key is the content of the Lean toolchain the model names rather than a Go version, and the two
-earlier Dispatch builds dispatch-two-builds restores, each keyed on a release commit and the hash of
-the script that builds it, which the dispatch-builds job fills. The changes job's two entries are
+Four families ci-caches.yaml fills are no Go family. The elan home the airlock-lean job restores,
+whose key is the content of the Lean toolchain the model names rather than a Go version
+(.github/ci-notes/ci-caches.md#the-elan-home). The bun family, ~/.bun/bin, which
+.github/actions/setup-bun restores in every job that calls it and saves only where its caller passes
+`save: 'true'` on a push to main: the bun job is the one caller that does, the family's one saving
+job as each Go family has one. The key names the runner's architecture, so each architecture needs
+an entry and a saving job of its own, and the bun job runs a leg on each runner the action's callers
+run on, ubuntu-24.04 and ubuntu-24.04-arm; the bun-superseded job then deletes each leg's entries
+under any other version (.github/ci-notes/ci-caches.md#what-bun-superseded-deletes). And the two
+earlier Dispatch builds dispatch-two-builds restores, each keyed on a release commit and the hash
+of the script that builds it, which the dispatch-builds job fills
+(.github/ci-notes/ci-caches.md#the-two-dispatch-builds). The changes job's two entries are
 ci-caches-changes.yaml's, which runs once per commit rather than one run at a time
 (.github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores). Two more went with the
 jobs that read them.
@@ -535,35 +537,92 @@ packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). 
 restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone with
 them.
 
-## What the refill-superseded job deletes, and why it is a job of its own
+## The Go module downloads before each fill's builds
 
-The entries of go-daemon, go-notices, go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race and
-go-envoy-darwin-vet that the fills replaced, deleted once each fill has saved its new one. Each
-fill saves a new entry, over a
-gigabyte for most families, so without this the entries would pile up: GitHub drops an entry only
-after seven days unread, and over the repository's cache limit it evicts the least recently used
-entries, which can be another family's live one. For each family and architecture this keeps one
-entry of this ref, the one the fill just saved, and deletes every other one of that family, runner
-and Go: those whose key is the readers' key followed by `-`, and the one under the readers' key
-itself, which the fills saved before they named the commit and which would otherwise win every
-reader's restore as an exact match. The family then holds what it held before this change, one
-entry per runner, in a repository near its cache limit. A job that is downloading a deleted entry
-at that moment gets a cache miss: actions/cache/restore warns and the job goes on, compiling what
-the entry would have given it, slower but not failed. An entry of another runner or another Go is
-no such entry and stays. None is deleted unless the new key is among this ref's entries, so a save
-that did not land leaves the old entries in place.
+Each Go fill downloads the modules its builds compile once, retried, before those builds (the
+Retries note of .github/ci-budgets.md; the retried unit is the download, never the build and
+never the test). On every run, as the builds run on every push now: the restored entry's module
+cache holds what the last fill downloaded, so the call fetches only what moved since.
 
-A job of its own, so the token that may delete caches is in no job that builds code. Its legs, and
-those of envoy-infra-superseded, dispatch-builds-superseded and ci-caches-changes.yaml's
-superseded job, run .github/scripts/cache-superseded.sh, which took the three step bodies out of
-ci-caches.yaml when that file came near its 64,000 bytes (a file at that size moves its bodies to
-.github/scripts). A cache key is text any build that saves on this ref chose, so the
-script never splits or prints one raw: the list stays JSON, jq selects the numeric ids to delete,
-and each id is checked to be a number before `gh cache delete` gets it. One leg per family and
-architecture, each keeping the key that fill's leg saved, under the output name the fill gives it;
-a leg whose fill saved nothing (it failed before its save) skips its steps, and the job runs when
-any fill failed, so one failed fill does not stop the others' deletes. Every leg runs on
-ubuntu-24.04-arm: gh and jq need nothing of an x64 machine.
+- The daemon job makes one call: the root go.work binds packages/daemon and packages/envoy, and a
+  download in either reads both modules' requirements.
+- The notices job makes two calls for the three module directories the notices script builds in:
+  in workspace mode `go mod download` with no arguments downloads the pattern `all` of the whole
+  workspace, so the first call, made in the root go.work, brings down both modules'
+  requirements. packages/envoy/infra the root go.work does not bind (its own go.work binds it and
+  packages/envoy), so it takes the second call. packages/daemon is downloaded there though the
+  daemon job downloads it too: the two jobs answer different keys on runners of their own, so
+  neither can lean on the other's module cache.
+- The envoy job makes one call for its build, and the envoy-test job, a job of its own since
+  main's #5334, one for its two, each after its job's restore, which would otherwise unpack over
+  what the call wrote.
+- The envoy-race job makes one call for its race build and the sizing program, after its restore
+  for the same reason (main's #5662 added the job; the merge of main at c62975ce gave it the
+  call).
+- The envoy-smoke job makes two calls, one for each workspace its three builds compile in: the
+  root go.work for the smoke test, and packages/envoy/infra's own go.work, which the root one
+  does not bind, for the host live tests and the plugin. Both run after its restore, for the
+  same reason (main's #5843 added the job; the merge of main at b44c810e gave it the calls).
+- The darwin vet's call runs on top of the module cache go-envoy's newest entry gave. `go mod
+  download` with no arguments takes the whole build list, every platform's modules among them, so
+  the darwin vet finds its own.
+- The envoy-infra job's one call runs on that build's own condition, so a run that finds the key
+  downloads nothing: packages/envoy/infra's go.work binds it and packages/envoy, and a download in
+  it reads both modules' requirements. Its lookup is `lookup-only`, so no module cache is ever
+  restored there and the cold figure below is what a miss pays.
+
+180 s per attempt, for every one of them: the slowest cold `go mod download` measured is 113 s,
+for packages/envoy/infra, against 81 s for packages/daemon and 77 s for packages/envoy, each on an
+empty module cache on 2026-11-07, so the bound is 1.6 times the slowest of the three. It can be
+that tight where a tarball fetch's could not: an attempt the bound kills leaves what it fetched in
+the module cache for the next one to resume from. A run with no entry of its Go to restore, as
+after a Go bump, starts from an empty module cache, and that cold figure is what it pays.
+
+## The refill-superseded job
+
+It deletes the entries of go-daemon, go-notices, go-envoy, go-envoy-test, go-envoy-smoke,
+go-envoy-race and go-envoy-darwin-vet that the fills replaced, once each fill has saved its new
+one. Each fill
+saves a new entry, over a gigabyte for most families, so without this the entries would pile up:
+GitHub drops an entry only after seven days unread, and over the repository's cache limit it
+evicts the least recently used entries, which can be another family's live one. For each family
+and architecture it keeps one entry of this ref, the one the fill just saved, and deletes the
+others of that family, runner and Go, three a run at most (below): those whose key is the
+readers' key followed by
+`-`, and the one under the readers' key itself, which the fills saved before they named the
+commit and which would otherwise win every reader's restore as an exact match. The family then
+holds what it held before the refill, one entry per runner, in a repository near its cache
+limit. A job that is downloading a deleted entry at that moment gets a cache miss:
+actions/cache/restore warns and the job goes on, compiling what the entry would have given it,
+slower but not failed. An entry of another runner or another Go is no such entry and stays. None
+is deleted unless the new key is among this ref's entries, so a save that did not land leaves
+the old entries in place. It is a job of its own, so the token that may delete caches is in no
+job that builds code. Its legs, and those of envoy-infra-superseded, dispatch-builds-superseded,
+bun-superseded and ci-caches-changes.yaml's superseded job, run
+.github/scripts/cache-superseded.sh, which took the three step bodies out of ci-caches.yaml when
+that file came near its 64,000 bytes (a file at that size moves its bodies to .github/scripts,
+main's #5649). A cache key is text any build that
+saves on this ref chose, so the script never splits or prints one raw: the list stays JSON, jq
+selects the numeric ids to delete, and each id is checked to be a number before `gh cache
+delete` gets it. One leg per family and architecture, each keeping the key that fill's leg saved,
+under the output name the fill gives it; a leg whose fill saved nothing (it failed before its
+save) skips its steps, and the job runs when any fill failed, so one failed fill does not stop
+the others' deletes. Every leg runs on ubuntu-24.04-arm: gh and jq need nothing of an x64
+machine.
+
+Each read and each delete retries through `.github/scripts/ci-retry.sh` at 30 s an attempt, the
+bound this repository gives a `gh` read of the API (dispatch://INFRA-1545, R1), run through
+gh-read.sh's gh_wait_reset: the list is one ladder, 5 x 30 + 150 = 300 s, and each delete one
+more. A leg deletes three entries at most, newest first, in the script's loop over three literal
+passes, the same loop in each of its modes: a common run deletes one, the entry the fill
+before it saved, and the first run after the keys took the commit deletes the entry under the
+readers' key beside it; a third is room for one a failed run left. Any more stay, a warning says
+how many, and the next fill deletes them, since each fill adds one entry and may delete three. A
+delete whose first attempt landed and whose answer was lost is refused
+on its retry as an entry that is gone, and fails the step by name; the next fill deletes what is
+left. The step's own budget is 300 + 3 x 300 = 1200 s, a whole number of minutes, so it takes
+the minute above, 21; the job's is 300 s, the 5 minutes main's #5141 gave it, plus that one
+retried step, 300 + 1200 = 1500 s -> 26 min.
 
 ## The go-envoy-infra fill, and the hash in its key
 
@@ -602,60 +661,155 @@ job those halves were near its time limit.
 
 ## What envoy-infra-superseded deletes
 
-The envoy-infra-superseded job deletes the go-envoy-infra entries the envoy-infra fill superseded,
-once that fill has saved the new one. A module-file change gives the family a new key, and the entry
-under the old key, about 1.4 GB, is then read by no run of this ref: left alone it would hold its
-space until GitHub drops it after seven days unread, and over the repository's cache limit GitHub
-evicts the least recently used entries, which can be another family's live one. An entry the new one
-supersedes is one of this ref whose key is the new key but for its 64-hex module-file hash: the same
+It deletes the go-envoy-infra entries the envoy-infra fill superseded, once it has saved the new
+one. A module-file change gives the family a new key, and the entry under the old key, about
+1.4 GB, is then read by no run of this ref: left alone it would hold its space until GitHub drops
+it after seven days unread, and over the repository's cache limit GitHub evicts the least
+recently used entries, which can be another family's live one. An entry the new one supersedes
+is one of this ref whose key is the new key but for its 64-hex module-file hash: the same
 family, runner and Go, with older module files, the hashless key of the fill before this one
-included. An entry of another runner or another Go is no such entry and stays, so a fill that runs
-once per architecture deletes nothing the other leg saved. None is deleted unless the new key is
-among this ref's entries, so a save that did not land leaves the old entry in place. A job of its
-own, so the token that may delete caches is in no job that builds code; cache-superseded.sh says how
-it reads the keys. One leg per architecture of the fill, each keeping the key that architecture's
-leg saved, under the output names the envoy-infra job gives it; a leg whose architecture filled
-nothing skips its step. Both legs run on ubuntu-24.04-arm: gh and jq need nothing of an x64 machine.
+included. An entry of another runner or another Go is no such entry and stays, so a fill that
+runs once per architecture deletes nothing the other leg saved. None is deleted unless the new
+key is among this ref's entries, so a save that did not land leaves the old entry in place. A
+job of its own, so the token that may delete caches is in no job that builds code. Its step runs
+the hash mode of .github/scripts/cache-superseded.sh (#the-refill-superseded-job). A cache key
+is text any build that saves on this ref chose, so the script never splits or prints one raw: the
+list stays JSON, jq selects the numeric ids of the superseded entries, and each id is checked to
+be a number before `gh cache delete` gets it. A key holding a newline then cannot add a line of
+its own, such as `--all`, to that list. One leg per architecture of the fill, each keeping the
+key that architecture's leg saved, under the output names the envoy-infra job gives it; a leg
+whose architecture filled nothing skips its step. Both legs run on ubuntu-24.04-arm: gh and jq
+need nothing of an x64 machine.
+
+Each read and each delete retries through `.github/scripts/ci-retry.sh` at 30 s an attempt, the
+bound this repository gives a `gh` read of the API (dispatch://INFRA-1545, R1): the list is one
+ladder, 5 x 30 + 150 = 300 s, and each delete one more. A fill supersedes the one entry the fill
+before it saved, so a common run deletes one, and the script deletes three at most, in the one
+loop over three literal passes its every mode shares, so the step waits for 300 + 3 x 300 =
+1200 s at most, a whole number of minutes, and takes the minute above, 21; the job's is 300 s,
+the 5 minutes this job carried, plus that one retried step, 300 + 1200 = 1500 s -> 26 min. Any
+more stay, a warning says how many, and the next fill deletes them. Until the merge of main at
+c62975ce the step deleted every superseded entry in a `while read`, priced at the one delete a
+common run makes,
+300 + 300 = 600 s, under a step budget of 11 minutes and a job budget of 16. A delete whose
+first attempt landed and whose answer was lost is refused on its retry as an entry that is gone,
+and fails the step by name; the next fill deletes nothing more.
 
 ## The two Dispatch builds
 
-The two earlier Dispatch builds ci.yaml's dispatch-two-builds job runs beside this tree
-(.github/workflows/ci-job-dispatch-two-builds.yaml): the previous build, the newest legion-envoy-v*
-release in main's history, and the first-rollout build, the release that job pins by its commit
-(FIRST_ROLLOUT_COMMIT). That job restores each, builds it on a miss, and saves neither:
-ci-caches.yaml's dispatch-builds job fills both in main's scope, which every pull request and merge
-group reads. That job saved them itself before, in the scope of its run's own ref, where a merge
-group's entry is read by no later run and a pull request's by that pull request alone: on 2026-11-23
-25 such entries held 12.2 GB of the repository's cache and main held none, and on 2026-11-22 308 of
-351 successful dispatch-two-builds jobs built the previous release again (107 s at the median, 11 s
-to restore it). Each key is the key that job restores, from the same steps: the previous build's
-commit from build-dispatch-build.sh, the first-rollout commit from that job's own env, its one pin
-in CI, read by the fill rather than copied. Each is looked up first, so a run after which neither
-the newest release nor the script changed builds nothing. The dispatch-builds job runs on each push
-to main and again once release-envoy-listener.yaml has tagged a release (the `only` input,
+ci-caches.yaml's dispatch-builds job fills the two builds ci.yaml's dispatch-two-builds job runs the
+tree against (.github/workflows/ci-job-dispatch-two-builds.yaml), each made by
+packages/envoy/scripts/build-dispatch-build.sh from a commit of this repository: the previous
+build, the newest legion-envoy-v* release in main's history, and the first-rollout build, the
+release that job pins by its commit (FIRST_ROLLOUT_COMMIT). That job restores each, builds it on
+a miss, and saves neither, since an entry a pull request or a merge group saves lands in a scope
+no other run reads (dispatch://INFRA-1545, R4): the dispatch-builds job fills both in main's scope,
+which every pull request and merge group reads. dispatch-two-builds saved them itself before: on
+2026-11-23 25 such entries held 12.2 GB of the repository's cache and main held none, and on
+2026-11-22 308 of 351 successful dispatch-two-builds jobs built the previous release again (107 s
+at the median, 11 s to restore it).
+
+Each key is the text of dispatch-two-builds' restore, which check-ci-filters.sh holds the
+dispatch-builds job's save to, from the same steps: the previous build's commit from
+build-dispatch-build.sh, and the first-rollout commit from dispatch-two-builds' own env, its one
+pin in CI, read by the dispatch-builds job with yq rather than copied. Each is looked up first, so
+a run after which neither the newest release nor the script changed builds nothing and sets
+neither Go nor Bun up. The job runs on each push to main and again once
+release-envoy-listener.yaml has tagged a release (the `only` input,
 .github/ci-notes/ci-caches.md#when-the-workflow-runs-and-why-it-has-no-paths), so the release that
-pull requests and merge groups resolve after the tag is filled within minutes of it. The
-dispatch-builds job runs on ubuntu-24.04, the runner dispatch-two-builds runs on.
+pull requests and merge groups resolve after the tag is filled within minutes of it. Main alone: a
+dispatched run on another branch would save the builds in that branch's scope, which only that
+branch's runs read. On ubuntu-24.04, the runner dispatch-two-builds runs on: the key names the
+runner's architecture, and each build's server is a binary of it. The whole history and the tags,
+as dispatch-two-builds checks them out: the script resolves the previous release from the tags in
+the history of origin/main, and refuses a commit older than its floor release, which it reads by
+its tag.
 
 ## What dispatch-builds-superseded deletes
 
-The dispatch-builds-superseded job deletes the entries of the two Dispatch builds this repository
-keeps no more, on main, once dispatch-builds has looked its keys up. For each build it keeps main's
-entry under the key dispatch-builds found or saved, and every main entry created after it, which a
-run that resolved a newer release beside this one saved (a release's dispatch-builds run can overlap
-a push's). It deletes the main entries created before it, of an older release or an older script,
-and every entry of that build, runner and architecture on any other ref, which only that ref's runs
-could read: the entries dispatch-two-builds saved in its runs' own refs before it stopped saving.
-That is a retention choice, not a proof that nothing reads them: a pull request whose merge base is
-older than main's newest release still resolves the older release, misses, and builds it (107 s at
-the median), as most runs did before. A run that is downloading a deleted entry at that moment gets
-a cache miss: actions/cache/restore warns and the job builds the release, slower but not failed.
-Main alone: dispatch-builds saves nothing on another branch. None is deleted unless the kept key is
-among main's entries and has the shape dispatch-builds gives it (the build, the runner's OS and
-architecture, the script's 64-hex hash, the 40-hex commit), from which the job's delete step takes
-the prefix it deletes under; the entries come from GitHub newest first and that step reads every one
-of them, so "created before" is GitHub's own order. The safety of envoy-infra-superseded, for the
-same reasons (cache-superseded.sh).
+It deletes the entries of the two Dispatch builds this repository keeps no more, on main once
+dispatch-builds has looked its keys up. For each build it keeps main's entry under the key
+dispatch-builds found or saved, and every main entry created after it, which a run that resolved
+a newer release beside this one saved (a release's dispatch-builds run can overlap a push's). It
+deletes the main entries created before it, of an older release or an older script, and every
+entry of that build, runner and architecture on any other ref, which only that ref's runs could
+read: the entries dispatch-two-builds saved in its runs' own refs before it stopped saving. That
+is a retention choice, not a proof that nothing reads them: a pull request whose merge base is
+older than main's newest release still resolves the older release, misses, and builds it (107 s
+at the median), as most runs did before. A run that is downloading a deleted entry at that
+moment gets a cache miss: actions/cache/restore warns and the job builds the release, slower but
+not failed. Main alone: dispatch-builds saves nothing on another branch. None is deleted unless
+the kept key is among main's entries and has the shape dispatch-builds gives it (the build, the
+runner's OS and architecture, the script's 64-hex hash, the 40-hex commit), from which
+.github/scripts/cache-superseded.sh's build mode takes the prefix it deletes under; the entries
+come from GitHub newest first and the script reads every one of them, so "created before" is
+GitHub's own order. The safety of envoy-infra-superseded, for the same reasons: a job of its own,
+the list kept as JSON, jq selecting numeric ids, each id checked to be a number before `gh cache
+delete` gets it.
+
+A leg deletes three entries at most, newest first, in the script's loop over three literal
+passes, as refill-superseded does and for its reason (#the-refill-superseded-job): each read and
+each delete
+retries through `.github/scripts/ci-retry.sh` at 30 s an attempt, the bound this repository gives
+a `gh` read of the API (dispatch://INFRA-1545, R1), so the list is one ladder,
+5 x 30 + 150 = 300 s, each delete one more, and three of them are priced ladders inside the job's
+budget. Any more stay, a warning says how
+many, and the next run deletes three more, so the 25 entries other refs held on 2026-11-23 go in
+five runs at least, six a run. A delete whose first attempt landed and whose answer was lost is
+refused on its retry as an entry that is gone, and fails the step by name; the next run deletes
+what is left. The step's own budget is 300 + 3 x 300 = 1200 s, a whole number of minutes, so it
+takes the minute above, 21; the job's is 300 s, the 5 minutes main's #5182 gave it, plus that one
+retried step, 300 + 1200 = 1500 s -> 26 min.
+
+## What bun-superseded deletes
+
+It deletes the bun entries a raise of .bun-version superseded, once the bun job has saved or
+restored the pinned version's. The bun key is the runner's OS and architecture, the build variant
+and the version (.github/actions/setup-bun's bun-pin and bun-cache steps), and an entry is written
+once and never replaced, so a raise gives each architecture a new key and leaves a whole Bun binary
+under the old one. No run of a tree that pins the new version reads it, since the restore has no
+restore-keys; left alone it would hold its space until GitHub drops it after seven days unread, and
+over the repository's cache limit GitHub evicts the least recently used entries, which can be
+another family's live one. A pull request whose tree still pins the older version restores that
+entry until it is gone, and downloads the release asset after: slower, not failed.
+
+The bun job's outputs name the key each leg looked up under that leg's architecture, bun-x64 and
+bun-arm64, as the Go fills' outputs do. The key comes from the `key` output of
+.github/actions/setup-bun, the key its bun-cache step looked up and its save writes, so it is
+worked out in that action alone. One leg of bun-superseded per architecture keeps that key and
+runs the version mode of .github/scripts/cache-superseded.sh (#the-refill-superseded-job): it
+deletes this ref's entries whose key is the kept key's prefix up to its version (bun, the OS, the
+architecture and the variant) followed by a dotted version, other than the kept key, whatever
+their age. The kept key is the pinned version's whether the leg's restore hit or its save wrote
+it, so a run after the raise deletes the old entries either way. A kept key of another shape fails
+the step and deletes nothing. None is deleted unless the kept key is among this ref's entries, so
+a leg whose restore missed and whose save did not land (a dispatched run saves nothing) leaves the
+old entries in place, and a leg whose bun job failed before it named its key skips its steps. The
+safety of envoy-infra-superseded, for the same reasons: a job of its own, the list kept as JSON, jq
+selecting numeric ids, each id checked to be a number before `gh cache delete` gets it.
+
+The architecture and the variant are kept apart because each leg names one key, its own: an
+arm64 Bun runs on no x64 runner, and an x64 runner restores the baseline build where it has no
+avx2 and the other build where it does. A leg deletes its own architecture's old entries only once
+its own new key is listed, so an arm64 leg that failed leaves arm64's old entry for the next run,
+as refill-superseded leaves a family's. The x64 leg fills the variant of the runner it lands on
+and names nothing of the other: a rule that reached the other variant's entries would have to
+work that variant's key out a second time, beside the bun-pin step that works it out now, so they
+stay until an x64 leg lands on a runner of that variant, or GitHub drops them.
+
+oven-sh/setup-bun's own cache, which this repository's jobs wrote before they passed that action
+`no-cache: true` on every ref, is keyed bun- and the base64 SHA-1 of the release asset's URL (its
+getCacheKey). Such a key names no OS, architecture, variant or version to read a prefix off, so the
+version mode neither lists nor selects it, and refuses it as a kept key; no job reads those entries
+any more, so they are left to GitHub's eviction, seven days after they were last read.
+
+A leg deletes three entries at most, in the script's loop over three literal passes, as
+refill-superseded does and for its reason (#the-refill-superseded-job): a raise supersedes one
+entry per architecture and variant, the one the version before it left. Any more stay, a warning
+says how many, and the next run deletes them. The step's own budget is 300 + 3 x 300 = 1200 s, a
+whole number of minutes, so it takes the minute above, 21; the job's is 300 s, the 5 minutes each
+other *-superseded job carries for the same one list and three deletes, plus that one retried step,
+300 + 1200 = 1500 s -> 26 min.
 
 ## The elan home
 
@@ -664,8 +818,9 @@ The elan job runs no setup-go and fills no Go family: the key is the runner's ar
 elan and the toolchain are binaries of it, and the content of the lean-toolchain the model names,
 since that file is what decides which toolchain elan installs, so the entry is refreshed when the
 model moves to another Lean and at no other time. install-elan puts elan under $RUNNER_TEMP/elan and
-`lake build` downloads the named toolchain into it on a miss, which is the whole of what is saved.
-The elan job runs on ubuntu-24.04-arm, the runner airlock-lean runs on.
+the job's retried toolchain step downloads the named toolchain into it on a miss, which is the whole
+of what is saved (.github/ci-notes/ci-caches.md#the-elan-jobs-budget). The elan job runs on
+ubuntu-24.04-arm, the runner airlock-lean runs on.
 
 ## The two entries the changes job restores
 
@@ -718,14 +873,107 @@ the changes job's restore key word for word, its `steps.base.outputs.sha` this c
 fill's step of that id names, so rule 11 holds the two to one text. An entry is about 20 KB, and
 GitHub drops each after seven days unread, so they are not deleted.
 
+The fill's downloads retry as the changes job's do, each step with its own limit above its
+arithmetic: the Go install's two fetches through .github/scripts/go-install-archive.sh, 675 s;
+setup-bun's two `ci_tools_fetch` calls, 3416 s; and the workspace install, 5 x 180 + 150 =
+1050 s. The job's limit is the 15 minutes main's #5649 gave it plus the slowest of those alone,
+900 + 3416 = 4316 s -> 72 min, as the comment above its key says.
+
 ## Which changes-git entry stays
 
 ci-caches-changes.yaml's superseded job runs cache-superseded.sh's commit mode, as
 refill-superseded does: it deletes this ref's changes-git entries created before the one its fill
-saved, and none created after it. That workflow's runs of two commits can overlap, and a later
-commit's fill can save first; then the earlier commit's job, which saved last, deletes the later
-commit's entry. So the entry that stays is the one saved last, whichever commit it is. That is the
-one the changes job's restore picks, as it takes the newest entry by prefix, and the checkout fetches
-what that entry lacks, so a run that stays on an earlier commit's objects costs it only a larger
-fetch. ci-caches.yaml's fills run one at a time, so there no entry is newer than the kept one and
-the same mode deletes every other.
+saved, three a run at most (#the-refill-superseded-job), and none created after it. That
+workflow's runs of two commits can overlap, and a later commit's fill can save first; then the
+earlier commit's job, which saved last, deletes the later commit's entry. So the entry that stays
+is the one saved last, whichever commit it is. That is the one the changes job's restore picks, as
+it takes the newest entry by prefix, and the checkout fetches what that entry lacks, so a run that
+stays on an earlier commit's objects costs it only a larger fetch. ci-caches.yaml's fills run one
+at a time, so there no entry is newer than the kept one and the same mode deletes every other.
+Its one step is that script's list and three deletes, 300 + 3 x 300 = 1200 s -> 21 min, and the
+job's limit the 5 minutes main's #5649 gave it plus that step, 300 + 1200 = 1500 s -> 26 min.
+
+## The envoy and envoy-test jobs' budgets
+
+Main's #5334 split the go-envoy-test fill out of the envoy job into a job of its own, envoy-test,
+and keyed both from measurements. The envoy job: warm, on its newest entry, 37 s a leg (jobs
+138290290861 and 138290290676); cold, from an empty module and build cache, 61 s and 48 s before
+a save of about 0.5 GB (probe run 45375660275, jobs 138381154486 and 138381153841). Main gave it
+10 minutes, about nine times the cold. The envoy-test job took 2.9 and 2.7 min warm, including
+the save. It took 4.5 and 4.2 min cold before an 8 s save in #5600's scratch run 45722872215.
+That fill omitted the module zips. See [why the fills keep them](#why-the-fills-keep-the-module-zips).
+Main gave it 30 minutes, about six times the measured cold job.
+
+Each job's first term is main's figure, and the Budgets note of `.github/ci-budgets.md` adds its
+slowest retried step alone, its Go module download, 5 x 180 + 150 = 1050 s
+(#the-go-module-downloads-before-each-fills-builds). The envoy job: 600 + 1050 = 1650 s -> 28
+min. The envoy-test job: 1800 + 1050 = 2850 s -> 48 min.
+
+## The elan job's budget
+
+The job's measured term is 1800 s, the 30 minutes it was written with: one toolchain download and
+one build of the model on a miss, where a run that finds the key costs the checkout alone. The
+Budgets note of `.github/ci-budgets.md` adds its single slowest retried step, install-elan's one
+`ci_tools_fetch` of the elan release tarball, 1708 s (that note's third worst case), above the Lean
+toolchain step's 750 s. 1800 + 1708 = 3508 s -> 59 min.
+
+The Lean toolchain step is airlock-lean's, run here on the same miss that runs the build:
+`elan toolchain install` of the toolchain lean-toolchain names, through
+`.github/scripts/ci-retry.sh` at 120 s an attempt, so the build after it downloads nothing and the
+entry saved holds the toolchain airlock-lean's build reads.
+.github/ci-notes/ci-job-airlock-lean.md#the-lean-toolchain-step-and-its-bound derives that
+bound from four measured installs, this job's own among them: job 134958116292 of run 44348716140,
+the first fill on ubuntu-24.04-arm, where elan's download took 4.8 s and the whole install 11.6 s.
+5 x 120 + 150 = 750 s -> 13 min.
+
+## The bun job's budget
+
+The bun job is the bun family's one saving job (the job's own comment says why there is one leg
+per runner architecture). No run of it is measured yet, so its first term is built from what it
+runs: a checkout of one commit, 68 s at most over the 1,032 checkouts of the 25 ci.yaml runs
+created from 2026-11-21T07:46Z to 08:23Z (median 4 s), and `.github/actions/setup-bun`, 5 s at
+most over the 482 calls in those runs that restored the entry. A miss adds the release asset of
+51,794,595 bytes and the save of what it installed. 600 s holds that with room, and the Budgets
+note of `.github/ci-budgets.md` adds the job's one retried step, setup-bun's two `ci_tools_fetch`
+calls, 2 x 1708 = 3416 s (that note's terms). 600 + 3416 = 4016 s -> 67 min, above that step's own
+57. The step after it names the key setup-bun looked up by the leg's architecture, for
+bun-superseded; it runs in a moment and fetches nothing, so neither term moves.
+
+## The dispatch-builds job's budget
+
+The job builds, on a miss of its key, each of the two builds ci.yaml's dispatch-two-builds job
+restores, with the script and the bounds that job's build steps run
+(.github/ci-notes/ci-job-dispatch-two-builds.md#the-build-steps-budgets): each build step is
+1050 + 1050 + 116 = 2216 s -> 37 min.
+
+No run of it is measured yet, so its first term is built from what it runs: the checkout of the
+whole history, 96 s at most over the 753 checkouts of dispatch-two-builds that job's own comment
+counts, and 68 s at most in the window the bun job's term above reads; the read of the
+first-rollout pin out of ci-job-dispatch-two-builds.yaml with yq, seconds, which fetches nothing;
+setup-go and setup-bun, the latter 5 s at most on a restore; and the two builds, 116 s at most
+each in the window `.github/ci-notes/ci-job-dispatch-two-builds.md` reads, and 118 s at the 90th
+percentile of the 2026-11-22 count main's #5182 gives (107 s at the median). That is under 400 s,
+and 900 s holds it with room. Its slowest retried step is setup-bun's two `ci_tools_fetch` calls,
+3416 s, above each build's 2216 s. 900 + 3416 = 4316 s -> 72 min, above every step's own budget.
+
+Main's #5182 wrote a job of this name too, keyed at 30 minutes for two builds on a miss, with no
+retried step priced. The merge of main at ae758e3b keeps one job: this one's steps and key, and
+main's `if:` (main alone), its outputs, which dispatch-builds-superseded keeps, and its read of
+the pin, which takes the place of a second copy of the commit in this job's env. None of those is
+a retried step, so neither term moves.
+
+<a id="the-notices-step-whose-script-the-gate-does-not-read"></a>
+
+## The notices step and the go-licenses install its script retries
+
+`Write every Go release archive's third-party notices and cross-build the commands`, in the notices
+job, runs `.github/scripts/go-release-notices.sh`, the script ci.yaml's lint job runs, and so waits
+for the one go-licenses install of `scripts/go-third-party-notices.sh` that
+.github/ci-notes/ci-job-lint.md#the-notices-step-whose-script-the-gate-does-not-read derives,
+1050 s. Beside it is the step's
+measured duration from a cold cache, which holds the cold build of every release target: 674 s at
+most over the 2 runs of the step in the 100 successful runs of this workflow created from
+2026-11-19T12:04Z to 2026-11-21T09:04Z (job 136376790855 of run 44762031448; every other run then
+found the key and skipped it). Since main's #5141 the step runs on every push, on the family's
+newest entry, where it compiles only what changed since that fill, so the cold figure is the most
+a run of it takes. 674 + 1050 = 1724 s -> 29 min, under the job's 127.

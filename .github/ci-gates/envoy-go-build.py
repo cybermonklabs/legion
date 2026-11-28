@@ -95,8 +95,9 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
      "`.github/actions/architecture-check/action.yml#Check the Go on PATH is the release packages/envoy/go.mod names`, `.github/actions/architecture-check/action.yml#Build the architecture-check command` and `.github/actions/architecture-check/action.yml#Check the architecture notes` run it"),
     (".dispatch/architecture/**",
      f"{at('envoy-go-build', './.github/actions/architecture-check')} judges the action's default path "
-     "(`.github/actions/architecture-check/action.yml#default: .dispatch/architecture`), which `.github/actions/architecture-check/check.sh#run()` "
-     "resolves against GITHUB_WORKSPACE and the command it runs reads"),
+     "(`.github/actions/architecture-check/action.yml#default: .dispatch/architecture`, the `path` input's default), "
+     "which `.github/actions/architecture-check/check.sh#run()` resolves against GITHUB_WORKSPACE and the command it "
+     "runs, `\"$binary\" \"$@\"`, reads"),
     (".github/actions/spec-check/action.yml",
      f"{at('envoy-go-build', './.github/actions/spec-check')} runs the action it defines"),
     (".github/actions/spec-check/check.sh",
@@ -114,8 +115,9 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
     # envoy_go_build filter names .dispatch whole too.
     (".dispatch/**",
      f"{at('envoy-go-build', './.github/actions/spec-check')} judges the action's default path "
-     "(`.github/actions/spec-check/action.yml#default: .dispatch/spec`), which `.github/actions/spec-check/check.sh#run()` "
-     "resolves against GITHUB_WORKSPACE and the command it runs reads"),
+     "(`.github/actions/spec-check/action.yml#default: .dispatch/spec`, the `path` input's default), "
+     "which `.github/actions/spec-check/check.sh#run()` resolves against GITHUB_WORKSPACE and the command it "
+     "runs, `\"$binary\" \"$@\"`, reads"),
     *[(glob, f"{at('envoy-go-build', 'Check that no CI file of this repository compares the spec files')}: "
              "spec-check guard reads every file under it")
       for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],

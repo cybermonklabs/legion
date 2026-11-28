@@ -46,7 +46,14 @@ env:
 jobs:
   dispatch-two-builds:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Budget (ci-budgets.md's Budgets note): 2700 s, the 45 minutes this job carried when main's
+    # #2461 added it, above its 878 s measured maximum (jobs 132706600704 and 132701468085, 878 s
+    # and 781 s) and holding the two-build step's own `-timeout 30m`, plus its slowest retried
+    # step alone — the setup-bun step's two `ci_tools_fetch` calls, 3416 s, above the previous
+    # build's and the first-rollout build's 2216 s each, Playwright's 1650 s, the workspace
+    # install's and the module download's 1050 s each and the ci-ok report's 2460 s.
+    # 2700 + 3416 = 6116 s -> 102 min.
+    timeout-minutes: 102
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -65,7 +72,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 45 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 102 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The Go half's database. The browser half runs on a Postgres of its own, which the harness
       # starts per step (e2e/harness-postgres.ts) from the same image digest the service runs, so
       # the service's pull is that step's too.
@@ -73,7 +80,8 @@ jobs:
       # The first-rollout build's commit, the release tagged legion-envoy-v30.20.2. That tag is
       # lightweight and no ruleset protects it, so it can move: the commit is the pin.
       # firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go holds the same
-      # commit.
+      # commit, and the dispatch-builds job of .github/workflows/ci-caches.yaml reads it from here,
+      # so its save is keyed on it as the restore below is.
       FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
     steps:
       # THIS COMMIT ALONE, THEN THE HISTORY THE BUILD SCRIPT READS, here and in
@@ -172,9 +180,28 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # As dispatch-multiprocess's download step: 180 s per attempt, 1.6 times the 113 s of the
+      # slowest cold run measured (packages/envoy/infra; packages/envoy 77 s), and an attempt the
+      # bound kills leaves what it fetched for the next one; the restore above makes the common
+      # run cost nothing.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
+        timeout-minutes: 57
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
-      - run: bun install --frozen-lockfile
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: Resolve the previous build's commit
         id: previous
         run: |
@@ -184,8 +211,9 @@ jobs:
       # a push to main and saves it in main's scope, which every pull request and merge group reads.
       # A save here would land in the run's own ref: a merge group's ref is read by no later run,
       # and a pull request's only by that pull request, so such entries filled the repository's
-      # cache (25 entries, 12.2 GB on 2026-11-23) and evicted entries other jobs read. A run whose
-      # release main has not built yet (a release tagged since the last push to main) builds it below.
+      # cache (25 entries, 12.2 GB on 2026-11-23) and evicted entries other jobs read
+      # (dispatch://INFRA-1545, R4). A run whose release main has not built yet (a release tagged
+      # since the last push to main) builds it below and keeps nothing.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - name: Restore the previous build
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -196,7 +224,14 @@ jobs:
       # A restored directory holds the complete build of that commit, which the script leaves as it
       # is. The runner context is not available in a job's env, so each step that reads the build's
       # directory names it in its own.
+      # The script's two downloads, the previous build's workspace install and the Go modules and
+      # toolchain its server loads, retry through .github/scripts/ci-retry.sh at 180 s each
+      # (packages/envoy/scripts/build-dispatch-build.sh says where). check-download-retry.sh reads
+      # no script outside .github/scripts, so this budget is derived by hand: 5 x 180 + 150 =
+      # 1050 s for each download, beside the 116 s this step measured whole in job 132706600704,
+      # 1050 + 1050 + 116 = 2216 s, the whole minute above which is 37.
       - name: Build the previous build
+        timeout-minutes: 37
         env:
           PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
@@ -225,7 +260,13 @@ jobs:
           path: |
             ${{ runner.temp }}/dispatch-first-rollout
           key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.first-rollout.outputs.commit }}
+      # The script's two downloads, at 180 s each, as the previous build's step above holds them;
+      # check-download-retry.sh reads no script outside .github/scripts, so this budget is
+      # priced by hand.
       - name: Build the first-rollout build
+        # why: .github/ci-notes/ci-job-dispatch-two-builds.md#the-build-steps-budgets
+        # 1050 + 1050 + 116 = 2216 s -> 37 min.
+        timeout-minutes: 37
         env:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
@@ -285,9 +326,13 @@ jobs:
         # screenshot, so the font packages `--with-deps` brought are not needed either. The
         # dispatch-browser-multiprocess job's step of the same name measured both and says so, and
         # with the apt work gone this step's removal of the runner image's chrome-stable apt
-        # source goes with it. The 4-minute budget is that step's, for the same download.
-        timeout-minutes: 4
-        run: bunx playwright install chromium
+        # source goes with it. The download retries as that step's does, at 300 s per attempt,
+        # for the reasons its own comment gives.
+        # Its own retry arithmetic: 5 x 300 + 150 = 1650 s -> 28 min.
+        timeout-minutes: 28
+        run: |
+          . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium >&2
         working-directory: packages/dispatch
       # The stack's connection limit, read outside the browser steps, where
       # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS), as
@@ -342,6 +387,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-two-builds
@@ -374,7 +423,12 @@ jobs:
   dispatch-two-builds-same:
     if: github.event_name == 'merge_group' && inputs.dispatch_two_builds_go == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Budget (ci-budgets.md's Budgets note): 2700 s, the 45 minutes main's #4329 gave this job, as
+    # the job above carried when it was added, holding the two-build step's own `-timeout 30m`,
+    # plus its slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls,
+    # 3416 s, above this tree's build's 2216 s, the ci-ok report's 2460 s and the workspace
+    # install's and the module download's 1050 s each. 2700 + 3416 = 6116 s -> 102 min.
+    timeout-minutes: 102
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -393,7 +447,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 45 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 102 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       # This commit alone, then main's history and the release tags, as the job above takes them:
@@ -458,11 +512,30 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # As the job above's download step: 180 s per attempt, after the same restore.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
+        timeout-minutes: 57
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
-      - run: bun install --frozen-lockfile
-      # No cache: the head is a new commit in every run.
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
+      # No cache: the head is a new commit in every run. The script's two downloads retry at 180 s
+      # each, so the budget is the job above's previous-build step's, derived the same way by hand:
+      # 1050 + 1050 + 116 = 2216 s, the whole minute above which is 37.
       - name: Build this tree as the previous build
+        timeout-minutes: 37
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-same
         run: packages/envoy/scripts/build-dispatch-build.sh --commit HEAD --out "$DISPATCH_PREVIOUS_BUILD"
@@ -484,6 +557,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: dispatch-two-builds

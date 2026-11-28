@@ -7,8 +7,12 @@
 # does not answer leaves the row cold and the run green, a row with a mirror_member pushes and
 # checks the member's own digest, an upload location written as a path resolves against the host
 # the push went to and not against the path the registry base carries, a row whose second source
-# this repository reads from no service stops the run where that read failed, and a run with no
-# push credential refuses before it reads anything.
+# this repository reads from no service stops the run where that read failed, a run with no
+# push credential refuses before it reads anything, a run fills the ghcr-mirror rows of the one
+# machine its argument names and the two machines' runs fill each row once between them, and a
+# ghcr-mirror row built for neither machine, a machine no row is built for, a machine this
+# script does not read and a run that names no machine are each refused before the package is
+# asked anything.
 #
 # NO CASE REACHES THE NETWORK. Each case starts an HTTP origin of its own on 127.0.0.1, at a port
 # the kernel picks. It answers the registry API at its root, as ghcr.io does, and under /ghcr as
@@ -36,8 +40,8 @@
 # root.
 #
 # THE CURL ON THESE CASES' PATH: the script fetches through .github/scripts/ci-tools.sh, which
-# pins `--retry 7 --retry-all-errors` with `--retry-max-time 60`, so the case whose asset does
-# not answer would sleep up to a minute. The cases put a curl of their own first on PATH, a
+# pins `--retry 7 --retry-all-errors` with `--retry-max-time 300`, so the case whose asset does
+# not answer would sleep the whole of curl's 127 s ladder. The cases put a curl of their own first on PATH, a
 # two-line script that runs the real curl with `--retry-max-time 1` appended after the arguments
 # the helper wrote, which curl reads as the last word on that option. It bounds the sleep and
 # changes nothing else. A .curlrc cannot do it, because curl reads its configuration file before
@@ -100,9 +104,11 @@ chmod 0755 "$work/bin/curl"
 # digest_of <file>: the sha256 the manifest writes bare.
 digest_of() { sha256sum -- "$1" | awk '{ print $1 }'; }
 
-# The two payloads. The `whole` row pushes its asset as it stands, and the `inner` row pushes the
-# member its archive holds, so the archive's own digest is one no row names.
+# The payloads. The `whole` row pushes its asset as it stands, and the `inner` row pushes the
+# member its archive holds, so the archive's own digest is one no row names. The `whole-aarch64`
+# row is the arm64 build of `whole`, with bytes of its own.
 printf 'the bytes a release asset would hold\n' > "$work/payloads/whole.tar.gz"
+printf 'the arm64 bytes a release asset would hold\n' > "$work/payloads/whole-arm64.tar.gz"
 mkdir -p "$work/inner-build"
 printf 'the binary inside a release tarball\n' > "$work/inner-build/inner"
 tar -czf "$work/payloads/inner.tar.gz" -C "$work/inner-build" ./inner
@@ -111,15 +117,23 @@ printf 'X' | dd of="$work/payloads/other.tar.gz" bs=1 seek=0 conv=notrunc status
 
 WHOLE=$(digest_of "$work/payloads/whole.tar.gz")
 INNER=$(digest_of "$work/inner-build/inner")
+ARM=$(digest_of "$work/payloads/whole-arm64.tar.gz")
 OTHER=$(digest_of "$work/payloads/other.tar.gz")
 WHOLE_TAG="tool-whole-1.0.0-${WHOLE:0:8}"
 INNER_TAG="tool-inner-2.0.0-${INNER:0:8}"
-# The two URLs the fixture rows name, written once, and the path the origin serves each asset
-# at: the URL with the host the CI_TOOLS_GITHUB_BASE seam stands in for taken off its front.
-WHOLE_URL=https://github.com/example/whole/releases/download/v1.0.0/whole.tar.gz
-INNER_URL=https://github.com/example/inner/releases/download/v2.0.0/inner.tar.gz
+ARM_TAG="tool-whole-aarch64-1.0.0-${ARM:0:8}"
+# The URLs the fixture rows name, written once, and the path the origin serves each asset at: the
+# URL with the host the CI_TOOLS_GITHUB_BASE seam stands in for taken off its front. Each file
+# name names the machine the way a release asset does, since that is half of how
+# .github/scripts/ci-tools.sh's ci_tools_mirror_rows reads which machine a row is built for, and
+# the riscv64 one names a machine that reading has no step for.
+WHOLE_URL=https://github.com/example/whole/releases/download/v1.0.0/whole_linux_amd64.tar.gz
+INNER_URL=https://github.com/example/inner/releases/download/v2.0.0/inner-x86_64-unknown-linux-musl.tar.gz
+ARM_URL=https://github.com/example/whole/releases/download/v1.0.0/whole_linux_arm64.tar.gz
+RISCV_URL=https://github.com/example/whole/releases/download/v1.0.0/whole_linux_riscv64.tar.gz
 WHOLE_ASSET=${WHOLE_URL#https://github.com/}
 INNER_ASSET=${INNER_URL#https://github.com/}
+ARM_ASSET=${ARM_URL#https://github.com/}
 WHOLE_SIZE=$(wc -c < "$work/payloads/whole.tar.gz")
 INNER_SIZE=$(wc -c < "$work/inner-build/inner")
 
@@ -340,9 +354,10 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as server:
 PY
 
 # row <name>: that row of the fixture manifest. The `whole` row pushes its archive as it stands,
-# the `inner` row pushes the member of its archive, the `packaged` row is an npm row, which
-# needs no copy at all, and the `odd` row names a second source this repository reads from no
-# service.
+# the `inner` row pushes the member of its archive, both built for x86_64, the `whole-aarch64`
+# row is the arm64 build of `whole`, the `whole-riscv64` row is a build for a machine no step
+# reads, the `packaged` row is an npm row, which needs no copy at all, and the `odd` row names a
+# second source this repository reads from no service.
 row() {
   case "$1" in
     whole)
@@ -371,6 +386,34 @@ YAML
     max_time: 7
     mirror_from: $INNER_URL
     mirror_member: ./inner
+YAML
+      ;;
+    whole-aarch64)
+      cat <<YAML
+  - name: whole-aarch64
+    version: 1.0.0
+    digest: $ARM
+    digest_of: the fixture's arm64 release tarball, whole
+    primary_source: github-release
+    primary: $ARM_URL
+    second_source: ghcr-mirror
+    max_time: 7
+    mirror_from: $ARM_URL
+    mirror_member: ""
+YAML
+      ;;
+    whole-riscv64)
+      cat <<YAML
+  - name: whole-riscv64
+    version: 1.0.0
+    digest: $OTHER
+    digest_of: the fixture's riscv64 release tarball, whole
+    primary_source: github-release
+    primary: $RISCV_URL
+    second_source: ghcr-mirror
+    max_time: 7
+    mirror_from: $RISCV_URL
+    mirror_member: ""
 YAML
       ;;
     packaged)
@@ -434,6 +477,9 @@ fixture() {
       inner)
         cp "$work/payloads/inner.tar.gz" "$state/assets/$INNER_ASSET"
         ;;
+      whole-aarch64)
+        cp "$work/payloads/whole-arm64.tar.gz" "$state/assets/$ARM_ASSET"
+        ;;
     esac
   done
   python3 "$work/origin.py" "$state" "$work/$name/port" &
@@ -449,11 +495,17 @@ fixture() {
   base="http://127.0.0.1:$(cat "$work/$name/port")"
 }
 
+# The machine run_mirror hands the script as its one argument: x86_64, which every fixture row
+# but the arm64 and riscv64 ones is built for. A case that runs another sets it and puts it back.
+mirror_machine=(x86_64)
+
 # run_mirror [environment assignment…]: the script under test against this case's tree and
-# origin. Sets `out` to the combined output and `status` to the exit code. Not a subshell, so
-# both survive the call. It sets CI_TOOLS_REDIRECT_HTTP=1, which lets the helper follow a
-# redirect to this file's http store and which no workflow sets, as .github/scripts/ci-tools.test.sh
-# explains.
+# origin, for the machine mirror_machine names. Sets `out` to the combined output and `status` to
+# the exit code. Not a subshell, so both survive the call. It sets CI_TOOLS_REDIRECT_HTTP=1,
+# which would let the helper follow a redirect to this file's http store and which no workflow
+# sets, as .github/scripts/ci-tools.test.sh explains; the script asks the helper to follow none,
+# so the redirect cases below read its refusal under the one environment in which a follow could
+# have reached the store.
 run_mirror() {
   set +e
   : > "$curl_arguments"
@@ -465,7 +517,7 @@ run_mirror() {
     GITHUB_TOKEN=fixture-password \
     PATH="$work/bin:$PATH" \
     RUNNER_TEMP="$runner_temp" \
-    "$@" "$root/.github/scripts/mirror-ci-tools.sh" 2>&1)
+    "$@" "$root/.github/scripts/mirror-ci-tools.sh" ${mirror_machine[@]+"${mirror_machine[@]}"} 2>&1)
   status=$?
   set -e
 }
@@ -531,7 +583,7 @@ check "the package now holds the whole archive, which is what this row pushes" \
 check "the manifest names the archive layer media type" \
   "$(contains "$(cat "$state/manifests/$WHOLE_TAG")" '"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip"')"
 check "and the asset's own file name" \
-  "$(contains "$(cat "$state/manifests/$WHOLE_TAG")" '"org.opencontainers.image.title":"whole.tar.gz"')"
+  "$(contains "$(cat "$state/manifests/$WHOLE_TAG")" '"org.opencontainers.image.title":"whole_linux_amd64.tar.gz"')"
 check "and the config blob it pushed" \
   "$(contains "$(cat "$state/manifests/$WHOLE_TAG")" "\"digest\":\"sha256:$WHOLE_CONFIG\"")"
 check "read the blob back after the push" \
@@ -637,9 +689,9 @@ check "the package holds the blob the run pushed" \
 check "and left no temporary file" "$(is "$(temporary_files)" "")"
 
 echo "case: a HEAD the package answers with a redirect to the store that holds the blob"
-# A registry may answer a HEAD of a blob with a redirect to the store that holds it. The run
-# follows it, and the push token goes with the first request alone: the store is read in a
-# request of its own, with no Authorization header, and its answer is the one the row is read by.
+# A registry may answer a HEAD of a blob with a redirect to the store that holds it. ghcr.io
+# answers a HEAD itself, so this run follows no redirect: the 302 is refused by name as a status
+# it does not admit, the push token goes to the package alone, and the store is asked nothing.
 # The run is under the forwarding curl, so a HEAD that left the follow to curl's `-L` hands the
 # store the push token here, and under a .curlrc that names location-trusted, which a HEAD that
 # read it would follow with the push token too.
@@ -657,36 +709,45 @@ printf 'location-trusted\n' > "$curlrc_home/.curlrc"
 : > "$forwarding_curl"
 run_mirror HOME="$curlrc_home" CURL_HOME="$curlrc_home" XDG_CONFIG_HOME="$curlrc_home"
 rm -f -- "$forwarding_curl"
-check "exits 0" "$(is "$status" 0)"
-check "holds the row, by the store's answer" "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)$")"
+check "fails" "$(is "$status" 1)"
+check "names the redirect as one this run does not follow" \
+  "$(contains "$out" "^::error file=.github/ci-tools.yaml::a HEAD of $base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE answered 302, a redirect, which this run does not follow: ghcr.io answers a HEAD of a blob and of a tag itself")"
+check "and refuses the row for that status" \
+  "$(contains "$out" "^::error file=.github/ci-tools.yaml::whole: a HEAD of $base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE answered 302,")"
 check "the package was asked for the blob and the tag, each with the push token" \
   "$(is "$(requests HEAD)" "HEAD blob sha256:$WHOLE HEAD manifest $WHOLE_TAG ")"
-check "the store was asked once, with no Authorization header" \
-  "$(is "$(cat "$store_log")" "HEAD store /v2/$REGISTRY_PATH/blobs/sha256:$WHOLE none")"
+check "the store was asked nothing" "$(is "$(cat "$store_log")" "")"
 check "and nothing is pushed" "$(is "$(requests PUT)$(requests POST)" "")"
 
 echo "case: a HEAD the package answers with a redirect to a file:// address"
-# A store is read at an https address, or an http one under CI_TOOLS_REDIRECT_HTTP=1, and at no
-# other scheme: the 302 is the status this run reads, which it admits nowhere.
+# No redirect is followed, so no address a redirect names is read whatever its scheme: the 302 is
+# the status this run reads, which it admits nowhere.
 fixture head-file whole
 printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
 printf '%s\n' "file:///etc/hostname" > "$state/flags/blob-head-redirect"
 run_mirror
 check "fails" "$(is "$status" 1)"
-check "the helper names the redirect and the scheme it reads a store at" \
-  "$(contains "$out" "^::error::ci-tools: a HEAD of $base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE answered 302, a redirect to file://, which this run does not follow: it reads a store at an https address alone$")"
+check "names the redirect as one this run does not follow" \
+  "$(contains "$out" "^::error file=.github/ci-tools.yaml::a HEAD of $base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE answered 302, a redirect, which this run does not follow")"
 check "and this script refuses the row for that status" \
   "$(contains "$out" "^::error file=.github/ci-tools.yaml::whole: a HEAD of $base/v2/$REGISTRY_PATH/blobs/sha256:$WHOLE answered 302,")"
+check "and the helper read no address the redirect named" "$(is "$(contains "$out" 'file://')" false)"
 check "and nothing is pushed" "$(is "$(requests PUT)$(requests POST)" "")"
 
 echo "case: an npm row"
-fixture npm-row packaged
+# Beside a ghcr-mirror row the package holds: a run reads the rows of a machine some row is
+# built for, and a manifest of npm rows alone has none (the case of a machine no row is built
+# for, below).
+fixture npm-row whole packaged
+cp "$work/payloads/whole.tar.gz" "$state/blobs/sha256:$WHOLE"
+printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
 run_mirror
 check "exits 0" "$(is "$status" 0)"
 check "says the row needs no copy" \
   "$(contains "$out" '^none packaged needs no copy: its second source is npm, which serves the bytes itself$')"
-check "counts it" "$(contains "$out" '^0 ghcr-mirror row(s) held, 0 filled, 0 cold, and 1 row(s) that need no copy$')"
-check "and reads nothing for it" "$(is "$(requests HEAD)$(requests 'GET asset')" "")"
+check "counts it" "$(contains "$out" '^1 ghcr-mirror row(s) held, 0 filled, 0 cold, and 1 row(s) that need no copy$')"
+check "and reads nothing for it" \
+  "$(is "$(requests HEAD)$(requests 'GET asset')" "HEAD blob sha256:$WHOLE HEAD manifest $WHOLE_TAG ")"
 
 echo "case: a run with no GITHUB_TOKEN"
 fixture no-push-credential whole
@@ -711,5 +772,90 @@ check "stops at that row, after the row before it was read" \
   "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)\$")"
 check "says of no row that it needs no copy" "$(is "$(contains "$out" 'needs no copy')" false)"
 check "and prints no summary line" "$(is "$(contains "$out" 'row(s) held')" false)"
+
+echo "case: a run fills its own machine's rows, and the other machine's run the rest"
+# ci.yaml's ci-images job runs the script once per machine. Each run names the rows its machine
+# is built for, fills those, and asks the package and the release host nothing about the other
+# machine's row, so the two runs fill each ghcr-mirror row once between them; an npm row is
+# named by both, since neither has anything to fill for it.
+fixture one-machine-a-run whole whole-aarch64 packaged
+run_mirror
+check "the x86_64 run exits 0" "$(is "$status" 0)"
+check "names the one row its machine is built for" \
+  "$(contains "$out" '^x86_64: this run fills the copy of whole$')"
+check "fills that row" "$(contains "$out" "^filled whole sha256:$WHOLE ($WHOLE_TAG)\$")"
+check "says nothing of the arm64 row" "$(is "$(contains "$out" 'whole-aarch64')" false)"
+check "names the npm row" "$(contains "$out" '^none packaged needs no copy')"
+check "counts its own row and the npm row" \
+  "$(contains "$out" '^0 ghcr-mirror row(s) held, 1 filled, 0 cold, and 1 row(s) that need no copy$')"
+check "asks the package about its own row alone" \
+  "$(is "$(requests HEAD)" "HEAD blob sha256:$WHOLE HEAD manifest $WHOLE_TAG HEAD blob sha256:$WHOLE ")"
+check "and reads its own asset alone" "$(is "$(requests 'GET asset')" "GET asset /$WHOLE_ASSET ")"
+: > "$log"
+mirror_machine=(aarch64)
+run_mirror
+mirror_machine=(x86_64)
+check "the aarch64 run exits 0" "$(is "$status" 0)"
+check "names the one row its machine is built for" \
+  "$(contains "$out" '^aarch64: this run fills the copy of whole-aarch64$')"
+check "fills that row" "$(contains "$out" "^filled whole-aarch64 sha256:$ARM ($ARM_TAG)\$")"
+check "says nothing of the x86_64 row" "$(is "$(contains "$out" '^\(held\|filled\|cold\) whole ')" false)"
+check "names the npm row too" "$(contains "$out" '^none packaged needs no copy')"
+check "asks the package about its own row alone" \
+  "$(is "$(requests HEAD)" "HEAD blob sha256:$ARM HEAD manifest $ARM_TAG HEAD blob sha256:$ARM ")"
+check "and reads its own asset alone" "$(is "$(requests 'GET asset')" "GET asset /$ARM_ASSET ")"
+check "the package now holds each row's layer and config, one row from each run, and nothing else" \
+  "$(is "$(cd "$state/blobs" && ls | sort | tr '\n' ' ')" "$(printf 'sha256:%s\n' "$WHOLE" "$ARM" "$WHOLE_CONFIG" "$(config_digest "$ARM")" | sort | tr '\n' ' ')")"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: a ghcr-mirror row built for neither machine"
+# A third machine's row reads as x86_64 by its name alone, which is why its asset is read as
+# well: whole_linux_riscv64.tar.gz names no word of x86_64. Both machines' runs refuse it by
+# name before they ask the package anything, so neither can pass while that row is filled by
+# neither.
+fixture third-machine whole whole-aarch64 whole-riscv64
+run_mirror
+check "the x86_64 run fails" "$(is "$status" 1)"
+check "names the row, what its name reads and what its asset names" \
+  "$(contains "$out" "^::error::ci-tools: whole-riscv64: this ghcr-mirror row is filled and checked by no machine's step. Its name reads x86_64 .* and the asset its copy is filled from, 'whole_linux_riscv64.tar.gz', names neither x86_64 nor aarch64")"
+check "fills nothing" "$(is "$(contains "$out" '^\(held\|filled\|cold\) ')" false)"
+check "and asks the package nothing" "$(is "$(cat "$log")" "")"
+mirror_machine=(aarch64)
+run_mirror
+mirror_machine=(x86_64)
+check "the aarch64 run fails" "$(is "$status" 1)"
+check "naming the same row" \
+  "$(contains "$out" "^::error::ci-tools: whole-riscv64: this ghcr-mirror row is filled and checked by no machine's step")"
+check "and asks the package nothing either" "$(is "$(cat "$log")" "")"
+
+echo "case: a machine no ghcr-mirror row is built for"
+fixture no-row-of-the-machine whole
+mirror_machine=(aarch64)
+run_mirror
+mirror_machine=(x86_64)
+check "fails" "$(is "$status" 1)"
+check "names the machine" \
+  "$(contains "$out" "^::error::ci-tools: .github/ci-tools.yaml holds no ghcr-mirror row built for aarch64, so the step that reads that machine's rows would read nothing")"
+check "and asks the package nothing" "$(is "$(cat "$log")" "")"
+
+echo "case: a machine this script does not read"
+fixture unknown-machine whole
+mirror_machine=(riscv64)
+run_mirror
+mirror_machine=(x86_64)
+check "fails" "$(is "$status" 1)"
+check "names the machine and the two it reads" \
+  "$(contains "$out" "^::error::ci-tools: ci_tools_mirror_rows reads the ghcr-mirror rows of x86_64 or aarch64, and this call asked for 'riscv64'\$")"
+check "and asks the package nothing" "$(is "$(cat "$log")" "")"
+
+echo "case: a run that names no machine"
+fixture no-machine whole
+mirror_machine=()
+run_mirror
+mirror_machine=(x86_64)
+check "fails" "$(is "$status" 1)"
+check "refuses in one sentence" \
+  "$(is "$out" "::error file=.github/ci-tools.yaml::this run fills the copy of one machine's ghcr-mirror rows, and takes that machine, x86_64 or aarch64, as its one argument; this call gave 0, so it reads nothing and fills nothing.")"
+check "and asks the package nothing" "$(is "$(cat "$log")" "")"
 
 summary "mirror-ci-tools.sh"

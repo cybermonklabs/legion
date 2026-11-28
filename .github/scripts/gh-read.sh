@@ -1,22 +1,58 @@
 #!/usr/bin/env bash
-# The two ways the scripts beside this file, and the workflow steps that source it, make a GitHub
-# call with the run's token: gh_wait_reset, which every call goes through, and gh_read, a retry
-# ladder over it for the calls a single refusal must decide nothing for.
+# The wait the scripts beside this file, and the workflow steps that source it, put in front of a
+# GitHub call made with the run's token: gh_wait_reset. It is no retry ladder. The one ladder of
+# this repository's CI is retry_fetch, in .github/scripts/ci-retry.sh (dispatch://INFRA-1545, R2),
+# and a call that retries runs that ladder through this wait, in one form:
 #
-# Sourced, never run: `source "$(dirname "${BASH_SOURCE[0]}")/gh-read.sh"`.
+#     gh_wait_reset [--stderr <file>] retry_fetch "<what>" <bound> -- gh ...
+#
+# which .github/scripts/check-download-retry.sh reads as one ladder, as it reads a bare
+# retry_fetch, because of the margin below. The two artifact-list reads of
+# ci-job-download-retry.yaml are the exception: they drive retry_fetch under a fault, and main
+# never ran them through this wait, so they stay bare.
+#
+# Sourced, never run: `source "$(dirname "${BASH_SOURCE[0]}")/gh-read.sh"`. It sources
+# ci-log-guard.sh, the file beside it, as ci-retry.sh does, for the block below.
 #
 # gh_wait_reset [--stderr <file>] <command>...: runs the command once. When it fails on one of
-# GitHub's rate limits, it works out when GitHub will answer again and, when that falls before the
-# job's limit (or the step's, below) by at least GH_WAIT_MARGIN seconds, logs one ::warning:: line
-# naming the wait and the limit, sleeps until then and runs the command once more; when that time
-# has passed by the moment it would sleep (a slow host), it runs the command once more at once and
-# logs no wait. When that time falls past the limit, or no limit can be read, it runs nothing more
-# and fails by name at once. Any other failure is the command's own: its stdout, its stderr and
-# its exit status reach the caller as a bare call's would. It returns the status of the run it
-# ended on, or 75 when it failed by name: a wait past the limit, no limit to wait within, a reset
-# it could not read, or a refusal again after the wait. Every line of its own goes to stderr;
-# stdout holds the stdout of the run it ended on and nothing else, so a run it repeats leaves no
-# half page in the caller's hands.
+# GitHub's rate limits, it works out when GitHub will answer again and, when that time plus the
+# command's margin (below) falls before the job's limit (or the step's, below), logs one
+# ::warning:: line naming the wait and the limit, sleeps until then and runs the command once
+# more; when that time has passed by the moment it would sleep (a slow host), it runs the command
+# once more at once and logs no wait. When it falls later, or no limit can be read, it runs
+# nothing more and fails by name at once, without sleeping. Any other failure is the command's
+# own: its stdout, its stderr and its exit status reach the caller as a bare call's would. It
+# returns the status of the run it ended on, or 75 when it failed by name: a wait past the limit,
+# no limit to wait within, a reset it could not read, or a refusal again after the wait. Every
+# line of its own goes to stderr; stdout holds the stdout of the run it ended on and nothing else,
+# so a run it repeats leaves no half page in the caller's hands.
+#
+# The margin is the time this call may still take after the wait. For `retry_fetch <what> <bound>
+# -- ...` it is that ladder's whole run, five attempts of <bound> seconds and its sleeps of 10,
+# 20, 40 and 80 s, 5 x <bound> + 150 s, plus GH_WAIT_MARGIN's 30 s; for any other command it is
+# GH_WAIT_MARGIN alone. So the ladder this runs again never outlives the nearer of the job's and
+# the step's limit: it runs it again only when the wait, the whole ladder and GH_WAIT_MARGIN end
+# before that limit, with no wait (the budget back already) as with one.
+# A STATED LIMIT: the margin does not cover the later calls of the same step, and each of them is
+# a ladder of its own. So a wait followed by 5xx answers on those later calls can run the step to
+# its `timeout-minutes`, which the runner reports as the step's timeout, never as a pass. Main put
+# no time bound on those calls.
+# A STATED LIMIT: in the composed form each attempt's log lines, retry_fetch's blocks and gh's
+# words in them, go to this helper's file (_gh_read_run) and reach the log only when that run of
+# the ladder has ended, before the wait for a refused run and when gh_wait_reset returns for the
+# run it ends on. So a step killed at its key in the middle of a ladder shows none of that
+# ladder's lines.
+#
+# Where the caller sent stdout to stderr (`gh_wait_reset ... >&2`, read as
+# `[ /dev/fd/1 -ef /dev/fd/2 ]`), the run's stdout is text for the log, and it is written inside
+# a stop-commands block of its own (ci-log-guard.sh), as retry_fetch writes such a copy inside its
+# attempt's block. retry_fetch cannot do that here: its stdout is this helper's file, and it reads
+# that as a caller's capture. Anywhere else stdout is the caller's value, and is copied plain.
+#
+# A run it repeats leaves its stderr in the log inside a stop-commands block of its own, written
+# before the wait: that text is the host's, and a ladder's `::error::` of exhaustion in it must not
+# annotate a step whose call the run after the wait still answers. The stderr of the run it ends
+# on is printed bare, as a bare call's would be, so a refusal it ends on annotates the step.
 #
 # --stderr <file> writes the stderr of the run it ended on to <file> instead of stderr, for a
 # caller that reads gh's words (a 404 told apart from a refusal); an earlier run's stderr, and
@@ -38,18 +74,20 @@
 #     retry-after header, whose seconds are waited. GitHub asks for at least a minute where a
 #     secondary limit's answer names no retry-after, but such an answer differs from any other 403
 #     by its message alone, so the helper does not wait for one: it is the command's own failure,
-#     which gh_read's ladder, or the caller, answers.
+#     which the composed form's ladder, or the caller, answers.
 # Any other answer, a 504 whatever its message says, is the command's own failure.
 #
 # Where the answer comes from. While the command runs, the first gh on PATH is the helper's own, a
 # script in its work directory that runs the real gh (_gh_read_gh), with that directory taken off
 # PATH again first: a gh that checks it is the first gh on PATH, as a Legion pane's `legion gh`
 # does, still finds itself. So a command that runs gh by name through any wrapper (bash -c, or a
-# shell function that runs it under timeout) hands the helper the answer of the last gh it ran. gh
-# prints no header of an answer but under GH_DEBUG=api, which logs each request and its answer,
-# body and all, from a `* Request at` line to a `* Request took` line, so the helper's gh runs
-# `gh api` under GH_DEBUG=api, keeps the answer's status and headers, and hands on gh's stderr
-# without the log. Only a `gh api` without --paginate: one request, whose log ends at the last
+# shell function that runs it under timeout) hands the helper the answer of the last gh it ran.
+# retry_fetch is such a function: in the composed form the answer is the one its last attempt got,
+# the attempt whose status retry_fetch returns. gh prints no header of an answer but under
+# GH_DEBUG=api, which logs each request and its answer, body and all, from a `* Request at` line
+# to a `* Request took` line, so the helper's gh runs `gh api` under GH_DEBUG=api, keeps the
+# answer's status and headers, and hands on gh's stderr without the log. Only a `gh api` without
+# --paginate: one request, whose log ends at the last
 # `took` line, which a line of the body cannot move. gh release view, edit and upload send a
 # GraphQL lookup and a REST request together, and a paginated read sends one per page, so a log of
 # theirs holds more than one answer's body (a draft release's name and body, ahead of
@@ -66,6 +104,13 @@
 # remains: such a command that fails for its own reason (a 404, say) while its budget is at 0, as
 # when its own call spent the last unit, or, for those that may send both, while the other budget
 # is. A command that ran no gh by name (git, say) spends no budget, and its failure is its own.
+# A STATED LIMIT: in the composed form that rate_limit read comes once, after the whole ladder,
+# and its 30 s bound is not in the ladder's arithmetic, 5 x <bound> + 150 s, which
+# check-download-retry.sh charges the call. So a step whose `timeout-minutes` leaves less than
+# 30 s over its ladders can reach that limit in the read, after a ladder whose last attempt exited
+# 1, before the helper names the failure. The runner reports that as the step's timeout, never as
+# a pass. Only the key of dispatch-browser.yaml's "Reading one, the rows" holds those 30 s, by
+# hand.
 #
 # Where the limit comes from. GitHub enforces a job's timeout-minutes from the job's start, and
 # a step's from the step's, and the runner exposes neither the limit nor the start to a step.
@@ -83,27 +128,29 @@
 # no Runner.Worker among the parents (a container job, whose steps run in another process
 # namespace, or a run outside Actions), the helper has no deadline and does not wait.
 #
-# gh_read <command>...: runs the command through gh_wait_reset, and on any failure but a rate
-# limit it could not wait for within a limit runs it again twice, GH_RETRY_SECONDS (10 by
-# default; the tests set 0) and then twice as many seconds apart. A rate limit met with no limit
-# set (JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES unset, or no Runner.Worker to measure from)
-# keeps those two later attempts, as the ladder made them before the wait existed: one may land
-# after a short reset. It prints the stdout of the attempt that succeeded and nothing else; every
-# attempt's stderr goes to the caller's stderr, where the job log holds it. It returns 0 for the
-# attempt that succeeded, 75 when gh_wait_reset failed by name on the attempt it stopped at (past
-# a limit, another attempt within seconds cannot find a limit that lifts later), and 1 when all
-# three were refused otherwise, which is the caller's to answer: a refused jobs list leaves
-# ci-ok-report.sh with no result to name for the jobs that have not ended, a refused post leaves
-# no ci-ok at all, and a refused PATCH leaves a stale ci-ok on the head. Its callers: the jobs
-# list and the queue branch's tip of ci-ok-report.sh, the `git ls-remote` ref reads of
-# ci-ok-hold.sh, the check-run post of post-check-run.sh, the check-run list and each PATCH of
-# ci-ok-reconcile.sh, the check-run and annotation reads of runner-shutdown.sh, and the jobs read of
-# dispatch-browser-run-reads.sh, which bounds each attempt with `timeout 30`. GitHub
-# refuses a call now and then (a 502), and ci-ok, the check main's ruleset requires, is posted
-# from what one call answered.
+# Its callers: every GitHub call of cancel-started-act.sh, check-pr-text.sh, find-pr-payload.sh,
+# ci-ok-report.sh, ci-ok-reconcile.sh, post-check-run.sh and runner-shutdown.sh, ci-ok-hold.sh's
+# run read and `git ls-remote` ref reads, dispatch-browser-run-reads.sh's jobs read,
+# priority-conflicts.sh's label read, fetch and read of the queue's branches, and the steps of
+# ci-caches.yaml, dequeued.yaml and main-bypass-check.yaml, each in the form above; and,
+# with no ladder, the release calls of release-push.sh, which R2's exception (d) leaves unretried
+# in the credentialed publish jobs, and check-daemon-api-contract.sh's reads.
 
-# Seconds the deadline must leave after the reset: the repeated call and what the step does after
-# it run in that time. A gh call takes about a second and a paginated read a few.
+if ! command -v ci_log_block_open > /dev/null 2>&1; then
+  if [ -r "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-log-guard.sh" ]; then
+    # shellcheck source=.github/scripts/ci-log-guard.sh
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-log-guard.sh"
+  else
+    echo "::error::gh-read.sh: ci_log_block_open is not defined and no ci-log-guard.sh can be read beside this file" >&2
+    return 2
+  fi
+fi
+
+# GH_WAIT_MARGIN, the 30 s of the margin above: for a call with a ladder it follows the ladder's
+# 5 x <bound> + 150 s, so the deadline must leave that whole ladder and these 30 s after the wait;
+# for a call with no ladder it is the whole margin, the one run included (the deadline check is
+# `wake + margin`), where a gh call takes about a second and a paginated read a few. It covers no
+# later call of the same step, each a ladder of its own (the header's stated limit on those calls).
 GH_WAIT_MARGIN=30
 # This file's absolute path, for the gh the helper puts first on PATH, which sources it: a caller
 # may change directory after sourcing it by a relative path.
@@ -113,10 +160,19 @@ _GH_READ_SOURCE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH
 # `set -e` (and inherit_errexit) reaches the decision below rather than leaving at the first
 # refused run.
 gh_wait_reset() {
-  local into='' dir status=0 kind reset=0 seconds until wake now pause limit deadline why failure=''
+  local into='' dir status=0 kind reset=0 seconds until='' wake now pause limit deadline why
+  local failure='' margin=$GH_WAIT_MARGIN ladder='' again token
   if [ "${1:-}" = --stderr ]; then
     into=$2
     shift 2
+  fi
+  # The ladder's own arithmetic, read off the call as check-download-retry.sh reads it: the bound
+  # is the word after <what>, and `--` the word after that. A bound retry_fetch refuses runs no
+  # attempt, so it meets no rate limit and needs no margin.
+  if [ "${1:-}" = retry_fetch ] && [ "${4:-}" = -- ] && [[ ${3:-} =~ ^[0-9]+$ ]]; then
+    ladder=$((5 * 10#$3 + 150))
+    margin=$((ladder + GH_WAIT_MARGIN))
+    again="one more run of its ladder, 5 x $((10#$3)) + 150 = $ladder s, and $GH_WAIT_MARGIN s after it"
   fi
   dir=$(mktemp -d) || return 1
   _gh_read_shim "$dir"
@@ -147,23 +203,45 @@ gh_wait_reset() {
       wake=$((now + seconds + 1))
       until="GitHub's secondary rate limit asks this call to wait $seconds s (its retry-after), until $(_gh_read_utc "$wake")"
     fi
-    if [ -z "$failure" ] && [ "$wake" -gt "$now" ]; then
+    # A ladder is held to the limit even where there is nothing to wait for: run again at once, it
+    # still takes up to its whole margin.
+    if [ -z "$failure" ] && { [ "$wake" -gt "$now" ] || [ -n "$ladder" ]; }; then
+      [ -n "$until" ] || until="GitHub refused this call for its API rate limit, and its rate_limit route shows the budget back"
       if ! limit=$(_gh_read_deadline); then
         failure="$until, and $limit, so this step does not wait for it; re-run the job after that time"
       else
         deadline=${limit%% *} why=${limit#* }
-        if [ $((wake + GH_WAIT_MARGIN)) -gt "$deadline" ]; then
-          failure="$until, past this $why's limit at $(_gh_read_utc "$deadline"); re-run the job after that time"
+        if [ $((wake + margin)) -gt "$deadline" ]; then
+          if [ -n "$ladder" ]; then
+            failure="$until, and that time with $again ends at $(_gh_read_utc $((wake + margin))), past this $why's limit at $(_gh_read_utc "$deadline"); re-run the job after that time"
+          else
+            failure="$until, past this $why's limit at $(_gh_read_utc "$deadline"); re-run the job after that time"
+          fi
         fi
       fi
     fi
     if [ -z "$failure" ]; then
-      # The refused run's words stay in the log; the run below is the one the caller gets.
-      cat "$dir/err" >&2
+      # The refused run's words stay in the log, inside a stop-commands block of their own: they
+      # are the host's text, and where the command is a ladder they hold its `::error::` of
+      # exhaustion, which must not annotate a step whose call the run below may still answer.
+      # The run below is the one the caller gets, printed as any run this ends on is, so a
+      # refusal it ends on still annotates the step.
+      token=$(ci_log_token) || token=
+      if [ -n "$token" ]; then
+        ci_log_block_open "$token"
+        cat "$dir/err" >&2 || true
+        ci_log_block_close "$token"
+      else
+        echo "gh-read.sh: no stop-commands token could be made, so the refused run's words are not printed" >&2
+      fi
       now=$(date +%s)
       pause=$((wake > now ? wake - now : 0))
       if [ "$pause" -gt 0 ]; then
-        echo "::warning::$until; waiting $pause s for it, within this $why's limit at $(_gh_read_utc "$deadline"), then calling once more" >&2
+        if [ -n "$ladder" ]; then
+          echo "::warning::$until; waiting $pause s for it, then $again, within this $why's limit at $(_gh_read_utc "$deadline")" >&2
+        else
+          echo "::warning::$until; waiting $pause s for it, within this $why's limit at $(_gh_read_utc "$deadline"), then calling once more" >&2
+        fi
         sleep "$pause"
       fi
       status=0
@@ -188,31 +266,25 @@ gh_wait_reset() {
   if [ -n "$failure" ]; then
     echo "::error::$failure" >&2
     status=75
+  elif [ /dev/fd/1 -ef /dev/fd/2 ] && [ -s "$dir/out" ]; then
+    # Text for the log, the host's as much as the command's stderr is: inside a block of its own,
+    # whose markers go on stderr with it (the stream they share here). `|| token=` keeps a token
+    # that cannot be made from ending a caller under errexit; the output then stays unwritten, and
+    # the status says so.
+    token=$(ci_log_token) || token=
+    if [ -z "$token" ]; then
+      echo "::error::gh-read.sh: no stop-commands token could be made, so this call's output is not printed" >&2
+      status=2
+    else
+      ci_log_block_open "$token"
+      cat "$dir/out" >&2 || status=$?
+      ci_log_block_close "$token"
+    fi
   else
-    cat "$dir/out"
+    cat "$dir/out" || status=$?
   fi
   rm -rf "$dir"
   return "$status"
-}
-
-gh_read() {
-  local attempt output status
-  for attempt in 1 2 3; do
-    if output=$(gh_wait_reset "$@"); then
-      printf '%s' "$output"
-      return 0
-    else
-      status=$?
-    fi
-    # Past a limit, later attempts within seconds meet the same refusal; with no limit set, the
-    # ladder's later attempts are the only retry there is, and one may land after a short reset.
-    if [ "$status" -eq 75 ] && _gh_read_deadline > /dev/null; then
-      return 75
-    fi
-    [ "$attempt" -eq 3 ] || sleep $((attempt * ${GH_RETRY_SECONDS:-10}))
-  done
-  [ "$status" -ne 75 ] || return 75
-  return 1
 }
 
 # _gh_read_shim <dir>: writes <dir>/bin/gh, the gh the commands of one gh_wait_reset meet first
@@ -264,6 +336,10 @@ _gh_read_gh() {
   local answer=$1 status=0 arg traced='' trace pid='' pending='' stdin='' budgets
   shift
   PATH=${PATH#"${answer%/answer}/bin:"}
+  # gh by name, bound to the real gh's file: check-download-retry.sh refuses a run whose command
+  # word is an expansion, since it cannot name what runs there. `hash -p` sets what the name runs
+  # without a change to PATH, and comes after the PATH assignment above, which empties the table.
+  hash -p "$GH_READ_GH" gh
   budgets=$(_gh_read_budgets "$@")
   if [ "${1:-}" = api ]; then
     traced=yes
@@ -273,7 +349,7 @@ _gh_read_gh() {
   fi
   if [ -z "$traced" ] || ! trace=$(mktemp "$answer.trace.XXXXXX"); then
     echo "unread $budgets" > "$answer"
-    exec "$GH_READ_GH" "$@"
+    exec gh "$@"
   fi
   { exec {stdin}<&0; } 2> /dev/null || stdin=''
   trap 'if [ -n "$pid" ]; then kill -s TERM "$pid" 2> /dev/null; else pending=TERM; fi' TERM
@@ -282,9 +358,9 @@ _gh_read_gh() {
   (
     export GH_DEBUG=api
     if [ -n "$stdin" ]; then
-      exec "$GH_READ_GH" "$@" <&"$stdin" {stdin}<&- 2> "$trace"
+      exec gh "$@" <&"$stdin" {stdin}<&- 2> "$trace"
     fi
-    exec "$GH_READ_GH" "$@" <&- 2> "$trace"
+    exec gh "$@" <&- 2> "$trace"
   ) &
   pid=$!
   [ -z "$pending" ] || kill -s "$pending" "$pid" 2> /dev/null
@@ -437,7 +513,8 @@ _gh_read_header() {
 
 # _gh_read_reset [<budget>...]: prints the latest reset (epoch seconds) of the named budgets (core
 # and graphql when none is named) that GET /rate_limit reports at 0, or 0 when none is. Fails with
-# gh's words on stderr when the route does not answer, bounded like every read the ladder makes.
+# gh's words on stderr when the route does not answer, bounded at the 30 s a `gh api` read of this
+# repository's CI carries.
 _gh_read_reset() {
   local reset budget picks=''
   [ "$#" -gt 0 ] || set -- core graphql

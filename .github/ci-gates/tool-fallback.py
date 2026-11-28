@@ -4,18 +4,22 @@
 # the gate beside it, the rig and the fault proxy it drives, the nine actions it installs
 # through, and the two files a row's version is pinned in that a step of it reads.
 GATE = gate("tool_fallback", "tool-fallback", reads=reads(
-    (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr-mirror row, "
+    (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} and {at('tool-fallback', TOOL_BLOB_ARM_STEP)} "
+                              "read the digest of every ghcr-mirror row, each the rows of one machine, "
                               f"and {at('tool-fallback', TOOL_ROWS_STEP)} reads every row"),
     (".github/scripts/ci-tools.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)}: the rig fetches each row's correct "
-                                    "bytes through it, and the two steps above source it for a row's fields"),
+                                    "bytes through it, and the three steps above source it for a row's fields"),
     (".github/scripts/ci-tools-proof.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)} runs it, as every other step "
                                           "of this job that drives the proof does; tool-fallback-arm drives it "
                                           "too, and the test job runs its ladder-report verb over logs of its "
                                           "own"),
     (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig starts it in front "
                                           "of GitHub's release assets"),
-    (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} refuses a row that script has "
-                                           "not filled, and states the rule that is the opposite of its own"),
+    *ci_retry("`.github/actions/install-jj/action.yml#Install the worker image's jj` step sources it and retries "
+              "`mise install` through it, in each of this job's install-jj steps"),
+    (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} and "
+                                           f"{at('tool-fallback', TOOL_BLOB_ARM_STEP)} refuse a row that script has "
+                                           "not filled, and state the rule that is the opposite of its own"),
     (".github/scripts/check-ci-tools.sh", f"{at('tool-fallback', TOOL_ROWS_STEP)} prints the one literal both "
                                           "paths are held to, which that gate holds every row and every call "
                                           "site of the tree to"),

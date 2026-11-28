@@ -65,9 +65,14 @@ jobs:
     # included (measured here, dispatch://INFRA-1413). This job restores no cache, so every run
     # compiles that command's 1,217 packages from nothing; 20 minutes is many times the cold
     # build and the 148 cases after it, and still fails a hung case well inside the hour.
-    timeout-minutes: 20
+    #
+    # Budget (ci-budgets.md's Budgets note): those 20 minutes, 1200 s, plus its slowest retried
+    # step alone — the ci-ok report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"), above the Go
+    # module download's 5 x 180 + 150 = 1050 s. 1200 + 2460 = 3660 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 62 min.
+    timeout-minutes: 62
     env:
-      JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 62 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,11 +88,28 @@ jobs:
           token: ''
           cache: false
 
+      # The modules the harness's build of ./cmd/legion compiles, downloaded once and retried
+      # before it (ci-budgets.md's Retries note; the retried unit is the download, never the
+      # build). One call: the root go.work binds packages/daemon and packages/envoy, and a
+      # download in either reads both modules' requirements. 180 s per attempt, as that note
+      # derives; this job restores no cache, so every run makes this download.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the Go workspace's modules" 180 -- go -C packages/daemon mod download
+
       - name: Test the private-name rules' port against the frozen script
         run: .github/scripts/check-private-names-port.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: private-names-port

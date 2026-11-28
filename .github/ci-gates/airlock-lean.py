@@ -14,6 +14,8 @@ GATE = gate("airlock_lean", AIRLOCK_JOB, exact=[
                                     "reads that row's two sources"),
     (f"{AIRLOCK_LEAN}/**", f"{at(AIRLOCK_JOB, AIRLOCK_BUILD_STEP)}: lake build reads the model's whole project, and "
                            f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} runs Axioms.lean over the library it builds"),
+    *ci_retry(f"{at(AIRLOCK_JOB, AIRLOCK_TOOLCHAIN_STEP)} sources it: the Lean toolchain installs "
+              "through retry_fetch before lake build reads it"),
     (f"{AIRLOCK_LEAN}/lean-toolchain", f"{at(AIRLOCK_JOB, 'elan-cache')}: the elan cache's key is hashFiles of it"),
     (AIRLOCK_AXIOMS_SCRIPT, f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} is one line running it, and check k15 of "
                             f"{ENVOY}/scripts/airlock-check.sh runs the same script, so the two cannot drift"),

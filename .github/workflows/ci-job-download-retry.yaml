@@ -1,0 +1,1034 @@
+name: CI job download-retry
+
+# The three jobs of `.github/workflows/ci.yaml#download-retry` job, in a file of their own:
+# `download-retry`, which proves the retries of the workflows' own sites, and
+# `download-retry-images` and `download-retry-images-worker`, which prove the inline retries of
+# the four Dockerfiles, the worker image's alone in the second, as five runs of one matrix, and
+# the other three in the first. ci.yaml's job of the same
+# id calls this file, and that caller keeps `needs: changes` and the `if:` that decides whether
+# any runs, on the `changes` output download_retry: 'true' on a dispatch that selects every job
+# (`-f every-job=true`, or a dispatch of main or a tag), 'false' in a merge group and on any other
+# dispatch of a branch since main's #5231, and otherwise the download_retry filter, which is both
+# lanes' filters together, read on a pull request only under its `full-ci` or
+# `lane:download_retry` label (ci.yaml's changes job). Each lane of this file runs behind an input of its own, which the caller fills
+# from the `changes` output of that lane's own filter (download_retry_sites,
+# download_retry_images), so each lane runs on exactly the changes its own filter selects, once
+# the caller runs; the two images jobs are one lane and read the one input. A job of a called
+# workflow cannot read `needs.changes.outputs.<name>`, so each is an input here. The two lanes
+# share one ci.yaml job, and so one call, because ci.yaml already calls close to as many unique
+# reusable workflows as `.github/scripts/check-workflow-files.sh#CALL_LIMIT` allows.
+#
+# The split is for the filters. Each lane's filter names this file beside ci.yaml, so a change to
+# these steps selects these three jobs alone, where a change to ci.yaml selects every job.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end each job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+      download_retry_sites:
+        description: >-
+          ci.yaml passes `needs.changes.outputs.download_retry_sites`: the download-retry job
+          below runs when that filter matched.
+        type: string
+        required: true
+      download_retry_images:
+        description: >-
+          ci.yaml passes `needs.changes.outputs.download_retry_images`: the download-retry-images
+          and download-retry-images-worker jobs below run when that filter matched.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  # Proves the retries against the two faults they answer, a host that refuses and then serves and
+  # one that stalls; the rig is .github/ci-budgets.md, "The download-retry job's rig".
+  #
+  # timeout-minutes (ci-budgets.md's Budgets note): this job's unretried duration is what it costs
+  # when its own injected faults are the only thing wrong — the sum of the budgets the report
+  # steps enforce, plus its rig. The recover half's 2 x 153 + 2 x 178 + 1130 + 1130 + 2 x 310 +
+  # 1730 + 380 = 5652 s, the stall half's seven at 6740 s, the carried dependency's 620 s, and
+  # about 330 s for the checkout, the bypass clearing, the tool installs, the cache emptyings, the
+  # unfaulted install the stalled Playwright site needs and the 29 rig steps (every step that is
+  # neither a site nor its report): in job 138409596939 everything outside the fifteen sites'
+  # reports, 31 rig steps among it, took 7352 - 7295 = 57 s. That is 13342 s. Each faulted
+  # site's report holds it to its budget, and
+  # the term the rule adds is this job's slowest retried step: setup-bun's two `ci_tools_fetch`
+  # calls, 3416 s (ci-budgets.md's Budgets note), above every faulted site's own key
+  # (install-changie's 29 minutes the longest), the unfaulted workspace install's 1050 s and the
+  # ci-ok report's 2460 s. So 13342 + 3416 = 16758 s -> 280 min, the whole minute above the 279.3
+  # that sum gives. It was 285 until round 65 dropped the Go download's sum.golang.org run, 303
+  # until round 64 split three recover arms into a run per faulted host, 298 until round 63 gave
+  # those arms a window per host, and 305 before that, from install-jj's 3866 s, while this job
+  # installed jj for the mise install-omp ran. What this key
+  # read before, and why each site's budget carries the probe's 20 s: .github/ci-budgets.md, "The
+  # download-retry job's rig".
+  download-retry:
+    if: inputs.download_retry_sites == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 280
+    steps:
+      # The bypass, emptied for every step of this job, which the job's comment derives: a
+      # `no_proxy` or `NO_PROXY` of `*` sends every host past the proxy, and a fault nothing
+      # meets passes in about no time while proving nothing. Both spellings, because a client
+      # reads either, and through the environment file because an `env:` map may carry only one
+      # of them. The probe in each site's own start step is what proves this worked.
+      - name: Clear the proxy bypass this runner image may carry
+        run: |
+          printf 'the runner carried no_proxy=%s and NO_PROXY=%s; both are emptied for every step below\n' \
+            "${no_proxy:-<unset>}" "${NO_PROXY:-<unset>}"
+          printf '%s\n' 'no_proxy=' 'NO_PROXY=' >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
+      - uses: ./.github/actions/setup-bun
+        timeout-minutes: 57
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      # No module cache is restored anywhere in this job, and that is the point: a go command
+      # reads its own module cache before it reaches any proxy, so a faulted `go mod download`
+      # over a warm cache would download nothing and prove nothing.
+
+      # --- the recovering fault: 504 for 60 s, then the request passes (check #0946ed09) -------
+
+      # What a recover site's budget is, what this arm checks, and the rule it was written to
+      # until round 30: .github/ci-budgets.md, "The download-retry job's rig". install-changie,
+      # install-omp and the Go download each run once per outage of their call's chain, each run
+      # faulting its outage's host so that only the retry passes, and checking that the site met
+      # it and passed on a retry with an attempt to spare:
+      # .github/ci-notes/ci-job-download-retry.md, "The sites lane's arms with a window per host".
+
+      # curl of a release asset. curl makes the attempts itself, in the spelling
+      # .github/actions/install-changie explains: 8, the last starting 127 s after the first,
+      # each bounded at 60 s. The asset's address on github.com redirects to
+      # release-assets.githubusercontent.com, and each of the two runs faults one of them.
+      - name: Start the recovering fault for install-changie on github.com
+        id: recover-changie-github-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start recover-changie-github \
+            --mode recover --recover-after 60 --per-host-window --hosts github.com --attempt-log
+          .github/scripts/download-retry-proof.sh probe recover-changie-github
+      - id: recover-changie-github
+        continue-on-error: true
+        # install-changie's own retry arithmetic, which rule 8 reads from the declaration for
+        # .github/scripts/ci-tools.sh: one `ci_tools_fetch`, four ladders, 1708 s (ci-budgets.md's
+        # Budgets note) -> 29 min. The report below holds the step to far less.
+        timeout-minutes: 29
+        uses: ./.github/actions/install-changie
+        env:
+          http_proxy: ${{ steps.recover-changie-github-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.recover-changie-github-proxy.outputs.proxy }}
+          CI_RETRY_ATTEMPT_LOG: ${{ steps.recover-changie-github-proxy.outputs.attempt_log }}
+      - name: What install-changie's curl did under the recovering fault on github.com
+        id: report-recover-changie-github
+        continue-on-error: true
+        # why: .github/ci-notes/ci-job-download-retry.md#the-sites-lanes-arms-with-a-window-per-host
+        # 127 + 6 + 20 = 153 s: curl's waits, the call measured at fbcc6647 and the probe.
+        run: >-
+          .github/scripts/download-retry-proof.sh report recover-changie-github
+          --what "changie's release asset with github.com faulted (curl, 8 attempts of 60 s)"
+          --outcome ${{ steps.recover-changie-github.outcome }} --attempts 8 --floor 0 --budget 153
+          --faulted github.com
+      - name: Start the recovering fault for install-changie on release-assets.githubusercontent.com
+        id: recover-changie-assets-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start recover-changie-assets --mode recover --recover-after 60 \
+            --per-host-window --hosts release-assets.githubusercontent.com --attempt-log
+          .github/scripts/download-retry-proof.sh probe recover-changie-assets
+      - id: recover-changie-assets
+        continue-on-error: true
+        # install-changie's own retry arithmetic, as above: 1708 s -> 29 min.
+        timeout-minutes: 29
+        uses: ./.github/actions/install-changie
+        env:
+          http_proxy: ${{ steps.recover-changie-assets-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.recover-changie-assets-proxy.outputs.proxy }}
+          CI_RETRY_ATTEMPT_LOG: ${{ steps.recover-changie-assets-proxy.outputs.attempt_log }}
+      - name: What install-changie's curl did under the recovering fault on release-assets.githubusercontent.com
+        id: report-recover-changie-assets
+        continue-on-error: true
+        # why: .github/ci-notes/ci-job-download-retry.md#the-sites-lanes-arms-with-a-window-per-host
+        # 127 + 6 + 20 = 153 s, as above.
+        run: >-
+          .github/scripts/download-retry-proof.sh report recover-changie-assets
+          --what "changie's release asset with release-assets.githubusercontent.com faulted (curl, 8 attempts of 60 s)"
+          --outcome ${{ steps.recover-changie-assets.outcome }} --attempts 8 --floor 0 --budget 153
+          --faulted release-assets.githubusercontent.com
+
+      # install-omp's curl of the release archive from the address GitHub serves a release asset
+      # at, through retry_fetch: github.com, and the host its redirect lands on, one run each.
+      - name: Start the recovering fault for install-omp on github.com
+        id: recover-omp-github-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start recover-omp-github \
+            --mode recover --recover-after 60 --per-host-window --hosts github.com --attempt-log
+          .github/scripts/download-retry-proof.sh probe recover-omp-github
+      - id: recover-omp-github
+        continue-on-error: true
+        # install-omp's own retry arithmetic: 5 x 60 + 150 = 450 s -> 8 min.
+        timeout-minutes: 8
+        uses: ./.github/actions/install-omp
+        env:
+          http_proxy: ${{ steps.recover-omp-github-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.recover-omp-github-proxy.outputs.proxy }}
+          CI_RETRY_ATTEMPT_LOG: ${{ steps.recover-omp-github-proxy.outputs.attempt_log }}
+      - name: What install-omp's curl did under the recovering fault on github.com
+        id: report-recover-omp-github
+        continue-on-error: true
+        # why: .github/ci-notes/ci-job-download-retry.md#the-sites-lanes-arms-with-a-window-per-host
+        # 150 + 8 + 20 = 178 s: the helper's sleeps, the call measured at fbcc6647 and the probe.
+        run: >-
+          .github/scripts/download-retry-proof.sh report recover-omp-github
+          --what "the pinned Oh My Pi's release archive with github.com faulted (curl through retry_fetch, 5 attempts of 60 s)"
+          --outcome ${{ steps.recover-omp-github.outcome }} --attempts 5 --floor 0 --budget 178
+          --faulted github.com
+      - name: Start the recovering fault for install-omp on release-assets.githubusercontent.com
+        id: recover-omp-assets-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start recover-omp-assets --mode recover --recover-after 60 \
+            --per-host-window --hosts release-assets.githubusercontent.com --attempt-log
+          .github/scripts/download-retry-proof.sh probe recover-omp-assets
+      - id: recover-omp-assets
+        continue-on-error: true
+        # install-omp's own retry arithmetic: 5 x 60 + 150 = 450 s -> 8 min.
+        timeout-minutes: 8
+        uses: ./.github/actions/install-omp
+        env:
+          http_proxy: ${{ steps.recover-omp-assets-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.recover-omp-assets-proxy.outputs.proxy }}
+          CI_RETRY_ATTEMPT_LOG: ${{ steps.recover-omp-assets-proxy.outputs.attempt_log }}
+      - name: What install-omp's curl did under the recovering fault on release-assets.githubusercontent.com
+        id: report-recover-omp-assets
+        continue-on-error: true
+        # why: .github/ci-notes/ci-job-download-retry.md#the-sites-lanes-arms-with-a-window-per-host
+        # 150 + 8 + 20 = 178 s, as above.
+        run: >-
+          .github/scripts/download-retry-proof.sh report recover-omp-assets
+          --what "the pinned Oh My Pi's release archive with release-assets.githubusercontent.com faulted (curl through retry_fetch, 5 attempts of 60 s)"
+          --outcome ${{ steps.recover-omp-assets.outcome }} --attempts 5 --floor 0 --budget 178
+          --faulted release-assets.githubusercontent.com
+
+      # bun add, of the npm registry.
+      - name: Start the recovering fault for install-claude-code
+        id: recover-claude-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start recover-claude \
+            --mode recover --recover-after 60 --hosts npmjs.org
+          .github/scripts/download-retry-proof.sh probe recover-claude
+      - id: recover-claude
+        continue-on-error: true
+        # install-claude-code's own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        uses: ./.github/actions/install-claude-code
+        env:
+          http_proxy: ${{ steps.recover-claude-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.recover-claude-proxy.outputs.proxy }}
+      - name: What install-claude-code's bun add did under the recovering fault
+        id: report-recover-claude
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report recover-claude
+          --what "the pinned Claude Code (bun add, 5 attempts of 180 s)"
+          --outcome ${{ steps.recover-claude.outcome }} --attempts 5 --floor 0 --budget 1130
+
+      # bun install --frozen-lockfile, the install every job of this workflow makes, in the very
+      # spelling they make it in.
+      - name: Start the recovering fault for the workspace install
+        id: recover-install-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start recover-install \
+            --mode recover --recover-after 60 --hosts npmjs.org
+          .github/scripts/download-retry-proof.sh probe recover-install
+      - name: bun install --frozen-lockfile under the recovering fault
+        id: recover-install
+        continue-on-error: true
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        env:
+          http_proxy: ${{ steps.recover-install-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.recover-install-proxy.outputs.proxy }}
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
+      - name: What the workspace install did under the recovering fault
+        id: report-recover-install
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report recover-install
+          --what "the workspace's dependencies (bun install --frozen-lockfile, 5 attempts of 180 s)"
+          --outcome ${{ steps.recover-install.outcome }} --attempts 5 --floor 0 --budget 1130
+
+      # go mod download, once per outage of its chain, each run faulting it so that only the retry
+      # passes, since `|direct` in GOPROXY falls through to a module's own source after any error
+      # (check #0946ed09): the proxy.golang.org run faults every host in one window from the
+      # proxy's start, sum.golang.org among them; and the storage.googleapis.com run the zips and
+      # packages/envoy's direct sources, a module's direct host first asked a second or so after
+      # its zip's 504, so their windows overlap into one outage, and a module whose direct host is
+      # not listed is fetched directly while the call still needs its retry for the others. No run
+      # faults sum.golang.org alone: on a complete go.sum, with proxy.golang.org answering, this
+      # download never asks it. Why each, and why go.googlesource.com stands for golang.org:
+      # .github/ci-notes/ci-job-download-retry.md, "The sites lane's arms with a window per host".
+      # The step between the two runs empties the module cache.
+      - name: Start the recovering fault for the Go modules on proxy.golang.org
+        id: recover-go-index-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start recover-go-index --mode recover --recover-after 60 --attempt-log
+          .github/scripts/download-retry-proof.sh probe recover-go-index
+      - name: Download packages/envoy's Go modules under the recovering fault on proxy.golang.org
+        id: recover-go-index
+        continue-on-error: true
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        env:
+          http_proxy: ${{ steps.recover-go-index-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.recover-go-index-proxy.outputs.proxy }}
+          CI_RETRY_ATTEMPT_LOG: ${{ steps.recover-go-index-proxy.outputs.attempt_log }}
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      - name: What the Go module download did under the recovering fault on proxy.golang.org
+        id: report-recover-go-index
+        continue-on-error: true
+        # why: .github/ci-notes/ci-job-download-retry.md#the-sites-lanes-arms-with-a-window-per-host
+        # 150 + 140 + 20 = 310 s: the helper's sleeps, the call measured at fbcc6647 and the probe.
+        run: >-
+          .github/scripts/download-retry-proof.sh report recover-go-index
+          --what "packages/envoy's Go modules with proxy.golang.org faulted (go mod download, 5 attempts of 180 s)"
+          --outcome ${{ steps.recover-go-index.outcome }} --attempts 5 --floor 0 --budget 310
+          --faulted proxy.golang.org
+      - name: Empty the Go module cache before the storage.googleapis.com run
+        run: go clean -modcache
+      - name: Start the recovering fault for the Go modules on storage.googleapis.com
+        id: recover-go-zips-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start recover-go-zips \
+            --mode recover --recover-after 60 --per-host-window --attempt-log \
+            --hosts storage.googleapis.com,github.com,googlesource.com,gitlab.com,google.golang.org,authelia.com,cloud.google.com,dario.cat,dmitri.shuralyov.com,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,go4.org,gonum.org,gopkg.in,gotest.tools,honnef.co,k8s.io,modernc.org,rsc.io
+          .github/scripts/download-retry-proof.sh probe recover-go-zips
+      - name: Download packages/envoy's Go modules under the recovering fault on storage.googleapis.com
+        id: recover-go-zips
+        continue-on-error: true
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        env:
+          http_proxy: ${{ steps.recover-go-zips-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.recover-go-zips-proxy.outputs.proxy }}
+          CI_RETRY_ATTEMPT_LOG: ${{ steps.recover-go-zips-proxy.outputs.attempt_log }}
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      - name: What the Go module download did under the recovering fault on storage.googleapis.com
+        id: report-recover-go-zips
+        continue-on-error: true
+        # why: .github/ci-notes/ci-job-download-retry.md#the-sites-lanes-arms-with-a-window-per-host
+        # 150 + 140 + 20 = 310 s, as above.
+        run: >-
+          .github/scripts/download-retry-proof.sh report recover-go-zips
+          --what "packages/envoy's Go modules with storage.googleapis.com faulted (go mod download, 5 attempts of 180 s)"
+          --outcome ${{ steps.recover-go-zips.outcome }} --attempts 5 --floor 0 --budget 310
+          --faulted storage.googleapis.com
+
+      # bunx playwright install chromium, which fetches from Playwright's own CDN. Only that host
+      # is faulted, so the download after the window is the real one.
+      - name: Start the recovering fault for Playwright's Chromium
+        id: recover-playwright-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start recover-playwright \
+            --mode recover --recover-after 60 --hosts playwright.dev
+          .github/scripts/download-retry-proof.sh probe recover-playwright
+      - name: Install Playwright's Chromium under the recovering fault
+        id: recover-playwright
+        continue-on-error: true
+        # Its own retry arithmetic: 5 x 300 + 150 = 1650 s -> 28 min.
+        timeout-minutes: 28
+        working-directory: packages/dispatch
+        env:
+          http_proxy: ${{ steps.recover-playwright-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.recover-playwright-proxy.outputs.proxy }}
+        run: |
+          . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium >&2
+      - name: What the Playwright download did under the recovering fault
+        id: report-recover-playwright
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report recover-playwright
+          --what "Playwright's Chromium (bunx playwright install, 5 attempts of 300 s)"
+          --outcome ${{ steps.recover-playwright.outcome }} --attempts 5 --floor 0 --budget 1730
+
+      # A gh api read, in the spelling .github/scripts/ci-ok-report.sh reads this same route
+      # with. That script is not run here because it posts ci-ok; the read is what retries, and
+      # this is the read.
+      - name: Start the recovering fault for the gh api read
+        id: recover-gh-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start recover-gh \
+            --mode recover --recover-after 60 --hosts api.github.com
+          .github/scripts/download-retry-proof.sh probe recover-gh
+      - name: Read the run's artifact list under the recovering fault
+        id: recover-gh
+        continue-on-error: true
+        # Its own retry arithmetic: 5 x 30 + 150 = 300 s, a whole number of minutes, so the
+        # budget is the next one strictly above it -> 6 min.
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+          http_proxy: ${{ steps.recover-gh-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.recover-gh-proxy.outputs.proxy }}
+        run: |
+          . .github/scripts/ci-retry.sh
+          # The redirection is this shell's own and is applied once: the helper buffers each
+          # attempt's output and prints the successful attempt's alone, so no refused attempt's
+          # body reaches the file.
+          retry_fetch "the run's artifact list" 30 -- \
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=1" \
+            > "$RUNNER_TEMP/artifacts.json"
+      - name: What the gh api read did under the recovering fault
+        id: report-recover-gh
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report recover-gh
+          --what "the run's artifact list (gh api, 5 attempts of 30 s)"
+          --outcome ${{ steps.recover-gh.outcome }} --attempts 5 --floor 0 --budget 380
+
+      # --- the stalling fault: the connection is accepted and nothing is sent (check #55bc6685) -
+
+      # Everything the recover half left behind, so the stall half's downloads reach the network
+      # again: `go mod download` over a warm module cache, `bun install` over a warm
+      # ~/.bun/install/cache and a full node_modules, and `playwright install` over an installed
+      # browser each fetch nothing at all. The reports below hold this step to account, since a
+      # site that fetched nothing ends in seconds.
+      - name: Empty every cache the recovering half filled
+        run: |
+          go clean -modcache
+          rm -rf node_modules packages/*/node_modules docs/site/node_modules \
+            "$HOME/.bun/install/cache" "$HOME/.cache/ms-playwright"
+
+      # What each stall site's floor and budget measure: .github/ci-budgets.md, "The
+      # download-retry job's rig".
+      - name: Start the stalling fault for install-changie
+        id: stall-changie-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start stall-changie \
+            --mode stall --hosts github.com,githubusercontent.com
+          .github/scripts/download-retry-proof.sh probe stall-changie
+      - id: stall-changie
+        continue-on-error: true
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s
+        # (ci-budgets.md's Budgets note) -> 29 min.
+        timeout-minutes: 29
+        uses: ./.github/actions/install-changie
+        env:
+          http_proxy: ${{ steps.stall-changie-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.stall-changie-proxy.outputs.proxy }}
+      # Ten stalls, two ladders of five, and the run these assertions are read from:
+      # .github/ci-budgets.md, "The ten stalls of install-changie".
+      - name: What install-changie's curl did under the stalling fault
+        id: report-stall-changie
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report stall-changie
+          --what "changie's release asset and the copy behind it (two ci_tools_curl ladders, each bounded at 300 s)"
+          --outcome ${{ steps.stall-changie.outcome }} --attempts 10 --floor 640 --budget 710
+
+      - name: Start the stalling fault for install-omp
+        id: stall-omp-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start stall-omp \
+            --mode stall --hosts github.com,githubusercontent.com
+          .github/scripts/download-retry-proof.sh probe stall-omp
+      - id: stall-omp
+        continue-on-error: true
+        # install-omp's own retry arithmetic: 5 x 60 + 150 = 450 s -> 8 min.
+        timeout-minutes: 8
+        uses: ./.github/actions/install-omp
+        env:
+          http_proxy: ${{ steps.stall-omp-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.stall-omp-proxy.outputs.proxy }}
+      - name: What install-omp's curl did under the stalling fault
+        id: report-stall-omp
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report stall-omp
+          --what "the pinned Oh My Pi's release archive (curl through retry_fetch, 5 attempts of 60 s)"
+          --outcome ${{ steps.stall-omp.outcome }} --attempts 5 --floor 150 --budget 530
+
+      - name: Start the stalling fault for install-claude-code
+        id: stall-claude-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start stall-claude \
+            --mode stall --hosts npmjs.org
+          .github/scripts/download-retry-proof.sh probe stall-claude
+      - id: stall-claude
+        continue-on-error: true
+        # install-claude-code's own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        uses: ./.github/actions/install-claude-code
+        env:
+          http_proxy: ${{ steps.stall-claude-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.stall-claude-proxy.outputs.proxy }}
+      - name: What install-claude-code's bun add did under the stalling fault
+        id: report-stall-claude
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report stall-claude
+          --what "the pinned Claude Code (bun add, 5 attempts of 180 s)"
+          --outcome ${{ steps.stall-claude.outcome }} --attempts 5 --floor 150 --budget 1130
+
+      - name: Start the stalling fault for the workspace install
+        id: stall-install-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start stall-install \
+            --mode stall --hosts npmjs.org
+          .github/scripts/download-retry-proof.sh probe stall-install
+      - name: bun install --frozen-lockfile under the stalling fault
+        id: stall-install
+        continue-on-error: true
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        env:
+          http_proxy: ${{ steps.stall-install-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.stall-install-proxy.outputs.proxy }}
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
+      - name: What the workspace install did under the stalling fault
+        id: report-stall-install
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report stall-install
+          --what "the workspace's dependencies (bun install --frozen-lockfile, 5 attempts of 180 s)"
+          --outcome ${{ steps.stall-install.outcome }} --attempts 5 --floor 150 --budget 1130
+
+      - name: Start the stalling fault for the Go modules
+        id: stall-go-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start stall-go --mode stall
+          .github/scripts/download-retry-proof.sh probe stall-go
+      - name: Download packages/envoy's Go modules under the stalling fault
+        id: stall-go
+        continue-on-error: true
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        env:
+          http_proxy: ${{ steps.stall-go-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.stall-go-proxy.outputs.proxy }}
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      - name: What the Go module download did under the stalling fault
+        id: report-stall-go
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report stall-go
+          --what "packages/envoy's Go modules (go mod download, 5 attempts of 180 s)"
+          --outcome ${{ steps.stall-go.outcome }} --attempts 5 --floor 150 --budget 1130
+
+      # The stalled install above left no node_modules, and `bunx playwright install` is the
+      # playwright this workspace locks. So the install is made once, unfaulted, for it: this is
+      # the step .github/scripts/ci_job_reads.py's bun_job cites this job's install by.
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
+      - name: Start the stalling fault for Playwright's Chromium
+        id: stall-playwright-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start stall-playwright \
+            --mode stall --hosts playwright.dev
+          .github/scripts/download-retry-proof.sh probe stall-playwright
+      - name: Install Playwright's Chromium under the stalling fault
+        id: stall-playwright
+        continue-on-error: true
+        # Its own retry arithmetic: 5 x 300 + 150 = 1650 s -> 28 min.
+        timeout-minutes: 28
+        working-directory: packages/dispatch
+        env:
+          http_proxy: ${{ steps.stall-playwright-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.stall-playwright-proxy.outputs.proxy }}
+        run: |
+          . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium >&2
+      - name: What the Playwright download did under the stalling fault
+        id: report-stall-playwright
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report stall-playwright
+          --what "Playwright's Chromium (bunx playwright install, 5 attempts of 300 s)"
+          --outcome ${{ steps.stall-playwright.outcome }} --attempts 5 --floor 150 --budget 1730
+
+      - name: Start the stalling fault for the gh api read
+        id: stall-gh-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start stall-gh \
+            --mode stall --hosts api.github.com
+          .github/scripts/download-retry-proof.sh probe stall-gh
+      - name: Read the run's artifact list under the stalling fault
+        id: stall-gh
+        continue-on-error: true
+        # Its own retry arithmetic: 5 x 30 + 150 = 300 s, a whole number of minutes, so the
+        # budget is the next one strictly above it -> 6 min.
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+          http_proxy: ${{ steps.stall-gh-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.stall-gh-proxy.outputs.proxy }}
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the run's artifact list" 30 -- \
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=1" \
+            > "$RUNNER_TEMP/artifacts.json"
+      - name: What the gh api read did under the stalling fault
+        id: report-stall-gh
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report stall-gh
+          --what "the run's artifact list (gh api, 5 attempts of 30 s)"
+          --outcome ${{ steps.stall-gh.outcome }} --attempts 5 --floor 150 --budget 380
+
+      # --- the dependency the tree carries, which no fault can reach (check #662bc39b) --------
+
+      # The other half of this change: proof-sdk used to come from api.github.com on every
+      # install, and over the 884 merge-group runs from 2026-11-03 to 2026-11-06 that fetch was
+      # 79 of the 222 failures. It is a tarball beside packages/proof-editor/package.json now,
+      # so the four GitHub hosts an install used to read it from answer 504 for the whole of
+      # this step and the install does not notice. The caches are emptied first, because an
+      # install that reads a warm one proves nothing about what it would fetch.
+      - name: Empty Bun's install cache and every node_modules
+        run: |
+          rm -rf ~/.bun/install/cache
+          find . -maxdepth 4 -type d -name node_modules -prune -exec rm -rf {} +
+      - name: Start the permanent fault for the dependency's old hosts
+        id: carried-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start carried --mode fail \
+            --hosts api.github.com,github.com,codeload.github.com,objects.githubusercontent.com
+          .github/scripts/download-retry-proof.sh probe carried
+      - name: Install the workspace with the dependency's old hosts answering 504
+        id: carried
+        continue-on-error: true
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        env:
+          http_proxy: ${{ steps.carried-proxy.outputs.proxy }}
+          https_proxy: ${{ steps.carried-proxy.outputs.proxy }}
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
+      - name: What the workspace install did with those hosts down
+        id: report-carried
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh report carried
+          --what "the workspace install with proof-sdk's old hosts answering 504"
+          --outcome ${{ steps.carried.outcome }} --attempts 1 --floor 0 --budget 620
+
+      - name: Leave no proxy behind the ci-ok report
+        if: always()
+        run: .github/scripts/download-retry-proof.sh clear
+
+      - name: Check report outcomes
+        # why: .github/ci-notes/ci-job-download-retry.md#report-verdict
+        if: ${{ !cancelled() }}
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          errors=$(jq -r 'to_entries[] | select((.key | startswith("report-")) and .value.outcome == "failure")
+            | "::error::\(.key) failed"' <<<"$STEPS") || exit 1
+          if [ -n "$errors" ]; then
+            printf '%s\n' "$errors"
+            exit 1
+          fi
+
+      - name: Report ci-ok when this is the run's last job
+        if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: download-retry
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The same recovering fault, inside the Dockerfiles whose network RUN lines carry the inline
+  # retry: this job builds the Envoy and held-port images under it and the browser image twice,
+  # and download-retry-images-worker below builds the worker image five times. The rig:
+  # .github/ci-budgets.md, "The download-retry-images job's rig". Each build has a proxy of its
+  # own, started with --coalesce-outage-gap <G>: the first request of a listed host opens an
+  # outage of 60 s, a host first reached while it is open joins it, a host first reached less
+  # than G s after it ended is passed on, and the first host reached G s or more after it ended
+  # opens the next (.github/scripts/ci-fault-proxy.py's header). G is 190 s for the Envoy image,
+  # 290 for the held-port image, 380 for the browser image and 230 for the worker image: 80 s,
+  # the inline retry's last sleep, plus the longest single attempt of a retried call in that
+  # arm's own builds, rounded up to the next whole 10 s, as the comment beside each start step
+  # derives. Why each host is listed, which RUN lines each run faults and the ones none faults:
+  # .github/ci-notes/ci-job-download-retry.md#the-image-arms-outages-and-their-coverage
+  # Each report holds its build to the price the gate puts on that build where the image is built
+  # for real (.github/scripts/check-download-retry.sh, rule 10), plus the probe's 20 s, plus 150
+  # s for each retried call of its Dockerfile and the time this head's run measured its calls'
+  # failed attempts taking. The `# why:` above each report step names the key of that build, and
+  # the note it points to derives the third term.
+  #
+  # timeout-minutes (ci-budgets.md's Budgets note): this job's unretried duration is what it costs
+  # when nothing outside its own injected faults goes wrong — 300 s for the base image pulls,
+  # 900 s for the unfaulted smoke build, the four faulted builds at the budgets their report
+  # steps enforce, 4263 + 3360 + 2208 + 2208 s (the browser image twice), and about 200 s of
+  # checkout, bypass clearing and rig steps, which is 13439 s — and the rule adds its single
+  # slowest retried step. That step is a build, priced at the longest single ladder of the
+  # Dockerfiles this job builds: a fault window of its own, outside the injected ones, is paid
+  # once, through one build's first fetch that meets it, and the longest such ladder is
+  # 5 x 600 + 150 = 3150 s, the Envoy image's `bun install` and `go mod download` and the
+  # held-port image's `go mod download`, above the browser image's package set at
+  # 5 x 300 + 150 = 1650 s, and the ci-ok report, the one download of this job that is not a
+  # faulted build: its `gh api` reads of the jobs and of the queue's tip and the POST of the
+  # check run, 3 x (5 x 30 + 150) = 900 s, and two calls of runner-shutdown.sh's check-run read
+  # and annotations loop, 2 x (300 + 480) = 1560 s, 2460 s together (ci-budgets.md's Budgets
+  # note, "The ci-ok report"). So 13439 + 3150 = 16589 s -> 277 min, the whole minute strictly
+  # above the 276.48 that sum gives, inside the 360 minutes GitHub gives a job on a hosted
+  # runner.
+  # The pulls' 300 s still holds the browser image's two bases, the Playwright copy among them,
+  # 990,220,611 bytes: the three images' pulls took 16 to 24 s in this job's ten runs from run
+  # 43761695707 to run 43987988192, and the browser image's whole build, which fetches those
+  # bases inside BuildKit, took 66 s at most over its 33 builds measured in
+  # browser-image.yaml's own job (dispatch://INFRA-1545, round 37).
+  download-retry-images:
+    if: inputs.download_retry_images == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 277
+    env:
+      SMOKE_IMAGE: legion-envoy-smoke:download-retry
+    steps:
+      # As the download-retry job's first step, and for the reason its comment gives: a
+      # `no_proxy` or `NO_PROXY` of `*` reads every host past the proxy, and the probes below
+      # are made from this job's own steps.
+      - name: Clear the proxy bypass this runner image may carry
+        run: |
+          printf 'the runner carried no_proxy=%s and NO_PROXY=%s; both are emptied for every step below\n' \
+            "${no_proxy:-<unset>}" "${NO_PROXY:-<unset>}"
+          printf '%s\n' 'no_proxy=' 'NO_PROXY=' >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Every FROM of the three files this job builds that names an image rather than a build
+      # argument or a stage of the file it is in: the builds are the unfaulted smoke build, the
+      # Envoy and held-port images and the browser image, twice. Pulled before any proxy exists,
+      # for the reason the job's comment gives. A FROM naming an earlier stage (`FROM
+      # runtime-base AS debian-packages`) is no registry reference, and `docker pull` of one
+      # is refused as a repository that does not exist, which is how this step first failed: run
+      # 42372090039's job 128402159563 ended at `pull access denied for runtime-base`. The worker
+      # image's bases are pulled by its own build, in the download-retry-images-worker job.
+      - name: Pull every base image the four builds read
+        run: |
+          for file in packages/envoy/docker/Dockerfile \
+                      packages/envoy/infra/host/heldportwrapper/Dockerfile \
+                      .github/docker/browser.Dockerfile; do
+            awk '
+              $1 == "FROM" && $2 !~ /^[$]/ && !($2 in stage) { print $2 }
+              $1 == "FROM" && toupper($3) == "AS" { stage[$4] = 1 }
+            ' "$file"
+          done | sort -u > "$RUNNER_TEMP/base-images"
+          [ -s "$RUNNER_TEMP/base-images" ] || { echo "::error::no base image to pull"; exit 1; }
+          cat "$RUNNER_TEMP/base-images"
+          while read -r image; do docker pull "$image"; done < "$RUNNER_TEMP/base-images"
+      - name: Build the smoke image the held-port wrapper takes as its base, with no proxy
+        run: >-
+          .github/scripts/download-retry-proof.sh build none
+          --tag ${{ env.SMOKE_IMAGE }}
+          --file packages/envoy/docker/Dockerfile
+
+      # The Envoy image: apt, the npm registry, the Go module proxy and the module hosts a go
+      # command falls through `|direct` to. G = 80 + 110 = 190 s: the inline retry's last sleep,
+      # and the longest single attempt of a retried call in this arm's builds, rounded up to the
+      # next whole 10 s. That attempt is its `bun install`'s failed one, 108.5 s in job
+      # 138409597173 (at fbcc6647), longer than its go-licenses install's passing one of 92 s in
+      # job 138666740472 (at e3e586f3).
+      - name: Start the recovering fault for the Envoy image build
+        id: envoy-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start envoy --mode recover --recover-after 60 \
+            --coalesce-outage-gap 190 --bind docker-bridge \
+            --hosts debian.org,npmjs.org,golang.org,googlesource.com,github.com,githubusercontent.com,googleapis.com,authelia.com,cloud.google.com,dario.cat,dmitri.shuralyov.com,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,gonum.org,gopkg.in,gotest.tools,honnef.co,k8s.io,rsc.io
+          .github/scripts/download-retry-proof.sh probe envoy
+      - name: Build the Envoy image under the recovering fault
+        id: envoy-build
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh build envoy
+          --tag legion-envoy:download-retry
+          --file packages/envoy/docker/Dockerfile
+      - name: What the Envoy image build did under the recovering fault
+        id: report-envoy
+        continue-on-error: true
+        # why: .github/ci-notes/ci-job-download-retry.md#each-image-builds-budget-the-gates-price-for-that-build
+        # 203 + 3150 + 20 + 5 x 150 + 140 = 4263 s: this build's figures in ci-job-envoy-smoke.yaml's job key comment, the probe's 20 s, and its five retried calls' sleeps and measured failed attempts.
+        run: |
+          echo "download-retry: budget 4263 s = the gate's price for this build, 203 + 3150 s (ci-job-envoy-smoke.yaml, the job key's comment: this build's measured 203 s in job 133743044741 and its Dockerfile's longest single ladder), + the probe's 20 s, + 5 x 150 + 140 s, the sleeps of each of its five retried calls and the time their failed attempts took in job 138409597173"
+          .github/scripts/download-retry-proof.sh report envoy \
+            --what "the Envoy image (packages/envoy/docker/Dockerfile)" \
+            --outcome ${{ steps.envoy-build.outcome }} --attempts 5 --floor 0 --budget 4263
+
+      # The held-port image: one `go mod download` in its wrapper stage, on the smoke image built
+      # above as its BASE, and the module hosts it falls through `|direct` to. G = 80 + 210 =
+      # 290 s: the inline retry's last sleep, and the longest single attempt of a retried call in
+      # this arm's builds, rounded up to the next whole 10 s. That attempt is its `go mod
+      # download`'s fifth, which ran from about 172.5 s to 373.5 s, about 201 s, in job
+      # 138666740472.
+      - name: Start the recovering fault for the held-port image build
+        id: heldport-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start heldport --mode recover --recover-after 60 \
+            --coalesce-outage-gap 290 --bind docker-bridge \
+            --hosts golang.org,github.com,githubusercontent.com,googleapis.com,authelia.com,cel.dev,charm.land,cloud.google.com,codeberg.org,dario.cat,git.sr.ht,go.mongodb.org,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,gocloud.dev,gonum.org,gopkg.in,gotest.tools,honnef.co,lukechampine.com,modernc.org,mvdan.cc,pgregory.net,rsc.io
+          .github/scripts/download-retry-proof.sh probe heldport
+      - name: Build the held-port image under the recovering fault
+        id: heldport-build
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh build heldport
+          --build-arg BASE=${{ env.SMOKE_IMAGE }}
+          --tag legion-envoy-heldport:download-retry
+          --file packages/envoy/infra/host/heldportwrapper/Dockerfile
+      - name: What the held-port image build did under the recovering fault
+        id: report-heldport
+        continue-on-error: true
+        # why: .github/ci-notes/ci-job-download-retry.md#each-image-builds-budget-the-gates-price-for-that-build
+        # 11 + 3150 + 20 + 150 + 29 = 3360 s: this build's figures in ci-job-envoy-smoke.yaml's job key comment, the probe's 20 s, and its one retried call's sleeps and measured failed attempts.
+        run: |
+          echo "download-retry: budget 3360 s = the gate's price for this build, 11 + 3150 s (ci-job-envoy-smoke.yaml, the job key's comment: this build's measured 11 s in job 133743044741 and its Dockerfile's longest single ladder), + the probe's 20 s, + 150 + 29 s, the sleeps of its one retried call and the time its failed attempts took in job 138409597173"
+          .github/scripts/download-retry-proof.sh report heldport \
+            --what "the held-port image (packages/envoy/infra/host/heldportwrapper/Dockerfile)" \
+            --outcome ${{ steps.heldport-build.outcome }} --attempts 5 --floor 0 --budget 3360
+
+      # The browser image, run 1: Ubuntu's apt mirror, PostgreSQL's signing key and apt repository
+      # and NodeSource's apt repository. G = 80 + 300 = 380 s for both runs: the inline retry's
+      # last sleep, and the longest single attempt of a retried call in this arm's builds, the
+      # 300 s bound of an `apt-get install` attempt, which two of them ran to in job
+      # 136575882603. Run 2 below says why there are two runs.
+      - name: Start the recovering fault for the browser image build
+        id: browser-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start browser --mode recover --recover-after 60 \
+            --coalesce-outage-gap 380 --bind docker-bridge \
+            --hosts postgresql.org,ubuntu.com,nodesource.com
+          .github/scripts/download-retry-proof.sh probe browser
+      - name: Build the browser image under the recovering fault
+        id: browser-build
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh build browser
+          --tag legion-browser:download-retry
+          --file .github/docker/browser.Dockerfile
+      - name: What the browser image build did under the recovering fault
+        id: report-browser
+        continue-on-error: true
+        # why: .github/ci-notes/ci-job-download-retry.md#each-image-builds-budget-the-gates-price-for-that-build
+        # 66 + 1650 + 20 + 3 x 150 + 22 = 2208 s: browser-image.yaml's Build and push step key, the probe's 20 s, and its three retried calls' sleeps and measured failed attempts.
+        run: |
+          echo "download-retry: budget 2208 s = the gate's price for this build, 66 + 1650 s (browser-image.yaml, the Build and push step's key: its measured build and its Dockerfile's longest single ladder), + the probe's 20 s, + 3 x 150 + 22 s, the sleeps of each of its three retried calls and the time their failed attempts took in job 138409597173"
+          .github/scripts/download-retry-proof.sh report browser \
+            --what "the browser image (.github/docker/browser.Dockerfile)" \
+            --outcome ${{ steps.browser-build.outcome }} --attempts 5 --floor 0 --budget 2208
+
+      # The browser image, run 2, with run 1's G. In run 1 the signing key's host,
+      # www.postgresql.org, is the first listed host reached, at 5.4 s in job 138409597173, so it
+      # opens the first outage, which ends at 65.4 s; the apt hosts are first reached at 76.4 s,
+      # about 11 s after that, inside G, so they are passed on and run 1 drives only the key. Run 2
+      # lists the apt hosts alone, so `apt-get update` opens an outage of its own and the apt calls
+      # are driven.
+      - name: Start the recovering fault for the browser image build, the apt hosts alone
+        id: browser-apt-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start browser-apt --mode recover --recover-after 60 \
+            --coalesce-outage-gap 380 --bind docker-bridge \
+            --hosts apt.postgresql.org,ubuntu.com,nodesource.com
+          .github/scripts/download-retry-proof.sh probe browser-apt
+      - name: Build the browser image under the recovering fault on the apt hosts
+        id: browser-apt-build
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh build browser-apt
+          --tag legion-browser-apt:download-retry
+          --file .github/docker/browser.Dockerfile
+      - name: What the browser image build did under the recovering fault on the apt hosts
+        id: report-browser-apt
+        continue-on-error: true
+        # why: .github/ci-notes/ci-job-download-retry.md#each-image-builds-budget-the-gates-price-for-that-build
+        # 66 + 1650 + 20 + 3 x 150 + 22 = 2208 s: browser-image.yaml's Build and push step key, the probe's 20 s, and its three retried calls' sleeps and measured failed attempts.
+        run: |
+          echo "download-retry: budget 2208 s = the gate's price for this build, 66 + 1650 s (browser-image.yaml, the Build and push step's key: its measured build and its Dockerfile's longest single ladder), + the probe's 20 s, + 3 x 150 + 22 s, the sleeps of each of its three retried calls and the time their failed attempts took in job 138409597173"
+          .github/scripts/download-retry-proof.sh report browser-apt \
+            --what "the browser image (.github/docker/browser.Dockerfile), the apt hosts alone" \
+            --outcome ${{ steps.browser-apt-build.outcome }} --attempts 5 --floor 0 --budget 2208
+
+      - name: Leave no proxy behind the ci-ok report
+        if: always()
+        run: .github/scripts/download-retry-proof.sh clear
+
+      - name: Check report outcomes
+        # why: .github/ci-notes/ci-job-download-retry.md#report-verdict
+        if: ${{ !cancelled() }}
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          errors=$(jq -r 'to_entries[] | select((.key | startswith("report-")) and .value.outcome == "failure")
+            | "::error::\(.key) failed"' <<<"$STEPS") || exit 1
+          if [ -n "$errors" ]; then
+            printf '%s\n' "$errors"
+            exit 1
+          fi
+
+      - name: Report ci-ok when this is the run's last job
+        if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: download-retry
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The worker image's build under the same recovering fault, in a job of its own and five times.
+  # why: .github/ci-notes/ci-job-download-retry.md#the-worker-images-job-of-its-own
+  #
+  # timeout-minutes (ci-budgets.md's Budgets note): each run is a runner job of its own, so this
+  # key bounds one run, whose unretried duration is what it costs when nothing outside its own
+  # injected faults goes wrong — the faulted build at the 15833 s its report step enforces, about
+  # 200 s of checkout, bypass clearing and rig steps, and the stamp step's blobless fetch, about
+  # 30 s (main's #5399 measured a whole blobless clone of this repository from GitHub at about
+  # 30 s on 2026-11-24), which is 16063 s — and the rule adds its single slowest retried step,
+  # the worker Dockerfile's longest single ladder, its `go mod download` at 5 x 900 + 150 =
+  # 4650 s, a fault window of its own outside the injected ones, above the ci-ok report's 2460 s
+  # (ci-budgets.md's Budgets note, "The ci-ok report").
+  # So 16063 + 4650 = 20713 s -> 346 min, for each of the five runs.
+  download-retry-images-worker:
+    if: inputs.download_retry_images == 'true'
+    name: download-retry-images-${{ matrix.run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 346
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Run 1: deb.debian.org and dl-cdn.alpinelinux.org, the first minute's apt and apk RUNs.
+          - run: worker
+            hosts: debian.org,npmjs.org,github.com,githubusercontent.com,jdx.dev,nodejs.org,awscli.amazonaws.com,go.dev,dl.k8s.io,googleapis.com,golang.org,googlesource.com,postgresql.org,google.com,astral.sh,pypi.org,pythonhosted.org,playwright.dev,microsoft.com,windows.net,alpinelinux.org,registry.yarnpkg.com,authelia.com,cel.dev,codeberg.org,dario.cat,dmitri.shuralyov.com,filippo.io,git.sr.ht,gitlab.com,go.etcd.io,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,go4.org,gonum.org,gopkg.in,gotest.tools,honnef.co,k8s.io,modernc.org,mvdan.cc,rsc.io,commandcode.ai,kilo.ai,venice.ai,stencil.so,aliyuncs.com,charm.land,zenmux.ai
+          # Run 2: go, npm, github and toolchain downloads, about 10-20 s in.
+          - run: worker-2
+            hosts: npmjs.org,github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,jdx.dev,nodejs.org,awscli.amazonaws.com,go.dev,dl.k8s.io,googleapis.com,golang.org,googlesource.com,google.com,authelia.com,cel.dev,codeberg.org,dario.cat,dmitri.shuralyov.com,filippo.io,git.sr.ht,gitlab.com,go.etcd.io,go.opencensus.io,go.opentelemetry.io,go.uber.org,go.yaml.in,go4.org,gonum.org,gopkg.in,gotest.tools,honnef.co,k8s.io,modernc.org,mvdan.cc,rsc.io
+          # Run 3: notices 4/23's fetches, about 55-100 s in.
+          - run: worker-3
+            hosts: raw.githubusercontent.com
+          # Run 4: azure-cli's toolchain 6/7, about 116 s in.
+          - run: worker-4
+            hosts: astral.sh,pypi.org,pythonhosted.org
+          # Run 5: webkit-check 2/2, about 204-250 s in, and runtime 26/40's bare `az version`.
+          - run: worker-5
+            hosts: playwright.dev,microsoft.com,windows.net
+    steps:
+      # As the download-retry job's first step, and for the reason its comment gives: a
+      # `no_proxy` or `NO_PROXY` of `*` reads every host past the proxy, and the probe below is
+      # made from this job's own steps.
+      - name: Clear the proxy bypass this runner image may carry
+        run: |
+          printf 'the runner carried no_proxy=%s and NO_PROXY=%s; both are emptied for every step below\n' \
+            "${no_proxy:-<unset>}" "${NO_PROXY:-<unset>}"
+          printf '%s\n' 'no_proxy=' 'NO_PROXY=' >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # why: .github/ci-notes/ci-job-download-retry.md#the-worker-images-job-of-its-own
+      - name: Read the contract entries' merge order
+        id: contract_order
+        run: |
+          head=$(git rev-parse HEAD)
+          git fetch --filter=blob:none --unshallow origin "$head" refs/heads/main:refs/remotes/origin/main
+          stamp=$(bash scripts/daemon-contract-order.sh --stamp "$head")
+          if [ -z "$stamp" ]; then
+            echo "::error::scripts/daemon-contract-order.sh printed no stamp for $head, whose Dockerfile requires one"
+            exit 1
+          fi
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+
+      # G = 80 + 150 = 230 s, for every run: the inline retry's last sleep, and the longest single
+      # attempt of a retried call in these builds, rounded up to the next whole 10 s. That attempt
+      # is the go-modules stage's `go mod download`'s attempt 4, which ran from 78.1 s to 224.3 s,
+      # 146.2 s, in job 138666740482 (at e3e586f3).
+      - name: Start the recovering fault for the worker image build
+        id: worker-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start ${{ matrix.run }} --mode recover --recover-after 60 \
+            --coalesce-outage-gap 230 --bind docker-bridge \
+            --hosts ${{ matrix.hosts }}
+          .github/scripts/download-retry-proof.sh probe ${{ matrix.run }}
+      - name: Build the worker image under the recovering fault
+        id: worker-build
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh build ${{ matrix.run }}
+          --build-arg LEGION_REVISION=${{ github.sha }}
+          --build-arg LEGION_CONTRACT_ORDER=${{ steps.contract_order.outputs.stamp }}
+          --tag legion-${{ matrix.run }}:download-retry
+          --file packages/daemon/docker/worker.Dockerfile
+      - name: What the worker image build did under the recovering fault
+        id: report-worker
+        continue-on-error: true
+        # why: .github/ci-notes/ci-job-download-retry.md#each-image-builds-budget-the-gates-price-for-that-build
+        # 1800 + 4650 + 20 + 39 x 150 + 25 x 127 + 338 = 15833 s: worker-image.yaml's build job key, the probe's 20 s, and its 64 retried calls' sleeps and measured failed attempts.
+        run: |
+          echo "download-retry: budget 15833 s = the gate's price for this build, 1800 + 4650 s (worker-image.yaml, the build job's key: the 1800 s that hold its build and its Dockerfile's longest single ladder), + the probe's 20 s, + 39 x 150 + 25 x 127 + 338 s, the sleeps of each of its 39 inline retries and 25 curl ladders and the time their failed attempts took in job 138409597020"
+          .github/scripts/download-retry-proof.sh report ${{ matrix.run }} \
+            --what "the worker image (packages/daemon/docker/worker.Dockerfile)" \
+            --outcome ${{ steps.worker-build.outcome }} --attempts 5 --floor 0 --budget 15833
+
+      - name: Leave no proxy behind the ci-ok report
+        if: always()
+        run: .github/scripts/download-retry-proof.sh clear
+
+      - name: Check report outcomes
+        # why: .github/ci-notes/ci-job-download-retry.md#report-verdict
+        if: ${{ !cancelled() }}
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          errors=$(jq -r 'to_entries[] | select((.key | startswith("report-")) and .value.outcome == "failure")
+            | "::error::\(.key) failed"' <<<"$STEPS") || exit 1
+          if [ -n "$errors" ]; then
+            printf '%s\n' "$errors"
+            exit 1
+          fi
+
+      - name: Report ci-ok when this is the run's last job
+        if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: download-retry
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

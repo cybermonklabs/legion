@@ -18,11 +18,15 @@
 #
 # Copy go.work, go.work.sum, and each used module's go.mod and go.sum at the same relative paths
 # so local replacements still resolve. Run go mod download all in the copy with GOSUMDB=off,
-# so the module download asks the checksum database for nothing. Go writes any missing content
-# hashes and the go.mod hashes of versions it reads, even ones it does not select. Compare
-# go.work.sum in the checkout and the copy: it is the only checksum file a workspace download
-# writes. Unverified hashes stay in the copy, even if a kill prevents its cleanup.
+# so the module download asks the checksum database for nothing. That download retries through
+# .github/scripts/ci-retry.sh at 180 s an attempt, the bound .github/ci-budgets.md's Retries note
+# gives a go mod download. Go writes any missing content hashes and the go.mod hashes of versions
+# it reads, even ones it does not select. Compare go.work.sum in the checkout and the copy: it is
+# the only checksum file a workspace download writes. Unverified hashes stay in the copy, even if
+# a kill prevents its cleanup.
 set -euo pipefail
+# shellcheck source=.github/scripts/ci-retry.sh
+source "$(dirname "$0")/ci-retry.sh"
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
@@ -55,7 +59,8 @@ copy_inputs() {
   goroot=$(GOWORK="$PWD/go.work" go env GOROOT) &&
     GOTOOLCHAIN=local "$goroot/bin/go" work edit -json go.work > "$scratch/work.json" &&
     copy_inputs &&
-    (cd "$copy" && GOWORK="$copy/go.work" GOSUMDB=off GOTOOLCHAIN=local "$goroot/bin/go" mod download all >&2)
+    (cd "$copy" && GOWORK="$copy/go.work" GOSUMDB=off GOTOOLCHAIN=local \
+      retry_fetch "the root workspace's modules, in a copy" 180 -- "$goroot/bin/go" mod download all >&2)
 } 2> "$scratch/check.err" || {
   echo '::error::Could not download the root workspace in a copy, so this check says nothing about the committed checksums:' >&2
   cat -- "$scratch/check.err" >&2

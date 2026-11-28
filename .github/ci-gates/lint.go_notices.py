@@ -5,6 +5,7 @@ GATE = gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), rea
     (GO_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
     (CLIENT_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
     (INFRA_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
+    *ci_retry(f"{at('lint', GO_DOWNLOAD_STEP)} sources it: it downloads what the notices step builds, on the notices step's own condition"),
 ))
 GATE = with_reads(GATE, [
     Read('**/*.go', "filter go_notices held **/*.go by hand before the filters were computed: it selected 945 file(s) no other read of this gate declares", but=('**/*_test.go',)),

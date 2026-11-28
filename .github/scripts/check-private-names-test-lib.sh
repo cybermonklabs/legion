@@ -163,11 +163,11 @@ GREP
 # write_pr_text <title> <body> <commit message> [branch] [author email] [committer email]: writes
 # the fixture check-pr-text.sh reads as CI runs it. A pull_request event payload carries the head
 # the run checks (its base and head sha, and its one commit). The stand-in `gh` stands in for
-# GitHub's GraphQL server for the script's two queries (`gh api graphql --input -`: PrText, and
-# ThreadComments for a review thread's comments past its first 20). It answers only the fields a
-# round asks for (each `@include` flag), in GraphQL's own shapes, so the real filters that feed the
-# required check run for real, rather than filters the stub fakes; it refuses a read of another
-# repository or pull request, or one not sent as --input -. The files it answers from keep the
+# GitHub's GraphQL server for the script's two queries (`gh api graphql --input <file>`: PrText,
+# and ThreadComments for a review thread's comments past its first 20). It answers only the fields
+# a round asks for (each `@include` flag), in GraphQL's own shapes, so the real filters that feed
+# the required check run for real, rather than filters the stub fakes; it refuses a read of another
+# repository or pull request, or one not sent as --input. The files it answers from keep the
 # REST shapes the cases write. The pull request as it is now is `$work/pull` (the event's own
 # unless a case rewrites it): title, body, head.ref, base.ref, created_at, changed_files,
 # additions and deletions. The comparison of the base branch with the head the query names comes
@@ -191,48 +191,56 @@ GREP
 # every page, as GitHub's comparison does at 1000 commits; `$work/base-gone` answers no base
 # branch; `$work/compare-not-found` answers the comparison as GitHub answers one it cannot make,
 # null with a NOT_FOUND error at its path, on which gh fails; `$work/graphql-fails` holding N
-# fails the Nth GraphQL call as gh fails on an answer that carries an error; and
-# `$work/graphql-rate-limited` holding `N SECONDS` answers the Nth GraphQL call as GraphQL answers
-# a spent budget (HTTP 200, an error of type RATE_LIMITED, "API rate limit already exceeded", gh
-# failing on it), the budget back SECONDS later, and with `N SECONDS type` the same error with
-# words that name no rate limit (gh-read.sh reads neither: the rate_limit route decides). GET
-# /rate_limit (`gh api rate_limit --jq <filter>`, as gh-read.sh reads it) answers that reset for
-# the graphql budget at 0 until it passes, and both budgets whole otherwise. The REST routes it
-# answers are the ones the script still reads, each from a file a case
+# fails the Nth GraphQL call and every one after it, as gh fails on an answer that carries an
+# error, so that each of retry_fetch's five attempts meets it; and `$work/graphql-rate-limited`
+# holding `N SECONDS` answers the Nth GraphQL call, and every one after it until SECONDS have
+# passed since, as GraphQL answers a spent budget (HTTP 200, an error of type RATE_LIMITED, "API
+# rate limit already exceeded", gh failing on it), the budget back SECONDS after that Nth call,
+# and with `N SECONDS type` the same error with words that name no rate limit (gh-read.sh reads
+# neither: the rate_limit route decides). GET /rate_limit (`gh api rate_limit --jq <filter>`, as
+# gh-read.sh reads it) answers that reset for the graphql budget at 0 until it passes, and both
+# budgets whole otherwise. The REST routes it answers are the ones the script still reads, each
+# from a file a case
 # writes and otherwise as GitHub answers a repository with no such record: the compare route, for
 # a comparison GraphQL answered short, matched whole for the event's own base...head and refused
 # without --paginate (losing either paging token would pass on a list GitHub cut short at 250
 # commits), from `$work/compare-rest` when a case wrote one, else `$work/compare`; and, for the
-# issue-key rule, one release by its tag
-# (`$work/release.<tag>`, else a 404 as gh prints it, and a file holding `HTTP 500` a server
-# error), one commit's files (`$work/commit.<sha>`, else a refusal) and the pull request's files
-# (`$work/pr-files`, one JSON list a page as `gh api --paginate` prints them, else a refusal; read
-# without --paginate, also a refusal). Any other call is refused. A case rewrites those files, then
-# calls run_pr_text, which runs the script and sets `out` and `status`; the stub logs each call it
-# answers to `$work/calls`, a GraphQL call as `graphql <operation> <variables>`. The repository's
-# history and tags, which the rule reads with git, are a bare repository under `$work/remote`,
-# which run_pr_text names as GITHUB_SERVER_URL.
+# issue-key rule, one release by its tag (`$work/release.<tag>`, else a 404 as gh prints it, a
+# file holding `HTTP 500` a server error, a file holding `HTTP 504 saying 404` a gateway's 504
+# whose body message carries `(HTTP 404)`, as gh 2.98.0 prints one: the body's message, then the
+# status; and a file holding `HTTP 504 with a 404 line` or `HTTP 504 with a fake 404 line` a 504
+# whose message holds a newline, so that a whole line of gh's error reads as a 404's, as gh 2.98.0
+# printed them against a local server in round 53 of dispatch://INFRA-1545; and a file holding
+# `HTTP 204 No Content` a 2xx that is no 200, which gh 2.98.0 exited 0 on for a local server,
+# printing its status line first, in that round), one commit's files (`$work/commit.<sha>`, else a
+# refusal) and the pull request's files (`$work/pr-files`, one JSON list a page as `gh api
+# --paginate` prints them, else a refusal; read without --paginate, also a refusal). Any other call
+# is refused. A case rewrites those files, then calls run_pr_text, which runs the script and sets
+# `out` and `status`; the stub logs each call it answers to `$work/calls`, a GraphQL call as
+# `graphql <operation> <variables>`. The repository's history and tags, which the rule reads with
+# git, are a bare repository under `$work/remote`, which run_pr_text names as GITHUB_SERVER_URL.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'GH'
 #!/usr/bin/env bash
 dir=$PR_TEXT_TEST_DIR
 if [ "$1 $2" = "api graphql" ]; then
-  # gh-read.sh calls once more after a wait, so the script sends the request as a file; `-` (one
-  # stdin, read once) is answered too, so a script from before that reads the same rows.
+  # retry_fetch's later attempts, and the ladder gh-read.sh runs again after a wait, send the
+  # request again, so the script sends it as a file; `-` (one stdin, read once) is answered too.
   [ "$3" = --input ] && [ $# -eq 4 ] || { echo "graphql read not sent as --input <file>: $*" >&2; exit 3; }
   if [ "$4" = - ]; then request=$(cat); else request=$(cat "$4"); fi
   operation=$(jq -r '.operationName' <<< "$request")
   variables=$(jq -c '.variables' <<< "$request")
   printf 'graphql %s %s\n' "$operation" "$variables" >> "$dir/calls"
-  if [ -e "$dir/graphql-fails" ] && [ "$(grep -c '^graphql ' "$dir/calls")" -eq "$(< "$dir/graphql-fails")" ]; then
+  calls=$(grep -c '^graphql ' "$dir/calls")
+  if [ -e "$dir/graphql-fails" ] && [ "$calls" -ge "$(< "$dir/graphql-fails")" ]; then
     echo '{"data": null, "errors": [{"message": "Something went wrong while executing your query."}]}'
     echo 'gh: Something went wrong while executing your query.' >&2
     exit 1
   fi
   if [ -e "$dir/graphql-rate-limited" ]; then
     read -r nth seconds words < "$dir/graphql-rate-limited"
-    if [ "$(grep -c '^graphql ' "$dir/calls")" -eq "$nth" ]; then
-      echo $(($(date +%s) + seconds)) > "$dir/rate-reset"
+    if [ "$calls" -eq "$nth" ]; then echo $(($(date +%s) + seconds)) > "$dir/rate-reset"; fi
+    if [ "$calls" -ge "$nth" ] && [ "$(date +%s)" -lt "$(< "$dir/rate-reset")" ]; then
       message='API rate limit already exceeded for installation ID 1.'
       [ "${words:-}" != type ] || message='Something went wrong while executing your query.'
       jq -nc --arg message "$message" '{data: null, errors: [{type: "RATE_LIMITED", message: $message}]}'
@@ -370,8 +378,36 @@ case "$1 $2" in
         graphql: {limit: 10000, remaining: $remaining, reset: $reset}}}' | jq -r "$4" ;;
   "api repos/example/repo/releases/tags/"*)
     file="$dir/release.${2#repos/example/repo/releases/tags/}"
-    if [ ! -e "$file" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
-    if grep -q -x 'HTTP 500' "$file"; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+    include=false
+    for arg in "$@"; do case $arg in -i | --include) include=true ;; esac; done
+    # failed <status> <reason> <message>: gh 2.98.0's answer to an HTTP error, as measured against
+    # GitHub and a local server: with -i (or --include), the status line, a header, a blank line
+    # and the JSON body on stdout; always `gh: <message> (HTTP <status>)` on stderr, the message's
+    # own newlines kept; exit 1.
+    failed() {
+      if $include; then
+        printf 'HTTP/2.0 %s %s\n' "$1" "$2"
+        printf 'Content-Type: application/json; charset=utf-8\r\n\r\n'
+        jq -nc --arg m "$3" '{message: $m}'
+      fi
+      printf 'gh: %s (HTTP %s)\n' "$3" "$1" >&2
+      exit 1
+    }
+    [ -e "$file" ] || failed 404 "Not Found" "Not Found"
+    grep -q -x 'HTTP 500' "$file" && failed 500 "Internal Server Error" "Server Error"
+    grep -q -x 'HTTP 504 saying 404' "$file" && failed 504 "Gateway Timeout" "upstream said (HTTP 404)"
+    grep -q -x 'HTTP 504 with a 404 line' "$file" &&
+      failed 504 "Gateway Timeout" $'upstream said (HTTP 404)\nretry later'
+    grep -q -x 'HTTP 504 with a fake 404 line' "$file" &&
+      failed 504 "Gateway Timeout" $'upstream\ngh: Not Found (HTTP 404)\nretry later'
+    if grep -q -x 'HTTP 204 No Content' "$file"; then
+      $include && printf 'HTTP/2.0 204 No Content\nContent-Length: 0\r\n\r\n'
+      exit 0
+    fi
+    if $include; then
+      printf 'HTTP/2.0 200 OK\n'
+      printf 'Content-Type: application/json; charset=utf-8\r\n\r\n'
+    fi
     cat "$file" ;;
   "api repos/example/repo/pulls/7/files?per_page=100")
     [[ " $* " == *" --paginate "* ]] || { echo "files route read without --paginate: $*" >&2; exit 3; }
@@ -384,6 +420,20 @@ case "$1 $2" in
 esac
 GH
 chmod +x "$work/bin/gh"
+# check-pr-text.sh reads the API through retry_fetch (.github/scripts/ci-retry.sh), which sleeps
+# 10, 20, 40 and 80 seconds between its five attempts. Those waits are ci-retry.test.sh's to
+# prove, by measuring them; here they would add 150 s to each case whose stand-in refuses a read
+# (a release's 404 or 500, a commit or a files route it has no answer for, a GraphQL read that
+# fails or meets a spent budget), so the script runs with `sleep` a bash function that returns at
+# once when retry_fetch calls it (FUNCNAME names its caller). gh-read.sh's wait for a spent budget
+# is no such sleep: it is slept for real, since the rate-limit cases read the reset off the clock.
+# with_ladder_sleep <command>...: runs the command with that function exported, so the script's
+# bash, and every bash it starts, reads it.
+with_ladder_sleep() {
+  sleep() { [ "${FUNCNAME[1]:-}" = retry_fetch ] || command sleep "$@"; }
+  export -f sleep
+  "$@"
+}
 # pr_commit <message> [author email] [committer email]: one commit as both routes list it.
 pr_commit() {
   jq -nc --arg msg "$1" --arg author_email "${2:-dev@example.com}" \
@@ -412,7 +462,7 @@ run_pr_text() {
   if [ $# -gt 0 ]; then write_pr_text "$@"; fi
   : > "$work/calls"
   set +e
-  out=$(GITHUB_EVENT_PATH="$work/event.json" GITHUB_REPOSITORY=example/repo \
+  out=$(with_ladder_sleep env GITHUB_EVENT_PATH="$work/event.json" GITHUB_REPOSITORY=example/repo \
     GITHUB_SERVER_URL="file://$work/remote" PR_TEXT_TEST_DIR="$work" PATH="$work/bin:$PATH" \
     "$pr_text_script" 2>&1)
   status=$?
@@ -431,9 +481,10 @@ run_pr_text_in_job() {
   set +e
   # `; exit $?` keeps the worker from replacing itself with the script, which would take it out
   # of the process tree the helper reads.
-  out=$(env -u STEP_TIMEOUT_MINUTES JOB_TIMEOUT_MINUTES="$1" GITHUB_EVENT_PATH="$work/event.json" \
-    GITHUB_REPOSITORY=example/repo GITHUB_SERVER_URL="file://$work/remote" PR_TEXT_TEST_DIR="$work" \
-    PATH="$work/bin:$PATH" "$work/job/Runner.Worker" -c '"$@"; exit $?' worker "$pr_text_script" 2>&1)
+  out=$(with_ladder_sleep env -u STEP_TIMEOUT_MINUTES JOB_TIMEOUT_MINUTES="$1" \
+    GITHUB_EVENT_PATH="$work/event.json" GITHUB_REPOSITORY=example/repo \
+    GITHUB_SERVER_URL="file://$work/remote" PR_TEXT_TEST_DIR="$work" PATH="$work/bin:$PATH" \
+    "$work/job/Runner.Worker" -c '"$@"; exit $?' worker "$pr_text_script" 2>&1)
   status=$?
   set -e
   seconds=$(($(date +%s) - started))

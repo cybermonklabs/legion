@@ -3,7 +3,8 @@
 # this script cannot read gets. The discipline this suite holds is that no input reaches a
 # traceback: every refusal names the file, the row and the remedy, so the case that proves a
 # hosted row with `jj` deleted is refused by name also asserts that the output holds no
-# `Traceback`.
+# `Traceback`. A row checks where a refusal is written and the rows, keys, values and figures it
+# names (names_at), not the words of the refusal or its remedy (dispatch://INFRA-1545, round 70).
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file e2e.yaml runs. The fixtures' scripts and
@@ -52,6 +53,7 @@ fixture() {
       "omp": true,
       "evidence_variable": "ALPHA_PROOF_EVIDENCE_DIR",
       "timeout_minutes": 25,
+      "run_timeout_minutes": 12,
       "why_hosted": "it takes a checkout, go and the job's database, and starts no container",
       "jj": true
     },
@@ -63,6 +65,7 @@ fixture() {
       "omp": false,
       "evidence_variable": "",
       "timeout_minutes": 20,
+      "run_timeout_minutes": 8,
       "why_hosted": "it takes a checkout and go, and keeps its work directory",
       "jj": false
     }
@@ -162,6 +165,11 @@ value = json.loads(sys.argv[1])[int(sys.argv[2])][sys.argv[3]]
 print(value if isinstance(value, str) else json.dumps(value))' "$proofs" "$1" "$2"
 }
 
+# Where the script refuses the list file, and the keys a hosted row carries, in the order the
+# script's MATRIX lists them and a refusal of a missing key names them all.
+list_error='::error file=.github/e2e-scripts.json::'
+matrix_keys='script, go_version_file, apt, bun, omp, jj, evidence_variable, timeout_minutes, run_timeout_minutes'
+
 echo "case: a workflow_dispatch of a hosted script emits one matrix entry with every key"
 root=$(fixture dispatch-green)
 run_select "$root" workflow_dispatch alpha-proof
@@ -169,7 +177,7 @@ check "exits 0" "$(is "$status" 0)"
 check "says what it selected" "$(contains "$out" '^1 proof(s): alpha-proof.sh$')"
 check "one entry" "$(is "$(proof_count)" 1)"
 check "the entry carries every key the matrix reads" \
-  "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,omp,proof,script,timeout_minutes")"
+  "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,omp,proof,run_timeout_minutes,script,timeout_minutes")"
 check "script is the row's" "$(is "$(proof_field 0 script)" alpha-proof.sh)"
 check "proof is that name without its .sh" "$(is "$(proof_field 0 proof)" alpha-proof)"
 check "go_version_file is the row's" "$(is "$(proof_field 0 go_version_file)" packages/example/go.mod)"
@@ -179,6 +187,7 @@ check "omp is a boolean" "$(is "$(proof_field 0 omp)" true)"
 check "jj is a boolean" "$(is "$(proof_field 0 jj)" true)"
 check "evidence_variable is the row's" "$(is "$(proof_field 0 evidence_variable)" ALPHA_PROOF_EVIDENCE_DIR)"
 check "timeout_minutes is a whole number" "$(is "$(proof_field 0 timeout_minutes)" 25)"
+check "run_timeout_minutes is a whole number" "$(is "$(proof_field 0 run_timeout_minutes)" 12)"
 run_select "$root" workflow_dispatch alpha-proof.sh
 check "a name given with its .sh selects the same row" "$(is "$(proof_field 0 script)" alpha-proof.sh)"
 run_select "$root" workflow_dispatch "  alpha-proof  "
@@ -192,6 +201,7 @@ check "every hosted row, in name order" "$(is "$(proof_scripts)" "alpha-proof.sh
 check "says how many and which" "$(contains "$out" '^2 proof(s): alpha-proof.sh, beta-proof.sh$')"
 check "a row with no package carries an empty apt" "$(is "$(proof_field 1 apt)" "")"
 check "and the row's own limit" "$(is "$(proof_field 1 timeout_minutes)" 20)"
+check "and its proof step's own limit" "$(is "$(proof_field 1 run_timeout_minutes)" 8)"
 check "a row with no Oh My Pi carries omp false" "$(is "$(proof_field 1 omp)" false)"
 run_select "$root" pull_request
 check "the e2e label selects the same rows" "$(is "$(proof_scripts)" "alpha-proof.sh beta-proof.sh")"
@@ -206,24 +216,23 @@ run_select "$root" pull_request
 check "the e2e label passes over it too" "$(is "$(proof_scripts)" "alpha-proof.sh")"
 run_select "$root" workflow_dispatch beta-proof
 check "its dispatch selects it" "$(is "$(proof_scripts)" "beta-proof.sh")"
-check "and the entry carries no dispatch_only" "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,omp,proof,script,timeout_minutes")"
+check "and the entry carries no dispatch_only" "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,omp,proof,run_timeout_minutes,script,timeout_minutes")"
 write_row_key "$root" hosted 1 dispatch_only false
 run_select "$root" schedule
 check "a false dispatch_only is a row like any other" "$(is "$(proof_scripts)" "alpha-proof.sh beta-proof.sh")"
 write_row_key "$root" hosted 1 dispatch_only '"yes"'
 run_select "$root" schedule
 check "a dispatch_only that is no boolean fails" "$(is "$status" 1)"
-check "and is named" "$(contains "$out" "^::error file=.github/e2e-scripts.json::hosted row beta-proof.sh has dispatch_only 'yes', which is not a boolean. Write dispatch_only as a boolean, or leave it out.$")"
+check "and names the file, the row, the key and its value" \
+  "$(names_at "$out" "$list_error" beta-proof.sh "dispatch_only 'yes'")"
 
 echo "case: a hosted row with jj deleted is refused by name, with no traceback"
 root=$(fixture missing-jj)
 drop_row_key "$root" hosted 0 jj
 run_select "$root" schedule
 check "fails" "$(is "$status" 1)"
-check "names the file and the row" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::hosted row alpha-proof.sh lacks jj\.')"
-check "names the remedy and every key the matrix reads" \
-  "$(contains "$out" 'Add each one: the matrix e2e.yaml.s proof job runs reads script, go_version_file, apt, bun, omp, jj, evidence_variable, timeout_minutes\.$')"
+check "names the file, the row, the one key it lacks and every key the matrix reads" \
+  "$(names_at "$out" "$list_error" alpha-proof.sh "$matrix_keys" jj --not go_version_file evidence_variable)"
 check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
 check "and writes no matrix" "$(is "$proofs" "")"
 
@@ -232,8 +241,8 @@ root=$(fixture missing-omp)
 drop_row_key "$root" hosted 1 omp
 run_select "$root" schedule
 check "fails" "$(is "$status" 1)"
-check "names the file, the row and the key" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::hosted row beta-proof.sh lacks omp\.')"
+check "names the file, the row, the one key it lacks and every key the matrix reads" \
+  "$(names_at "$out" "$list_error" beta-proof.sh "$matrix_keys" omp --not jj go_version_file evidence_variable)"
 check "and writes no matrix" "$(is "$proofs" "")"
 
 echo "case: a hosted row missing several keys names every one of them"
@@ -242,158 +251,207 @@ drop_row_key "$root" hosted 1 apt
 drop_row_key "$root" hosted 1 timeout_minutes
 run_select "$root" schedule
 check "fails" "$(is "$status" 1)"
-check "names the row and both keys" "$(contains "$out" 'hosted row beta-proof.sh lacks apt, timeout_minutes\.')"
+check "names the file, the row and both keys it lacks" \
+  "$(names_at "$out" "$list_error" beta-proof.sh "$matrix_keys" apt timeout_minutes --not go_version_file evidence_variable)"
 
 echo "case: a hosted key holding the wrong kind of value"
 root=$(fixture wrong-timeout)
 write_row_key "$root" hosted 0 timeout_minutes '"25"'
 run_select "$root" schedule
 check "a quoted timeout_minutes fails" "$(is "$status" 1)"
-check "names the row, the key and what it must hold" \
-  "$(contains "$out" "^::error file=.github/e2e-scripts.json::hosted row alpha-proof.sh has timeout_minutes '25', which is not a whole number. Write timeout_minutes as a whole number.$")"
+check "names the file, the row, the key and its value" \
+  "$(names_at "$out" "$list_error" alpha-proof.sh "timeout_minutes '25'")"
 
 root=$(fixture boolean-timeout)
 write_row_key "$root" hosted 0 timeout_minutes true
 run_select "$root" schedule
 check "a boolean timeout_minutes fails, though Python counts one as a number" "$(is "$status" 1)"
-check "and is named" "$(contains "$out" 'has timeout_minutes True, which is not a whole number')"
+check "and is named, with its value" "$(names_at "$out" "$list_error" alpha-proof.sh "timeout_minutes True")"
 
 root=$(fixture apt-string)
 write_row_key "$root" hosted 0 apt '"tmux"'
 run_select "$root" schedule
 check "an apt that is one string fails" "$(is "$status" 1)"
-check "and is named" "$(contains "$out" "has apt 'tmux', which is not a list of strings. Write apt as a list of strings.")"
+check "and is named, with its value" "$(names_at "$out" "$list_error" alpha-proof.sh "apt 'tmux'")"
 
 root=$(fixture apt-numbers)
 write_row_key "$root" hosted 0 apt '["tmux", 7]'
 run_select "$root" schedule
 check "an apt holding a number fails" "$(is "$status" 1)"
-check "and is named" "$(contains "$out" "has apt \['tmux', 7\], which is not a list of strings")"
+check "and is named, with its value" "$(names_at "$out" "$list_error" alpha-proof.sh "apt ['tmux', 7]")"
 
 root=$(fixture bun-string)
 write_row_key "$root" hosted 0 bun '"yes"'
 run_select "$root" schedule
 check "a bun that is a string fails" "$(is "$status" 1)"
-check "and is named" "$(contains "$out" "has bun 'yes', which is not a boolean. Write bun as a boolean.")"
+check "and is named, with its value" "$(names_at "$out" "$list_error" alpha-proof.sh "bun 'yes'")"
 
 root=$(fixture jj-number)
 write_row_key "$root" hosted 0 jj 1
 run_select "$root" schedule
 check "a jj that is a number fails" "$(is "$status" 1)"
-check "and is named" "$(contains "$out" 'has jj 1, which is not a boolean. Write jj as a boolean.')"
+check "and is named, with its value" "$(names_at "$out" "$list_error" alpha-proof.sh "jj 1")"
 
 root=$(fixture omp-string)
 write_row_key "$root" hosted 0 omp '"true"'
 run_select "$root" schedule
 check "an omp that is a string fails" "$(is "$status" 1)"
-check "and is named" "$(contains "$out" "has omp 'true', which is not a boolean. Write omp as a boolean.")"
+check "and is named, with its value" "$(names_at "$out" "$list_error" alpha-proof.sh "omp 'true'")"
+
+echo "case: run_timeout_minutes, the limit of the step that runs the script"
+root=$(fixture missing-run-timeout)
+drop_row_key "$root" hosted 0 run_timeout_minutes
+run_select "$root" schedule
+check "a row with no run_timeout_minutes fails" "$(is "$status" 1)"
+check "names the file, the row and the key it lacks" \
+  "$(names_at "$out" "$list_error" alpha-proof.sh "$matrix_keys" run_timeout_minutes --not go_version_file evidence_variable)"
+check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
+check "and writes no matrix" "$(is "$proofs" "")"
+
+root=$(fixture quoted-run-timeout)
+write_row_key "$root" hosted 0 run_timeout_minutes '"12"'
+run_select "$root" schedule
+check "a quoted run_timeout_minutes fails" "$(is "$status" 1)"
+check "names the file, the row, the key and its value" \
+  "$(names_at "$out" "$list_error" alpha-proof.sh "run_timeout_minutes '12'")"
+check "and is refused once, not compared with the job's limit as well" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
+check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
+
+root=$(fixture fraction-run-timeout)
+write_row_key "$root" hosted 0 run_timeout_minutes 12.5
+run_select "$root" schedule
+check "a run_timeout_minutes with a fraction fails" "$(is "$status" 1)"
+check "and is named, with its value" "$(names_at "$out" "$list_error" alpha-proof.sh "run_timeout_minutes 12.5")"
+
+root=$(fixture equal-run-timeout)
+write_row_key "$root" hosted 0 run_timeout_minutes 25
+run_select "$root" schedule
+check "a run_timeout_minutes equal to the row's timeout_minutes fails" "$(is "$status" 1)"
+check "names the file, the row, its run_timeout_minutes and the timeout_minutes it is not below" \
+  "$(names_at "$out" "$list_error" alpha-proof.sh "run_timeout_minutes 25" "timeout_minutes 25")"
+check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
+check "and writes no matrix" "$(is "$proofs" "")"
+
+root=$(fixture above-run-timeout)
+write_row_key "$root" hosted 1 run_timeout_minutes 30
+run_select "$root" schedule
+check "a run_timeout_minutes above the row's timeout_minutes fails" "$(is "$status" 1)"
+check "names the file, the row, its run_timeout_minutes and the timeout_minutes it is not below" \
+  "$(names_at "$out" "$list_error" beta-proof.sh "run_timeout_minutes 30" "timeout_minutes 20")"
+
+root=$(fixture just-below-run-timeout)
+write_row_key "$root" hosted 0 run_timeout_minutes 24
+run_select "$root" workflow_dispatch alpha-proof
+check "a run_timeout_minutes one minute below timeout_minutes passes" "$(is "$status" 0)"
+check "and is carried as the row gives it" "$(is "$(proof_field 0 run_timeout_minutes)" 24)"
 
 echo "case: a row that is not an object, or that has no script string"
 root=$(fixture row-not-object)
 write_row "$root" hosted 0 '["alpha-proof.sh"]'
 run_select "$root" schedule
 check "fails" "$(is "$status" 1)"
-check "names the list, the row and the remedy" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::hosted\[0\] is a list, not an object. Write every row as an object whose "script" names a file of scripts/e2e/.$')"
+check "names the file, the list and the row, and what the row is" \
+  "$(names_at "$out" "$list_error" "hosted[0]" "a list")"
 
 root=$(fixture row-no-script)
 drop_row_key "$root" elsewhere 0 script
 run_select "$root" schedule
 check "a row with no script fails" "$(is "$status" 1)"
-check "and names the list, the row and the remedy" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::elsewhere\[0\] has no "script" string. Give the row a "script" naming a file of scripts/e2e/.$')"
+check "and names the file, the list, the row and the key" \
+  "$(names_at "$out" "$list_error" "elsewhere[0]" '"script"')"
 
 root=$(fixture script-not-string)
 write_row_key "$root" hosted 1 script 7
 run_select "$root" schedule
 check "a script that is no string fails" "$(is "$status" 1)"
-check "and names the row" "$(contains "$out" 'hosted\[1\] has no "script" string')"
+check "and names the file, the row and the key" "$(names_at "$out" "$list_error" "hosted[1]" '"script"')"
 
 echo "case: an elsewhere row with no needs text"
 root=$(fixture no-needs)
 drop_row_key "$root" elsewhere 0 needs
 run_select "$root" schedule
 check "fails" "$(is "$status" 1)"
-check "names the row, the remedy and what the text is for" \
-  "$(contains "$out" "^::error file=.github/e2e-scripts.json::elsewhere row gamma-proof.sh has no needs text. Write what the script's own header says it needs: e2e.yaml prints that text when it refuses this script.$")"
+check "names the file, the row and the key" \
+  "$(names_at "$out" "$list_error" gamma-proof.sh needs)"
 
 root=$(fixture blank-needs)
 write_row_key "$root" elsewhere 0 needs '"   "'
 run_select "$root" schedule
 check "needs holding spaces alone fails too" "$(is "$status" 1)"
-check "and is named" "$(contains "$out" 'elsewhere row gamma-proof.sh has no needs text')"
+check "and is named" "$(names_at "$out" "$list_error" gamma-proof.sh needs)"
 
 echo "case: a file that is not JSON, or that this script cannot read"
 root=$(fixture not-json)
 write_file "$root" '{"hosted": ['
 run_select "$root" schedule
 check "fails" "$(is "$status" 1)"
-check "names the file and where the syntax breaks" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::this file is no JSON: .*line [0-9]* column [0-9]*.*\. Fix the syntax at that line\.$')"
+check "names the file and the line and column where the syntax breaks" \
+  "$(names_at "$out" "$list_error" "line 2 column 1")"
 check "and reaches no traceback" "$(is "$(contains "$out" Traceback)" false)"
 
 root=$(fixture no-file)
 rm "$root/.github/e2e-scripts.json"
 run_select "$root" schedule
 check "a missing file fails" "$(is "$status" 1)"
-check "and names the file and what to write" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::this script cannot read the file (No such file or directory). Write it as an object with a "hosted" list and an "elsewhere" list.$')"
+check "and names the file and why it cannot be read" \
+  "$(names_at "$out" "$list_error" "No such file or directory")"
 
 echo "case: a top level that is not an object holding both lists"
 root=$(fixture top-level-list)
 write_file "$root" '[]'
 run_select "$root" schedule
 check "a list at the top level fails" "$(is "$status" 1)"
-check "and names what to write" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::this file holds a list at the top level. Write an object with a "hosted" list and an "elsewhere" list.$')"
+check "and names the file and what its top level is" \
+  "$(names_at "$out" "$list_error" "a list")"
 
 root=$(fixture no-hosted)
 write_file "$root" '{"elsewhere": []}'
 run_select "$root" schedule
 check "a file with no hosted list fails" "$(is "$status" 1)"
-check "and names that list and what it holds" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::this file has no "hosted" list. Write "hosted" as a list of rows, one row for every scripts/e2e/\*.sh a GitHub-hosted runner can run.$')"
+check "and names the file and that list alone" \
+  "$(names_at "$out" "$list_error" '"hosted"' --not '"elsewhere"')"
 
 root=$(fixture elsewhere-not-list)
 write_file "$root" '{"hosted": [], "elsewhere": {}}'
 run_select "$root" schedule
 check "an elsewhere that is an object fails" "$(is "$status" 1)"
-check "and names that list and what it holds" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::this file has no "elsewhere" list. Write "elsewhere" as a list of rows, one row for every other scripts/e2e/\*.sh, with the needs its own header states.$')"
+check "and names the file and that list alone" \
+  "$(names_at "$out" "$list_error" '"elsewhere"' --not '"hosted"')"
 
 echo "case: a script under scripts/e2e/ that neither list names"
 root=$(fixture unlisted-script)
 printf '#!/usr/bin/env bash\necho delta\n' > "$root/scripts/e2e/delta-proof.sh"
 run_select "$root" schedule
 check "fails" "$(is "$status" 1)"
-check "names the script and both remedies" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::scripts/e2e/delta-proof.sh is in neither list: add it to .hosted. with what a job must give it, or to .elsewhere. with what its own header says it needs$')"
+check "names the file and the script" \
+  "$(names_at "$out" "$list_error" scripts/e2e/delta-proof.sh)"
 
 echo "case: a row naming a script the tree does not hold"
 root=$(fixture stale-row)
 rm "$root/scripts/e2e/gamma-proof.sh"
 run_select "$root" schedule
 check "fails" "$(is "$status" 1)"
-check "names the row and the remedy" \
-  "$(contains "$out" '^::error file=.github/e2e-scripts.json::this file names gamma-proof.sh, and scripts/e2e/ does not hold it: delete its row$')"
+check "names the file and the row" \
+  "$(names_at "$out" "$list_error" gamma-proof.sh)"
 
 echo "case: a workflow_dispatch for a script of the elsewhere list"
 root=$(fixture dispatch-elsewhere)
 run_select "$root" workflow_dispatch gamma-proof
 check "fails" "$(is "$status" 1)"
-check "names the script, what it needs and why no job runs it" \
-  "$(contains "$out" '^::error::scripts/e2e/gamma-proof.sh is on the elsewhere list of \.github/e2e-scripts\.json, so this workflow runs it nowhere\. It needs a throwaway cluster on an amd64 Linux host and a worker image by digest\.$')"
+check "names the script, the list it is on and what its row says it needs" \
+  "$(names_at "$out" '::error::' scripts/e2e/gamma-proof.sh .github/e2e-scripts.json "a throwaway cluster on an amd64 Linux host and a worker image by digest")"
 
 echo "case: a workflow_dispatch for a name in neither list"
 root=$(fixture dispatch-unknown)
 run_select "$root" workflow_dispatch nothing-here
 check "fails" "$(is "$status" 1)"
-check "names the script and every name it could have been given" \
-  "$(contains "$out" '^::error::scripts/e2e/nothing-here.sh is no proof a GitHub-hosted runner can run. Name one of: alpha-proof.sh, beta-proof.sh.$')"
+check "names the script and every name it could have been given, the two hosted rows and not the elsewhere one" \
+  "$(names_at "$out" '::error::' scripts/e2e/nothing-here.sh alpha-proof.sh beta-proof.sh --not gamma-proof.sh)"
 run_select "$root" workflow_dispatch ""
 check "a dispatch naming nothing fails" "$(is "$status" 1)"
-check "and is refused by name, with no traceback" \
-  "$(contains "$out" '^::error::scripts/e2e/.sh is no proof a GitHub-hosted runner can run')"
+check "and is refused by the name it was given" \
+  "$(names_at "$out" '::error::' scripts/e2e/.sh)"
 check "  no traceback" "$(is "$(contains "$out" Traceback)" false)"
 
 echo "case: the environment e2e.yaml's select job sets"
@@ -404,7 +462,7 @@ out=$(env -u EVENT GITHUB_OUTPUT="$root/github-output" \
 status=$?
 set -e
 check "an unset EVENT fails" "$(is "$status" 1)"
-check "and is named, with no traceback" "$(contains "$out" '^::error::EVENT is empty\.')"
+check "and is named" "$(names_at "$out" '::error::' EVENT)"
 check "  no traceback" "$(is "$(contains "$out" Traceback)" false)"
 set +e
 out=$(env -u GITHUB_OUTPUT EVENT=schedule \
@@ -412,7 +470,7 @@ out=$(env -u GITHUB_OUTPUT EVENT=schedule \
 status=$?
 set -e
 check "an unset GITHUB_OUTPUT fails" "$(is "$status" 1)"
-check "and is named, with no traceback" "$(contains "$out" '^::error::GITHUB_OUTPUT is empty\.')"
+check "and is named" "$(names_at "$out" '::error::' GITHUB_OUTPUT)"
 check "  no traceback" "$(is "$(contains "$out" Traceback)" false)"
 
 # The real data, through the real script: every hosted row of .github/e2e-scripts.json against the
@@ -445,7 +503,7 @@ for name in $every_hosted_script; do
   check "a workflow_dispatch of $name passes" "$(is "$status" 0)"
   check "  and emits that row alone" "$(is "$(proof_scripts)" "$name")"
   check "  with every key the matrix reads" \
-    "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,omp,proof,script,timeout_minutes")"
+    "$(is "$(proof_keys 0)" "apt,bun,evidence_variable,go_version_file,jj,omp,proof,run_timeout_minutes,script,timeout_minutes")"
   case "$name" in
     claim-compaction.sh | late-completion.sh | provider-error-retry.sh | refusal-fallback-omp.sh | role-prompt-rule.sh) omp=true ;;
     *) omp=false ;;

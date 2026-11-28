@@ -4,5 +4,6 @@ GATE = harness("check_private_names_keys_test", "Test the private-name check's i
     (TEST_LIB, "`.github/scripts/check-private-names-test-lib.sh#$script_dir/test-lib.sh`: the lib sources it for check/is/summary, which that function and the harnesses call"),
     (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
     (f"{SCRIPTS}/check-pr-text.sh", "`.github/scripts/check-private-names-test-lib.sh#run_pr_text` runs it, over a pull request's new text"),
-    (f"{SCRIPTS}/gh-read.sh", "`.github/scripts/check-pr-text.sh#$script_dir/gh-read.sh`: it sources it for that helper, which every gh read goes through"),
+    (f"{SCRIPTS}/gh-read.sh", "`.github/scripts/check-pr-text.sh#$script_dir/gh-read.sh` sources it from its own directory for every gh read"),
 ], lib=False)
+GATE = with_reads(GATE, reads(*ci_retry("check-pr-text.sh sources it from its own directory for every read of the API")))

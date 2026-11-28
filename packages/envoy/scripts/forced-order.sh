@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# packages/envoy/scripts/forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... <package>...
+# packages/envoy/scripts/forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... [-download] <package>...
 #
 # Runs the forced-order tests of each package on the hooked nats-server: every test named
 # TestForcedOrder…, built with -tags odatrace and -race, against a nats-server whose own code
@@ -33,6 +33,14 @@
 #                    holding there fails without it. A name no hook call of that version's hooks
 #                    passes is refused before the build, so a mistyped point cannot "fail" a test
 #                    on a compile error instead. Repeatable.
+#   -download        runs every check above and the read of nats-server's tree at that version
+#                    below, with its download into the module cache where no cache holds it, then
+#                    exits 0, building and testing nothing. A CI step runs it under
+#                    .github/scripts/ci-retry.sh's retry_fetch before the step that tests, so the
+#                    network reads of that read retry, and the test step reads the module cache
+#                    alone (dispatch://INFRA-1545, round 57). The download runs from a directory
+#                    with no go.mod, where go asks the checksum database for the module even when
+#                    its zip is cached, so a module download of the build alone does not cover it.
 #
 # It fails, naming the package, when a package it is given declares no TestForcedOrder test, or
 # runs none (every one it declares skipped), so a step that names a package whose tests were
@@ -54,13 +62,14 @@ die() {
 }
 
 usage() {
-  echo "usage: forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... <package>..." >&2
+  echo "usage: forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... [-download] <package>..." >&2
   exit 2
 }
 
 module="$envoy"
 server=""
 drops=()
+download_only=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -C)
@@ -79,6 +88,10 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || usage
       drops+=("$2")
       shift 2
+      ;;
+    -download)
+      download_only=1
+      shift
       ;;
     -h | --help) usage ;;
     -*)
@@ -168,12 +181,10 @@ for point in ${drops[@]+"${drops[@]}"}; do
 done
 
 # nats-server's tree, read where the module cache extracted it: `go list -m -json` names that
-# directory and fetches nothing. `go mod download` fetches the module's zip whenever the cache holds
-# none (cmd/go/internal/modcmd/download.go calls DownloadZip), and the CI caches are saved without
-# their zips (.github/ci-notes/ci-caches.md#why-the-fills-delete-the-module-zips), so it would fetch
-# the zip on every run. It is the fallback, for a version no cache holds (-server 2.10.29, which
-# no build links). Both run from the work directory, where no go.mod is, so the module's own go.sum
-# is not touched.
+# directory and fetches nothing. `go mod download` is the fallback, for a version no cache holds
+# (-server 2.10.29, which no build links): it fetches the module's zip whenever the cache holds
+# none (cmd/go/internal/modcmd/download.go calls DownloadZip). Both run from the work directory,
+# where no go.mod is, so the module's own go.sum is not touched.
 source_dir="$(cd "$work" && GOWORK=off go list -m -json "$nats_server@v$server" 2>/dev/null | jq -r '.Dir // empty')" ||
   source_dir=""
 if [ -z "$source_dir" ] || [ ! -d "$source_dir" ]; then
@@ -182,6 +193,10 @@ if [ -z "$source_dir" ] || [ ! -d "$source_dir" ]; then
   source_dir="$(jq -r '.Dir // empty' "$work/download.json")" || die "jq could not read go mod download's answer"
 fi
 [ -n "$source_dir" ] && [ -d "$source_dir" ] || die "neither go list -m nor go mod download found a source for $nats_server@v$server"
+if [ -n "$download_only" ]; then
+  echo "forced-order.sh: -download: nats-server v$server is in the module cache at $source_dir; nothing is built or tested" >&2
+  exit 0
+fi
 copy="$work/nats-server"
 cp -R "$source_dir" "$copy"
 chmod -R u+w "$copy"

@@ -14,8 +14,10 @@ description: >-
 
   A refusal names its cause and installs nothing: a pin of another shape, a Dockerfile with no
   digest, a fetch that fails, or an archive whose sha256 is not the pinned one. There is no other
-  source. curl tries a failed transfer three more times before the step refuses it, and whatever
-  it wrote is held to the digest after that, so a retry can never admit other bytes.
+  source. The fetch retries like any other download: five bounded attempts through
+  .github/scripts/ci-retry.sh, the last starting 150 s after the first, before the step refuses
+  it, and whatever it wrote is held to the digest after that, so a retry can never admit other
+  bytes.
 runs:
   using: composite
   steps:
@@ -27,8 +29,11 @@ runs:
         pin=$(<.omp-pin)
         # Each part of the pin — owner, repository, version — is one or more of [A-Za-z0-9._-] and
         # holds no `..`, so no part can be a path of its own or climb out of the one it stands in.
+        # The pattern is a variable's: written inside `[[ … ]]`, each `($part)` reads to
+        # .github/scripts/check-download-retry.sh as a subshell running `$part`.
         part='[A-Za-z0-9._-]+'
-        if ! [[ $pin =~ ^github:($part)/($part)@($part)$ ]] || [[ $pin == *..* ]]; then
+        pin_shape="^github:($part)/($part)@($part)\$"
+        if ! [[ $pin =~ $pin_shape ]] || [[ $pin == *..* ]]; then
           echo "::error file=.omp-pin::install-omp: .omp-pin holds '$pin', which is no github:<owner>/<repo>@<version> pin of [A-Za-z0-9._-] parts without '..', so no release archive can be named" >&2
           exit 1
         fi
@@ -45,7 +50,13 @@ runs:
         rm -rf "$dir" "$archive"
         mkdir -p "$dir"
         started=$(date +%s)
-        if ! curl -fsSL --retry 3 --retry-all-errors --max-time 300 -o "$archive" "https://github.com/${owner}/${repo}/releases/download/${tag}/omp-${tag}-linux-x64.tar.gz"; then
+        # 60 s per attempt: the `mise install` this fetch replaced, which downloaded the same
+        # archive, measured at most 7 s across the 20 most recent successful ci.yaml push runs on
+        # main, so the bound is over eight times its measured maximum.
+        # shellcheck source=.github/scripts/ci-retry.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-retry.sh"
+        if ! retry_fetch "the release archive of $pin" 60 -- \
+          curl -fsSL --max-time 60 -o "$archive" "https://github.com/${owner}/${repo}/releases/download/${tag}/omp-${tag}-linux-x64.tar.gz" >&2; then
           echo "::error::install-omp: the release archive of $pin did not download, so nothing is installed" >&2
           rm -f "$archive"
           exit 1
@@ -60,6 +71,8 @@ runs:
         tar -xzf "$archive" -C "$dir" --strip-components=1 --no-same-owner
         rm -f "$archive"
         omp="$dir/bin/omp"
-        "$omp" --version
+        # By its path, not as "$omp": check-download-retry.sh names the program a command word
+        # runs only where the word's last path element is written.
+        "$dir/bin/omp" --version
         echo "installed $pin (sha256 $got) in $(( $(date +%s) - started ))s"
         echo "LEGION_TEST_OMP=$omp" >> "$GITHUB_ENV"

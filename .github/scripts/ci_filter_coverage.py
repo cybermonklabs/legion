@@ -249,7 +249,15 @@ class Gate:
     step) it gates reads. `workflow` is the file that holds that job's steps: ci.yaml, or a
     workflow ci.yaml calls, since a job that calls a reusable workflow keeps its id, its
     `needs: changes` and the whole `if:` that tests the filter in ci.yaml and holds its steps in
-    the called file under the same id."""
+    the called file under the same id.
+
+    `called_job`, where it is set, names one job of that called file which an `if:` of its own
+    gates on this filter through an input, as ci-job-download-retry.yaml's two lanes are gated:
+    the gate is that called job's, and `job` is still the ci.yaml job that calls the file. Such a
+    called job runs only when its caller does, so the filter of the gate on its caller's own `if:`
+    is computed from this gate's reads too (gate_read_sets), as it is from a step gate's, and that
+    `if:` must test this filter or that gate's, or a change only this filter matches would start
+    nothing."""
 
     filter: str
     job: str
@@ -258,10 +266,11 @@ class Gate:
     step: str = ""
     exact: tuple = ()
     workflow: str = WORKFLOW
+    called_job: str = ""
 
 
-def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=WORKFLOW):
-    return Gate(filter, job, tuple(runs), tuple(reads), step, tuple(exact), workflow)
+def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=WORKFLOW, called_job=""):
+    return Gate(filter, job, tuple(runs), tuple(reads), step, tuple(exact), workflow, called_job)
 
 
 def gate_runs(g: Gate) -> list:
@@ -1953,12 +1962,20 @@ ENV_ALLOWED = frozenset({
     # run go commands among them, and around_job reads a job's env. go reads it nowhere.
     "JOB_TIMEOUT_MINUTES",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
+    # A directory of binaries a live test runs rather than installing its own: it names no
+    # package and changes nothing a go command compiles (dispatch://INFRA-1545).
+    "LEGION_LIVE_TOOL_DIR",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     # The commit envoy-go-build's edited-migrations step compares a bypass run's tree with:
     # .github/scripts/edited-migrations-base.sh, which that step runs, reads it and hands the base
     # it picks to the command as an argument, and go reads it nowhere.
     "MIGRATION_BASE",
     "PREVIOUS_COMMIT",
+    # A step's own timeout-minutes, which gh-read.sh's wait stays within as it does the job's:
+    # every step with a limit of its own that reaches that file sets it, the ci-ok report step
+    # that ends every job among them since that report's tip read waits through gh-read.sh
+    # (dispatch://INFRA-1545, round 55). go reads it nowhere.
+    "STEP_TIMEOUT_MINUTES",
     "TESTCONTAINERS_RYUK_DISABLED",
     # The deployment's term list .github/scripts/check-private-names.sh reads. The private-names
     # jobs of ci-job-lint.yaml and docs-site.yaml map it from the secret of that name, and this
@@ -2263,9 +2280,24 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
             problems.append(error(declared(g), f"gate {g.filter} holds job {g.job}'s steps in {g.workflow}, which "
                                                f"{WORKFLOW} neither is nor calls"))
             continue
-        job = (steps_document.get("jobs") or {}).get(g.job)
+        # A gate on a job of a called file names that job, and holds the caller's `if:` to a
+        # filter computed from its reads too, since the called job runs only inside a run of its
+        # caller; a gate on a step names none, and its job is the caller's own id there.
+        if g.called_job:
+            if g.step or g.workflow == WORKFLOW:
+                problems.append(error(declared(g), f"gate {g.filter} names called job {g.called_job} with "
+                                                   + (f"step \"{g.step}\"" if g.step else f"no file but {WORKFLOW}")
+                                                   + f", and a called job's gate is a whole job of a file job {g.job} "
+                                                   f"calls: drop the step, or name the file"))
+                continue
+            if str((caller_jobs.get(g.job) or {}).get("uses", "")).removeprefix("./") != g.workflow:
+                problems.append(error(declared(g), f"gate {g.filter} names job {g.called_job} of {g.workflow}, but "
+                                                   f"job {g.job} of {WORKFLOW} does not call that file"))
+                continue
+        holder = g.called_job or g.job
+        job = (steps_document.get("jobs") or {}).get(holder)
         if job is None:
-            problems.append(error(declared(g), f"gate {g.filter} names job {g.job}, which {g.workflow} does not have"))
+            problems.append(error(declared(g), f"gate {g.filter} names job {holder}, which {g.workflow} does not have"))
             continue
         if g.step:
             steps = [s for s in job.get("steps") or [] if step_matches(s, g.step)]
@@ -2275,6 +2307,24 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                                                   f"no single step of that name has an if: on "
                                                   f"needs.changes.outputs.{g.filter}, nor one reading "
                                                   f"{g.filter} out of needs.changes.outputs.{LIST_OUTPUT}"))
+        elif g.called_job:
+            if g.filter not in gated[(g.workflow, g.called_job)]:
+                problems.append(error(g.workflow, f"gate {g.filter} names job {g.called_job} of {g.workflow}, "
+                                                  f"which job {g.job} calls, but that job's own if: does not test "
+                                                  f"needs.changes.outputs.{g.filter} through an input its caller passes"))
+            # gate_read_sets folds this gate's reads into the filter of the gate on the caller's
+            # own if:, so that if: holds them when it tests this filter or that gate's.
+            tested = sorted(gated[(WORKFLOW, g.job)])
+            folded = {o.filter for o in data.GATES
+                      if (o.workflow, o.job) == (g.workflow, g.job) and not o.step and not o.called_job}
+            if g.filter not in tested and not folded & set(tested):
+                problems.append(error(WORKFLOW, f"gate {g.filter} gates job {g.called_job} of {g.workflow}, which "
+                                                f"runs only inside a run of job {g.job}, but job {g.job}'s if: tests "
+                                                + (", ".join(f"needs.changes.outputs.{name}" for name in tested)
+                                                   or "no output of changes")
+                                                + f", and no filter of those is computed from what {g.filter} reads, "
+                                                f"so a change only {g.filter} matches starts neither job; declare a "
+                                                f"gate on job {g.job}'s own if:"))
         elif g.filter not in gated[(WORKFLOW, g.job)]:
             problems.append(error(WORKFLOW, f"job {g.job}'s if: does not test needs.changes.outputs.{g.filter}"))
     for name, kept in excluded.items():
@@ -3628,7 +3678,8 @@ def gate_read_sets(session: Session, data, files: list, expander: Expander, unre
     the report names. A gate on a job's own `if:` reads what each gate on one of that job's steps
     reads too: a step runs only in a run its job's filter selected, so a change only the step
     reads must start the job, which is why the test job's filter holds every harness its steps
-    test."""
+    test. A gate on a job of a called file (Gate.called_job) is folded in the same way, since that
+    job runs only in a run of its caller."""
     gate_files: dict = defaultdict(GateFiles)
     own: dict = defaultdict(set)  # id of a gate -> the files it reads
     report = []
@@ -3664,10 +3715,10 @@ def gate_read_sets(session: Session, data, files: list, expander: Expander, unre
         note = (f"; every Go file and every file under a Go module's directory, since {'; '.join(widened)}"
                 if widened else "")
         report.append(f"{where}: {len(reads)} files (filter {g.filter}){note}")
-    jobs = {(g.workflow, g.job): g.filter for g in data.GATES if not g.step}
+    jobs = {(g.workflow, g.job): g.filter for g in data.GATES if not g.step and not g.called_job}
     for g in data.GATES:
         name = jobs.get((g.workflow, g.job))
-        if g.step and name and name != g.filter:
+        if (g.step or g.called_job) and name and name != g.filter:
             gate_files[name].reads.update(own[id(g)])
             gate_files[name].globs.update(verbatim_globs(g))
     return gate_files, report
@@ -3954,7 +4005,7 @@ def check() -> int:
         # merges main; nothing reads it, so what the branch added there selects nothing.
         if (REPO / ".github/ci-filters.yaml").exists():
             problems.append(error(".github/ci-filters.yaml", "no job reads this file any more: the changes job "
-                                                             "computes the filters. Run .github/scripts/ci-reads-convert, "
+                                                             "computes the filters. Run .github/scripts/ci-reads-convert.py, "
                                                              "which moves what a branch added here into its gates and "
                                                              "deletes it"))
         if mode == "generate":
@@ -4010,6 +4061,7 @@ def check() -> int:
     rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
+    rules.check_workflow_size(problems)
     # Rule 20: a vet for another platform passes over no file a build tag would compile.
     report += check_vet_tags(session, data, problems)
     problems += session.problems

@@ -50,18 +50,26 @@ jobs:
   envoy-infra-go:
     if: inputs.job == 'envoy-infra-go'
     runs-on: ubuntu-24.04-arm
-    # The limit the job ran under while it also held envoy-infra-build's steps: the worst job
-    # measured plus half again. With no go-envoy-infra entry, as after an eviction or for a pull
-    # request whose module files main has not filled, everything compiles: that job took 996 s,
-    # of which the live tests took 390 s (run 44563221379, its restore forced to miss), and the
-    # worst runs on record were 959 and 1059 s for runs 44013632169 and 43996496498 on
-    # ubuntu-24.04, whose entry was eleven days old and held no darwin objects. 1059 s and the
-    # 206 s the race compile added at most come to 1265 s, about 21 minutes, and half again is
-    # 1898 s, the 32 minutes here. No run has measured this half alone yet, so the limit stays
-    # the one it ran under.
-    timeout-minutes: 32
+    # Budget (ci-budgets.md's Budgets note): 1920 s, the 32 minutes main's #4518 gave this job for
+    # its slowest measured runs below, which it ran under while it also held envoy-infra-build's
+    # steps (no run has measured this half alone yet, main's #5175 says, so the measured term
+    # stays the one it ran under), plus its slowest retried step alone — the four `go install`s
+    # of the live tests' tools, each 5 x 180 + 150 = 1050 s, so 4200 s, above both
+    # packages/envoy/infra's own `go mod download` at 1050 s and the ci-ok report's 2460 s. That
+    # step's own arithmetic is a whole number of minutes, so it takes one more (71), and this job
+    # takes it with it: 1920 + 4260 = 6180 s -> 104 min, the whole minute above a sum that is itself
+    # a whole number of minutes. It was 1200 + 4260 = 5460 s, 92 minutes, until main's #4518 put
+    # the unit step under the race detector and raised the measured term from 20 minutes to 32.
+    # The measured term (main's #4518) is the worst job measured plus half again. With no
+    # go-envoy-infra entry, as after an eviction or for a pull request whose module files main has
+    # not filled, everything compiles: that job took 996 s, of which the live tests took 390 s (run
+    # 44563221379, its restore forced to miss), and the worst runs on record were 959 and 1059 s
+    # for runs 44013632169 and 43996496498 on ubuntu-24.04, whose entry was eleven days old and
+    # held no darwin objects. 1059 s and the 206 s the race compile added at most come to 1265 s,
+    # about 21 minutes, and half again is 1898 s, the 32 minutes of the measured term.
+    timeout-minutes: 104
     env:
-      JOB_TIMEOUT_MINUTES: 32 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 104 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,6 +94,19 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
           restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
+      # The infra module's own workspace, downloaded once and retried before the live tests below
+      # (ci-budgets.md's Retries note; the retried unit is the download, never the
+      # build and never the test). 180 s per attempt: a cold `go mod download` of
+      # packages/envoy/infra measured 113 s on an empty module cache on 2026-11-07, the slowest
+      # of the three modules measured there, so the bound is 1.6 times it; an attempt it kills
+      # leaves what it fetched in the module cache for the next one to resume from, which a
+      # tarball fetch cannot do.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
       - name: Pull the NATS and Postgres test container images
         uses: ./.github/actions/pull-test-images
         with:
@@ -93,12 +114,41 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/testpg/testpg.go Image
+      # gcp's live tests install helm, nats-server, the config reloader and the exporter with
+      # `go install module@version`, which builds from each module's own go.mod and reads no
+      # go.work, so the workspace download above covers none of it: four download sites inside a
+      # `go test`. They come down here instead, through the one helper, and the test takes them
+      # from LEGION_LIVE_TOOL_DIR rather than installing its own (dispatch://INFRA-1545).
+      # One call per tool and no loop, because a loop's passes are what this repository's
+      # download check cannot count, and a figure nobody can read is a budget nobody can check.
+      - name: Download the tools envoy-infra's live tests run
+        # Its own retry arithmetic: four installs, each 5 x 180 + 150 = 1050 s, so 4200 s, and
+        # the budget stands strictly above it rather than level with it -> 71 min.
+        timeout-minutes: 71
+        run: |
+          . .github/scripts/ci-retry.sh
+          mkdir -p "$RUNNER_TEMP/live-tools"
+          cd packages/envoy/infra
+          export GOBIN="$RUNNER_TEMP/live-tools" GOWORK=off
+          retry_fetch "helm v3.20.2" 180 -- go install helm.sh/helm/v3/cmd/helm@v3.20.2
+          retry_fetch "nats-server v2.15.1" 180 -- go install github.com/nats-io/nats-server/v2@v2.15.1
+          retry_fetch "the config reloader v0.24.0" 180 -- \
+            go install github.com/nats-io/nack/cmd/nats-server-config-reloader@v0.24.0
+          retry_fetch "the nats exporter v0.20.2" 180 -- \
+            go install github.com/nats-io/prometheus-nats-exporter@v0.20.2
       - name: Live tests of envoy-infra against nats-server (natslive)
+        env:
+          LEGION_LIVE_TOOL_DIR: ${{ runner.temp }}/live-tools
+        # The tools come down in the step above, so this step holds no retried call of its own.
         # why: .github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests
         run: scripts/natslive.sh ./core ./seed ./gcp
         working-directory: packages/envoy/infra
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-infra-go
@@ -112,10 +162,16 @@ jobs:
     # above gives. With a go-envoy-infra entry filled for the run's module files both vets take a
     # second and the unit step under -race 50 s (run 44565671151); with none, the two vets took
     # 175 and 162 s and the race unit step 234 s (run 44563221379). No run has measured this half
-    # alone yet, so the limit stays the one it ran under.
-    timeout-minutes: 32
+    # alone yet, so the measured term stays the one it ran under.
+    #
+    # Budget (ci-budgets.md's Budgets note): those 32 minutes, 1920 s, plus its slowest retried
+    # step alone — the ci-ok report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"),
+    # above packages/envoy/infra's `go mod download` at 5 x 180 + 150 = 1050 s.
+    # 1920 + 2460 = 4380 s, a whole number of minutes, so the budget is the next one strictly
+    # above it -> 74 min.
+    timeout-minutes: 74
     env:
-      JOB_TIMEOUT_MINUTES: 32 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 74 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -137,6 +193,16 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
           restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
+      # The infra module's own workspace, downloaded once and retried before the vets and the
+      # unit tests below, as envoy-infra-go downloads it (ci-budgets.md's Retries note; the
+      # retried unit is the download, never the build and never the test). 180 s per attempt, the
+      # bound envoy-infra-go's step of this name derives.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
       - name: Check Go formatting
         run: |
           unformatted=$(gofmt -l .)
@@ -184,6 +250,10 @@ jobs:
         working-directory: packages/envoy/infra
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-infra-build

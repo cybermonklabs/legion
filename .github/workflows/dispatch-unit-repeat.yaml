@@ -140,10 +140,16 @@ jobs:
         # #4790's, as the notes say); and the deadline, the test step's budget and the job's budget
         # set from them, with a margin of twice the slowest, each line's arithmetic beside it. The
         # job takes the other steps twice too, where dispatch-browser.yaml's rule takes them once:
-        # a margin of this file's own, which the notes measure. The step's 60 s of slack, for the
-        # step's own start around `timeout`, rests on no reading: it sits behind the deadline and
-        # the kill-after, so it decides nothing. A budget is a hang guard only, and decides no
-        # verdict. The head says why a web or harness leg runs 20 times and a web-cold leg once.
+        # a margin of this file's own, which the notes measure. The job also takes retry_seconds,
+        # the retry arithmetic of its single slowest retried step alone, the term
+        # .github/ci-budgets.md#the-budgets-note adds: the setup-bun step's two `ci_tools_fetch` calls at
+        # 3416 s (ci-budgets.md's Budgets note), above the workspace install's 1050 s and the
+        # harness leg's zsh install's 1400 s. check-download-retry.sh's rule 8 reads no number out
+        # of job_minutes (its paragraph A CEILING WRITTEN AS AN EXPRESSION names this job), so the
+        # budget test below holds it. The step's 60 s of slack, for the step's own start around
+        # `timeout`, rests on no reading: it sits behind the deadline and the kill-after, so it
+        # decides nothing. A budget is a hang guard only, and decides no verdict. The head says why
+        # a web or harness leg runs 20 times and a web-cold leg once.
         # packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts holds each budget to
         # exactly its rule over the measurement beside it.
         # why: .github/ci-notes/dispatch-unit-repeat.md#the-budgets-measured-from-cis-own-runs
@@ -152,37 +158,62 @@ jobs:
             reruns: 20
             slowest_seconds: 1954 # run 44759854373, round 1
             other_steps_seconds: 37 # run 44751162563, round 3
+            retry_seconds: 3416 # the setup-bun step's two ci_tools_fetch calls
             deadline_seconds: 3960 # 2 x 1,954 = 3,908 s, up to the next whole minute
             step_minutes: 68 # 3,960 + 60 s kill-after + 60 s of slack = 4,080 s
-            job_minutes: 70 # 68 + 2 x 37 s = 74 s, up to the next whole minute, 2
+            job_minutes: 127 # 4,080 + 2 x 37 + 3,416 = 7,570 s, up to the next whole minute
           - lane: web-cold
             reruns: 1
             slowest_seconds: 175 # run 44956324879, round 3
             other_steps_seconds: 44 # run 44814644776, round 1
+            retry_seconds: 3416 # the setup-bun step's two ci_tools_fetch calls
             deadline_seconds: 360 # 2 x 175 = 350 s, up to the next whole minute
             step_minutes: 8 # 360 + 60 s kill-after + 60 s of slack = 480 s
-            job_minutes: 10 # 8 + 2 x 44 s = 88 s, up to the next whole minute, 2
+            job_minutes: 67 # 480 + 2 x 44 + 3,416 = 3,984 s, up to the next whole minute
           - lane: harness
             reruns: 20
             slowest_seconds: 3882 # run 44963607247, round 3, stopped at 3,300 s and estimated (the notes)
             other_steps_seconds: 229 # run 44709413418, round 1, whose zsh install is most of it
+            retry_seconds: 3416 # the setup-bun step's two ci_tools_fetch calls
             deadline_seconds: 7800 # 2 x 3,882 = 7,764 s, up to the next whole minute
             step_minutes: 132 # 7,800 + 60 s kill-after + 60 s of slack = 7,920 s
-            job_minutes: 140 # 132 + 2 x 229 s = 458 s, up to the next whole minute, 8
+            job_minutes: 197 # 7,920 + 2 x 229 + 3,416 = 11,794 s, up to the next whole minute
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       # As ci-job-dispatch-ui.yaml's step of this name, for its reason:
       # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, and
       # outside-edge-refusals-input.test.ts the edge-refusal check, each of which must refuse to run
       # and name bash; each skips that row where zsh is missing. The runner image has no zsh (dash,
       # the other shell they run under, is Ubuntu's /bin/sh).
+      # Both apt phases retry through .github/scripts/ci-retry.sh, in e2e.yaml's spelling; their
+      # bounds, and why the index read carries `-o APT::Update::Error-Mode=any`: ci-budgets.md's
+      # Retries note.
       - name: Install zsh
         if: matrix.lane == 'harness'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+        # Its own retry arithmetic, so an exhausted phase fails this step by name rather than
+        # being cut part way by the job: the index read's 5 x 95 + 150 = 625 s and the package
+        # download's 5 x 125 + 150 = 775 s, 1400 s -> 24 min.
+        timeout-minutes: 24
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "apt's package lists" 95 -- \
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any >&2
+          retry_fetch "zsh" 125 -- \
+            sudo timeout 120 apt-get install -y --no-install-recommends -d zsh >&2
+          sudo apt-get install -y --no-install-recommends zsh
       # The harness rows that ci-job-dispatch-ui.yaml skips for want of a database repeat here,
       # as they run in a pod: e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts's "psql
       # reads its own stack's database", and the rows of replace-blocks-guard.test.ts that need a

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests for gh-read.sh: gh_wait_reset, which waits out a spent API budget when its reset falls
-# before the job's or the step's limit and fails by name when it does not, and gh_read's ladder,
-# which takes each attempt through it.
+# before the job's or the step's limit and fails by name when it does not, alone in front of a gh
+# command and in front of retry_fetch, the one ladder (.github/scripts/ci-retry.sh), whose whole
+# arithmetic the wait must leave room for.
 #
 # Every case runs the real gh against a stand-in GitHub, a local HTTP server
 # (.github/scripts/gh-read-stand-in.py), so the answers the helper reads, their status and
@@ -104,7 +105,7 @@ drive() {
     GH_READ="$script_dir/gh-read.sh" GH_HOST=github.localhost GH_TOKEN=t \
     GH_CONFIG_DIR="$work/gh-config" GH_NO_UPDATE_NOTIFIER=1 GH_PROMPT_DISABLED=1 \
     HTTP_PROXY="http://127.0.0.1:$port" http_proxy="http://127.0.0.1:$port" NO_PROXY= no_proxy= \
-    GH_RETRY_SECONDS=0 "${assignments[@]}" "${command[@]}" 2> "$work/err")
+    "${assignments[@]}" "${command[@]}" 2> "$work/err")
   status=$?
   set -e
   err=$(<"$work/err")
@@ -380,24 +381,153 @@ check "the call after the wait came no sooner than the reset" "$(at_least "$(nth
 check "and any wait it logged reached the log" "$(logged_wait_names '^::warning::the API budget is spent until ')"
 rm -f "$work/words"
 
-echo "case: gh_read takes its attempt through the wait"
-github 3
-drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
+# The form every retried call of this repository's CI writes, `gh_wait_reset retry_fetch "<what>"
+# <bound> -- gh …` (dispatch://INFRA-1545, round 55): gh_wait_reset runs the ladder once, and runs
+# it again after a wait only when the wait, the ladder's whole arithmetic, 5 x <bound> + 150 s,
+# and GH_WAIT_MARGIN end before the nearer of the job's and the step's limit. LADDER sources
+# ci-retry.sh beside the code and stands a function in for `sleep` that records each call, as
+# `<caller> <seconds>`, in $work/sleeps, and returns at once when the ladder asks, so a case does
+# not spend the ladder's 150 s; gh_wait_reset's own wait goes to the `sleep` on PATH, the stand-in
+# clock's under drive_on_clock, so a case reads it as a fact of that clock rather than a span.
+# shellcheck disable=SC2016 # expanded by the driven shell
+LADDER='source "${GH_READ%/*}/ci-retry.sh"
+sleep() { echo "${FUNCNAME[1]} $1" >> "$PWD/sleeps"; [ "${FUNCNAME[1]}" != gh_wait_reset ] || command sleep "$1"; }
+'
+ladder_slept=$'retry_fetch 10\nretry_fetch 20\nretry_fetch 40\nretry_fetch 80'
+sleeps() { cat "$work/sleeps" 2> /dev/null || true; }
+# bare_errors: how many `::error::` lines of the log stand outside every stop-commands block, the
+# lines the runner turns into annotations. It reads the log as the runner does: a
+# `::stop-commands::<token>` stops command processing until the line `::<token>::`, and while it
+# is stopped no other line is a command, a second `::stop-commands::` or another token included,
+# so a ladder's own blocks inside the helper's change nothing.
+bare_errors() {
+  awk '
+    open == "" && /^::stop-commands::/ { open = substr($0, 18); next }
+    open != "" && $0 == "::" open "::" { open = ""; next }
+    open == "" && /^[ \t]*::error::/ { n++ }
+    END { print n + 0 }' <<<"$err"
+}
+
+echo "case: composed, a spent budget whose wait and one more ladder fit the limit is waited out"
+# 60 s: the ladder's five refused attempts and the rate_limit read land before the reset on any
+# host, and the wait costs a second on the stand-in clock. Bound 5 s: the wait, about 61 s, plus
+# 5 x 5 + 150 = 175 s and 30 s, about 266 s, fits 5 minutes.
+github 60
+rm -f "$work/sleeps"
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 5 -- gh api repos/o/r/pulls/1'
+reset=$(spent_until)
 check "exits 0" "$(is "$status" 0)"
-check "prints the answer" "$(is "$out" '{"title":"t"}')"
-check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
+check "prints the answer of the ladder run after the wait" "$(is "$out" '{"title":"t"}')"
+check "calls the route six times: the ladder's five, refused, then one after the wait" \
+  "$(is "$(calls /repos/o/r/pulls/1)" 6)"
+check "the sixth no sooner than the reset" "$(at_least "$(nth_at /repos/o/r/pulls/1 6)" "$reset")"
+check "the ladder's four sleeps, then one wait of gh_wait_reset's own" \
+  "$(is "$(sed '$d' <<<"$(sleeps)")|$(tail -n 1 <<<"$(sleeps)" | cut -d' ' -f1)" "$ladder_slept|gh_wait_reset")"
+check "logs one wait, naming the reset, the ladder it runs again and the job's limit" \
+  "$(is "$(grep -c "^::warning::the API budget is spent until $(utc "$reset"); waiting [0-9]* s for it, then one more run of its ladder, 5 x 5 + 150 = 175 s, and 30 s after it, within this job's limit at " <<<"$err")" 1)"
+check "and no ::error:: of its own: the one is the first ladder's exhaustion" \
+  "$(is "$(errors)|$(contains "$err" '^::error::the pull request failed to download after 5 attempts')" '1|true')"
+check "which stays inside the refused run's stop-commands block: no ::error:: outside a block annotates the step" \
+  "$(is "$(bare_errors)" 0)"
 
-echo "case: gh_read stops its ladder on a budget it cannot wait for"
-github 3600
-drive JOB_TIMEOUT_MINUTES=1 -- 'gh_read gh api repos/o/r/pulls/1'
-check "fails with the helper's status" "$(is "$status" 75)"
-check "calls the route once, not three times" "$(is "$(calls /repos/o/r/pulls/1)" 1)"
+echo "case: composed, a wait that does not fit with one more ladder fails by name at once"
+# Bound 30 s: the ladder alone, 5 x 30 + 150 = 300 s, and 30 s fit a 6-minute job, and the
+# 60 s wait on top of them does not. A margin that left the ladder out would wait the 60 s.
+github 60
+rm -f "$work/sleeps"
+drive JOB_TIMEOUT_MINUTES=6 -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 30 -- gh api repos/o/r/pulls/1'
+check "fails by name" "$(is "$status" 75)"
+check "at once: no wait of gh_wait_reset's own, nothing slept but the ladder's own four waits" \
+  "$(is "$(sleeps)" "$ladder_slept")"
+check "after one ladder, five calls" "$(is "$(calls /repos/o/r/pulls/1)" 5)"
+check "naming the reset, the ladder it would run again and the job's limit" \
+  "$(contains "$err" "^::error::the API budget is spent until $(utc "$(spent_until)"), and that time with one more run of its ladder, 5 x 30 + 150 = 300 s, and 30 s after it ends at [0-9TZ:-]*, past this job's limit at ")"
+check "and nothing on stdout" "$(is "$out" '')"
 
-echo "case: gh_read still climbs its ladder on any other refusal"
+echo "case: composed, a step limit nearer than the job's is the one the wait and the ladder are held to"
+# Bound 10 s: 5 x 10 + 150 = 200 s and 30 s fit the step's 4 minutes alone, and the 40 s wait on
+# top of them does not; all three fit the job's 10 minutes, so a helper that read the job's limit
+# alone would wait the 40 s.
+github 40
+rm -f "$work/sleeps"
+drive JOB_TIMEOUT_MINUTES=10 STEP_TIMEOUT_MINUTES=4 -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 10 -- gh api repos/o/r/pulls/1'
+check "fails by name" "$(is "$status" 75)"
+check "at once: no wait of gh_wait_reset's own, nothing slept but the ladder's own four waits" \
+  "$(is "$(sleeps)" "$ladder_slept")"
+check "naming the step's limit, not the job's" \
+  "$(contains "$err" "^::error::the API budget is spent until .*, past this step's limit at ")"
+
+echo "case: composed, stdout the caller sends to stderr is written inside a stop-commands block"
+# retry_fetch, run with its stdout in the helper's file, cannot see the caller's `>&2`, so the
+# helper puts the answer inside a block of its own (ci-log-guard.sh) rather than after the
+# ladder's last block closed, where the runner would act on a workflow command in it.
+github never
+drive JOB_TIMEOUT_MINUTES=5 -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 5 -- gh api repos/o/r/pulls/1 >&2'
+check "exits 0" "$(is "$status" 0)"
+check "nothing on stdout" "$(is "$out" '')"
+check "the answer is on stderr inside a block that opens before it and closes after it" \
+  "$(awk -v want='{"title":"t"}' '
+      /^::stop-commands::/ { open = substr($0, 18); next }
+      open != "" && $0 == "::" open "::" { open = ""; next }
+      $0 == want { print (open != "" ? "inside" : "outside"); exit }' <<<"$err" | grep -qx inside &&
+    echo true || echo false)"
+
+echo "case: composed, an answer the caller's stdout cannot take fails the call"
+# The answer is written last, from the helper's file to the caller's stdout, which here is
+# /dev/full: every write to it fails. A caller that writes the answer to a file inside an `if`
+# (ci-ok-reconcile.sh's runs, ci-ok-report.sh's jobs, post-check-run.sh's posted) must see that,
+# as a bare retry_fetch shows it (ci-retry.sh writes `cat … || status=$?`). With the helper's
+# final `cat` bare it returned 0 (review round 37 of dispatch://INFRA-1545).
+github never
+drive JOB_TIMEOUT_MINUTES=5 -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 5 -- gh api repos/o/r/pulls/1 > /dev/full'
+check "exits with the failed write's status" "$(is "$status" 1)"
+check "the write's own error reaches stderr" "$(contains "$err" 'write error')"
+check "after one call, which the host answered" "$(is "$(calls /repos/o/r/pulls/1)" 1)"
+
+echo "case: composed, any other refusal climbs the whole ladder and is the ladder's"
+# A 404 is no rate limit: the helper hands the ladder's own result through, after its five
+# attempts, and reads no rate limit.
 github never 404
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
-check "fails" "$(is "$status" 1)"
-check "after three attempts" "$(is "$(calls /repos/o/r/pulls/1)" 3)"
+rm -f "$work/sleeps"
+drive JOB_TIMEOUT_MINUTES=5 -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 5 -- gh api repos/o/r/pulls/1'
+check "fails as gh does" "$(is "$status" 1)"
+check "after five attempts" "$(is "$(calls /repos/o/r/pulls/1)" 5)"
+check "having slept nothing but the ladder's own four waits" "$(is "$(sleeps)" "$ladder_slept")"
+check "and read no rate limit" "$(is "$(calls /rate_limit)" 0)"
+
+# GraphQL answers a spent budget with HTTP 200, an error of type RATE_LIMITED and
+# x-ratelimit-remaining: 0, and gh fails on it. Composed, the helper reads that answer through
+# retry_fetch: each attempt runs gh by name under timeout, so the gh it runs is the helper's own,
+# and the answer the helper reads is the last attempt's.
+echo "case: composed, GraphQL's refusal for its budget, a 200 with x-ratelimit-remaining: 0, is waited out"
+github 60
+touch "$work/state/graphql-200"
+rm -f "$work/sleeps"
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- "$LADDER"'gh_wait_reset retry_fetch "the viewer" 5 -- gh api graphql -f query="{viewer{login}}"'
+reset=$(spent_until)
+check "exits 0" "$(is "$status" 0)"
+check "prints the answer of the ladder run after the wait" "$(is "$out" '{"title":"t"}')"
+check "calls GraphQL six times: the ladder's five, refused, then one after the wait" \
+  "$(is "$(calls /graphql)" 6)"
+check "reads the reset from the rate_limit route once" "$(is "$(calls /rate_limit)" 1)"
+check "the sixth no sooner than the reset" "$(at_least "$(nth_at /graphql 6)" "$reset")"
+check "the ladder's four sleeps, then one wait of gh_wait_reset's own" \
+  "$(is "$(sed '$d' <<<"$(sleeps)")|$(tail -n 1 <<<"$(sleeps)" | cut -d' ' -f1)" "$ladder_slept|gh_wait_reset")"
+check "and no ::error:: outside a block annotates the step" "$(is "$(bare_errors)" 0)"
+
+echo "case: composed, a paginated read is decided by the rate_limit route once, after the ladder"
+# A paginated read leaves the helper no answer to read (gh-read.sh's header), so it asks the
+# rate_limit route about the core budget once, after the ladder's last attempt exited 1, and not
+# after each attempt. The refusal's message names no rate limit, so the route alone tells.
+github 60
+echo "Forbidden" > "$work/state/spent-message"
+rm -f "$work/sleeps"
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 5 -- gh api --paginate repos/o/r/pulls/1'
+reset=$(spent_until)
+check "exits 0 with the answer of the ladder run after the wait" "$(is "$status|$out" '0|{"title":"t"}')"
+check "calls the route six times, the sixth no sooner than the reset" \
+  "$(is "$(calls /repos/o/r/pulls/1)|$(at_least "$(nth_at /repos/o/r/pulls/1 6)" "$reset")" '6|true')"
+check "reads the rate_limit route once, after the ladder" "$(is "$(calls /rate_limit)" 1)"
 
 # A secondary rate limit spends no budget: GitHub's answer names how long to wait in a retry-after
 # header. Its documentation asks for at least a minute where the answer names none, but such an
@@ -447,7 +577,8 @@ check "and none of gh's request trace does" "$(is "$(contains "$err" '^\* Reques
 
 echo "case: a 403 that names a secondary rate limit, with no retry-after and the budget whole, is gh's own failure"
 # Its status and headers are a plain 403's, and the helper decides a rate limit from those alone:
-# the message is the server's text. The ladder (gh_read), or the caller, decides what comes next.
+# the message is the server's text. The composed form's ladder, or the caller, decides what comes
+# next.
 github never
 secondary 403 none
 drive_recording_sleep JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
@@ -493,14 +624,18 @@ check "a 504 naming the budget through the function is gh's own failure, with no
 check "and gh's words through the function reach stderr" \
   "$(contains "$err" '^gh: API rate limit exceeded for installation ID 1\. (HTTP 504)$')"
 
-echo "case: gh_read takes a secondary rate limit through the wait too"
+echo "case: composed, a secondary rate limit the ladder outlasts takes no wait"
+# The stand-in refuses the route's first call for a secondary limit, its retry-after 2 s, and
+# answers the next: the ladder's second attempt is answered, so the helper meets no refusal and
+# sleeps nothing of its own.
 github never
 secondary 403 2
-drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
+rm -f "$work/sleeps"
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 5 -- gh api repos/o/r/pulls/1'
 check "exits 0" "$(is "$status" 0)"
 check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
-check "the second call came the 2 s retry-after after the first: the helper waited, the ladder would not" \
-  "$(gap_at_least /repos/o/r/pulls/1 2)"
+check "the ladder's first sleep alone, none of gh_wait_reset's own" "$(is "$(sleeps)" 'retry_fetch 10')"
+check "and logs no wait" "$(is "$(warnings)" 0)"
 
 # Only the answer decides a rate limit: its status, and its x-ratelimit-remaining and retry-after
 # headers, as GitHub's documentation defines each limit. The message is the server's text, which
@@ -526,14 +661,17 @@ reply 504 "You have exceeded a secondary rate limit. Please wait a few minutes b
 drive_recording_sleep JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 own_failure /repos/o/r/pulls/1 '^gh: You have exceeded a secondary rate limit.* (HTTP 504)$'
 
-echo "case: gh_read climbs its ladder for a 504 whose message names the API budget"
+echo "case: composed, the ladder climbs for a 504 whose message names the API budget, and the helper names no rate limit"
 github never
 reply 504 "API rate limit exceeded for installation ID 1."
-drive_recording_sleep JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
+rm -f "$work/sleeps"
+drive_recording_sleep JOB_TIMEOUT_MINUTES=5 -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 5 -- gh api repos/o/r/pulls/1'
 check "fails as gh does" "$(is "$status" 1)"
-check "after three attempts, one call each" "$(is "$(calls /repos/o/r/pulls/1)" 3)"
-check "sleeping only the ladder's pauses (0 s here)" "$(is "$(slept | tr '\n' ' ')" '0 0 ')"
-check "and naming no rate limit" "$(is "$(warnings)|$(errors)" '0|0')"
+check "after five attempts, one call each" "$(is "$(calls /repos/o/r/pulls/1)" 5)"
+check "sleeping only the ladder's own four waits" "$(is "$(sleeps)|$(slept)" "$ladder_slept|")"
+check "reading no rate limit" "$(is "$(calls /rate_limit)" 0)"
+check "and naming none: the one ::error:: is the ladder's exhaustion" \
+  "$(is "$(warnings)|$(errors)|$(contains "$err" '^::error::the pull request failed to download after 5 attempts')" '0|1|true')"
 
 echo "case: a 403 with x-ratelimit-remaining: 0 is waited for, whatever its message says"
 github 3
@@ -839,19 +977,22 @@ check "exits 0" "$(is "$status" 0)"
 check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
 check "logs no wait: the reset passed while the rate-limit read answered" "$(is "$(warnings)" 0)"
 
-echo "case: gh_read with no limit set keeps its ladder's retries for a rate limit"
-# With no limit the helper cannot wait, and says so; the ladder still makes its later attempts, as
-# it did before the helper. The stand-in refuses the route's first two calls for the spent budget,
-# its reset an hour off, and answers the third: refusals counted, not a reset the attempts must
-# straddle, so a slow host changes nothing.
+echo "case: composed, with no limit set the ladder still makes its retries for a rate limit"
+# With no limit the helper cannot wait; the ladder inside it makes its later attempts all the same,
+# so a budget back by the third attempt is read there and the helper meets no refusal. The stand-in
+# refuses the route's first two calls for the spent budget, its reset an hour off, and answers the
+# third: refusals counted, not a reset the attempts must straddle, so a slow host changes nothing.
 github never
 echo 2 > "$work/state/refuse-calls"
-drive -- 'gh_read gh api repos/o/r/pulls/1'
+rm -f "$work/sleeps"
+drive -- "$LADDER"'gh_wait_reset retry_fetch "the pull request" 5 -- gh api repos/o/r/pulls/1'
 check "exits 0" "$(is "$status" 0)"
 check "prints the answer" "$(is "$out" '{"title":"t"}')"
 check "after three attempts" "$(is "$(calls /repos/o/r/pulls/1)" 3)"
-check "the two refused ones each named the missing limit" \
-  "$(is "$(grep -c 'names no time limit to wait within' <<<"$err")" 2)"
+check "the ladder's first two sleeps, and none of gh_wait_reset's own" \
+  "$(is "$(sleeps)" $'retry_fetch 10\nretry_fetch 20')"
+check "and nothing named the missing limit: the helper met no refusal" \
+  "$(is "$(contains "$err" 'names no time limit to wait within')" false)"
 
 echo "case: a rate-limit read that overlaps the first spend reads the reset whole"
 # The hold-spend-read knob makes a rate_limit read and the first spend's write overlap: the read
@@ -970,4 +1111,4 @@ else
   echo "  SKIP: not on a GitHub runner (GITHUB_ACTIONS is not true)"
 fi
 
-summary "gh-read.sh's wait for a spent API budget and its retry ladder"
+summary "gh-read.sh's wait for a spent API budget, alone and in front of retry_fetch's ladder"

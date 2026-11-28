@@ -29,9 +29,14 @@ jobs:
     # longest, 94 s, 5 s of its clock over its steps, and its test step's longest, 406 s
     # (run 44807153227), plus that one guard, 250 s: 755 s, or 13 minutes. 15 leaves the test step
     # room to grow as it did from 285 s on 2026-11-18 to 406 s.
-    timeout-minutes: 15
+    # Budget (ci-budgets.md's Budgets note): those 15 minutes, 900 s, are the first term, plus the
+    # job's slowest retried step alone - the setup-bun step's two `ci_tools_fetch` calls, 3416 s,
+    # above the ci-ok report's 2460 s, the tmux install's 625 + 775 = 1400 s, the workspace
+    # install's 1050 s and install-omp's 450 s. 900 + 3416 = 4316 s -> 72 min. It carried 80,
+    # from install-jj's 3866 s, until main's #4877 took install-jj out of this job.
+    timeout-minutes: 72
     env:
-      JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 72 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.
@@ -44,19 +49,46 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
       - uses: ./.github/actions/setup-bun
+        timeout-minutes: 57
       # extensions/dispatch-first-omp.test.ts, extensions/askgate/askgate-omp.test.ts,
       # extensions/card-delivery-omp.test.ts and extensions/tmux-place-omp.test.ts run the pinned
       # Oh My Pi against stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub
       # Actions without one. The pin is read from .omp-pin, the repository's one copy of it
       # (.github/actions/install-omp, which needs no mise and no token).
+      # install-omp's own retry arithmetic: its fetch of the release archive,
+      # 5 x 60 + 150 = 450 s -> 8 min.
       - uses: ./.github/actions/install-omp
+        timeout-minutes: 8
       # extensions/tmux-place-omp.test.ts runs that binary in a pane of a tmux server of its own,
       # the only way the place a session registers can be read from the session itself, and refuses
       # on GitHub Actions without a tmux.
+      # Both apt phases retry through .github/scripts/ci-retry.sh, in the spelling the test job's
+      # own tmux install carries, for the same runner image and the same indexes; ci-budgets.md's
+      # Retries note holds the whole reasoning — the inner `sudo timeout` is what bounds an attempt,
+      # the unpack after the download takes no network and stays bare, and
+      # `-o APT::Update::Error-Mode=any` is what leaves retry_fetch something to retry.
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
-      - run: bun install --frozen-lockfile
+        # Its own retry arithmetic, so an exhausted phase fails this step by name rather than
+        # being cut part way by the job: the index read's 5 x 95 + 150 = 625 s and the package
+        # download's 5 x 125 + 150 = 775 s, 1400 s -> 24 min.
+        timeout-minutes: 24
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "apt's package lists" 95 -- \
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any >&2
+          retry_fetch "tmux" 125 -- \
+            sudo timeout 120 apt-get install -y --no-install-recommends -d tmux >&2
+          sudo apt-get install -y --no-install-recommends tmux
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: Build contracts for pi-envoy
         run: bun run build
         working-directory: packages/contracts
@@ -102,6 +134,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: pi-envoy

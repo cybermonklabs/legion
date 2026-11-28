@@ -48,7 +48,6 @@
 # reads it, relative to your working directory.
 # ci.yaml's tag steps run it, and its tests run in ci.yaml's test job.
 set -euo pipefail
-shopt -s nullglob
 
 fail() { # fail MESSAGE...: on standard error, and nothing on standard output
   echo "go-tagged-tests.sh: $*" >&2
@@ -94,7 +93,9 @@ mentions_tag() { # mentions_tag CONSTRAINT TAG
 }
 
 tagged=()
+# A glob that matches no file stays as its own text, which names no file, so `-e` skips it.
 for file in "$dir"/*_test.go; do
+  [ -e "$file" ] || continue
   constraint=$(constraint_of "$file")
   if [ "$constraint" = "$tag" ]; then
     tagged+=("$file")

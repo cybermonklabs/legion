@@ -19,13 +19,12 @@ set -euo pipefail
 
 # shellcheck source=.github/scripts/ci-tools.sh
 . .github/scripts/ci-tools.sh
-proof=.github/scripts/ci-tools-proof.sh
 wrong=""
-"$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
-"$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
-"$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
+.github/scripts/ci-tools-proof.sh version-answers crane "$(crane version)" || wrong="$wrong crane"
+.github/scripts/ci-tools-proof.sh version-answers changie "$(changie --version)" || wrong="$wrong changie"
+.github/scripts/ci-tools-proof.sh version-answers jj "$(jj --version)" || wrong="$wrong jj"
 ci_tools_verify jj "$HOME/.local/bin/jj" "the tool this job leaves on the runner" || wrong="$wrong jj"
-"$proof" version-answers helm "$(helm version --short)" || wrong="$wrong helm"
+.github/scripts/ci-tools-proof.sh version-answers helm "$(helm version --short)" || wrong="$wrong helm"
 for taken in "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"; do
   if [ -e "$taken" ]; then
     echo "::error::$taken is still here, and no case of this job may leave one: the bun-primary case's refusal takes the binary it refused away, and the bun-second-source case's refusal writes none in its place, so a bun here is a refused binary on the PATH of every later step" >&2

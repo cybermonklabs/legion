@@ -28,7 +28,8 @@
 #   * the static reads of the job's other steps: actions, the Bun install, Biome, scripts,
 #     fixtures, and the job's own gate file, which its filter is computed from;
 #   * what each gate on one of the job's steps reads, since the step runs only in a run the
-#     job's filter selected.
+#     job's filter selected, and what each gate on a job of a file the job calls reads
+#     (`called_job`, rule 2), since that job runs only in a run of its caller.
 # Those globs are expanded over the repository's files (tracked, and untracked ones git does not
 # ignore, so an uncommitted new file counts and a build output does not), and the filter is
 # written from the files (ci_filter_coverage.compute_filters): `<dir>/**`, `<dir>/*` or the path,
@@ -60,12 +61,21 @@
 #      a literal, chooses which projects the browser suite runs, never whether it runs,
 #      and where such a value stands in for a gate the table declares, this rule's own first
 #      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone.
-#      A step may read its filter out of the changes job's one list of the filters that matched
-#      instead, `contains(needs.changes.outputs.matched_filters, '"<filter>"')` once resolved, as
-#      the test job's steps do (rule 23 holds that shape): the filter each `contains` names is a
-#      gate of the step, and the list itself is none. The list hands on every filter that
-#      matched, so a filter a step reads out of it needs no output of the changes job of its own,
-#      as one read through an output does,
+#      A gate is on a ci.yaml job (its if: tests the filter), on one step of that job's steps
+#      (`step`: that step's if: tests it), or, with `called_job`, on a whole job of the file that
+#      ci.yaml job calls, which is how ci-job-download-retry.yaml's two lanes are gated. A
+#      `called_job` gate is refused when the ci.yaml job it names does not call that file, when
+#      it also names a step, when the called job's own if: does not test the gate's filter
+#      through an input of its caller, and when the caller's if: tests neither the gate's filter
+#      nor that of a gate on the caller's own if:, whose filter is computed from the called job's
+#      reads too, since a called job runs only inside a run of its caller and a change only the
+#      gate's filter matched would start neither. A step may read its filter out of the changes
+#      job's one list of the filters that matched instead,
+#      `contains(needs.changes.outputs.matched_filters, '"<filter>"')` once resolved, as the test
+#      job's steps do (rule 23 holds that shape): the filter each `contains` names is a gate of the
+#      step, and the list itself is none. The list hands on every filter that matched, so a filter
+#      a step reads out of it needs no output of the changes job of its own, as one read through
+#      an output does,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
 #      or in a workflow it calls, where the filter is the one the resolved condition names, or
 #      the one it reads out of the list. A term that tests an output for not being 'true'
@@ -179,39 +189,46 @@
 #      restore go-envoy and go-envoy-test for the dispatch-browser job - or of any other workflow
 #      of .github/workflows that restores it (the release builds, the nightly browser re-record,
 #      the fill workflows' own restores), since a drift there misses as silently (the keys compared
-#      as text, trailing whitespace aside, the paths as ordered lists of stripped lines), naming
-#      the file the restore is in, or that none of ci.yaml's files restores; a family saved both
-#      under `-${{ github.sha }}` and without it, in one fill workflow or across two; a save of a
-#      fill workflow whose key holds
-#      hashFiles(), or names `steps.<id>.outputs.cache-primary-key` of no actions/cache/restore
-#      of its job (a save under that output takes that restore's key text); an
-#      actions/cache/restore of a fill workflow of a family it saves under `-${{ github.sha }}`
-#      that sets lookup-only at all, or whose restore-keys are not exactly its key followed by
-#      `-`; any other actions/cache/restore of a fill workflow that is not `lookup-only: true`
-#      or that carries restore-keys; and an actions/cache/restore of any workflow of the
-#      directory whose family no actions/cache/save of a workflow or of a composite action of
-#      .github/actions writes (a save that names its restore's cache-primary-key writes that
-#      restore's family; one whose family cannot be read is named in the refusal, which then says
-#      that no save it can read writes the family). The fill workflows fill
-#      the entries ci.yaml restores, and a key or a path that drifts apart makes every restore
-#      miss silently: nothing fails, every job just rebuilds from nothing what the fill already
-#      built. A save is matched to a restore by
-#      family, the key's text up to its first `${{`, which is the Go version the entry is keyed
-#      on. A family ci.yaml restores that no fill workflow saves is no failure when another
-#      workflow saves it: go-docs is saved by docs-site.yaml, the build job docs-pages.yaml shares
-#      with ci.yaml's docs job. A family no save writes is one, since a misspelled family name
-#      (go-envoy-tests- for go-envoy-test) would otherwise be a family of its own that nothing
-#      holds, and its restore would miss on every run.
+#      as text, trailing whitespace aside, once each `${{ env.NAME }}` in them is read as the
+#      value the env of its own step, else of its step's job, else of its workflow, sets for
+#      NAME, a reference none of them sets staying text; the paths as ordered lists of stripped
+#      lines), naming the file the restore is in, or that none of ci.yaml's files restores; a
+#      family saved both under `-${{ github.sha }}` and without it, in one fill workflow or
+#      across two; a save of a fill workflow
+#      whose key holds hashFiles(), or names `steps.<id>.outputs.cache-primary-key` of no
+#      actions/cache/restore of its job (a save under that output takes that restore's key
+#      text); an actions/cache/restore of a fill workflow of a family it saves under
+#      `-${{ github.sha }}` that sets lookup-only at all, or whose restore-keys are not exactly
+#      its key followed by `-`; any other actions/cache/restore of a fill workflow that is not
+#      `lookup-only: true` or that carries restore-keys; and an actions/cache/restore of any
+#      workflow of the directory whose family no actions/cache/save of a workflow or of a
+#      composite action of .github/actions writes (a save that names its restore's
+#      cache-primary-key writes that restore's family; one whose family cannot be read is named
+#      in the refusal, which then says that no save it can read writes the family).
+#      The fill workflows fill the entries ci.yaml restores, and a key or a path that drifts apart
+#      makes every restore miss silently: nothing fails, every job just rebuilds from nothing
+#      what the fill already built. Two keys that both read the same `${{ env.NAME }}` are such
+#      a drift when their two documents set NAME apart, which is why the references are resolved
+#      (ci-caches.yaml's dispatch-builds job once held its own copy of FIRST_ROLLOUT_COMMIT;
+#      since main's #5182 it reads ci-job-dispatch-two-builds.yaml's pin with yq, so the two
+#      cannot part). A save is matched to a restore by family, the key's text up to its first
+#      `${{`, which is the Go version the entry is keyed on. A family ci.yaml restores that
+#      no fill workflow saves is no failure when another workflow saves it: go-docs is
+#      saved by docs-site.yaml, the build job docs-pages.yaml shares with ci.yaml's docs job. A
+#      family no save writes is one, since a misspelled family name (go-envoy-tests- for
+#      go-envoy-test) would otherwise be a family of its own that nothing holds, and its restore
+#      would miss on every run.
 #      A save's own hashFiles() is evaluated after the build, which can change the files it
-#      hashes (a go command may add the checksums it fetched to go.sum or go.work.sum), so it can save under
-#      a key no restore asks for: go-envoy-infra's did, and every push missed its lookup. A
-#      family saved under the commit is filled again on every push, each entry under a key of its
-#      own; no entry carries the restores' key itself, so GitHub gives each restore the newest
-#      entry whose key starts with it. The fill builds on that newest entry, so its own restore
-#      must download it, and its restore-keys must hold its Go version. Every other restore of
-#      a fill workflow is a lookup, which must download nothing: the workflow asks only whether
-#      that exact key is already there, no step of it reads a restored entry, and a prefix hit
-#      would answer for an older key and skip the build that fills this one, leaving it empty.
+#      hashes (a go command may add the checksums it fetched to go.sum or go.work.sum), so it can
+#      save under a key no restore asks for: go-envoy-infra's did, and every push missed its
+#      lookup. A family saved under the commit is filled again on every push, each entry under a
+#      key of its own; no entry carries the restores' key itself, so GitHub gives each restore
+#      the newest entry whose key starts with it. The fill builds on that newest entry, so its
+#      own restore must download it, and its restore-keys must hold its Go version. Every other
+#      restore of a fill workflow is a lookup, which must download nothing: the workflow asks
+#      only whether that exact key is already there, no step of it reads a restored entry, and a
+#      prefix hit would answer for an older key and skip the build that fills this one, leaving
+#      it empty.
 #  12. a job of ci.yaml whose `if:` lacks `(github.event_name != 'merge_group' ||
 #      github.run_attempt == '1')`, or, for a job whose `if:` admits merge_group alone (the
 #      one cancel job, `cancel-started`), `github.run_attempt == '1'`: a group is
@@ -399,7 +416,7 @@
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to
 # load while it binds one of those names, and the check refuses the old file, each naming
-# .github/scripts/ci-reads-convert, which moves what the branch added.
+# .github/scripts/ci-reads-convert.py, which moves what the branch added.
 #
 # Every rule reads the filters from the same run of the engine that computes them, in memory, and
 # names the gate file, the //ci: line or the workflow a fault is in. The go commands of every gate

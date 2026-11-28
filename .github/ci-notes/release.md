@@ -90,9 +90,10 @@ skills/ (scripts/pi-plugin-prepack.sh stages pi-legion's share into legion/skill
 package's skills/ links into skills/), the notices generator, the prepack and patches/ (the
 bundles inline nats.js with patches/nats@2.29.3.patch applied). Everything after
 packages/claude-envoy/ is content the plugin ships rather than documentation, so a docs:
-commit there still releases: each is a --patch-path. Nothing has been published under this
-name, so --first-npm seeds the line at npm's 0.0.0 and the first release bumps from the whole
-history.
+commit there still releases: each is a --patch-path. Before the first claude-envoy-v* tag,
+nothing but npm's 0.0.0 placeholder had been published under this name, so --first-npm seeded
+the line at 0.0.0 and the first release bumped from the whole history. Since that tag, the
+newest claude-envoy-v* tag is the previous release and --first-npm is not read.
 
 ## The Go legion's version arguments and the command that prints its envoy packages
 
@@ -161,9 +162,13 @@ release-envoy-listener.yaml, release-envoy-infra.yaml and docs-pages.yaml carry 
 The Go `legion`: linux and darwin archives of the binary, which embeds its role prompts, with
 its THIRD_PARTY_NOTICES, on a legion-v* tag of the commit the run checked out. Nothing is
 committed: a Go module carries no version file, so the tag alone records the version, and
-`legion version` names it. Only main releases one: a workflow_dispatch from another branch skips
-this job, and the worker image job, worker_image, then publishes that commit's sha- tag alone, as it does
-for any branch.
+`legion version` names it. Only main releases one: a workflow_dispatch on main runs it as a push does, and a
+workflow_dispatch from another branch skips this job, so the worker image job, worker_image,
+then publishes that commit's sha- tag alone, as it does for any branch.
+
+Each of the four build jobs (`legion_build`, `pi_envoy_build`, `pi_legion_build` and
+`claude_envoy_build`) declares `contents: read` alone: it is for the checkout, and nothing in
+any build job writes to the repository, a registry or a release.
 
 legion_build versions, builds and smoke-tests the archives and hands them to publish as an
 artifact. It runs the module's code and every third-party module it links, so it holds no write
@@ -192,6 +197,14 @@ workflow's one concurrency group keeps one run of main at a time, so no other ru
 tag between this step and the plugins' build jobs. publish's "legion: Check the linked
 plugin pair" refuses to release this legion unless npm then carries exactly this pair.
 
+## Why legion_build reads the contract order before setup-go
+
+The stamp of this commit's contract entries in main's merge order, which the build links in
+(.github/scripts/release-build-legion.sh says why it refuses to build without one). The
+checkout's fetch-depth 0 holds this commit's history and main's: it fetches every branch into
+refs/remotes/origin, so refs/remotes/origin/main is there, the main the script reads. As the
+tags are, it is read before setup-go, so no dependency code has run yet.
+
 ## What the legion build writes and why it is static
 
 CGO_ENABLED=0: a static binary, as the worker image builds it, so a linux archive runs on any
@@ -203,6 +216,23 @@ Go module that target's binary compiles in (scripts/go-third-party-notices.sh, r
 build's own GOOS, GOARCH and CGO_ENABLED), and fails the build when one cannot be determined.
 publish writes SHA256SUMS over the archives it accepts.
 
+## What legion_build's smoke test holds
+
+`legion version` names the release, the commit and the linked plugin pair. Then `legion
+version --contracts` is held line by line to the stamp the build linked: `contract` L plus
+the stamp's count of ids, L the greatest number of
+packages/contracts/fixtures/daemon-api/released-contracts.json; `order stamped`, for the
+stamp `v1:` of no entry too; and each id of the stamp in its order, the k-th numbered L + k
+and followed by its slug. An archive linked with no stamp prints `order id`, so it fails
+here even where its ids fall in the stamp's order.
+
+## What legion_build's changelog step renders
+
+This release's own changelog entries, as in pi_envoy_build and for the reasons
+.github/ci-notes/release.md#what-the-envoy-plugins-changelog-step-renders gives: the
+fragments under packages/daemon/.changes/unreleased/ that this release's own commits first
+added, and the `notes` line fold-notes prints says whether there were any.
+
 ## What legion_names checks
 
 The private-name check of the changelog entries legion_build rendered, over the very file
@@ -210,7 +240,9 @@ publish writes into the GitHub release's body, through
 .github/workflows/release-notes-names.yaml, whose header says why it is a job of its own and
 what it runs. It runs whenever legion_build released, and checks when that release rendered
 entries. publish needs this job, and its legion steps run only when it succeeded, so a finding
-releases nothing of legion.
+releases nothing of legion. pi_envoy_names and pi_legion_names run the same check over the
+changelog entries pi_envoy_build and pi_legion_build rendered, and publish's steps for each
+package run only when its names job succeeded.
 
 ## What pi_envoy_build hands to publish
 
@@ -245,11 +277,36 @@ ones its tag will hold. A release no fragment belongs to renders no file, and th
 line fold-notes prints says which of the two it was, since publish cannot look into the
 artifact before it downloads it.
 
+## Why pi_envoy_build points its manifest at the packed bundle
+
+The committed manifest keeps the source path (extensions/envoy.ts) so repo checkouts (dev
+sessions) load the source without a build. The published tarball ships only the
+self-contained dist bundle, and scripts/pi-plugin-prepack.sh refuses to pack any other
+omp.extensions. Nothing restores the manifest: this job's tree is discarded, and no job commits a
+version, so the committed manifest keeps whatever it last held.
+
+## Why the packed tarball's repository url is checked in the build jobs
+
+Read repository.url back out of the tarball the publish job will hand npm, not out of the
+working tree: npm refuses a publish with provenance whose url is not the publishing
+repository's, and this catches that here rather than in the job holding the credentials.
+pi_legion_build's step of the same name is pi_envoy_build's check, over that package's
+tarball: the packed manifest, which is what npm verifies the provenance against, must name the
+publishing repository. Before that, pi_legion_build rewrites its manifest's repository.url as
+pi_envoy_build does, for the reason .github/scripts/release-pi-envoy-manifest-repository.sh
+gives; this job's tree is discarded, so the committed manifest keeps its repository.
+
 ## Why pi_legion_build reads the tags before setup-bun
 
 First, before setup-bun, as pi_envoy_build's version step is, and releasing again a tag
 an earlier attempt pushed for this commit as that step does, over the paths
 $PI_LEGION_VERSION_ARGS names (the workflow's `env:` says why each is there).
+
+## Why pi_legion_build writes the contract number
+
+The committed manifest declares no contract number: the pack writes the one of this tree
+(scripts/daemon-contract.sh), which the prepack's bundle inlines with the rest of the
+manifest, as it writes the version.
 
 ## What the Legion plugin's changelog step renders
 
@@ -347,6 +404,13 @@ committed: `release-push.sh tag` tags $GITHUB_SHA itself, which main already hol
 `tagged` finds a tag only on HEAD. So no package's steps move main, and a re-run of this job
 reads the same tags its first attempt pushed.
 
+The checkout fetches every tag for release-push.sh and for legion's existing-tag check, and
+leaves no credential in the checkout: the deploy key reaches the push steps alone. Each
+downloaded artifact (tarball and rendered changelog entries) goes under $RUNNER_TEMP, outside
+the checkout, so no package's reset of the checkout removes it and no git command sees it.
+Each npm publish is handed the build job's .tgz directly, never a repack here, so no package
+script (prepack) runs in this job.
+
 ## Why the publish job holds each of its scopes
 
 contents: write creates the GitHub releases (`release-push.sh release`, in each "Create GitHub release" step); id-token: write
@@ -417,6 +481,15 @@ both plugins are in one of those states; otherwise legion is not released and
 worker_image_attest does not attest the image on main, so neither links a plugin version
 npm lacks.
 
+In that step, pair_released <build result> <skip> <release outcome> <released version>: succeeds when npm
+carries a version of the package for this run, and sets `released` to the version its release
+published, or to nothing when it released nothing in this run; it fails when its release did
+not publish, and the package's member is then nothing. This step's own dispatch is which of
+the three a run is in; release-push.sh pair-version <tag prefix> turns that answer into a
+version, reading the newest tag for a package that released nothing in this run. Each
+pair-version call is written where its version is resolved rather than inside the function,
+so both read as runs this step waits for (dispatch://INFRA-1545, round 37).
+
 ## Why legion is released only once both plugins are on npm
 
 legion: what legion_build built and smoke-tested, once legion_names found no private name in
@@ -479,6 +552,8 @@ block (the build, with actions: read and checks: write for the ci-ok report its 
 only on ci.yaml's pull_request call) and its `attest` job's (id-token and attestations:
 write, for the image's GitHub attestation). The release note, which needs contents: write,
 and the legion version tag on ghcr.io, which needs packages: write, are the worker_image_release job's.
+worker_image_attest declares the same scopes as worker_image, for the same reason: the grant
+must cover every permissions block of worker-image.yaml, the build's this call skips included.
 
 ## Why the image attestation is a second call of worker-image.yaml
 
@@ -509,9 +584,12 @@ called.
 Names the worker image on the legion release this run made: tags the image's digest with the
 legion version on ghcr.io, so a version tag still means "released", and writes the digest
 reference into the release notes. It runs when legion released in this run, even when a later
-package in publish failed. It runs beside worker_image_attest, not after it: if the attestation
-fails, the release names a digest that the consumers' `gh attestation verify` refuses, which
-fails closed. It runs no build and no dependency code, only the runner's own `docker buildx
+package in publish failed. Its condition is on `always()`, so a job skipped upstream does not
+skip this one, and it tests the results of both jobs it reads, as this file's section "Why the
+workflow level permissions block is empty, and the four stages a release waits for" says. It
+runs beside worker_image_attest, not after it: if the attestation fails, the release names a
+digest that the consumers' `gh attestation verify` refuses, which fails closed. It runs no build
+and no dependency code, only the runner's own `docker buildx
 imagetools`, release-push.sh, gh and the pinned login action, so the scopes it holds never meet
 the Dockerfile worker_image ran.
 
@@ -533,3 +611,95 @@ the job unless the tag names exactly the digest the release note and the attesta
 The release's body gets one "## Worker image" section, naming the digest the version tag
 points at now. release-section replaces a section that heading already holds, which is what
 a whole-run rerun of this image needs, and says there why the write is a replace.
+
+## The release jobs' budgets
+
+Each job's limit follows .github/ci-budgets.md#the-budgets-note. Its measured term is the budget
+it carried before dispatch://INFRA-1545, the measured minutes its `timeout-minutes` held, and each
+line below names its slowest retried step. publish and
+worker_image_release also set `JOB_TIMEOUT_MINUTES` to their own `timeout-minutes`, which
+gh-read.sh's wait for a spent API budget stays within (check-workflow-files.sh holds them equal).
+
+- legion_build: 900 s, the measured 15 minutes this job carried, plus its slowest retried step
+  alone, "Resolve plugin versions for the smoke test and worker image", whose
+  .github/scripts/release-plugin-versions.sh runs .github/scripts/release-push.sh four times -
+  two `version` calls and two `pair-version` calls, each written where its version is resolved
+  rather than inside a function, so all four read as runs that step waits for - and each
+  run holds that script's leak-guard fetch at every one of its call sites, 6 x 450 = 2700 s, so
+  4 x 2700 = 10800 s, above every other retried step here. 900 + 10800 = 11700 s -> 196 min,
+  which carries the whole minute the Budgets note gives a step whose own arithmetic is a whole
+  number of minutes (that step's 181).
+- pi_envoy_build and pi_legion_build: 600 s, the measured 10 minutes each carried, plus its
+  slowest retried step alone, the setup-bun step's two `ci_tools_fetch` calls, 2 x 1708 =
+  3416 s, above the leak-guard fetch of the release-push.sh steps, 2700 s, and every other
+  retried step there. 600 + 3416 = 4016 s -> 67 min.
+- claude_envoy_build: 900 s, the measured 15 minutes it carried, plus the same setup-bun step,
+  3416 s. 900 + 3416 = 4316 s -> 72 min.
+- publish: 600 s, the measured 10 minutes it carried, plus its slowest retried step alone,
+  "Check the plugin pair npm carries" or "legion: Tag release", each running release-push.sh
+  twice, 2 x 2700 = 5400 s, above every other retried step there. 600 + 5400 = 6000 s -> 101
+  min, which carries the whole minute that note gives a step whose own arithmetic is a whole
+  number of minutes (those two steps' 91).
+- worker_image_release: 600 s, the measured 10 minutes it carried, plus its slowest retried step
+  alone, "Name the worker image on the legion release", which runs release-push.sh once,
+  2700 s. 600 + 2700 = 3300 s -> 56 min.
+
+A step that runs release-push.sh once carries 46 minutes, the whole minute above 2700 s, which
+is itself a whole number of minutes; one that runs it twice carries 91, above 5400 s; the
+plugin-version step 181, above 10800 s. install-changie carries its one `ci_tools_fetch`,
+1708 s -> 29 min, setup-bun its two, 3416 s -> 57 min, and the workspace install the 180 s bound
+every Bun install of this repository's CI carries (20.70 s cold on a pod, against at most 11 s
+over 180 observations in the 20 most recent successful ci.yaml push runs on main),
+5 x 180 + 150 = 1050 s -> 18 min. The "Check the plugin pair npm carries" step of the
+credentialed publish job writes its `pair-version` calls where each version is resolved, outside
+the `pair_released` function, so both read as runs the step waits for
+(dispatch://INFRA-1545, round 37); the body stays inline there, as
+.github/scripts/check-release-credentials.sh requires of a job holding a credential.
+
+publish and worker_image_release hold a credential, and the credentialed publish jobs of the
+three release workflows are an exception of R2 of dispatch://INFRA-1545, so no step of either
+retries anything. They carry these keys because their steps run release-push.sh, which the build
+jobs run too and which therefore keeps its one retried fetch, the leak engine's in `leak_guard`:
+each step that runs the script is priced at that fetch at each of `leak_guard`'s six call sites,
+2700 s a run, so it carries a `timeout-minutes` of its own, its job a key a comment prices, and
+no run of the script sits inside a shell function, where its runs cannot be counted. The
+10 minutes and the bare steps these two jobs carry on main hold none of it, in any of their
+release-push.sh steps or either key, and main's `pair_member` runs the script inside a shell
+function.
+
+Every step of this workflow that runs release-push.sh, or release-plugin-versions.sh, which runs
+it, sets STEP_TIMEOUT_MINUTES to its own `timeout-minutes` in its `env:`, whichever of the
+script's commands it runs: `restart`, `release` and `release-section` make their GitHub calls
+through .github/scripts/gh-read.sh's gh_wait_reset, which waits out a spent API budget only
+within the nearer of the job's limit and the step's, and .github/scripts/check-workflow-files.sh
+refuses a step with a limit of its own that reaches gh-read.sh and passes none
+(dispatch://INFRA-1545, round 55). Those entries carry no comment in the workflow, which stands
+close to that check's 64,000-byte limit; this paragraph is theirs.
+
+## The legion build step and its notices script
+
+`Build legion`, in legion_build, runs .github/scripts/release-build-legion.sh, which runs
+scripts/go-third-party-notices.sh once for each target of .github/go-release-targets.json. That
+script installs go-licenses through .github/scripts/ci-retry.sh at the 180 s module bound,
+5 x 180 + 150 = 1050 s, and only where its `$tool` is not already executable; the tool's
+directory is named by the go-licenses version and the host's Go version, not by the GOOS or
+GOARCH the packages target, so every call after the first finds that build and fetches nothing,
+and the step waits for one ladder. The budget is derived by hand: the ladder beside the step's
+measured duration, which holds the cross-builds and the notices, 427 s at most over the 11 runs
+of the step in the 30 successful runs of this workflow
+created from 2026-11-20T12:23Z to 2026-11-21T08:25Z (job 136642681904 of run 44839077231; the
+other runs released no legion and skipped it). 427 + 1050 = 1477 s -> 25 min, under
+legion_build's 196, whose slowest retried step is still the plugin-version step's 10800 s.
+
+## Why legion_build downloads its Go modules before the build
+
+The modules this job's build compiles, downloaded once and retried, so the build itself reads the
+module cache and never the proxy (dispatch://INFRA-1545, R1 and its D1: the retried unit is the
+download, never the build). Five bounded attempts through .github/scripts/ci-retry.sh, the last
+starting 150 s after the first. 180 s per attempt: a cold `go mod download` of packages/daemon -
+an empty module cache, this repository at this commit - measured 81 s on 2026-11-07, and the
+slowest cold run measured anywhere in this repository is packages/envoy/infra's 113 s, so the
+bound is 1.6 times that slowest measurement. It can be that tight where a tarball fetch's could
+not: an attempt the bound kills leaves what it fetched in the module cache, and the next attempt
+resumes from there. The go-daemon cache the step before it restores makes the common run far
+shorter. 5 x 180 + 150 = 1050 s -> 18 min.

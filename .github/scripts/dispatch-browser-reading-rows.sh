@@ -49,7 +49,7 @@ usage() {
     "blob selection's conclusion and the id of the job that calls dispatch-browser.yaml, with" \
     "the run's token in GH_TOKEN: GH_TOKEN=<token>" \
     ".github/scripts/dispatch-browser-reading-rows.sh <download conclusion>" \
-    "<selection conclusion> <job>. It was given: $*"
+    "<selection conclusion> <job>. It was given: $*" >&2
   exit 1
 }
 
@@ -134,7 +134,7 @@ how_ended() {
 # appears there with job id 128737742824, `run_attempt: 6` and `started_at
 # 2026-11-08T09:41:30Z`, which is attempt 1's time.
 #
-# The script retries the read through .github/scripts/gh-read.sh's ladder and, when
+# The script retries the read through .github/scripts/ci-retry.sh's ladder and, when
 # that is spent, names the endpoint, the status and the attempt and says it is a
 # failed read rather than a failed row, which is why this step no longer carries a
 # `|| { echo …; exit 1; }` block of its own. It still reads with `--paginate --slurp`
@@ -152,7 +152,7 @@ legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$
   sort) || true
 if [ -z "$legs" ]; then
   echo "::error::this run's jobs hold no shard or alone leg, so there is nothing to" \
-    "hold the merged report against"
+    "hold the merged report against" >&2
   exit 1
 fi
 missing=""
@@ -256,7 +256,7 @@ fi
   echo
   echo "$summary_line"
 } >> "$GITHUB_STEP_SUMMARY"
-echo "::notice title=dispatch-browser rows::$notice"
+echo "::notice title=dispatch-browser rows::$notice" >&2
 case "$input" in
   refused)
     # Where the download was refused, this step runs anyway - its `if:` is `always()` -
@@ -273,7 +273,7 @@ case "$input" in
     echo "::error::the download of the legs' blob reports failed, so this job read no blob" \
       "report of: $missing, and made no merged report; the step \"Download every leg's blob" \
       "report\" carries that download's own error line. This error is a failed read of the" \
-      "run's artifacts, not a failed browser row."
+      "run's artifacts, not a failed browser row." >&2
     exit 1
     ;;
   download | selection)
@@ -293,7 +293,7 @@ case "$input" in
     fi
     echo "::error::the step \"$step\" $ended, so this job made no merged report: the step" \
       "\"Merge the legs' blob reports into one report\" runs only after the selection" \
-      "succeeds.$said This job's log shows what stopped that step."
+      "succeeds.$said This job's log shows what stopped that step." >&2
     exit 1
     ;;
 esac
@@ -307,7 +307,7 @@ if [ -n "$missing" ]; then
   else
     said="this job has no merged report"
   fi
-  echo "::error::no blob report arrived from: $missing; $said"
+  echo "::error::no blob report arrived from: $missing; $said" >&2
   exit 1
 fi
 # The shard legs' row lists, held against each other: every row of the selection the legs read
@@ -316,11 +316,13 @@ fi
 # both count twice. packages/dispatch/e2e/tools/leg-rows.ts says why and prints one line per
 # fault, naming the rows and legs; the alone legs are not sharded and write no list. It runs
 # before the counts so both readings print, and the step fails on either: each way out below
-# carries its status.
+# carries its status. Its lines go to standard error, as every workflow command of this script
+# does: the jobs read above runs retry_fetch's stop-commands blocks in this step
+# (dispatch://INFRA-1545, round 54).
 mapfile -t shard_legs < <(grep -E '^shard-[0-9]+$' <<< "$legs" || true)
 lists=0
 if [ "${#shard_legs[@]}" -gt 0 ]; then
-  bun packages/dispatch/e2e/tools/leg-rows.ts "$counts" "${shard_legs[@]}" || lists=$?
+  bun packages/dispatch/e2e/tools/leg-rows.ts "$counts" "${shard_legs[@]}" >&2 || lists=$?
 fi
 # Every owed blob arrived.
 case "$report_state" in
@@ -334,14 +336,14 @@ case "$report_state" in
     ;;
   unsummed)
     echo "::error::jq could not sum the stats of the merged report $report (jq's own message is" \
-      "above), so this reading cannot hold its rows against the legs' counts"
+      "above), so this reading cannot hold its rows against the legs' counts" >&2
     exit 1
     ;;
   # A test on a sum that is not a whole number would fail inside an `if` below, where `set -e`
   # does not reach, and let the step pass having compared nothing.
   not_whole)
     echo "::error::the merged report's stats sum to '$merged', not a whole number of rows," \
-      "so this reading cannot hold it against the legs' counts"
+      "so this reading cannot hold it against the legs' counts" >&2
     exit 1
     ;;
 esac
@@ -351,7 +353,7 @@ if [ -n "$unread_legs" ]; then
   echo "::error::every leg's blob report is present, but this job read no row count of:" \
     "$unread_legs, so the merged report's $merged rows cannot be held against the legs'" \
     "counts. A leg's count is the N of the last \"Running N tests\" line its own log printed;" \
-    "the log of each leg named here shows whether it printed one."
+    "the log of each leg named here shows whether it printed one." >&2
   exit 1
 fi
 # Every owed blob arrived and every count was read, so the two counts are of the same rows and
@@ -363,13 +365,13 @@ fi
 if [ "$merged" -lt "$printed_total" ]; then
   echo "::error::the merged report holds $merged rows and the legs printed" \
     "$printed_total, with every leg's blob report present:" \
-    "the merge dropped rows the legs ran"
+    "the merge dropped rows the legs ran" >&2
   exit 1
 fi
 if [ "$merged" -gt "$printed_total" ]; then
   echo "::error::the merged report holds $merged rows and the legs printed" \
     "$printed_total, with every leg's blob report present: the merged report holds rows" \
-    "that no leg's log counted"
+    "that no leg's log counted" >&2
   exit 1
 fi
 [ "$lists" -eq 0 ] || exit 1

@@ -399,8 +399,10 @@ for workflow in workflows:
             )
 
 # The wrapper is judged for what it is, not only for what other files are not: a wrapper that is
-# deleted, repointed at a fork, duplicated, or given any input other than `no-cache` would
-# otherwise leave every other rule satisfied while CI installed something else. Its step count is
+# deleted, repointed at a fork, duplicated, or whose setup-bun step is given any input other than
+# `no-cache` would otherwise leave every other rule satisfied while CI installed something else.
+# An input of the wrapper's own, such as `save`, which decides whether its cache-save step runs,
+# reaches no setup-bun step and names no version, so it is no such input. Its step count is
 # not the rule — it reads the pin, restores the cache that version keys, and installs — but no
 # step of it may hand a later step an input or a bun of its own, since both outlive the action:
 # the $GITHUB_ENV half is rule 4 above, which holds every file in the tree, and this is the

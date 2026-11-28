@@ -62,9 +62,10 @@ head_root=$PWD
 
 # The generation took 46 s of the ci-filters job's check in run 44974321862 and 52 s of the changes
 # job in run 45017125244: a run past 300 s is one that has stopped making progress. A child that
-# ignores the TERM is killed 15 s later. The changes job's step timeout of 9 minutes holds this
-# tree's run, the base's fetch and install, and the base's run together; the comment above the
-# changes job's timeout-minutes in ci.yaml adds up the job's steps.
+# ignores the TERM is killed 15 s later. The changes job's step timeout of 24 minutes holds this
+# tree's run, the base's fetch and its retried install, and the base's run together; the comment
+# above that step in ci.yaml adds them up, and the one above the job's timeout-minutes adds up
+# the job.
 LIMIT=${CI_FILTERS_LIMIT:-300}
 
 # every_filter <first line>: a filters file whose every filter is `'**'`, under that first line,
@@ -157,9 +158,14 @@ else
     exit 0
   fi
   # The base tree's listing needs its own node_modules, which a frozen install fills from the cache
-  # this tree's install just warmed.
+  # this tree's install just warmed. It retries as every Bun install of this repository's CI does
+  # (.github/ci-budgets.md's Retries note): five attempts of 180 s each, 5 x 180 + 150 = 1050 s at
+  # the worst, which the changes job's step budget holds. An install that takes what is left of
+  # LIMIT leaves the base's run no time, and the check below makes every filter `'**'` then.
   if [ -f "$scratch/base/package.json" ] && command -v bun >/dev/null; then
-    (cd "$scratch/base" && timeout -k 5 120 bun install --frozen-lockfile >/dev/null 2>&1)
+    # shellcheck source=.github/scripts/ci-retry.sh
+    . .github/scripts/ci-retry.sh
+    (cd "$scratch/base" && retry_fetch "the base tree's dependencies" 180 -- bun install --frozen-lockfile >/dev/null 2>&1)
   fi
   if [ "$(left)" -le 15 ]; then
     force_every_filter "no time is left of the ${LIMIT} s for the base tree's filters, so which filters this change alters is unknown"

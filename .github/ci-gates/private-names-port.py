@@ -14,7 +14,7 @@ GATE = gate("private_names_port", PRIVATE_NAMES_PORT_JOB, runs=[PRIVATE_NAMES_PO
     (f"{SCRIPTS}/check-private-names.sh",
      "the frozen script every case of check-private-names-port.test.sh runs beside the "
      "engine, symlinked into each fixture (its four `ln -s \"$frozen_script\"` lines)"),
-) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod"))
+) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod") + go_modules(PRIVATE_NAMES_PORT_JOB))
 GATE = with_reads(GATE, [
     Read('packages/daemon/internal/daemon/**', "filter private_names_port held packages/daemon/internal/daemon/** by hand before the filters were computed: it selected 7 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/dispatch/pmdoc/**', "filter private_names_port held packages/envoy/internal/dispatch/pmdoc/** by hand before the filters were computed: it selected 278 file(s) no other read of this gate declares", but=('**/*_test.go',)),

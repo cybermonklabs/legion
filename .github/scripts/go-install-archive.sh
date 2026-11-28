@@ -23,12 +23,21 @@
 # The archive is downloaded to a file and checked against the sha256 go.dev lists for that file
 # (https://go.dev/dl/?mode=json&include=all, the listing setup-go reads its versions from) before
 # it is unpacked. That catches a cut or corrupted download, which tar would otherwise unpack in part.
-# Each fetch is bounded: curl starts the file again on a retry, gives a try at most --max-time, and
-# starts no retry once --retry-max-time has passed, so the listing takes at most about 45 s and the
-# archive 105 s, which together fit the 3-minute limit of each step that runs this.
+# Each fetch retries through .github/scripts/ci-retry.sh, as every download of this repository's
+# CI does (.github/ci-budgets.md's Retries note): five attempts, each bounded on its own, the last
+# starting 150 s after the first, and curl starts the file again on each attempt. The listing's
+# bound is 15 s an attempt, the one this script first gave it, about seven times the 2.1 s the
+# whole script took in the job above; the listing was 2,279,774 bytes, fetched in 0.47 s from a
+# pod on 2026-11-26. The archive's bound is 60 s an attempt, the one the Retries note gives a
+# release archive: go1.27.3's was 67,076,044 bytes for linux-arm64 and 70,588,678 for
+# linux-amd64, read the same day. So the listing takes at most 5 x 15 + 150 = 225 s and the
+# archive 5 x 60 + 150 = 450 s, 675 s together, which each step that runs this holds in its own
+# limit.
 set -euo pipefail
 
 echo "GOTOOLCHAIN=local" >>"${GITHUB_ENV:?GITHUB_ENV must name the env file of the runner}"
+# shellcheck source=.github/scripts/ci-retry.sh
+. "$(dirname "$0")/ci-retry.sh"
 gomod=${1:?usage: go-install-archive.sh <go.mod>}
 version=$(sed -n 's/^toolchain go\([0-9][0-9.a-z]*\)$/\1/p' "$gomod")
 [ -n "$version" ] || version=$(sed -n 's/^go \([0-9][0-9.a-z]*\)$/\1/p' "$gomod")
@@ -44,16 +53,16 @@ esac
 file=go$version.linux-$arch.tar.gz
 temp=${RUNNER_TEMP:?RUNNER_TEMP must name the temporary directory of the runner}
 dest=$temp/go$version
-# fetch <url> <file> <seconds a try may take> <seconds after which no retry starts>
-fetch() { curl -fsSL --retry 3 --connect-timeout 10 --max-time "$3" --retry-max-time "$4" -o "$2" "$1"; }
 
-fetch "https://go.dev/dl/?mode=json&include=all" "$temp/go-releases.json" 15 30
+retry_fetch "go.dev's list of Go releases" 15 -- \
+  curl -fsSL --connect-timeout 10 --max-time 15 -o "$temp/go-releases.json" "https://go.dev/dl/?mode=json&include=all" >&2
 want=$(jq -r --arg f "$file" 'first(.[].files[] | select(.filename == $f) | .sha256) // ""' "$temp/go-releases.json")
 if ! [[ $want =~ ^[0-9a-f]{64}$ ]]; then
   echo "::error::go.dev lists no sha256 for $file" >&2
   exit 1
 fi
-fetch "https://go.dev/dl/$file" "$temp/$file" 45 60
+retry_fetch "the Go archive $file" 60 -- \
+  curl -fsSL --connect-timeout 10 --max-time 60 -o "$temp/$file" "https://go.dev/dl/$file" >&2
 got=$(sha256sum "$temp/$file" | cut -d' ' -f1)
 if [ "$got" != "$want" ]; then
   echo "::error::$file downloaded with sha256 $got, and go.dev lists $want" >&2

@@ -15,19 +15,29 @@
 # the two call sites that read its digest".
 set -euo pipefail
 
+# This script downloads nothing itself: `ci_tools_rows`, `ci_tools_digest` and `ci_tools_field`
+# read .github/ci-tools.yaml off this checkout, and the two greps read this tree. The grep of the
+# rig's path is written outside the row loop, which is also one walk of those trees instead of one
+# per row: written inside it, .github/scripts/check-download-retry.sh read it as a run of that
+# script once per pass of a loop whose passes it cannot count, and could put no figure on the step
+# at all.
 # shellcheck source=.github/scripts/ci-tools.sh
 . .github/scripts/ci-tools.sh
 rows=$(ci_tools_rows)
 unread=""
+# Every line of an action or of the rig that reads a row, read once for the whole run rather than
+# once per row: the walk of those two trees finds the same lines whichever row is being printed,
+# and each row's own lines are selected out of this text below.
+# The lines that read the row rather than every line that says its name: a ci_tools_* call that
+# names it, and the `row=` an action assigns it to where the call site names the row through a
+# variable (.github/actions/setup-bun does).
+reader_lines=$(grep -rn -E 'ci_tools_|row=' \
+  .github/actions .github/scripts/ci-tools-proof.sh || true)
 for row in $rows; do
   digest=$(ci_tools_digest "$row")
   echo "$row: sha256 $digest, of $(ci_tools_field "$row" digest_of)"
   pinned=$(grep -n "digest: $digest" .github/ci-tools.yaml || true)
-  # The lines that read the row rather than every line that says its name: a
-  # ci_tools_* call that names it, and the `row=` an action assigns it to where the
-  # call site names the row through a variable (.github/actions/setup-bun does).
-  readers=$(grep -rn -- "$row" .github/actions .github/scripts/ci-tools-proof.sh \
-    | grep -E 'ci_tools_|row=' || true)
+  readers=$(printf '%s\n' "$reader_lines" | grep -F -- "$row" || true)
   echo "  the manifest's own line:"
   printf '%s\n' "$pinned" | sed 's|^|    .github/ci-tools.yaml:|'
   echo "  what reads that row, in the action or the rig:"

@@ -17,10 +17,14 @@ GATE = gate("ci_images", "ci-images", reads=reads(
                                              f"{at('ci-images', PACKAGE_STEP)} hashes this file "
                                              f"too, since its labels, outputs, platforms and "
                                              f"action pins decide the bytes the build pushes"),
-    (".github/ci-tools.yaml", f"{at('ci-images', TOOL_COPY_STEP)} fills the copy of every ghcr-mirror row it holds"),
-    (".github/scripts/mirror-ci-tools.sh", f"{at('ci-images', TOOL_COPY_STEP)} runs it"),
-    (".github/scripts/ci-tools.sh", f"{at('ci-images', TOOL_COPY_STEP)}: the filler reads a row's fields and "
-                                    "its seams the way that helper does, and the copy it fills is what the "
+    (".github/ci-tools.yaml", f"{at('ci-images', TOOL_COPY_STEP)} and {at('ci-images', TOOL_COPY_ARM_STEP)} "
+                              "fill the copy of every ghcr-mirror row it holds, each the rows of one machine"),
+    (".github/scripts/mirror-ci-tools.sh", f"{at('ci-images', TOOL_COPY_STEP)} and "
+                                           f"{at('ci-images', TOOL_COPY_ARM_STEP)} run it"),
+    (".github/scripts/ci-tools.sh", f"{at('ci-images', TOOL_COPY_STEP)} and {at('ci-images', TOOL_COPY_ARM_STEP)}: "
+                                    "the filler reads a row's fields, its machine and its seams the way that "
+                                    "helper does, and the copy it fills is what the "
                                     "helper then reads"),
     (".github/actions/install-crane/**", at("ci-images", "./.github/actions/install-crane")),
+    *ci_retry(f"{at('ci-images', COPY_STEP)}: mirror-ci-images.sh sources it for every registry read that has to succeed"),
 ))

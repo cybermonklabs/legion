@@ -100,6 +100,14 @@ dispatch-browser-pr, on a pull request that selects both, and passes its own id 
 every caller does: so its artifacts are `dispatch-references-…` beside `dispatch-browser-pr-…`,
 and each merge job reads only its own caller's legs.
 
+A step that holds a retried download, and a job that holds such a step, take their budgets from
+.github/ci-budgets.md#the-budgets-note (dispatch://INFRA-1545). The step carries its own retry
+arithmetic there instead of a measured maximum, and the job's measured term is the budget the
+measured rule above gives it, which every job derives from its own table.
+Each budget is derived by hand from that arithmetic. Where a job's line below writes
+`<a> + <b> = <c> s -> <key> min`, the first term is that measured budget and the second the
+slowest retried step's ladder.
+
 ## Why GOPROXY falls through to direct
 
 A `|` between proxy entries makes a go command fall through to the next source after ANY error,
@@ -148,6 +156,11 @@ run that misses it builds four commands cold, which the planner measured at 3m37
 ./cmd/dispatch alone, and two minutes would cancel it. So the budget carries the cold build
 rather than the warm one, as the multiprocess job's Playwright install step, "Install Playwright Chromium", carries
 its own retry arithmetic rather than its measured maximum.
+
+That 10 minutes, 600 s, is this job's first term since dispatch://INFRA-1545 put its one
+retried step in front of the build: the module download, 5 x 180 + 150 = 1050 s, so
+600 + 1050 = 1650 s -> 28 min, which stands above that step's own 18 minutes, so no job
+budget fires before a step's own.
 
 ## Why the binaries job restores go-envoy-test
 
@@ -226,7 +239,7 @@ count and the merged report both read 1,616.
 
 The image this repository builds and publishes for every CI job that can launch WebKit or
 Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
-tag browser-398fb2e8): Playwright's own browser host, which bakes Chromium, WebKit and
+tag browser-81ccc1e3): Playwright's own browser host, which bakes Chromium, WebKit and
 Firefox and every host package they need under /ms-playwright - where its
 PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed`
 binary, jq, python3 with PyYAML - which .github/scripts/ci-tools.sh imports to read a row
@@ -370,6 +383,10 @@ seconds" in that log) answers a failed read, not a slow one. The job's budget is
 browser step's 1,080 s, the two download attempts' 120 s each, and the steps without a
 budget at the census's 565 s: 1,885 s, 31 min 25 s, rounded up to the 32 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
+The second download attempt has retried since dispatch://INFRA-1545, and it still counts here
+at the 120 s it carried before that. A retried step counts in this term at its measured
+maximum, as the setup-bun step and the workspace install do, and no leg of the census ran the
+second attempt, so the 120 s stands in for a reading.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
 again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -380,6 +397,17 @@ this job's shard command (.github/scripts/dispatch-browser-shard-suite.sh) names
 pull-request lane names hold 1,252, of which that lane's `@pr` grep selects 282. The two
 `visual` projects hold 20, which the visual job runs one row at a time, and the 54
 wall-clock rows are the alone job's.
+
+That 1,885 s, 32 minutes, 1920 s, is this job's first term, the measured half of the rule,
+which holds every step at its maximum above, the retried setup-bun and workspace install among
+them. To it dispatch://INFRA-1545 adds the arithmetic of this job's slowest retried step, the
+setup-bun step at 3416 s - the figure its own key derives - above the workspace install's
+5 x 180 + 150 = 1050 s. The first download attempt is no second term: it is a `uses:` of an
+artifact this run built, which no `retry_fetch` holds, and its 120 s is in the first term
+already. Nor is the second attempt: its two ladders, 300 + 900 = 1,200 s
+([its section](#why-the-second-read-of-the-binaries-is-a-script)), are under the setup-bun
+step's 3416 s. 1920 + 3416 = 5336 s -> 89 min, which stands above the largest step budget of this
+job, so no job budget fires before a step's own and every `if: always()` upload still runs.
 
 ## Why the leg count stands in two places
 
@@ -400,13 +428,14 @@ binary rides along in it and is named by path in DISPATCH_E2E_SERVER_BIN (.githu
 
 A BOUND OF ITS OWN AND A SECOND ATTEMPT. A read of this artifact took 2 to 6 s on every
 leg but one, which took 428 s (the budget note above), so a slow read is answered by
-reading again rather than by waiting. Each attempt carries this file's floor of 2
+reading again rather than by waiting. The first attempt carries this file's floor of 2
 minutes, twenty times the longest of the other reads. That is not this file's rule of
 the measured maximum plus 15 per cent, which the 428 s read would put at 9 minutes: those
 9 minutes are the wait this bound is here to cut, since the same bytes took seconds on
 every other leg. The second attempt runs only when the first did not end in success, and
 a second failure fails the job there, by name. The second attempt is a script and not the
-action again; the section after this one says why.
+action again; the section after this one says why. It retries, so its key is the arithmetic
+of its retries and not this floor.
 
 EACH ATTEMPT INTO A DIRECTORY OF ITS OWN. A step that runs past its budget in a
 `container:` job ends the `docker exec` that started it, and the action's process inside
@@ -438,18 +467,36 @@ and one that is ended throws away what it read. So the second read is
 address with curl: an attempt whose connection stays under 1 MiB a second for 10 s ends
 (`--speed-limit`, `--speed-time`), the next one opens a new connection and asks for the bytes
 after the last one's (`--continue-at`), and the whole zip is held to the artifact's sha256
-digest before it is unzipped. Each attempt prints its bytes, its speed and the TCP segments
-the leg retransmitted during it, so the next stall says whether the connection was silent or
-slow. Its first read stays actions/download-artifact, which reads in seconds on all but about
-one leg in a thousand. The script runs in the step's 2 minutes, with the same directory of
-its own as the action's attempt, and reads the artifact the action reads, `<job>-binaries`,
-given the calling job's id (`${{ inputs.job }}`): callers that share a run - a pull request
-labelled full-ci runs dispatch-browser beside dispatch-browser-pr, and one that changes what the
-reference rows test runs dispatch-references beside it - each read only their own build's
-binaries. A re-run uploads them again under the same name, and the action takes the highest id
-of the run's artifacts of that name (run 45306887784 held three by its attempt 3, and the highest
-id was not the newest by `created_at`), so the script takes that same one and reads its address,
-size and digest from it.
+digest before it is unzipped. An attempt that cannot be continued, or whose zip fails the
+digest, deletes the zip, and the next one starts again from byte 0. Each attempt prints its
+bytes, its speed and the TCP segments the leg retransmitted during it, so the next stall says
+whether the connection was silent or slow. Its first read stays actions/download-artifact,
+which reads in seconds on all but about one leg in a thousand.
+
+Both of the script's reads go through retry_fetch (.github/scripts/ci-retry.sh), the one retry
+of this repository's CI (dispatch://INFRA-1545, R2). The read of the run's artifact list is
+bounded at 30 s an attempt, the bound the Retries note of .github/ci-budgets.md gives a
+`gh api` read of the same API. The attempts at the zip are bounded at 150 s, a figure the
+script's comment above the call derives from the zip's size: a read held just above 1 MiB a
+second takes 102 s of the 107 MB, curl's two connections may take 10 s each to open, and
+curl's own `--max-time 140` ends a transfer under the helper's bound. So the zip is read in at
+most five attempts, with the helper's waits of 10, 20, 40 and 80 s between them. An attempt
+that a bound ends loses nothing, since the next resumes at the byte it reached. Each attempt
+prints its line on standard error, because retry_fetch withholds a failed attempt's standard
+output. The step's key holds both ladders: the list's 5 x 30 + 150 = 300 s and the zip's
+5 x 150 + 150 = 900 s, 1,200 s together, a whole number of minutes, so the key is the next
+minute strictly above it, 21 minutes. Before dispatch://INFRA-1545 put the script through
+retry_fetch, it made up to eight attempts of its own, with no wait between them, inside the
+step's 2 minutes.
+
+The script runs with the same directory of its own as the action's attempt, and reads the
+artifact the action reads, `<job>-binaries`, given the calling job's id
+(`${{ inputs.job }}`): callers that share a run - a pull request labelled full-ci runs
+dispatch-browser beside dispatch-browser-pr, and one that changes what the reference rows test
+runs dispatch-references beside it - each read only their own build's binaries. A re-run uploads
+them again under the same name, and the action takes the highest id of the run's artifacts of
+that name (run 45306887784 held three by its attempt 3, and the highest id was not the newest by
+`created_at`), so the script takes that same one and reads its address, size and digest from it.
 
 ## What the shard job places, and what its budget leaves for it
 
@@ -798,7 +845,15 @@ without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up t
 minutes of the alone job's `timeout-minutes`, whose 38 s left over hold the new step that places the binaries
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it).
 The browser step's own budget is unchanged, and it still
-fires first.
+fires first. The second download attempt still counts at its 120 s, for the reason the shard
+job's budget gives.
+
+That 862 s, 15 minutes, 900 s, is this job's first term. To it dispatch://INFRA-1545 adds the
+arithmetic of this job's slowest retried step, the setup-bun step at 3416 s, above the
+workspace install's 5 x 180 + 150 = 1050 s; neither download attempt is a second term, for the
+reasons the shard job's budget gives. 900 + 3416 = 4316 s -> 72 min, which stands above the
+largest step budget of this job, so no job budget fires before a step's own and every
+`if: always()` upload still runs.
 
 ## What the alone job downloads in place of a Go build
 
@@ -971,6 +1026,22 @@ full-lane run after this job's Go cache restore moved from go-envoy to go-envoy-
 sign-in, 96 s in the steps without a budget, 219 s whole - and that restore reads
 go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, 22 s of those 96.
 
+The install step's key is 28 minutes since dispatch://INFRA-1545, which is that step's own retry
+arithmetic and no measured maximum, and the image pull is keyed at the 3 minutes the visual
+job's pull of the same digest derives, 120 x 1.15 = 138 s. The measured half of the rule gives
+this job 4 + 4 + 2 + 3 + 2 min (the install, dashboard, sign-in, pull and connections steps)
+plus 135 s = 17 min 15 s -> 18 min, and that 1080 s is its first term: it holds the install
+step at the 4 minutes that step measured, not at the ladder the step's own budget now carries.
+To it the rule adds the arithmetic of this job's slowest retried step, the setup-bun step's two
+`ci_tools_fetch` calls at 2 x 1708 = 3416 s, above the Chromium install's one `retry_fetch`
+call, 5 x 300 + 150 = 1650 s, and the module download's and the workspace install's 1050 s
+each. The image pull is no term of it: it is a ghcr.io pull of a package this repository
+publishes, which this step makes once and never retries.
+1080 + 3416 = 4496 s -> 75 min, which stands above the largest step budget of this job, the
+setup-bun step's own 57, so no job budget fires before a step's own and the `if: failure()`
+upload still runs. It was 780 + 3416 = 4196 s, 70 minutes, until main's #4486 moved the job's
+Postgres to the harness's own.
+
 ## Why the two-process job restores go-envoy-test
 
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
@@ -1025,6 +1096,17 @@ image that carries the browsers, which took their restores and ci-caches.yaml's
 browsers job with them (dispatch://INFRA-1443). This job stays on the runner, because
 nothing can make it launch another engine, and so keeps this one download.
 
+The step's key is its own retry arithmetic since dispatch://INFRA-1545: the download retries
+through .github/scripts/ci-retry.sh at 300 s an attempt, 5 x 300 + 150 = 1650 s -> 28 min. It
+was 4 minutes, Playwright's own attempts over this step's measured maximum, until the call
+gained the retry: a download this job makes is held to the floor the rest of this repository's
+CI is held to, whoever makes the attempts inside it. The 300 s bound: this step measured at most
+15 s across the 20 most recent successful ci.yaml push runs on main, where the browsers came
+from the runner image's cache - the 339 s in the table above is a wider window and almost all
+of it an apt fetch this step no longer makes - and a cold Chromium is about 210 s, so the bound
+is 20 times the measured maximum and above that cold figure. The embedder job's step of this
+name carries the same call at the same bound.
+
 ## Why the two-process job pulls its stack's Postgres image
 
 The image the harness starts each Playwright run's Postgres from, pulled here so the
@@ -1033,6 +1115,13 @@ it. The digest is the browser steps', written three times, and the three must st
 same: a pull of another digest leaves the browser step to pull its own. Each new step's
 name carries the lane, as the embedder job's build step's does, for the reason
 .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name gives.
+
+The pull is keyed as the visual job's "Pull the visual stack's Postgres copy" is, from that
+step's reading of the same digest: 120 s before the stack's first output on #4129 (run
+44215262087, job 134503540243), where the browser step still made the pull, so
+120 x 1.15 = 138 s -> 3 min. A failed pull is a fault of this repository's own package, so it
+fails here and says so. The embedder
+job's pull carries the same key.
 
 ## Why the two-process job reads its stack's connection limit in a step of its own
 
@@ -1099,6 +1188,17 @@ container to the harness's own, for the reason .github/ci-notes/dispatch-browser
 added that job's two steps for it at that job's figures: the pull at 120 s and the
 connections read at its two-minute floor. 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s
 -> 15 min.
+
+Since dispatch://INFRA-1545 the pull counts at 3 minutes, the key the multiprocess job derives
+for it: 4 + 4 + 3 + 2 min plus 135 s = 15 min 15 s -> 16 min. That 960 s is the measured half
+of the rule, and it holds the Chromium install at the 4 minutes that step measured rather than
+at the ladder the step's own budget carries. To it the rule adds the arithmetic of this job's
+slowest retried step, the setup-bun step's 3416 s, above the Chromium install's 1650 s and the
+module download's and the workspace install's 1050 s each; the image pull is no term of it, for
+the reason the multiprocess job's budget gives. 960 + 3416 = 4376 s -> 73 min, which stands
+above the largest step budget of this job, the setup-bun step's own 57. It was
+660 + 3416 = 4076 s, 68 minutes, until main's #4486 moved the job's Postgres to the harness's
+own.
 
 ## Why the embedder job builds contracts
 
@@ -1207,6 +1307,49 @@ was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at
 six columns above, the sixth being run 42614920253 (job 129152410516). So the sum is
 240 + 333 + 120 = 693 s, 11 min 33 s, and the budget stays 12 minutes.
 
+ROUND 37 OF dispatch://INFRA-1545 TOOK THE STACK'S SETUP OUT OF THE BROWSER STEP. Merge-group
+run 43901029821's job 133419437957 had that step cut at its 4 minutes with 21 of its 22 tests
+passed: e2e/visual-run.sh had spent 80 s to the stack's first listener, its Postgres `docker
+run` pulling the image among them, 46 s more to the Dispatch server's listening line, its build
+and its module downloads among them, and 67 s more to the dev issuer's, which is the real
+broker's build, all inside the step's own budget. Those are steps of their own now, before it:
+the pull of the stack's Postgres copy, and one build of the four commands to the paths
+e2e/run-server.sh and e2e/run-broker.sh write, whose own builds inside the browser step then
+find each binary current - beside the module download and the connection count, which were
+outside it already. The script is unchanged. Main's #4383 added the same pull, as a step "Pull
+the stack's Postgres image", from the run its section below names, and the two steps pulled the
+same digest, so one stands, "Pull the visual stack's Postgres copy", keyed from both readings.
+
+The browser step's key is derived again from the tests' own time, which is what it holds once
+the steps above have pulled its images and built its binaries. Playwright's `22 passed (<s>)`
+line over 14 passing runs of this job on 2026-11-16 - merge groups 43894543037, 43891441459,
+43891003711, 43890498473, 43878030884, 43878026790, 43867990046 and 43857961137, pull requests
+43907894300, 43906396458, 43906342739 and 43905806451, and workflow_dispatch runs 43905122072
+and 43905060337 - read 42.4-57.4 s, the maximum in job 133444910330. What the step still runs
+beside the tests is the stack's start, the seed and the container's start. In those runs that
+took at most 16.6 s outside the two builds, and that figure still held the Postgres pull, which
+the step before it now makes. So the key holds with all of it counted: (57.4 + 16.6) x 1.15 =
+85 s. `docker run` of a digest the runner already holds pulls nothing (e2e/harness-postgres.ts
+passes no --pull). The rule reads the tests: 57.4 x 1.15 = 66 s -> 2 min, the rule's own floor.
+The reverse-order browser step main's #4536 added carried the first browser step's key, 2
+minutes, until main's #5195 removed it: the section on the guard that took its place says why.
+
+The job's first term is the measured half of the rule over its steps as they stand now: the
+browser step's 120 s, the Postgres pull's 180 s and the build's 600 s, each that step's own key,
+plus the same 333 s of every step without one, 120 + 180 + 600 + 333 = 1233 s -> 21 min, so
+1260 s. To it the rule adds the arithmetic of its slowest retried step, the setup-bun step at
+3416 s, above the workspace install's and the module download's 5 x 180 + 150 = 1050 s each. The
+two image pulls are no term of it: each is a ghcr.io pull of a package this repository
+publishes, which its step makes once and never retries.
+1260 + 3416 = 4676 s -> 78 min, which stands above the largest step budget of this job. It was
+1380 + 3416 = 4796 s, 80 minutes, while main's #4536's reverse-order browser step ran, its 120 s
+in the first term, and went back to 78 minutes when main's #5195 removed that step;
+1260 + 3416 = 4676 s, 78 minutes, until #4536 added it; 1200 + 3416 = 4616 s, 77 minutes, until
+main's #4383's 120 s reading raised the Postgres pull's key from 2 minutes to 3;
+1200 + 2562 = 3762 s, 63 minutes, until main's #4214 gave each `ci_tools_fetch` a fourth ladder;
+600 + 2562 = 3162 s, 53 minutes, until round 37 gave the setup steps their own keys;
+540 + 2562 = 3102 s, 52 minutes, until main's #3516 raised the first term from 9 minutes to 10.
+
 ## Why the visual job restores go-envoy-test
 
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
@@ -1246,6 +1389,14 @@ past its budget at 250 s. Its log does not time the pull apart from the rest of 
 start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
 digest is written twice, here and in the browser step's script, and the two must stay the same:
 a pull of another digest here leaves the browser step to pull its own inside its budget again.
+
+Measured inside the browser step, where the `docker run` made this pull: 7-10 s to the stack's
+first listener over the 14 passing runs the browser step's key reads, and 80 s in job
+133419437957, whose step was cut. Main's #4383 read the time before the stack's first output: 7
+to 15 s over five green visual jobs, and 120 s on #4129, whose step ran past its 4 minutes at
+250 s. Neither log times the pull apart from the rest of that start, so the maximum bounds the
+pull rather than measuring it alone: 120 x 1.15 = 138 s -> 3 min. A failed pull is a fault of
+this repository's own package, so it fails here and says so.
 
 ## Why each visual row stops its page's writes, and runs once
 
@@ -1364,30 +1515,40 @@ attempt 0 s, Merge the legs' blob reports 3 s, Upload the merged report 3 s, Rea
 4 s, Reading two 1 s, Reading three 1 s, the verdict step 1 s, the ci-ok report 1 s, Post
 setup-bun 1 s, Post checkout 1 s, Complete job 1 s.
 
-One step carries a budget of its own: "Reading one, the rows", which calls
-.github/scripts/dispatch-browser-run-reads.sh and so waits on gh-read.sh's ladder. The
+Before dispatch://INFRA-1545 one step carried a budget of its own: "Reading one, the rows",
+which calls .github/scripts/dispatch-browser-run-reads.sh and so waited on the ladder
+gh-read.sh held then. The
 ladder bounds that wait rather than measuring it - three attempts, each bounded by
-`timeout 30`, with waits of 10 s and 20 s between them - and a bound takes no 15 per cent.
-The read is paginated, so gh-read.sh can read no answer of its own: after an attempt that
-exits 1 it reads GitHub's rate_limit route, bounded by its own `timeout 30`. So each attempt
-takes up to 30 + 30 s, and the ladder 3 x 60 + 10 + 20 = 210 s at most. The step's own work
-has a measured maximum of 4 s; it now also runs
-packages/dispatch/e2e/tools/leg-rows.ts over the four shard legs' row lists (1.1 MB for the
+`timeout 30`, with waits of 10 s and 20 s between them, which is 120 s at most - and a
+bound takes no 15 per cent. The step's own work has a measured maximum of 4 s, and
+4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
+that step carried. The rule's two-minute floor does not bind. Main's #4987 has the step also
+run packages/dispatch/e2e/tools/leg-rows.ts over the four shard legs' row lists (1.1 MB for the
 full lane's 1,617 rows), measured at 0.02 to 0.08 s on the development box over three runs;
-counted at a whole second, (4 + 1) x 1.15 = 5.75 s, and 210 + 5.75 = 215.75 s, at the next
-whole minute above, is the 4 min that step carries. The rule's two-minute floor does not bind.
+counted at a whole second, (4 + 1) x 1.15 = 5.75 s and 120 + 5.75 = 125.75 s, still the 3 min.
+Main's #5154 has gh-read.sh read the rate limit of a paginated read off GitHub's rate_limit
+route, bounded by its own `timeout 30`, after each of that ladder's attempts that exits 1. So
+each attempt took up to 30 + 30 s, the ladder 3 x 60 + 10 + 20 = 210 s at most, and
+210 + 5.75 = 215.75 s, at the next whole minute above, the 4 min main's step carries.
 
-A spent API budget is not in that bound: when the rate_limit route shows the core budget this
-read spends at 0, gh-read.sh's gh_wait_reset waits for its reset only when that falls at least
-30 s before this step's limit and the job's, which the job's env passes as JOB_TIMEOUT_MINUTES
+A spent API budget is not in the ladder's bound: when the rate_limit route shows the core budget
+this read spends at 0, gh-read.sh's gh_wait_reset, which the read's ladder runs through, waits
+for its reset only when that time, one more run of the ladder (5 x 40 + 150 = 350 s) and 30 s
+end before this step's limit and the job's, which the job's env passes as JOB_TIMEOUT_MINUTES
 and the step's as STEP_TIMEOUT_MINUTES, and otherwise fails the step at once, naming the wait
 and the limit. So the wait never outlives either budget, and the budgets need no room for it: a
 step that would have to wait past them fails by name instead, and a re-run after the reset
-reads the jobs again. A secondary rate limit is not waited for on this read: GitHub names its
-wait in the answer's retry-after, which a paginated read leaves unread, so it is one of the
-ladder's failed attempts.
+reads the jobs again. The read is paginated, so gh-read.sh has no answer of its own to read: it
+asks the rate_limit route, bounded by its own `timeout 30`, once, after a ladder whose last
+attempt exited 1, and the step's budget holds those 30 s on top of the ladder's 350 s. In
+"Reading one, the rows" no wait can ever fit: the first ladder's own waits take 150 s before
+the helper decides, and that margin, 350 + 30 = 380 s, on top of them is more than the step's
+whole 7 min, 420 s, so a rate-limited jobs read there fails by name after its one ladder. The
+key stays at 7 min all the same: a re-run after the reset reads the jobs again. A secondary rate
+limit is not waited for on this read: GitHub names its wait in the answer's retry-after, which a
+paginated read leaves unread, so it is one of the ladder's failed attempts.
 
-So by the rule in this file's head the job's budget is the sum of its step budgets, that
+So by the rule in this file's head main's job budget is the sum of its step budgets, that
 one step's 240 s, plus the measured maximum of every step without one: 40 s less reading
 one's 4 s is 36 s, and 1 s for "Report a refused blob download as a refused read", which
 runs one `echo` and has no measurement of its own - 1 s is what this job's other
@@ -1400,6 +1561,27 @@ report in them carries a failed row's trace, and the download, the merge and rea
 three's per-leg merge all grow with those. A job cancelled at this budget posts no ci-ok,
 so the run is red and read again from the jobs API; it cannot pass a verdict it never
 reached.
+
+Four steps carry a budget of their own since dispatch://INFRA-1545, each from its own retry
+arithmetic rather than a measured maximum: the workspace install, 5 x 180 + 150 = 1050 s
+-> 18 min; the two that run .github/scripts/dispatch-browser-run-reads.sh - "Reading one, the
+rows", through .github/scripts/dispatch-browser-reading-rows.sh, and "Report a refused blob
+download as a refused read" - from that file's one ladder, which a step reaching the file
+carries whichever mode the step asks for, 5 x 40 + 150 = 350 s: the report at 6 min, and "Reading
+one, the rows"
+at 7 min, since it adds the 30 s bound of gh-read.sh's one rate_limit read after a ladder whose
+last attempt exited 1 (the paragraph above) and its own 5.75 s of work, 385.75 s; and the ci-ok
+report, 2460 s -> 43 min, the Budgets note's figure. Of the two that run that file only "Reading
+one, the rows" waits on a host at all: `blobs-refused` is one `echo` and makes no request. The
+measured half of the rule gives this job the 40 s of step maxima above, which is under the
+two-minute floor, and its first term is main's own 5 minutes, 300 s, kept rather than
+tightened: it stands far above the 34 s this job measured, so it only loosens this ceiling. To
+it the rule adds the arithmetic of this job's slowest retried step, the setup-bun step at
+3416 s, above the workspace install's 1050 s, the ci-ok report's 2460 s, the 380 s of "Reading
+one, the rows" and the report's 350 s: 300 + 3416 = 3716 s -> 62 min, which stands above the
+largest step budget of this job, the setup-bun step's own 57. The ladder "Reading one, the rows"
+waits on is .github/scripts/ci-retry.sh's now, at 40 s an attempt, where it was gh-read.sh's
+three attempts bounded at 30 s.
 
 ## Why every leg's blob report is downloaded without merge-multiple, and the two layouts it lands in
 
@@ -1527,3 +1709,61 @@ which is the shape .github/scripts/ci_filter_coverage.py's check_ci_ok holds a c
 to. The nightly workflow passes no `ci-ok-changes`, and the step skips; nor does ci.yaml's
 dispatch-references job, which is outside ci-ok on purpose (CI_OK_EXEMPT), and which
 check_ci_ok refuses to let report.
+
+## Why each job that builds Go downloads its modules in a step of its own
+
+The binaries, multiprocess, embedder and visual jobs each download the modules their builds
+compile once, in a step before the first build, and retry that download (the Retries note of
+.github/ci-budgets.md; the retried unit is the download, never the build): a go build fetches
+its module's dependencies itself on a cache miss, where a go command reaches proxy.golang.org
+with no retry of its own, and nothing in this workflow could see that site because it is
+inside a `go build`. The shard and alone jobs made this download inside their own build until
+the build became the binaries job's, and it went there with it; the multiprocess job builds the
+Dispatch server once and both its processes start from what that build wrote. 180 s per
+attempt: the slowest cold `go mod download` measured is 113 s, for packages/envoy/infra, against
+77 s for packages/envoy, each on an empty module cache on 2026-11-07, so the bound is 1.6 times
+the slowest of them; an attempt it kills leaves what it fetched in the module cache for the next
+one to resume from, which a tarball fetch cannot do. The cache restores before it make the
+common run cost nothing. 5 x 180 + 150 = 1050 s -> 18 min, and no job's key stands on it: each
+job's slowest retried step is larger.
+
+## The setup-bun and workspace install steps' budgets
+
+Every job here installs Bun through ./.github/actions/setup-bun and then the workspace, and both
+retry (dispatch://INFRA-1545). The setup-bun step's key is the action's own retry arithmetic:
+.github/scripts/ci-tools.sh is sourced in two of that action's steps - the second source's
+fetch of Bun and the digest check after it - and each is priced at that file's one
+`ci_tools_fetch`, 1708 s (the Budgets note of .github/ci-budgets.md derives it), 2 x 1708 =
+3416 s -> 57 min. A step sourcing the file twice is priced twice, which over-prices the step
+rather than under-pricing it.
+
+The workspace install retries like every install of this repository's CI (the Retries note of
+.github/ci-budgets.md), at the 180 s bound every Bun install carries: 20.70 s cold on a pod,
+against at most 11 s over 180 observations in CI, 5 x 180 + 150 = 1050 s -> 18 min. In the shard
+and alone jobs .github/scripts/ci-retry.sh is sourced by the `sh -e {0}` those jobs' heads name
+rather than by bash, and it and the file it writes each attempt's stop-commands block with,
+.github/scripts/ci-log-guard.sh, are written for that: they define their functions out of POSIX
+constructs and set no option, and the shell the container runs takes `local` and the arithmetic
+shift the sleep uses. That shell sets no BASH_SOURCE, by which ci-retry.sh finds ci-log-guard.sh
+beside it under bash, so the step sources ci-log-guard.sh itself first, and ci-retry.sh, finding
+its functions defined, reads nothing more (ci-retry.sh's header; dispatch://INFRA-1545, round
+54).
+
+## Why the visual job builds its stack's four commands before its browser step
+
+The four commands the stack runs, built outside the browser step's budget with the commands
+e2e/run-server.sh and e2e/run-broker.sh run and to the paths they write: ./dispatch-e2e for the
+server, and out/dispatch-e2e-broker/ for the broker, its dev issuer and requestseed, which
+e2e/real-broker.ts runs from that path alone. Those scripts still run their own `go build`
+inside the browser step, and Go writes nothing there, since each binary's build ID already
+matches what it would build. Nothing the script is handed changes: no DISPATCH_E2E_SERVER_BIN
+and no DISPATCH_E2E_BROKER_BIN_DIR, so the stack runs the binaries those scripts would have
+built, under the same names. .github/scripts/check-ci-filters.sh names a step of this workflow
+by its own name, so this one carries the lane.
+
+Measured inside the browser step, from the stack's first listener to the dev issuer's listening
+line: 72-120 s over the 14 passing runs the browser step's key reads, on a restored
+go-envoy-test cache. The key carries a cold build instead, as the binaries job's first term
+carries one for these same four commands: a run on main restores no other key, and a miss there
+builds them all cold, which two or three minutes would cancel. That first term is
+600 s -> 10 min.

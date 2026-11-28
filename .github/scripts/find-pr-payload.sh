@@ -21,9 +21,11 @@
 #   GITHUB_EVENT_NAME  the event, as Actions sets it.
 #   GITHUB_EVENT_PATH  the payload Actions wrote for that event.
 #   GH_TOKEN           the job's github.token. merge_group only: it reads the pull request,
-#                      through gh-read.sh's gh_wait_reset, which waits out a spent API budget
-#                      (GraphQL's here) within the job's JOB_TIMEOUT_MINUTES and fails by name
-#                      past it; the request is a file, so the call after a wait sends it again.
+#                      retry_fetch's ladder run through gh-read.sh's gh_wait_reset, which waits
+#                      out a spent API budget (GraphQL's here) only when the wait and one more
+#                      ladder fit within the step's JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES,
+#                      and fails by name otherwise; the request is a file, so every attempt, and
+#                      the ladder run again after a wait, sends it whole.
 #   GITHUB_REPOSITORY  owner/repo, as Actions sets it. merge_group only.
 #   RUNNER_TEMP        where the payload it writes lands. merge_group only.
 #
@@ -60,7 +62,19 @@ jq -n --arg owner "${repository%%/*}" --arg repo "${repository#*/}" --argjson nu
   operationName: "QueuedPull",
   query: "query QueuedPull($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { number baseRefOid headRefOid } } }",
   variables: {owner: $owner, repo: $repo, number: $number}}' > "$request"
-gh_wait_reset gh api graphql --input "$request" > "$answer"
+# The read retries: .github/scripts/ci-retry.sh makes five bounded attempts, the last starting
+# 150 s after the first, so a refusal costs this lane a wait rather than the required pr-title
+# check (dispatch://INFRA-1545, R1). 30 s per attempt, the bound .github/ci-budgets.md's Retries
+# note gives a `gh api` read: ten times the about 3 s one takes. The ladder asks again after an
+# attempt that exits non-zero, and gh fails on a GraphQL answer that carries an error, HTTP 200
+# or not; an answer gh exits 0 on is the jq check's below. The redirection is this shell's own and
+# is applied once: the helper buffers each attempt's output and prints the successful attempt's
+# alone, so no refused attempt's body reaches the file.
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=.github/scripts/ci-retry.sh
+. "$script_dir/ci-retry.sh"
+gh_wait_reset retry_fetch "the queued pull request" 30 -- \
+  gh api graphql --input "$request" > "$answer"
 if ! jq -e --argjson number "$number" '.data.repository.pullRequest
     | {pull_request: {number, base: {sha: .baseRefOid}, head: {sha: .headRefOid}}, number: $number}
     | select((.pull_request.base.sha | type) == "string" and (.pull_request.head.sha | type) == "string")' \

@@ -8,4 +8,6 @@ GATE = harness("go_work_sum", "Check that every checksum a root workspace downlo
     (f"{DAEMON}/go.sum", "the daemon module's hashes, copied beside its go.mod"),
     (f"{ENVOY}/go.mod", "the envoy module's requirements, copied into the workspace for the download"),
     (f"{ENVOY}/go.sum", "the envoy module's hashes, copied beside its go.mod"),
+    *ci_retry("check-go-work-sum.sh sources it from its own directory for the retry its go mod download all "
+              "in the copy goes through"),
 ], lib=False)

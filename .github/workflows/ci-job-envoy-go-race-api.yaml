@@ -52,7 +52,14 @@ jobs:
     # under the job's 90. 70 minutes is
     # twice the longest measured run: the package took 32.6 minutes under the race detector on a
     # dev box, and this job took 32 minutes 48 seconds, past the 30 minutes it had.
-    timeout-minutes: 90
+    #
+    # Budget (ci-budgets.md's Budgets note): 5400 s, the 90 minutes main's #4444 gives this job,
+    # above both the 77 the sentence above derives and its 32 minutes 48 seconds measured, plus
+    # its slowest retried step alone — the ci-ok report, 2460 s (ci-budgets.md's Budgets note,
+    # "The ci-ok report"), above packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s.
+    # 5400 + 2460 = 7860 s, a whole number of minutes, so the budget is the next one strictly
+    # above it -> 132 min.
+    timeout-minutes: 132
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -71,7 +78,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 90 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 132 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The broker's store, which the package's contract tests open (brokerstoretest.Open in
       # internal/dispatch/api/contract_test.go) and skip without; a skip is a pass, so without this
@@ -98,11 +105,20 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-race-{0}-{1}-', runner.os, runner.arch) }}
+      # As envoy-go-race's download step: 180 s per attempt, 1.6 times the 113 s of the slowest
+      # cold run measured (packages/envoy/infra; packages/envoy 77 s), after the same restore.
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
         timeout-minutes: 2
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      # why: .github/ci-notes/ci.md#why-a-lanes-sizing-step-comes-after-its-retried-module-download
       - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The package's tests run 8 at once (apiTestParallelism, server_test.go), each with a
@@ -155,6 +171,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go-race-api
@@ -170,9 +190,11 @@ jobs:
     needs: envoy-go-race-api-legs
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # Budget (ci-budgets.md's Budgets note): the 5 minutes main's #5583 gives this job, 300 s, plus
+    # its slowest retried step alone, the ci-ok report's 2460 s. 300 + 2460 = 2760 s -> 47 min.
+    timeout-minutes: 47
     env:
-      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 47 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       # The ci-ok report below is an action of this repository's .github.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -195,6 +217,10 @@ jobs:
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-go-race-api

@@ -79,6 +79,9 @@ case "\$*" in
   *"--method POST repos/o/r/check-runs"*)
     # post-check-run.sh sends the body as a file, so that a retried post can send it again.
     n=\$(find "$work" -maxdepth 1 -name 'posted.*.json' | wc -l)
+    # The body comes from the file --input names, not from standard input: post-check-run.sh
+    # posts through retry_fetch, and an attempt that had read the input would leave the attempt
+    # after it posting nothing.
     body=
     while [ \$# -gt 0 ]; do
       case \$1 in --input) body=\$2 ;; esac
@@ -91,6 +94,16 @@ case "\$*" in
 esac
 GH
 chmod +x "$work/bin/gh"
+
+# All three scripts read through retry_fetch (.github/scripts/ci-retry.sh), which sleeps 10, 20,
+# 40 and 80 seconds between its five attempts. Those waits are ci-retry.test.sh's to prove, by
+# measuring them; here they would add 150 s to each case that exhausts a retry, so `sleep` is a
+# no-op on this PATH, as the retry delay this test used to set to zero was.
+cat > "$work/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$work/bin/sleep"
 
 cat > "$work/ci.yaml" <<'YAML'
 env:
@@ -155,7 +168,7 @@ annotations() {
 run_report() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-    GITHUB_SERVER_URL=https://github.com GH_RETRY_SECONDS=0 JOB=typecheck CHANGES=$1 \
+    GITHUB_SERVER_URL=https://github.com JOB=typecheck CHANGES=$1 \
     EVENT=$2 JOB_STATUS=$3 HEAD_SHA=abc123 BASE_SHA=${base_sha-base123} \
     BASE_REF=${base_ref-refs/heads/main} CI_OK_WORKFLOW=${4:-$work/ci.yaml} \
     "$script_dir/ci-ok-report.sh" 2>&1)
@@ -172,7 +185,7 @@ verdict() {
     '{changes: $changes, lint: {result: "success"}, typecheck: {result: $typecheck},
       "envoy-client": {result: "success"}, "worker-image": {result: "skipped"}, docs: {result: "skipped"}}')
   set +e
-  PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 GH_RETRY_SECONDS=0 \
+  PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     HEAD_SHA=abc123 EVENT=merge_group NEEDS=$needs \
     SELECTED_BY="$(yq -r '.env.CI_OK_SELECTED_BY' "$work/ci.yaml")" \
     PULL_REQUEST_ONLY="$(yq -r '.env.CI_OK_PULL_REQUEST_ONLY' "$work/ci.yaml")" \
@@ -274,18 +287,20 @@ check "says the group stands behind the front" \
   "$(contains "$out" '^typecheck ended success (changes ended cancelled) on a merge-group run whose group stands behind the front')"
 
 echo "case: a failure whose group's place in the queue GitHub will not tell"
-# The tip is read three times, then the group is treated as the front and the post goes up, as
-# every other refusal here prefers the failing verdict: a front group with no early post would
-# hold the queue until the end of its run.
+# The tip is read through retry_fetch's ladder, run through gh-read.sh's gh_wait_reset, which
+# waits for nothing here: GitHub answers a 502, no rate limit. After the ladder's five refused
+# attempts the group is treated as the front and the post goes up, as every other refusal here
+# prefers the failing verdict: a front group with no early post would hold the queue until the
+# end of its run.
 jobs typecheck=in_progress lint=in_progress envoy-client=queued
 tip_refused
 run_report "$selects" merge_group failure
 check "exits 0" "$(is "$status" 0)"
 check "posts its failing ci-ok" "$(is "$(posted)" 1)"
 check "failing" "$(is "$(field .conclusion)" failure)"
-check "tried the tip three times" "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 3)"
+check "tried the tip at each of the ladder's five attempts" "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 5)"
 check "warns why it posted" \
-  "$(contains "$out" '::warning::GitHub refused the tip of refs/heads/main three times')"
+  "$(contains "$out" '::warning::GitHub refused the tip of refs/heads/main at every attempt')"
 
 echo "case: a group of a queue on another branch reads that branch's tip, not main's"
 # Main's tip is the group's base here, so a read of main would call the group the front. The
@@ -403,9 +418,10 @@ run_report "$selects" workflow_dispatch failure
 check "posts nothing" "$(is "$(posted)" 0)"
 
 echo "case: a decided merge_group run whose reads GitHub refuses posts its verdict all the same"
-# The jobs route is read three times before the script gives up, and so are the check runs it
-# would tell a runner shutdown by. On a decided merge-group run nothing this job waits for can
-# help: the queue takes the pull request out on this verdict and
+# The jobs route is read five times before the script gives up, which is retry_fetch's floor
+# (.github/scripts/ci-retry.sh), and so are the check runs it would tell a runner shutdown by.
+# On a decided merge-group run nothing this job waits for can help: the queue takes the pull
+# request out on this verdict and
 # dequeued.yaml force-cancels the run, and a force-cancel leaves every `if: always()` step
 # skipped. A run that waited for a read it could not make would carry no ci-ok at all and hold the
 # queue until GitHub's 180-minute check timeout dropped its pull request. So every other job is
@@ -422,17 +438,17 @@ check "records every other job as unread" "$(contains "$(field .output.summary)"
 check "and the reporting job at its own status" \
   "$(contains "$(field .output.summary)" '^typecheck: failure (selected')"
 check "warns why it posted on an unread run" \
-  "$(contains "$out" "::warning::GitHub refused this run's job list at every attempt gh-read.sh made")"
+  "$(contains "$out" "::warning::GitHub refused this run's job list at every attempt")"
 check "warns that it could not tell a runner shutdown from a failure either" \
-  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 at every attempt gh-read.sh made')"
+  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 at every attempt')"
 
 echo "case: GitHub refuses the post"
 jobs typecheck=in_progress lint=in_progress envoy-client=queued
 touch "$work/post-fails"
 run_report "$selects" merge_group failure
 check "fails the step" "$(is "$status" 1)"
-check "tried three times" "$(is "$(posted)" 3)"
-check "says so" "$(contains "$out" 'GitHub refused the ci-ok check run on abc123 at every attempt gh-read.sh made')"
+check "tried five times" "$(is "$(posted)" 5)"
+check "says so" "$(contains "$out" 'GitHub refused the ci-ok check run on abc123 at every attempt')"
 
 echo "case: CHANGES is not toJSON(needs.changes)"
 jobs typecheck=in_progress
@@ -453,7 +469,7 @@ echo "case: post-check-run.sh called with no marker"
 jobs
 : > "$work/summary.md"
 set +e
-out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GH_RETRY_SECONDS=0 \
+out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r \
   HEAD_SHA=abc123 CHECK_NAME=pr-title CONCLUSION=success TITLE='the title is conventional' \
   SUMMARY_FILE="$work/summary.md" DETAILS_URL=https://github.com/o/r/actions/runs/41 \
   "$script_dir/post-check-run.sh" 2>&1)
@@ -469,7 +485,7 @@ echo "case: post-check-run.sh posts the marker it was given"
 jobs
 : > "$work/summary.md"
 set +e
-out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GH_RETRY_SECONDS=0 \
+out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r \
   HEAD_SHA=abc123 CHECK_NAME=pr-title CONCLUSION=success TITLE='the title is conventional' \
   SUMMARY_FILE="$work/summary.md" DETAILS_URL=https://github.com/o/r/actions/runs/41 \
   EXTERNAL_ID=pr-title:41 "$script_dir/post-check-run.sh" 2>&1)
@@ -512,7 +528,7 @@ chmod +x "$work/bin/git"
 run_hold() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r \
-    GITHUB_RUN_ID=41 GH_RETRY_SECONDS=0 BASE_SHA=${base_sha-base123} BASE_REF=refs/heads/main \
+    GITHUB_RUN_ID=41 BASE_SHA=${base_sha-base123} BASE_REF=refs/heads/main \
     HEAD_SHA=${head_sha-abc123} HEAD_REF=refs/heads/gh-readonly-queue/main/pr-1-base123 \
     CI_OK_HOLD_AGE_SECONDS=${1:-3600} CI_OK_HOLD_RUN_SECONDS=${run_s-600} \
     CI_OK_HOLD_POLL_SECONDS=${poll-0} timeout 60 "$script_dir/ci-ok-hold.sh" 2>&1)
@@ -623,8 +639,8 @@ run_s=3600 run_hold 3600
 check "an unread creation: exits 0 after one read" "$(is "$status $(reads)" '0 1')"
 check "and says it counted from its own start" \
   "$(contains "$out" "^::warning::GitHub did not give this run's creation time (refused), so the hold counts from its own start")"
-check "having made the creation read with no deadline to wait within: three attempts" \
-  "$(is "$(calls 'repos/o/r/actions/runs/41 --jq .created_at')" 3)"
+check "having made the creation read with no deadline to wait within: five attempts" \
+  "$(is "$(calls 'repos/o/r/actions/runs/41 --jq .created_at')" 5)"
 
 echo "case: one entry that breaks every group built on it builds no group more"
 # The 2026-11-22 cascade: #4812's entry broke every group built on it, and each group's failing
@@ -669,9 +685,9 @@ echo "case: every refusal of the hold lets the failing verdict go up at once"
 rm -f "$work/remote" "$work/calls"
 run_hold
 check "refs GitHub will not serve: exits 0" "$(is "$status" 0)"
-check "after the three attempts gh-read.sh makes" "$(is "$(reads)" 3)"
+check "after the five attempts retry_fetch makes" "$(is "$(reads)" 5)"
 check "and warns why the verdict went up" \
-  "$(contains "$out" '^::warning::GitHub refused the refs refs/heads/main and refs/heads/gh-readonly-queue/main/pr-1-base123 of https://github.com/o/r.git at every attempt gh-read.sh made')"
+  "$(contains "$out" '^::warning::GitHub refused the refs refs/heads/main and refs/heads/gh-readonly-queue/main/pr-1-base123 of https://github.com/o/r.git at every attempt retry_fetch made')"
 remote -:abc123
 run_hold
 check "an answer with no tip for main: exits 0 at the first read" "$(is "$status $(reads)" '0 1')"
@@ -695,7 +711,7 @@ echo "case: the real ci.yaml's ci-ok job holds a failing verdict of a merge grou
 # is the verdict of a tree the queue no longer waits on. The reconcile step is skipped in exactly
 # the case the hold runs, so the hold ends the job, whose check run concludes as soon as the hold
 # ends. It reads the group's base, head and branches from the merge_group event; its age leaves
-# the last pause, the last read's three attempts and the job's end under the queue's 180-minute
+# the last pause, the last read's ladder and the job's end under the queue's 180-minute
 # check timeout, and fits in the step's own limit.
 ci_ok_job=$(yq -o=json '.jobs["ci-ok"]' "$script_dir/../workflows/ci.yaml")
 step_index() { jq --arg name "$1" '[.steps[].name] | index($name)' <<<"$ci_ok_job"; }
@@ -720,12 +736,13 @@ check "with the group's base, head and branches" \
 check "and a job that may read its run's creation" \
   "$(is "$(jq -r '.permissions.actions' <<<"$ci_ok_job")" read)"
 age=$(jq -r .env.CI_OK_HOLD_AGE_SECONDS <<<"$hold")
-# The last pause (30 s), the last read's three 30-second attempts and their pauses (10 s and 20 s)
-# and a minute for the job to end, inside the queue's 180-minute check timeout.
+# The last pause (30 s), the last read's ladder, five 30-second attempts and retry_fetch's sleeps
+# of 10, 20, 40 and 80 s between them (5 x 30 + 150 = 300 s), and a minute for the job to end,
+# inside the queue's 180-minute check timeout.
 check "an age that ends the hold inside the queue's 180-minute check timeout" \
-  "$(is "$((age + 30 + 3 * 30 + 30 + 60 <= 180 * 60))" 1)"
+  "$(is "$((age + 30 + 5 * 30 + 150 + 60 <= 180 * 60))" 1)"
 check "and a step limit that a hold of a run created moments before it can use whole" \
-  "$(is "$((age + 30 + 3 * 30 + 30 < $(jq -r '."timeout-minutes"' <<<"$hold") * 60))" 1)"
+  "$(is "$((age + 30 + 5 * 30 + 150 < $(jq -r '."timeout-minutes"' <<<"$hold") * 60))" 1)"
 remote base123:abc123
 run_hold "$age"
 check "a hold with that age lets the front group's verdict go up" \

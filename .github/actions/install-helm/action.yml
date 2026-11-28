@@ -8,8 +8,8 @@ description: >-
   get.helm.sh does not serve the bytes: the copy of that tarball in ghcr.io/cybermonklabs/legion/ci.
   .github/scripts/check-ci-tools.sh holds the row's version to the HELM= line of render-nats.sh,
   and the render runs an installed helm only where it answers that version, so the render runs
-  this helm rather than building one with `go run`. The manifest holds no helm row for any machine
-  but x86_64, so this action refuses any other machine by name.
+  this helm rather than building one with `go install`. The manifest holds no helm row for any
+  machine but x86_64, so this action refuses any other machine by name.
 runs:
   using: composite
   steps:

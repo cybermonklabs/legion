@@ -23,7 +23,8 @@ measurement beside the budgets:
 - `step_minutes`: the deadline, the 60 s `timeout --kill-after` leaves the tool to report, and
   60 s of slack for the step's own start around `timeout`, up to the next whole minute. The slack
   rests on no reading: it sits behind the deadline and the kill-after, so it decides nothing;
-- `job_minutes`: `step_minutes`, and twice `other_steps_seconds` up to the next whole minute.
+- `job_minutes`: `step_minutes`, twice `other_steps_seconds` and `retry_seconds`, up to the next
+  whole minute.
 
 The job's rule is this file's own. `.github/ci-notes/dispatch-browser.md`'s rule for
 `dispatch-browser.yaml` adds the measured maximum of the steps without a budget once; this one
@@ -31,7 +32,17 @@ adds it twice, the same margin of 2 as the deadline, because the other steps var
 runner as the test step does. Over the 31 runs below, a leg's other steps took 15 to 37 s in the
 web lane, 13 to 44 s in the web-cold lane and 28 to 229 s in the harness lane: 2.5, 3.4 and 8.2
 times the fastest. Taken once, those maxima would give 69, 9 and 136 minutes in place of 70, 10
-and 140. The job budget stays a backstop behind the step's, and decides no verdict.
+and 140, before the retry term below. The job budget stays a backstop behind the step's, and
+decides no verdict.
+
+`retry_seconds` is the retry arithmetic of the job's single slowest retried step, the term
+.github/ci-budgets.md#the-budgets-note adds for a job that retries a download
+(dispatch://INFRA-1545): the setup-bun step's two `ci_tools_fetch` calls at 3416 s
+(`ci-budgets.md`'s Budgets note), above the workspace install's 1050 s and the harness leg's zsh
+install's 1400 s. With it the three jobs take 127, 67 and 197 minutes. `job_minutes` is an
+expression's value, and the test below holds it. It also holds each
+lane's `retry_seconds` to the setup-bun step's own figure, which it reads from the comment above
+that step's key (`2 x 1708 = 3416 s`), so a change of that figure the matrix does not take fails it.
 
 `packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts`, which the dashboard job of
 `ci.yaml` runs on every change to the workflow, holds each lane's three budgets to exactly those

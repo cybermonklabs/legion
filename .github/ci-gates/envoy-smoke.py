@@ -46,12 +46,14 @@ GATE = gate("envoy_smoke", "envoy-smoke", runs=[
     ("packages/pi-shared/package.json", "`packages/envoy/docker/Dockerfile#COPY packages/pi-shared/package.json`"),
     ("packages/claude-envoy/package.json", "`packages/envoy/docker/Dockerfile#COPY packages/claude-envoy/package.json`"),
     ("packages/test-fixtures/package.json", "`packages/envoy/docker/Dockerfile#COPY packages/test-fixtures/package.json`"),
-    ("docs/site/package.json", "`packages/envoy/docker/Dockerfile#COPY docs/site/package.json` and `packages/envoy/docker/Dockerfile#RUN bun install --frozen-lockfile`, whose RUN reads every manifest above"),
+    ("docs/site/package.json", "`packages/envoy/docker/Dockerfile#COPY docs/site/package.json` and "
+                               '`packages/envoy/docker/Dockerfile#retry 600 "bun install"`, '
+                               "the web stage's RUN whose bun install --frozen-lockfile reads every manifest above"),
     ("packages/contracts/**", "`packages/envoy/docker/Dockerfile#COPY packages/contracts/package.json`, `packages/envoy/docker/Dockerfile#COPY packages/contracts packages/contracts` and `packages/envoy/docker/Dockerfile#RUN bun run gen:go` copies the manifest and then the package, which it runs gen:go in"),
     ("packages/dispatch/**", "`packages/envoy/docker/Dockerfile#COPY packages/dispatch/package.json`, `packages/envoy/docker/Dockerfile#COPY packages/dispatch packages/dispatch` and `packages/envoy/docker/Dockerfile#RUN bun run build:web` copies the manifest and then the package, which it runs build:web in"),
     ("packages/proof-editor/**", "`packages/envoy/docker/Dockerfile#COPY packages/proof-editor/package.json`, `packages/envoy/docker/Dockerfile#COPY packages/proof-editor/proof-sdk-*.tgz` and `packages/envoy/docker/Dockerfile#COPY packages/proof-editor packages/proof-editor` copies the manifest, the upstream tarball and then the package, which the SPA build aliases"),
     ("scripts/third-party-notices.ts", "`packages/envoy/docker/Dockerfile#COPY scripts/third-party-notices.ts`, which the SPA build writes its notices with"),
-    ("scripts/go-third-party-notices.sh", "`packages/envoy/docker/Dockerfile#COPY scripts/go-third-party-notices.sh`, `packages/envoy/docker/Dockerfile#RUN go-third-party-notices.sh --install` and `packages/envoy/docker/Dockerfile#go-third-party-notices.sh /tmp/go-notices` copies it and runs it twice"),
+    ("scripts/go-third-party-notices.sh", "`packages/envoy/docker/Dockerfile#COPY scripts/go-third-party-notices.sh`, `packages/envoy/docker/Dockerfile#go-third-party-notices.sh --install` and `packages/envoy/docker/Dockerfile#go-third-party-notices.sh /tmp/go-notices` copies it and runs it twice"),
     ("scripts/assemble-third-party-notices.sh", "`packages/envoy/docker/Dockerfile#scripts/assemble-third-party-notices.sh /usr/local/bin/` and `packages/envoy/docker/Dockerfile#assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES` copies it and runs it"),
     # The image's Go stage copies the Envoy module whole
     # (`packages/envoy/docker/Dockerfile#COPY packages/envoy ./`), and the held-port image's build
@@ -70,4 +72,5 @@ GATE = gate("envoy_smoke", "envoy-smoke", runs=[
              "`packages/envoy/infra/host/heldportwrapper/Dockerfile#COPY packages/envoy /src/packages/envoy`")
       for path in files_but_tests(ENVOY, suffix="", tree=True, skip=(".changes",))
       if not path.startswith(tuple(f"{ENVOY}/{d}/" for d in ("internal/integration", "internal/smoke", "deploy")))],
+    *ci_retry(f"{at('envoy-smoke', GO_DOWNLOAD_STEP)} sources it: the step downloads both of this job's modules through it"),
 ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod"))

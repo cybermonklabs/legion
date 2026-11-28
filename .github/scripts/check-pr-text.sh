@@ -36,19 +36,21 @@
 # push can land while the job runs and gets a run of its own. A payload without one is refused.
 # The rest it reads with gh (GH_TOKEN, GITHUB_REPOSITORY) through GitHub's GraphQL API, whose
 # budget is its own, apart from the REST budget the rest of CI spends (THE READ below says what it
-# asks for and how it reads every page), each call through gh-read.sh's gh_wait_reset, which waits
-# out a spent API budget (REST's or GraphQL's) within the JOB_TIMEOUT_MINUTES both jobs that run
-# this script set, and fails by name past it. The title, body and branch name are the pull request's
-# as it has them now, not the payload's: `.github/workflows/ci.yaml#pr-title` job checks at a push and can finish
-# long after a later edit's pr-title.yaml run, and both carry pr-title on the head, so a check of
-# the push's own text would report a pass over the edit's refusal. The commits are those from the
-# base branch to the event's head, and the issue comments, reviews and review comments every one
-# the pull request holds. GitHub reports a total for each list, and a list read short of its total
-# is refused loudly here, naming the list, instead of silently scanning part of it. A list that
-# changes between two pages of one run's read can miss its total that way too; the next push or
-# edit run and `.github/workflows/ci.yaml#pr-title` job's next run (ci.yaml says when it runs) read it again, and
-# those runs' checks are the ones the merge reads. A NUL byte in any of them, which would make
-# `grep -I` treat the file as binary and skip it, is stripped first.
+# asks for and how it reads every page), each call retry_fetch's ladder run through gh-read.sh's
+# gh_wait_reset, which waits out a spent API budget (REST's or GraphQL's) only when the wait and
+# one more ladder fit within the JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES both steps that run
+# this script set, and fails by name otherwise. The title, body and branch name are the pull
+# request's as it has them now, not the payload's: `.github/workflows/ci.yaml#pr-title` job
+# checks at a push and can finish long after a later edit's pr-title.yaml run, and both carry
+# pr-title on the head, so a check of the push's own text would report a pass over the edit's
+# refusal. The commits are those from the base branch to the event's head, and the issue
+# comments, reviews and review comments every one the pull request holds. GitHub reports a total
+# for each list, and a list read short of its total is refused loudly here, naming the list,
+# instead of silently scanning part of it. A list that changes between two pages of one run's
+# read can miss its total that way too; the next push or edit run and
+# `.github/workflows/ci.yaml#pr-title` job's next run (ci.yaml says when it runs) read it again,
+# and those runs' checks are the ones the merge reads. A NUL byte in any of them, which would
+# make `grep -I` treat the file as binary and skip it, is stripped first.
 #
 # Usage: GITHUB_EVENT_PATH=<payload> GITHUB_REPOSITORY=<owner>/<repo> .github/scripts/check-pr-text.sh
 # CI runs it in `.github/workflows/ci.yaml#pr-title` job at every push to a pull request that is not a draft, when
@@ -189,18 +191,41 @@ query ThreadComments($thread: ID!, $after: String) {
   }
 }
 GRAPHQL
+# Every read of the API below retries: .github/scripts/ci-retry.sh makes five bounded attempts,
+# the last starting 150 s after the first, so a refusal costs this lane a wait rather than the
+# required pr-title check (dispatch://INFRA-1545, R1). Each read's redirection is this shell's
+# own and is applied once: the helper buffers every attempt's output and prints the successful
+# attempt's alone, so no refused attempt's body reaches the file. gh_wait_reset, in front of
+# each, runs that ladder once more after a rate limit's wait, and only when the two fit. The
+# ladder asks again after an attempt that exits non-zero and after nothing else: gh fails on a
+# GraphQL answer that carries an error, HTTP 200 or not, so that answer is asked for again, and
+# an answer gh exits 0 on is the script's to read, as it was before the ladder.
+#
+# 30 s per attempt, for each: the bound .github/ci-budgets.md's Retries note gives a `gh api`
+# read, ten times the about 3 s one takes. Each round of THE READ is one `gh api graphql` call,
+# and so is each page of a review thread's later comments.
+# shellcheck source=.github/scripts/ci-retry.sh
+. "$script_dir/ci-retry.sh"
 # graphql <answer> <operation> <variables>: asks GitHub's GraphQL API that operation with those
-# variables (a JSON object) and writes the answer to <answer>, through gh_wait_reset, which waits
-# out a spent GraphQL budget within the job's limit and calls once more, so the request is a file
-# both calls send. An answer that carries any other error, which gh reports by failing, or a budget
-# the helper could not wait for (its own ::error:: line names why), is refused by name.
+# variables (a JSON object) and writes the answer to <answer>, retry_fetch's ladder run through
+# gh_wait_reset. The request is a file, so every attempt, and the ladder gh_wait_reset runs again
+# after a wait for a spent GraphQL budget, sends it whole: an attempt after the first would find
+# stdin already read. Each attempt writes gh's own standard error to gh-error and then copies it
+# to its standard error, inside its block, where the log keeps it and gh_wait_reset reads a rate
+# limit's refusal in it, as the release read below does: --stderr would send every attempt's
+# lines, retry_fetch's own among them, to that file rather than to the log. So gh-error holds the
+# last attempt's words alone. An answer that carries any other error, which gh reports by
+# failing, on each of the ladder's attempts, or a budget the helper could not wait for (its own
+# ::error:: line names why), is refused by name, with the first line of those words.
 graphql() {
   local answer=$1 operation=$2 variables=$3 query=$pr_query
   [ "$operation" = PrText ] || query=$thread_query
   jq -n --arg query "$query" --arg operation "$operation" --argjson variables "$variables" \
     '{query: $query, operationName: $operation, variables: $variables}' > "$work/request.json"
-  if ! gh_wait_reset --stderr "$work/gh-error" gh api graphql --input "$work/request.json" \
-    > "$answer"; then
+  # shellcheck disable=SC2016 # the shell retry_fetch runs expands $1, $2 and $status
+  if ! gh_wait_reset retry_fetch "the $operation read of #$number" 30 -- bash -c \
+    'gh api graphql --input "$1" 2> "$2"; status=$?; cat "$2" >&2; exit "$status"' \
+    graphql-read "$work/request.json" "$work/gh-error" > "$answer"; then
     echo "::error::GitHub's GraphQL API did not answer the $operation read of #$number" \
       "($(head -n 1 "$work/gh-error")), so its text cannot be checked" >&2
     exit 1
@@ -280,7 +305,7 @@ jq -r '.headRefName' "$live" | tr -d '\000' > "$text/branch"
 base_ref=$(jq -r '.baseRefName // "main"' "$live")
 title_status=0
 if ! grep -qE '^[a-z]+(\([^)]+\))?!?: .+' "$text/title"; then
-  echo "::error::PR title must be a conventional commit subject (type(scope): summary). Squash merges use the PR title as the commit subject, and the release workflows version from conventional subjects — this repository's squash merges write an empty body, so the title is the only text they read."
+  echo "::error::PR title must be a conventional commit subject (type(scope): summary). Squash merges use the PR title as the commit subject, and the release workflows version from conventional subjects — this repository's squash merges write an empty body, so the title is the only text they read." >&2
   title_status=1
 fi
 
@@ -307,8 +332,8 @@ else
   # is that parameter, and asks for the largest page GitHub serves; `--paginate` then reads every
   # page it creates, printing one JSON object per page, each repeating total_commits.
   compare_json="$work/compare.json"
-  gh_wait_reset gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate \
-    > "$compare_json"
+  gh_wait_reset retry_fetch "the pull request's commits" 30 -- \
+    gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate > "$compare_json"
   total_commits=$(jq -s '.[0].total_commits // empty' "$compare_json")
   if ! [[ $total_commits =~ ^[0-9]+$ ]]; then
     echo "::error::the compare route's answer for $base...$head names no whole-number" \
@@ -423,7 +448,7 @@ status=0
 PRIVATE_NAME_BARE_HOSTS=yes "$script_dir/check-private-names.sh" "$text/title" "$text/body" "$text/branch" "$text/commits" \
   "${kinds[@]/#/$text/}" 2>&1 | sed -E -e "s|$text/||g" -e "s#(^|[:=])$kind_pattern/([0-9]+)#\\1\\2:\\3#g" \
   > "$work/report" || status=$?
-cat "$work/report"
+cat "$work/report" >&2
 if [ "$status" -ne 0 ] && grep -q -E "(^|[:=])$kind_pattern:[0-9]+:" "$work/report"; then
   echo "  - a comment, review or review comment reported above is public on the pull request's page"
   echo "    now: delete each comment and review comment, since an edit keeps the old text in its"
@@ -465,6 +490,11 @@ fi
 # names an issue's branch after its key today, and the change that names branches another way adds
 # the branch to this rule.
 key_status=0
+# The commits on the base branch that touch the marker come with THE READ. The rule's other three
+# reads of the API, one release, one commit's files and the pull request's files, retry as THE
+# READ does, each at 30 s an attempt: measured 2026-11-19 from a Legion pod, one release answered
+# in 0.9 s, #4348's commit with its 73 files in 1.1 s and the files of a pull request of 119 files
+# and 1,090,069 bytes, two pages, in 1.7 s, so the largest of them takes under a sixth of its bound.
 whole history "commits on $base_ref that touch $cutoff_file"
 skill_commit=$(jq -r '.history.nodes | last | .oid // empty' "$reads")
 cutoff=''
@@ -512,12 +542,44 @@ else
     first_tag='' first_published=''
     while IFS= read -r tag; do
       # A tag can exist before its release does, and a draft is no release: either is skipped.
-      if ! gh_wait_reset --stderr "$work/gh-error" \
-        gh api "repos/$repository/releases/tags/$tag" > "$work/release"; then
-        if grep -q -F '(HTTP 404)' "$work/gh-error"; then continue; fi
-        unknown "GitHub did not answer for the release of $tag ($(head -n 1 "$work/gh-error"))"
+      # A 404 is GitHub's answer that the release does not exist, not a refusal to retry, so the
+      # shell retry_fetch runs exits 0 on a 404: that tag costs one call, and a read that got no
+      # answer (a 5xx, a reset, a timeout) is retried as every read here is. The code is the
+      # response's own status line, the first line `gh api -i` writes on standard output
+      # (`HTTP/2.0 404 Not Found`), which no body can write; gh's standard error is not read for
+      # it, since gh puts the API's message in front of its `(HTTP <code>)` there, and a message
+      # holding a newline after `(HTTP 404)` ends a line with it (dispatch://INFRA-1545, round
+      # 52). The body follows the headers' blank line. `[ -z "$response" ] ||` keeps retry_fetch's
+      # notice about an attempt's empty output out of the log: a read that got no response exits
+      # non-zero, and retry_fetch never puts a failed attempt's output on standard output, so the
+      # empty line printf would write for it reaches nothing but that notice. `|| true` on the
+      # status-line read below lets an answer with no status line at all reach the `no 200 status
+      # line` UNKNOWN rather than end the script.
+      # Each attempt rewrites gh-error, so the last one's words are what UNKNOWN names: gh's last
+      # line of standard error, each control character a space. On an HTTP error that line usually
+      # carries gh's own `(HTTP <code>)`, and it can be a hint gh adds after it. gh alone writes
+      # gh-error, so no line of retry_fetch's own, and no marker of its stop-commands blocks, can be
+      # the line UNKNOWN names. The attempt then copies those words to its standard error, inside
+      # its block, where the log keeps them and gh_wait_reset reads a rate limit's refusal in them;
+      # it takes no --stderr here, which would send every attempt's lines, retry_fetch's own among
+      # them, to that file rather than to the log.
+      # shellcheck disable=SC2016 # the shell retry_fetch runs expands $1, $2, $response and the rest
+      if ! gh_wait_reset retry_fetch "the release of $tag" 30 -- bash -c \
+        'response=$(gh api "$1" -i 2> "$2"); status=$?; cat "$2" >&2
+         [ -z "$response" ] || printf "%s\n" "$response"
+         read -r proto code _ <<< "$response"
+         [ "$status" -eq 0 ] || { [[ $proto == HTTP/* ]] && [ "$code" = 404 ]; } || exit "$status"' \
+        release-read "repos/$repository/releases/tags/$tag" "$work/gh-error" > "$work/response"; then
+        unknown "GitHub did not answer for the release of $tag ($(tail -n 1 "$work/gh-error" | tr -d '\n' | tr '[:cntrl:]' ' '))"
         break
       fi
+      read -r release_proto release_code _ < "$work/response" || true
+      if [[ $release_proto == HTTP/* ]] && [ "$release_code" = 404 ]; then continue; fi
+      if ! [[ $release_proto == HTTP/* && $release_code == 200 ]]; then
+        unknown "GitHub answered the release of $tag with no 200 status line ($(head -n 1 "$work/response"))"
+        break
+      fi
+      sed '1,/^\r\{0,1\}$/d' "$work/response" > "$work/release"
       published=$(jq -r 'select(.draft == false) | .published_at // empty' "$work/release")
       [ -n "$published" ] || continue
       if [ -z "$first_tag" ]; then
@@ -841,8 +903,8 @@ AWK
     fi
     stage="$work/stage-$short"
     mkdir "$stage"
-    gh_wait_reset gh api "repos/$repository/commits/$sha?per_page=100" --paginate \
-      > "$work/commit-$short"
+    gh_wait_reset retry_fetch "the files of commit $short" 30 -- \
+      gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$short"
     files=$(jq -s '[.[].files[]] | length' "$work/commit-$short")
     listed=$(jq -s '[.[].files[] | .changes] | add // 0' "$work/commit-$short")
     total=$(jq -s '.[0].stats.total // -1' "$work/commit-$short")
@@ -874,8 +936,8 @@ AWK
   if [ "$merges" -gt 0 ]; then
     stage="$work/stage-net"
     mkdir "$stage"
-    gh_wait_reset gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate \
-      > "$work/pr-files-pages"
+    gh_wait_reset retry_fetch "the files of #$number" 30 -- \
+      gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate > "$work/pr-files-pages"
     jq -s '{files: [.[][]]}' "$work/pr-files-pages" > "$work/pr-files"
     files=$(jq '.files | length' "$work/pr-files")
     listed=$(jq '[.files[] | .changes] | add // 0' "$work/pr-files")
@@ -915,7 +977,7 @@ AWK
     PRIVATE_NAME_RULES=keys PRIVATE_NAME_CHECK_PATHS=$paths_flag "$script_dir/check-private-names.sh" "$dir" 2>&1 |
       sed -E -e "s|$dir/||g" -e "s#(^|[:=])$kind_pattern/([0-9]+)#\\1\\2:\\3#g" \
         -e "s#(^|[:=])commit/([0-9A-Za-z_-]+)#\\1commit:\\2#g" -e "s#(^|[:=])added/([0-9A-Za-z_-]+)/#\\1commit:\\2:#g" \
-        -e "s#(^|[:=])net/#\\1files:#g" \
+        -e "s#(^|[:=])net/#\\1files:#g" >&2 \
       || run_status=$?
     if [ "$run_status" -gt "$key_status" ]; then key_status=$run_status; fi
   done

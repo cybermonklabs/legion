@@ -248,7 +248,7 @@ fi
 
 if [ "${#errors[@]}" -gt 0 ]; then
   for error in "${errors[@]}"; do
-    echo "::error::$error"
+    echo "::error::$error" >&2
   done
   [ "${#not_run[@]}" -eq 0 ] || printf '%s\n' "${not_run[@]}"
   exit 1

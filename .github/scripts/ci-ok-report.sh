@@ -39,7 +39,7 @@
 # at the end of the run and holds a failing one until the group is the front (ci-ok-hold.sh, whose
 # header measures the groups a failing verdict concluded behind the front still built), so the
 # group counts as building until the verdict can take it out. That tip is read once, and only on
-# a run this job's result would decide; a read GitHub refuses three times leaves the group
+# a run this job's result would decide; a read GitHub refuses at every attempt leaves the group
 # treated as the front and the post made, as every other refusal here prefers the failing
 # verdict.
 #
@@ -79,11 +79,15 @@
 # either, and the verdict goes up all the same: it is failing whatever those jobs go on to do, and
 # waiting for a read this job cannot make would leave the group with no ci-ok at all until
 # GitHub's 180-minute check timeout took its pull request out of the queue. Every read here, and
-# the post, is retried on gh-read.sh's one ladder, whose GH_RETRY_SECONDS is the tests' knob for
-# the delay (that file says when it stops sooner); a post refused at every attempt fails the step
-# with nothing posted, and the run's other jobs run on — the ci-ok job then posts the verdict at
-# the end of the run, unless .github/workflows/dequeued.yaml force-cancels the run first, which
-# leaves every `if: always()` step skipped.
+# the post, goes through .github/scripts/ci-retry.sh, the one retry every download and every API
+# call of this repository's CI makes (dispatch://INFRA-1545, R1 and R2): five attempts, each
+# bounded at 30 s, the last starting 150 s after the first. Each runs that ladder through
+# gh-read.sh's gh_wait_reset as well, which waits out a spent API budget only when the wait and
+# one more ladder fit within the step's limit and the job's, and fails by name otherwise. A post
+# refused at every attempt fails the step with nothing posted, and the run's other
+# jobs run on — the ci-ok job then posts the verdict at the end of the run, unless
+# .github/workflows/dequeued.yaml force-cancels the run first, which leaves every `if: always()`
+# step skipped.
 #
 # The verdict is ci-ok.sh's, over the NEEDS this script builds: `changes`' result and outputs as
 # `toJSON(needs.changes)` gave them to the reporting job, and every other job's result as above.
@@ -104,6 +108,9 @@
 #                      (`github.event.merge_group.base_sha` and `.base_ref`); a merge_group run
 #                      needs both, and every other run reads neither.
 #   GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SERVER_URL, as Actions sets them.
+#   JOB_TIMEOUT_MINUTES, STEP_TIMEOUT_MINUTES  the reporting job's and the report step's
+#                      timeout-minutes, from the job's env and the step's, the limits
+#                      gh-read.sh's wait for each read and the post stays within.
 #   CI_OK_WORKFLOW     optional: the router's file, .github/workflows/ci.yaml beside this script
 #                      by default (the copy of the commit the run checked out). CI_OK_SELECTED_BY,
 #                      CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN are read from it and handed
@@ -117,10 +124,12 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 workflow=${CI_OK_WORKFLOW:-$script_dir/../workflows/ci.yaml}
+# shellcheck source=.github/scripts/ci-retry.sh
+. "$script_dir/ci-retry.sh"
 # shellcheck source=.github/scripts/gh-read.sh
-source "$script_dir/gh-read.sh"
+. "$script_dir/gh-read.sh"
 # shellcheck source=.github/scripts/runner-shutdown.sh
-source "$script_dir/runner-shutdown.sh"
+. "$script_dir/runner-shutdown.sh"
 for input in GH_TOKEN JOB JOB_STATUS CHANGES EVENT HEAD_SHA GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_SERVER_URL; do
   if [ -z "${!input:-}" ]; then
     echo "::error::ci-ok-report.sh needs $input in its environment"
@@ -141,21 +150,18 @@ if ! jq -e 'type == "object" and (.result | type == "string")' <<<"$CHANGES" >/d
 fi
 
 # Whether this run's group is the front of the queue: true when the queue's branch is at the
-# group's base, so no group stands in front of it, and when GitHub refuses that read three times,
-# which leaves the post as it was before this read existed. It sets tip for the line that says why
-# nothing went up.
-tip=
-front_of_queue() {
-  if ! tip=$(gh_read gh api "repos/$GITHUB_REPOSITORY/git/ref/${BASE_REF#refs/}" --jq .object.sha); then
-    echo "::warning::GitHub refused the tip of $BASE_REF three times, so this group may stand behind the front of the queue; the failing ci-ok goes up all the same, as every other refusal here prefers the failing verdict"
-    return 0
-  fi
-  [ "$tip" = "$BASE_SHA" ]
-}
+# group's base, so no group stands in front of it, and when GitHub refuses that read at every
+# attempt, which leaves the post as it was before this read existed. The read is written here
+# rather than in a function of this script: .github/scripts/check-download-retry.sh refuses a
+# script whose own function fetches beside a call of runner-shutdown.sh's runner_shutdown_kills,
+# which it reads as a call through a variable.
 if [ "$EVENT" = merge_group ]; then
   case "$JOB_STATUS/$(jq -r .result <<<"$CHANGES")" in
     failure/* | cancelled/* | */failure | */cancelled)
-      if ! front_of_queue; then
+      if ! tip=$(gh_wait_reset retry_fetch "the tip of $BASE_REF" 30 -- \
+        gh api "repos/$GITHUB_REPOSITORY/git/ref/${BASE_REF#refs/}" --jq .object.sha); then
+        echo "::warning::GitHub refused the tip of $BASE_REF at every attempt, so this group may stand behind the front of the queue; the failing ci-ok goes up all the same, as every other refusal here prefers the failing verdict" >&2
+      elif [ "$tip" != "$BASE_SHA" ]; then
         echo "$JOB ended $JOB_STATUS (changes ended $(jq -r .result <<<"$CHANGES")) on a merge-group run whose group stands behind the front of the queue: its base $BASE_SHA is not $tip, the tip of $BASE_REF. The queue takes its pull request out only once the groups in front of it have ended, and an early post would let the queue build another group on this one, so nothing is posted from here; the ci-ok job reaches this run's verdict at the end of the run and holds a failing one until the group is the front"
         exit 0
       fi
@@ -226,7 +232,7 @@ always_run=$(yq -r '.env.CI_OK_ALWAYS_RUN // ""' "$workflow")
 if ! jq -e 'type == "object"' <<<"$selected_by" >/dev/null 2>&1 \
   || ! jq -e 'type == "array"' <<<"$pull_request_only" >/dev/null 2>&1 \
   || ! jq -e 'type == "array"' <<<"$always_run" >/dev/null 2>&1; then
-  echo "::error::$workflow's env holds no JSON CI_OK_SELECTED_BY object and CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN arrays"
+  echo "::error::$workflow's env holds no JSON CI_OK_SELECTED_BY object and CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN arrays" >&2
   exit 1
 fi
 
@@ -246,13 +252,31 @@ def live($job): [mine($job)[] | select(.status != "completed") | .status] | firs
 + ([$always[] | select(. != "changes") | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
 + ([$map | keys_unsorted[] | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
 JQ
-if jobs=$(gh_read gh api --paginate \
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# The run's jobs, read once. The read goes through retry_fetch: five attempts, each bounded at
+# 30 s, the last starting 150 s after the first, run through gh-read.sh's gh_wait_reset as every
+# read here is. The loop that used to stand here, and the second ladder the ci-ok scripts kept
+# beside it, were each a copy of that helper, which is what dispatch://INFRA-1545's R2 refuses:
+# one file holds the attempts for all of CI.
+#
+# gh writes into a file rather than into a variable, and the redirection is this shell's own,
+# applied once: the helper buffers each attempt's output and prints the successful attempt's
+# alone, so a refused attempt's body — which gh copies to standard output as it copies a good
+# one's — reaches neither this file nor the log.
+#
+# 30 s per attempt: this is a JSON read of one REST route, which measured about 3 s over 378
+# observations in the 20 most recent successful ci.yaml push runs on main, so the bound is ten
+# times what the call takes. This read is the dominant adder in the report step's budget, and
+# that is why the bound is the call's own size rather than a round number above it
+# (dispatch://INFRA-1545).
+if gh_wait_reset retry_fetch "the run's job list" 30 -- gh api --paginate \
   "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
-  --jq '.jobs[] | {name, status, conclusion}'); then
-  needs=$(jq -n --argjson jobs "$(jq -s . <<<"$jobs")" --argjson changes "$CHANGES" \
+  --jq '.jobs[] | {name, status, conclusion}' > "$work/jobs"; then
+  needs=$(jq -n --argjson jobs "$(jq -s . "$work/jobs")" --argjson changes "$CHANGES" \
     --argjson map "$selected_by" --argjson always "$always_run" "$program")
 else
-  echo "::warning::GitHub refused this run's job list at every attempt gh-read.sh made, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes"
+  echo "::warning::GitHub refused this run's job list at every attempt, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes" >&2
   needs=$(jq -n --argjson changes "$CHANGES" --argjson map "$selected_by" --argjson always "$always_run" \
     '{changes: $changes}
      + ([$always[] | select(. != "changes") | {key: ., value: {result: "unread"}}] | from_entries)
@@ -261,12 +285,13 @@ fi
 # This job's own result, which the jobs route cannot give while this step is running.
 needs=$(jq --arg job "$JOB" --arg status "$JOB_STATUS" '.[$job].result = $status' <<<"$needs")
 
-summary=$(mktemp)
-trap 'rm -f "$summary"' EXIT
+# Under $work, so the one EXIT trap above removes it: a second `trap … EXIT` would replace that
+# one and leave the directory behind.
+summary="$work/summary"
 status=0
 verdict=$(NEEDS=$needs EVENT=$EVENT SELECTED_BY=$selected_by ALWAYS_RUN=$always_run \
   PULL_REQUEST_ONLY=$pull_request_only "$script_dir/ci-ok.sh" 2>&1) || status=$?
-echo "$verdict"
+echo "$verdict" >&2
 if [ "$status" -eq 0 ]; then
   conclusion=success
   title="Every job changes selected succeeded"

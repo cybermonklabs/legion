@@ -86,8 +86,9 @@ key_rule_on() {
   release legion-v9.0.0 "$cutoff_at"
   release legion-v9.1.0 2026-11-20T06:00:00Z
 }
-# release_calls: the tags whose release the run asked for, in order, one a line.
-release_calls() { sed -n 's#^api repos/example/repo/releases/tags/##p' "$work/calls"; }
+# release_calls: the tags whose release the run asked for, in order, one a line (a flag after the
+# route, the `-i` that check-pr-text.sh writes there, is left out).
+release_calls() { sed -n 's#^api repos/example/repo/releases/tags/\([^ ]*\).*#\1#p' "$work/calls"; }
 # opened_at <time>: the pull request was opened then.
 opened_at() { jq --arg at "$1" '.created_at = $at' "$work/pull" > "$work/pull.next" && mv "$work/pull.next" "$work/pull"; }
 # commits <sha> <date> <message> [...]: the compare route's one page, those commits in order.
@@ -207,6 +208,57 @@ key_run
 check "a server error on a release exits 2" "$(is "$status" 2)"
 check "names the release it could not read" \
   "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9.0.0 (gh: Server Error (HTTP 500))')"
+# A gateway's 504 whose body message says `(HTTP 404)`: gh 2.98.0 prints the body's message and
+# then the status, `gh: upstream said (HTTP 404) (HTTP 504)` (driven against a local server in an
+# issue pod, dispatch://INFRA-1545, round 52). That is a read that got no answer, not GitHub's
+# answer that the release does not exist: it is retried and then UNKNOWN, and never read as a
+# 404 that skips legion-v9.0.0 and takes the next release, legion-v9.1.0, as the cutoff.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+marker_on_main
+echo 'HTTP 504 saying 404' > "$work/release.legion-v9.0.0"
+release legion-v9.1.0 2026-11-20T06:00:00Z
+key_run
+check "a 504 whose message says (HTTP 404) exits 2" "$(is "$status" 2)"
+check "a 504 whose message says (HTTP 404) is read again, never once as a 404" \
+  "$(is "$(release_calls | grep -c -E '^legion-v9\.0\.0( |$)')" 5)"
+check "a 504 whose message says (HTTP 404) names the release it could not read, and its 504" \
+  "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9\.0\.0 (.*504')"
+check "a 504 whose message says (HTTP 404) takes no later release as the cutoff" \
+  "$(is "$(contains "$out" 'active since legion-v9\.1\.0')" false)"
+# A 504 whose message holds a newline, so that a whole line of gh's error is a 404's: gh 2.98.0
+# printed `gh: upstream said (HTTP 404)` then `retry later (HTTP 504)` for one, and `gh: upstream`,
+# `gh: Not Found (HTTP 404)`, `retry later (HTTP 504)` for one whose message carries a whole fake
+# 404 line (driven against a local server, dispatch://INFRA-1545, round 53). No text a server can
+# echo decides the outcome: each is retried and then UNKNOWN.
+for answer in 'HTTP 504 with a 404 line' 'HTTP 504 with a fake 404 line'; do
+  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+  marker_on_main
+  echo "$answer" > "$work/release.legion-v9.0.0"
+  release legion-v9.1.0 2026-11-20T06:00:00Z
+  key_run
+  check "$answer: exits 2" "$(is "$status" 2)"
+  check "$answer: is read again, never once as a 404" "$(is "$(release_calls | grep -c -E '^legion-v9\.0\.0( |$)')" 5)"
+  check "$answer: is UNKNOWN for that release" \
+    "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9\.0\.0 ')"
+  # gh's last line on standard error, each control character a space: the line that ends with
+  # the 504, never the first line of the message, which `head -n 1` would name.
+  check "$answer: the UNKNOWN names gh's last line, the 504's" \
+    "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9\.0\.0 (retry later (HTTP 504)), so ')"
+  check "$answer: takes no later release as the cutoff" "$(is "$(contains "$out" 'active since legion-v9\.1\.0')" false)"
+done
+# A read gh answers with exit 0 and a status that is no 200: gh 2.98.0 exited 0 for a local
+# server's 204, printing `HTTP/1.1 204 No Content` first (dispatch://INFRA-1545, round 53). That
+# is no release body to read and no 404 to skip, so it is UNKNOWN, naming the status line it got.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+marker_on_main
+echo 'HTTP 204 No Content' > "$work/release.legion-v9.0.0"
+release legion-v9.1.0 2026-11-20T06:00:00Z
+key_run
+check "a 204, gh's exit 0 with no 200 status line: exits 2" "$(is "$status" 2)"
+check "a 204, gh's exit 0 with no 200 status line: is UNKNOWN naming that status line" \
+  "$(contains "$out" '^::error::UNKNOWN: GitHub answered the release of legion-v9\.0\.0 with no 200 status line (HTTP/2\.0 204 No Content)')"
+check "a 204, gh's exit 0 with no 200 status line: takes no later release as the cutoff" \
+  "$(is "$(contains "$out" 'active since legion-v9\.1\.0')" false)"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 mv "$work/remote" "$work/remote.held"

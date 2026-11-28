@@ -78,7 +78,7 @@
 #      packages/envoy/loadtest/cluster/render-nats.sh, without its leading `v`. The render runs
 #      an installed helm only where that helm answers this version, and
 #      .github/actions/install-helm installs this row's, so a row at another version installs a
-#      helm the render passes over for the one it builds with `go run`. That file is read only
+#      helm the render passes over for the one it builds with `go install`. That file is read only
 #      where a helm row exists, and then a file that is missing, is not readable as text, or
 #      holds no such line is refused too.
 #      The `crane`, `changie`, `elan` and `pulumi-cli` rows are their own pins: their installs
@@ -945,7 +945,7 @@ for row in readable:
             f"{RENDER_NATS} pins HELM={helm_module}, whose version is {helm_version}. The render "
             f"runs an installed helm only where it answers v{helm_version}, and "
             f".github/actions/install-helm installs this row's, so the render passes this row's "
-            f"helm over and builds its own with go run: move this row to the HELM= line's "
+            f"helm over and builds its own with go install: move this row to the HELM= line's "
             f"version, or that line to the row's."
         )
     if name.endswith(ARM64_SUFFIX) and not name.startswith("bun-"):

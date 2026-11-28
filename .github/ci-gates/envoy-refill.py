@@ -10,4 +10,4 @@ GATE = gate("envoy_refill", "envoy-refill", runs=[
                f"run by {at('envoy-refill', 'Refill live proof')}", ENVOY, ["./internal/testnats/cmd/natsd"], mode="build"),
 ], reads=reads(
     (f"{ENVOY}/scripts/e2e-refill.sh", at("envoy-refill", "Refill live proof")),
-) + setup_go("envoy-refill", f"{ENVOY}/go.mod"))
+) + setup_go("envoy-refill", f"{ENVOY}/go.mod") + go_modules("envoy-refill"))

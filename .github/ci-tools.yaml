@@ -456,7 +456,7 @@ tools:
   # helm, which .github/actions/install-helm installs for the envoy-go-checks job, whose cluster
   # suite renders the load test's NATS manifests with
   # packages/envoy/loadtest/cluster/render-nats.sh. That render runs an installed helm only where
-  # it answers the version the script's `HELM=` line names, and builds helm with `go run`
+  # it answers the version the script's `HELM=` line names, and builds helm with `go install`
   # otherwise, so this row's version is that line's.
   # get.helm.sh is the one publisher of these bytes, so the second source is a copy, filled from
   # the primary itself; the digest is the one get.helm.sh publishes in the .sha256sum file beside

@@ -39,7 +39,8 @@
 # there says nothing, since one outlived its group (pr-2865-52913999…), and the age bound decides
 # that case. A git read spends none of the installation's REST API budget, which ran out twice on
 # 2026-11-22, so a held group never waits on a spent budget between its reads; the one REST read
-# runs with no deadline for gh-read.sh to wait within, so a spent budget refuses it at once.
+# runs with no deadline for gh-read.sh to wait within, so a spent budget fails it once its ladder
+# ends, without a wait for the reset.
 #
 # When it ends, and the failing verdict goes up:
 #   * the queue's branch is at the group's base: the group is the front, and the queue takes the
@@ -49,17 +50,18 @@
 #     can be built on it and the verdict decides nothing. cancel-started of the rebuilt group's
 #     run force-cancels this run in most such cases first (merge-group-cancels.sh), which skips
 #     this step and every later one;
-#   * GitHub refused the read at every attempt gh-read.sh made, or answered no tip for the
+#   * GitHub refused the read at every attempt retry_fetch made, or answered no tip for the
 #     queue's branch: the step cannot tell where the group stands, and every refusal of the ci-ok
 #     steps prefers the failing verdict (ci-ok-report.sh's header);
 #   * the group is CI_OK_HOLD_AGE_SECONDS old, counted from its run's creation, and still held
 #     behind the front. Main's merge_queue rule assumes a check failed when it has not concluded
 #     180 minutes into the group (check_response_timeout_minutes); the age, 170 minutes, leaves
-#     the last pause, the last read's three attempts and the job's conclusion inside that. The
-#     run's creation time is read rather than the queue commit's time, which is no clock of the
-#     group: on three runs created at 2026-11-23T06:00:26Z to 06:00:28Z the head commit's time was
-#     74.6 to 83.7 minutes earlier. When GitHub refuses that read, the hold counts from its own
-#     start instead, with CI_OK_HOLD_RUN_SECONDS taken off the age: the longest run measured.
+#     the last pause, the last read's ladder (five attempts, 300 s) and the job's conclusion
+#     inside that. The run's creation time is read rather than the queue commit's time, which is
+#     no clock of the group: on three runs created at 2026-11-23T06:00:26Z to 06:00:28Z the head
+#     commit's time was 74.6 to 83.7 minutes earlier. When GitHub refuses that read, the hold
+#     counts from its own start instead, with CI_OK_HOLD_RUN_SECONDS taken off the age: the
+#     longest run measured.
 #
 # What it costs: the ci-ok job's ubuntu-24.04-arm runner while it waits. Over those 8 failures the
 # runners would have waited 122 minutes in all: 3.9 to 19.4 minutes for each of the six failed
@@ -80,8 +82,10 @@
 #                            knob): the verdict reaches the queue at most that long after the
 #                            group becomes the front, plus one read.
 #   GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, as Actions sets them.
-# Every read goes through gh-read.sh's retry ladder, whose GH_RETRY_SECONDS is the tests' knob;
-# each git attempt is bounded by `timeout 30`.
+# Every read is retry_fetch's ladder (ci-retry.sh) run through gh-read.sh's gh_wait_reset: five
+# attempts, each bounded at 30 s, with sleeps of 10, 20, 40 and 80 s between them, 5 x 30 + 150 =
+# 300 s at most; the tests make `sleep` a no-op on PATH, as ci-ok-report.test.sh does for the
+# report.
 #
 # Run from anywhere: GH_TOKEN=... BASE_SHA=... BASE_REF=... HEAD_SHA=... HEAD_REF=... \
 #   CI_OK_HOLD_AGE_SECONDS=... CI_OK_HOLD_RUN_SECONDS=... .github/scripts/ci-ok-hold.sh
@@ -90,42 +94,47 @@ set -euo pipefail
 shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=.github/scripts/ci-retry.sh
+source "$script_dir/ci-retry.sh"
 # shellcheck source=.github/scripts/gh-read.sh
 source "$script_dir/gh-read.sh"
 for input in GH_TOKEN BASE_SHA BASE_REF HEAD_SHA HEAD_REF CI_OK_HOLD_AGE_SECONDS CI_OK_HOLD_RUN_SECONDS \
   GITHUB_SERVER_URL GITHUB_REPOSITORY GITHUB_RUN_ID; do
   if [ -z "${!input:-}" ]; then
-    echo "::error::ci-ok-hold.sh needs $input in its environment; the failing ci-ok goes up now"
+    echo "::error::ci-ok-hold.sh needs $input in its environment; the failing ci-ok goes up now" >&2
     exit 1
   fi
 done
 poll=${CI_OK_HOLD_POLL_SECONDS:-30}
 for input in CI_OK_HOLD_AGE_SECONDS CI_OK_HOLD_RUN_SECONDS poll; do
   if ! [[ ${!input} =~ ^[0-9]+$ ]]; then
-    echo "::error::ci-ok-hold.sh's $input is not a whole number of seconds: ${!input}; the failing ci-ok goes up now"
+    echo "::error::ci-ok-hold.sh's $input is not a whole number of seconds: ${!input}; the failing ci-ok goes up now" >&2
     exit 1
   fi
 done
 
 # The deadline, from the run's creation. The read runs with no limit for gh-read.sh to wait
-# within, so a spent budget refuses it at once rather than holding the group until a reset.
+# within, so a spent budget fails it once its ladder ends rather than holding the group until a
+# reset.
 start=$(date +%s)
 if created=$(unset JOB_TIMEOUT_MINUTES STEP_TIMEOUT_MINUTES
-  gh_read gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at) \
+  gh_wait_reset retry_fetch "this run's creation time" 30 -- \
+    gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at) \
   && created_at=$(date -u -d "$created" +%s 2>/dev/null); then
   deadline=$((created_at + CI_OK_HOLD_AGE_SECONDS))
   echo "This run was created at $created, so the hold ends at the latest at $(date -u -d "@$deadline" +%FT%TZ), when the group is $CI_OK_HOLD_AGE_SECONDS s old"
 else
   deadline=$((start + CI_OK_HOLD_AGE_SECONDS - CI_OK_HOLD_RUN_SECONDS))
-  echo "::warning::GitHub did not give this run's creation time (${created:-refused}), so the hold counts from its own start: it ends at the latest at $(date -u -d "@$deadline" +%FT%TZ), $CI_OK_HOLD_AGE_SECONDS s less the $CI_OK_HOLD_RUN_SECONDS s the longest run takes"
+  echo "::warning::GitHub did not give this run's creation time (${created:-refused}), so the hold counts from its own start: it ends at the latest at $(date -u -d "@$deadline" +%FT%TZ), $CI_OK_HOLD_AGE_SECONDS s less the $CI_OK_HOLD_RUN_SECONDS s the longest run takes" >&2
 fi
 
 export GIT_TERMINAL_PROMPT=0
 remote=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git
 seen=
 while :; do
-  if ! refs=$(gh_read timeout 30 git ls-remote "$remote" "$BASE_REF" "$HEAD_REF"); then
-    echo "::warning::GitHub refused the refs $BASE_REF and $HEAD_REF of $remote at every attempt gh-read.sh made, so this step cannot tell whether a group stands in front of this one; the failing ci-ok goes up now, as every refusal of the ci-ok steps prefers the failing verdict"
+  if ! refs=$(gh_wait_reset retry_fetch "the refs $BASE_REF and $HEAD_REF of $remote" 30 -- \
+    git ls-remote "$remote" "$BASE_REF" "$HEAD_REF"); then
+    echo "::warning::GitHub refused the refs $BASE_REF and $HEAD_REF of $remote at every attempt retry_fetch made, so this step cannot tell whether a group stands in front of this one; the failing ci-ok goes up now, as every refusal of the ci-ok steps prefers the failing verdict" >&2
     exit 0
   fi
   tip=$(awk -v ref="$BASE_REF" '$2 == ref { print $1 }' <<<"$refs")
@@ -133,7 +142,7 @@ while :; do
   now=$(date +%s)
   waited=$((now - start))
   if [ -z "$tip" ]; then
-    echo "::warning::$remote answered no tip for $BASE_REF, so this step cannot tell whether a group stands in front of this one; the failing ci-ok goes up now, as every refusal of the ci-ok steps prefers the failing verdict"
+    echo "::warning::$remote answered no tip for $BASE_REF, so this step cannot tell whether a group stands in front of this one; the failing ci-ok goes up now, as every refusal of the ci-ok steps prefers the failing verdict" >&2
     exit 0
   fi
   if [ "$tip" = "$BASE_SHA" ]; then
@@ -149,7 +158,7 @@ while :; do
     seen=$tip
   fi
   if [ "$now" -ge "$deadline" ]; then
-    echo "::warning::This group still stands behind the front of the queue after $waited s, at its deadline $(date -u -d "@$deadline" +%FT%TZ); the failing ci-ok goes up now, before the queue's own check timeout, and the queue may build another group on this one"
+    echo "::warning::This group still stands behind the front of the queue after $waited s, at its deadline $(date -u -d "@$deadline" +%FT%TZ); the failing ci-ok goes up now, before the queue's own check timeout, and the queue may build another group on this one" >&2
     exit 0
   fi
   sleep "$poll"

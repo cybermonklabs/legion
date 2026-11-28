@@ -5,4 +5,5 @@ GATE = harness("mirror_ci_images_test", "Test the CI image mirror", f"{SCRIPTS}/
     (f"{SCRIPTS}/ci_images.py", "`.github/scripts/mirror-ci-images.test.sh#fixture` symlinks in the grammar both scripts read a row with"),
     (".github/ci-images.yaml", "`.github/scripts/mirror-ci-images.test.sh#held_back`: the rule 9 case builds its ordering fixture from this repository's own rows"),
     (f"{SCRIPTS}/workflow_paths.py", "check-ci-images.sh, which the harness runs, imports it"),
+    *ci_retry("mirror-ci-images.sh sources it for every registry read that has to succeed"),
 ])

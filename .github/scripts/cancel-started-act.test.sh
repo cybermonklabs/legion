@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # Tests for cancel-started-act.sh, which ci.yaml's cancel-started job runs over the merge-group
 # runs the queue has replaced, and for what it does with a run list GitHub refuses: it reads the
-# list through gh-read.sh's gh_read, so a refusal the next attempt gets past leaves it doing its
-# work, and a list refused at every attempt still fails the step. Merge-group run 45467602844
-# went red whole for one HTTP 500 of that list, in job 138706588845.
+# list through retry_fetch's ladder (.github/scripts/ci-retry.sh), run through gh-read.sh's
+# gh_wait_reset, so a refusal the next attempt gets past leaves it doing its work, and a list
+# refused at every attempt still fails the step. Merge-group run 45467602844 went red whole for
+# one HTTP 500 of that list, in job 138706588845.
 #
 # Each case runs the real scripts with a stand-in `gh` first on PATH. It answers the two routes
 # the act calls - `runs`, the merge-group run list, and `cancel`, a force-cancel - and logs every
 # call, so a case counts the attempts the ladder made and the cancels the act made. A case says
-# per route how many of its calls are refused and with which of gh's own words. GH_RETRY_SECONDS
-# is 0, so the attempts are made without the waits between them, and every case runs under
-# `timeout`, so an act that hung would fail its case instead of hanging the job.
+# per route how many of its calls are refused and with which of gh's own words. `sleep` is a
+# no-op on the act's PATH, so the attempts are made without the waits between them, and every
+# case runs under `timeout`, so an act that hung would fail its case instead of hanging the job.
 #
 # Run from anywhere: .github/scripts/cancel-started-act.test.sh
 # CI runs it in ci.yaml's test job.
@@ -52,6 +53,15 @@ fi
 GH
 chmod +x "$work/bin/gh"
 
+# retry_fetch sleeps 10, 20, 40 and 80 seconds between its five attempts. Those waits are
+# ci-retry.test.sh's to prove, by measuring them; here they would add 150 s to the case whose
+# every attempt is refused, so `sleep` is a no-op on this PATH.
+cat > "$work/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$work/bin/sleep"
+
 # fresh: a case's stand-in GitHub, with no refusal, no answer and no call behind it.
 fresh() { rm -f "$work"/*.count "$work"/*.refuse "$work"/*.words "$work"/*.body "$work/calls"; }
 # refuses <route> <how many|always> <gh's words>: how that route is refused.
@@ -85,7 +95,7 @@ merge_group_runs=$(jq -nc --arg newer "$queue_branch" --arg older "gh-readonly-q
 run_started() {
   set +e
   out=$(cd "$repo_root" && PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r \
-    GH_RETRY_SECONDS=0 HEAD_BRANCH="$queue_branch" RUN_ID="$asking_run" \
+    HEAD_BRANCH="$queue_branch" RUN_ID="$asking_run" \
     timeout 60 "$script_dir/cancel-started-act.sh" 2>&1)
   status=$?
   set -e
@@ -118,7 +128,7 @@ answers runs "$merge_group_runs"
 refuses runs always "$runs_500"
 run_started
 check "the act fails" "$(is "$(test "$status" -ne 0 && echo failed || echo "$status")" failed)"
-check "gh-read.sh made its three attempts" "$(is "$(reads runs)" 3)"
+check "retry_fetch made its five attempts" "$(is "$(reads runs)" 5)"
 check "it cancels nothing" "$(is "$(calls force-cancel)" 0)"
 
 summary "cancel-started-act.sh's read of the run list"

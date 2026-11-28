@@ -25,10 +25,12 @@
 #
 # What it is checked against: every open pull request labelled `priority` that is approved
 # (reviewDecision APPROVED) or in the merge queue, read through GitHub's GraphQL API, whose budget
-# is apart from the REST one the rest of CI spends, a page of 100 at a time until the last. A
-# change whose every pull request carries the label passes. One of the change's own pull requests
-# is passed over, and in a merge group so is a queued priority pull request that stands in a group
-# in front of this one (the queue's branches say which, below), since it lands first.
+# is apart from the REST one the rest of CI spends, a page of 100 at a time, two pages at most: 7
+# open pull requests carried the label on 2026-11-26, and more than 200 fail the check, since the
+# step's budget pays for two reads. A change whose every pull request carries the label passes.
+# One of the change's own pull requests is passed over, and in a merge group so is a queued
+# priority pull request that stands in a group in front of this one (the queue's branches say
+# which, below), since it lands first.
 #
 # What counts as the change's conflict with one of them, P, in up to four git merge-tree runs,
 # between refs named `change`, `priority` and `landed`, so git labels the conflicts of any two of
@@ -72,22 +74,30 @@
 # nothing.
 #
 # A read it could not make fails the check rather than pass it, saying what it could not read: a
-# label read GitHub refused at every attempt gh-read.sh's gh_read made, an answer that is not the
-# shape asked for, a fetch refused at every attempt, a merge git could not run or whose answer
-# could not be read.
+# label read GitHub refused at every attempt retry_fetch made, an answer that is not the shape
+# asked for, a fetch or a read of the queue's branches refused at every attempt, a merge git could
+# not run or whose answer could not be read.
+#
+# Each of its three reads, the label read (a page at a time, two at most), the fetch and, in a
+# merge group, the read of the queue's branches, is retry_fetch's ladder (ci-retry.sh) run through
+# gh-read.sh's gh_wait_reset: five attempts, each bounded at the seconds written beside its call,
+# with sleeps of 10, 20, 40 and 80 s between them, 5 x <bound> + 150 s at most. The tests make
+# `sleep` a no-op on PATH, as ci-ok-report.test.sh does.
 #
 # Its inputs, from the step's env:
 #   GITHUB_EVENT_NAME, GITHUB_EVENT_PATH  the event and the payload Actions wrote for it.
 #   GITHUB_SHA         the run's commit: a pull request's test merge, or a merge group's head.
-#   GH_TOKEN           the job's github.token, with `pull-requests: read`: the label read, through
-#                      gh-read.sh's gh_read, which waits out a spent budget within the job's
-#                      JOB_TIMEOUT_MINUTES and tries twice more after any other refusal.
+#   GH_TOKEN           the job's github.token, with `pull-requests: read`: the label read, whose
+#                      gh_wait_reset waits out a spent budget within the limits below.
+#   JOB_TIMEOUT_MINUTES, STEP_TIMEOUT_MINUTES  the job's and the step's timeout-minutes, which
+#                      gh_wait_reset's wait stays within (gh-read.sh's header).
 #   GITHUB_REPOSITORY, GITHUB_SERVER_URL  as Actions sets them: the repository read and fetched.
 #   RUNNER_TEMP        where the fetch's repository is made.
 #
-# Every ::error:: line goes to stderr, every other line to stdout. A pull request's title is
-# written in an ::error:: line alone, escaped, and every other line names a pull request by its
-# number, so no title can start a line of the log.
+# Every ::error:: line goes to stderr, and so do the ladders' own lines, each attempt inside a
+# stop-commands block of its own (ci-retry.sh's header says why); every other line goes to stdout.
+# A pull request's title is written in an ::error:: line alone, escaped, and every other line
+# names a pull request by its number, so no title can start a line of the log.
 #
 # Run from anywhere: .github/scripts/priority-conflicts.sh
 # Its tests are in priority-conflicts.test.sh, which ci.yaml's test job runs.
@@ -95,6 +105,8 @@ set -euo pipefail
 shopt -s inherit_errexit
 # sort compares the NUL-separated path lists byte for byte.
 export LC_ALL=C
+# shellcheck source=.github/scripts/ci-retry.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-retry.sh"
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
@@ -152,9 +164,11 @@ unread="so this check cannot tell whether $change conflicts with a priority pull
 
 work=$(mktemp -d "$temp/priority-conflicts.XXXXXX")
 
-# The label read, a page at a time: each page's nodes are appended to $work/nodes, one JSON
-# object a line. A page that is not the shape asked for, or that says another page follows and
-# names no new cursor, fails the check.
+# The label read, a page at a time, two at most: each page's nodes are appended to $work/nodes,
+# one JSON object a line. A page that is not the shape asked for, or that says another page
+# follows and names no new cursor, fails the check, and so does a second page that says a third
+# follows. The count is written as literal words, which check-download-retry.sh reads, so the
+# step's budget holds both reads.
 read -r -d '' query <<'GRAPHQL' || true
 query PriorityPulls($owner: String!, $repo: String!, $after: String) {
   repository(owner: $owner, name: $repo) {
@@ -173,12 +187,14 @@ shape='.data.repository.pullRequests
       and (.isInMergeQueue | type == "boolean"))'
 : > "$work/nodes"
 after=null
-while :; do
+for page in 1 2; do
   jq -n --arg query "$query" --arg owner "${repository%%/*}" --arg repo "${repository#*/}" \
     --argjson after "$after" \
     '{operationName: "PriorityPulls", query: $query, variables: {owner: $owner, repo: $repo, after: $after}}' \
     > "$work/request.json"
-  if ! gh_read gh api graphql --input "$work/request.json" > "$work/answer.json"; then
+  # 30 s an attempt, the bound .github/ci-budgets.md's Retries note gives a `gh api` read.
+  if ! gh_wait_reset retry_fetch "the open pull requests labelled priority" 30 -- \
+    gh api graphql --input "$work/request.json" > "$work/answer.json"; then
     fail "GitHub's GraphQL API refused the read of the open pull requests labelled priority at every attempt, $unread"
   fi
   if ! jq -e "$shape" "$work/answer.json" > /dev/null 2>&1; then
@@ -186,6 +202,9 @@ while :; do
   fi
   jq -c '.data.repository.pullRequests.nodes[]' "$work/answer.json" >> "$work/nodes"
   [ "$(jq -r '.data.repository.pullRequests.pageInfo.hasNextPage' "$work/answer.json")" = true ] || break
+  if [ "$page" = 2 ]; then
+    fail "GitHub's GraphQL API said a third page of the open pull requests labelled priority follows, and this check reads two pages of 100, $unread"
+  fi
   next=$(jq -c '.data.repository.pullRequests.pageInfo.endCursor' "$work/answer.json")
   if [ "$next" = null ] || [ "$next" = "$after" ]; then
     fail "GitHub's GraphQL API said another page of the open pull requests labelled priority follows, and named no new cursor for it, $unread"
@@ -233,8 +252,18 @@ heads=("$head")
 for candidate in "${candidates[@]}"; do
   heads+=("${candidate#* }")
 done
+# 70 s an attempt. No run of the priority-conflicts job had fetched by 2026-11-26T14:10Z: in each
+# of them no priority pull request was approved or queued. This fetch of #5595's test merge and
+# the heads of the seven open pull requests labelled priority that day, 20 MB, took 4.3 s to 6.6 s
+# from a development pod, three runs. The same read of main's whole history with no file contents
+# took 2.01 s to 3.18 s on GitHub's x64 runner in twelve jobs of six merge-group runs of
+# ci-job-dispatch-two-builds.yaml's history step on 2026-11-26 (the slowest, job 139939402717),
+# read off each job log's timestamps. Ten times the slowest, as the Retries note of
+# .github/ci-budgets.md takes for a `gh api` read, is 66 s, and the bound is the next ten seconds
+# above it.
 started=$SECONDS
-if ! gh_read git -C "$repo" fetch --quiet --no-tags --filter=blob:none origin "${heads[@]}"; then
+if ! gh_wait_reset retry_fetch "the commit of $change and the heads of the priority pull requests" 70 -- \
+  git -C "$repo" fetch --quiet --no-tags --filter=blob:none origin "${heads[@]}"; then
   fail "git could not fetch the commit of $change and the heads of the priority pull requests it is checked against from $server/$repository.git, $unread"
 fi
 echo "Fetched the commit of $change and ${#candidates[@]} priority head(s), with their history and no file contents, in $((SECONDS - started)) s."
@@ -385,7 +414,7 @@ read_renames() {
   mapfile -d '' -t fields < "$work/renames"
   for ((i = 0; i < ${#fields[@]}; )); do
     if [[ ${fields[i]} == R* ]]; then
-      renamed_from[${fields[i + 2]}]=${fields[i + 1]}
+      renamed_from+=(["${fields[i + 2]}"]="${fields[i + 1]}")
       i=$((i + 3))
     elif [[ ${fields[i]} == C* ]]; then
       i=$((i + 3))
@@ -488,7 +517,9 @@ judge() {
 # spends none of the API budget.
 ahead=()
 if [ "$event_name" = merge_group ]; then
-  if ! queue=$(gh_read git -C "$repo" ls-remote origin 'refs/heads/gh-readonly-queue/*'); then
+  # 30 s an attempt, the bound ci-ok-hold.sh gives its `git ls-remote` of this repository.
+  if ! queue=$(gh_wait_reset retry_fetch "the merge queue's branches of $server/$repository.git" 30 -- \
+    git -C "$repo" ls-remote origin 'refs/heads/gh-readonly-queue/*'); then
     fail "git could not list the merge queue's branches of $server/$repository.git, $unread"
   fi
   while read -r tip ref; do

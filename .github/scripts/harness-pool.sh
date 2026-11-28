@@ -519,7 +519,9 @@ wait_all() {
       if [[ -e $base.bound ]]; then
         read -r bound_minutes bound_seconds < "$base.bound"
       fi
-      if [[ ($status == 124 || $status == 137) && -n $bound_seconds ]] &&
+      # why: two tests rather than one with a `( )` inside, since the download gate reads no `( )`
+      # grouping inside `[[ ]]` (dispatch://INFRA-1545, round 65); the two mean the same.
+      if [[ $status == 124 || $status == 137 ]] && [[ -n $bound_seconds ]] &&
         awk -v w="$wall" -v s="$bound_seconds" 'BEGIN { exit !(w >= s) }'; then
         echo "::error title=$name::ran past its bound of $bound_minutes minutes and was stopped (exit $status); its log is in the group of that name above"
       else

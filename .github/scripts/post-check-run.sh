@@ -42,9 +42,8 @@
 #                      127905818541 of the run that read them (2026-11-06). So the test is the
 #                      field's shape: a prefix or an empty field is a post, and a UUID is a job's
 #                      own check run.
-#   GH_RETRY_SECONDS   optional: a refused post is retried twice on gh-read.sh's one ladder, this
-#                      many seconds and then twice as many apart (10 by default; the tests set 0),
-#                      then fails the step (gh-read.sh says how it waits out a spent API budget).
+#   JOB_TIMEOUT_MINUTES, STEP_TIMEOUT_MINUTES  the posting job's and step's timeout-minutes, from
+#                      the job's env and the step's, the limits gh-read.sh's wait stays within.
 #
 # Run from anywhere: HEAD_SHA=... CHECK_NAME=... CONCLUSION=... TITLE=... SUMMARY_FILE=...
 #   DETAILS_URL=... EXTERNAL_ID=... .github/scripts/post-check-run.sh
@@ -53,41 +52,59 @@ set -euo pipefail
 shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=.github/scripts/ci-retry.sh
+. "$script_dir/ci-retry.sh"
 # shellcheck source=.github/scripts/gh-read.sh
-source "$script_dir/gh-read.sh"
+. "$script_dir/gh-read.sh"
 
 for input in GH_TOKEN GITHUB_REPOSITORY HEAD_SHA CHECK_NAME CONCLUSION TITLE SUMMARY_FILE DETAILS_URL EXTERNAL_ID; do
   if [ -z "${!input:-}" ]; then
-    echo "::error::post-check-run.sh needs $input in its environment"
+    echo "::error::post-check-run.sh needs $input in its environment" >&2
     exit 1
   fi
 done
 case $CONCLUSION in
   success | failure) ;;
   *)
-    echo "::error::post-check-run.sh posts success or failure, not '$CONCLUSION'"
+    echo "::error::post-check-run.sh posts success or failure, not '$CONCLUSION'" >&2
     exit 1
     ;;
 esac
 
 # GitHub refuses a summary longer than 65535 characters. The body goes to a file rather than to
-# gh's stdin: a retried post must send it again, and the three attempts of gh-read.sh's ladder
-# share the one stdin a here-string gives them, which nothing rewinds. Measured under bash 5.2
-# over that ladder's shape: a refused attempt that read nothing leaves the whole body for the
-# next attempt, one that read the body to its end leaves it nothing, and one refused after 40 of
-# 121 bytes leaves the other 81 — so the body a retry sent would be whatever the refusal before
-# it happened to leave. `--input` names a file, which every attempt opens and reads in full.
-body=$(mktemp)
-trap 'rm -f "$body"' EXIT
+# gh's stdin: a retried post must send it again, and the five attempts of
+# .github/scripts/ci-retry.sh share the one stdin a here-string gives them, which nothing
+# rewinds. Measured under bash 5.2 over a retry ladder of that shape: a refused attempt that
+# read nothing leaves the whole body for the next attempt, one that read the body to its end
+# leaves it nothing, and one refused after 40 of 121 bytes leaves the other 81 — so the body a
+# retry sent would be whatever the refusal before it happened to leave. `--input` names a file,
+# which every attempt opens and reads in full.
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+body="$work/body.json"
 jq -n --arg name "$CHECK_NAME" --arg sha "$HEAD_SHA" --arg conclusion "$CONCLUSION" \
   --arg url "$DETAILS_URL" --arg title "$TITLE" --arg external_id "$EXTERNAL_ID" \
   --rawfile summary "$SUMMARY_FILE" \
   '{name: $name, head_sha: $sha, status: "completed", conclusion: $conclusion, details_url: $url,
     external_id: $external_id,
     output: {title: $title, summary: ($summary | .[0:65000])}}' >"$body"
-if posted=$(gh_read gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" --input "$body" --jq '.html_url'); then
-  echo "posted $CHECK_NAME ($CONCLUSION) on $HEAD_SHA: $posted"
+# The post retries: .github/scripts/ci-retry.sh makes five bounded attempts, the last starting
+# 150 s after the first, and an exhausted post fails the step. The loop that stood here, and the
+# second ladder the ci-ok scripts kept beside it, were each a copy of that helper, which is what
+# dispatch://INFRA-1545's R2 refuses. The ladder runs through gh-read.sh's gh_wait_reset, which
+# waits out a spent API budget or a secondary rate limit only when the wait and one more ladder
+# fit within the step's limit and the job's, and fails by name otherwise. The redirection that
+# takes the posted check's URL is this shell's own and is applied once: the helper buffers each
+# attempt's output and prints the successful attempt's alone, so a refused attempt's body — which
+# gh copies to standard output as it copies a good one's — reaches neither this file nor the log.
+#
+# 30 s per attempt: the bound that file derives there for a JSON call on one REST route, about
+# 3 s of work, which this post is no larger than.
+if gh_wait_reset retry_fetch "the $CHECK_NAME check run" 30 -- \
+  gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" --input "$body" --jq '.html_url' \
+  > "$work/posted"; then
+  echo "posted $CHECK_NAME ($CONCLUSION) on $HEAD_SHA: $(<"$work/posted")"
   exit 0
 fi
-echo "::error::GitHub refused the $CHECK_NAME check run on $HEAD_SHA at every attempt gh-read.sh made"
+echo "::error::GitHub refused the $CHECK_NAME check run on $HEAD_SHA at every attempt" >&2
 exit 1

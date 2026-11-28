@@ -7,10 +7,13 @@
 # (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request).
 #
 # The held-back set is read, not listed here, and read apart from the label terms it tests: the
-# outputs a merge group turns on and an unlabelled pull request holds false, every paths filter
-# saying yes in both. A read that finds none fails, since every case below would then pass over
-# nothing. Two copies of ci.yaml, each with one label literal broken, show that a broken term
-# fails its case rather than leaving the set.
+# outputs whose expression reads the pull request's labels, every paths filter saying yes. A read
+# that finds none fails, since every case below would then pass over nothing. Each of them is on
+# in a merge group but download_retry, which no merge group runs
+# (.github/ci-notes/ci.md#the-three-jobs-that-prove-the-retries-and-why-none-runs-in-a-merge-group),
+# so a pull request runs that one only under its label or full-ci. Two copies of ci.yaml, each
+# with one label literal broken, show that a broken term fails its case rather than leaving the
+# set.
 #
 # It holds a dispatched run's selection and the workflow's cancel key the same way, through the
 # changes job's own steps and the workflow's own `concurrency:`
@@ -110,16 +113,16 @@ off_under() {
 baseline=$(outputs --event pull_request)
 mapfile -t held < <(held_of "$repo/.github/workflows/ci.yaml")
 
-echo "case: exactly the fifteen gated outputs read the pull request's labels"
+echo "case: exactly the sixteen gated outputs read the pull request's labels"
 # A count and the names, so an output whose label term is deleted outright fails here by name
-# rather than leaving the set. A sixteenth gated suite adds its name to this list.
-gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_checks envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_infra_go envoy_smoke pi_legion test'
-check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 15)"
-check "and they are the fifteen" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
+# rather than leaving the set. A seventeenth gated suite adds its name to this list.
+gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds download_retry envoy_go envoy_go_checks envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_infra_go envoy_smoke pi_legion test'
+check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 16)"
+check "and they are the sixteen" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
 
-echo "case: each of them is on for a merge group and for a push, where no label is read"
-check "a merge group leaves none off" \
-  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event merge_group | tr '\n' ' ')" "")"
+echo "case: each of them but download_retry is on for a merge group, and each is on for a push, where no label is read"
+check "a merge group leaves none off but download_retry, which no merge group runs" \
+  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event merge_group | tr '\n' ' ')" "download_retry ")"
 check "a push leaves none off" \
   "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event push | tr '\n' ' ')" "")"
 
@@ -217,8 +220,8 @@ broken=$(copy_with "$work/no-event" ci.yaml \
   "(github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race'))")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
-check "a merge group leaves exactly envoy_go_race off" \
-  "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "envoy_go_race ")"
+check "a merge group leaves exactly envoy_go_race off, beside download_retry, which no merge group runs" \
+  "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "envoy_go_race download_retry ")"
 
 echo "case: an output that reads the labels through the whole pull request is refused, never missed"
 broken=$(copy_with "$work/whole-pr" ci.yaml \
@@ -245,6 +248,9 @@ off_of() { selecting "$1" | grep -v '=true$' | cut -d= -f1 | tr '\n' ' ' || true
 # How many outputs select a job, read from the file itself, so a case that reads fewer fails.
 n_selecting=$(python3 -c 'import sys, yaml; print(len(yaml.safe_load(open(sys.argv[1]))["jobs"]["changes"]["outputs"]) - 3)' "$ci")
 mapfile -t names < <(python3 -c 'import sys, yaml; print("\n".join(yaml.safe_load(open(sys.argv[1]))))' "$filters")
+# The outputs no merge group turns on, whatever the filters say: the download-retry job and its two
+# lanes (.github/ci-notes/ci.md#the-three-jobs-that-prove-the-retries-and-why-none-runs-in-a-merge-group).
+no_queue='download_retry|download_retry_sites|download_retry_images'
 old=1111111111111111111111111111111111111111
 new=2222222222222222222222222222222222222222
 
@@ -277,7 +283,10 @@ for parity in 0 1 all none; do
     0 | 1) check "filters $parity: some jobs selected and some left off" \
       "$(is "$([ -n "$(on_of "$dispatched")" ] && [ -n "$(off_of "$dispatched")" ] && echo both)" both)" ;;
     # Equality alone would pass an output that lost its filter on both events at once.
-    all) check "filters all: every output that selects a job is true on the branch" "$(is "$(off_of "$dispatched")" "")" ;;
+    # The three download-retry outputs are off in a merge group whatever the filters say, so a
+    # dispatch of a branch leaves them off too.
+    all) check "filters all: every output that selects a job is true on the branch but the three download-retry ones" \
+      "$(is "$(off_of "$dispatched" | tr ' ' '\n' | { grep -v -x -E "$no_queue" || true; } | tr '\n' ' ')" "")" ;;
   esac
 done
 
@@ -381,7 +390,8 @@ check "  and so does a pull request with every filter saying no" "$(is "$(on_of 
 echo "case: an output that lost its filter fails the all-filters case, which equality alone misses"
 broken=$(copy_with "$work/output-no-filter" ci.yaml "typecheck: \${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.typecheck }}" "typecheck: \${{ steps.scope.outputs.every_job }}")
 dispatched=$(outputs_of "$broken" --event workflow_dispatch --ref refs/heads/feature --verdicts true)
-check "every filter true: the branch then leaves exactly typecheck off" "$(is "$(off_of "$dispatched")" "typecheck ")"
+check "every filter true: the branch then leaves exactly typecheck off, beside the three download-retry outputs" \
+  "$(is "$(off_of "$dispatched" | tr ' ' '\n' | { grep -v -x -E "$no_queue" || true; } | tr '\n' ' ')" "typecheck ")"
 check "  while a merge group leaves it off too, so the two still agree" \
   "$(is "$(selecting "$dispatched")" "$(selecting "$(outputs_of "$broken" --event merge_group --verdicts true)")")"
 

@@ -3,10 +3,16 @@
 The derivations and the history of `.github/workflows/release-envoy-listener.yaml`, which points
 into this file. Each `# why:` line of that workflow names the section below that holds the
 derivation or the record its step, its job or its key rests on, and the sections stand in the
-order their comment blocks stood in the workflow file. A value's own arithmetic stays beside the
-value, and a comment inside a `run:` body stays beside its command, in the workflow file.
+order of the `# why:` lines that first name them in the workflow file. A value's own arithmetic
+stays beside the value, and a comment inside a `run:` body stays beside its command, in the
+workflow file.
 In the text moved here, "this workflow" and "this file" refer to
 `.github/workflows/release-envoy-listener.yaml`.
+
+The budgets dispatch://INFRA-1545 gave that file's jobs and retried steps are derived here as
+well. The file reached the size limit `.github/scripts/check-workflow-files.sh` holds every
+workflow file to once its downloads were retried, so the arithmetic of each budget stays on the
+line it sizes and the reasoning behind it is here, as `.github/ci-notes/README.md` says.
 
 ## What the push paths list, and why
 
@@ -88,6 +94,86 @@ no script of this repository but release-push.sh (.github/scripts/check-release-
 image_index runs no code of the checkout. The targets job holds contents: read alone, so it may run
 one - which makes it a build job, hence the tripwire last, as in build, docker and release_build.
 
+## The jobs' budgets
+
+Each job's limit follows .github/ci-budgets.md#the-budgets-note. Its measured term is the budget
+the job carried before dispatch://INFRA-1545, and each line below names its slowest retried step.
+
+- `targets`: 600 s, the measured 10 minutes this job carried, plus its slowest retried step
+  alone: the leak-guard fetch of the release-push.sh steps, 6 call sites of one 450 s fetch =
+  2700 s, above every other retried step there. 600 + 2700 = 3300 s -> 56 min, which carries the
+  whole minute that note gives a step whose own arithmetic is a whole number of minutes (the
+  tripwire's 46 min).
+- `build`: 600 s, the measured 10 minutes this job carried, plus its slowest retried step alone:
+  the setup-bun step's two `ci_tools_fetch` calls, 2 x 1708 = 3416 s, above the leak-guard fetch
+  of the release-push.sh steps, 6 call sites of one 450 s fetch = 2700 s, and every other retried
+  step there. 600 + 3416 = 4016 s -> 67 min.
+- `docker`: 4800 s, the 80 minutes this job carried, which holds its builds (over both legs of
+  this workflow's 15 runs from run 43834530574 to run 43983059481 the smoke build took 134 to
+  234 s and the publish build 7 to 11 s), plus its slowest retried step alone: setup-bun's two
+  `ci_tools_fetch` calls, 2 x 1708 = 3416 s. That is above the smoke image's build, priced at the
+  longest single ladder of the Dockerfile it builds, since a build runs its fetches one after
+  another and pays a fault window once, through the first fetch that meets it: the `bun install`
+  and the `go mod download` that packages/envoy/docker/Dockerfile runs, at 5 x 600 + 150 = 3150 s
+  each. The publish
+  build after it reuses that build's layers from the same builder, so its RUN lines fetch nothing
+  again. It is above `Check this job holds no credential (tripwire)` too, which runs
+  `.github/scripts/release-push.sh` and so holds that script's leak-guard fetch at every one of
+  its call sites, 6 call sites of one 450 s fetch = 2700 s, and above the Go module download and
+  the workspace install at 5 x 180 + 150 = 1050 s each. 4800 + 3416 = 8216 s -> 137 min. The
+  eight job keys a reviewer of dispatch://INFRA-1545 raised by hand did not hold this one, and
+  round 28 of that issue found it from the step arithmetic rather than from the figures a comment
+  names.
+- `release_build`: 600 s, the measured 10 minutes this job carried, plus its slowest retried step
+  alone: the leak-guard fetch of the release-push.sh steps, 6 call sites of one 450 s fetch =
+  2700 s, above every other retried step there. 600 + 2700 = 3300 s -> 56 min, which carries the
+  whole minute the Budgets note gives a step whose own arithmetic is a whole number of minutes
+  (46 min there).
+- `release_publish`: 600 s, the measured 10 minutes this job carried, plus its slowest retried
+  step alone: the leak-guard fetch of the release-push.sh steps, 12 call sites of one 450 s fetch
+  = 5400 s, above every other retried step there. 600 + 5400 = 6000 s -> 101 min, which carries
+  the whole minute that note gives a step whose own arithmetic is a whole number of minutes
+  (91 min there).
+
+A step that runs `.github/scripts/release-push.sh` carries 46 minutes, the whole minute above that
+script's 6 x 450 = 2700 s, and one that runs it twice carries 91, the whole minute above
+2 x 2700 = 5400 s.
+
+Each such step sets STEP_TIMEOUT_MINUTES to its own `timeout-minutes` in its `env:`, whichever of
+the script's commands it runs: `restart`, `release` and `release-section` make their GitHub calls
+through `.github/scripts/gh-read.sh`'s gh_wait_reset, which waits out a spent API budget only
+within the nearer of the job's limit and the step's, and `.github/scripts/check-workflow-files.sh`
+refuses a step with a limit of its own that reaches gh-read.sh and passes none
+(dispatch://INFRA-1545, round 55). The entries carry no comment in the workflow, which stood close
+to that check's 64,000-byte limit when they were added; this paragraph is theirs.
+
+## The retried install and module downloads
+
+The workspace install of the `build` and `docker` jobs retries: five bounded attempts through
+`.github/scripts/ci-retry.sh`, the last starting 150 s after the first. 180 s per attempt, the
+bound every Bun install of this repository's CI carries (dispatch://INFRA-1545): this install
+measured 20.70 s cold on a pod, against at most 11 s over 180 observations in the 20 most recent
+successful ci.yaml push runs on main.
+
+Each job that compiles Go downloads the modules it builds once, in a step of its own before the
+first build, and retries that download, so the build itself reads the module cache and never the
+proxy (dispatch://INFRA-1545, R1 and its D1: the retried unit is the download, never the build).
+180 s per attempt: a cold `go mod download` of packages/envoy (an empty module cache, this
+repository at this commit) measured 77 s on 2026-11-07, and the slowest cold run measured
+anywhere in this repository is packages/envoy/infra's 113 s, so the bound is 1.6 times that
+slowest measurement. It can be that tight where a tarball fetch's could not: an attempt the bound
+kills leaves what it fetched in the module cache, and the next attempt resumes from there.
+
+- `build`'s download is of the module its build compiles.
+- `docker`'s is of the modules the smoke test compiles. The arm64 leg restores no module cache,
+  so that leg's download is the cold one.
+- `release_build`'s runs on the same condition as that job's builds, and is one call: every
+  binary that job ships is a command of packages/envoy, and the cross-builds read that one module
+  graph whatever GOOS and GOARCH they set. That job holds `contents: read` and no secret, so it is
+  a build job like any other and the retry belongs in it; `.github/scripts/check-release-credentials.sh`
+  pins the command set of the credentialed `release_publish`, not of this one. It restores no
+  module cache, so the cold figure is the one every run pays.
+
 ## What the envoy archive holds, and why the binary is stamped
 
 The build job's archive holds envoy-listener and THIRD_PARTY_NOTICES, the license of every Go module
@@ -98,6 +184,26 @@ commit (internal/buildversion's commit), as the image's binaries are
 the archive names its build (`legion@<commit>`), which legacy-subjects-gate.sh's census of
 connections reads; -buildvcs=false records no other commit. Its Build envoy binary step reads the
 stamp back from the binary and fails without it.
+
+<a id="the-build-steps-whose-notices-script-the-gate-does-not-read"></a>
+
+## The build steps and the go-licenses install their notices script retries
+
+`Build envoy binary`, in `build`, and `Build agent-secrets binaries`, in `release_build`, each run
+`scripts/go-third-party-notices.sh`, the first once and the second once for each archive it packs.
+The script installs go-licenses through `.github/scripts/ci-retry.sh` at the 180 s module bound,
+5 x 180 + 150 = 1050 s, and only where its `$tool` is not already executable; the tool's
+directory is named by the go-licenses version and the host's Go version, not by the GOOS or
+GOARCH the packages target, so every call after the first finds that build and fetches nothing,
+and each step waits for one ladder. Each budget is derived by hand: the ladder beside the
+step's measured duration, which holds its builds, over the 20 successful runs of this workflow
+created from 2026-11-20T23:00Z to 2026-11-21T08:25Z.
+
+- `Build envoy binary`: 54 s at most over its 40 runs, both legs (job 136709424404 of run
+  44857506208, the arm64 leg). 54 + 1050 = 1104 s -> 19 min, under `build`'s 67.
+- `Build agent-secrets binaries`: 172 s at most over its 12 runs (job 136751939257 of run
+  44873151474; the other runs released nothing and skipped it). 172 + 1050 = 1222 s -> 21 min,
+  under `release_build`'s 56.
 
 ## Why the image is built one leg per platform
 
@@ -341,14 +447,20 @@ attestation's subjects, every archive and SHA256SUMS the release's files.
 
 ## Why release_publish dispatches the Dispatch builds of ci-caches.yaml
 
-The release just tagged is the previous build every pull request and merge group from now on
-resolves for ci.yaml's dispatch-two-builds job, and that job only restores it: the fill of this push
-in .github/workflows/ci-caches.yaml ran before the tag existed and built the release before. So the
+The Fill the cache of the earlier Dispatch builds with this release step, which main's #5182 added,
+starts one of the two runs release_publish starts by workflow_dispatch; Confirm the version starts
+the other, through release-push.sh restart
+(#how-confirm-the-version-decides-and-what-a-lost-race-does). The release just tagged is the
+previous build every pull request and merge group from now on resolves for ci.yaml's
+dispatch-two-builds job, and that job only restores it: the fill of this push in
+.github/workflows/ci-caches.yaml ran before the tag existed and built the release before. So the
 step asks ci-caches.yaml on main to fill the Dispatch builds alone (`only: dispatch-builds`). A
 workflow_dispatch made with release_publish's GITHUB_TOKEN creates a run, and actions: write lets
 the token make it. Plain gh, as release_publish runs no script but release-push.sh
 (check-release-credentials.sh rule 1). A refused dispatch costs builds, not the release, so it warns
-and the job goes on.
+and the job goes on. The dispatch is a write, as release-push.sh restart's `gh workflow run` is, and
+neither is a fetch, so the step adds one call of seconds and no retried step to release_publish,
+whose key stands: 600 + 5400 = 6000 s -> 101 min (#the-jobs-budgets).
 
 ## What the host binaries' attestation proves, and how to verify it
 

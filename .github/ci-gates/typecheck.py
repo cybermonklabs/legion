@@ -4,7 +4,8 @@ GATE = gate("typecheck", "typecheck", runs=[
              tags="e2e", mode="vet"),
 ], exact=[
     darwin_vet("typecheck", DAEMON_DARWIN_VET, DAEMON),
-], reads=setup_go("typecheck", f"{DAEMON}/go.mod") + darwin_vet_reads("typecheck", DAEMON_DARWIN_VET, DAEMON))
+], reads=setup_go("typecheck", f"{DAEMON}/go.mod") + go_modules("typecheck")
+    + darwin_vet_reads("typecheck", DAEMON_DARWIN_VET, DAEMON))
 GATE = with_reads(GATE, [
     Read('packages/daemon/**', "filter typecheck held packages/daemon/** by hand before the filters were computed: it selected 808 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/cipher/policy/**', "filter typecheck held packages/envoy/internal/cipher/policy/** by hand before the filters were computed: it selected 2 file(s) no other read of this gate declares", but=('**/*_test.go',)),

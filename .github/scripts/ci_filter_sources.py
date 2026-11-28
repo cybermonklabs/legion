@@ -95,7 +95,7 @@ def load_gate_files(namespace: dict) -> tuple:
         if old in namespace:
             raise RepositoryInputError(".github/scripts/ci_job_reads.py", RuntimeError(
                 f"binds {old}, which this module no longer holds: each gate is a file of {GATES_DIR} and "
-                f"each RULES row the //ci: lines of its test file. Run .github/scripts/ci-reads-convert, which "
+                f"each RULES row the //ci: lines of its test file. Run .github/scripts/ci-reads-convert.py, which "
                 f"moves what a branch added to the old tables into those files"))
     gates, excluded_filters = [], {}
     for path in gate_files():

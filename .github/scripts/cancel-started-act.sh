@@ -12,13 +12,17 @@
 # run's queue branch and id, which merge-group-cancels.sh reads beside the RUNS this script
 # exports. That job checks out with `sparse-checkout: .github`, so this script and the one it runs
 # are both in the checkout when the step runs.
-# The runner sets $GITHUB_REPOSITORY, which both `gh` calls name, for every step. The list goes
-# through gh-read.sh's gh_read, its three-attempt ladder over gh_wait_reset, so one refusal GitHub
-# lifts by itself is read again rather than failing the merge group: merge-group run 45467602844
-# (pull request #5331's second group) went red whole when the list answered HTTP 500 once, in job
-# 138706588845. A list still refused after the three attempts fails the step as it did. Each cancel
-# goes through gh_wait_reset alone, which waits out a spent API budget within the step's
-# JOB_TIMEOUT_MINUTES and fails by name past it, and a refused cancel warns as it did.
+# The runner sets $GITHUB_REPOSITORY, which both `gh` calls name, for every step. Each call is
+# retry_fetch's ladder (ci-retry.sh) run through gh-read.sh's gh_wait_reset, which waits out a
+# spent API budget only when the wait and one more ladder fit within the step's
+# JOB_TIMEOUT_MINUTES and fails by name otherwise: a list still refused after the ladder fails the
+# step as it did, and a refused cancel warns as it did. The list's ladder is the retry main's
+# #5448 gave it, so one refusal GitHub lifts by itself is read again rather than failing the merge
+# group: merge-group run 45467602844 (pull request #5331's second group) went red whole when the
+# list answered HTTP 500 once, in job 138706588845. #5448 wrote that retry as gh-read.sh's
+# three-attempt gh_read, which gh-read.sh no longer holds, since retry_fetch is the one ladder
+# (dispatch://INFRA-1545); the list takes retry_fetch's five attempts and no second ladder
+# around them.
 # Its tests are in cancel-started-act.test.sh, which ci.yaml's test job runs.
 #
 # Run from the repository root, with those three and $GITHUB_REPOSITORY set:
@@ -28,16 +32,25 @@ set -euo pipefail
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
+# shellcheck source=.github/scripts/ci-retry.sh
+. .github/scripts/ci-retry.sh
+
 # The `--limit` is 100, well above the number of groups main's merge queue builds at once, and
 # this pull request's own groups are among those: gh's default of 20 runs could leave an older
-# group of it out of the list, and so out of the act.
-RUNS=$(gh_read gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml \
-  --event merge_group --limit 100 --json databaseId,headBranch,status,createdAt)
+# group of it out of the list, and so out of the act. It retries at the same 30 s an
+# attempt as the force-cancel below: a refused list names no group at all, and every
+# removed group's run then keeps its runners.
+RUNS=$(gh_wait_reset retry_fetch "the merge-group runs of this repository" 30 -- \
+  gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
+  --limit 100 --json databaseId,headBranch,status,createdAt)
 export RUNS
 acts=$(.github/scripts/merge-group-cancels.sh)
+# 30 s an attempt, the bound every `gh api` read of this repository's CI carries, which
+# is ten times the about 3 s one takes (.github/ci-budgets.md's Retries note). The loop is
+# over the groups to cancel, not over the attempts: the attempts are the helper's.
 while read -r act id; do
   [ "$act" = cancel ] || continue
-  gh_wait_reset gh api --silent --method POST \
-    "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
-    echo "::warning::force-cancel of run $id failed; it may have completed already"
+  gh_wait_reset retry_fetch "the force-cancel of run $id" 30 -- \
+    gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
+    echo "::warning::force-cancel of run $id failed; it may have completed already" >&2
 done <<<"$acts"

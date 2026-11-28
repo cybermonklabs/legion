@@ -225,18 +225,41 @@ def path_lines(value) -> list:
     return [line.strip() for line in str(value).splitlines() if line.strip()]
 
 
+# A `${{ env.NAME }}` in a cache key, which GitHub fills in from the env of the key's own step,
+# else from the env of its job, else from the env of its workflow.
+ENV_REFERENCE = re.compile(r"\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+
+
+def resolved_key(key: str, *envs) -> str:
+    """A cache key with each `${{ env.NAME }}` in it replaced by the value the first of envs that
+    sets NAME gives it. A reference no env sets stays as written; an env: written as an
+    expression rather than a mapping is passed over, since no value of it can be read here."""
+    def value(found: re.Match) -> str:
+        for env in envs:
+            if isinstance(env, dict) and found.group(1) in env:
+                return str(env[found.group(1)])
+        return found.group(0)
+    return ENV_REFERENCE.sub(value, key)
+
+
 def job_cache_steps(job: dict, action: str) -> list:
-    """Every actions/cache/<action> step of one job, as (its family, its with:)."""
-    return [(cache_family(str((step.get("with") or {}).get("key", ""))), step.get("with") or {})
-            for step in ((job or {}).get("steps") or [])
+    """Every actions/cache/<action> step of one job."""
+    return [step for step in ((job or {}).get("steps") or [])
             if str((step or {}).get("uses", "")).split("@")[0] == f"actions/cache/{action}"]
 
 
 def cache_steps(document: dict, action: str) -> list:
-    """Every actions/cache/<action> step of a workflow, as (its job, its family, its with:)."""
-    return [(job_id, family, given)
-            for job_id, job in (document.get("jobs") or {}).items()
-            for family, given in job_cache_steps(job or {}, action)]
+    """Every actions/cache/<action> step of a workflow, as (its job, its family, its with:, its
+    key with each env reference resolved against the step's own env, else the job's, else the
+    workflow's)."""
+    found = []
+    for job_id, job in (document.get("jobs") or {}).items():
+        for step in job_cache_steps(job or {}, action):
+            given = step.get("with") or {}
+            found.append((job_id, cache_family(str(given.get("key", ""))), given,
+                          resolved_key(str(given.get("key", "")).rstrip(), step.get("env"),
+                                       (job or {}).get("env"), document.get("env"))))
+    return found
 
 
 # The composite actions of this repository, whose steps a job runs as its own.
@@ -283,7 +306,8 @@ def save_families(steps: list, where: str) -> tuple:
 
 
 def restores_of(documents: dict) -> dict:
-    """Every restore of the given workflows, as family -> [(where it is, its with:)]. Given the
+    """Every restore of the given workflows, as family -> [(where it is, its with:, its resolved
+    key)]. Given the
     document set the engine loads - ci.yaml, and each local workflow one of its jobs calls:
     dispatch-browser.yaml's binaries, multiprocess, embedder and visual jobs restore go-envoy and
     go-envoy-test for ci.yaml's dispatch-browser job - it is every restore of ci.yaml's run;
@@ -293,15 +317,17 @@ def restores_of(documents: dict) -> dict:
     each restore is taken once."""
     restores = defaultdict(list)
     for path, document in documents.items():
-        for job_id, family, given in cache_steps(document, "restore"):
-            restores[family].append((f"job {job_id} of {path}", given))
+        for job_id, family, given, key in cache_steps(document, "restore"):
+            restores[family].append((f"job {job_id} of {path}", given, key))
     return restores
 
 
 def saves_of(caches: dict, where: str, problems: list) -> list:
     """Every save of the fill workflow `where`, as (its job, its family, its key as its restores
-    write it, its with:). A save under COMPUTED_KEY of a restore step of its own job takes that step's key text,
-    the key the restore computed before the build; a save naming any other step is refused, and
+    write it, each `${{ env.NAME }}` in it resolved as cache_steps resolves a restore's, its with:).
+    A save under COMPUTED_KEY of a restore step of its own job takes that step's key text, resolved
+    against that step's env, the key the restore computed before the build; a save naming any other
+    step is refused, and
     so is a save whose own key holds hashFiles(): the save evaluates it after the build, and the
     build can change the files it hashes (a go command may add the checksums it fetched to go.sum
     or go.work.sum), so the key it saves under need not be the one the restores ask for. On the
@@ -322,6 +348,7 @@ def saves_of(caches: dict, where: str, problems: list) -> list:
                                              f"the key the lookup computed, `${{{{ steps.<id>.outputs.cache-primary-key }}}}`"))
                 continue
             named = COMPUTED_KEY.fullmatch(key.strip())
+            keyed = step
             if named:
                 restore = next((s for s in steps if str((s or {}).get("id", "")) == named.group(1)
                                 and str((s or {}).get("uses", "")).split("@")[0] == "actions/cache/restore"), None)
@@ -330,8 +357,10 @@ def saves_of(caches: dict, where: str, problems: list) -> list:
                                                  f"actions/cache/restore of that job has the id {named.group(1)}, "
                                                  f"so nothing says which key the entry lands under"))
                     continue
+                keyed = restore
                 key = str((restore.get("with") or {}).get("key", "")).rstrip()
-            saves.append((job_id, cache_family(key), key, given))
+            saves.append((job_id, cache_family(key),
+                          resolved_key(key, keyed.get("env"), (job or {}).get("env"), caches.get("env")), given))
     return saves
 
 
@@ -351,16 +380,23 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     text, or the text of the restore step of its job whose computed key it names (saves_of says
     why a hashFiles() of its own is refused). A family is the key's text up to its first
     expression, and it is what
-    pairs a save with the restores to hold it to; the keys are compared as text and the paths as
-    the ordered lists of lines they name. A family ci.yaml restores that no fill workflow saves is
-    no fault when another workflow of the directory saves it: docs-site.yaml saves go-docs.
-    A family no save writes is one: its restore misses on every run and nothing fails, as a
-    restore whose family name is misspelled does (`go-envoy-tests-` for go-envoy-test), so every
-    restore of the directory names a family some save writes. The saves read for it are those of
-    every workflow and of every composite action of .github/actions (save_families says how a
-    key's family is read). A save whose family cannot be read leaves the refusal unable to say that
-    no save writes the family, so the refusal then names each such save rather than saying none
-    exists. The other way round is one too, a family nothing restores being a fill nobody reads.
+    pairs a save with the restores to hold it to; the keys are compared as text once each
+    `${{ env.NAME }}` in them is read as the value the env of its own step, else of its step's
+    job, else of its workflow, sets for NAME, in the save's document and in the restore's (a
+    reference none of them sets stays as text), and the paths as the ordered lists of lines they
+    name. Read as text alone, two keys that both say the same `${{ env.NAME }}` would agree while
+    their two documents set NAME apart, and every restore would miss (ci-caches.yaml's
+    dispatch-builds job once held its own copy of FIRST_ROLLOUT_COMMIT; since main's #5182 it
+    reads ci-job-dispatch-two-builds.yaml's pin with yq). A family ci.yaml restores that no fill
+    workflow saves is no fault when another workflow of the directory saves it:
+    docs-site.yaml saves go-docs. A family no save writes is one: its restore misses on every run
+    and nothing fails, as a restore whose family name is misspelled does (`go-envoy-tests-` for
+    go-envoy-test), so every restore of the directory names a family some save writes. The saves
+    read for it are those of every workflow and of every composite action of .github/actions
+    (save_families says how a key's family is read). A save whose family cannot be read leaves
+    the refusal unable to say that no save writes the family, so the refusal then names each such
+    save rather than saying none exists. The other way round is one too, a family nothing
+    restores being a fill nobody reads.
 
     A fill workflow's own restores of a family it saves under the commit are what the fill builds
     on, and have one shape: no lookup-only at all (an expression can evaluate to true), so the
@@ -402,7 +438,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
         saved_anywhere |= families
         unread += missed
     for path, document in {**directory_workflows(), **documents}.items():
-        for job_id, family, _ in cache_steps(document, "restore"):
+        for job_id, family, _, _ in cache_steps(document, "restore"):
             if not family or family in saved_anywhere:
                 continue
             if unread:
@@ -436,8 +472,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
                                          f"family nothing restores is a fill nobody reads: restore it there, "
                                          f"or drop the save"))
             continue
-        for restore_where, restored in restores[family] + elsewhere.get(family, []):
-            restored_key = str(restored.get("key", "")).rstrip()
+        for restore_where, restored, restored_key in restores[family] + elsewhere.get(family, []):
             restored_paths = path_lines(restored.get("path", ""))
             expected = restored_key + COMMIT_SUFFIX if key.endswith(COMMIT_SUFFIX) else restored_key
             if key != expected:
@@ -450,8 +485,9 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
                            "rebuilds from nothing instead")
                 problems.append(error(where, f"job {job_id} saves family {family} under key "
                                              f"`{key}`, but {restore_where} restores it under "
-                                             f"`{restored_key}`: a save's key must be the restore's, or the "
-                                             f"restore's followed by `{COMMIT_SUFFIX}`; {why}"))
+                                             f"`{restored_key}` (each `${{{{ env.NAME }}}}` read as the value "
+                                             f"its step's env, else its job's, else its workflow's, sets): a save's key "
+                                             f"must be the restore's, or the restore's followed by `{COMMIT_SUFFIX}`; {why}"))
             if paths != restored_paths:
                 problems.append(error(where, f"job {job_id} saves family {family} from "
                                              f"{', '.join(paths) or '(no path)'}, but {restore_where} restores "
@@ -467,7 +503,7 @@ def check_fill_restores(where: str, caches: dict, refilled: set, problems: list)
     """The restores of one fill workflow, as check_cache_round_trip's second paragraph says: one of
     a family it saves under the commit (`refilled`) downloads the newest entry, and every other one
     is a lookup."""
-    for job_id, family, given in cache_steps(caches, "restore"):
+    for job_id, family, given, _ in cache_steps(caches, "restore"):
         given_lookup = given.get("lookup-only")
         lookup_text = str(given_lookup).strip().lower() if isinstance(given_lookup, bool) else str(given_lookup).strip()
         restore_keys = given.get("restore-keys")
@@ -695,6 +731,40 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
         problems.append(error(TABLE, f"WORKSPACES names {workspace}, which the root manifest's workspaces "
                                      f"does not: every Bun job then declares a read of {workspace}/package.json that no install "
                                      f"of this repository reads"))
+
+
+# ------------------------------------------------- the size a workflow must stay under
+# GitHub starts no run at all from a workflow file over this size, and the failure is silent
+# exactly where a reader looks for it: the run is created, it holds zero jobs, every required
+# check is ABSENT rather than red, and the only words GitHub gives are "This run likely failed
+# because of a workflow file issue" (https://docs.github.com/actions/reference/limits, "Workflow
+# file size": "Each workflow file in the .github/workflows directory must be 500 KB or smaller to
+# trigger a run"). Measured on this repository: .github/workflows/ci.yaml ran the whole lane at
+# 501,500 bytes (run 42710088044) and started nothing at 525,100 (run 42739729814), so the
+# threshold is inside that bracket and 500,000 is the figure the documentation states.
+WORKFLOW_SIZE_LIMIT = 500_000
+
+
+def check_workflow_size(problems: list) -> None:
+    """Every workflow file stays under the size GitHub needs to start a run.
+
+    This rule runs over the whole directory rather than over the workflows one job's filter
+    names, because the file that grows is not the file whose check would catch it: a pull
+    request that only grows dispatch-browser.yaml merges green and then starts no run of it.
+    Both suffixes are read, since GitHub runs a `.yml` as readily as a `.yaml`, and the message
+    names the file and its size, because a reader whose run holds zero jobs has nothing else to
+    go on."""
+    for path in sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES):
+        size = path.stat().st_size
+        if size <= WORKFLOW_SIZE_LIMIT:
+            continue
+        name = f"{WORKFLOW_DIR}/{path.name}"
+        problems.append(error(name, f"{name} is {size} bytes, over the {WORKFLOW_SIZE_LIMIT} GitHub needs "
+                              f"to start a run: a workflow file above it creates a run with zero jobs that "
+                              f"concludes failure at once, so every required check of it is absent rather than "
+                              f"red and nothing says why. Move this file's background prose into a note beside "
+                              f"it, as .github/ci-budgets.md holds ci.yaml's, keeping each step's own arithmetic "
+                              f"where a reader of that step sees it"))
 
 
 # ------------------------------------------------- the one workflow a merge group runs
