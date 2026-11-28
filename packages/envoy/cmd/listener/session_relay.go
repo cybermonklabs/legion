@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nuid"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -108,14 +110,9 @@ const (
 	// as delivery 1 and the ladder climbs again: each restart adds the five relays of its first
 	// rungs.
 	relayNakDelay = time.Second
-	// relayNakDelayMax is the ladder's ceiling, the delay of every nak from a message's sixth
-	// delivery on. It is the ladder's own rather than the pause backoff's relayPauseMax, whose
-	// value a relay carries as sessionRelays.pauseMax and a test shortens: 30 s each, two bounds.
+	// relayNakDelayMax is the ladder's ceiling. In production it applies from a message's sixth
+	// delivery on. It is separate from the pause backoff ceiling, relayPauseMax.
 	relayNakDelayMax = 30 * time.Second
-	// relayNakShiftMax is the most relayNakDelay is doubled: relayNakDelay << relayNakShiftMax
-	// (32 s) is the first rung at or above relayNakDelayMax, so a delivery count past the rung
-	// after it takes the ceiling and the shift overflows no time.Duration (relayNakDelayFor).
-	relayNakShiftMax = 5
 	// relayRetryFirst and relayRetryMax bound the wait before a relay whose consumer call or pull
 	// failed restarts at the ack floor; it doubles from the first to the max.
 	relayRetryFirst = time.Second
@@ -235,14 +232,17 @@ type sessionRelays struct {
 	// and one subscription to the inbox's wildcard hears every reply.
 	inbox       string
 	replyPrefix string
-	// pauseFirst and pauseMax are the bounds of a paused relay's backoff, relayPauseFirst and
-	// relayPauseMax; a test shortens them. receiptWait is relayReceiptWait, how long the oldest
-	// unanswered frame may wait before the relay pauses, and a test shortens it the same way, so
-	// a row about what an unreachable session leaves behind spends its own short wait rather
-	// than three seconds of the clock. Set before the first relay starts and read-only after.
+	// pauseFirst and pauseMax bound a paused relay's backoff; receiptWait bounds how long its
+	// oldest unanswered frame may wait before it pauses. Set before the first relay starts
+	// and read-only after.
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
+	// clock times the retry and pause waits, frame receipts and gap-mark writes; nil is the wall
+	// clock. nakDelay is the first rung of the nak ladder. Set before the first relay starts and
+	// read-only after.
+	clock    clock.Clock
+	nakDelay time.Duration
 	// repositories is the edge listener's repository reader (edge_repositories.go), which holds
 	// each GitHub frame to its session's projects (relayNATS); nil on every listener but an edge
 	// one, which relays every frame as it always has. Set before the first relay starts and
@@ -534,6 +534,8 @@ type relayRun struct {
 	// sessionRelays.framesMu.
 	outstanding map[string]*relayFrame
 	unanswered  []*relayFrame
+	// sentSeq orders this run's sends and is guarded by sessionRelays.framesMu.
+	sentSeq uint64
 	// exitMu orders the run's return against the loop's wakes. exiting is set under it once the
 	// run returns, and a wake the loop sends after that is refused (relayRun.wake), so the loop starts
 	// a run in its place; a wake sent before it is taken by the exit (relayRun.exit), which asks the
@@ -605,8 +607,8 @@ func (r *relayRun) restartedBefore(heard uint64) bool {
 // its registration came before the frame went out, so the frame went to the relay subject that
 // registration holds and the session left it unanswered. That registration has had its probe, and a
 // session that registers and never answers costs no restart of its consumer every receipt wait.
-func (r *relayRun) waitPause(ctx context.Context, d time.Duration, from uint64) (goesOn, woken bool) {
-	timer := time.NewTimer(d)
+func (r *relayRun) waitPause(ctx context.Context, c clock.Clock, d time.Duration, from uint64) (goesOn, woken bool) {
+	timer := c.NewTimer(d)
 	defer timer.Stop()
 	for {
 		select {
@@ -616,7 +618,7 @@ func (r *relayRun) waitPause(ctx context.Context, d time.Duration, from uint64) 
 			if heard > from {
 				return true, true
 			}
-		case <-timer.C:
+		case <-timer.C():
 			return true, false
 		}
 	}
@@ -627,14 +629,14 @@ func (r *relayRun) waitPause(ctx context.Context, d time.Duration, from uint64) 
 // included: a registration, or at the edge a role claim, heard while the failed call or pull ran
 // restarts the run at once. A pause takes only a wake heard after the frame it paused on
 // (waitPause).
-func (r *relayRun) waitRetry(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
+func (r *relayRun) waitRetry(ctx context.Context, c clock.Clock, d time.Duration) bool {
+	timer := c.NewTimer(d)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
 	case <-r.resume:
-	case <-timer.C:
+	case <-timer.C():
 	}
 	return true
 }
@@ -655,6 +657,8 @@ type relayFrame struct {
 	run    *relayRun
 	acker  bus.SessionAcker
 	sentAt time.Time
+	// sentSeq orders frames of the run stamped with the same sentAt.
+	sentSeq uint64
 	// sentMark is the mark (sessionDelivery.mark) the frame took just before it was published
 	// (publishFrame). A registration whose mark is above it may have opened the session's relay
 	// subject only after the frame went out, so a pause on this frame ends at that registration's
@@ -710,6 +714,7 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 		inbox:       inbox,
 		replyPrefix: inbox + ".",
 		pauseFirst:  relayPauseFirst,
+		nakDelay:    relayNakDelay,
 		pauseMax:    relayPauseMax,
 		receiptWait: relayReceiptWait,
 		loopDone:    make(chan struct{}),
@@ -728,6 +733,14 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 	delivery.relay = m
 	go m.loop()
 	return m, nil
+}
+
+// clk returns the relay's clock, or the wall clock if none was set.
+func (m *sessionRelays) clk() clock.Clock {
+	if m.clock == nil {
+		return clock.Real()
+	}
+	return m.clock
 }
 
 // setOwned records whether this task holds its machine's durable binding. Gaining it starts the
@@ -1025,7 +1038,7 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 					slog.String("receipt_wait", m.receiptWait.String()),
 					slog.String("backoff", pause.String()))
 			}
-			goesOn, woken := run.waitPause(ctx, pause, run.pausedOn)
+			goesOn, woken := run.waitPause(ctx, m.clk(), pause, run.pausedOn)
 			if !goesOn {
 				return
 			}
@@ -1037,7 +1050,7 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 			}
 			pause = min(pause*2, m.pauseMax)
 		default:
-			if !run.waitRetry(ctx, retry) {
+			if !run.waitRetry(ctx, m.clk(), retry) {
 				return
 			}
 			retry = min(retry*2, relayRetryMax)
@@ -1211,6 +1224,50 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 	}
 }
 
+var errRelayConnectionReconnected = errors.New("the session consumer's connection reconnected")
+
+// relayReconnect shares one signal among the pulls open on the session-consumer connection.
+// Each reconnect retires that signal so a new pull waits for the next reconnect instead.
+type relayReconnect struct {
+	mu     sync.Mutex
+	next   context.Context
+	signal context.CancelFunc
+}
+
+// register attaches the signal to the client that opens the session-consumer connection.
+// The hook does not wait for a relay to stop its pull or make any requests.
+func (r *relayReconnect) register(client *bus.Client) error {
+	client.AddReconnectHook(func(context.Context, *nats.Conn) error {
+		r.mu.Lock()
+		signal := r.signal
+		r.next, r.signal = nil, nil
+		r.mu.Unlock()
+		if signal != nil {
+			signal()
+		}
+		return nil
+	})
+	return nil
+}
+
+// watch takes the signal before opening a pull so a reconnect between open and Next still wakes
+// it. The returned cleanup removes the callback when the pull ends without a reconnect.
+func (r *relayReconnect) watch(ctx context.Context) (context.Context, func()) {
+	r.mu.Lock()
+	if r.next == nil {
+		r.next, r.signal = context.WithCancel(context.Background())
+	}
+	next := r.next
+	r.mu.Unlock()
+
+	pullCtx, cancel := context.WithCancelCause(ctx)
+	stop := context.AfterFunc(next, func() { cancel(errRelayConnectionReconnected) })
+	return pullCtx, func() {
+		stop()
+		cancel(nil)
+	}
+}
+
 // relayNATS restarts a NATS session's consumer at its ack floor and publishes each message it pulls
 // as a frame on the session's relay subject, in stream order, with up to the consumer's
 // MaxAckPending in flight. It pauses, sending nothing more, once the oldest frame the session has
@@ -1244,6 +1301,8 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			return relayEnded
 		}
 	}
+	pullCtx, stopWatching := m.delivery.reconnect.watch(ctx)
+	defer stopWatching()
 	start, pull, outcome := m.restart(ctx, run)
 	if pull == nil {
 		return outcome
@@ -1327,22 +1386,28 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	// back any more leave the set here (relayPassedSet.prune).
 	m.passed.prune(sessionID, start)
 	for {
-		next := ctx
+		next := pullCtx
 		cancelNext := context.CancelFunc(func() {})
 		if deadline, sent, waiting := m.receiptDeadline(run); waiting {
-			if !time.Now().Before(deadline) {
+			c := m.clk()
+			if !c.Now().Before(deadline) {
 				run.pausedOn = sent
 				return relayPaused
 			}
-			next, cancelNext = context.WithDeadline(ctx, deadline)
+			next, cancelNext = c.WithDeadline(pullCtx, deadline)
 		}
 		msg, err := pull.Next(next)
 		cancelNext()
-		if err != nil {
+		// A reconnect ends just the pull, not ownership of the session. Check its cause
+		// before treating a deadline as a receipt wait or handling a queued frame.
+		reconnected := context.Cause(pullCtx) == errRelayConnectionReconnected
+		if err != nil || reconnected {
 			if ctx.Err() != nil {
 				return relayEnded
 			}
-			if errors.Is(err, context.DeadlineExceeded) {
+			if reconnected {
+				err = errRelayConnectionReconnected
+			} else if errors.Is(err, context.DeadlineExceeded) {
 				continue
 			}
 			m.logger.Warn("session relay pull ended; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
@@ -1442,7 +1507,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 // alone kept would be lost with a move.
 func (m *sessionRelays) noteRepositoryGap(ctx context.Context, sessionID string) (string, error) {
 	mark := id.New()
-	writeCtx, cancel := context.WithTimeout(ctx, repositoryGapWriteTimeout)
+	writeCtx, cancel := m.clk().WithTimeout(ctx, repositoryGapWriteTimeout)
 	defer cancel()
 	if err := m.sessions.SetRepositoryGap(writeCtx, sessionID, mark); err != nil {
 		return "", err
@@ -1462,7 +1527,7 @@ func (m *sessionRelays) noteRepositoryGap(ctx context.Context, sessionID string)
 	return mark, nil
 }
 
-// repositoryGapWriteTimeout bounds each write a relay makes of its session's gap mark, the mark
+// repositoryGapWriteTimeout bounds each write on the relay's clock: the mark
 // (noteRepositoryGap) and the clear after a frame (repositoryGapSent): a read and a write of the
 // session's entry, each of which answers in milliseconds on a bus that answers at all. The relay
 // run's own context has no deadline, and the session's frames wait behind the write, so a bucket
@@ -1499,7 +1564,7 @@ func (m *sessionRelays) repositoryGapSent(ctx context.Context, sessionID, mark s
 	if entry, _ := m.sessions.Lookup(sessionID); entry.RepositoryGap == "" {
 		return
 	}
-	writeCtx, cancel := context.WithTimeout(ctx, repositoryGapWriteTimeout)
+	writeCtx, cancel := m.clk().WithTimeout(ctx, repositoryGapWriteTimeout)
 	defer cancel()
 	if err := m.sessions.ClearRepositoryGap(writeCtx, sessionID, mark); err != nil {
 		m.logger.Warn("edge listener could not clear the session's repository gap on its entry; its next relay run sends the mark again",
@@ -1560,7 +1625,7 @@ func (m *sessionRelays) acknowledgeWithheld(sessionID string, msg bus.SessionMes
 // that fails is logged at every give-back: the server then holds the event for the consumer's ack
 // wait rather than the nak's delay, which is no repeat of the mark's failure.
 func (m *sessionRelays) giveBackWithheld(sessionID string, msg bus.SessionMessage, err error) {
-	nakErr := msg.NakWithDelay(relayNakDelayFor(msg.Delivered))
+	nakErr := msg.NakWithDelay(relayNakDelayFor(m.nakDelay, msg.Delivered))
 	m.repositoryGapsMu.Lock()
 	if m.givenBack == nil {
 		m.givenBack = map[string]int{}
@@ -1623,8 +1688,10 @@ func (m *sessionRelays) endGiveBacks(sessionID string, verdict frameVerdict) {
 func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool, gapReason, owed string) error {
 	reply := bus.SessionReplySubject(m.inbox, run.sessionID)
 	token := reply[strings.LastIndexByte(reply, '.')+1:]
-	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), sentMark: m.delivery.mark(), delivered: msg.Delivered, gapMark: owed}
+	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: m.clk().Now(), sentMark: m.delivery.mark(), delivered: msg.Delivered, gapMark: owed}
 	m.framesMu.Lock()
+	run.sentSeq++
+	frame.sentSeq = run.sentSeq
 	if run.outstanding == nil {
 		run.outstanding = map[string]*relayFrame{}
 	}
@@ -1751,9 +1818,15 @@ func (m *sessionRelays) forget(run *relayRun) map[string]*relayFrame {
 func (m *sessionRelays) release(run *relayRun) (int, error) {
 	dropped := slices.Collect(maps.Values(m.forget(run)))
 	// The frames are naked in the order they were sent, which is stream order except for a
-	// message the session naked and the relay sent again. No nak is sent under framesMu: it is a
-	// publish, and the lock answers every session's replies.
-	slices.SortFunc(dropped, func(a, b *relayFrame) int { return a.sentAt.Compare(b.sentAt) })
+	// message the session naked and the relay sent again. The sequence breaks ties when the
+	// clock has not moved. No nak is sent under framesMu: it is a publish, and the lock answers
+	// every session's replies.
+	slices.SortFunc(dropped, func(a, b *relayFrame) int {
+		if order := a.sentAt.Compare(b.sentAt); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.sentSeq, b.sentSeq)
+	})
 	held := make([]bus.SessionAcker, 0, len(dropped))
 	for _, frame := range dropped {
 		held = append(held, frame.acker)
@@ -1762,19 +1835,24 @@ func (m *sessionRelays) release(run *relayRun) (int, error) {
 }
 
 // relayNakDelayFor is how long the server waits before it delivers a frame the session refused
-// (nak) again: relayNakDelay for a message on its first delivery, doubled for every delivery it
-// has had before this one, and relayNakDelayMax from the rung that reaches that ceiling on, so
-// one frame the session goes on refusing comes back 1, 2, 4, 8, 16 s and then 30 s apart.
+// (nak) again: first for a message on its first delivery, doubled for every delivery it
+// has had before this one, up to relayNakDelayMax. With the production first rung, a frame
+// the session goes on refusing comes back 1, 2, 4, 8, 16 s and then 30 s apart.
 //
 // delivered is the message's own delivery count, which the frame carried from the pull that
-// published it (relayFrame.delivered); a pulled message is on its first delivery at 1. A count
-// of 0 is no count at all, and so is one past relayNakShiftMax+1: both take the ceiling, rather
-// than a delay shorter than the rung before it or one the shift overflowed.
-func relayNakDelayFor(delivered uint64) time.Duration {
-	if delivered == 0 || delivered > relayNakShiftMax+1 {
+// published it (relayFrame.delivered); a pulled message is on its first delivery at 1. An
+// unknown count (0) or a missing positive first rung takes the ceiling.
+func relayNakDelayFor(first time.Duration, delivered uint64) time.Duration {
+	if delivered == 0 || first <= 0 {
 		return relayNakDelayMax
 	}
-	return min(relayNakDelay<<(delivered-1), relayNakDelayMax)
+	shift := delivered - 1
+	// Compare against the ceiling shifted down, not the first rung shifted up: a large
+	// shift makes the bound zero rather than overflowing the duration.
+	if first > relayNakDelayMax>>shift {
+		return relayNakDelayMax
+	}
+	return first << shift
 }
 
 // onReply hears a session's reply to a frame: received marks the frame answered, progress restarts
@@ -1847,7 +1925,7 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 	case relayReplyDone:
 		err = frame.acker.Ack()
 	case relayReplyNak:
-		err = frame.acker.NakWithDelay(relayNakDelayFor(frame.delivered))
+		err = frame.acker.NakWithDelay(relayNakDelayFor(m.nakDelay, frame.delivered))
 		if frame.gapMark != "" {
 			// onReply is the one callback for every session's receipts on this connection's core
 			// subscription, run one at a time (nats.go), so the re-mark's KV read and write

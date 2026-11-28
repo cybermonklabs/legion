@@ -48,18 +48,25 @@ func newSessionConsumerRig(t *testing.T, sessionOptions ...session.SessionRegist
 
 func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
 	t.Helper()
+	return newSessionConsumerRigWithDeliveryOn(t, client, url, url, nil, sessionOptions...)
+}
+
+// newSessionConsumerRigWithDeliveryOn lets a test route the listener's consumer connection
+// through a proxy without routing the test's observer through it.
+func newSessionConsumerRigWithDeliveryOn(t *testing.T, client *bus.Client, observerURL, deliveryURL string, deliveryOptions []bus.ConnectOption, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
+	t.Helper()
 	harness := newListenerDeliveryHarnessOn(t, client, sessionOptions...)
 	// The connection is opened with the threshold this listener's own windows derive, as main
 	// opens it (inactiveThresholdFor), so every consumer the rig creates carries what a
 	// deployment with these windows would give it.
-	delivery, err := connectSessionDelivery([]string{url},
+	delivery, err := connectSessionDelivery([]string{deliveryURL},
 		inactiveThresholdFor(harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
-		client, harness.config.logger)
+		client, harness.config.logger, deliveryOptions...)
 	if err != nil {
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
 	t.Cleanup(delivery.close)
-	observer, err := bus.ConnectSessionConsumers([]string{url}, 0, nil)
+	observer, err := bus.ConnectSessionConsumers([]string{observerURL}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}
