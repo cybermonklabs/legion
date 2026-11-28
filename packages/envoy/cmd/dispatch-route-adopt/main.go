@@ -22,10 +22,11 @@
 //
 // It works in three steps, in this order:
 //
-//  1. It refuses a tree that is mid-merge or holds a change, naming the commands that return it
-//     and what they cost: `git merge --abort`; under jj, where the merge is the working-copy
-//     commit, `jj abandon @` and then `jj edit` (or `jj new`) of the merge's first parent, since
-//     `jj abandon @` alone leaves a new working copy on the same two parents.
+//  1. It refuses a tree that is mid-merge, naming the commands that return it and what they cost:
+//     `git merge --abort`; under jj, where the merge is the working-copy commit, `jj abandon @`
+//     and then `jj edit` (or `jj new`) of the merge's first parent, since `jj abandon @` alone
+//     leaves a new working copy on the same two parents. It refuses a tree that holds changes,
+//     saying to commit or stash them under git, or to describe them and run `jj new` under jj.
 //  2. It reads both sides, the merge base and both splits, and settles every file it will write
 //     and every three-way merge, so a branch it cannot adopt is refused with the tree as it was.
 //  3. It makes the merge (`git merge --no-commit --no-ff`; `jj new <branch side> <revision>`),
