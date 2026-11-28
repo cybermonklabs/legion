@@ -111,7 +111,8 @@ case "${words[*]}" in
     # not listed. The check lists scopes through the API (fake curl); this case lets a run of an
     # older script, which asked gcloud, be compared on the same world.
     [ ! -e "$world/refuse-scopes" ] || refuse container.fleet.scopes.list "Permission 'gkehub.scopes.list' denied on 'projects/${flag[project]:-}/locations/global/scopes'"
-    { if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi; } | jq '[.[] | select(.name | contains("/locations/global/"))]'
+    if [ -e "$world/scopes.json" ]; then exec <"$world/scopes.json"; else exec <<<'[]'; fi
+    jq '[.[] | select(.name | contains("/locations/global/"))]'
     ;;
   "container fleet memberships get-credentials "*)
     # A member of the fleet that is no GKE cluster, through the Connect gateway.
@@ -140,14 +141,17 @@ case "${words[*]}" in
     # number are this world's project), or, from the organization's scope, on the organization.
     # With --analyze-service-account-impersonation, each service account among the holders gets an
     # analysis of who holds one of the six impersonation permissions on it, and so on through each
-    # service account those list, as the API's serviceAccountImpersonationAnalysis does.
+    # service account those list, as the API's serviceAccountImpersonationAnalysis does. The
+    # world's marks are read by the shell's own tests, so the call starts the one jq alone.
+    explored=true empty=false
+    [ ! -e "$world/not-explored" ] || explored=false
+    [ ! -e "$world/empty-analysis" ] || empty=true
     jq -n --arg scope "$scope" --arg res "${flag[full-resource-name]:-}" --arg perms "${flag[permissions]:-}" \
       --arg project "$project" --arg number "$number" \
       --arg org_res "//cloudresourcemanager.googleapis.com/organizations/100" \
       --arg expand_groups "${flag[expand-groups]:-}${flag[output-group-edges]:-}" --arg expand_roles "${flag[expand-roles]:-}" \
       --arg impersonation "${flag[analyze-service-account-impersonation]:-}" \
-      --arg explored "$([ -e "$world/not-explored" ] && echo false || echo true)" \
-      --arg empty "$([ -e "$world/empty-analysis" ] && echo true || echo false)" \
+      --arg explored "$explored" --arg empty "$empty" \
       --slurpfile iam "$world/iam.json" --slurpfile roles "$world/roles.json" --slurpfile groups "$world/groups.json" '
       def results($res; $asked):
         ((([$res | capture("/projects/(?<p>[^/]+)") | .p] | first) // "") as $p
@@ -239,6 +243,10 @@ shaped_answer() {
   [ ! -e "$dir/object-$1" ] || { echo '{}'; exit 0; }
   [ ! -e "$dir/emptylist-$1" ] || { echo '{"apiVersion":"v1","kind":"List","items":[]}'; exit 0; }
 }
+# world_input FILE DEFAULT: the fake's stdin becomes the world's FILE, or DEFAULT where the world
+# holds none, for the jq that answers next: it reads them on stdin as it would from `cat FILE` or
+# `echo DEFAULT`, with no process for either.
+world_input() { if [ -e "$1" ]; then exec <"$1"; else exec <<<"$2"; fi; }
 case "${args[*]}" in
   "create -f - -o json")
     shaped_answer reviews
@@ -256,8 +264,11 @@ case "${args[*]}" in
     #   review-follow-nostatus answers a follow round's reviews with no status (row cy);
     #   review-witness-copied answers the witness's reviews with copies of the first other review,
     #   and review-repeated answers the last review with a copy of the first, keeping the count (row cy).
+    # The count is read by the shell's own read, so no process starts for it.
     while ! mkdir "$dir/review-calls.lock" 2>/dev/null; do :; done
-    calls=$(( $(cat "$dir/review-calls" 2>/dev/null || echo 0) + 1 ))
+    calls=0
+    [ ! -e "$dir/review-calls" ] || read -r calls <"$dir/review-calls"
+    calls=$((calls + 1))
     echo "$calls" >"$dir/review-calls"
     rmdir "$dir/review-calls.lock"
     # A world marked review-record-cpus (rows cy and cz, whose items run review's four calls at once
@@ -283,7 +294,6 @@ case "${args[*]}" in
            ($s.user // "group:" + ((($s.groups // []) | join(","))))] | @tsv' \
         >"$dir/review-requests-$calls.tsv" 2>/dev/null || true
     set -- "$dir/review-call-$calls.json"
-    mark() { [ -e "$dir/$1" ] && echo on || echo off; }
     # A world marked review-refuse-holding or review-short-holding (a subject, as the record's
     # last field writes it) refuses, or answers one review short, the one call that asks about
     # that subject, whichever batch that is (row cz's later-batch items). The subjects reach grep
@@ -297,10 +307,18 @@ case "${args[*]}" in
       forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
     short=off
     ! holding review-short-holding || short=on
-    jq --slurpfile grants "$dir/grants.json" --arg masters "$([ -e "$dir/no-masters" ] && echo off || echo on)" \
-      --arg reversed "$(mark review-answers-reversed)" --arg copied "$(mark review-witness-copied)" \
-      --arg repeated "$(mark review-repeated)" --argjson call "$calls" --arg short "$short" \
-      --arg follow_refused "$(mark review-follow-refused)" --arg follow_nostatus "$(mark review-follow-nostatus)" '
+    # The world's marks, each on or off, read by the shell's own tests, so no process starts.
+    masters=on reversed=off copied=off repeated=off follow_refused=off follow_nostatus=off
+    [ ! -e "$dir/no-masters" ] || masters=off
+    [ ! -e "$dir/review-answers-reversed" ] || reversed=on
+    [ ! -e "$dir/review-witness-copied" ] || copied=on
+    [ ! -e "$dir/review-repeated" ] || repeated=on
+    [ ! -e "$dir/review-follow-refused" ] || follow_refused=on
+    [ ! -e "$dir/review-follow-nostatus" ] || follow_nostatus=on
+    jq --slurpfile grants "$dir/grants.json" --arg masters "$masters" \
+      --arg reversed "$reversed" --arg copied "$copied" \
+      --arg repeated "$repeated" --argjson call "$calls" --arg short "$short" \
+      --arg follow_refused "$follow_refused" --arg follow_nostatus "$follow_nostatus" '
       def answer:
         .spec as $s | ($s.resourceAttributes // {}) as $a
         | ($s.user // "") as $user | ($s.groups // []) as $groups
@@ -343,7 +361,10 @@ case "${args[*]}" in
     # back empty would (row cu).
     shaped_answer bindings
     [ ! -e "$dir/refuse-bindings" ] || forbidden clusterrolebindings.rbac.authorization.k8s.io 'list resource "clusterrolebindings" in API group "rbac.authorization.k8s.io"' container.clusterRoleBindings.list
-    jq --arg boot "$([ -e "$dir/no-bootstrap-binding" ] && echo off || echo on)" --arg rolebindings "$([ -e "$dir/no-rolebindings" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
+    boot=on rolebindings=on
+    [ ! -e "$dir/no-bootstrap-binding" ] || boot=off
+    [ ! -e "$dir/no-rolebindings" ] || rolebindings=off
+    jq --arg boot "$boot" --arg rolebindings "$rolebindings" '{apiVersion: "v1", kind: "List", items: (
       [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding",
         metadata: {name: "cluster-admin", labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
         roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "cluster-admin"},
@@ -377,27 +398,33 @@ case "${args[*]}" in
     # before that row, so the branch is kept. For -o json, -o name and -o jsonpath kubectl asks for
     # plain JSON and gets the Secrets whole, data included. Each response the API server sends is
     # recorded, one a line, in token-secret-responses, and each list of the Secrets whole asked for
-    # with -o in secret-data-asked (row cp).
+    # with -o in secret-data-asked (row cp). One jq makes the response and, for the default output,
+    # kubectl's rows: its first line is the response, each later line a row.
     [ ! -e "$dir/refuse-token-secrets" ] || forbidden secrets 'list resource "secrets" in API group ""' container.secrets.list
-    whole="$({ if [ -e "$dir/token-secrets.json" ]; then cat "$dir/token-secrets.json"; else echo '[]'; fi; } |
-      jq -c --arg ns "${args[3]}" --arg data "$([ -e "$dir/token-secret-data" ] && echo "$secret_data_b64")" '{apiVersion: "v1", kind: "List", items: [.[] | select(.namespace == $ns)
-        | {apiVersion: "v1", kind: "Secret", type: "kubernetes.io/service-account-token", metadata: {namespace: .namespace, name: .name}}
-        + (if $data == "" then {} else {data: {token: $data}} end)]}')"
+    data=""
+    [ ! -e "$dir/token-secret-data" ] || data="$secret_data_b64"
     case "${args[*]:6}" in
       "--server-print=true" | "--server-print=true --no-headers")
-        if [ -e "$dir/token-secrets-no-table" ]; then
-          printf '%s\n' "$whole" >>"$dir/token-secret-responses"
-          header="NAME   AGE"
-          rows="$(jq -r '.items[] | "\(.metadata.name)   1d"' <<<"$whole")"
-        else
-          table="$(jq -c '{apiVersion: "meta.k8s.io/v1", kind: "Table",
+        if [ -e "$dir/token-secrets-no-table" ]; then sent=list header="NAME   AGE"; else sent=table header="NAME   TYPE   DATA   AGE"; fi ;;
+      *) sent=list-alone ;;
+    esac
+    world_input "$dir/token-secrets.json" '[]'
+    answer="$(jq -r -c --arg ns "${args[3]}" --arg data "$data" --arg sent "$sent" '{apiVersion: "v1", kind: "List", items: [.[] | select(.namespace == $ns)
+        | {apiVersion: "v1", kind: "Secret", type: "kubernetes.io/service-account-token", metadata: {namespace: .namespace, name: .name}}
+        + (if $data == "" then {} else {data: {token: $data}} end)]}
+      | if $sent == "table" then
+          {apiVersion: "meta.k8s.io/v1", kind: "Table",
             columnDefinitions: [{name: "Name", type: "string"}, {name: "Type", type: "string"}, {name: "Data", type: "string"}, {name: "Age", type: "string"}],
             rows: [.items[] | {cells: [.metadata.name, .type, ((.data // {}) | length), "1d"],
-              object: {apiVersion: "meta.k8s.io/v1", kind: "PartialObjectMetadata", metadata: .metadata}}]}' <<<"$whole")"
-          printf '%s\n' "$table" >>"$dir/token-secret-responses"
-          header="NAME   TYPE   DATA   AGE"
-          rows="$(jq -r '.rows[].cells | map(tostring) | join("   ")' <<<"$table")"
-        fi
+              object: {apiVersion: "meta.k8s.io/v1", kind: "PartialObjectMetadata", metadata: .metadata}}]}
+          | ., (.rows[].cells | map(tostring) | join("   "))
+        elif $sent == "list" then ., (.items[] | "\(.metadata.name)   1d")
+        else . end')"
+    response="${answer%%$'\n'*}" rows=""
+    [ "$response" = "$answer" ] || rows="${answer#*$'\n'}"
+    case "${args[*]:6}" in
+      "--server-print=true" | "--server-print=true --no-headers")
+        printf '%s\n' "$response" >>"$dir/token-secret-responses"
         if [ -z "$rows" ]; then
           echo "No resources found in ${args[3]} namespace." >&2
         else
@@ -406,12 +433,12 @@ case "${args[*]}" in
         fi
         ;;
       "-o json" | "-o name" | "-o jsonpath="*)
-        printf '%s\n' "$whole" >>"$dir/token-secret-responses"
+        printf '%s\n' "$response" >>"$dir/token-secret-responses"
         printf '%s\n' "kubectl ${args[*]}" >>"$dir/secret-data-asked"
         case "${args[7]}" in
-          json) jq . <<<"$whole" ;;
-          name) jq -r '.items[] | "secret/\(.metadata.name)"' <<<"$whole" ;;
-          'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}') jq -r '.items[].metadata.name' <<<"$whole" ;;
+          json) jq . <<<"$response" ;;
+          name) jq -r '.items[] | "secret/\(.metadata.name)"' <<<"$response" ;;
+          'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}') jq -r '.items[].metadata.name' <<<"$response" ;;
           *) echo "fake kubectl: unexpected output: ${args[7]}" >&2; exit 2 ;;
         esac
         ;;
@@ -422,54 +449,61 @@ case "${args[*]}" in
     # One Service: the world's services.json entry for <namespace>/<name>, or a ClusterIP Service
     # whose selector picks pods labelled app=<name>.
     shaped_answer service
-    { if [ -e "$dir/services.json" ]; then cat "$dir/services.json"; else echo '{}'; fi; } |
-      jq --arg key "${args[3]}/${args[4]}" --arg name "${args[4]}" \
-        '.[$key] // {spec: {type: "ClusterIP", selector: {app: $name}}} | {apiVersion: "v1", kind: "Service"} + .'
+    world_input "$dir/services.json" '{}'
+    jq --arg key "${args[3]}/${args[4]}" --arg name "${args[4]}" \
+      '.[$key] // {spec: {type: "ClusterIP", selector: {app: $name}}} | {apiVersion: "v1", kind: "Service"} + .'
     ;;
   "get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json")
     # The cluster's webhook configurations: the world's webhooks.json (each a configuration object), or none.
     shaped_answer webhooks
     [ ! -e "$dir/refuse-webhooks" ] || forbidden mutatingwebhookconfigurations.admissionregistration.k8s.io 'list resource "mutatingwebhookconfigurations" in API group "admissionregistration.k8s.io"' container.mutatingWebhookConfigurations.list
-    { if [ -e "$dir/webhooks.json" ]; then cat "$dir/webhooks.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    world_input "$dir/webhooks.json" '[]'
+    jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get customresourcedefinitions -o json")
     # The cluster's CRDs: the world's crds.json (each a CustomResourceDefinition), or none.
     shaped_answer crds
     [ ! -e "$dir/refuse-crds" ] || forbidden customresourcedefinitions.apiextensions.k8s.io 'list resource "customresourcedefinitions" in API group "apiextensions.k8s.io"' container.customResourceDefinitions.list
-    { if [ -e "$dir/crds.json" ]; then cat "$dir/crds.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    world_input "$dir/crds.json" '[]'
+    jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get workloadallowlists.auto.gke.io -o json")
     # Autopilot's installed workload allowlists: the world's allowlists.json (names), or none.
     shaped_answer allowlists
     [ ! -e "$dir/refuse-allowlists" ] || forbidden workloadallowlists.auto.gke.io 'list resource "workloadallowlists" in API group "auto.gke.io"' container.thirdPartyObjects.list
-    { if [ -e "$dir/allowlists.json" ]; then cat "$dir/allowlists.json"; else echo '[]'; fi; } |
-      jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "auto.gke.io/v1", kind: "WorkloadAllowlist", metadata: {name: .}}]}'
+    world_input "$dir/allowlists.json" '[]'
+    jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "auto.gke.io/v1", kind: "WorkloadAllowlist", metadata: {name: .}}]}'
     ;;
   "get "*admissionpolic*" -o json")
     # The cluster's admission policies and their bindings: the world's admission-policies.json, or none.
     shaped_answer policies
     [ ! -e "$dir/refuse-policies" ] || forbidden validatingadmissionpolicies.admissionregistration.k8s.io 'list resource "validatingadmissionpolicies" in API group "admissionregistration.k8s.io"' container.thirdPartyObjects.list
-    { if [ -e "$dir/admission-policies.json" ]; then cat "$dir/admission-policies.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    world_input "$dir/admission-policies.json" '[]'
+    jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get pods -n "*" -o json")
     # A namespace's pods: the world's pods.json entries (each a Pod) there, or none.
     shaped_answer pods
     [ ! -e "$dir/refuse-pods" ] || forbidden pods 'list resource "pods" in API group ""' container.pods.list
-    { if [ -e "$dir/pods.json" ]; then cat "$dir/pods.json"; else echo '[]'; fi; } |
-      jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.metadata.namespace == $ns)]}'
+    world_input "$dir/pods.json" '[]'
+    jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.metadata.namespace == $ns)]}'
     ;;
   "get --raw /metrics")
     # The API server's metrics, the seats of global-default among them: 40, as on the operator's
-    # real cluster, or the world's global-default-seats. A world marked metrics-refused refuses the
-    # read, and metrics-without-seats answers metrics that hold no global-default seats (row cz).
+    # real cluster, or the world's global-default-seats (its line, read by the shell). A world marked
+    # metrics-refused refuses the read, and metrics-without-seats answers metrics that hold no
+    # global-default seats (row cz).
     if [ -e "$dir/metrics-refused" ]; then
       echo 'Error from server (Forbidden): forbidden: User "ci" cannot get path "/metrics"' >&2
       exit 1
     fi
     echo '# TYPE apiserver_flowcontrol_nominal_limit_seats gauge'
     echo 'apiserver_flowcontrol_nominal_limit_seats{priority_level="workload-low"} 46'
-    [ -e "$dir/metrics-without-seats" ] ||
-      echo "apiserver_flowcontrol_nominal_limit_seats{priority_level=\"global-default\"} $(cat "$dir/global-default-seats" 2>/dev/null || echo 40)"
+    if [ ! -e "$dir/metrics-without-seats" ]; then
+      seats=40
+      [ ! -e "$dir/global-default-seats" ] || read -r seats <"$dir/global-default-seats"
+      echo "apiserver_flowcontrol_nominal_limit_seats{priority_level=\"global-default\"} $seats"
+    fi
     ;;
   "get --raw "*)
     # Discovery of one group version: the world's raw.json, keyed by path, or the API server's 404.
@@ -484,7 +518,9 @@ case "${args[*]}" in
     # answers the ClusterRoles alone, as an answer whose Role half came back empty would (row cu).
     shaped_answer roles
     [ ! -e "$dir/refuse-roles" ] || forbidden roles.rbac.authorization.k8s.io 'list resource "roles" in API group "rbac.authorization.k8s.io"' container.roles.list
-    jq --arg roles "$([ -e "$dir/no-roles" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
+    roles=on
+    [ ! -e "$dir/no-roles" ] || roles=off
+    jq --arg roles "$roles" '{apiVersion: "v1", kind: "List", items: (
       [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole",
         metadata: {name: "cluster-admin", labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
         rules: [{apiGroups: ["*"], resources: ["*"], verbs: ["*"]}]},
@@ -592,7 +628,9 @@ EOF
 # so a script that writes it into that configuration unescaped reads back another token, which
 # this fake refuses. ---
 fake curl <<'EOF'
-config="$(cat)"
+# The configuration, read whole by the shell with no process (its trailing line breaks kept, which
+# "$(cat)" would drop and no test below reads).
+IFS= read -r -d '' config || true
 url="" token=""
 for ((i = 1; i <= $#; i++)); do
   arg="${!i}"
@@ -612,11 +650,23 @@ done
 scheme=Bearer
 [[ "$config" == *"header = \"Authorization: $scheme example-access-token\""* ]] || { echo "fake curl: no bearer token on stdin" >&2; exit 2; }
 # A page token, as curl reads a quoted configuration value: \" is a double quote and \\ a backslash.
-page_line="$(grep '^data-urlencode = "pageToken=' <<<"$config" || true)"
+# The shell finds its line, as `grep '^data-urlencode = "pageToken='` would, and reads it back.
+page_line=""
+while IFS= read -r line; do
+  case "$line" in
+    'data-urlencode = "pageToken='*) if [ -n "$page_line" ]; then page_line+=$'\n'; fi; page_line+="$line" ;;
+  esac
+done <<<"$config"
 if [ -n "$page_line" ]; then
   quoted="${page_line#data-urlencode = \"pageToken=}"
   [ "${quoted: -1}" = '"' ] || { echo "fake curl: the page token's configuration line does not end its quote: $page_line" >&2; exit 2; }
-  read_token="$(printf '%s' "${quoted%\"}" | sed -e 's/\\\(["\\]\)/\1/g')"
+  # Each \" and \\ is the one character it escapes, read left to right.
+  rest="${quoted%\"}" read_token=""
+  while [[ "$rest" == *\\* ]]; do
+    read_token+="${rest%%\\*}" rest="${rest#*\\}"
+    case "$rest" in '"'* | '\'*) read_token+="${rest:0:1}" rest="${rest:1}" ;; *) read_token+='\' ;; esac
+  done
+  read_token+="$rest"
   token="${read_token#p\\\"}"
   [[ "$read_token" == p\\\"* && "$token" =~ ^[0-9]+$ ]] || { echo "fake curl: the page token read back as $read_token, which this fake never sent" >&2; exit 2; }
 fi
@@ -629,8 +679,8 @@ deny() {
 project_of="${url#https://gkehub.googleapis.com/v1/projects/}"
 if [ "$url" = "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/scopes" ]; then
   [ ! -e "$world/refuse-scopes" ] || deny gkehub.scopes.list "projects/$fleet_project/locations/-/scopes"
-  { if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi; } |
-    jq --argjson at "${token:-0}" '. as $s | {scopes: [$s[$at] // empty]} + (if $at + 1 < ($s | length) then {nextPageToken: "p\\\"\($at + 1)"} else {} end)'
+  if [ -e "$world/scopes.json" ]; then exec <"$world/scopes.json"; else exec <<<'[]'; fi
+  jq --argjson at "${token:-0}" '. as $s | {scopes: [$s[$at] // empty]} + (if $at + 1 < ($s | length) then {nextPageToken: "p\\\"\($at + 1)"} else {} end)'
   exit 0
 fi
 if [ "$url" != "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ] || [ -e "$world/refuse-fleet" ]; then
