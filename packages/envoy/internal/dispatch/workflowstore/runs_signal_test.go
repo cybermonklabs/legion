@@ -2,8 +2,8 @@ package workflowstore
 
 import (
 	"context"
+	"fmt"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A write of a run signals its issue (dispatch://INFRA-4869's plan, decision 6): PutStep sends
@@ -41,49 +42,40 @@ func listenForRuns(t *testing.T, pool *store.Pool) *pgx.Conn {
 	return conn
 }
 
-// nextRunsSignal is the next notification conn receives within wait, or nil.
-func nextRunsSignal(t *testing.T, conn *pgx.Conn, wait time.Duration) *pgconn.Notification {
+// nextRunsSignal is the next notification conn receives. It waits with no bound of its own, until
+// the test binary's give-up (testwait.Context): a notification that never comes fails t there with
+// missing, which says what the wait was for, and the error that ended the wait.
+func nextRunsSignal(t *testing.T, conn *pgx.Conn, missing string) *pgconn.Notification {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), wait)
-	defer cancel()
-	notification, err := conn.WaitForNotification(ctx)
+	notification, err := conn.WaitForNotification(testwait.Context(t))
 	if err != nil {
-		if ctx.Err() != nil && t.Context().Err() == nil {
-			return nil
-		}
-		t.Fatalf("wait for a notification on %s: %v", runsSignalChannel, err)
+		t.Fatalf("%s: %v", missing, err)
 	}
 	return notification
 }
 
 // signalBeforeMarker sends the marker on pool, in a transaction of its own, and returns the
-// notification conn receives before it, or nil when the marker is the next one, within 5 seconds.
-// Postgres delivers notifications to a listener in commit order, so a signal an action committed
-// before the marker comes first, and a transaction still open has sent nothing yet: its signal
-// comes at its commit, after the marker's.
+// notification conn receives before it, or nil when the marker is the next one. Postgres delivers
+// notifications to a listener in commit order, so a signal an action committed before the marker
+// comes first, and a transaction still open has sent nothing yet: its signal comes at its commit,
+// after the marker's.
 func signalBeforeMarker(t *testing.T, pool *store.Pool, conn *pgx.Conn, after string) *pgconn.Notification {
 	t.Helper()
 	if _, err := pool.Exec(t.Context(), `select pg_notify($1, $2)`, runsSignalChannel, runsSignalMarker); err != nil {
 		t.Fatalf("after %s, send the marker on %s: %v", after, runsSignalChannel, err)
 	}
-	signal := nextRunsSignal(t, conn, 5*time.Second)
-	if signal == nil {
-		t.Fatalf("after %s, the marker sent on %s did not arrive within 5s", after, runsSignalChannel)
-	}
+	signal := nextRunsSignal(t, conn, fmt.Sprintf("after %s, the marker sent on %s did not arrive", after, runsSignalChannel))
 	if signal.Payload == runsSignalMarker {
 		return nil
 	}
 	return signal
 }
 
-// requireOneRunsSignal requires conn to receive one notification of issue within 5 seconds, and
-// no second one before the marker sent on pool after it.
+// requireOneRunsSignal requires conn to receive one notification of issue, and no second one
+// before the marker sent on pool after it.
 func requireOneRunsSignal(t *testing.T, pool *store.Pool, conn *pgx.Conn, issue, after string) {
 	t.Helper()
-	signal := nextRunsSignal(t, conn, 5*time.Second)
-	if signal == nil {
-		t.Fatalf("after %s, no notification on %s within 5s: an open page would never hear of the run", after, runsSignalChannel)
-	}
+	signal := nextRunsSignal(t, conn, fmt.Sprintf("after %s, no notification on %s: an open page would never hear of the run", after, runsSignalChannel))
 	if signal.Channel != runsSignalChannel || signal.Payload != issue {
 		t.Fatalf("after %s, a notification on %s with payload %q, want %s with the issue %s", after, signal.Channel, signal.Payload, runsSignalChannel, issue)
 	}
