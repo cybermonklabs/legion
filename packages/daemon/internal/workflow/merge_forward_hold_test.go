@@ -175,9 +175,11 @@ func TestAPlannerAfterTheImplementerIsHeldAndFenced(t *testing.T) {
 
 // On the default steps, a worker starts while another role's merge forward is open in two ways,
 // and is held in both: the tester's completion at the head the implementer was asked to merge,
-// which main took and still takes, starts the reviewer; and the reviewer's own move back starts
-// the tester. A move back into planning, which on the default steps stands before the
-// implementer, starts the planner the same way.
+// which main took and still takes, starts the reviewer once that head's one check passes there
+// (testedAs); and the reviewer's own move back starts the tester. A move back into planning, which
+// on the default steps stands before the implementer, starts the planner the same way; a testing
+// step ends by its checks' states alone, so the reviewer makes that move, since the tester's own
+// is refused (BACKWARD_REFUSED).
 func TestADefaultStepThatStartsWhileTheMergeIsOpenIsHeld(t *testing.T) {
 	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
@@ -186,7 +188,9 @@ func TestADefaultStepThatStartsWhileTheMergeIsOpenIsHeld(t *testing.T) {
 	t.Run("the move into reviewing after the tester's completion", func(t *testing.T) {
 		pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
 		confirmsConflict(t, pool, requiresCI)
-		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+		engine := readsAfter(2 * time.Minute)
+		testedAs(t, pool, engine, "LEGION-208", conflictHead, true)
+		applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
 			Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Commit: conflictHead,
 			HandoffRecord: "test-1", HandoffVersion: 1})
 		if got := issuePhase(t, pool); got != phase.Reviewing {
@@ -206,7 +210,7 @@ func TestADefaultStepThatStartsWhileTheMergeIsOpenIsHeld(t *testing.T) {
 		to   phase.Phase
 	}{
 		{name: "the reviewer's move back into testing", from: phase.Reviewing, by: claim.RoleReviewer, to: phase.Testing},
-		{name: "the tester's move back into planning", from: phase.Testing, by: claim.RoleTester, to: phase.Planning},
+		{name: "the reviewer's move back into planning", from: phase.Reviewing, by: claim.RoleReviewer, to: phase.Planning},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := seedConflictIssue(t, tc.from, PhaseStatus(tc.from), settledGreen("lint"))

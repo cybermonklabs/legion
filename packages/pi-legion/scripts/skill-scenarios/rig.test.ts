@@ -37,7 +37,6 @@ import { RunRow } from "./scored-runs-contracts";
 import {
   JUDGE_OMP,
   JUDGE_OMP_ENVIRONMENT,
-  JUDGE_PULLS,
   RIG_STEP,
   rowLimit,
   SCRIPT_RUN,
@@ -1283,6 +1282,13 @@ echo done
     expect(existsSync(path.join(label, "superpowers"))).toBe(false);
   });
 });
+
+/**
+ * The pulls of the judge's image rig.sh judge-omp asks for at most, a pause of 2 s between two
+ * (rig.sh's `for attempt in 1 2 3`): a pull that fails within its bound is asked again, and a pull
+ * its bound ends is not.
+ */
+const JUDGE_PULLS = 3;
 
 // rig.sh judge-omp, the whole script, in its Docker container (Docker is on the devbox and on CI's
 // ubuntu-24.04 runners), with the real key-file route and a stand-in omp that records its argv and
@@ -2768,6 +2774,7 @@ describe("cmd_batch", () => {
       fn("hidden_needs_heads"),
       fn("one_of"),
       fn("listed_in"),
+      fn("map_run"),
       fn("cmd_run"),
       'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
       "on_exit() { :; }",
@@ -2823,8 +2830,9 @@ describe("cmd_batch", () => {
         [
           fn("fail"),
           fn("task_words"),
+          fn("handoff_line"),
           fn(fnName),
-          `R=$1 co=$2 worker_key=$3 label=ablate-states-read`,
+          `R=$1 co=$2 worker_key=$3 label=ablate-states-read root=${root}`,
           fnName,
           `echo "${fnName} returned"`,
         ].join("\n"),
@@ -3258,7 +3266,7 @@ describe("heads_fixture", () => {
     expect(String(reviewer.route("^gh pr checks")?.stdout)).toContain(jobLine(failedJob, "fail"));
     expect(reviewer.route("^gh pr checks")?.exit).toBe(1);
     expect(reviewer.route(logOf(failedJob.checkRun))?.stdout).toBe(failedJob.log);
-    const body = (reviewer.route("^gh pr view")?.stdout as { body: string }).body;
+    const body = (reviewer.route("^gh pr view")?.stdout as { body: string } | undefined)?.body;
     expect(body).toContain(`**Checks:**\n${k1Line("702")}\n${k2Line("702", "fail")}\n`);
 
     const other = routes("reviewer-own-head", "ci-check-fail-other-head", {
@@ -3276,12 +3284,12 @@ describe("heads_fixture", () => {
       "702": "pass",
       "703": "fail",
     });
-    expect((architect.route("^gh pr list")?.stdout as unknown[]).length).toBe(2);
+    expect((architect.route("^gh pr list")?.stdout as unknown[] | undefined)?.length).toBe(2);
     expect(architect.route("^gh api .*pulls/702/reviews")?.stdout).toMatchObject([
       { state: "APPROVED", commit_id: heads["702"] },
     ]);
     const alone = routes("architect-pass-and-fail", "ci-check-fail", { "702": "fail" });
-    expect((alone.route("^gh pr list")?.stdout as unknown[]).length).toBe(1);
+    expect((alone.route("^gh pr list")?.stdout as unknown[] | undefined)?.length).toBe(1);
     expect(String(alone.route("^gh pr checks")?.stdout)).toContain(jobLine(failedJob, "fail"));
   });
 
@@ -5581,6 +5589,38 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       stored: false,
     });
     expect(existsSync(path.join(bare, "stored"))).toBe(false);
+  });
+
+  // Catches: a pack that follows a link of the run's tree. find lists the run's regular files and
+  // directories, and a process still running can swap a listed file for a link to a credential
+  // before tar packs it; a tar that follows every listed path (--dereference) then packs and
+  // uploads the credential's bytes, where tar must pack the link as a link, which restore-stored
+  // refuses.
+  test("a listed file swapped for a link before the pack is packed as that link, never as what it points at", () => {
+    const store = plantStore();
+    const pod = freshDir("store-swap");
+    plantScored(pod, "head", { kind: "root", form: "B", family: "claude" }, 1, { read: true });
+    const secret = path.join(freshDir("store-swap-secret"), "token");
+    const marker = fixtureSecret("store-swap");
+    writeFileSync(secret, `${marker}\n`);
+    const stored = bash(
+      [
+        defs("note", "fail", "store_scored_run"),
+        "work=$1 maps=$1/maps",
+        'swap=$(readlink -f -- "$maps/runs/$2")/world.json secret=$3',
+        // The swap a process still running could make between store_scored_run's find and its tar.
+        'tar() { ln -sfn -- "$secret" "$swap"; command tar "$@"; }',
+        'store_scored_run "$2"',
+      ].join("\n"),
+      [pod, run(1), secret],
+      { RT_STORE: store.bin }
+    );
+    expect({ code: stored.code, stderr: stored.stderr }).toEqual({ code: 0, stderr: "" });
+    const pack = at(store.bucket, 1, "tar.gz");
+    expect(members(pack)).toContain(`${run(1)}/world.json`);
+    expect(types(pack)).toContain("l");
+    const bytes = childSpawn({ ...RIG_STEP, part: "tar -xOzf" }, ["tar", "-xOzf", pack]);
+    expect(bytes.stdout.toString()).not.toContain(marker);
   });
 
   // Catches: a restart that launches its cell from nothing; one that counts a run whose row was

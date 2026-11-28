@@ -674,7 +674,7 @@ func TestAWokenRoleReadsATrueWakeText(t *testing.T) {
 	t.Run("(i) the CI settlement and backstop texts are unchanged", func(t *testing.T) {
 		for _, tc := range []struct{ kind, detail, want string }{
 			{kind: pods.WakeChecks, detail: "head1 failed build",
-				want: preamble + "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."},
+				want: preamble + "The wake is a CI settlement on your pull request's head: head1 failed build. Nothing moved on it."},
 			{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due",
 				want: preamble + "The wake is the release's backstop running out: the backstop armed for LEGION-208's implementer came due. " +
 					"Nothing else asked for you, so take up your phase where you left it."},

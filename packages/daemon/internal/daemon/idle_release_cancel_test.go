@@ -315,7 +315,7 @@ func TestACancelAfterASettlementWakeTellsTheRoleTheSettlement(t *testing.T) {
 	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
-	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."
+	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Nothing moved on it."
 	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != cancelled+settled {
 		t.Fatalf("queued starts = %+v, want the cancel's one start of the implementer with the task %q: the settlement reaches the role only through it, and the pod never went away",
 			starts, cancelled+settled)
@@ -437,7 +437,7 @@ func TestACancelAfterASettlementWakeKeepsACheckLookQueuedForTheRole(t *testing.T
 	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
-	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."
+	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Nothing moved on it."
 	if len(starts) != 2 || starts[0].CheckLook != 1 || !starts[0].CheckOpenedAt.Equal(opened) || starts[0].Task != lookTask ||
 		starts[1].Role != claim.RoleImplementer || starts[1].CheckLook != 0 || starts[1].Task != cancelled+settled {
 		t.Fatalf("queued starts = %+v, want the check's look as it was queued and then the cancel's start of the implementer with the task %q: the look is no wake's start",

@@ -559,6 +559,7 @@ func StorePullRequestBaseSHA(ctx context.Context, db refs.Execer, repoFull strin
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
 // citingRowsRejudged is the WITH clause upsertHeadRow's insert starts with. Where no row of the
 // pull request ($1, $2) exists yet (every sub-statement reads the snapshot from before the
 // insert), it sets attribution_rule to 0 on each row credited by source github_issue_link whose

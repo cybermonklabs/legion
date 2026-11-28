@@ -576,6 +576,7 @@ const returnNotUsed = "workflow: the testing step passed, so the step the tester
 // step, completed naming none, returns a fail to the default. The subtest naming none is the
 // control of the one naming step 1: the same issue, the same states, and another step.
 func TestTheStepATestersCompletionNamesIsTakenOnlyOnAFail(t *testing.T) {
+	t.Parallel()
 	// waiting is LEGION-208 walking the steps planner implementer tester reviewer, standing in
 	// testing at step 3, after the tester's completion naming returnTo, which waits: no state is
 	// held at headOne, the head it tested.
@@ -685,6 +686,7 @@ func TestTheStepATestersCompletionNamesIsTakenOnlyOnAFail(t *testing.T) {
 // Control: the pass subtest of TestTheStepATestersCompletionNamesIsTakenOnlyOnAFail, whose pass
 // moves the issue and says so once.
 func TestAPassThatMovesNothingSaysNothingOfTheStepNamed(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, logged := loggedEngine()
 	root := stepRoot(t, pool, phase.Testing)
@@ -798,6 +800,7 @@ func TestTheWalkTakesItsTaskByTheStoresOneRule(t *testing.T) {
 // fail of the step takes its task back to a step an earlier completion named. The cleared commit
 // shows the clear ran; returnTo is the field this test exists for.
 func TestATestingStepStartedAgainNamesNoStepAnEarlierCompletionNamed(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)

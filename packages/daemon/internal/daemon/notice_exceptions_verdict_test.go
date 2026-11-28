@@ -17,6 +17,7 @@ import (
 // queued one, and the architect still gets its phase-finished notice. A key Notice never had still
 // refuses the report, so the decode stays strict for everything else.
 func TestAFailedForwardOfANoticeThatNamesAVerdictIsQueuedAgainWithoutIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		extra string

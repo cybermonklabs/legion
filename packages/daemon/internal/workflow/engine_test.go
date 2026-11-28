@@ -803,6 +803,7 @@ func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 // leaves it, and leaves it open at its one start, with no end written and nothing queued beside its
 // start.
 func TestATestersBackwardMoveOutOfTestingIsRefused(t *testing.T) {
+	t.Parallel()
 	seed := func(t *testing.T, at phase.Phase, role claim.Role) *pgxpool.Pool {
 		pool := migratedPool(t)
 		seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: at, Generation: 1, Status: PhaseStatus(at), Rank: "U"})

@@ -61,7 +61,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { CASED_RUNS } from "./score";
+import { runFields } from "./run-names";
 
 interface Term {
   readonly kind: string;
@@ -71,12 +71,26 @@ interface Term {
   /** Fixed strings, lower case, one of which each match holds: the view walk's prefilter. */
   readonly literals: readonly string[];
 }
+/** A place the run's agent could learn from: its channel and place, what it tells (`kind`, `text`
+ * and whether it is the run's own, `own`: a term's for a term's match, or a fact of the layout of
+ * its own), and the text around it. */
 interface Hit {
   readonly channel: string;
   readonly where: string;
-  readonly term: Term;
+  readonly kind: string;
+  readonly own: boolean;
+  readonly text: string;
   readonly context: string;
 }
+/** The hit of `term`'s match at `where`. */
+const termHit = (channel: string, where: string, term: Term, context: string): Hit => ({
+  channel,
+  where,
+  kind: term.kind,
+  own: term.own,
+  text: term.text,
+  context,
+});
 /** One link of <work>/maps/runs, read into its fields. */
 interface MappedRun {
   readonly name: string;
@@ -91,6 +105,8 @@ interface RunMap {
   readonly labels: string[];
   readonly checkouts: { label: string; checkout: string }[];
   readonly maps: string;
+  /** The map's run names runFields cannot read. */
+  readonly unread: string[];
 }
 
 const MAX_FILE = 64 * 1024 * 1024;
@@ -98,12 +114,15 @@ const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** A name that holds no hyphen, digit or capital is a plain word, searched only in a rig name's shapes. */
 const plainWord = (name: string) => /^[a-z]+$/.test(name);
 
-/** The run's own fields and every name the map holds, from the links under <work>/maps. */
+/** The run's own fields and every name the map holds, from the links under <work>/maps. A link
+ * whose name is no run name rig.sh writes (run-names.ts runFields) gives no term, and is named in
+ * `unread`. */
 function mapOf(work: string, runDir: string): RunMap {
   const runsLinks = path.join(work, "maps", "runs");
   const profileLinks = path.join(work, "maps", "profiles");
   const labels = existsSync(profileLinks) ? readdirSync(profileLinks) : [];
   const runReal = realpathSync(runDir);
+  const unread: string[] = [];
   const runs = (existsSync(runsLinks) ? readdirSync(runsLinks) : []).map((name) => {
     const link = path.join(runsLinks, name);
     let target = "";
@@ -112,25 +131,22 @@ function mapOf(work: string, runDir: string): RunMap {
     } catch {
       // A link whose run was removed points at nothing.
     }
-    // The case of a run of each scenario the scorer reads a case of, by the same patterns.
-    const cased = Object.values(CASED_RUNS)
-      .map((pattern) => pattern.exec(name))
-      .find((hit) => hit !== null);
-    const label =
-      labels
-        .filter((one) => new RegExp(`-${escaped(one)}-\\d+$`).test(name))
-        .sort((a, b) => b.length - a.length)[0] ?? "";
-    const prefix = label === "" ? name : name.slice(0, name.lastIndexOf(`-${label}-`));
-    const runCase = cased?.[1] ?? "";
-    const scenario = runCase === "" ? prefix : prefix.slice(0, -(runCase.length + 1));
-    return { name, target, scenario, case: runCase, label };
+    const fields = runFields(name);
+    if (fields === undefined) unread.push(name);
+    return {
+      name,
+      target,
+      scenario: fields?.scenario ?? "",
+      case: fields?.case ?? "",
+      label: fields?.label ?? "",
+    };
   });
   const own = runs.find((run) => run.target === runReal);
   const checkouts = labels.flatMap((label) => {
     const file = path.join(profileLinks, label, "checkout");
     return existsSync(file) ? [{ label, checkout: readFileSync(file, "utf8").trim() }] : [];
   });
-  return { own, runs, labels, checkouts, maps: path.join(work, "maps") };
+  return { own, runs, labels, checkouts, maps: path.join(work, "maps"), unread };
 }
 
 /** `word` between two separators, `-` or `_`, as fixed strings: the literals of `[-_]word[-_]`. */
@@ -216,13 +232,15 @@ function search(channel: string, where: string, text: string, terms: Term[]) {
   for (const term of terms) {
     if (term.kind === "case-file") continue;
     term.pattern.lastIndex = 0;
+    let found = 0;
     for (const match of text.matchAll(term.pattern)) {
       const at = match.index ?? 0;
       const context = text
         .slice(Math.max(0, at - 60), at + match[0].length + 60)
         .replace(/[^\x20-\x7e]/g, " ");
-      hits.push({ channel, where, term, context });
-      if (hits.filter((hit) => hit.where === where && hit.term === term).length >= 3) break;
+      hits.push(termHit(channel, where, term, context));
+      found += 1;
+      if (found >= 3) break;
     }
   }
 }
@@ -231,7 +249,7 @@ function searchPath(channel: string, file: string, terms: Term[]) {
   search(channel, `${file} (its path)`, file, terms);
   for (const term of terms)
     if (term.kind === "case-file" && /(^|\/)case\.txt$/.test(file))
-      hits.push({ channel, where: file, term, context: "a file named case.txt" });
+      hits.push(termHit(channel, file, term, "a file named case.txt"));
 }
 
 function readText(file: string): string | undefined {
@@ -483,7 +501,7 @@ async function viewWorld(
           if (seen.has(key)) continue;
           seen.add(key);
           const context = where.slice(Math.max(0, at - 60), end + 60).replace(/[^\x20-\x7e]/g, " ");
-          hits.push({ channel: "view", where, term, context });
+          hits.push(termHit("view", where, term, context));
         }
       }
     };
@@ -629,7 +647,9 @@ function liveWorld(
       hits.push({
         channel: "visible",
         where: `${work}/maps`,
-        term: terms.find((term) => term.kind === "map") as Term,
+        kind: "map",
+        own: false,
+        text: map.maps,
         context: "the agent's mount namespace shows the map",
       });
     // The agent's scratch directories: its /tmp must be its run's own tmp, and /var/tmp and
@@ -640,7 +660,9 @@ function liveWorld(
       hits.push({
         channel: "visible",
         where: "/tmp",
-        term: terms.find((term) => term.kind === "case-file") as Term,
+        kind: "tmp",
+        own: false,
+        text: "/tmp",
         context: "the agent's /tmp is not its run's own tmp: it is the machine's, every run's",
       });
     for (const shared of ["/var/tmp", "/dev/shm"]) {
@@ -650,14 +672,16 @@ function liveWorld(
         search("visible", `${shared}/${name}`, `${shared}/${name}`, terms);
     }
     // Every label's checkout is empty in its view, so no agent reads another label's texts.
-    for (const { checkout } of map.checkouts) {
+    for (const { label, checkout } of map.checkouts) {
       const entries = existsSync(`${root}${checkout}`) ? readdirSync(`${root}${checkout}`) : [];
       count("visible checkouts");
       if (entries.length > 0)
         hits.push({
           channel: "visible",
           where: checkout,
-          term: terms.find((term) => term.kind === "checkout") as Term,
+          kind: "checkout",
+          own: label === map.own?.label,
+          text: checkout,
           context: `the agent's view shows ${entries.length} entries of a label's checkout`,
         });
     }
@@ -706,6 +730,10 @@ if (import.meta.main) {
   console.log(
     `run ${map.own.name} (${runDir}): scenario ${map.own.scenario}, case ${map.own.case || "none"}, label ${map.own.label}; ${terms.length} terms from ${map.runs.length} runs and ${map.labels.length} labels`
   );
+  for (const name of map.unread)
+    unknowns.push(
+      `map: ${name} is no run name rig.sh writes (run-names.ts), so its scenario, case and label are not searched`
+    );
   const viewFile = path.join(work, "views", path.basename(runDir));
   const files = staticWorld(runDir, terms, existsSync(viewFile) ? mountsOf(viewFile) : undefined);
   const seen = live ? liveWorld(runDir, work, terms, map) : undefined;
@@ -730,7 +758,7 @@ if (import.meta.main) {
   }
   for (const hit of hits)
     console.log(
-      `${hit.channel}\t${hit.where}\t${hit.term.kind}${hit.term.own ? " (own)" : ""}\t${hit.term.text}\t…${hit.context}…`
+      `${hit.channel}\t${hit.where}\t${hit.kind}${hit.own ? " (own)" : ""}\t${hit.text}\t…${hit.context}…`
     );
   console.log(`read: ${[...counts].map(([channel, n]) => `${channel} ${n}`).join(", ")}`);
   const byChannel = new Map<string, number>();

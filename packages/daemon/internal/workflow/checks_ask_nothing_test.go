@@ -21,6 +21,7 @@ import (
 // what the outbox queued beside it, never a word of a message. The wake of a released role by a
 // settlement is TestACISettlementWakesTheReleasedPhaseWorker's.
 func TestACISettlementTellsEachRoleWhatCIReportedAndStartsNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from   phase.Phase
 		status string

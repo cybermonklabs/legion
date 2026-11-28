@@ -1,6 +1,7 @@
 // A copy of this directory for the tests of its catalogs (heads-scenarios.txt, askgate-cases.txt):
 // a catalog edited in the copy reaches the copy's readers and no file of the checkout.
-import { cpSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { cpSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
@@ -25,10 +26,24 @@ export function copyOfThisDirectory(into: string): string {
 
 /** Every function the copy's rig.sh defines, as scriptFunctions extracts each, whichever helper of
  * it reads a catalog: a test stubs the commands that would start services or agents after them. */
-export function rigFunctions(copy: string): string {
+function rigFunctions(copy: string): string {
   const rig = path.join(copy, "rig.sh");
   const fn = scriptFunctions(rig);
   return [...readFileSync(rig, "utf8").matchAll(/^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm)]
     .map((found) => fn(found[1] ?? ""))
     .join("\n");
+}
+
+/** The command that runs `lines` under bash after every function of the copy's rig.sh
+ * (rigFunctions), with `args` as $1 and on. The script is a file of its own beside the copy:
+ * rig.sh's functions together are longer than one argument may be (the kernel's MAX_ARG_STRLEN,
+ * 128 KiB), so `bash -c` with them fails E2BIG before bash starts. */
+export function rigCommand(
+  copy: string,
+  lines: readonly string[],
+  args: readonly string[]
+): string[] {
+  const script = path.join(path.dirname(copy), `rig-step-${randomUUID()}.sh`);
+  writeFileSync(script, [rigFunctions(copy), ...lines].join("\n"));
+  return ["bash", script, ...args];
 }

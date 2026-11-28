@@ -21,6 +21,7 @@ const phaseReturnToRelease = "the release that keeps the step a tester's complet
 // column and deletes the migration's version row, so the roll-forward's Migrate applies the file
 // again, and only it, and adds the column again at 0.
 func TestThePhaseReturnToComesAtZeroAndItsWayBackLetsItComeAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, phaseReturnToVersion-1)

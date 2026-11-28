@@ -16,7 +16,7 @@ import {
 import path from "node:path";
 import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { copyOfThisDirectory, rigFunctions } from "./catalog-copy";
+import { copyOfThisDirectory, rigCommand } from "./catalog-copy";
 import { HEADS_SCENARIOS, headsCases, isHeadsScenario } from "./heads-scenarios";
 import { fileRowLimit, RIG_STEP, SCRIPT_RUN } from "./test-limit";
 
@@ -48,13 +48,10 @@ test("a world added to the catalog alone reaches rig.sh, heads-world.ts, seed.ts
   const tree = path.resolve(copy, "../../../..");
   appendFileSync(path.join(copy, "heads-scenarios.txt"), "architect-pass-and-fail no-verdict\n");
   const env = { PATH: process.env.PATH ?? "", HOME: makeDirectory("home") };
-  const functions = rigFunctions(copy);
   const bash = (part: string, lines: string[], args: string[]) => {
-    const ran = spawnWithin(
-      { ...RIG_STEP, part },
-      ["bash", "-c", [functions, ...lines].join("\n"), "-", ...args],
-      { env: { ...env, SKILL_SCENARIOS_PARALLEL: "1" } }
-    );
+    const ran = spawnWithin({ ...RIG_STEP, part }, rigCommand(copy, lines, args), {
+      env: { ...env, SKILL_SCENARIOS_PARALLEL: "1" },
+    });
     return `exit=${ran.exitCode} ${ran.stderr.toString()}`;
   };
 
@@ -97,14 +94,15 @@ test("a world added to the catalog alone reaches rig.sh, heads-world.ts, seed.ts
     ranWith = readFileSync(ranFile, "utf8");
   } catch {}
 
-  // heads-world.ts's world and score.ts's reading of three runs' names, from the copy.
+  // heads-world.ts's world and run-names.ts's reading of three runs' names, which score.ts reads
+  // them through, from the copy.
   const probe = path.join(copy, "catalog-probe.ts");
   writeFileSync(
     probe,
     [
       'import { headsWorld } from "./heads-world";',
-      'import { CASED_RUNS } from "./score";',
-      'const read = (name: string) => CASED_RUNS["architect-pass-and-fail"]?.exec(name)?.slice(1);',
+      'import { runFields } from "./run-names";',
+      "const read = (name: string) => [runFields(name)?.case, runFields(name)?.label];",
       "console.log(JSON.stringify({",
       '  world: headsWorld("architect-pass-and-fail", "no-verdict") ?? null,',
       "  runs: [",
@@ -157,7 +155,7 @@ test("a world added to the catalog alone reaches rig.sh, heads-world.ts, seed.ts
       runs: [
         ["no-verdict", "head"],
         ["no-verdict-fail", "head"],
-        [null, "head"],
+        ["", "head"],
       ],
     },
     usage: true,
@@ -167,17 +165,13 @@ test("a world added to the catalog alone reaches rig.sh, heads-world.ts, seed.ts
 /** Runs `lines` under bash after every function of `copy`'s rig.sh, with `args` as $1...: the
  * exit status and stderr, as one string. */
 function rigStep(copy: string, part: string, lines: string[], args: string[]): string {
-  const ran = spawnWithin(
-    { ...RIG_STEP, part },
-    ["bash", "-c", [rigFunctions(copy), ...lines].join("\n"), "-", ...args],
-    {
-      env: {
-        PATH: process.env.PATH ?? "",
-        HOME: makeDirectory("home"),
-        SKILL_SCENARIOS_PARALLEL: "1",
-      },
-    }
-  );
+  const ran = spawnWithin({ ...RIG_STEP, part }, rigCommand(copy, lines, args), {
+    env: {
+      PATH: process.env.PATH ?? "",
+      HOME: makeDirectory("home"),
+      SKILL_SCENARIOS_PARALLEL: "1",
+    },
+  });
   return `exit=${ran.exitCode} ${ran.stderr.toString()}`;
 }
 

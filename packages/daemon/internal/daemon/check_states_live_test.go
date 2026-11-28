@@ -23,7 +23,7 @@
 // checkout builds, on a database of its own, as handoff_records_live_test.go runs it, but with its
 // events on: it publishes them on the run's own broker, LEGION_E2E_NATS_URL, where the daemon's
 // durable consumer of Dispatch's issue events takes them, as in a deployment. The daemon is the
-// whole daemon (run, through startDaemonWithin), booted with dispatch_url at that server. Each
+// whole daemon (run, through startDaemonLogging), booted with dispatch_url at that server. Each
 // tester is a real `omp --mode rpc` under the real `legion worker-shim`, started by
 // localruntime_live_test.go's runtime with this checkout's `@sjawhar/pi-envoy` and
 // `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own, and its model is
@@ -387,7 +387,7 @@ func newStatesProof(t *testing.T) *statesProof {
 	r.serveGitHub()
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 2*time.Minute)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.note("Dispatch %s (database of its own, events on %s), project %s mapped to %s; daemon at dispatch_url %s, each pane told it as DISPATCH_URL",
 		r.dispatch.base, os.Getenv(liveNATSURLEnv), r.cfg.Project, liveRepo, r.cfg.DispatchURL)
 	return r

@@ -27,6 +27,7 @@ func (stateEventFails) Apply(context.Context, pgx.Tx, intake.Fact) (intake.Resul
 // the workflow's handler leaves none of them and no processed record, and the event applied again
 // leaves all four.
 func TestAStateEventIsStoredInTheFactsOwnTransaction(t *testing.T) {
+	t.Parallel()
 	r := newStatesRig(t, phase.Testing)
 	state := intake.DispatchCheckState{Check: "k1", State: "no", Reason: "fail", Roles: []string{"implementer"}, CICase: "not_completed",
 		Checks: []string{"k1", "k2"}, Serial: 3}

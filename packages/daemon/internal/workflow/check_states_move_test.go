@@ -19,6 +19,7 @@ import (
 // at the head where k1 reads yes from the tester, is no state, and changes nothing the daemon
 // holds. The tester's completion then moves the issue to reviewing on the states it holds.
 func TestOnlyTheStateEventMovesTheTester(t *testing.T) {
+	t.Parallel()
 	r := newStatesRig(t, phase.Testing)
 	r.states(headOne, 1, passOf("k1", "tester"), passOf("k2", "tester"))
 
@@ -57,6 +58,7 @@ func TestOnlyTheStateEventMovesTheTester(t *testing.T) {
 // pull request now stands. A record of H1 goes to reviewing, and one of H2 goes back to
 // implementing naming k2.
 func TestTheMoveReadsTheStatesAtTheTestedHead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		tested string
@@ -92,6 +94,7 @@ func TestTheMoveReadsTheStatesAtTheTestedHead(t *testing.T) {
 // of H1 from before the move: the fail case goes to review on the implementer's passes, and the
 // pass case goes back on no result.
 func TestAResultAtTheTestedHeadAfterAMoveDecidesTheMove(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		published string
@@ -136,6 +139,7 @@ func TestAResultAtTheTestedHeadAfterAMoveDecidesTheMove(t *testing.T) {
 // notice says. (The completion route refuses a completion naming no commit, so only a row the
 // engine was handed directly, never one a plugin sent, can name none.)
 func TestATestRecordNamingNoHeadHoldsTheMove(t *testing.T) {
+	t.Parallel()
 	r := newStatesRig(t, phase.Testing)
 	r.states(headOne, 1, passOf("k1", "tester"), passOf("k2", "tester"))
 	r.complete("", 2)
@@ -157,6 +161,7 @@ func TestATestRecordNamingNoHeadHoldsTheMove(t *testing.T) {
 // holds none (record.PhaseRow), and the architect's phase-finished notice carries the tester's
 // summary and no verdict key. On a fail the notice carries the check that does not pass.
 func TestTheReviewerAndTheArchitectGetNoTesterVerdict(t *testing.T) {
+	t.Parallel()
 	t.Run("a pass", func(t *testing.T) {
 		r := newStatesRig(t, phase.Testing)
 		r.states(headOne, 1, passOf("k1", "tester"))
@@ -191,6 +196,7 @@ func TestTheReviewerAndTheArchitectGetNoTesterVerdict(t *testing.T) {
 // A fail state that arrives while the tester has not completed is held and starts nothing: the
 // issue stays in testing, and no implementer is started.
 func TestAFailStateBeforeTheTesterCompletesStartsNothing(t *testing.T) {
+	t.Parallel()
 	r := newStatesRig(t, phase.Testing)
 	r.states(headOne, 1, stateOf("k1", "no", "fail"))
 	if k1 := r.held(headOne).States["k1"]; k1.State != "no" || k1.Reason != "fail" {
@@ -213,6 +219,7 @@ func TestAFailStateBeforeTheTesterCompletesStartsNothing(t *testing.T) {
 // testing step. Each case runs under both values. The issue here has no plan rows, so it walks the
 // steps of the task default on today's line (todaysWalk).
 func TestATestingStepPassesWhenItsChecksPass(t *testing.T) {
+	t.Parallel()
 	w := todaysWalk()
 	implementing, _ := w.PlaceOf(phase.Implementing)
 	tested := 0
@@ -266,6 +273,7 @@ func TestATestingStepPassesWhenItsChecksPass(t *testing.T) {
 // An issue with no before_merge check goes to reviewing when its tester completes: the first
 // event of its head is the set form, with no check.
 func TestAnIssueWithNoCheckGoesToReview(t *testing.T) {
+	t.Parallel()
 	r := newStatesRig(t, phase.Testing)
 	r.states(headOne, 1)
 	if held := r.held(headOne); held.Checks == nil || len(held.Checks) != 0 {
@@ -279,6 +287,7 @@ func TestAnIssueWithNoCheckGoesToReview(t *testing.T) {
 // head's whole set, so the daemon holds the set from them, and the tester's completion moves on
 // them.
 func TestTheFirstEventsOfAHeadGiveItsSet(t *testing.T) {
+	t.Parallel()
 	r := newStatesRig(t, phase.Testing)
 	r.states(headOne, 1, passOf("k1", "tester"), passOf("k2", "tester"))
 	if held := r.held(headOne); !reflect.DeepEqual(held.Checks, []string{"k1", "k2"}) {

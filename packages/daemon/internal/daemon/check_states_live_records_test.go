@@ -68,14 +68,14 @@ func (r *statesProof) storedResults(table, where string, args ...any) []statesSt
 	return stored
 }
 
-// statesPublished is one row of Dispatch's check_states, the newest state Dispatch published of a
-// check at a head. document is the Verification document the row was computed from, empty where
+// checkStatePublished is one row of Dispatch's check_states, the newest state Dispatch published of
+// a check at a head. document is the Verification document the row was computed from, empty where
 // the issue had none.
-type statesPublished struct {
+type checkStatePublished struct {
 	check, head, state, reason, document string
 }
 
-func (p statesPublished) String() string {
+func (p checkStatePublished) String() string {
 	return fmt.Sprintf("%s at %s: %s (%s)", p.check, p.head, p.state, p.reason)
 }
 
@@ -93,7 +93,7 @@ func (p statesSetPublished) String() string {
 
 // publishedStates is each state Dispatch has published of issue's checks, as its check_states
 // table holds the newest, head by head and check by check.
-func (r *statesProof) publishedStates(issue *statesIssue) []statesPublished {
+func (r *statesProof) publishedStates(issue *statesIssue) []checkStatePublished {
 	r.t.Helper()
 	rows, err := r.dispatchDB.Query(context.Background(), `
 		select check_block_id, head_sha, state, reason, check_artifact_id::text
@@ -102,9 +102,9 @@ func (r *statesProof) publishedStates(issue *statesIssue) []statesPublished {
 		r.fail("published-states", "read Dispatch's check_states of %s: %v", issue.key, err)
 	}
 	defer rows.Close()
-	var states []statesPublished
+	var states []checkStatePublished
 	for rows.Next() {
-		var state statesPublished
+		var state checkStatePublished
 		if err := rows.Scan(&state.check, &state.head, &state.state, &state.reason, &state.document); err != nil {
 			r.fail("published-states", "read a state of %s: %v", issue.key, err)
 		}

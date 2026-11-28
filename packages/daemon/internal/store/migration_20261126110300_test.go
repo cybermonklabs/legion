@@ -59,6 +59,7 @@ func checkStatesWayBack(t *testing.T) string {
 // protocol), drops the three tables and the column and deletes the migration's own row, keeping
 // every issue; the roll-forward's Migrate then applies the migration again, and only it.
 func TestTheCheckStatesMigrationAndItsWayBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, checkStatesVersion-1)

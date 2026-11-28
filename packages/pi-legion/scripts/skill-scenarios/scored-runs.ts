@@ -43,6 +43,7 @@ import {
   stageOf,
 } from "./owner-walk";
 import { parseInstant } from "./production-dispatch";
+import { SCORED_SCENARIOS } from "./run-names";
 import {
   Captured,
   CellLine,
@@ -64,9 +65,6 @@ import {
   wholeKeys,
 } from "./scored-runs-contracts";
 import { parsedSession, type SessionEntry, session, sessionId } from "./transcript";
-
-/** The scenarios whose runs score.ts scores through this module. */
-export const SCORED_SCENARIOS: readonly string[] = ["owner-walk"];
 
 function readJson(dir: string, file: string): unknown {
   const full = path.join(dir, file);

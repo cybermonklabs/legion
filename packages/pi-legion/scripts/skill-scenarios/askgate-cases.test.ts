@@ -8,7 +8,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path";
 import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { copyOfThisDirectory, rigFunctions } from "./catalog-copy";
+import { copyOfThisDirectory, rigCommand } from "./catalog-copy";
 import { fileRowLimit, RIG_STEP, SCRIPT_RUN } from "./test-limit";
 
 // The most a row runs as processes of their own: two rig.sh steps and one bun script, or three
@@ -31,13 +31,8 @@ test("a case added to the askgate catalog alone reaches rig.sh and score.ts", ()
     SKILL_SCENARIOS_ASKGATE_CASE: "upload-twice",
     SKILL_SCENARIOS_PARALLEL: "1",
   };
-  const functions = rigFunctions(copy);
   const bash = (part: string, lines: string[], args: string[]) => {
-    const ran = spawnWithin(
-      { ...RIG_STEP, part },
-      ["bash", "-c", [functions, ...lines].join("\n"), "-", ...args],
-      { env }
-    );
+    const ran = spawnWithin({ ...RIG_STEP, part }, rigCommand(copy, lines, args), { env });
     return `exit=${ran.exitCode} ${ran.stderr.toString()}`;
   };
 
@@ -81,15 +76,15 @@ test("a case added to the askgate catalog alone reaches rig.sh and score.ts", ()
     ranWith = readFileSync(path.join(work, "maps/runs/askgate-upload-twice-head-1/ran"), "utf8");
   } catch {}
 
-  // score.ts's reading of two runs' names, from the copy.
+  // run-names.ts's reading of two runs' names, which score.ts reads them through, from the copy.
   const probe = path.join(copy, "catalog-probe.ts");
   writeFileSync(
     probe,
     [
-      'import { CASED_RUNS } from "./score";',
+      'import { runFields } from "./run-names";',
       "console.log(JSON.stringify(",
       '  ["askgate-upload-twice-head-1", "askgate-upload-head-1"].map(',
-      "    (name) => CASED_RUNS.askgate?.exec(name)?.slice(1)",
+      "    (name) => [runFields(name)?.case, runFields(name)?.label]",
       "  )",
       "));",
     ].join("\n")

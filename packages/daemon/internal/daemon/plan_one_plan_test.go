@@ -478,7 +478,7 @@ func (r *ownerStepsRig) ownersTextOverThePlannersBlocks() {
 	}
 	r.takesOne(doc, 4, "default", stepAt(3, claim.RoleTester))
 	r.standsAsItWas("version 4 given again", "default", before)
-	r.finish(tester, "test", api.HandoffCompleteRequest{Summary: "the criteria read pass", Verdict: "pass"}, phase.Reviewing)
+	r.finish(tester, "test", testCompletion, phase.Reviewing)
 	holdsOwnersText(t, "reviewer", takeText(r.worker(claim.RoleReviewer)), cTwo, append([]string{cOne, defaultText}, elementTexts...)...)
 }
 

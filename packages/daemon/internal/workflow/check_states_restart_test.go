@@ -15,6 +15,7 @@ import (
 // tester's completion stands in testing until the restarted tester completes; that completion
 // then decides the move, which is the control.
 func TestARestartOfTheTesterLeavesNoCompletionTheStatesDecideOn(t *testing.T) {
+	t.Parallel()
 	r := newStatesRig(t, phase.Testing)
 	r.states(headOne, 1, ofSet(passOf("k1", "tester"), "k1", "k2"))
 	r.complete(headOne, 1)

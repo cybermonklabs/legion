@@ -383,8 +383,14 @@ function ciCheckLines(
   if (derived === undefined) {
     // A pass the CI job recorded may stand where the run derives nothing, so the head line says
     // so rather than "no result" above a line that says a pass stands. A result derived at
-    // another head is no result of the job: its head's line says what it decides.
-    const jobResults = others.some((result) => !result.id.startsWith(CI_RESULT_ID_PREFIX));
+    // another head is no result of the job, nor is a role's result or one that counts for
+    // nothing: its own line says what it decides.
+    const jobResults = others.some(
+      (result) =>
+        result.role === "ci" &&
+        !result.id.startsWith(CI_RESULT_ID_PREFIX) &&
+        (result.not_counted ?? "") === ""
+    );
     const head = jobResults
       ? `its CI job's results below, and CI run ${ci.run} derives none`
       : "no result";

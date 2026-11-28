@@ -22,6 +22,7 @@ import (
 // state Dispatch could not read of a check no CI job runs among them. A state of a check outside
 // the set is no part of the judgement, and no set held is no judgement at all.
 func TestJudgeStates(t *testing.T) {
+	t.Parallel()
 	state := func(check, answer, reason, ciCase string, roles ...string) record.CheckState {
 		return record.CheckState{Check: check, State: answer, Reason: reason, CICase: ciCase, Roles: roles}
 	}
@@ -139,6 +140,7 @@ func TestJudgeStates(t *testing.T) {
 // of the set with no state holds the move either way, since only its state says whether a CI job
 // runs it.
 func TestTheTestingMoveStateTable(t *testing.T) {
+	t.Parallel()
 	k3Failed := inCI(stateOf("k3", "no", "fail", "ci"), "failure")
 	reviewing := func(r *statesRig) { assertPhase(r.t, r.pool, phase.Reviewing) }
 	for _, tc := range []struct {

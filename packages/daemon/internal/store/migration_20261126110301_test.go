@@ -22,6 +22,7 @@ const phaseVerdictGoneVersion = 20261126110301
 // which the release before has no field for, keeping the rest of what each says, and deletes the
 // migration's own row; the roll-forward's Migrate then applies the migration again, and only it.
 func TestThePhaseVerdictGoneMigrationAndItsWayBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, phaseVerdictGoneVersion-1)

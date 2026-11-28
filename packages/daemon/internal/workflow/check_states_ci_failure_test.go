@@ -23,6 +23,7 @@ import (
 // failure, tell nobody. The test reads the rows' fields and the lines written from them, never a
 // word of a message.
 func TestAFailedCIJobReachesTheImplementerWhileTheReviewerWorks(t *testing.T) {
+	t.Parallel()
 	k3Failed := ofSet(inCI(stateOf("k3", "no", "fail", "ci"), "failure"), "k1", "k2", "k3")
 
 	t.Run("the CI result settles while the tester works", func(t *testing.T) {

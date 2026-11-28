@@ -24,6 +24,7 @@ import (
 // waits for the job that goes on. An engine wired to leave those checks out would send ACME-1 to
 // review in both cases, and this test fails then.
 func TestTheDaemonWiresTheTestingMoveToReadEveryCheck(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		k3   intake.DispatchCheckState

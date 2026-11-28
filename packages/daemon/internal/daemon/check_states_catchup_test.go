@@ -164,6 +164,7 @@ func statesCursor(t *testing.T, pool *store.Pool, key string) int64 {
 // move reaches its fence at once. ACME-3, done, is not read. Before this catch-up the boot read
 // only the roots that wait on a person, so ACME-1 stayed in testing.
 func TestTheBootCatchUpTakesTheStateEventsTheDaemonMissed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client := &stateLogs{logs: map[string][]json.RawMessage{
 		"ACME-1": {passedAt(t, "ACME-1", 10, 1, statesHeadOne, "k1", "k1", "k2"), passedAt(t, "ACME-1", 11, 2, statesHeadOne, "k2", "k1", "k2"),
@@ -249,6 +250,7 @@ func (f failingState) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (inta
 // the cursor stops just below it, so the next boot reads it again, as the live consumer retries it,
 // and holds its state then.
 func TestTheCheckStatesCatchUpReadsAnEventThatFailedAgainAtTheNextBoot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client := &stateLogs{logs: map[string][]json.RawMessage{"ACME-1": {
 		passedAt(t, "ACME-1", 10, 1, statesHeadOne, "k1", "k1", "k2", "k3"), passedAt(t, "ACME-1", 11, 2, statesHeadOne, "k2", "k1", "k2", "k3"),
@@ -290,6 +292,7 @@ func TestTheCheckStatesCatchUpReadsAnEventThatFailedAgainAtTheNextBoot(t *testin
 // refusal (401) not again, then passes over it with its cursor where it stood, and the next issue
 // is caught up all the same.
 func TestTheCheckStatesCatchUpSkipsAnIssueDispatchKeepsRefusing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		status int
 		reads  int
@@ -331,6 +334,7 @@ func TestTheCheckStatesCatchUpSkipsAnIssueDispatchKeepsRefusing(t *testing.T) {
 // event it reads whatever processed_events records of it, so every state is held again, as the
 // migration's header says.
 func TestTheCheckStatesCatchUpHoldsTheStatesAgainAfterTheWayBackAndTheRollForward(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client := &stateLogs{logs: map[string][]json.RawMessage{"ACME-1": {
 		passedAt(t, "ACME-1", 10, 1, statesHeadOne, "k1", "k1", "k2"), passedAt(t, "ACME-1", 11, 2, statesHeadOne, "k2", "k1", "k2"),

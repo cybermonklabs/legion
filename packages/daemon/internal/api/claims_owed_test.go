@@ -71,7 +71,7 @@ func TestClaimOwedFollowsThePhaseAsTheWorkflowMovesTheIssue(t *testing.T) {
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
 	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
-			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
+			Number: 42, Branch: "legion/LEGION-208", HeadSHA: headSHA, CheckedHead: headSHA, Failing: []string{}})
 	}); err != nil {
 		t.Fatalf("record the pull request: %v", err)
 	}
@@ -88,7 +88,10 @@ func TestClaimOwedFollowsThePhaseAsTheWorkflowMovesTheIssue(t *testing.T) {
 	takeStart(t, h, tester.token, "LEGION-208", claim.RoleTester)
 	tester.owes(t, "the testing phase of LEGION-208")
 
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+	// A testing step ends by its checks' states: the head's one check passes there (testedAs), and
+	// the completion names that head and no verdict.
+	testedAs(t, h, "LEGION-208", headSHA, true)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA,
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
 	assertIssuePhase(t, h, phase.Reviewing)
 	tester.owesNothing(t)
