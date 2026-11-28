@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 )
 
 // TestTheRereadAnOpenOutcomeNamesReachesTheBroker: a retag whose tag write's answer is lost, and
@@ -30,20 +30,21 @@ import (
 func TestTheRereadAnOpenOutcomeNamesReachesTheBroker(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	t.Run("the retag prints the command", func(t *testing.T) {
-		local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
-		broker := startSecretBroker(t, servedBy(local))
-		broker.failRereads(http.StatusServiceUnavailable)
-		awstest.Use(t, &raceOnTag{WriterAPI: local, loseAnswer: "tag"}, testAccount, adaSignIn)
-		_, stderr, code := runSecret("retag", "API_KEY", "--tier", policy.TierAgent)
-		printed := regexp.MustCompile("ask for the reread with `([^`]*)`").FindStringSubmatch(stderr)
-		if code != 1 || printed == nil || printed[1] != rereadCommand("API_KEY") {
-			t.Fatalf("retag: exit %d stderr %q; want 1 and the reread command %q", code, stderr, rereadCommand("API_KEY"))
-		}
-		for _, claim := range []string{"stands", "after the write"} {
-			if strings.Contains(stderr, claim) {
-				t.Fatalf("retag: stderr %q says %q of a write whose outcome is unknown", stderr, claim)
+		onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+			putSecret(t, store, policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
+			broker.failRereads(http.StatusServiceUnavailable)
+			store.loseTagWriteAnswer(1)
+			_, stderr, code := runSecret("retag", "API_KEY", "--tier", policy.TierAgent)
+			printed := regexp.MustCompile("ask for the reread with `([^`]*)`").FindStringSubmatch(stderr)
+			if code != 1 || printed == nil || printed[1] != rereadCommand("API_KEY") {
+				t.Fatalf("retag: exit %d stderr %q; want 1 and the reread command %q", code, stderr, rereadCommand("API_KEY"))
 			}
-		}
+			for _, claim := range []string{"stands", "after the write"} {
+				if strings.Contains(stderr, claim) {
+					t.Fatalf("retag: stderr %q says %q of a write whose outcome is unknown", stderr, claim)
+				}
+			}
+		})
 	})
 	for _, c := range []struct {
 		name       string
@@ -59,36 +60,37 @@ func TestTheRereadAnOpenOutcomeNamesReachesTheBroker(t *testing.T) {
 		{name: "a broker refusing the reread", refuse: http.StatusTooManyRequests, wantSaid: "returned error: 429"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
-			broker := startSecretBroker(t, servedBy(local))
-			broker.failRereads(c.refuse)
-			home := t.TempDir()
-			env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}
-			if c.noVar {
-				// The CLI read the address from the config file, so the shell holds none.
-				dir := filepath.Join(home, ".config", "agent-secrets")
-				if err := os.MkdirAll(dir, 0o700); err != nil {
-					t.Fatal(err)
+			onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+				putSecret(t, store, policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
+				broker.failRereads(c.refuse)
+				home := t.TempDir()
+				env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}
+				if c.noVar {
+					// The CLI read the address from the config file, so the shell holds none.
+					dir := filepath.Join(home, ".config", "agent-secrets")
+					if err := os.MkdirAll(dir, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(dir, "config"), []byte(brokerURLVar+"="+os.Getenv(brokerURLVar)+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					env = append(env, brokerURLVar+"="+os.Getenv(brokerURLVar)+c.suffix)
 				}
-				if err := os.WriteFile(filepath.Join(dir, "config"), []byte(brokerURLVar+"="+os.Getenv(brokerURLVar)+"\n"), 0o600); err != nil {
-					t.Fatal(err)
+				cmd := exec.Command("bash", "--noprofile", "--norc", "-c", rereadCommand("API_KEY"))
+				cmd.Env = env
+				out, err := cmd.CombinedOutput()
+				rereads := broker.rereadUnsigned()
+				if c.wantReread {
+					if err != nil || len(rereads) != 1 || rereads[0] != "API_KEY" || strings.Contains(string(out), "stands") {
+						t.Fatalf("the printed command: err %v, output %q, rereads %v; want one reread of API_KEY, and no word of the write standing", err, out, rereads)
+					}
+					return
 				}
-			} else {
-				env = append(env, brokerURLVar+"="+os.Getenv(brokerURLVar)+c.suffix)
-			}
-			cmd := exec.Command("bash", "--noprofile", "--norc", "-c", rereadCommand("API_KEY"))
-			cmd.Env = env
-			out, err := cmd.CombinedOutput()
-			rereads := broker.rereadUnsigned()
-			if c.wantReread {
-				if err != nil || len(rereads) != 1 || rereads[0] != "API_KEY" || strings.Contains(string(out), "stands") {
-					t.Fatalf("the printed command: err %v, output %q, rereads %v; want one reread of API_KEY, and no word of the write standing", err, out, rereads)
+				if err == nil || !strings.Contains(string(out), c.wantSaid) || len(rereads) != 0 {
+					t.Fatalf("the printed command: err %v, output %q, rereads %v; want it to fail saying %q and record no reread", err, out, rereads, c.wantSaid)
 				}
-				return
-			}
-			if err == nil || !strings.Contains(string(out), c.wantSaid) || len(rereads) != 0 {
-				t.Fatalf("the printed command: err %v, output %q, rereads %v; want it to fail saying %q and record no reread", err, out, rereads, c.wantSaid)
-			}
+			})
 		})
 	}
 }

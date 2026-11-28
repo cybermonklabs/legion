@@ -50,12 +50,16 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 		source   string
 		store    string
 	}{
-		{"gcp", "https://secrets.internal.example/", Settings{Store: gcp.Name, GCPProject: "000000000000"},
+		{"gcp", "https://secrets.internal.example/", Settings{Store: gcp.Name, Fields: map[string]string{"gcp_project": "000000000000"}},
 			"the broker AGENT_SECRETS_URL names (GCP Secret Manager)", "GCP Secret Manager project 000000000000"},
-		{"aws", "http://127.0.0.1:13380", Settings{Store: aws.Name, AWSAccountID: "111122223333", AWSRegion: "us-east-1"},
+		{"aws", "http://127.0.0.1:13380", Settings{Store: aws.Name, Fields: map[string]string{"aws_account_id": "111122223333", "aws_region": "us-east-1"}},
 			"the broker AGENT_SECRETS_URL names (AWS Secrets Manager)", "AWS Secrets Manager account 111122223333 in us-east-1"},
-		{"a broker from before the store field", "http://127.0.0.1:13380", Settings{AWSAccountID: "111122223333"},
+		{"a broker from before the store field", "http://127.0.0.1:13380", Settings{Fields: map[string]string{"aws_account_id": "111122223333"}},
 			"the broker AGENT_SECRETS_URL names (AWS Secrets Manager)", "AWS Secrets Manager account 111122223333"},
+		// The memory store's line keeps main's word, "(memory)", which main printed for it as for
+		// any store it did not know; its store name adds the file the settings name.
+		{"memory", "http://127.0.0.1:13380", Settings{Store: "memory", Fields: map[string]string{"memory_secrets_file": "/tmp/memory-secrets.json"}},
+			"the broker AGENT_SECRETS_URL names (memory)", "memory file /tmp/memory-secrets.json"},
 		{"a store this release does not know", "http://127.0.0.1:13380", Settings{Store: "vault"},
 			"the broker AGENT_SECRETS_URL names (vault)", "vault"},
 	} {
@@ -112,8 +116,8 @@ func TestExecFormNamesItsSourceBeforeItExecs(t *testing.T) {
 		line     string
 	}{
 		{"gcp", &fakeSettings, prefix + " (GCP Secret Manager)\n"},
-		{"aws", &Settings{Store: aws.Name, AWSAccountID: "111122223333", AWSRegion: "us-east-1"}, prefix + " (AWS Secrets Manager)\n"},
-		{"a broker from before the store field", &Settings{AWSAccountID: "111122223333", AWSRegion: "us-east-1"}, prefix + " (AWS Secrets Manager)\n"},
+		{"aws", &Settings{Store: aws.Name, Fields: map[string]string{"aws_account_id": "111122223333", "aws_region": "us-east-1"}}, prefix + " (AWS Secrets Manager)\n"},
+		{"a broker from before the store field", &Settings{Fields: map[string]string{"aws_account_id": "111122223333", "aws_region": "us-east-1"}}, prefix + " (AWS Secrets Manager)\n"},
 		{"a store this release does not know", &Settings{Store: "vault"}, prefix + " (vault)\n"},
 		{"no settings route", nil, prefix + "\n"},
 	} {
@@ -412,7 +416,7 @@ func TestNoSessionLineNamesAHostOrAStoreID(t *testing.T) {
 		source   string
 	}{
 		{"gcp", &fakeSettings, "the broker AGENT_SECRETS_URL names (GCP Secret Manager)"},
-		{"aws", &Settings{Store: aws.Name, AWSAccountID: "111122223333", AWSRegion: "us-east-1"}, "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)"},
+		{"aws", &Settings{Store: aws.Name, Fields: map[string]string{"aws_account_id": "111122223333", "aws_region": "us-east-1"}}, "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)"},
 		{"a store this release does not know", &Settings{Store: "vault"}, "the broker AGENT_SECRETS_URL names (vault)"},
 		{"no settings route", nil, "the broker AGENT_SECRETS_URL names"},
 	} {

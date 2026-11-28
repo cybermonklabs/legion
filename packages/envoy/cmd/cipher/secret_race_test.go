@@ -169,26 +169,28 @@ func TestARetagExitsOneWhileTheBrokerServesTheOldType(t *testing.T) {
 		{"removal read", "", []string{"--type", "none"}, 0, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := awstest.NewLocal(awstest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleLogin)))
-			if row.args[1] == "none" {
-				local = awstest.NewLocal(awstest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
-			}
-			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true, Type: row.served} })
-			awstest.Use(t, local, testAccount, adaSignIn)
-			stdout, stderr, code := runSecret(append([]string{"retag", "LOGIN_KEY"}, row.args...)...)
-			if code != row.code {
-				t.Fatalf("retag %v with the broker serving type %q: exit %d, stdout %q, stderr %q; want %d", row.args, row.served, code, stdout, stderr, row.code)
-			}
-			stale := strings.Contains(stderr, "it still sees the old tags") && strings.Contains(stderr, "Run this retag again") && strings.Contains(stderr, "store no value in LOGIN_KEY")
-			if stale != (row.code == 1) {
-				t.Fatalf("stderr %q; want the stale-tags message exactly when the type is stale", stderr)
-			}
-			if row.refusal != "" && !strings.Contains(stderr, row.refusal) {
-				t.Fatalf("stderr %q does not say %q: the refusal has to name the type the broker serves, which is what tells an operator whether to run the retag again", stderr, row.refusal)
-			}
-			if row.served != "" && (!strings.Contains(stdout, "broker: serving LOGIN_KEY from ") || !strings.Contains(stdout, "(type "+row.served+")")) {
-				t.Fatalf("stdout %q does not name the served type and the store it is in", stdout)
-			}
+			onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+				held := policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleLogin))
+				if row.args[1] == "none" {
+					held = policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
+				}
+				putSecret(t, store, held)
+				broker.answerAs(func(name string) Reread { return Reread{Name: name, Served: true, Type: row.served} })
+				stdout, stderr, code := runSecret(append([]string{"retag", "LOGIN_KEY"}, row.args...)...)
+				if code != row.code {
+					t.Fatalf("retag %v with the broker serving type %q: exit %d, stdout %q, stderr %q; want %d", row.args, row.served, code, stdout, stderr, row.code)
+				}
+				stale := strings.Contains(stderr, "it still sees the old tags") && strings.Contains(stderr, "Run this retag again") && strings.Contains(stderr, "store no value in LOGIN_KEY")
+				if stale != (row.code == 1) {
+					t.Fatalf("stderr %q; want the stale-tags message exactly when the type is stale", stderr)
+				}
+				if row.refusal != "" && !strings.Contains(stderr, row.refusal) {
+					t.Fatalf("stderr %q does not say %q: the refusal has to name the type the broker serves, which is what tells an operator whether to run the retag again", stderr, row.refusal)
+				}
+				if row.served != "" && (!strings.Contains(stdout, "broker: serving LOGIN_KEY from ") || !strings.Contains(stdout, "(type "+row.served+")")) {
+					t.Fatalf("stdout %q does not name the served type and the store it is in", stdout)
+				}
+			})
 		})
 	}
 }

@@ -29,7 +29,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // useStoreCallDeadline makes d the deadline on each store call of a create, for the rest of t.
@@ -58,16 +60,18 @@ func (h hungCreate) CreateSecret(ctx context.Context, in *secretsmanager.CreateS
 }
 
 // TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline: a store call of the create that the
-// store never answers - GCP's AddSecretVersion, AWS's one CreateSecret - ends at the deadline on
-// each such call, and the create fails as on any store error rather than waiting for it: on GCP,
-// where a call that ran out of time may have stored the value or may still, it lists the versions,
-// finds none, keeps the secret, says a late add may still land and names the command that checks
-// it, deleting nothing, and asks the broker to reread the name; on AWS, whose CreateSecret makes
-// the secret with its value in one call, it says that the store may hold the secret or not and
-// names the command that says which. Each exits 1 well before the store would answer.
+// store never answers - GCP's AddSecretVersion, AWS's one CreateSecret, the memory store's one
+// create (memory.Writer.HangNext) - ends at the deadline on each such call, and the create fails as
+// on any store error rather than waiting for it: on GCP, where a call that ran out of time may have
+// stored the value or may still, it lists the versions, finds none, keeps the secret, says a late
+// add may still land and names the command that checks it, deleting nothing, and asks the broker to
+// reread the name; on AWS and the memory store, whose create makes the secret with its value in one
+// call, it says that the store may hold the secret or not and names the command that says which.
+// Each exits 1 well before the store would answer. It runs on every store the registry holds.
 func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
-	for _, store := range []string{"gcp", "aws"} {
+	for _, b := range backends.All() {
+		store := b.ID()
 		t.Run(store, func(t *testing.T) {
 			useStoreCallDeadline(t, 300*time.Millisecond)
 			release := make(chan struct{})
@@ -76,6 +80,7 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 			var fake *gcptest.FakeSecretManager
 			var broker *secretBroker
 			var local *awstest.Local
+			var held typeStore
 			want := []string{}
 			switch store {
 			case "gcp":
@@ -94,6 +99,14 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 				broker = startSecretBroker(t, servedBy(local))
 				awstest.Use(t, hungCreate{Local: local, release: release}, testAccount, adaSignIn)
 				want = append(want, "context deadline exceeded", "did not answer within 300ms", "the store may hold NEW_TEST, made with its value, or no NEW_TEST at all", "`agent-secrets secret show NEW_TEST` says which")
+			case "memory":
+				rig := storeRigs["memory"](t)
+				held = rig.store
+				t.Cleanup(memory.SwapHooks(memory.Hooks{Opened: func(w *memory.Writer) { w.HangNext("create") }}))
+				broker = startSecretBrokerWith(t, rig.settings, rig.answer)
+				want = append(want, "context deadline exceeded", "did not answer within 300ms", "the store may hold NEW_TEST, made with its value, or no NEW_TEST at all", "`agent-secrets secret show NEW_TEST` says which")
+			default:
+				t.Fatalf("the registry holds the store %s, which this test has no hung call for", store)
 			}
 			useStdin(t, "shh")
 
@@ -105,7 +118,7 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 			meter := startStallMeter(t)
 			start := time.Now()
 			go func() {
-				_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
+				_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent")
 				done <- result{stderr, code}
 			}()
 			// The store never answers until the test ends (releaseOnce, a cleanup), so the create
@@ -131,6 +144,13 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 			case "aws":
 				if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_TEST"))}); err == nil {
 					t.Fatal("the create whose CreateSecret ran out of time made NEW_TEST")
+				}
+				if rereads, _ := broker.recorded(); len(rereads) != 0 {
+					t.Fatalf("rereads %v; want none, the create having made nothing", rereads)
+				}
+			case "memory":
+				if held.has(t, "NEW_TEST") {
+					t.Fatal("the create whose store call ran out of time made NEW_TEST")
 				}
 				if rereads, _ := broker.recorded(); len(rereads) != 0 {
 					t.Fatalf("rereads %v; want none, the create having made nothing", rereads)

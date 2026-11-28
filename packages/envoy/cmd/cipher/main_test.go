@@ -457,8 +457,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 var fakeSettings = Settings{
 	Store:         gcp.Name,
 	SecretsPrefix: "projects/000000000000/secrets/agent-secrets-",
-	KMSKeyName:    "projects/000000000000/locations/global/keyRings/example/cryptoKeys/agent-secrets",
-	GCPProject:    "000000000000",
+	Fields:        map[string]string{"kms_key_name": "projects/000000000000/locations/global/keyRings/example/cryptoKeys/agent-secrets", "gcp_project": "000000000000"},
 }
 
 // fakeSourceText is the source the CLI names for a line about a secret from this fake broker: its

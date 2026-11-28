@@ -6,7 +6,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,15 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
-
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -37,17 +31,16 @@ import (
 // reads the broker's whole answer: `broker: serving` and exit 0.
 func TestASecretFormSignsItsRereadAsThisProcesssSession(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal()
-	broker := startSecretBroker(t, servedBy(local))
-	awstest.Use(t, local, testAccount, adaSignIn)
-	useStdin(t, "v1")
-	stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
-	if code != 0 || !strings.Contains(stdout, "broker: serving NEW_KEY from ") {
-		t.Fatalf("create with a key directory: exit %d, stdout %q, stderr %q; want 0 and the broker serving NEW_KEY", code, stdout, stderr)
-	}
-	if signers, unsigned := broker.rereadSigners(), broker.rereadUnsigned(); !slices.Equal(signers, []string{testEnrollmentID}) || len(unsigned) != 0 {
-		t.Fatalf("the rereads were signed by %v, and %v went with no proof; want one, signed by %s, the key directory's session", signers, unsigned, testEnrollmentID)
-	}
+	onEachStore(t, func(t *testing.T, _ typeStore, broker *secretBroker) {
+		useStdin(t, "v1")
+		stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent")
+		if code != 0 || !strings.Contains(stdout, "broker: serving NEW_KEY from ") {
+			t.Fatalf("create with a key directory: exit %d, stdout %q, stderr %q; want 0 and the broker serving NEW_KEY", code, stdout, stderr)
+		}
+		if signers, unsigned := broker.rereadSigners(), broker.rereadUnsigned(); !slices.Equal(signers, []string{testEnrollmentID}) || len(unsigned) != 0 {
+			t.Fatalf("the rereads were signed by %v, and %v went with no proof; want one, signed by %s, the key directory's session", signers, unsigned, testEnrollmentID)
+		}
+	})
 }
 
 // TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned: a form run where this process holds
@@ -60,34 +53,32 @@ func TestASecretFormSignsItsRereadAsThisProcesssSession(t *testing.T) {
 func TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	t.Run("a stored secret", func(t *testing.T) {
-		local := awstest.NewLocal()
-		broker := startSecretBroker(t, servedBy(local))
-		withNoBrokerIdentity(t)
-		awstest.Use(t, local, testAccount, adaSignIn)
-		useStdin(t, "v1")
-		stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
-		if code != 0 || !strings.Contains(stdout, "broker: rereading NEW_KEY from ") || strings.Contains(stdout, "broker: serving") ||
-			strings.Count(afterUsing(t, stderr, "secret create"), "\n") != 1 ||
-			!strings.Contains(stderr, "took the reread of NEW_KEY, but how it serves NEW_KEY was not checked ("+errNoBrokerIdentity.Error()+": key-dir:") ||
-			!strings.Contains(stderr, "; machine:") ||
-			!strings.Contains(stderr, "agent-secrets sign --method POST") {
-			t.Fatalf("create with no broker identity: exit %d, stdout %q, stderr %q; want 0 and one line saying the broker's view was not checked, why, and the signed reread that checks it", code, stdout, stderr)
-		}
-		if unsigned, signers := broker.rereadUnsigned(), broker.rereadSigners(); !slices.Equal(unsigned, []string{"NEW_KEY"}) || len(signers) != 0 {
-			t.Fatalf("the rereads %v went with no proof and %v were signed; want NEW_KEY's alone, with no proof", unsigned, signers)
-		}
+		onEachStore(t, func(t *testing.T, _ typeStore, broker *secretBroker) {
+			withNoBrokerIdentity(t)
+			useStdin(t, "v1")
+			stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent")
+			if code != 0 || !strings.Contains(stdout, "broker: rereading NEW_KEY from ") || strings.Contains(stdout, "broker: serving") ||
+				strings.Count(afterUsing(t, stderr, "secret create"), "\n") != 1 ||
+				!strings.Contains(stderr, "took the reread of NEW_KEY, but how it serves NEW_KEY was not checked ("+errNoBrokerIdentity.Error()+": key-dir:") ||
+				!strings.Contains(stderr, "; machine:") ||
+				!strings.Contains(stderr, "agent-secrets sign --method POST") {
+				t.Fatalf("create with no broker identity: exit %d, stdout %q, stderr %q; want 0 and one line saying the broker's view was not checked, why, and the signed reread that checks it", code, stdout, stderr)
+			}
+			if unsigned, signers := broker.rereadUnsigned(), broker.rereadSigners(); !slices.Equal(unsigned, []string{"NEW_KEY"}) || len(signers) != 0 {
+				t.Fatalf("the rereads %v went with no proof and %v were signed; want NEW_KEY's alone, with no proof", unsigned, signers)
+			}
+		})
 	})
 	t.Run("a type secret whose tag the store kept", func(t *testing.T) {
-		local := awstest.NewLocal()
-		broker := startSecretBroker(t, servedBy(local))
-		withNoBrokerIdentity(t)
-		awstest.Use(t, local, testAccount, adaSignIn)
-		useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
-		stdout, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleLogin)
-		requireTypeUnchecked(t, "create", stdout, stderr, code, errNoBrokerIdentity.Error())
-		if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"LOGIN_KEY"}) {
-			t.Fatalf("the rereads %v went with no proof; want LOGIN_KEY's", unsigned)
-		}
+		onEachStore(t, func(t *testing.T, _ typeStore, broker *secretBroker) {
+			withNoBrokerIdentity(t)
+			useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
+			stdout, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGoogleLogin)
+			requireTypeUnchecked(t, "create", stdout, stderr, code, errNoBrokerIdentity.Error())
+			if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"LOGIN_KEY"}) {
+				t.Fatalf("the rereads %v went with no proof; want LOGIN_KEY's", unsigned)
+			}
+		})
 	})
 }
 
@@ -106,76 +97,42 @@ func requireTypeUnchecked(t *testing.T, form, stdout, stderr string, code int, b
 	}
 }
 
-// plantingStore is the store the CLI writes to, which, once a form's own write has landed, leaves
-// the secret's type tag as plant does: a store that did not keep the type the form wrote, as
-// another writer's race or a tag policy that strips it would leave it. It plants after a create's
-// CreateSecret, a set's PutSecretValue or a retag's TagResource, whichever the form writes with,
-// and counts each plant, so a row that planted nothing fails rather than passing on nothing.
-type plantingStore struct {
-	*awstest.Local
-	t       *testing.T
-	found   string // the type tag to leave: a type, tagNone for none, or "" to plant nothing
-	planted *int
-}
-
-func (p plantingStore) plant(id string) {
-	if p.found == "" {
+// plantType makes store, once a form's own write has landed, leave the type tag of LOGIN_KEY as
+// found says: a store that did not keep the type the form wrote, as another writer's race or a
+// tag policy that strips it would leave it. found is a type, tagNone for none, or "" to plant
+// nothing. It plants after each write of the form's (typeStore.afterEachWrite) and counts each
+// plant in planted, so a row that planted nothing fails rather than passing on nothing.
+func plantType(t *testing.T, store typeStore, found string, planted *int) {
+	t.Helper()
+	if found == "" {
 		return
 	}
-	ctx := context.Background()
-	if p.found == tagNone {
-		if _, err := p.Local.UntagResource(ctx, &secretsmanager.UntagResourceInput{SecretId: aws.String(id), TagKeys: []string{policy.TagType}}); err != nil {
-			p.t.Fatal(err)
+	store.afterEachWrite(func() {
+		if found == tagNone {
+			store.retag(t, "LOGIN_KEY", nil, policy.TagType)
+		} else {
+			store.retag(t, "LOGIN_KEY", map[string]string{policy.TagType: found})
 		}
-	} else if _, err := p.Local.TagResource(ctx, &secretsmanager.TagResourceInput{SecretId: aws.String(id),
-		Tags: []smtypes.Tag{{Key: aws.String(policy.TagType), Value: aws.String(p.found)}}}); err != nil {
-		p.t.Fatal(err)
-	}
-	*p.planted++
+		*planted++
+	})
 }
 
-func (p plantingStore) CreateSecret(ctx context.Context, in *secretsmanager.CreateSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
-	out, err := p.Local.CreateSecret(ctx, in, o...)
-	if err == nil {
-		p.plant(aws.ToString(in.Name))
-	}
-	return out, err
-}
-
-func (p plantingStore) PutSecretValue(ctx context.Context, in *secretsmanager.PutSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error) {
-	out, err := p.Local.PutSecretValue(ctx, in, o...)
-	if err == nil {
-		p.plant(aws.ToString(in.SecretId))
-	}
-	return out, err
-}
-
-func (p plantingStore) TagResource(ctx context.Context, in *secretsmanager.TagResourceInput, o ...func(*secretsmanager.Options)) (*secretsmanager.TagResourceOutput, error) {
-	out, err := p.Local.TagResource(ctx, in, o...)
-	if err == nil {
-		p.plant(aws.ToString(in.SecretId))
-	}
-	return out, err
-}
-
-// typedWrite sets local and the stdin up for form's typed write of LOGIN_KEY as google-login and
+// typedWrite sets store and the stdin up for form's typed write of LOGIN_KEY as google-login and
 // answers the form's arguments: a create of a new secret, a set of a google-login secret's value,
 // or a retag of a stored secret that holds a login to google-login.
-func typedWrite(t *testing.T, local *awstest.Local, form string) []string {
+func typedWrite(t *testing.T, store typeStore, form string) []string {
 	t.Helper()
 	login := policytest.TypeValue(policy.TypeGoogleLogin)
 	switch form {
 	case "create":
 		useStdin(t, login)
-		return []string{"create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleLogin}
+		return []string{"create", "LOGIN_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGoogleLogin}
 	case "set":
-		local.Put(awstest.LocalSecret{Name: policytest.ID("LOGIN_KEY"), KmsKeyID: awstest.KeyARN,
-			Tags: awstest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "").Tags, Value: "old"})
+		store.put(t, "LOGIN_KEY", policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "").Tags, "old")
 		useStdin(t, login+"\n")
 		return []string{"set", "LOGIN_KEY"}
 	default:
-		local.Put(awstest.LocalSecret{Name: policytest.ID("LOGIN_KEY"), KmsKeyID: awstest.KeyARN,
-			Tags: awstest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "").Tags, Value: login})
+		store.put(t, "LOGIN_KEY", ownerTier("ada@example.com", policy.TierAgent), login)
 		return []string{"retag", "LOGIN_KEY", "--type", policy.TypeGoogleLogin}
 	}
 }
@@ -196,34 +153,34 @@ func TestATypedWriteReadsItsTypeTagBack(t *testing.T) {
 					kept = "the right tag"
 				}
 				t.Run(form+" leaving "+kept+" with "+identity, func(t *testing.T) {
-					local := awstest.NewLocal()
-					broker := startSecretBroker(t, servedBy(local))
-					if identity == "no broker identity" {
-						withNoBrokerIdentity(t)
-					}
-					planted := 0
-					args := typedWrite(t, local, form)
-					awstest.Use(t, plantingStore{Local: local, t: t, found: found, planted: &planted}, testAccount, adaSignIn)
-					stdout, stderr, code := runSecret(args...)
-					if found != "" && planted != 1 {
-						t.Fatalf("planted %d times; want once, or the row tests nothing", planted)
-					}
-					if asked := len(broker.rereadUnsigned()) + len(broker.rereadSigners()); asked != 1 {
-						t.Errorf("the broker was asked to reread %d times; want once, so its view follows the store", asked)
-					}
-					switch {
-					case found != "":
-						want := "LOGIN_KEY's type tag there is " + found + ", not " + policy.TypeGoogleLogin
-						if code != 1 || !strings.Contains(stderr, want) || !strings.Contains(stderr, "secret retag LOGIN_KEY --type "+policy.TypeGoogleLogin) {
-							t.Errorf("exit %d, stdout %q, stderr %q; want 1 saying %q and naming the retag", code, stdout, stderr, want)
+					onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+						if identity == "no broker identity" {
+							withNoBrokerIdentity(t)
 						}
-					case identity == "no broker identity":
-						requireTypeUnchecked(t, form, stdout, stderr, code, errNoBrokerIdentity.Error())
-					default:
-						if code != 0 || !strings.Contains(stdout, "broker: serving LOGIN_KEY from ") || strings.Contains(stderr, "was not checked") {
-							t.Errorf("exit %d, stdout %q, stderr %q; want 0 and the broker serving LOGIN_KEY as its type", code, stdout, stderr)
+						planted := 0
+						args := typedWrite(t, store, form)
+						plantType(t, store, found, &planted)
+						stdout, stderr, code := runSecret(args...)
+						if found != "" && planted != 1 {
+							t.Fatalf("planted %d times; want once, or the row tests nothing", planted)
 						}
-					}
+						if asked := len(broker.rereadUnsigned()) + len(broker.rereadSigners()); asked != 1 {
+							t.Errorf("the broker was asked to reread %d times; want once, so its view follows the store", asked)
+						}
+						switch {
+						case found != "":
+							want := "LOGIN_KEY's type tag there is " + found + ", not " + policy.TypeGoogleLogin
+							if code != 1 || !strings.Contains(stderr, want) || !strings.Contains(stderr, "secret retag LOGIN_KEY --type "+policy.TypeGoogleLogin) {
+								t.Errorf("exit %d, stdout %q, stderr %q; want 1 saying %q and naming the retag", code, stdout, stderr, want)
+							}
+						case identity == "no broker identity":
+							requireTypeUnchecked(t, form, stdout, stderr, code, errNoBrokerIdentity.Error())
+						default:
+							if code != 0 || !strings.Contains(stdout, "broker: serving LOGIN_KEY from ") || strings.Contains(stderr, "was not checked") {
+								t.Errorf("exit %d, stdout %q, stderr %q; want 0 and the broker serving LOGIN_KEY as its type", code, stdout, stderr)
+							}
+						}
+					})
 				})
 			}
 		}
@@ -264,18 +221,17 @@ func TestARereadThatRanAndFailedIsNotSentAgainUnsigned(t *testing.T) {
 		{http.StatusBadRequest, "SECRET_NAME_INVALID"},
 	} {
 		t.Run(fmt.Sprintf("%d %s", row.status, row.code), func(t *testing.T) {
-			local := awstest.NewLocal()
-			broker := startSecretBroker(t, servedBy(local))
-			broker.failSignedRereads(row.status, row.code)
-			awstest.Use(t, local, testAccount, adaSignIn)
-			useStdin(t, "v1")
-			stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
-			if code != 1 || !strings.Contains(stderr, "could not be asked to reread NEW_KEY, so it serves the change only from its next reload") || strings.Contains(stderr, "was not checked") {
-				t.Fatalf("a signed reread answered %d %s: exit %d, stdout %q, stderr %q; want 1 saying the broker could not be asked", row.status, row.code, code, stdout, stderr)
-			}
-			if unsigned := broker.rereadUnsigned(); len(unsigned) != 0 {
-				t.Fatalf("the rereads %v went again with no proof; want none after a signed reread the broker answered %d %s", unsigned, row.status, row.code)
-			}
+			onEachStore(t, func(t *testing.T, _ typeStore, broker *secretBroker) {
+				broker.failSignedRereads(row.status, row.code)
+				useStdin(t, "v1")
+				stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent")
+				if code != 1 || !strings.Contains(stderr, "could not be asked to reread NEW_KEY, so it serves the change only from its next reload") || strings.Contains(stderr, "was not checked") {
+					t.Fatalf("a signed reread answered %d %s: exit %d, stdout %q, stderr %q; want 1 saying the broker could not be asked", row.status, row.code, code, stdout, stderr)
+				}
+				if unsigned := broker.rereadUnsigned(); len(unsigned) != 0 {
+					t.Fatalf("the rereads %v went again with no proof; want none after a signed reread the broker answered %d %s", unsigned, row.status, row.code)
+				}
+			})
 		})
 	}
 }
@@ -291,34 +247,33 @@ func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
 	because := errSignedRereadMissingProof.Error()
 	for _, form := range []string{"a stored secret's create", "a type secret's create"} {
 		t.Run(form, func(t *testing.T) {
-			local := awstest.NewLocal()
-			broker := startSecretBroker(t, servedBy(local))
-			upstream, err := url.Parse(os.Getenv("AGENT_SECRETS_URL"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			proxy := httputil.NewSingleHostReverseProxy(upstream)
-			front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasSuffix(r.URL.Path, "/reread") {
-					r.Header.Del("Proof")
+			onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+				upstream, err := url.Parse(os.Getenv("AGENT_SECRETS_URL"))
+				if err != nil {
+					t.Fatal(err)
 				}
-				proxy.ServeHTTP(w, r)
-			}))
-			t.Cleanup(front.Close)
-			t.Setenv("AGENT_SECRETS_URL", front.URL)
-			awstest.Use(t, local, testAccount, adaSignIn)
-			args := []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}
-			useStdin(t, "v1")
-			if form == "a type secret's create" {
-				args = typedWrite(t, local, "create")
-			}
-			stdout, stderr, code := runSecret(args...)
-			if code != 0 || !strings.Contains(stdout, "broker: rereading ") || !strings.Contains(stderr, "was not checked ("+because+")") || strings.Contains(stderr, "<nil>") {
-				t.Fatalf("%s behind a front that drops Proof: exit %d, stdout %q, stderr %q; want 0 and the unchecked line naming why", form, code, stdout, stderr)
-			}
-			if got := len(broker.rereadUnsigned()); got != 1 {
-				t.Fatalf("the broker took %d rereads with no proof; want the one the front stripped, and no second", got)
-			}
+				proxy := httputil.NewSingleHostReverseProxy(upstream)
+				front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if strings.HasSuffix(r.URL.Path, "/reread") {
+						r.Header.Del("Proof")
+					}
+					proxy.ServeHTTP(w, r)
+				}))
+				t.Cleanup(front.Close)
+				t.Setenv("AGENT_SECRETS_URL", front.URL)
+				args := []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}
+				useStdin(t, "v1")
+				if form == "a type secret's create" {
+					args = typedWrite(t, store, "create")
+				}
+				stdout, stderr, code := runSecret(args...)
+				if code != 0 || !strings.Contains(stdout, "broker: rereading ") || !strings.Contains(stderr, "was not checked ("+because+")") || strings.Contains(stderr, "<nil>") {
+					t.Fatalf("%s behind a front that drops Proof: exit %d, stdout %q, stderr %q; want 0 and the unchecked line naming why", form, code, stdout, stderr)
+				}
+				if got := len(broker.rereadUnsigned()); got != 1 {
+					t.Fatalf("the broker took %d rereads with no proof; want the one the front stripped, and no second", got)
+				}
+			})
 		})
 	}
 }
@@ -332,48 +287,47 @@ func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
 // is late against a deadline of 0, beyond the time this process was held up (requireOnTime).
 func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
-	local := awstest.NewLocal()
-	broker := startSecretBroker(t, servedBy(local))
-	withNoBrokerIdentity(t)
-	dir := seedMachineCache(t)
-	unlock, err := lockMachineCache(dir, true, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unlock()
-	awstest.Use(t, local, testAccount, adaSignIn)
-	useStdin(t, "v1")
-	type result struct {
-		stdout, stderr string
-		code           int
-	}
-	done := make(chan result, 1)
-	meter := startStallMeter(t)
-	start := time.Now()
-	go func() {
-		stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
-		done <- result{stdout, stderr, code}
-	}()
-	var got result
-	testwait.Eventually(t, "the create to finish while another command holds the machine cache's lock", func() bool {
-		select {
-		case got = <-done:
-			return true
-		default:
-			return false
+	onEachStore(t, func(t *testing.T, _ typeStore, broker *secretBroker) {
+		withNoBrokerIdentity(t)
+		dir := seedMachineCache(t)
+		unlock, err := lockMachineCache(dir, true, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unlock()
+		useStdin(t, "v1")
+		type result struct {
+			stdout, stderr string
+			code           int
+		}
+		done := make(chan result, 1)
+		meter := startStallMeter(t)
+		start := time.Now()
+		go func() {
+			stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent")
+			done <- result{stdout, stderr, code}
+		}()
+		var got result
+		testwait.Eventually(t, "the create to finish while another command holds the machine cache's lock", func() bool {
+			select {
+			case got = <-done:
+				return true
+			default:
+				return false
+			}
+		})
+		requireOnTime(t, meter, "the create while another command held the machine cache's lock", start, 0)
+		if got.code != 0 || !strings.Contains(got.stdout, "broker: rereading NEW_KEY from ") ||
+			!strings.Contains(got.stderr, "another command is registering this machine's session") {
+			t.Fatalf("create with the machine cache locked: exit %d, stdout %q, stderr %q; want 0, the reread sent unsigned, and the registration in progress", got.code, got.stdout, got.stderr)
+		}
+		if strings.Contains(got.stderr, dir) {
+			t.Fatalf("create with the machine cache locked printed the cache's path %s: %q; want it named in words", dir, got.stderr)
+		}
+		if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"NEW_KEY"}) {
+			t.Fatalf("the rereads that went with no proof were %v; want NEW_KEY's", unsigned)
 		}
 	})
-	requireOnTime(t, meter, "the create while another command held the machine cache's lock", start, 0)
-	if got.code != 0 || !strings.Contains(got.stdout, "broker: rereading NEW_KEY from ") ||
-		!strings.Contains(got.stderr, "another command is registering this machine's session") {
-		t.Fatalf("create with the machine cache locked: exit %d, stdout %q, stderr %q; want 0, the reread sent unsigned, and the registration in progress", got.code, got.stdout, got.stderr)
-	}
-	if strings.Contains(got.stderr, dir) {
-		t.Fatalf("create with the machine cache locked printed the cache's path %s: %q; want it named in words", dir, got.stderr)
-	}
-	if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"NEW_KEY"}) {
-		t.Fatalf("the rereads that went with no proof were %v; want NEW_KEY's", unsigned)
-	}
 }
 
 // TestASecretWriteWithALapsedMachineCacheSessionNamesTheMachineCure: a secret form never trades a
@@ -381,24 +335,23 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 // unsigned reread and tells the operator to renew the machine's session with agent-secrets self.
 func TestASecretWriteWithALapsedMachineCacheSessionNamesTheMachineCure(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal()
-	broker := startSecretBroker(t, servedBy(local))
-	broker.lapseSignedRereads()
-	withNoBrokerIdentity(t)
-	dir := seedMachineCache(t)
-	awstest.Use(t, local, testAccount, adaSignIn)
-	useStdin(t, "v1")
-	stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
-	if code != 0 || !strings.Contains(stdout, "broker: rereading NEW_KEY from ") ||
-		!strings.Contains(stderr, "machine's session") || !strings.Contains(stderr, "agent-secrets self") {
-		t.Fatalf("create with a lapsed machine-cache session: exit %d, stdout %q, stderr %q; want 0 and the machine session's agent-secrets self cure", code, stdout, stderr)
-	}
-	if strings.Contains(stderr, dir) {
-		t.Fatalf("create with a lapsed machine-cache session printed the cache's path %s: %q; want it named in words", dir, stderr)
-	}
-	if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"NEW_KEY"}) {
-		t.Fatalf("the rereads that went with no proof were %v; want NEW_KEY's after the lapsed machine session", unsigned)
-	}
+	onEachStore(t, func(t *testing.T, _ typeStore, broker *secretBroker) {
+		broker.lapseSignedRereads()
+		withNoBrokerIdentity(t)
+		dir := seedMachineCache(t)
+		useStdin(t, "v1")
+		stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent")
+		if code != 0 || !strings.Contains(stdout, "broker: rereading NEW_KEY from ") ||
+			!strings.Contains(stderr, "machine's session") || !strings.Contains(stderr, "agent-secrets self") {
+			t.Fatalf("create with a lapsed machine-cache session: exit %d, stdout %q, stderr %q; want 0 and the machine session's agent-secrets self cure", code, stdout, stderr)
+		}
+		if strings.Contains(stderr, dir) {
+			t.Fatalf("create with a lapsed machine-cache session printed the cache's path %s: %q; want it named in words", dir, stderr)
+		}
+		if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"NEW_KEY"}) {
+			t.Fatalf("the rereads that went with no proof were %v; want NEW_KEY's after the lapsed machine session", unsigned)
+		}
+	})
 }
 
 // seedMachineCache writes a whole machine session, a key and its enrollment
@@ -458,23 +411,23 @@ func TestATypedWriteExitsOnItsTagWhenTheBrokersViewCannotBeChecked(t *testing.T)
 				name = row.name + ", another tag"
 			}
 			t.Run(name, func(t *testing.T) {
-				local := awstest.NewLocal()
-				broker := startSecretBroker(t, servedBy(local))
-				row.setup(t, broker)
-				planted := 0
-				args := typedWrite(t, local, "create")
-				awstest.Use(t, plantingStore{Local: local, t: t, found: found, planted: &planted}, testAccount, adaSignIn)
-				stdout, stderr, code := runSecret(args...)
-				if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"LOGIN_KEY"}) {
-					t.Fatalf("the rereads that went with no proof were %v; want LOGIN_KEY's, so the write is served at once all the same (stderr %q)", unsigned, stderr)
-				}
-				if found == "" {
-					requireTypeUnchecked(t, "create", stdout, stderr, code, row.because)
-					return
-				}
-				if want := "LOGIN_KEY's type tag there is " + found; code != 1 || !strings.Contains(stderr, want) || strings.Contains(stderr, "was not checked") {
-					t.Fatalf("exit %d, stderr %q; want 1 saying %q and no line about the broker's view", code, stderr, want)
-				}
+				onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+					row.setup(t, broker)
+					planted := 0
+					args := typedWrite(t, store, "create")
+					plantType(t, store, found, &planted)
+					stdout, stderr, code := runSecret(args...)
+					if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"LOGIN_KEY"}) {
+						t.Fatalf("the rereads that went with no proof were %v; want LOGIN_KEY's, so the write is served at once all the same (stderr %q)", unsigned, stderr)
+					}
+					if found == "" {
+						requireTypeUnchecked(t, "create", stdout, stderr, code, row.because)
+						return
+					}
+					if want := "LOGIN_KEY's type tag there is " + found; code != 1 || !strings.Contains(stderr, want) || strings.Contains(stderr, "was not checked") {
+						t.Fatalf("exit %d, stderr %q; want 1 saying %q and no line about the broker's view", code, stderr, want)
+					}
+				})
 			})
 		}
 	}
@@ -495,53 +448,54 @@ func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) 
 	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_reread_test.go:511); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, row := range []string{"a launcher still enrolling", "a machine with no session yet"} {
 		t.Run(row, func(t *testing.T) {
-			local := awstest.NewLocal()
-			startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: awstest.KeyARN, AWSAccountID: testAccount,
-				AWSRegion: "us-east-1", SecretTypeTag: true, GoogleExchangeAudience: "agent-secrets-vm"}, servedBy(local))
-			withNoBrokerIdentity(t)
-			metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
-			if row == "a launcher still enrolling" {
-				marker := filepath.Join(os.Getenv("AGENT_SECRETS_KEY_DIR"), pendingMarker)
-				if err := os.WriteFile(marker, nil, 0o600); err != nil {
-					t.Fatal(err)
+			onEachStoreRig(t, func(t *testing.T, rig storeRig) {
+				settings := rig.settings
+				settings.GoogleExchangeAudience = "agent-secrets-vm"
+				startSecretBrokerWith(t, settings, rig.answer)
+				withNoBrokerIdentity(t)
+				metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
+				if row == "a launcher still enrolling" {
+					marker := filepath.Join(os.Getenv("AGENT_SECRETS_KEY_DIR"), pendingMarker)
+					if err := os.WriteFile(marker, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					ahead := time.Now().Add(24 * time.Hour)
+					if err := os.Chtimes(marker, ahead, ahead); err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("AGENT_SECRETS_ENROLL_WAIT", "24h")
 				}
-				ahead := time.Now().Add(24 * time.Hour)
-				if err := os.Chtimes(marker, ahead, ahead); err != nil {
-					t.Fatal(err)
+				calls := recordBrokerCalls(t)
+				useStdin(t, "v1")
+				stdout, stderr := &cmdtest.LockedBuffer{}, &cmdtest.LockedBuffer{}
+				ended := make(chan struct{})
+				var code int
+				go func() {
+					defer close(ended)
+					code = cmdSecret([]string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}, stdout, stderr)
+				}()
+				testwait.Eventually(t, "the create to end or say that it waits on the launcher", func() bool {
+					select {
+					case <-ended:
+						return true
+					default:
+						return strings.Contains(stderr.String(), launcherWaitStart)
+					}
+				})
+				if strings.Contains(stderr.String(), launcherWaitStart) {
+					t.Fatalf("stderr %q; the create must not wait on the launcher", stderr.String())
 				}
-				t.Setenv("AGENT_SECRETS_ENROLL_WAIT", "24h")
-			}
-			calls := recordBrokerCalls(t)
-			awstest.Use(t, local, testAccount, adaSignIn)
-			useStdin(t, "v1")
-			stdout, stderr := &cmdtest.LockedBuffer{}, &cmdtest.LockedBuffer{}
-			ended := make(chan struct{})
-			var code int
-			go func() {
-				defer close(ended)
-				code = cmdSecret([]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, stdout, stderr)
-			}()
-			testwait.Eventually(t, "the create to end or say that it waits on the launcher", func() bool {
-				select {
-				case <-ended:
-					return true
-				default:
-					return strings.Contains(stderr.String(), launcherWaitStart)
+				<-ended
+				if code != 0 {
+					t.Fatalf("create: exit %d, stderr %q; want 0", code, stderr.String())
+				}
+				if want := []string{"GET /v1/settings", "POST /v1/secrets/NEW_KEY/reread"}; !slices.Equal(calls(), want) {
+					t.Fatalf("the broker was asked %v; want %v and nothing else: no token trade, no enrollment", calls(), want)
+				}
+				if n := metadata.totalRequests(); n != 0 {
+					t.Fatalf("the metadata server was asked %d times; want never", n)
 				}
 			})
-			if strings.Contains(stderr.String(), launcherWaitStart) {
-				t.Fatalf("stderr %q; the create must not wait on the launcher", stderr.String())
-			}
-			<-ended
-			if code != 0 {
-				t.Fatalf("create: exit %d, stderr %q; want 0", code, stderr.String())
-			}
-			if want := []string{"GET /v1/settings", "POST /v1/secrets/NEW_KEY/reread"}; !slices.Equal(calls(), want) {
-				t.Fatalf("the broker was asked %v; want %v and nothing else: no token trade, no enrollment", calls(), want)
-			}
-			if n := metadata.totalRequests(); n != 0 {
-				t.Fatalf("the metadata server was asked %d times; want never", n)
-			}
 		})
 	}
 }
@@ -555,28 +509,29 @@ func TestATypedWriteReadsItsTypeTagBackWhenTheBrokerFailsItsReread(t *testing.T)
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, row := range []struct {
 		name   string
-		broker func(t *testing.T, local *awstest.Local)
+		broker func(broker *secretBroker)
 		says   string
 	}{
-		{"a reread the broker could not be asked for", func(t *testing.T, local *awstest.Local) {
-			startSecretBroker(t, servedBy(local)).failRereads(http.StatusServiceUnavailable)
+		{"a reread the broker could not be asked for", func(broker *secretBroker) {
+			broker.failRereads(http.StatusServiceUnavailable)
 		}, "could not be asked to reread LOGIN_KEY"},
-		{"a reread the broker answers with the secret refused", func(t *testing.T, _ *awstest.Local) {
-			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Reason: policy.ReasonOwnerTagMissing} })
+		{"a reread the broker answers with the secret refused", func(broker *secretBroker) {
+			broker.answerAs(func(name string) Reread { return Reread{Name: name, Reason: policy.ReasonOwnerTagMissing} })
 		}, "refuses LOGIN_KEY after the write"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := awstest.NewLocal()
-			row.broker(t, local)
-			planted := 0
-			awstest.Use(t, plantingStore{Local: local, t: t, found: policy.TypeGitHubApp, planted: &planted}, testAccount, adaSignIn)
-			useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
-			_, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleLogin)
-			want := "LOGIN_KEY's type tag there is " + policy.TypeGitHubApp + ", not " + policy.TypeGoogleLogin
-			if code != 1 || !strings.Contains(stderr, row.says) || !strings.Contains(stderr, want) {
-				t.Fatalf("a typed create after %s, whose store holds %s: exit %d, stderr %q; want 1, the broker's line %q and the store's %q",
-					row.name, policy.TypeGitHubApp, code, stderr, row.says, want)
-			}
+			onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+				row.broker(broker)
+				planted := 0
+				plantType(t, store, policy.TypeGitHubApp, &planted)
+				useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
+				_, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGoogleLogin)
+				want := "LOGIN_KEY's type tag there is " + policy.TypeGitHubApp + ", not " + policy.TypeGoogleLogin
+				if code != 1 || !strings.Contains(stderr, row.says) || !strings.Contains(stderr, want) {
+					t.Fatalf("a typed create after %s, whose store holds %s: exit %d, stderr %q; want 1, the broker's line %q and the store's %q",
+						row.name, policy.TypeGitHubApp, code, stderr, row.says, want)
+				}
+			})
 		})
 	}
 }

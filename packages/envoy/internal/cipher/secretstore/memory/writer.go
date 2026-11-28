@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
@@ -37,16 +38,26 @@ const readPermission = "read access to the memory secrets file"
 // its calls too: create, set, tags, delete and restore.
 type Writer struct {
 	*Store
-	// mu guards lose and deny, the test hooks of the next calls.
+	// prefix is the agent secrets' prefix the broker's settings name, from which a printed command
+	// names a secret as a session asks for it.
+	prefix string
+	// mu guards lose, deny and hang, the test hooks of the next calls.
 	mu   sync.Mutex
 	lose map[string]bool
 	deny map[string]string
+	hang map[string]bool
+	// applied is Hooks.Applied as the writer was opened with it.
+	applied func(call string)
 }
 
 // Hooks are what a test sees of the writers OpenWriter opens.
 type Hooks struct {
 	// Opened is handed each writer OpenWriter opens.
 	Opened func(w *Writer)
+	// Applied, when set, runs once a write of kind call ("create", "set", "tags", "delete" or
+	// "restore") has changed the file, before the call answers, so a test can be the writer that
+	// changes the secret between this one's write and its read-back.
+	Applied func(call string)
 }
 
 var (
@@ -100,9 +111,10 @@ func (Backend) OpenWriter(_ context.Context, s secretstore.Settings, _ secretsto
 	if err != nil {
 		return nil, err
 	}
-	w := &Writer{Store: store, lose: map[string]bool{}, deny: map[string]string{}}
+	w := &Writer{Store: store, prefix: s.Prefix, lose: map[string]bool{}, deny: map[string]string{}, hang: map[string]bool{}}
 	hooksMu.Lock()
 	opened := hooks.Opened
+	w.applied = hooks.Applied
 	hooksMu.Unlock()
 	if opened != nil {
 		opened(w)
@@ -125,32 +137,55 @@ func (w *Writer) DenyNext(call, message string) {
 	w.deny[call] = message
 }
 
-// takeHooks answers whether the next call of kind call is to be denied, with what, and whether its
-// answer is to be lost, clearing both.
-func (w *Writer) takeHooks(call string) (denied bool, message string, lost bool) {
+// HangNext makes the next call of kind call answer nothing until its context ends, and then the
+// context's error, having done nothing: a store call no store answers, as a network store's can
+// be. The file store itself never hangs; this is how a test reaches the caller's deadline.
+func (w *Writer) HangNext(call string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.hang[call] = true
+}
+
+// takeHooks answers whether the next call of kind call is to be denied, with what, whether its
+// answer is to be lost, and whether it hangs, clearing all three.
+func (w *Writer) takeHooks(call string) (denied bool, message string, lost, hang bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	message, denied = w.deny[call]
 	delete(w.deny, call)
 	lost = w.lose[call]
 	delete(w.lose, call)
-	return denied, message, lost
+	hang = w.hang[call]
+	delete(w.hang, call)
+	return denied, message, lost, hang
 }
 
 // start counts one call of kind call as the store counts its reads, answers the error a test set
-// for it, and refuses it when DenyNext asked; lost reports whether its answer is to be lost.
-func (w *Writer) start(call string) (lost bool, err error) {
+// for it, refuses it when DenyNext asked, and waits for ctx to end when HangNext asked; lost
+// reports whether its answer is to be lost.
+func (w *Writer) start(ctx context.Context, call string) (lost bool, err error) {
 	w.Store.mu.Lock()
 	err = w.Store.begin(call)
 	w.Store.mu.Unlock()
 	if err != nil {
 		return false, err
 	}
-	denied, message, lost := w.takeHooks(call)
+	denied, message, lost, hang := w.takeHooks(call)
+	if hang {
+		<-ctx.Done()
+		return false, ctx.Err()
+	}
 	if denied {
 		return false, secretstore.Failure{Call: call, Words: "the memory store refused the call", Err: fmt.Errorf("%w: %s", ErrDenied, message)}
 	}
 	return lost, nil
+}
+
+// didApply runs the Applied hook, where one is set, for a write of kind call that changed the file.
+func (w *Writer) didApply(call string) {
+	if w.applied != nil {
+		w.applied(call)
+	}
 }
 
 // lostAnswer is a call's answer once it was applied and its answer lost.
@@ -305,10 +340,18 @@ func (c *create) Begin(context.Context) (secretstore.DiscardOutcome, error) {
 	return secretstore.MadeNothing, nil
 }
 
-// Store makes the secret with value, unless another writer made one of its name meanwhile.
-func (c *create) Store(_ context.Context, value string) error {
-	lost, err := c.w.start("create")
+// Store makes the secret with value, unless another writer made one of its name meanwhile, under
+// secretstore.CallDeadline as every store's create call is. A call that runs out of time may or
+// may not have made the secret, which the error says, naming the command that tells which.
+func (c *create) Store(ctx context.Context, value string) error {
+	ctx, cancel := secretstore.WithCallDeadline(ctx)
+	defer cancel()
+	lost, err := c.w.start(ctx, "create")
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("%w; the memory store did not answer within %s, so the store may hold %s, made with its value, or no %s at all; %s says which",
+				err, secretstore.CallDeadlineText(), c.name(), c.name(), c.show())
+		}
 		return err
 	}
 	now := time.Now().UTC()
@@ -321,11 +364,20 @@ func (c *create) Store(_ context.Context, value string) error {
 	if err != nil {
 		return err
 	}
+	c.w.didApply("create")
 	if lost {
 		c.lost = true
 		return lostAnswer("create")
 	}
 	return nil
+}
+
+// name is the NAME a session asks for the secret this create makes (policy.DisplayName).
+func (c *create) name() string { return policy.DisplayName(c.w.prefix, c.id) }
+
+// show is the command that says what the store holds of the secret, in backquotes.
+func (c *create) show() string {
+	return "`" + secretstore.Command("", "secret", "show", c.name()) + "`"
 }
 
 // Discard has nothing to remove: Begin made nothing.
@@ -338,15 +390,15 @@ func (c *create) Unsettled() string {
 	if !c.lost {
 		return ""
 	}
-	return "the memory store may hold " + c.id + "; check it with " + secretstore.Command("", "secret", "show", c.id)
+	return "the memory store may hold " + c.name() + "; check it with " + c.show()
 }
 
 // MadeBeforeValue is false: the memory store makes a secret with its value.
 func (c *create) MadeBeforeValue() bool { return false }
 
 // Set writes a new value of a secret the store holds.
-func (w *Writer) Set(_ context.Context, id, value string) error {
-	lost, err := w.start("set")
+func (w *Writer) Set(ctx context.Context, id, value string) error {
+	lost, err := w.start(ctx, "set")
 	if err != nil {
 		return err
 	}
@@ -360,6 +412,7 @@ func (w *Writer) Set(_ context.Context, id, value string) error {
 	}); err != nil {
 		return err
 	}
+	w.didApply("set")
 	if lost {
 		return lostAnswer("set")
 	}
@@ -378,13 +431,13 @@ func (w *Writer) CurrentTags(ctx context.Context, id string) (secretstore.HeldTa
 // SetTags writes tags, keeping every other tag, when the secret's tags are still the ones held
 // was read with; another write since refuses it with ErrTagsChanged, writing nothing. check is
 // unused: the memory store's tag write is conditional.
-func (w *Writer) SetTags(_ context.Context, id string, held secretstore.HeldTags, tags map[string]string, _ secretstore.TagCheck) error {
-	return w.writeTags(id, held, func(t map[string]string) { maps.Copy(t, tags) })
+func (w *Writer) SetTags(ctx context.Context, id string, held secretstore.HeldTags, tags map[string]string, _ secretstore.TagCheck) error {
+	return w.writeTags(ctx, id, held, func(t map[string]string) { maps.Copy(t, tags) })
 }
 
 // RemoveTags removes keys, keeping every other tag, on the same condition as SetTags.
-func (w *Writer) RemoveTags(_ context.Context, id string, held secretstore.HeldTags, keys []string, _ secretstore.TagCheck) error {
-	return w.writeTags(id, held, func(t map[string]string) {
+func (w *Writer) RemoveTags(ctx context.Context, id string, held secretstore.HeldTags, keys []string, _ secretstore.TagCheck) error {
+	return w.writeTags(ctx, id, held, func(t map[string]string) {
 		for _, k := range keys {
 			delete(t, k)
 		}
@@ -392,8 +445,8 @@ func (w *Writer) RemoveTags(_ context.Context, id string, held secretstore.HeldT
 }
 
 // writeTags applies change to the secret's tags when they still match held.
-func (w *Writer) writeTags(id string, held secretstore.HeldTags, change func(map[string]string)) error {
-	lost, err := w.start("tags")
+func (w *Writer) writeTags(ctx context.Context, id string, held secretstore.HeldTags, change func(map[string]string)) error {
+	lost, err := w.start(ctx, "tags")
 	if err != nil {
 		return err
 	}
@@ -415,6 +468,7 @@ func (w *Writer) writeTags(id string, held secretstore.HeldTags, change func(map
 	}); err != nil {
 		return err
 	}
+	w.didApply("tags")
 	if lost {
 		return secretstore.TagsUnknown{Err: lostAnswer("tags")}
 	}
@@ -422,8 +476,8 @@ func (w *Writer) writeTags(id string, held secretstore.HeldTags, change func(map
 }
 
 // Delete schedules the secret for deletion and answers the end of its recovery window.
-func (w *Writer) Delete(_ context.Context, id string) (time.Time, error) {
-	lost, err := w.start("delete")
+func (w *Writer) Delete(ctx context.Context, id string) (time.Time, error) {
+	lost, err := w.start(ctx, "delete")
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -438,6 +492,7 @@ func (w *Writer) Delete(_ context.Context, id string) (time.Time, error) {
 	}); err != nil {
 		return time.Time{}, err
 	}
+	w.didApply("delete")
 	if lost {
 		return time.Time{}, lostAnswer("delete")
 	}
@@ -445,8 +500,8 @@ func (w *Writer) Delete(_ context.Context, id string) (time.Time, error) {
 }
 
 // Restore brings back a secret scheduled for deletion.
-func (w *Writer) Restore(_ context.Context, id string) error {
-	lost, err := w.start("restore")
+func (w *Writer) Restore(ctx context.Context, id string) error {
+	lost, err := w.start(ctx, "restore")
 	if err != nil {
 		return err
 	}
@@ -460,6 +515,7 @@ func (w *Writer) Restore(_ context.Context, id string) error {
 	}); err != nil {
 		return err
 	}
+	w.didApply("restore")
 	if lost {
 		return lostAnswer("restore")
 	}

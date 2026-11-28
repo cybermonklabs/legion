@@ -36,8 +36,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testport"
@@ -113,17 +114,22 @@ func (b *chainBroker) selfReadCount() int {
 	return b.selfReads
 }
 
-// storeSettings is GET /v1/settings of a broker on store ("aws" or "gcp"), naming google as its
-// Google exchange audience where it is not empty.
+// storeSettings is GET /v1/settings of a broker on the store whose registry ID is store ("aws",
+// "gcp" or "memory"), naming google as its Google exchange audience where it is not empty. A
+// memory broker names a file no test reads: the chain reads the broker alone.
 func storeSettings(store, google string) map[string]any {
 	settings := map[string]any{}
 	switch store {
 	case "aws":
-		settings = map[string]any{"store": aws.Name, "secrets_prefix": policytest.Prefix, "kms_key_arn": awstest.KeyARN,
-			"aws_account_id": testAccount, "aws_region": "us-east-1"}
+		settings = map[string]any{"store": aws.Name, "secrets_prefix": policytest.Prefix}
+		for name, value := range awsTestSettings().Fields {
+			settings[name] = value
+		}
 	case "gcp":
 		settings = map[string]any{"store": gcp.Name, "secrets_prefix": testGCPPrefix, "kms_key_name": testKMSKeyName,
 			"gcp_project": testGCPProject}
+	case "memory":
+		settings = map[string]any{"store": memory.Name, "secrets_prefix": policytest.Prefix, "memory_secrets_file": "/srv/agent-secrets/memory.json"}
 	}
 	if google != "" {
 		settings["google_exchange_audience"] = google
@@ -470,7 +476,12 @@ func (r *chainRig) mustUse() string {
 // it runs its own backend's code rather than the other's.
 func assertInjectedFromStore(t *testing.T, store, stderr string) {
 	t.Helper()
-	kind := map[string]string{"aws": "AWS Secrets Manager", "gcp": "GCP Secret Manager"}[store]
+	kind := ""
+	for _, b := range backends.All() {
+		if b.ID() == store {
+			kind = b.Kind()
+		}
+	}
 	if want := "agent-secrets: TEST_KEY from the broker AGENT_SECRETS_URL names (" + kind + ")\n"; kind == "" || !strings.Contains(stderr, want) {
 		t.Fatalf("stderr %q; want the injection line %q", stderr, want)
 	}
@@ -583,7 +594,8 @@ func TestAUnitWithNoEnvironmentReadsTheConfigFile(t *testing.T) {
 func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
 	binary := chainBinary(t)
-	for _, store := range []string{"aws", "gcp"} {
+	for _, b := range backends.All() {
+		store := b.ID()
 		t.Run(store, func(t *testing.T) {
 			broker := newChainBroker(t, storeSettings(store, "agent-secrets-vm"))
 			r := newChainRig(t, binary, broker)
@@ -921,7 +933,8 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 			t.Fatalf("%s is there (%v); a machine that minted nothing keeps no audience", pin, err)
 		}
 	}
-	for _, store := range []string{"aws", "gcp"} {
+	for _, b := range backends.All() {
+		store := b.ID()
 		t.Run(store, func(t *testing.T) {
 			rows := []struct {
 				name  string

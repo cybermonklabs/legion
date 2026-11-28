@@ -9,14 +9,14 @@ import (
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 func TestSecretTypeWritesAndDisplaysBothStores(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
-		if _, stderr, code := runSecret("create", "TYPE_NOT_A_SECRET", "--owner", "me", "--tier", "agent", "--type", "google-login"); code != 0 {
+		if _, stderr, code := runSecret("create", "TYPE_NOT_A_SECRET", "--owner", "ada@example.com", "--tier", "agent", "--type", "google-login"); code != 0 {
 			t.Fatalf("create --type: exit %d stderr %q", code, stderr)
 		}
 		tags := store.tags(t, "TYPE_NOT_A_SECRET")
@@ -110,12 +110,12 @@ func TestATypedWriteIsRefusedByABrokerThatDoesNotReadTheTypeTag(t *testing.T) {
 		args  []string
 		typed bool // the write leaves the secret a type
 	}{
-		{"create --type", nil, login, []string{"create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleLogin}, true},
+		{"create --type", nil, login, []string{"create", "LOGIN_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGoogleLogin}, true},
 		{"set on a type secret", typed, rotated, []string{"set", "LOGIN_KEY"}, true},
 		{"set on a secret of the old tag", tags(policy.LegacyTypeTag, policy.TypeGoogleLogin), rotated, []string{"set", "LOGIN_KEY"}, true},
 		{"retag to a type", tags(), "", []string{"retag", "LOGIN_KEY", "--type", policy.TypeGoogleLogin}, true},
 		{"retag of a type secret's tier", typed, "", []string{"retag", "LOGIN_KEY", "--tier", policy.TierHuman}, true},
-		{"create with no type", nil, "stored-value", []string{"create", "LOGIN_KEY", "--owner", "me", "--tier", "agent"}, false},
+		{"create with no type", nil, "stored-value", []string{"create", "LOGIN_KEY", "--owner", "ada@example.com", "--tier", "agent"}, false},
 		{"set on a stored secret", tags(), "stored-value", []string{"set", "LOGIN_KEY"}, false},
 		{"retag --type none", typed, "", []string{"retag", "LOGIN_KEY", "--type", "none"}, false},
 	} {
@@ -175,7 +175,7 @@ func TestACreateOrSetExitsOneWhileTheBrokerServesAnotherType(t *testing.T) {
 	login := policytest.TypeValue(policy.TypeGoogleLogin)
 	for _, row := range []struct {
 		name, served string
-		held         *awstest.LocalSecret // nil: create
+		held         *memory.Secret // nil: create
 		args         []string
 		code         int
 		refusal      string // what a refused row's stderr names, beside the retag it asks for
@@ -186,37 +186,37 @@ func TestACreateOrSetExitsOneWhileTheBrokerServesAnotherType(t *testing.T) {
 		{"create: served as written", policy.TypeGoogleLogin, nil, []string{"--type", policy.TypeGoogleLogin}, 0, "", ""},
 		{"create of a stored secret: served as a type", policy.TypeGoogleLogin, nil, nil, 1, "serves LOGIN_KEY as " + policy.TypeGoogleLogin + ", not a stored secret", "--type none"},
 		{"create of a stored secret: served as stored", "", nil, nil, 0, "", ""},
-		{"set: served as stored", "", new(awstest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, login)), nil, 1, "serves LOGIN_KEY as a stored secret, not " + policy.TypeGoogleLogin, "--type " + policy.TypeGoogleLogin},
-		{"set: served as written", policy.TypeGoogleLogin, new(awstest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, login)), nil, 0, "", ""},
-		{"set of a stored secret: served as a type", policy.TypeGoogleLogin, new(awstest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "v1")), nil, 1, "serves LOGIN_KEY as " + policy.TypeGoogleLogin + ", not a stored secret", "--type none"},
-		{"set of a stored secret: served as stored", "", new(awstest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "v1")), nil, 0, "", ""},
+		{"set: served as stored", "", new(policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, login)), nil, 1, "serves LOGIN_KEY as a stored secret, not " + policy.TypeGoogleLogin, "--type " + policy.TypeGoogleLogin},
+		{"set: served as written", policy.TypeGoogleLogin, new(policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, login)), nil, 0, "", ""},
+		{"set of a stored secret: served as a type", policy.TypeGoogleLogin, new(policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "v1")), nil, 1, "serves LOGIN_KEY as " + policy.TypeGoogleLogin + ", not a stored secret", "--type none"},
+		{"set of a stored secret: served as stored", "", new(policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "v1")), nil, 0, "", ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := awstest.NewLocal()
-			args := []string{"set", "LOGIN_KEY"}
-			if row.held != nil {
-				local = awstest.NewLocal(*row.held)
-			} else {
-				args = append([]string{"create", "LOGIN_KEY", "--owner", "me", "--tier", "agent"}, row.args...)
-			}
-			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true, Type: row.served} })
-			awstest.Use(t, local, testAccount, adaSignIn)
-			useStdin(t, login)
-			stdout, stderr, code := runSecret(args...)
-			if code != row.code {
-				t.Fatalf("%v with the broker serving type %q: exit %d, stdout %q, stderr %q; want %d", args, row.served, code, stdout, stderr, row.code)
-			}
-			if valueOf(t, local, "LOGIN_KEY") != login {
-				t.Fatalf("%v: LOGIN_KEY does not hold the value written", args)
-			}
-			if row.code == 0 {
-				return
-			}
-			for _, says := range []string{"the value of LOGIN_KEY in", "stands", row.refusal, "secret retag LOGIN_KEY " + row.retag} {
-				if !strings.Contains(stderr, says) {
-					t.Fatalf("%v: stderr %q does not say %q", args, stderr, says)
+			onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+				args := []string{"set", "LOGIN_KEY"}
+				if row.held != nil {
+					putSecret(t, store, *row.held)
+				} else {
+					args = append([]string{"create", "LOGIN_KEY", "--owner", "ada@example.com", "--tier", "agent"}, row.args...)
 				}
-			}
+				broker.answerAs(func(name string) Reread { return Reread{Name: name, Served: true, Type: row.served} })
+				useStdin(t, login)
+				stdout, stderr, code := runSecret(args...)
+				if code != row.code {
+					t.Fatalf("%v with the broker serving type %q: exit %d, stdout %q, stderr %q; want %d", args, row.served, code, stdout, stderr, row.code)
+				}
+				if store.value(t, "LOGIN_KEY") != login {
+					t.Fatalf("%v: LOGIN_KEY does not hold the value written", args)
+				}
+				if row.code == 0 {
+					return
+				}
+				for _, says := range []string{"the value of LOGIN_KEY in", "stands", row.refusal, "secret retag LOGIN_KEY " + row.retag} {
+					if !strings.Contains(stderr, says) {
+						t.Fatalf("%v: stderr %q does not say %q", args, stderr, says)
+					}
+				}
+			})
 		})
 	}
 }

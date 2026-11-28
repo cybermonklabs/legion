@@ -1,17 +1,12 @@
 package main
 
 import (
-	"context"
 	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestCreateAndRetagWriteTheJudgeTags: create and retag --judge SECONDS and --guidance TEXT write
@@ -22,7 +17,7 @@ import (
 func TestCreateAndRetagWriteTheJudgeTags(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, "probe-value")
-		if _, stderr, code := runSecret("create", "JUDGED_KEY", "--owner", "me", "--tier", "human", "--judge", "900", "--guidance", "grant k14-grant"); code != 0 {
+		if _, stderr, code := runSecret("create", "JUDGED_KEY", "--owner", "ada@example.com", "--tier", "human", "--judge", "900", "--guidance", "grant k14-grant"); code != 0 {
 			t.Fatalf("create --judge 900 --guidance: exit %d, stderr %q", code, stderr)
 		}
 		tags := store.tags(t, "JUDGED_KEY")
@@ -63,41 +58,40 @@ func TestCreateAndRetagWriteTheJudgeTags(t *testing.T) {
 	})
 
 	t.Run("a value the broker would refuse is refused before any write", func(t *testing.T) {
-		local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
-		writes := &countingTagWrites{Local: local}
-		startSecretBroker(t, servedBy(local))
-		awstest.Use(t, writes, testAccount, adaSignIn)
-		longGuidance := strings.Repeat("g", policy.MaxGuidanceRunes+1)
-		for _, c := range []struct {
-			args   []string
-			flag   string
-			reason string
-			quoted string // a value the refusal must not print
-		}{
-			{[]string{"create", "NEW_KEY", "--owner", "me", "--tier", "human", "--judge", "1800"}, "--judge", policy.ReasonJudgeOutOfRange, "1800"},
-			{[]string{"create", "NEW_KEY", "--owner", "me", "--tier", "human", "--judge", "0"}, "--judge", policy.ReasonJudgeOutOfRange, ""},
-			{[]string{"create", "NEW_KEY", "--owner", "me", "--tier", "human", "--judge", "15m"}, "--judge", policy.ReasonJudgeOutOfRange, "15m"},
-			{[]string{"create", "NEW_KEY", "--owner", "me", "--tier", "human", "--judge", "none"}, "--judge", policy.ReasonJudgeOutOfRange, ""},
-			{[]string{"retag", "API_KEY", "--judge", "901"}, "--judge", policy.ReasonJudgeOutOfRange, "901"},
-			{[]string{"retag", "API_KEY", "--judge", "-900"}, "--judge", policy.ReasonJudgeOutOfRange, "-900"},
-			{[]string{"create", "NEW_KEY", "--owner", "me", "--tier", "human", "--guidance", "none"}, "--guidance", "a retag", ""},
-			{[]string{"create", "NEW_KEY", "--owner", "me", "--tier", "human", "--judge", "300", "--guidance", longGuidance}, "--guidance", policy.ReasonGuidanceTooLong, longGuidance},
-			{[]string{"retag", "API_KEY", "--guidance", longGuidance}, "--guidance", policy.ReasonGuidanceTooLong, longGuidance},
-		} {
-			useStdin(t, "probe-value")
-			_, stderr, code := runSecret(c.args...)
-			if code != exitUsageError || !strings.Contains(stderr, c.flag) || !strings.Contains(stderr, c.reason) {
-				t.Errorf("%q: exit %d stderr %q; want %d naming %s and %s", c.args, code, stderr, exitUsageError, c.flag, c.reason)
+		onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+			putSecret(t, store, policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
+			longGuidance := strings.Repeat("g", policy.MaxGuidanceRunes+1)
+			for _, c := range []struct {
+				args   []string
+				flag   string
+				reason string
+				quoted string // a value the refusal must not print
+			}{
+				{[]string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "human", "--judge", "1800"}, "--judge", policy.ReasonJudgeOutOfRange, "1800"},
+				{[]string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "human", "--judge", "0"}, "--judge", policy.ReasonJudgeOutOfRange, ""},
+				{[]string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "human", "--judge", "15m"}, "--judge", policy.ReasonJudgeOutOfRange, "15m"},
+				{[]string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "human", "--judge", "none"}, "--judge", policy.ReasonJudgeOutOfRange, ""},
+				{[]string{"retag", "API_KEY", "--judge", "901"}, "--judge", policy.ReasonJudgeOutOfRange, "901"},
+				{[]string{"retag", "API_KEY", "--judge", "-900"}, "--judge", policy.ReasonJudgeOutOfRange, "-900"},
+				{[]string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "human", "--guidance", "none"}, "--guidance", "a retag", ""},
+				{[]string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "human", "--judge", "300", "--guidance", longGuidance}, "--guidance", policy.ReasonGuidanceTooLong, longGuidance},
+				{[]string{"retag", "API_KEY", "--guidance", longGuidance}, "--guidance", policy.ReasonGuidanceTooLong, longGuidance},
+			} {
+				useStdin(t, "probe-value")
+				_, stderr, code := runSecret(c.args...)
+				if code != exitUsageError || !strings.Contains(stderr, c.flag) || !strings.Contains(stderr, c.reason) {
+					t.Errorf("%q: exit %d stderr %q; want %d naming %s and %s", c.args, code, stderr, exitUsageError, c.flag, c.reason)
+				}
+				if c.quoted != "" && strings.Contains(stderr, strconv.Quote(c.quoted)) {
+					t.Errorf("%q: stderr %q prints the value it refused", c.args, stderr)
+				}
 			}
-			if c.quoted != "" && strings.Contains(stderr, strconv.Quote(c.quoted)) {
-				t.Errorf("%q: stderr %q prints the value it refused", c.args, stderr)
+			if calls := store.calls(); calls != 0 {
+				t.Fatalf("refused commands made %d store calls; want none: no tag read and no write", calls)
 			}
-		}
-		if writes.describes != 0 || writes.tags != 0 || writes.untags != 0 {
-			t.Fatalf("refused commands made %d DescribeSecret, %d TagResource and %d UntagResource calls; want none", writes.describes, writes.tags, writes.untags)
-		}
-		if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-			t.Fatal("a refused create made NEW_KEY")
-		}
+			if store.has(t, "NEW_KEY") {
+				t.Fatal("a refused create made NEW_KEY")
+			}
+		})
 	})
 }

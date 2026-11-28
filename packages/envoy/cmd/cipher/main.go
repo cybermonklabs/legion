@@ -109,6 +109,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -184,7 +185,8 @@ var commands = []command{
 		"Request secrets, wait up to --wait (default 30m) for a person to decide, and run <command>\nwith each granted secret in its environment under its NAME; nothing runs unless all are\ngranted. One line on stderr names those secrets and the broker and store they came from,\nnever a value. A name a person must approve needs --reason; with none the\nwhole request is denied. The grant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours otherwise (until this session ends when every secret is tagged default-grant=session). The release\nnames <command>'s first 32 arguments, each cut to 256 bytes, and this call's --reason to the\nbroker, which logs them with the reason of the request the grant came of, each value of 8 bytes\nor more the release hands out and each credential of a known shape replaced by [redacted]. Any\nother secret on the command line, a shorter value among them, is logged as typed: pass secrets\nin the environment, never as arguments.\n--target narrows the one NAME's GitHub profile to ACCOUNT, or to ACCOUNT/REPOSITORY,\ngiven once for each repository of one account, at most 100 times. It never widens the\nprofile; a run of two NAMEs with a target, or targets of two accounts, exits 2 and sends\nnothing. A GitHub profile's NAME holds the JSON object of installations the release\nmakes, or one token where the profile says \"value\": \"token\". One line on stderr names\nfor each account of a GitHub profile the permissions its token leaves out, since the\ninstallation does not hold them."},
 }
 
-// usageEnvironment closes usage: the variables every form reads, and the exit codes.
+// usageEnvironment is usage's environment table: the variables every form reads, before each
+// store's rows (storeHelpRows).
 const usageEnvironment = `
 environment (a process given none of the AGENT_SECRETS_URL, AGENT_SECRETS_SIGNIN_* and
 AGENT_SECRETS_MACHINE_* / AGENT_SECRETS_POOL_* settings reads them from
@@ -238,27 +240,10 @@ AGENT_SECRETS_MACHINE_* / AGENT_SECRETS_POOL_* settings reads them from
   AGENT_SECRETS_POOL_ACCOUNT the managed identity generateIdToken is called on
   AGENT_SECRETS_SESSION      the session name a trade writes under, where the deployment's entry
                              fixes none
-  AWS_PROFILE                the AWS profile the secret forms sign in with, against a broker on
-                             AWS; access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and
-                             AWS_WEB_IDENTITY_TOKEN_FILE, outrank it, as in the AWS CLI, and
-                             without it the AWS SDK's default credential chain signs in; every
-                             secret form needs a sign-in in the broker's account, and the
-                             store's IAM decides what it may do there
-  AWS_DEFAULT_PROFILE        the AWS profile the secret forms sign in with where AWS_PROFILE is
-                             unset; a profile either names that the AWS config does not hold
-                             stops the command
-  CLOUDSDK_AUTH_ACCESS_TOKEN a Google access token the secret forms sign in with against a broker
-                             on Google Cloud; it outranks every other Google source
-  GOOGLE_APPLICATION_CREDENTIALS
-                             a Google credentials file the secret forms sign in with where no
-                             token is lent; it outranks the gcloud variables below
-  CLOUDSDK_ACTIVE_CONFIG_NAME
-                             the gcloud configuration whose login the secret forms sign in with,
-                             before the well-known credentials file, the active gcloud account
-                             and the metadata server
-  CLOUDSDK_CORE_ACCOUNT      the gcloud login the secret forms sign in with, at the same place in
-                             that order; the store's IAM decides what each may do
+`
 
+// usageExitCodes closes usage, after the stores' rows of its environment table: the exit codes.
+const usageExitCodes = `
 exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval (or its status unreadable when --wait ran out), 76 permanent renewal refusal, 77 denied;
 register --exec exits 127 when COMMAND is not found and 126 when it cannot run;
 secret create and set end by the signal on hang-up (SIGHUP), interrupt (Ctrl-C), quit (Ctrl-\)
@@ -340,6 +325,18 @@ func usage() string {
 		}
 	}
 	b.WriteString(usageEnvironment)
+	b.WriteString(storeHelpRows())
+	b.WriteString(usageExitCodes)
+	return b.String()
+}
+
+// storeHelpRows is each store's rows of usage's environment table (Backend.HelpRows), in the
+// registry's order (backends.All).
+func storeHelpRows() string {
+	var b strings.Builder
+	for _, backend := range backends.All() {
+		b.WriteString(backend.HelpRows())
+	}
 	return b.String()
 }
 

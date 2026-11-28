@@ -558,17 +558,10 @@ type writer struct {
 	tokens *storeTokens
 }
 
-// id is the Secret Manager resource name of the secret whose name under the prefix is slug.
-func (b *writer) id(slug string) string { return b.settings.SecretsPrefix + slug }
-
+// parent is the project the broker's settings name, as Secret Manager's resource names start.
 func (b *writer) parent() string { return "projects/" + b.settings.GCPProject }
 
-// secretID is id(slug) with the parent's "projects/<project>/secrets/" stripped, the bare id
-// CreateSecretRequest.SecretId takes.
-func (b *writer) secretID(slug string) string {
-	return strings.TrimPrefix(b.id(slug), b.parent()+"/secrets/")
-}
-
+// displayName is the NAME a session asks for the secret named id (policy.DisplayName).
 func (b *writer) displayName(id string) string {
 	return policy.DisplayName(b.settings.SecretsPrefix, id)
 }
@@ -590,7 +583,7 @@ func (b *writer) RequireAccount(context.Context) error { return nil }
 func (b *writer) CheckTagValues(map[string]string) error { return nil }
 
 // PersonEmail answers, for --owner me, the lowercased email of the person this sign-in is, as
-// Google's userinfo endpoint (gcpUserinfo) names the account behind its token. It is the one
+// Google's userinfo endpoint (userinfo) names the account behind its token. It is the one
 // userinfo call any form makes. It refuses a token userinfo does not answer, which is any token
 // without an email scope (an access token minted for cloud-platform alone, as a lent token or a
 // machine's commonly is), and an account that is no person's (personAccount): a service account's
