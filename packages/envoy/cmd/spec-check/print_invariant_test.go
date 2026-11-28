@@ -9,7 +9,6 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,16 +24,16 @@ import (
 // node that they held before the run as yaml.v3 reads it, each node of the run as its approved
 // document, and no other node, each check that the run wrote is in the block of its statement, and
 // a second run changes no byte; a refused run writes nothing. The test runs print's own path after
-// its arguments (printApproved, with a bound of 4,096 bytes) over random approved sets: printSeeds
-// seeds, each up to 40 runs of 1 to 5 nodes on one directory, with a new approved version of a
-// node between runs. Before one run in four it plants a fault in one file (plantFault): the same
-// nodes with other line breaks, a term in front whose name holds a line break of YAML 1.1, or a
-// fault of the YAML after the documents. The plan of no run loses a node, and print refuses a run
-// over a file whose reading stops, by its name. It replays each run with Layout.Place to name the
-// answer that each node got, and requires each answer that print can give to occur: W (written at
-// home), M (moved to the next file of its series) and T (refused, its block over the bound) for
-// each kind of node, new and replaced, and S and P (refused, its statement or its parent not in
-// the files).
+// its arguments (printApproved, with a bound of 4,096 bytes and no wait for the lock) over random
+// approved sets: printSeeds seeds, each a parallel subtest of seeds named by its number, of up to
+// 40 runs of 1 to 5 nodes on a directory of its own, with a new approved version of a node between
+// runs. Before one run in four it plants a fault in one file (plantFault): the same nodes with
+// other line breaks, a term in front whose name holds a line break of YAML 1.1, or a fault of the
+// YAML after the documents. The plan of no run loses a node, and print refuses a run over a file
+// whose reading stops, by its name. It replays each run with Layout.Place to name the answer that
+// each node got, and requires each answer that print can give to occur: W (written at home), M
+// (moved to the next file of its series) and T (refused, its block over the bound) for each kind
+// of node, new and replaced, and S and P (refused, its statement or its parent not in the files).
 //
 // The proof of the rule itself is TestPlace, a row for each cell of its table; this test proves
 // that print follows the rule. Over the seeds 1 to 2,000 of the generator before it planted faults,
@@ -47,24 +46,18 @@ func TestPrintKeepsTheInvariant(t *testing.T) {
 	seeds := printSeeds(t)
 	var mu sync.Mutex
 	seen := map[string]bool{}
-	// The seeds are spread over one group for each core, so the test takes the time of the seeds
-	// divided by the cores.
-	groups := min(max(runtime.GOMAXPROCS(0), 1), 64)
+	// Each seed is a parallel subtest of seeds. The group returns after the last of them ends, so
+	// seen holds the answers of every seed when the test reads it.
 	t.Run("seeds", func(t *testing.T) {
-		for group := range groups {
-			t.Run(strconv.Itoa(group), func(t *testing.T) {
+		for seed := uint64(1); seed <= seeds; seed++ {
+			t.Run(strconv.FormatUint(seed, 10), func(t *testing.T) {
 				t.Parallel()
-				for seed := uint64(group + 1); seed <= seeds; seed += uint64(groups) {
-					answers := printSeed(t, seed, limit)
-					mu.Lock()
-					for answer := range answers {
-						seen[answer] = true
-					}
-					mu.Unlock()
-					if t.Failed() {
-						return
-					}
+				answers := printSeed(t, seed, limit)
+				mu.Lock()
+				for answer := range answers {
+					seen[answer] = true
 				}
+				mu.Unlock()
 			})
 		}
 	})
@@ -104,13 +97,16 @@ func printSeeds(t *testing.T) uint64 {
 }
 
 // printSeed runs the printer over the random approved set of seed, and answers each answer that
-// a node got. After a run that print refuses, it puts a file with a planted fault back.
+// a node got. After a run that print refuses, it puts a file with a planted fault back. Print waits
+// no time for the lock of the directory: the directory is the seed's own, so no other run takes its
+// lock, and a run that ends releases its lock at once, even while a child that another test forks
+// holds a copy of its descriptor (TestReleaseEndsTheLockWhileACopyOfItsDescriptorIsOpen).
 func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 	r := rand.New(rand.NewPCG(seed, seed))
 	g := newPrintSet(r)
 	dir := t.TempDir()
 	answers := map[string]bool{}
-	bounds := printBounds{limit: limit, wait: printLockWait}
+	bounds := printBounds{limit: limit, wait: 0}
 	for range 1 + r.IntN(40) {
 		g.change(r)
 		a := g.approved()
@@ -150,6 +146,11 @@ func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 		}
 		switch code {
 		case 2:
+			// No other run takes the lock of the seed's own directory, so a refusal for the lock is
+			// a fault of the lock, not an answer of print.
+			if strings.Contains(stderr.String(), "holds the lock of the directory") {
+				t.Fatalf("seed %d: print refused a run for the lock of a directory that no other run uses: %s", seed, stderr.String())
+			}
 			if got := readDir(t, dir); !maps.EqualFunc(got, files, bytes.Equal) {
 				t.Fatalf("seed %d: a refused run changed the files: %s", seed, stderr.String())
 			}
