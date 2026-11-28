@@ -18,9 +18,11 @@
  *                       issue), which the seed adds. Its session is EARLIER_SESSION.
  *   fixtures.json       the gh stand-in's routes: E1's pull request EARLIER_PR, merged. rig.sh
  *                       copies it to the run's fixtures.json.
- *   guidance-first.md   form A's and D's guidance: the implementer on the Claude family and the
- *                       reviewer on the GPT family, each with its model.
- *   guidance-second.md  form C's guidance: both on the Claude family, with one model.
+ *   guidance-first.md   form A's and D's guidance: the deployment's first guidance word for word,
+ *                       with its slot in the first form, the reviewer on the GPT family and the
+ *                       implementer on the Claude family, each with its model.
+ *   guidance-second.md  form C's guidance: the same text, with its slot in the second form, both
+ *                       on the Claude family, with one model.
  *   questions.txt       the second turn's questions, one a line: `<forms>: <question>`.
  * The guidance files name their models `{{IMPLEMENTER_MODEL}}` and `{{REVIEWER_MODEL}}`, which the
  * world's guidance fills (`guidance`, below).

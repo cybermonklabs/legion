@@ -1,10 +1,5 @@
-This deployment has three points for the plans that owners write:
+Plan each issue with these three points. They are this deployment's practice, and Legion requires none of them: where an issue needs another plan, write it, and say why in the task's text.
 
-1. A reviewer is on another model family than the implementer.
-2. A tester runs the real thing.
-3. The owner chooses a fresh or an earlier agent for each step.
-
-The models of this deployment:
-
-- The implementer runs on `{{IMPLEMENTER_MODEL}}`, of the Claude family.
-- The reviewer runs on `{{REVIEWER_MODEL}}`, of the Claude family. It is the model of the implementer.
+1. Review on another model family. Put a reviewer step after the implementer step of each task, and write in the task's text what the review holds the work to: the issue's goal and each requirement of its spec, and the model families of the reviewer and the implementer, as the next sentence gives them. In this deployment's 10 most recent finished issues, read on 2026-11-28, the reviewer ran on {{REVIEWER_MODEL}} and the implementer on {{IMPLEMENTER_MODEL}}, one model family, so this deployment does not yet meet this point; put the reviewer step all the same. A reviewer of the implementer's own model family tends to miss the same faults.
+2. Test the real thing. Where the work changes something a person or a program uses, put a tester step, and write in the task's text what it runs: the real command, the real page with a real login, or the real API call with a real caller's credential. Reading the code, or running unit tests alone, is not that step.
+3. Choose each step's agent. For each step, choose a fresh agent or the agent of an earlier step, and write the choice and its reason in the task's text. Choose a fresh agent for a review or a test, so that it reads the work without the context of the agent that wrote it. Choose the agent of an earlier step where what it already knows saves work.
