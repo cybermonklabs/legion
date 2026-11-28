@@ -87,6 +87,10 @@ func ReadWork(run func(in string, args ...string) (string, error), jj, dir strin
 		return "", false, nil, err
 	}
 	if beside {
+		// CONTROL (fb8-stale): the read brings a stale fix copy up to date before it snapshots it.
+		if _, err := run(fix, command("workspace", "update-stale", "-R", fix)...); err != nil {
+			return "", false, nil, err
+		}
 		if _, err := run(fix, command("log", "-R", fix, "-r", "@", "--no-graph", "-T", "commit_id")...); err != nil {
 			return "", false, nil, err
 		}
