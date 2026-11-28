@@ -358,14 +358,15 @@ itself, whose tests import its sources by relative path.
   for clause 4 one for each failed entry, and exits 1; the wrapper fails a step whose bun exited 0
   when its run breaks one (bun 1.4.4 exits 0 and writes no report when it cannot write its
   outfile, and when a test calls `process.exit`).
-- The wrapper refuses, before bun starts, a run whose record could not be whole: a `-t` pattern
-  that is not a literal name (a regular expression's special character, or more than 1,000
-  characters; the record matches a pattern as a literal substring, never compiles it), on the
-  command line or in the script `bun run` runs; a reporter of the command's or the script's own;
-  a `bun run` from a directory with no `package.json` (bun runs the script at the package's
-  root); and a `bun run` of a script that is not one `bun test` command (bun gives the reporter
-  flags to its last command alone). So a step that runs a chained script, as dispatch-ui's "Test
-  dispatch dashboard" does, runs each command under the wrapper, and holds the script to the
+- The wrapper refuses, before bun starts, a run whose record could not be whole. It checks `-t`
+  and `--test-name-pattern` on the command line and in the script `bun run` runs, even when
+  the pattern is attached to the flag (`-tpicked`, `-t=picked`, or `--test-name-pattern=picked`).
+  It refuses a pattern with a regular expression's special characters or more than 1,000
+  characters. It also refuses a reporter of the command's or the script's own, a `bun run` from
+  a directory with no `package.json`, and a script with a line break or any other form that is
+  not one `bun test` command. bun runs a script at its package's root and gives the reporter
+  flags to the last command alone. A step that runs a chained script, as dispatch-ui's "Test
+  dispatch dashboard" does, runs each command under the wrapper and holds the script to the
   commands it runs.
 - The job uploads that directory, its hidden files included, as the artifact
   `bun-test-reports-<job id>` in its step "Keep the bun test reports"
@@ -393,13 +394,15 @@ itself, whose tests import its sources by relative path.
   so the reader's line for a cancelled job does not see it. An upload before bun ends finds the
   run's marker with no exit status, which the first clause makes unknown; an upload after bun
   ended on its own reads the run whole, as its tests did run.
-- An artifact is written by the run's own tests too, so the reader holds it as untrusted input: it
-  matches a `.t` only as a literal substring, and refuses by name, before it downloads or unpacks
-  anything, an artifact above 64 MiB as GitHub lists it or as its members unpack.
+- A run's own tests can write into its artifact, so the reader treats it as untrusted input. It
+  matches a `.t` only as a literal substring and refuses a report with more than 100 nested
+  `<testsuite>` levels under clause 2. It names an artifact above 64 MiB without downloading it
+  if GitHub lists its size above that bound. It names an artifact without unpacking any member
+  if its members unpack to more than 64 MiB or it holds more than 10,000 zip members.
 - What the record cannot see: a step that never started (an earlier step failed, or its `if:` was
-  false) writes nothing, and nothing of it is printed; the names of the tests a file that did not
-  load, a describe whose hook threw, or a crashed worker did not report are in no record (the run
-  is unknown, and the log holds what bun printed); and a bun test the rule does not read (its
+  false) writes nothing, and nothing of it is printed. A file that did not load, a file or
+  describe whose hook threw, or a crashed worker can leave tests out of the report. The run is
+  unknown, and the log holds what bun printed. A bun test the rule does not read (its
   docstring lists those forms, and a workflow outside `ci.yaml`'s run) keeps no record.
 
 ## A Bun test waits for its fact, and its command sets its one guard

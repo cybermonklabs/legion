@@ -26,14 +26,14 @@ every test bun ran in it, exactly when:
 
   1. its `.exit` is there, as the wrapper writes it;
   2. its report is there and is bun 1.4.4's JUnit: a <testsuites> root whose `tests` is the number
-     of its <testcase> entries, each one a test, with a `time`, a `line` and a `file`, or one of
-     bun's two entries with no line, skipped or failed: HOOK for a beforeAll or afterAll hook,
-     CRASH for a --parallel worker; and the run's `.t` pattern, when it has one, is a literal name
-     (literal_fault), which the reader matches as a substring, as bun's regular expression of it
-     matches;
+     of its <testcase> entries, with at most NESTING_LIMIT nested <testsuite> levels. Each entry is
+     a test, with a `time`, a `line` and a `file`, or one of bun's two entries with no line,
+     skipped or failed: HOOK for a beforeAll or afterAll hook, CRASH for a --parallel worker; and
+     the run's `.t` pattern, when it has one, is a literal name (literal_fault), which the reader
+     matches as a substring, as bun's regular expression of it matches;
   3. bun started, printed its summary, and the summary counts no error;
-  4. no entry with no line is a failure: a beforeAll or afterAll hook that threw (the tests of
-     that describe may not have run, and those that did not are not in the report) or a worker
+  4. no entry with no line is a failure: a beforeAll or afterAll hook that threw (the tests of its
+     describe or file may not have run, and those that did not are not in the report) or a worker
      that crashed (the tests of that file it had not reported are not in the report). A skipped
      entry with no line is a hook of a skipped describe, and no test;
   5. a non-zero exit status comes with a failure the record shows: a failing test, an entry of
@@ -47,7 +47,7 @@ wrapper fails a step whose bun exited 0 when its run breaks a clause.
 
 Everything under REPORTS_DIR is written by the run's own tests too, if they choose: an artifact is
 untrusted input. So a `.t` is matched as a literal substring, never compiled, and the reader
-bounds an artifact's size before it unpacks it.
+bounds an artifact's size and member count before it unpacks it.
 """
 import json
 import os
@@ -72,6 +72,9 @@ PATTERN = ".t"
 # at most PATTERN_LIMIT characters.
 REGEX_CHARACTERS = set("\\^$.|?*+()[]{}")
 PATTERN_LIMIT = 1000
+# bun nests one <testsuite> per file and one per describe. Bound the number of levels a test's
+# printed name can include.
+NESTING_LIMIT = 100
 # The attributes bun 1.4.4 writes on every <testcase> of a test.
 CASE_ATTRIBUTES = ("time", "line", "file")
 # The names bun 1.4.4 gives its <testcase> entries with no line: a beforeAll or afterAll hook
@@ -115,7 +118,7 @@ def read_exit(path: Path):
     text = path.read_text()
     try:
         record = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         record = None
     if not (isinstance(record, dict) and type(record.get("status")) is int
             and (record.get("errors") is None or type(record.get("errors")) is int)
@@ -128,9 +131,6 @@ def read_pattern(path: Path):
     """(the run's -t pattern or None, the reason clause 2 refuses it or None)."""
     if not path.is_file():
         return None, None
-    # A literal name of PATTERN_LIMIT characters is at most 4 bytes a character.
-    if path.stat().st_size > 4 * PATTERN_LIMIT:
-        return None, f"its -t pattern {path.name} is {path.stat().st_size} bytes, above the bound of {PATTERN_LIMIT} characters"
     try:
         pattern = path.read_text()
     except (OSError, UnicodeDecodeError) as error:
@@ -155,19 +155,34 @@ def status_of(case, full_name: str, pattern) -> str:
     return "pass"
 
 
-def cases(suite, describes: list):
-    """(describe blocks and name, case) for each <testcase> under `suite`, depth first, in the
-    report's order."""
-    for child in suite:
-        if child.tag == "testsuite":
-            yield from cases(child, describes + [child.get("name", "")])
+class ReportNestingError(ValueError):
+    pass
+
+
+def cases(suite):
+    """(describe blocks and name, case) for each <testcase> under a file's suite, in report order."""
+    stack = [iter(suite)]
+    describes = []
+    while stack:
+        child = next(stack[-1], None)
+        if child is None:
+            stack.pop()
+            if describes:
+                describes.pop()
+        elif child.tag == "testsuite":
+            if len(stack) == NESTING_LIMIT:
+                raise ReportNestingError(
+                    f"the report's <testsuite> nesting exceeds the bound of {NESTING_LIMIT} levels")
+            stack.append(iter(child))
+            describes.append(child.get("name", ""))
         elif child.tag == "testcase":
-            yield describes + [child.get("name", "")], child
+            yield [*describes, child.get("name", "")], child
 
 
 def read_report(path: Path, report: str):
     """(rows, clause 4's reasons, clause 2's reason) for one report; `report` is its path in the
-    artifact, whose directory is put before each test's file."""
+    artifact, whose directory is put before each test's file. Raise ReportNestingError if the
+    report exceeds the suite nesting bound."""
     try:
         root = ElementTree.parse(path).getroot()
     except (ElementTree.ParseError, OSError) as error:
@@ -181,7 +196,7 @@ def read_report(path: Path, report: str):
     rooted = lambda file: f"{directory}/{file}" if directory else file
     rows, failed, entries = [], [], 0
     for top in root.findall("testsuite"):
-        for names, case in cases(top, []):
+        for names, case in cases(top):
             entries += 1
             skipped, failure = case.find("skipped") is not None, case.find("failure") is not None
             if case.get("line") is None and names[-1] in (HOOK, CRASH) and skipped != failure:
@@ -189,9 +204,10 @@ def read_report(path: Path, report: str):
                     failed.append(f"the --parallel worker running {rooted(case.get('file'))} crashed: the tests of "
                                   "that file it had not reported are not in the report")
                 elif failure:
-                    where = f"of {' > '.join(names[:-1])!r}" if names[:-1] else "at the top"
+                    where = f"of {' > '.join(names[:-1])!r}" if len(names) > 1 else "at the top"
+                    scope = "describe" if len(names) > 1 else "file"
                     failed.append(f"a beforeAll or afterAll hook {where} in {rooted(case.get('file'))} threw: the "
-                                  "tests of that describe may not have run, and those that did not are not in the "
+                                  f"tests of that {scope} may not have run, and those that did not are not in the "
                                   "report")
                 continue
             missing = [a for a in CASE_ATTRIBUTES if case.get(a) is None]
@@ -236,7 +252,10 @@ def read_run(path: Path, report: str):
             f": bun exited {ended['status']} and wrote none (an outfile it could not write, a test that called "
             "process.exit, a signal or a crash)" if started else ""))
         return [], reasons
-    rows, failed, why = read_report(path, report)
+    try:
+        rows, failed, why = read_report(path, report)
+    except ReportNestingError as error:
+        return [], [*reasons, f"clause 2: {error}"]
     if why:
         reasons.append(f"clause 2: {why}")
         return [], reasons

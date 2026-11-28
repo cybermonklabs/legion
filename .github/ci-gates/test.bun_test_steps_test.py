@@ -4,8 +4,7 @@ GATE = harness("bun_test_steps_test", "Test the workflow file check's bun test r
     (f"{SCRIPTS}/bun_test_steps.py", "the module under test"),
     (f"{SCRIPTS}/check-workflow-files.sh", "every case runs it, linked into the case's fixture: it imports the module "
                                           "from beside its own file and reports what the module refuses"),
-    (f"{SCRIPTS}/bun_test_record.py", "the module imports the wrapper's path, the report name and the upload step's "
-                                      "action and name from it"),
+    (f"{SCRIPTS}/bun_test_record.py", "the module imports the record's names from it"),
     (f"{SCRIPTS}/workflow_paths.py", "the module imports the node readers from it, and the check imports "
                                      "repeated_keys"),
     (f"{SCRIPTS}/postgres-service-settings.sh", "the check runs its --command from beside its own file before any "

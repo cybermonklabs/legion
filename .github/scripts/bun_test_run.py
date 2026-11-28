@@ -10,11 +10,12 @@ It runs the command with `--reporter=junit --reporter-outfile=<report>` added at
 with bun's exit status. The report is `$RUNNER_TEMP/bun-test-reports/<the working directory, from
 GITHUB_WORKSPACE>/<name>.xml`. Before bun starts it writes `<report>.run` and, for a -t
 (--test-name-pattern) pattern on the command line or in the script `bun run` runs, `<report>.t`;
-once bun has ended, or could not start, `<report>.exit`. bun's standard output reaches the step as bun writes it. Its standard error passes through this
-script, which copies each piece as it comes and reads the count of errors from bun's summary (the
-` N error` line above `Ran N tests across M files.`), since bun's report leaves out a file that
-did not load and an error between tests. When bun has ended, the copy goes on for at most
-DRAIN_SECONDS more, for a process a test started that still holds bun's standard error.
+once bun has ended, or could not start, it writes `<report>.exit`. bun's standard output reaches
+the step as bun writes it. This script copies each piece of standard error as it comes and reads
+the count of errors from bun's summary (the ` N error` line above `Ran N tests across M files.`).
+bun's report leaves out a file that did not load and an error between tests. When bun has ended,
+the copy goes on for at most DRAIN_SECONDS more, for a process that still holds bun's standard
+error.
 
 When bun exits 0 and its run breaks a clause of bun_test_record.py's rule (bun 1.4.4 exits 0 and
 writes no report when it cannot write its outfile, and when a test calls process.exit), this
@@ -27,14 +28,14 @@ run's marker with no `.exit`: clause 1 makes that run unknown.
 
 Exit status: bun's, 1 as above, 127 when bun could not start, or 2, before bun starts, when this
 was called wrongly: a name NAME does not match; a command that is not `bun test` or `bun run`;
-a command, or the script it runs, that names a reporter of its own or gives two -t patterns, or a
--t pattern that is not a literal name (bun_test_record.literal_fault: the record matches a pattern
-as a literal substring, never as a regular expression); a name another run of the job took; a
-`bun run` whose working
-directory holds no package.json (bun would run the script at the package's root, and every
-test's file would be read from the wrong directory), or whose script is not one `bun test`
-command (bun gives the reporter flags to a script's last command alone); or outside a runner (no
-RUNNER_TEMP or GITHUB_WORKSPACE, or a working directory outside GITHUB_WORKSPACE).
+a command, or the script it runs, that names its own reporter or gives two -t patterns; a -t
+pattern that is not a literal name, whether the pattern is attached to the flag or given as the
+next word (bun_test_record.literal_fault); a name another run of the job took; a `bun run` from a
+directory with no package.json (bun would run at the package's root, so each test's file would
+be read from the wrong directory); or a script with a line break or any other form that is not
+one `bun test` command (bun gives the reporter flags to a script's last command alone). It also
+refuses to run outside a runner (no RUNNER_TEMP or GITHUB_WORKSPACE, or a working directory outside
+GITHUB_WORKSPACE).
 .github/scripts/check-workflow-files.sh's rule 8 (bun_test_steps.py) holds every bun test step of
 ci.yaml's run to this script; its tests are in bun_test_reports.test.sh, which runs it with the
 real bun.
@@ -57,7 +58,7 @@ from bun_test_record import (  # noqa: E402
 
 PATTERN_FLAGS = ("-t", "--test-name-pattern")
 # One `bun test` command with no shell operator: the only script `bun run` may run here.
-ONE_BUN_TEST = re.compile(r"bun test(?:\s+[^\s;&|<>()`$'\"\\]+)*")
+ONE_BUN_TEST = re.compile(r"bun[ \t]+test(?:[ \t]+[^\s;&|<>()`$'\"\\]+)*")
 SUMMARY_END = re.compile(r"Ran \d+ tests? across \d+ files?\.")
 SUMMARY_LINE = re.compile(r"\s*\d+ \S.*")
 ERRORS = re.compile(r"\s*(\d+) errors?\s*")
@@ -72,12 +73,14 @@ def refuse(message: str) -> int:
 
 
 def patterns_of(command: list) -> list:
-    """Every -t pattern of the command, as bun reads `-t <p>`, `-t=<p>` and their long form."""
+    """Every pattern from `-t <p>`, `-t<p>`, `-t=<p>`, or the long flag with a space or `=`."""
     found = []
     for at, word in enumerate(command):
         if word in PATTERN_FLAGS and at + 1 < len(command):
             found.append(command[at + 1])
-        elif word.startswith(tuple(f"{flag}=" for flag in PATTERN_FLAGS)):
+        elif word.startswith("-t") and len(word) > 2:
+            found.append(word[2:].removeprefix("="))
+        elif word.startswith("--test-name-pattern="):
             found.append(word.split("=", 1)[1])
     return found
 
@@ -100,7 +103,7 @@ def bun_words(command: list):
         return None, f"package.json does not parse: {error}"
     if not isinstance(script, str):
         return None, f"package.json has no script {command[2]!r}"
-    if not ONE_BUN_TEST.fullmatch(script.strip()):
+    if not ONE_BUN_TEST.fullmatch(script.strip(" \t")):
         return None, (f"the script {command[2]!r} is {script!r}, not one `bun test` command: bun gives the "
                       "reporter flags to a script's last command alone")
     return shlex.split(script) + command[3:], None
@@ -131,12 +134,12 @@ def main(argv: list) -> int:
     if fault:
         return refuse(fault)
     # What bun runs, the script's words included, so a -t or a reporter a script gives is read too.
-    runs = shlex.join(words) + (f" (`{shlex.join(command)}`)" if words is not command else "")
+    shown = shlex.join(words) + (f" (`{shlex.join(command)}`)" if command[1] == "run" else "")
     if any(word.startswith("--reporter") for word in words):
-        return refuse(f"the command names a reporter of its own, and this one adds bun's JUnit reporter: {runs}")
+        return refuse(f"the command names a reporter of its own, and this one adds bun's JUnit reporter: {shown}")
     patterns = patterns_of(words)
     if len(patterns) > 1:
-        return refuse(f"the command gives {len(patterns)} -t patterns, and its report keeps one: {runs}")
+        return refuse(f"the command gives {len(patterns)} -t patterns, and its report keeps one: {shown}")
     if patterns:
         fault = literal_fault(patterns[0])
         if fault:

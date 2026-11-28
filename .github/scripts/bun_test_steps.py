@@ -23,8 +23,9 @@ request and the merge queue get), it refuses:
     reader finds the artifact by PREFIX, and the wrapper writes under REPORTS_DIR, so the action's
     copy of the two is held to the record's.
 
-Each refusal names the file, the job, the step's number and name, and its line. A line is read as
-written, lines continued with `\\` joined first, and a line whose first word is `#` is a comment.
+A step's refusal names the file, job, step number and name, and line. An action's refusal names
+its file and line, or only its file if it cannot be read. A line is read as written, lines
+continued with `\\` joined first, and a line whose first word is `#` is a comment.
 The wrapper behind quotes (`"$GITHUB_WORKSPACE/.github/scripts/bun_test_run.py"`) is not read as
 the wrapper, so its bun test is refused as a bare one. These forms are not read, and pass unread:
 bun's own options before `test` (`bun --cwd x test`); a bun given by its path
@@ -175,7 +176,7 @@ def check_bun_test_steps(path: Path, root: object, problem, census: Census) -> N
         name, condition = scalar(mapping_get(step, "name")), scalar(mapping_get(step, "if"))
         check_run_id = scalar(mapping_get(mapping_get(step, "with"), "check-run-id"))
         if name != UPLOAD_STEP:
-            wrong.append(f"is named {name!r}, not {UPLOAD_STEP!r}, the name .github/scripts/bun_test_reports.py "
+            wrong.append(f"is not named {UPLOAD_STEP!r}, the name .github/scripts/bun_test_reports.py "
                          "finds the job's records by")
         if condition != "always()":
             wrong.append(("has no `if:`" if condition is None else f"runs if {condition!r}") + ", not `if: always()`, "
@@ -183,8 +184,9 @@ def check_bun_test_steps(path: Path, root: object, problem, census: Census) -> N
         if check_run_id != CHECK_RUN_ID:
             wrong.append(f"gives check-run-id {check_run_id!r}, not `{CHECK_RUN_ID}`, the job id the artifact is "
                          "named for")
+        label = f"step {index + 1} ({name or '(no name)'!r})"
         for fault in wrong:
-            problem(path, f"{path}:{step_line}: step {index + 1} of job {job_id}, its upload of the bun test "
+            problem(path, f"{path}:{step_line}: {label} of job {job_id}, its upload of the bun test "
                           f"reports, {fault}.", line=step_line)
 
 
@@ -193,16 +195,25 @@ def check_upload_action(problem) -> None:
     under PREFIX, with hidden files."""
     try:
         root = yaml.compose(ACTION_FILE.read_text())
-    except (OSError, yaml.YAMLError) as error:
+    except (OSError, UnicodeError) as error:
         problem(ACTION_FILE, f"{ACTION_FILE} could not be read ({' '.join(str(error).split())}), and every job that "
                              f"runs bun test uses it to keep its reports")
         return
-    steps = mapping_get(mapping_get(root, "runs"), "steps")
+    except yaml.YAMLError as error:
+        mark = getattr(error, "problem_mark", None)
+        line = mark.line + 1 if mark is not None else 1
+        problem(ACTION_FILE, f"{ACTION_FILE}:{line}: its YAML does not parse ({' '.join(str(error).split())}), "
+                             "and every job that runs bun test uses it to keep its reports", line=line)
+        return
+    runs = mapping_get(root, "runs")
+    steps = mapping_get(runs, "steps")
     uploads = [step for step in (steps.value if isinstance(steps, yaml.SequenceNode) else [])
                if (scalar(mapping_get(step, "uses")) or "").startswith("actions/upload-artifact@")]
     if not uploads:
-        problem(ACTION_FILE, f"{ACTION_FILE} has no step that uses actions/upload-artifact, so no job keeps its "
-                             f"bun test reports")
+        node = steps or runs
+        line = node.start_mark.line + 1 if node is not None else 1
+        problem(ACTION_FILE, f"{ACTION_FILE}:{line}: it has no step that uses actions/upload-artifact, "
+                             "so no job keeps its bun test reports", line=line)
         return
     for step in uploads:
         given = mapping_get(step, "with")

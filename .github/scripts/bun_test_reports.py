@@ -34,6 +34,7 @@ These are every such line:
     - its artifact is missing or expired, or, with --offline, the store holds none for it;
     - its artifact could not be downloaded or unpacked, or is larger than ARTIFACT_LIMIT, as GitHub
       lists it or as its members unpack (a run's own tests can write into it);
+    - its artifact is not unpacked because it holds more than MEMBER_LIMIT zip members;
     - its artifact holds no run.
   {"run", "unknown"}, `run` null with --offline:
     - the run's job list or artifact list could not be read, or gh could not start;
@@ -66,8 +67,11 @@ from bun_test_record import PREFIX, UPLOAD_STEP, read_run, runs  # noqa: E402
 # A job that ended so: its steps after the cancel did not run.
 CUT_SHORT = ("cancelled", "timed_out")
 # An artifact is written by the run's own tests too, so one above this is refused by name, never
-# downloaded or unpacked in part: the largest of the 17 jobs' artifacts is about 0.4 MB.
+# downloaded or unpacked in part: the largest of the 17 artifacts of run 46075808979, dispatch-ui's,
+# is 415,736 bytes.
 ARTIFACT_LIMIT = 64 * 1024 * 1024
+# The most members one of those 17 artifacts holds is 38, envoy-session-stall's.
+MEMBER_LIMIT = 10_000
 
 
 def gh(repo: str, path: str, paginate: bool = False):
@@ -117,7 +121,8 @@ def run_artifacts(repo: str, run: str) -> dict:
 
 def download(repo: str, artifact: dict, into: Path):
     """Unpacks the artifact into `into`, or gives the reason it could not. Its size as GitHub lists
-    it, and the sizes its members unpack to, are each held to ARTIFACT_LIMIT first."""
+    it, and the size its members unpack to, are each held to ARTIFACT_LIMIT. The zip's member
+    count must be at most MEMBER_LIMIT before any member is unpacked."""
     bound = f"the bound of {ARTIFACT_LIMIT:,} bytes"
     listed = artifact.get("size_in_bytes")
     if not isinstance(listed, int):
@@ -136,7 +141,10 @@ def download(repo: str, artifact: dict, into: Path):
     shutil.rmtree(partial, ignore_errors=True)
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zipped:
-            unpacked = sum(member.file_size for member in zipped.infolist())
+            members = zipped.infolist()
+            if len(members) > MEMBER_LIMIT:
+                return f"is not unpacked: it holds {len(members):,} members, above the bound of {MEMBER_LIMIT:,}"
+            unpacked = sum(member.file_size for member in members)
             if unpacked > ARTIFACT_LIMIT:
                 return f"is not unpacked: its members unpack to {unpacked:,} bytes, above {bound}"
             zipped.extractall(partial)

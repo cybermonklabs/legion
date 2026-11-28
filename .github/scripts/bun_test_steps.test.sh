@@ -263,11 +263,11 @@ check "refuses a job with no upload step, naming its last bun test run" \
 check "refuses a job whose upload comes before its last bun test run" \
   "$(contains "$out" "line=9::.*job upload-before runs bun test (its last such run is step 3 ('Test two'), line $(line_of "$file" 'bun_test_run.py two')) and has no step after it that uses ./.github/actions/bun-test-reports-upload (its step 2 does, before that run ends)")"
 check "refuses an upload step of another name, the name the reader finds a job by" \
-  "$(contains "$out" "line=$(line_of "$file" 'name: Upload the bun test reports')::.*step 2 of job renamed, its upload of the bun test reports, is named 'Upload the bun test reports', not 'Keep the bun test reports'")"
+  "$(contains "$out" "line=$(line_of "$file" 'name: Upload the bun test reports')::.*step 2 ('Upload the bun test reports') of job renamed, its upload of the bun test reports, is not named 'Keep the bun test reports'")"
 check "refuses an upload step that does not run always" \
-  "$(contains "$out" "step 2 of job not-always, its upload of the bun test reports, has no \`if:\`, not \`if: always()\`")"
+  "$(contains "$out" "step 2 ('Keep the bun test reports') of job not-always, its upload of the bun test reports, has no \`if:\`, not \`if: always()\`")"
 check "refuses an upload step named for another id" \
-  "$(contains "$out" "step 2 of job other-id, its upload of the bun test reports, gives check-run-id '\${{ github.run_id }}', not \`\${{ job.check_run_id }}\`")"
+  "$(contains "$out" "step 2 ('Keep the bun test reports') of job other-id, its upload of the bun test reports, gives check-run-id '\${{ github.run_id }}', not \`\${{ job.check_run_id }}\`")"
 check "refuses an upload before the wait of a run the pool starts" \
   "$(contains "$out" "job pool-before-wait runs bun test (its last such run is step 1 ('Scan in the pool'), line $(line_of "$file" 'start scan .github')) and has no step after it")"
 check "refuses a run the pool starts with no wait after it" \
@@ -314,8 +314,14 @@ upload_action hidden 'text = text.replace("        include-hidden-files: true\n"
 check "an upload without its hidden files is refused" \
   "$(is "$status:$(contains "$out" "its upload-artifact step gives include-hidden-files None, not 'true'")" 1:true)"
 upload_action none 'text = text.replace("actions/upload-artifact@", "actions/cache@")'
-check "an action with no upload-artifact step is refused" \
-  "$(is "$status:$(contains "$out" 'action.yml has no step that uses actions/upload-artifact')" 1:true)"
+check "an action with no upload-artifact step is refused, naming the steps node's line" \
+  "$(is "$status:$(contains "$out" "^::error file=.github/actions/bun-test-reports-upload/action.yml,line=$(line_of "$file" '- name: Upload the bun test reports')::.*it has no step that uses actions/upload-artifact")" 1:true)"
+upload_action no-runs 'text = "name: No runs\n"'
+check "an action with no runs or steps is refused at line 1" \
+  "$(is "$status:$(contains "$out" '^::error file=.github/actions/bun-test-reports-upload/action.yml,line=1::.*it has no step that uses actions/upload-artifact')" 1:true)"
+upload_action bad-yaml 'text = "name: Bad YAML\nruns:\n  steps: ]\n"'
+check "malformed action YAML is refused at the line of the YAML error" \
+  "$(is "$status:$(contains "$out" '^::error file=.github/actions/bun-test-reports-upload/action.yml,line=3::.*its YAML does not parse')" 1:true)"
 
 echo "case: a tree with no ci.yaml says the rule read nothing"
 root=$(fixture no-router)

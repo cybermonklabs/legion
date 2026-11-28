@@ -24,13 +24,13 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     (".github/scripts/postgres-service-settings.sh", "check-workflow-files.sh runs its --command for rule 7, "
                                                      "the command line every Postgres service must carry"),
     (".github/scripts/bun_test_steps.py", "check-workflow-files.sh imports its rule 8 from it"),
-    (".github/scripts/bun_test_record.py", "bun_test_steps.py imports the wrapper's path, the report name and the "
-                                           "upload step's action and name from it, and ci_job_reads.py the "
-                                           "wrapper's path and the action"),
+    (".github/scripts/bun_test_record.py", "bun_test_steps.py imports the record's names from it, and ci_job_reads.py "
+                                           "imports the wrapper's path and the action"),
     (".github/actionlint.yaml", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads its configuration "
                                 "from the project it runs in"),
     (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "
-                           "local action a step's `uses:` names, for the inputs it checks"),
+                           "local action a step's `uses:` names, for the inputs it checks. Rule 8 of "
+                           "check-workflow-files.sh reads bun-test-reports-upload/action.yml"),
     (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
     (".github/scripts/audited_scripts.py", "the readings of the scripts a step runs, which check-ci-filters.sh's engine reads a step through"),
     (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),

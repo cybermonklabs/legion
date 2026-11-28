@@ -65,8 +65,9 @@
 #      uses ./.github/actions/bun-test-reports-upload, named "Keep the bun test reports", with
 #      `if: always()` and `check-run-id: ${{ job.check_run_id }}`; and, once such a job exists,
 #      that action's own upload-artifact step when it does not upload `bun-test-reports/` as
-#      `bun-test-reports-<check-run-id>` with its hidden files. Each refusal names the file and
-#      its line, and a step's also the job and the step's number and name. The rule is
+#      `bun-test-reports-<check-run-id>` with its hidden files. A step's refusal names the file,
+#      job, step number and name, and line. An action's refusal names its file and line, or only
+#      its file if it cannot be read. The rule is
 #      .github/scripts/bun_test_steps.py, whose head lists the forms it does not read; the names
 #      it holds steps and the action to are bun_test_record.py's, which every reader of the
 #      record imports, so they have one spelling.

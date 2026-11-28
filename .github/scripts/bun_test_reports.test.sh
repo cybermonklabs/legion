@@ -128,6 +128,12 @@ check "a nested test's name holds its describe blocks" \
 check "a failure is a fail" "$(contains "$(row fails)" '"status": "fail"')"
 check "a skip is a skip" "$(contains "$(row 'outer > is skipped')" '"status": "skip"')"
 check "a todo is a todo" "$(contains "$(row 'is to do')" '"status": "todo"')"
+check "test rows follow the report's depth-first order" \
+  "$(python3 -c '
+import json, sys, xml.etree.ElementTree as ET
+expected = [c.get("name") for c in ET.parse(sys.argv[1]).iter("testcase")]
+actual = [json.loads(line)["name"].split(" > ")[-1] for line in sys.stdin if line.startswith("{")]
+print("true" if actual == expected else "false")' "$written" <<<"$out")"
 check "a test's seconds are the time bun wrote for it" \
   "$(python3 -c '
 import json, sys, xml.etree.ElementTree as ET
@@ -220,6 +226,25 @@ echo "zero" > "$work/s-exit-text/bun-test-reports-101/packages/ok/test.xml.exit"
 read_store "$work/s-exit-text"
 check "exits 1, naming clause 1" \
   "$(is "$status:$(contains "$out" "\"unknown\": \"clause 1: its exit status file test.xml.exit holds 'zero', not the wrapper's\"")" 1:true)"
+
+echo "case: clause 1: an exit status file with deeply nested JSON does not stop the reader"
+deep_exit_store="$work/s-deep-exit"
+store "$deep_exit_store" "$work/t-ok"
+cp -r "$deep_exit_store/bun-test-reports-101" "$deep_exit_store/bun-test-reports-102"
+python3 - "$deep_exit_store" <<'EOF'
+import json, sys
+from pathlib import Path
+store = Path(sys.argv[1])
+jobs = store / "jobs.json"
+first, _ = json.loads(jobs.read_text())
+jobs.write_text(json.dumps([first, {**first, "id": 102, "name": "ok / ok"}]))
+(store / "bun-test-reports-101/packages/ok/test.xml.exit").write_text("[" * 200_000)
+EOF
+read_store "$deep_exit_store"
+check "deep JSON: exits 1, naming clause 1 with no traceback" \
+  "$(is "$status:$(contains "$out" "\"job_id\": 101, .*\"unknown\": \"clause 1: its exit status file test.xml.exit holds .*not the wrapper's\""):$(contains "$out" Traceback)" 1:true:false)"
+check "the reader still prints tests from both jobs" \
+  "$(is "$(contains "$out" '"job_id": 101, .*"status": "pass"'):$(contains "$out" '"job_id": 102, .*"status": "pass"')" true:true)"
 
 echo "case: a process a test leaves holding bun's standard error keeps the wrapper at most DRAIN_SECONDS"
 package holder holder.test.ts "$imports
@@ -328,6 +353,21 @@ read_store "$work/s5"
 check "a count off by one: exits 1, naming the two counts" \
   "$(is "$status:$(contains "$out" '"unknown": "clause 2: the report says 5 tests and holds 4 entries"')" 1:true)"
 
+echo "case: clause 2: suite nesting beyond the bound does not stop the reader"
+store "$work/s-deep-report" "$work/t-ok"
+python3 - "$work/s-deep-report/bun-test-reports-101/packages/ok/test.xml" <<'EOF'
+import sys
+from pathlib import Path
+levels = 100_000
+Path(sys.argv[1]).write_text(
+    '<testsuites tests="1">' + '<testsuite name="nested">' * levels
+    + '<testcase name="passes" file="src/ok.test.ts" line="2" time="0"/>'
+    + '</testsuite>' * levels + '</testsuites>')
+EOF
+read_store "$work/s-deep-report"
+check "deep XML: exits 1, naming clause 2 and the suite nesting bound with no traceback" \
+  "$(is "$status:$(contains "$out" '"report": "packages/ok/test.xml", "unknown": "clause 2: the report.s <testsuite> nesting exceeds the bound of 100 levels"'):$(contains "$out" Traceback)" 1:true:false)"
+
 echo "case: clause 2: a test with no time, line or file is a format this reader does not know, not a test of 0 s"
 for attribute in time line file; do
   store "$work/s-no-$attribute"
@@ -360,14 +400,11 @@ status=$?
 set -e
 check "a backtracking pattern: exits 1 at once, naming clause 2 and the special characters" \
   "$(is "$status:$(contains "$out" '"unknown": "clause 2: its -t pattern test.xml.t is not a literal name: it holds \$ ( ) +')":$(( $(date +%s) - started < 10 )) 1:true:1)"
-python3 -c 'print("x" * 1001, end="")' > "$work/s-bad-t/bun-test-reports-101/packages/long/test.xml.t"
+# The one bound counts characters, including when UTF-8 needs four bytes for each one.
+python3 -c 'print(chr(0x1f600) * 1001, end="")' > "$work/s-bad-t/bun-test-reports-101/packages/long/test.xml.t"
 read_store "$work/s-bad-t"
 check "a pattern longer than the bound: exits 1, naming it" \
   "$(is "$status:$(contains "$out" 'clause 2: its -t pattern test.xml.t is not a literal name: it is 1001 characters, above the bound of 1000')" 1:true)"
-python3 -c 'print("x" * 4001, end="")' > "$work/s-bad-t/bun-test-reports-101/packages/long/test.xml.t"
-read_store "$work/s-bad-t"
-check "a pattern file larger than the bound is refused before it is read" \
-  "$(is "$status:$(contains "$out" 'clause 2: its -t pattern test.xml.t is 4001 bytes, above the bound of 1000 characters')" 1:true)"
 
 echo "case: clause 3 (no error outside a test): a file that does not load, in a run with no failing test"
 package load a.test.ts "$imports
@@ -459,7 +496,7 @@ wrap "$work/t-afterall" afterall test bun test
 store "$work/s-afterall" "$work/t-afterall"
 read_store "$work/s-afterall"
 check "the reader exits 1, naming clause 4 at the top of the file" \
-  "$(is "$status:$(contains "$out" '"unknown": "clause 4: a beforeAll or afterAll hook at the top in packages/afterall/src/a.test.ts threw: the tests of that describe may not have run')" 1:true)"
+  "$(is "$status:$(contains "$out" '"unknown": "clause 4: a beforeAll or afterAll hook at the top in packages/afterall/src/a.test.ts threw: the tests of that file may not have run, and those that did not are not in the report"')" 1:true)"
 check "and prints the test that ran, which the report holds" "$(contains "$(row ran)" '"status": "pass"')"
 
 echo "case: clause 4: a --parallel worker that crashes"
@@ -562,8 +599,31 @@ check "with no pattern beside it, the left-out test reads as a skip" "$(contains
 wrap "$work/t-sel-long" sel test bun test "--test-name-pattern=group picked"
 check "the pattern's --test-name-pattern=<p> form is kept too" "$(is "$wrapped:$(cat "$work/t-sel-long/bun-test-reports/packages/sel/test.xml.t")" '0:group picked')"
 
+echo "case: an attached -t pattern is kept on the command line and in a script"
+wrap "$work/t-sel-attached" sel cli bun test -tpicked
+check "the wrapper writes picked from a command-line -tpicked" \
+  "$(is "$wrapped:$(cat "$work/t-sel-attached/bun-test-reports/packages/sel/cli.xml.t" 2>/dev/null || echo none)" 0:picked)"
+store "$work/s-sel-attached" "$work/t-sel-attached"
+read_store "$work/s-sel-attached"
+check "the test left out by the command-line -tpicked is unselected" \
+  "$(is "$status:$(contains "$(row 'left out')" '"status": "unselected"')" 0:true)"
+printf '%s\n' '{"scripts": {"picked": "bun test -tpicked"}}' > "$ws/packages/sel/package.json"
+wrap "$work/t-sel-attached-script" sel test bun run picked
+check "the wrapper writes picked from a package script's -tpicked" \
+  "$(is "$wrapped:$(cat "$work/t-sel-attached-script/bun-test-reports/packages/sel/test.xml.t" 2>/dev/null || echo none)" 0:picked)"
+
 echo "case: the wrapper refuses, before bun starts, a run whose record could not be whole"
-printf '%s\n' '{"scripts": {"test": "bun test", "chain": "bun test src && bun test src", "build": "tsc", "picked": "bun test -t passes", "dots": "bun test --reporter=dots"}}' > "$ws/packages/ok/package.json"
+cat > "$ws/packages/ok/package.json" <<'EOF'
+{"scripts": {
+  "test": "bun test",
+  "chain": "bun test src && bun test src",
+  "newline": "bun test src\nbun test src",
+  "carriage-return": "bun test src\r",
+  "build": "tsc",
+  "picked": "bun test -t passes",
+  "dots": "bun test --reporter=dots"
+}}
+EOF
 # refused <name> <command...>: sets refusal, true when the wrapper exits 2 and wrote no marker.
 refused() {
   local name=$1
@@ -575,6 +635,9 @@ refused() {
 refused re bun test -t '(?<g>x)'
 check "a -t pattern that is not a literal name, which bun would run" "$refusal"
 check "and says so, naming its special characters" "$(contains "$wrap_log" "the -t pattern '(?<g>x)' is not a literal name: it holds ( ) ?")"
+refused attached-re bun test '-t(a+)+$'
+check "an attached pattern with special characters is refused before bun starts" \
+  "$(is "$refusal:$(contains "$wrap_log" 'is not a literal name')" true:true)"
 refused dots bun run dots
 check "a reporter the script gives" "$refusal"
 refused twice bun run picked -t other
@@ -582,6 +645,12 @@ check "a -t the script gives, and one the command adds" "$refusal"
 refused chain bun run chain
 check "a bun run of a script that chains two bun tests" "$refusal"
 check "and says the reporter would reach the last alone" "$(contains "$wrap_log" "not one \`bun test\` command")"
+refused newline bun run newline
+check "a bun run of a script that chains two bun tests with a newline is refused before bun starts" \
+  "$(is "$refusal:$(contains "$wrap_log" "not one \`bun test\` command")" true:true)"
+refused carriage-return bun run carriage-return
+check "a bun run of a script with a carriage return is refused before bun starts" \
+  "$(is "$refusal:$(contains "$wrap_log" "not one \`bun test\` command")" true:true)"
 refused build bun run build
 check "a bun run of a script that is no bun test" "$refusal"
 refused none bun run none
@@ -769,6 +838,22 @@ read_run "$read_store_dir"
 check "members that unpack above the bound: exits 1, naming it, and unpacks nothing" \
   "$(is "$status:$(contains "$out" '"job_id": 101, .*"unknown": "the artifact bun-test-reports-101 is not unpacked: its members unpack to 67,108,865 bytes, above the bound of 67,108,864 bytes"'):$([ -e "$read_store_dir/bun-test-reports-101" ] && echo kept || echo none)" 1:true:none)"
 check "and reads the job beside it" "$(contains "$out" '"job_id": 201, .*"status": "pass"')"
+
+echo "case: an artifact with too many zip members is refused by name, before any extraction"
+member_zip="$(answer_file actions/artifacts/9/zip)"
+python3 - "$member_zip" <<'EOF'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    for i in range(10_001):
+        z.writestr(f"empty-{i}", b"")
+EOF
+answer "actions/runs/7/artifacts?per_page=100" "{\"artifacts\": [{\"id\": 9, \"name\": \"bun-test-reports-101\", \"expired\": false, \"size_in_bytes\": $(stat -c '%s' "$member_zip")}, {\"id\": 10, \"name\": \"bun-test-reports-201\", \"expired\": false, \"size_in_bytes\": 4096}]}"
+read_store_dir="$work/s-many-members"
+read_run "$read_store_dir"
+check "too many members: exits 1, names the artifact and the bound, and unpacks nothing" \
+  "$(is "$status:$(contains "$out" '"job_id": 101, .*"unknown": "the artifact bun-test-reports-101 is not unpacked: it holds 10,001 members, above the bound of 10,000"'):$([ ! -e "$read_store_dir/bun-test-reports-101" ] && [ ! -e "$read_store_dir/bun-test-reports-101.partial" ] && echo none || echo unpacked)" 1:true:none)"
+check "and reads the job beside the artifact with too many members" \
+  "$(contains "$out" '"job_id": 201, .*"status": "pass"')"
 
 echo "case: an artifact the run does not list, or lists expired, is an UNKNOWN line for its job"
 answer "actions/runs/7/artifacts?per_page=100" '{"artifacts": [{"id": 10, "name": "bun-test-reports-201", "expired": true, "size_in_bytes": 4096}]}'
