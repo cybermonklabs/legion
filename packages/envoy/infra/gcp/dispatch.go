@@ -177,7 +177,7 @@ type DispatchArgs struct {
 	// newDispatchSettings refuses each one missing by name, in the wording it always used; of
 	// natsSeedSecret and natsAudience, the pods' NATS credential, every deployment sets exactly one,
 	// and natsSeedSecret is refused missing by name while natsAudience is unset too
-	// (resolveDispatchNATSCredential). The other eight are two groups, each set whole or left
+	// (refuseDispatchNATSCredential). The other eight are two groups, each set whole or left
 	// wholly unset: the tailnet group (dispatchTailnetInputs), which builds the front door and
 	// serves Dispatch at its tailnet name, and the sign-in group (dispatchSignInInputs), which runs
 	// people's browser sign-in.
@@ -1877,7 +1877,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if args.NatsUrl == nil {
 		return dispatchSettings{}, core.InputErrorf("natsUrl", "natsUrl is required")
 	}
-	if err := resolveDispatchNATSCredential(args); err != nil {
+	if err := refuseDispatchNATSCredential(args); err != nil {
 		return dispatchSettings{}, err
 	}
 	if args.AgentSecretsAudience != "" && args.AgentSecretsUrl == "" {

@@ -5,7 +5,6 @@ package gcp_test
 import (
 	"encoding/base64"
 	"encoding/json"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -305,14 +304,10 @@ type hubConnection struct {
 // ones too.
 func hubConnections(t *testing.T, server *testnats.Server, state string) []hubConnection {
 	t.Helper()
-	response, err := http.Get(server.MonitorURL() + "/connz?auth=1&limit=10000&state=" + state)
-	require.NoError(t, err)
-	defer response.Body.Close()
-	require.Equal(t, http.StatusOK, response.StatusCode, "the hub's /connz")
 	var connz struct {
 		Connections []hubConnection `json:"connections"`
 	}
-	require.NoError(t, json.NewDecoder(response.Body).Decode(&connz))
+	require.NoError(t, getJSON(server.MonitorURL()+"/connz?auth=1&limit=10000&state="+state, &connz), "the hub's /connz")
 	return connz.Connections
 }
 
@@ -428,6 +423,7 @@ func TestAClusteredHubsTokenListenerIsAdmittedThroughTheCallout(t *testing.T) {
 	}
 
 	t.Run("the listener presenting its token is admitted as listener/envoy-hub", func(t *testing.T) {
+		t.Parallel()
 		server, uri, stub := hub(t)
 		const name = "the listener with its token"
 		listener := start(t, name, uri, token)
@@ -444,6 +440,7 @@ func TestAClusteredHubsTokenListenerIsAdmittedThroughTheCallout(t *testing.T) {
 	})
 
 	t.Run("control: another token is refused, and no connection is ever listener/envoy-hub", func(t *testing.T) {
+		t.Parallel()
 		server, uri, stub := hub(t)
 		const name = "the listener with another token"
 		listener := start(t, name, uri, unsignedListenerToken("system:serviceaccount:envoy:another-account"))
@@ -460,6 +457,7 @@ func TestAClusteredHubsTokenListenerIsAdmittedThroughTheCallout(t *testing.T) {
 	})
 
 	t.Run("control: without NATS_SERVICE_TOKEN_FILE the listener becomes the session user", func(t *testing.T) {
+		t.Parallel()
 		server, uri, stub := hub(t)
 		start(t, "the listener with no token file", uri, "")
 		// The listener's connections are named envoy (internal/bus); the server's own probe of

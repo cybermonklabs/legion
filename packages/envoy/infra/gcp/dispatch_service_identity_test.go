@@ -1,6 +1,7 @@
 package gcp_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -52,12 +53,7 @@ func TestDispatchListenerPodWithServiceIdentityMatchesGolden(t *testing.T) {
 
 // registered reports whether the component registered a resource of type typ named name.
 func registered(m *pulumitest.Mocks, typ, name string) bool {
-	for _, r := range m.Registrations() {
-		if r.Type == typ && r.Name == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(registrationNames(registrationsOf(m, typ)), name)
 }
 
 // podVolumes indexes a pod template's volumes by name.
@@ -133,9 +129,9 @@ func TestDispatchRunsByItsServiceIdentity(t *testing.T) {
 				require.Equal(t, !row.token, registered(m, resource.typ, resource.name), "%s %s registered", resource.typ, resource.name)
 			}
 			var seedNames []string
-			for _, r := range m.Registrations() {
-				if strings.Contains(r.Name, "nats-seed") {
-					seedNames = append(seedNames, r.Name)
+			for _, name := range registrationNames(m.Registrations()) {
+				if strings.Contains(name, "nats-seed") {
+					seedNames = append(seedNames, name)
 				}
 			}
 			if row.token {

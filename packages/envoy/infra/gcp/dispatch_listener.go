@@ -27,13 +27,13 @@ import (
 // streamMaxBytes, the sender limit and consumerNames reach no refusal of core's own, since
 // newDispatchSettings bounds them more tightly (1 to bus.MaxReplicas, at least 1,
 // core.CheckSenderLimit and core.CheckConsumerNames) before anything registers, which is why every
-// refusal that is not socks5Proxy's is natsUrl's. The NATS credential is nats's
-// (newDispatchNATSCredential): its one variable, the seed's file or, with natsAudience, the
-// projected token's, follows core's rendering, in the place the seed's always held.
+// refusal that is not socks5Proxy's is natsUrl's. natsCredential is the one variable naming the
+// NATS credential's file (dispatchNATSCredential's env): the seed's or, with natsAudience, the
+// projected token's, which follows core's rendering, in the place the seed's always held.
 // The listener serves on every address of its pod, and its API refuses to start on a non-loopback
 // listen host without a bearer (packages/envoy/cmd/listener/apiauth.go), so the environment names
 // the bearer in Secret listenerSecret.
-func dispatchListenerEnv(s dispatchSettings, nats dispatchNATSCredential, listenerSecret, url string) (corev1.EnvVarArray, error) {
+func dispatchListenerEnv(s dispatchSettings, natsCredential corev1.EnvVarArgs, listenerSecret, url string) (corev1.EnvVarArray, error) {
 	if s.natsInCluster && bus.LocalNATSURL(url) {
 		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
 	}
@@ -56,7 +56,7 @@ func dispatchListenerEnv(s dispatchSettings, nats dispatchNATSCredential, listen
 		return nil, core.InputErrorf("natsUrl", "%s", strings.ReplaceAll(err.Error(), "natsUrls[0]", "natsUrl"))
 	}
 	values := envVars(env)
-	values = append(values, nats.env)
+	values = append(values, natsCredential)
 	values = append(values, secretEnv("ENVOY_API_TOKEN", listenerSecret, "ENVOY_API_TOKEN"))
 	return values, nil
 }

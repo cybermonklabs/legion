@@ -446,7 +446,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// raw input, so envoy-dispatch's NATS_URLS is never an unchecked copy beside the listener's
 	// checked environment.
 	natsURL := args.NatsUrl.ToStringOutput().ApplyT(func(url string) (string, error) {
-		if _, err := dispatchListenerEnv(s, nats, listenerName, url); err != nil {
+		if _, err := dispatchListenerEnv(s, nats.env, listenerName, url); err != nil {
 			return "", fmt.Errorf("%s: %w", dispatch, err)
 		}
 		return url, nil
@@ -461,7 +461,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		if err != nil {
 			return nil, err
 		}
-		env, err := dispatchListenerEnv(s, nats, listenerName, parts[0])
+		env, err := dispatchListenerEnv(s, nats.env, listenerName, parts[0])
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", dispatch, err)
 		}
@@ -642,7 +642,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// account's two grants, by name and by uid, rather than racing IAM on the first deployment: the
 	// listener here, the app below (dispatchNATSCredential's grants). With natsAudience each
 	// presents its own account's projected token, and there is no grant to wait for.
-	seedGrant := pulumi.DependsOn(nats.listenerGrants)
+	listenerGrants := pulumi.DependsOn(nats.listenerGrants)
 
 	// The listener runs under its own ServiceAccount, <hostname>-listener, which is what mounts
 	// the NATS seed through Workload Identity, or, with natsAudience, what the projected token it
@@ -672,7 +672,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 			},
 		},
 		Volumes: corev1.VolumeArray{nats.volume},
-	}, true, frontDoor, seedGrant); err != nil {
+	}, true, frontDoor, listenerGrants); err != nil {
 		return pulumi.StringOutput{}, err
 	}
 	if _, err := service(listenerName, core.DefaultListenerPort); err != nil {
@@ -788,7 +788,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	appMounts = append(appMounts, tokenMount)
 	appVolumes := corev1.VolumeArray{nats.volume}
 	appVolumes = append(appVolumes, tokenVolume)
-	appGrants := append([]pulumi.Resource(nil), nats.appGrants...)
+	appGrants := nats.appGrants
 	if s.agentSecretsURL != "" {
 		// Dispatch presents its own ServiceAccount's token to the broker, which reads the caller
 		// from BROKER_API_ACCOUNTS. The kubelet mints it for the broker's audience into a projected

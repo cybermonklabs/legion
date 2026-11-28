@@ -231,9 +231,8 @@ func checkClusteredHubListenerAudience(args *ClusteredNatsHubArgs, l *ClusteredH
 				"or its seed's user, and with natsAudience the hub renders no user for it and mounts no seed; unset %s.%s, or natsAudience", input, path, seed.name, path, seed.name)
 		}
 	}
-	if strings.ContainsFunc(l.NatsAudience, unicode.IsSpace) || strings.ContainsFunc(l.NatsAudience, unicode.IsControl) {
-		return core.InputErrorf(input, "%s %q holds whitespace or a control character: the broker reads its own audience, BROKER_NATS_K8S_AUDIENCE, trimmed, "+
-			"so a token minted for this one would never verify", input, l.NatsAudience)
+	if holdsSpaceOrControl(l.NatsAudience) {
+		return natsAudienceRefused(input, l.NatsAudience)
 	}
 	return nil
 }
@@ -289,13 +288,10 @@ func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredH
 	if len(l.AllowedHosts) > 0 {
 		return nil, core.InputErrorf(path+".allowedHosts", "%s.allowedHosts is given on a listener that requires a credential, which serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS, so it would do nothing; unset it", path)
 	}
-	blank := func(value string) bool {
-		return strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsFunc(value, unicode.IsControl)
-	}
-	if blank(l.OidcIssuer) || !issuerURL(l.OidcIssuer) {
+	if holdsSpaceOrControl(l.OidcIssuer) || !issuerURL(l.OidcIssuer) {
 		return nil, core.InputErrorf(path+".oidcIssuer", "%s.oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", path, l.OidcIssuer)
 	}
-	if blank(l.OidcAudience) {
+	if holdsSpaceOrControl(l.OidcAudience) {
 		return nil, core.InputErrorf(path+".oidcAudience", "%s.oidcAudience %q holds whitespace or a control character", path, l.OidcAudience)
 	}
 	seen := make(map[string]int, len(l.OidcAccounts))
@@ -319,4 +315,12 @@ func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredH
 func issuerURL(raw string) bool {
 	issuer, err := url.Parse(raw)
 	return err == nil && issuer.Scheme == "https" && issuer.Host != "" && !urlCarriesExtras(raw, issuer)
+}
+
+// holdsSpaceOrControl is whether value holds whitespace (unicode.IsSpace) or a control character
+// (unicode.IsControl), which an environment variable's value cannot carry intact and which the
+// broker trims off its own audience: the one test of a listener's oidcIssuer and oidcAudience and
+// of the natsAudience of the hub's listener and of gcp:Dispatch (natsAudienceRefused).
+func holdsSpaceOrControl(value string) bool {
+	return strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsFunc(value, unicode.IsControl)
 }

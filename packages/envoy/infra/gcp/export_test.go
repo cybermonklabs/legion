@@ -1,5 +1,7 @@
 package gcp
 
+import corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
+
 // CloudConfig is the hub VM's cloud-config document, for the tests outside the package.
 type CloudConfig = cloudConfig
 
@@ -239,6 +241,6 @@ func DispatchKubeconfig(endpoint, ca, name string) string {
 // for the refusal tests, with the front door's proxy in the default namespace and no NATS
 // credential, which no refusal of the URL reads: nil when the URL renders an environment.
 func DispatchListenerEnvError(hostname, url string) error {
-	_, err := dispatchListenerEnv(dispatchSettings{hostname: hostname, namespace: defaultDispatchNamespace}, dispatchNATSCredential{}, hostname+"-listener", url)
+	_, err := dispatchListenerEnv(dispatchSettings{hostname: hostname, namespace: defaultDispatchNamespace}, corev1.EnvVarArgs{}, hostname+"-listener", url)
 	return err
 }
