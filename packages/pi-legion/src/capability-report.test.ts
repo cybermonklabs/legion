@@ -949,14 +949,12 @@ describe("cleanDetail", () => {
   // eight passes for each, which every row fails. JavaScriptCore counts no step a regular
   // expression takes, so the count does not catch a pass that backtracks within itself.
   //
-  // The limit on each row is a hang guard. The JWT rule made quadratic by hand cost 13,570 to
-  // 14,088 ms on a 2-CPU gVisor agent pod, which the 10 s guard fails; CI is about 4.5 times
-  // faster, where that same regression would cost about 3 s and pass (an estimate from those
-  // ratios, not a run on CI), so a rule made quadratic is not caught on CI, a risk INFRA-985's
-  // architect accepted on 2026-11-07. On bun 1.4.4 a per-test limit is reported for a body that
-  // blocks the thread only once that body comes back, so the guard ends a blow-up that returns at
-  // all, and a rule that never returns is ended by the pi-legion job's own limit
-  // (timeout-minutes: 28, .github/workflows/ci-job-pi-legion.yaml).
+  // No clock carries the verdict, since no limit on time holds a 2-CPU pod and CI alike: the count
+  // above is one verdict, and recheck's reading of each pattern
+  // (`capability-report-patterns.test.ts`) is the other, which holds each pass linear where no
+  // count reaches. Four rules have no verdict from recheck, a risk INFRA-3149's architect accepted
+  // (`WITHOUT_VERDICT` there): for those, this count is the one check, and it does not see a pass
+  // that backtracks within itself.
   const RULES = CREDENTIAL_RULES.length;
   const READINGS = HELD_READINGS.length;
   for (const { name, unit } of redaction.linear) {
@@ -973,7 +971,7 @@ describe("cleanDetail", () => {
         handed,
         `cleaning 64 KiB of ${name} handed the rules ${handed} characters, where at most ${allowed} (${RULES} rules, each over the ${text.length} characters once and once more after each of ${READINGS} readings, and over the ${MAX_DETAIL_BYTES} the cut keeps) are allowed`
       ).toBeLessThanOrEqual(allowed);
-    }, 10_000);
+    });
   }
 });
 
