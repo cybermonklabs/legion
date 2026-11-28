@@ -158,43 +158,57 @@ func standInGranting(t *testing.T, url string, keys testnats.CalloutKeys, publis
 	conn, err := testnats.ConnectSeed(t, url, keys.ServiceSeed)
 	require.NoError(t, err)
 	_, err = conn.QueueSubscribe(authSubject, queueGroup, func(msg *nats.Msg) {
-		serverXKey := msg.Header.Get(serverXKeyHeader)
-		data := msg.Data
-		if serverXKey != "" {
-			opened, err := xkey.Open(data, serverXKey)
-			if err != nil {
-				return
-			}
-			data = opened
-		}
-		claims, err := jwt.DecodeAuthorizationRequestClaims(string(data))
+		claims, serverXKey, err := openRequest(xkey, msg)
 		if err != nil {
 			return
 		}
-		user := jwt.NewUserClaims(claims.UserNkey)
-		user.Audience = config.GlobalNATSAccount
-		user.Pub.Allow.Add(publish...)
-		user.Sub.Allow.Add(subscribe...)
-		userJWT, err := user.Encode(issuer)
-		if err != nil {
-			return
+		if out, err := admitUnchecked(issuer, xkey, claims, serverXKey, publish, subscribe); err == nil {
+			_ = msg.Respond(out)
 		}
-		response := jwt.NewAuthorizationResponseClaims(claims.UserNkey)
-		response.Audience = claims.Server.ID
-		response.Jwt = userJWT
-		encoded, err := response.Encode(issuer)
-		if err != nil {
-			return
-		}
-		out := []byte(encoded)
-		if serverXKey != "" {
-			if out, err = xkey.Seal(out, serverXKey); err != nil {
-				return
-			}
-		}
-		_ = msg.Respond(out)
 	})
 	require.NoError(t, err)
 	require.NoError(t, conn.Flush())
 	return conn
+}
+
+// openRequest reads the authorization request msg carries, opened with xkey, the service's curve
+// key, when the server sealed it, and answers it with the server's curve key ("" for a request in
+// the clear).
+func openRequest(xkey nkeys.KeyPair, msg *nats.Msg) (*jwt.AuthorizationRequestClaims, string, error) {
+	serverXKey := msg.Header.Get(serverXKeyHeader)
+	data := msg.Data
+	if serverXKey != "" {
+		opened, err := xkey.Open(data, serverXKey)
+		if err != nil {
+			return nil, "", err
+		}
+		data = opened
+	}
+	claims, err := jwt.DecodeAuthorizationRequestClaims(string(data))
+	return claims, serverXKey, err
+}
+
+// admitUnchecked is the answer that admits the user claims names with publish and subscribe as its
+// allow lists, as given and unchecked, signed by issuer and sealed with xkey to serverXKey when the
+// server sent one.
+func admitUnchecked(issuer, xkey nkeys.KeyPair, claims *jwt.AuthorizationRequestClaims, serverXKey string, publish, subscribe []string) ([]byte, error) {
+	user := jwt.NewUserClaims(claims.UserNkey)
+	user.Audience = config.GlobalNATSAccount
+	user.Pub.Allow.Add(publish...)
+	user.Sub.Allow.Add(subscribe...)
+	userJWT, err := user.Encode(issuer)
+	if err != nil {
+		return nil, err
+	}
+	response := jwt.NewAuthorizationResponseClaims(claims.UserNkey)
+	response.Audience = claims.Server.ID
+	response.Jwt = userJWT
+	encoded, err := response.Encode(issuer)
+	if err != nil {
+		return nil, err
+	}
+	if serverXKey == "" {
+		return []byte(encoded), nil
+	}
+	return xkey.Seal([]byte(encoded), serverXKey)
 }
