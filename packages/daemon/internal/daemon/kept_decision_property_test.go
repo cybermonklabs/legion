@@ -852,6 +852,15 @@ type keptRun struct {
 	// seek is not seekSpentRehold: the drive leaves out each step that would end, refuse or
 	// relaunch that architect or give it a new launch (spentHolding, spentHoldOn).
 	spentHold *keptTree
+	// seekPlan is the plan of the fault seek for the step now running (faultSeekPlan), computed
+	// once as the step begins and cleared once it has run (drive): the drive's choice among the
+	// seek's steps (faultSeekSteps) and the row, the operation and the answer runRow and raceRow
+	// take (soughtRow, soughtRace, soughtRaceOp, soughtRaceMode) all read it, so no choice of the
+	// step reads a plan computed at another moment. It is empty in every run without a seek.
+	seekPlan keptSeekPlan
+	// spentLines is the key of each line of reholdNotice's spent branch the outbox runner has
+	// logged (outboxLog), which the marker of seed 701's state reads (markSpentRehold).
+	spentLines keptSpentLines
 }
 
 // A person's decision on a tree nobody in it can hear reaches an architect of that tree exactly
@@ -1188,7 +1197,7 @@ func (r *keptRun) restart() {
 	}
 	r.sup = sup
 	r.runner = &outbox{
-		log: quietLogger(), pool: r.pool, dispatchProject: "LEGION", records: r.records, notices: r.publisher,
+		log: r.outboxLog(), pool: r.pool, dispatchProject: "LEGION", records: r.records, notices: r.publisher,
 		supervisor: sup, trees: r.trees, tokens: outboxTokens{}, handlers: []intake.Handler{r.engine},
 		project: "legion", stateDir: r.stateDir, now: time.Now,
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
@@ -1210,14 +1219,17 @@ func (r *keptRun) storedClaims() []supervise.Claim {
 // drive runs the seed's operations, each chosen among those the model state enables. Every step
 // is read for the moves it made: an issue that left one tree for another takes the decisions
 // still owed on it with it (noteMoves). A step first lapses the lease each crash left
-// keptCrashLapseSteps steps before it (lapseCrashes).
+// keptCrashLapseSteps steps before it (lapseCrashes), and computes the fault seek's plan for the
+// step once (seekPlan), which every choice of the step reads and which is cleared once it has run.
 func (r *keptRun) drive() {
 	for r.step = 1; r.step <= r.steps; r.step++ {
 		r.lapseCrashes(false)
 		r.snapshotRows()
 		r.noteBefore()
+		r.seekPlan = r.faultSeekPlan()
 		enabled := r.enabled()
 		enabled[r.rng.IntN(len(enabled))]()
+		r.seekPlan = keptSeekPlan{}
 		r.noteMoves()
 		r.observe()
 		r.deliverRowsTheRunDoesNotDrive()
@@ -2292,6 +2304,7 @@ func (r *keptRun) raceRow() {
 	race.mode = mode
 	r.markDelivering(race, row.ID)
 	answered := r.publisher.answers()
+	spent := r.spentLines.mark()
 	r.publisher.arm(race)
 	claimed, runErr := r.runOne(keptSiteRaceCatchUp, &row, payload)
 	r.publisher.disarm()
@@ -2323,7 +2336,7 @@ func (r *keptRun) raceRow() {
 			r.tracef("the re-hold of row %d queued no copy: the publish was superseded while it ran or its re-holds are spent, so what it claimed is handed over", row.ID)
 		}
 		if runErr == nil {
-			r.markSpentRehold(row, payload)
+			r.markSpentRehold(row, payload, spent)
 		}
 	}
 }

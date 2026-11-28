@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -69,32 +71,26 @@ func (r *keptRun) markDropBesideADeliveringTelling(issue string, delivering int6
 	}
 }
 
-// markSpentRehold marks seed 701's state when a held-open catch-up publish in raceRow drew a
-// receipt timeout on a copy whose re-holds are spent (Resends >= len(noticeReholdDelays)) and whose
-// catch-up carries kept decisions, and reholdNotice took its spent branch rather than stopping with
-// its finished tree or taking its superseded branch. In reholdNotice (notice_exceptions.go),
-// stoppedWithTree runs before the Resends check, and the Resends check runs before
-// catchUpSuperseded, so a non-stopped row at Resends >= len(noticeReholdDelays) takes the spent
-// branch alone. In a run under the seek of that state (seekSpentRehold), the first firing names the
-// tree whose architect the seek then holds at its launch (spentHold, holdTheSpentState).
-func (r *keptRun) markSpentRehold(row record.OutboxRow, payload record.OutboxPayload) {
+// markSpentRehold marks seed 701's state when the publish of a catch-up that carries kept
+// decisions, held open in raceRow, drew a receipt timeout and reholdNotice took its spent branch.
+// The branch the daemon took is read from the line that branch alone logs (keptSpentReholdLine):
+// the run's outbox log hands the key each such line names to the run (keptOutboxLog), and the
+// state is reached when a line handed since spent was marked (keptSpentLines.mark) names the key
+// the catch-up went out under, which for a re-held copy is the key of the row it copies
+// (record.Notice.Published). In a run under the seek of that state (seekSpentRehold), the first
+// firing names the tree whose architect the seek then holds at its launch (spentHold,
+// holdTheSpentState).
+func (r *keptRun) markSpentRehold(row record.OutboxRow, payload record.OutboxPayload, spent int) {
 	notice, ok := payload.(record.Notice)
-	if !ok || notice.CatchUp == nil || notice.CatchUp.Kept == nil || notice.Resends < len(noticeReholdDelays) {
+	if !ok || notice.CatchUp == nil || notice.CatchUp.Kept == nil {
+		return
+	}
+	if _, key := notice.Published(row.ID); !r.spentLines.since(spent, key) {
 		return
 	}
 	tree := r.treeRow(row.Issue)
 	if tree == nil {
 		return
-	}
-	held := r.runner.supervisedClaim(tree.token)
-	if !holdsRole(held) {
-		_, lingers, err := r.runner.issueTree(r.ctx, row.Issue)
-		if err != nil {
-			r.fatalf("read %s's tree for the spent-rehold marker: %v", row.Issue, err)
-		}
-		if stoppedWithTree(lingers, held) {
-			return
-		}
 	}
 	if r.faults.spentRehold.Add(1) == 1 {
 		r.t.Logf("seed %d: fault marker %q reached at step %d (row=%d issue=%s resends=%d)",
@@ -103,6 +99,77 @@ func (r *keptRun) markSpentRehold(row record.OutboxRow, payload record.OutboxPay
 			r.spentHold = tree
 		}
 	}
+}
+
+// keptSpentReholdLine is the line reholdNotice logs, at Warn, in its spent branch alone
+// (notice_exceptions.go): a notice queued again the most times a notice is
+// (len(noticeReholdDelays)) was not taken again, and nothing is queued again.
+const keptSpentReholdLine = "outbox notice not re-held again: it was queued again the most times a notice is"
+
+// keptOutboxLog is the log of the run's outbox runner (outboxLog): as quiet as quietLogger, save
+// that each line of reholdNotice's spent branch (keptSpentReholdLine) hands the key it names, the
+// dedupe key the notice went out under, to the run (keptRun.spentLines).
+type keptOutboxLog struct {
+	slog.Handler
+	spent *keptSpentLines
+}
+
+func (h keptOutboxLog) Handle(ctx context.Context, line slog.Record) error {
+	if line.Message == keptSpentReholdLine {
+		line.Attrs(func(a slog.Attr) bool {
+			if a.Key != "key" {
+				return true
+			}
+			h.spent.add(a.Value.String())
+			return false
+		})
+	}
+	return h.Handler.Handle(ctx, line)
+}
+
+func (h keptOutboxLog) WithAttrs(attrs []slog.Attr) slog.Handler {
+	h.Handler = h.Handler.WithAttrs(attrs)
+	return h
+}
+
+func (h keptOutboxLog) WithGroup(name string) slog.Handler {
+	h.Handler = h.Handler.WithGroup(name)
+	return h
+}
+
+// outboxLog is the log the run's outbox runner writes (keptOutboxLog), built at each restart over
+// the one record of spent lines the run keeps.
+func (r *keptRun) outboxLog() *slog.Logger {
+	return slog.New(keptOutboxLog{Handler: quietLogger().Handler(), spent: &r.spentLines})
+}
+
+// keptSpentLines is the key of each line of reholdNotice's spent branch that the run's outbox
+// runner has logged, in the order it logged them. Lanes that run beside each other (runTogether)
+// log at once, so the keys are kept under a lock.
+type keptSpentLines struct {
+	mu   sync.Mutex
+	keys []string
+}
+
+func (l *keptSpentLines) add(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.keys = append(l.keys, key)
+}
+
+// mark is how many lines have been handed so far, which a step reads before a row's run to see
+// what that run logged (since).
+func (l *keptSpentLines) mark() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.keys)
+}
+
+// since is whether a line handed after mark named key.
+func (l *keptSpentLines) since(mark int, key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Contains(l.keys[mark:], key)
 }
 
 // DropCatchUps checks, in the drop's transaction under record.LockCatchUps(issue), whether an
@@ -162,13 +229,21 @@ func (s *keptForgetStore) MarkProcessed(ctx context.Context, tx pgx.Tx, source, 
 	return s.Store.MarkProcessed(ctx, tx, source, eventID)
 }
 
-// keptSeekPlan is what the seek of a fault state takes now: the steps the drive may choose among
-// (nil leaves the step to the generator's pick among every enabled step), and the row runRow or
-// raceRow then takes.
+// keptSeekPlan is what the seek of a fault state takes in one step: the steps the drive may choose
+// among (nil leaves the step to the generator's pick among every enabled step), the row runRow or
+// raceRow then takes, and how raceRow races a catch-up for the seek. drop is the catch-up R the
+// seek of seed 427's state has armed (armedDrop), nil for none, which raceRow races with a
+// delivering answer and an operation that drops its tree's catch-ups (dropOpRank); spends is
+// whether the seek of seed 701's state is on, so raceRow races every sought catch-up with a
+// receipt timeout and an operation that supersedes nothing the re-hold reads (spentReholdOpRank).
+// The drive computes the plan once as each step begins and keeps it on the run for that step
+// (keptRun.seekPlan), so every choice the step makes reads the one plan.
 type keptSeekPlan struct {
-	steps []func()
-	run   int64
-	race  int64
+	steps  []func()
+	run    int64
+	race   int64
+	drop   *keptSoughtCatchUp
+	spends bool
 }
 
 // faultSeekPlan is the plan of the seek this run's seed is set to (keptFaultSeeds), while the
@@ -182,7 +257,9 @@ func (r *keptRun) faultSeekPlan() keptSeekPlan {
 	case r.seekingTheDrop():
 		return r.seekTheDrop()
 	case r.seekingSpentRehold():
-		return r.seekTheSpentRehold()
+		plan := r.seekTheSpentRehold()
+		plan.spends = true
+		return plan
 	case r.spentHolding():
 		return r.holdTheSpentState()
 	}
@@ -228,19 +305,21 @@ func (r *keptRun) holdTheSpentState() keptSeekPlan {
 	return keptSeekPlan{}
 }
 
-// faultSeekSteps is the steps the drive chooses among while a seek has one to take (enabled).
+// faultSeekSteps is the steps the drive chooses among while the step's seek plan has one to take
+// (enabled).
 func (r *keptRun) faultSeekSteps() []func() {
-	return r.faultSeekPlan().steps
+	return r.seekPlan.steps
 }
 
-// soughtRow is the index in due of the row a seek has runRow take, and -1 for none.
+// soughtRow is the index in due of the row the step's seek plan has runRow take, and -1 for none.
 func (r *keptRun) soughtRow(due []record.OutboxRow) int {
-	return keptRowIndex(due, r.faultSeekPlan().run)
+	return keptRowIndex(due, r.seekPlan.run)
 }
 
-// soughtRace is the index in catchUps of the catch-up a seek has raceRow race, and -1 for none.
+// soughtRace is the index in catchUps of the catch-up the step's seek plan has raceRow race, and
+// -1 for none.
 func (r *keptRun) soughtRace(catchUps []record.OutboxRow) int {
-	return keptRowIndex(catchUps, r.faultSeekPlan().race)
+	return keptRowIndex(catchUps, r.seekPlan.race)
 }
 
 func keptRowIndex(rows []record.OutboxRow, id int64) int {
@@ -251,20 +330,21 @@ func keptRowIndex(rows []record.OutboxRow, id int64) int {
 }
 
 // soughtRaceOp is the index in ops of the operation raceRow runs inside the publish of row while
-// a seek races it, and -1 to leave the pick to the generator: for seed 427's state, an operation
-// that drops the catch-ups of the row's tree (dropOpRank); for seed 701's, one that supersedes
-// nothing the re-hold reads, one of another tree before one of the row's own (spentReholdOpRank).
-// Ops are ranked, and the first of the best rank is taken, so one seed always takes the same one.
+// the step's seek plan races it, and -1 to leave the pick to the generator: for seed 427's state,
+// on the catch-up the plan has armed (drop), an operation that drops the catch-ups of its tree
+// (dropOpRank); for seed 701's (spends), on a sought catch-up, one that supersedes nothing the
+// re-hold reads, one of another tree before one of the row's own (spentReholdOpRank). Ops are
+// ranked, and the first of the best rank is taken, so one seed always takes the same one.
 func (r *keptRun) soughtRaceOp(row record.OutboxRow, ops []keptRaceOp) int {
 	var rank func(keptRaceOp) int
 	switch {
-	case r.seekingTheDrop():
-		armed, ok := r.armedDrop()
-		if !ok || armed.row.ID != row.ID {
+	case r.seekPlan.drop != nil:
+		armed := r.seekPlan.drop
+		if armed.row.ID != row.ID {
 			return -1
 		}
 		rank = func(op keptRaceOp) int { return r.dropOpRank(armed.tree, op) }
-	case r.seekingSpentRehold():
+	case r.seekPlan.spends:
 		raced, ok := r.soughtCatchUp(row)
 		if !ok {
 			return -1
@@ -282,15 +362,16 @@ func (r *keptRun) soughtRaceOp(row record.OutboxRow, ops []keptRaceOp) int {
 	return pick
 }
 
-// soughtRaceMode is the answer a seek gives the publish of row it races, and whether it gives one:
-// for seed 427's state a delivery, so the row is inside a publish that delivers while the race
-// drops its tree's catch-ups; for seed 701's a receipt timeout, so the re-hold queues the next
-// copy until the last one's re-holds are spent.
+// soughtRaceMode is the answer the step's seek plan gives the publish of row it races, and
+// whether it gives one: for seed 427's state a delivery on the catch-up the plan has armed (drop),
+// so the row is inside a publish that delivers while the race drops its tree's catch-ups; for seed
+// 701's (spends) a receipt timeout on a sought catch-up, so the re-hold queues the next copy until
+// the last one's re-holds are spent.
 func (r *keptRun) soughtRaceMode(row record.OutboxRow) (keptPublishMode, bool) {
 	switch {
-	case r.seekingTheDrop() && r.isArmedDrop(row):
+	case r.seekPlan.drop != nil && r.seekPlan.drop.row.ID == row.ID:
 		return keptDelivers, true
-	case r.seekingSpentRehold() && r.isSoughtCatchUp(row):
+	case r.seekPlan.spends && r.isSoughtCatchUp(row):
 		return keptReceiptTimeout, true
 	}
 	return keptDelivers, false
@@ -413,19 +494,56 @@ func (r *keptRun) reachesItsPublish(c keptSoughtCatchUp) (bool, int64) {
 	return true, 0
 }
 
+// keptPlanRows is the rows a lane could claim now (claimable) as one seek's plan reads them: read
+// once, when the plan first asks, however many rows the plan weighs.
+type keptPlanRows struct {
+	run  *keptRun
+	rows []record.OutboxRow
+	read bool
+}
+
+func (r *keptRun) planRows() *keptPlanRows {
+	return &keptPlanRows{run: r}
+}
+
+func (p *keptPlanRows) claimable() []record.OutboxRow {
+	if !p.read {
+		p.rows, p.read = p.run.claimable(), true
+	}
+	return p.rows
+}
+
+// lists is whether a lane could claim outbox row id now.
+func (p *keptPlanRows) lists(id int64) bool {
+	return keptRowIndex(p.claimable(), id) >= 0
+}
+
+// runsNow weighs catch-up c for a seek's run in this step. fence is the step that takes an
+// earlier notice of c's architect out of its way (clearFence), set where one fences c, which the
+// seek takes before anything else; reaches is whether a run of c now would publish it
+// (reachesItsPublish); and runs is whether it would and a lane could claim its row now (due).
+func (r *keptRun) runsNow(c keptSoughtCatchUp, due *keptPlanRows) (fence *keptSeekPlan, reaches, runs bool) {
+	publishes, fencing := r.reachesItsPublish(c)
+	if fencing != 0 {
+		cleared := r.clearFence(fencing, due)
+		return &cleared, false, false
+	}
+	return nil, publishes, publishes && due.lists(c.row.ID)
+}
+
 // clearFence is the step that takes the fencing notice id out of a sought catch-up's way: its run,
 // once it is due (bringDue), once the forget's failure is off, so a catch-up that tells is not
 // retried for a failed settle, and once the listener's standing mode lets it finish rather than
 // wait for a holder or fail its forward; a step switches each first. A row no lane could claim
 // even when due is left to the generator.
-func (r *keptRun) clearFence(id int64) keptSeekPlan {
+func (r *keptRun) clearFence(id int64, due *keptPlanRows) keptSeekPlan {
 	if r.records.fails.Load() {
 		return keptSeekPlan{steps: []func(){r.toggleForget}}
 	}
 	if mode := r.publisher.standingMode(); mode == keptNoHolder || mode == keptDeliveryFailed {
 		return keptSeekPlan{steps: []func(){r.setModeForASeek(keptDelivers)}}
 	}
-	if keptRowIndex(r.claimable(), id) >= 0 {
+	if due.lists(id) {
 		return keptSeekPlan{steps: []func(){r.runRow}, run: id}
 	}
 	var leased bool
@@ -536,13 +654,14 @@ func (r *keptRun) launchComing(tree *keptTree) bool {
 func (r *keptRun) seekToldAgain() keptSeekPlan {
 	catchUps := r.soughtCatchUps()
 	now := time.Now()
+	due := r.planRows()
 	waiting := map[string]bool{}
 	for _, c := range catchUps {
 		telling := c.telling()
 		if !r.records.tellingFailed(telling) || r.toldMarked(telling) {
 			continue
 		}
-		if drop, coming := r.dropStep(c.tree); coming {
+		if drop, coming := r.dropStep(c.tree, due); coming {
 			return drop
 		}
 		waiting[c.tree.key] = true
@@ -551,11 +670,11 @@ func (r *keptRun) seekToldAgain() keptSeekPlan {
 		if !r.namesWhatAFailedTellingTold(c) || c.leased(now) {
 			continue
 		}
-		reaches, fence := r.reachesItsPublish(c)
-		if fence != 0 {
-			return r.clearFence(fence)
+		fence, _, runs := r.runsNow(c, due)
+		if fence != nil {
+			return *fence
 		}
-		if !reaches || keptRowIndex(r.claimable(), c.row.ID) < 0 {
+		if !runs {
 			continue
 		}
 		if r.records.fails.Load() {
@@ -571,11 +690,11 @@ func (r *keptRun) seekToldAgain() keptSeekPlan {
 		if waiting[c.tree.key] || r.records.tellingFailed(telling) || r.toldMarked(telling) || c.leased(now) || !r.architectToHear(c.tree.key) {
 			continue
 		}
-		reaches, fence := r.reachesItsPublish(c)
-		if fence != 0 {
-			return r.clearFence(fence)
+		fence, _, runs := r.runsNow(c, due)
+		if fence != nil {
+			return *fence
 		}
-		if !reaches || keptRowIndex(r.claimable(), c.row.ID) < 0 {
+		if !runs {
 			continue
 		}
 		if r.publisher.standingMode() != keptDelivers {
@@ -610,14 +729,14 @@ func (r *keptRun) holdBack(id int64) {
 // nearer, and whether there is one: the ready fact of tree's architect, when its launch has said it
 // is ready and the workflow has not been told (readyFact); that launch's ready, when it has not
 // said it yet (ready); or the run of an architect start of tree that drops them (droppingStart).
-func (r *keptRun) dropStep(tree *keptTree) (keptSeekPlan, bool) {
+func (r *keptRun) dropStep(tree *keptTree, due *keptPlanRows) (keptSeekPlan, bool) {
 	if _, _, enabled := r.readyFactEnabled(tree); enabled {
 		return keptSeekPlan{steps: []func(){func() { r.readyFact(tree) }}}, true
 	}
 	if r.launchComing(tree) {
 		return keptSeekPlan{steps: []func(){func() { r.ready(tree) }}}, true
 	}
-	if start := r.droppingStart(tree); start != 0 {
+	if start := r.droppingStart(tree, due); start != 0 {
 		return keptSeekPlan{steps: []func(){r.runRow}, run: start}, true
 	}
 	return keptSeekPlan{}, false
@@ -625,9 +744,9 @@ func (r *keptRun) dropStep(tree *keptTree) (keptSeekPlan, bool) {
 
 // droppingStart is the claimable architect start of tree whose run drops tree's queued catch-ups
 // (startDropRank), the first of the best rank, and 0 for none.
-func (r *keptRun) droppingStart(tree *keptTree) int64 {
+func (r *keptRun) droppingStart(tree *keptTree, due *keptPlanRows) int64 {
 	best, pick := -1, int64(0)
-	for _, row := range r.claimable() {
+	for _, row := range due.claimable() {
 		if k := r.startDropRank(tree, row); k >= 0 && (best < 0 || k < best) {
 			best, pick = k, row.ID
 		}
@@ -667,28 +786,33 @@ func (r *keptRun) namesWhatAFailedTellingTold(c keptSoughtCatchUp) bool {
 // operation, the first of dropOpRank's order that is enabled. That drop is the state.
 func (r *keptRun) seekTheDrop() keptSeekPlan {
 	now := time.Now()
+	due := r.planRows()
 	if armed, ok := r.armedDrop(); ok {
+		plan := keptSeekPlan{drop: &armed}
 		if r.crashed[armed.row.ID].until.After(now) {
-			return keptSeekPlan{steps: []func(){r.toggleForget, r.togglePublisher, r.toggleLaunch}}
+			plan.steps = []func(){r.toggleForget, r.togglePublisher, r.toggleLaunch}
+			return plan
 		}
 		if r.records.fails.Load() {
-			return keptSeekPlan{steps: []func(){r.toggleForget}}
+			plan.steps = []func(){r.toggleForget}
+			return plan
 		}
 		reaches, _ := r.reachesItsPublish(armed)
-		if !reaches || keptRowIndex(r.claimable(), armed.row.ID) < 0 || !r.dropRaceable(armed) {
-			return keptSeekPlan{}
+		if !reaches || !due.lists(armed.row.ID) || !r.dropRaceable(armed) {
+			return plan
 		}
-		return keptSeekPlan{steps: []func(){r.raceRow}, race: armed.row.ID}
+		plan.steps, plan.race = []func(){r.raceRow}, armed.row.ID
+		return plan
 	}
 	for _, c := range r.soughtCatchUps() {
 		if c.notice.Resends != 0 || c.leased(now) || r.copiesOf(c.row.ID) != 0 || !r.architectToHear(c.tree.key) {
 			continue
 		}
-		reaches, fence := r.reachesItsPublish(c)
-		if fence != 0 {
-			return r.clearFence(fence)
+		fence, _, runs := r.runsNow(c, due)
+		if fence != nil {
+			return *fence
 		}
-		if !reaches || keptRowIndex(r.claimable(), c.row.ID) < 0 {
+		if !runs {
 			continue
 		}
 		if !r.dropRaceable(c) {
@@ -715,11 +839,6 @@ func (r *keptRun) armedDrop() (keptSoughtCatchUp, bool) {
 		}
 	}
 	return keptSoughtCatchUp{}, false
-}
-
-func (r *keptRun) isArmedDrop(row record.OutboxRow) bool {
-	armed, ok := r.armedDrop()
-	return ok && armed.row.ID == row.ID
 }
 
 // dropRaceable is whether an operation that drops the queued catch-ups of c's tree can run inside
@@ -812,22 +931,23 @@ func keptArchitectStart(tree *keptTree, row record.OutboxRow) (record.SuperviseR
 // tell it, which held reports.
 func (r *keptRun) seekTheSpentRehold() keptSeekPlan {
 	now := time.Now()
+	due := r.planRows()
 	catchUps := r.soughtCatchUps()
 	slices.SortStableFunc(catchUps, func(a, b keptSoughtCatchUp) int { return cmp.Compare(b.notice.Resends, a.notice.Resends) })
 	for _, c := range catchUps {
 		if !r.holdsItsLaunch(c) || !r.nothingRetells(c.tree) {
 			continue
 		}
-		reaches, fence := r.reachesItsPublish(c)
-		if fence != 0 {
-			return r.clearFence(fence)
+		fence, reaches, runs := r.runsNow(c, due)
+		if fence != nil {
+			return *fence
 		}
 		if !reaches || c.leased(now) || !slices.ContainsFunc(r.raceOps(c.row.ID), func(op keptRaceOp) bool { return r.spentReholdOpRank(c.tree, op) >= 0 }) {
 			continue
 		}
 		id := c.row.ID
 		if !c.row.NextAt.After(now) {
-			if keptRowIndex(r.claimable(), id) < 0 {
+			if !runs {
 				continue
 			}
 			return keptSeekPlan{steps: []func(){r.raceRow}, race: id}
@@ -840,7 +960,7 @@ func (r *keptRun) seekTheSpentRehold() keptSeekPlan {
 			if keptRowIndex(r.keptCatchUps(r.claimable()), id) >= 0 {
 				r.raceRow()
 			}
-		}}}
+		}}, race: id}
 	}
 	return keptSeekPlan{}
 }
