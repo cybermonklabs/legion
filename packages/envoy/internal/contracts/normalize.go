@@ -1085,8 +1085,14 @@ func githubPayload(event string, body map[string]any) string {
 			// pull request's head only when the two are the same, since anyone may open a fork's
 			// pull request at any commit and title it after an issue (delivery's headAttribution).
 			// GitHub sends null for it once a fork is deleted, which normalizes to the empty string.
-			"head_repo":        nestedString(body, "pull_request", "head", "repo", "full_name"),
-			"base_ref":         nestedString(body, "pull_request", "base", "ref"),
+			"head_repo": nestedString(body, "pull_request", "head", "repo", "full_name"),
+			"base_ref":  nestedString(body, "pull_request", "base", "ref"),
+			// state is GitHub's word for the pull request when the event happened, open or closed
+			// (a merged one is closed, and merged says so). Only opened, reopened and closed name
+			// a state in the action: a label, an edit, a lock and every other action can come after
+			// a close, so Dispatch stores the state from this field (delivery's
+			// recordPullRequestHead).
+			"state":            nestedString(body, "pull_request", "state"),
 			"merged":           strconv.FormatBool(boolValue(nested(body, "pull_request", "merged"))),
 			"merge_commit_sha": nestedString(body, "pull_request", "merge_commit_sha"),
 			// merged_at is when GitHub merged the pull request, null and so absent until it has:
