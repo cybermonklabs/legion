@@ -11,7 +11,9 @@ export const PAGE_SIZE = 20;
 export const SHOW_MORE = new RegExp(`^${CONTROL_LABELS.show_more}`, "u");
 
 /** For tests only: the accessible name of Show more with `left` entries of its list not
- *  drawn, in the page's words: "Show more (25 left)" (`details-leaves.tsx`'s `ShowMoreWords`). */
-export function showMoreName(left: number): string {
+ *  drawn, in the page's words: "Show more (25 left)" (`details-leaves.tsx`'s `ShowMoreWords`).
+ *  The history's count is written as text where an older page of its log is unread: "0+" gives
+ *  "Show more (0+ left)". */
+export function showMoreName(left: number | `${number}+`): string {
   return `${CONTROL_LABELS.show_more} (${left} ${CONTROL_LABELS.show_more_left})`;
 }

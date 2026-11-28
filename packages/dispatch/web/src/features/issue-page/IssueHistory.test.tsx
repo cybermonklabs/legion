@@ -1130,13 +1130,81 @@ test("a history whose first page holds exactly 20 entries reads the older page b
   }
 });
 
-// Show more is never drawn bare while an older page of the log is unread: where every entry read
-// is drawn it says "0+". A refetch of the log that fails over the pages held, as a live event's
-// can, draws no line, stops the reading on, and takes the failure of the next page, and its Retry
-// in Show more's place, with it, which leaves Show more under the entries to read on. Found by
-// the goal's red team on e74723b8: with the history's first page holding 20 entries, all drawn,
-// and the read of the older page failed, a refetch of the log that failed drew a bare "Show more".
-test("a refetch of the log that fails with every entry read drawn and an older page unread leaves Show more saying 0+, never bare", async () => {
+// R9: an address of R4 reads older pages of the log only until the thread of the turn it names
+// is drawn, and R2's Show more reads the log's next page only when pressed. Where that thread is
+// the oldest entry read, an older page unread, the history drawn down to it leaves no entry read
+// and not drawn, and Show more says "0+", R2's "N+", until a press reads that page. "0+" stands
+// only where no read of the next page has failed, since a failed one's Retry stands in Show
+// more's place, and every entry read is drawn with an older page unread. That arises in more
+// than an address's landing: also where the writer's landing draws the history down to its
+// thread the same way, where a refetch that failed over the pages held stopped the first view's
+// reading on, and where the entries left under the last one drawn leave the history, as a thread
+// a person writes in does. Found by the reviewer at 6769a360: the history read the next page
+// with no press once the address's thread was drawn.
+test("the address of a turn whose thread is the oldest entry read, an older page unread, reads no further page, and Show more says 0+ until pressed", async () => {
+  // The log's first page: 25 claims of the last half minute, then events the history leaves out
+  // back to 200 s ago. The daemon's thread began 100 s ago, so it is the history's 26th entry, the
+  // oldest read, under the 20 its first view draws.
+  const firstPage = pageOf(PAGE_SIZE + 5, 400);
+  const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(100 - index, 300 + index));
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.before === undefined ? [...firstPage] : [...olderPage]
+  );
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([agentMessage("m-old", 100)]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const olderReads = () =>
+    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory("m-old").unmount;
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-history-item="m-old"]')?.getAttribute("aria-current"),
+        "the address of the turn marks nothing"
+      ).toBe("true")
+    );
+    expect(
+      drawnEntries(),
+      "the history is not drawn down to the thread of the turn the address names"
+    ).toHaveLength(PAGE_SIZE + 6);
+    expect(
+      olderReads(),
+      "the history read the log's next page with no press once the address's thread was drawn"
+    ).toBe(0);
+    const more = screen.getByRole("button", { name: SHOW_MORE });
+    expect(more.getAttribute("aria-busy"), "Show more reads busy with no press").toBeNull();
+    expect(more.textContent).toBe(showMoreName("0+"));
+
+    await userEvent.click(more);
+    await waitFor(() =>
+      expect(
+        drawnEntries(),
+        "a press of Show more saying 0+ did not draw the next 20 from the page it read"
+      ).toHaveLength(2 * PAGE_SIZE + 6)
+    );
+    expect(olderReads()).toBe(1);
+    // The page read was the log's last, so the count says no +.
+    expect(more.textContent).toBe(showMoreName(10));
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// R2: where a read of an older page fails with every entry read drawn, the next page's Retry
+// stands in Show more's place and Show more is not drawn, whatever a refetch of the log does
+// after it (INFRA-1196's architect's ruling on the reviewer's finding 1 at 6769a360). TanStack
+// Query derives the next page's failure from the log's last fetch, which a refetch replaces, so
+// the history holds that failure itself until a next page lands. Found by the goal's red team on
+// e74723b8: with the history's first page holding 20 entries, all drawn, and the read of the
+// older page failed, a refetch of the log that failed drew a bare "Show more"; and by the
+// reviewer at 6769a360, where that refetch took the Retry away and drew "Show more (0+ left)".
+test("a refetch of the log that fails after the next page's read failed with every entry read drawn leaves that page's Retry in Show more's place, and draws no Show more", async () => {
   const firstPage = pageOf(PAGE_SIZE, 400);
   let readLog = async (): Promise<DispatchEvent[]> => [...firstPage];
   const reads = [
@@ -1155,7 +1223,7 @@ test("a refetch of the log that fails with every entry read drawn and an older p
     unmount = drawn.unmount;
     // The history read the older page before it drew, and that read failed: it draws the 20
     // entries it holds, with the next page's Retry in Show more's place.
-    await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     expect(drawnEntries()).toHaveLength(PAGE_SIZE);
     expect(screen.queryByRole("button", { name: SHOW_MORE })).toBeNull();
 
@@ -1170,22 +1238,99 @@ test("a refetch of the log that fails with every entry read drawn and an older p
     );
     expect(
       screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
-      "the next page's Retry stayed once a refetch of the log failed after it"
-    ).toBeNull();
+      "the next page's Retry went once a refetch of the log failed after it"
+    ).toBe(retry);
     expect(drawnEntries(), "the failed refetch took entries away").toHaveLength(PAGE_SIZE);
-    const more = screen.getByRole("button", { name: SHOW_MORE });
+    const more = screen.queryByRole("button", { name: SHOW_MORE });
     expect(
-      more.getAttribute("aria-busy"),
-      "Show more reads busy though the failed refetch stopped the reading on"
+      more,
+      `Show more is drawn in the next page's Retry's place once a refetch of the log failed (it reads "${more?.textContent}")`
+    ).toBeNull();
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// A live event refetches the log, often on a busy issue, and the history holds the next page's
+// failure through that refetch: its Retry stays in Show more's place, with the reader's focus on
+// it, while the refetch is out, Show more is not drawn, and the page is not read again; once the
+// refetch lands, the page is read again only by a press. Found by the reviewer at 6769a360:
+// during the refetch the Retry went, Show more read busy with no press and the focus fell to the
+// page's body, and once the refetch landed the failed page was read again with no press.
+test("a refetch of the log out after the next page's read failed with every entry read drawn keeps that page's Retry and the focus on it, and the page is read again only by a press", async () => {
+  const firstPage = pageOf(PAGE_SIZE, 400);
+  // The event the live refetch brings: a claim newer than every event of the first page.
+  const arrived = claimAgo(401, 0);
+  let readLog = async (): Promise<DispatchEvent[]> => [...firstPage];
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+    if (options?.before !== undefined) throw new Error("the next page is down");
+    return readLog();
+  });
+  const reads = [
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const olderReads = () =>
+    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
+  // The refetch is held out until the case lets it land.
+  const refetched = Promise.withResolvers<DispatchEvent[]>();
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    // The history read the older page before it drew, and that read failed: it draws the 20
+    // entries it holds, with the next page's Retry in Show more's place.
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
+    expect(olderReads()).toBe(1);
+    act(() => retry.focus());
+
+    readLog = () => refetched.promise;
+    act(() => {
+      void drawn.queryClient.invalidateQueries({ queryKey: ["events", KEY] });
+    });
+    await waitFor(() =>
+      expect(drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus).toBe("fetching")
+    );
+    expect(retry.isConnected, "the next page's Retry went while a refetch of the log was out").toBe(
+      true
+    );
+    expect(
+      document.activeElement,
+      "the focus left the next page's Retry while a refetch of the log was out"
+    ).toBe(retry);
+    expect(
+      screen.queryByRole("button", { name: SHOW_MORE }),
+      "Show more is drawn in the next page's Retry's place while a refetch of the log is out"
     ).toBeNull();
     expect(
-      more.querySelector("[data-history-left]")?.textContent,
-      `Show more is drawn with no "+" count while an older page is unread (it reads "${more.textContent}")`
-    ).toBe("0+");
-    expect(more.textContent).toBe(
-      `${CONTROL_LABELS.show_more} (0+ ${CONTROL_LABELS.show_more_left})`
+      olderReads(),
+      "the next page was read again with no press while a refetch of the log was out"
+    ).toBe(1);
+
+    await act(async () => refetched.resolve([arrived, ...firstPage]));
+    await waitFor(() =>
+      expect(
+        document.querySelector(`[data-event-seq="${arrived.seq}"]`),
+        "the event the refetch brought is not drawn"
+      ).not.toBeNull()
     );
+    expect(
+      olderReads(),
+      "the next page was read again with no press once the refetch of the log landed"
+    ).toBe(1);
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "the next page's Retry went once the refetch of the log landed"
+    ).toBe(retry);
+    expect(document.activeElement).toBe(retry);
+    expect(screen.queryByRole("button", { name: SHOW_MORE })).toBeNull();
   } finally {
+    refetched.resolve([...firstPage]);
     unmount?.();
     for (const read of reads) read.mockRestore();
   }
@@ -1397,7 +1542,8 @@ test("the Retry of a failed next page hands the focus to the first entry it draw
 // the log that failed, under the heading; a refetch that fails over the pages held draws no line.
 // Neither Retry is disabled while it reads: Chromium would drop its focus to the page
 // (`chromium-focus-fixup.ts`). A keyboard reader stays on the Retry while it reads, and when its
-// read fails again.
+// read fails again. The next page's failure stands until a next page lands, whatever a refetch
+// of the log does after it (R2), so that page lands before the log's refetch fails.
 test("a history Retry pressed by keyboard keeps the focus while it reads and when its read fails again", async () => {
   const firstPage = pageOf(PAGE_SIZE + 1, 400);
   let readLog = async (): Promise<DispatchEvent[]> => [...firstPage];
@@ -1440,6 +1586,11 @@ test("a history Retry pressed by keyboard keeps the focus while it reads and whe
       document.activeElement,
       "the next page's Retry whose read failed again did not keep the focus"
     ).toBe(older);
+    readOlder = async () => [];
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
+    );
 
     readLog = async () => {
       throw new Error("the log is down");

@@ -9,7 +9,7 @@ import { expect, type Locator, type Page, type Request, type Response } from "@p
 import { routeUrl } from "../web/src/api/paths";
 import type { GraphReferences } from "../web/src/api/types";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
-import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
+import { PAGE_SIZE, showMoreName } from "../web/src/features/issue-page/show-more-fixture";
 import { issueProject } from "../web/src/lib/issue-key";
 import { baseUrl, e2eAgentToken, getIssue } from "./api";
 import { gotoIssue, issuePage, marginShell, openDetails } from "./issue-page";
@@ -90,30 +90,33 @@ export function historyShowMore(page: Page): Locator {
 }
 
 /** Show more's name where its press reads the log's next page before it draws: "Show more
- *  (<n>+ left)" with `n` from 0 to `PAGE_SIZE`, so no more entries are read and not drawn than a
- *  press draws. */
+ *  (<n>+ left)" with `n` from 1 to `PAGE_SIZE`, so no more entries are read and not drawn than a
+ *  press draws, and at least one is: "0+" is no such name (`historyShowMoreState`'s `stopped`). */
 const READS_FIRST = new RegExp(
-  `^${literally(CONTROL_LABELS.show_more)} \\((?:${Array.from({ length: PAGE_SIZE + 1 }, (_, index) => index).join("|")})\\+ ${literally(CONTROL_LABELS.show_more_left)}\\)$`,
+  `^${literally(CONTROL_LABELS.show_more)} \\((?:${Array.from({ length: PAGE_SIZE }, (_, index) => index + 1).join("|")})\\+ ${literally(CONTROL_LABELS.show_more_left)}\\)$`,
   "u"
 );
 
 /** The history's Show more where its press reads the log's next page before it draws the next
- *  entries: it says "<n>+" with `n` at most `PAGE_SIZE`. */
+ *  entries: it says "<n>+" with `n` from 1 to `PAGE_SIZE`. */
 export function historyNextPage(page: Page): Locator {
   return historyPanel(page).getByRole("button", { name: READS_FIRST });
 }
 
 /** What the history's Show more says, read once the page shows one of them: `reads` where its
- *  press reads the log's next page before it draws (`historyNextPage`), `counted` where it says
- *  how many entries read are left and its press draws the next ones, `uncounted` where it says no
- *  number, `reading` while it reads, and `gone` where the history has drawn entries and no control
- *  stands under them. */
+ *  press reads the log's next page before it draws (`historyNextPage`); `stopped` where it says
+ *  "0+", the history having drawn every entry it read and stopped with an older page of the log
+ *  unread, which it reads only once Show more is pressed (`IssueHistory.tsx`); `counted` where it
+ *  says how many entries read are left and its press draws the next ones; `uncounted` where it
+ *  says no number; `reading` while it reads; and `gone` where the history has drawn entries and
+ *  no control stands under them. */
 export function historyShowMoreState(
   page: Page
-): Promise<"counted" | "gone" | "reading" | "reads" | "uncounted"> {
+): Promise<"counted" | "gone" | "reading" | "reads" | "stopped" | "uncounted"> {
   const busy = 'button[aria-busy="true"]';
   return settledState("the history's Show more", [
     ["reads", historyNextPage(page)],
+    ["stopped", historyPanel(page).getByRole("button", { exact: true, name: showMoreName("0+") })],
     ["counted", historyShowMore(page).filter({ has: page.locator("[data-history-left]") })],
     [
       "uncounted",

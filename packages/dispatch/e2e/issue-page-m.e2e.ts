@@ -218,13 +218,16 @@ async function allEvents(key: string): Promise<DispatchEvent[]> {
 
 /**
  * Presses the history's Show more by `press` until it reaches `end`: `reads`, where the control
- * says "<n>+" with `n` at most `PAGE_SIZE` and its press reads the log's next page before it
+ * says "<n>+" with `n` from 1 to `PAGE_SIZE` and its press reads the log's next page before it
  * draws (`historyNextPage`), or `gone`, where no control is left under the last entry, so the
  * history draws the whole log of `key`, which holds `events` events. Each press draws the next
  * entries, waited for until more are drawn; a press that reads the next page first draws them
  * once that page's answer has landed. A control that says no number fails: the history says how
- * many entries are left while any may be. Each press draws an entry, so a control still offered
- * after as many presses as the log has entries and pages fails as offered past the log's end.
+ * many entries are left while any may be. So does one that says "0+" (`stopped`): the history
+ * drew every entry it read and stopped with an older page of the log unread, where its first
+ * view and each press read on until more entries are read than they draw. Each press draws an
+ * entry, so a control still offered after as many presses as the log has entries and pages
+ * fails as offered past the log's end.
  */
 async function readHistoryDown(
   page: Page,
@@ -241,6 +244,10 @@ async function readHistoryDown(
       state,
       `${CONTROL_LABELS.show_more} says no number while entries of the log may be left`
     ).not.toBe("uncounted");
+    expect(
+      state,
+      `the history drew every entry it read and stopped with an older page of the log unread: ${CONTROL_LABELS.show_more} says 0+`
+    ).not.toBe("stopped");
     if (state === "reading") {
       await expect(
         historyPanel(page).locator('button[aria-busy="true"]'),
@@ -1547,10 +1554,15 @@ test("the history leaves the comments of people out of its read of the log, so i
       }
     });
     await gotoIssue(page, `/issues/${issue.key}/activity`);
+    const firstView = await historyShowMoreState(page);
     expect(
-      await historyShowMoreState(page),
+      firstView,
       "the history's first view drew a Show more that says no number, the older page unread"
     ).not.toBe("uncounted");
+    expect(
+      firstView,
+      `the history's first view drew every entry it read and stopped with an older page of the log unread: ${CONTROL_LABELS.show_more} says 0+`
+    ).not.toBe("stopped");
     await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
     await expect(
       historyEntries(page),
