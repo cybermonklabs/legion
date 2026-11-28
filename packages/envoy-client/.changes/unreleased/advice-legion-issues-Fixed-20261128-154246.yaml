@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  On an issue that Legion runs, `dispatch message`, `dispatch comment` and `dispatch ask` no
+  longer print the line "Posted. You've sent N messages on KEY with no human response", which
+  from six writes says "Stop posting here until a human replies". There the posts are records
+  that Legion's roles keep for each other, and no person is meant to answer them, so the count
+  never ends: roles read the line as a refusal and held back records that Legion needs. Legion
+  runs an issue that carries the `legion` label in any ASCII case, or that has an issue of its
+  own project above it that does: the rule by which Dispatch answers `legion_managed_status`.
+  Dispatch sends that answer only on an issue in triage, so on any other issue the command reads
+  the issue and each issue above it, and only for a write that would print the line. When a read
+  fails, the line prints as before. On every other issue the line does not change.
+time: 2026-11-28T15:42:46Z
+custom:
+    Issue: advice-legion-issues

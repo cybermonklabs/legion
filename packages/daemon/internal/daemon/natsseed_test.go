@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
@@ -137,6 +138,11 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 
 // chooseNATSConnection picks the daemon seed, else the pane seed, else none, and its one line says
 // which user that is and whether it is the pane user, the daemon seed naming the pane user included.
+// Each seed row's credential is the one boot resolves (natsauth.DaemonCredential): the row's daemon
+// seed by NATS_DAEMON_NKEY_SEED, where the row has one, beside the pane seed readLaunchSecrets read.
+// With the service token (nats_daemon_service_token_file), alone or beside the pane seed, the
+// connection presents no seed, and its line names the account the token names, as no pane user,
+// from the service token.
 func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 	t.Parallel()
 	daemonSeed, daemonUser := testnkeys.User(t)
@@ -151,7 +157,15 @@ func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 		{"neither", "", "", "", "", `user="" paneUser=false seed=none`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			nc, err := chooseNATSConnection(tc.daemon, tc.pane, tc.paneUser)
+			daemonEnvironment := map[string]string{}
+			if tc.daemon != "" {
+				daemonEnvironment[natsauth.DaemonSeedVariable] = tc.daemon
+			}
+			credential, err := natsauth.DaemonCredential("", "", nil, tc.pane, lookup(daemonEnvironment))
+			if err != nil {
+				t.Fatalf("DaemonCredential of the row's seeds: %v", err)
+			}
+			nc, err := chooseNATSConnection(credential, tc.paneUser)
 			// Named, never printed: a failure message is no place for a seed.
 			name := map[string]string{daemonSeed: "the daemon seed", paneSeed: "the pane seed", "": "none"}
 			if err != nil || nc.seed != tc.seed {
@@ -165,11 +179,44 @@ func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 			}
 		})
 	}
+	file := tokenFile(t, testnkeys.ServiceToken(tokenAccount, time.Now().Add(time.Hour)))
+	for _, tc := range []struct {
+		name, pane, paneUser string
+	}{
+		{"the service token", "", ""},
+		{"the service token beside the pane seed", paneSeed, paneUser},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			credential, err := natsauth.DaemonCredential("", file, nil, tc.pane, lookup(nil))
+			if err != nil {
+				t.Fatalf("DaemonCredential of nats_daemon_service_token_file: %v", err)
+			}
+			nc, err := chooseNATSConnection(credential, tc.paneUser)
+			// Named, never printed: a failure message is no place for a seed.
+			name := map[string]string{daemonSeed: "the daemon seed", paneSeed: "the pane seed", "": "none"}
+			if err != nil || nc.seed != "" {
+				t.Fatalf("chooseNATSConnection = %s, %v; want no seed beside the service token", name[nc.seed], err)
+			}
+			if presented, _, account := nc.credential.ServiceToken(); nc.credential.Source() != natsauth.SourceServiceToken || presented != file || account != tokenAccount {
+				t.Fatalf("chooseNATSConnection's credential = %q from %q naming %q; want the service token from %q naming %q",
+					nc.credential.Source(), presented, account, file, tokenAccount)
+			}
+			var out bytes.Buffer
+			nc.log(slog.New(slog.NewTextHandler(&out, nil)))
+			want := `level=INFO msg="legion daemon connects to NATS" user=` + tokenAccount + " paneUser=false seed=service-token\n"
+			if !strings.HasSuffix(out.String(), want) || strings.Count(out.String(), "\n") != 1 {
+				t.Errorf("log = %q, want one line ending %q", out.String(), want)
+			}
+		})
+	}
 }
 
 // The daemon's own seed reaches no launch: with both seeds configured, a root's and a worker's
 // launch carry the pane seed as NATS_NKEY_SEED and nothing of the daemon seed, in no secret, no
-// variable, and no other field of the spec.
+// variable, and no other field of the spec. The daemon's service token is its own too: with
+// nats_daemon_service_token_file or NATS_DAEMON_SERVICE_TOKEN_FILE beside the pane seed, each
+// launch still carries the pane seed, and none carries the token, the path of its file, or a
+// NATS_DAEMON_SERVICE name.
 func TestNoLaunchCarriesTheDaemonSeed(t *testing.T) {
 	t.Parallel()
 	daemonSeed, paneSeed := testnkeys.UserSeed(t), testnkeys.UserSeed(t)
@@ -199,6 +246,37 @@ func TestNoLaunchCarriesTheDaemonSeed(t *testing.T) {
 				}
 				if dump := fmt.Sprintf("%#v", spec); strings.Contains(dump, daemonSeed) || strings.Contains(dump, "NATS_DAEMON") {
 					t.Errorf("the %s launch carries the daemon seed or its name: %s", kind, dump)
+				}
+			}
+		})
+	}
+	token := testnkeys.ServiceToken(tokenAccount, time.Now().Add(time.Hour))
+	file := tokenFile(t, token)
+	for _, tc := range []struct {
+		name    string
+		key     string
+		environ []string
+	}{
+		{"nats_daemon_service_token_file", file, nil},
+		{"NATS_DAEMON_SERVICE_TOKEN_FILE", "", []string{"NATS_DAEMON_SERVICE_TOKEN_FILE=" + file}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, paneSeed)
+			cfg.NatsDaemonServiceTokenFile = tc.key
+			rt := fake.NewRuntime()
+			o := fakeRuntime(rt, &built{})
+			o.environ = tc.environ
+			d := startDaemon(t, cfg, o)
+
+			root := lastLaunch(t, rt, d.spawn(architect()))
+			worker := lastLaunch(t, rt, d.spawn(api.SpawnRequest{Tree: "LEGION-1", Issue: "LEGION-2", Role: claim.RoleImplementer, Prompt: "Wait."}))
+			for kind, spec := range map[string]runtime.SpawnSpec{"root": root, "worker": worker} {
+				if got := spec.Secrets["NATS_NKEY_SEED"]; got != paneSeed {
+					t.Errorf("the %s launch's NATS_NKEY_SEED secret is %q, want the pane seed", kind, got)
+				}
+				if dump := fmt.Sprintf("%#v", spec); strings.Contains(dump, token) || strings.Contains(dump, file) || strings.Contains(dump, "NATS_DAEMON_SERVICE") {
+					t.Errorf("the %s launch carries the daemon's service token, its file or its name: %s", kind, dump)
 				}
 			}
 		})
