@@ -47,8 +47,7 @@ var fromZero = &shimwire.Totals{}
 
 // Each case of a step's calls is a set of launch spans, and countStep gives its set model and its
 // answers. A start or an end not known, a name outside the form, or 17 models leave the counts
-// unknown. Two set models name none. A step with no call knows an empty list. A step that starts
-// from a newer read a committed fact kept counts from that read.
+// unknown. Two set models name none. A step with no call knows an empty list.
 func TestCountStepGivesEachRowsArithmetic(t *testing.T) {
 	t.Parallel()
 	seventeen := make([]shimwire.ModelCount, 0, 17)
@@ -69,7 +68,7 @@ func TestCountStepGivesEachRowsArithmetic(t *testing.T) {
 			modelA, answered(record.ModelCalls{Model: modelA, Calls: 3}, record.ModelCalls{Model: modelB, Calls: 1})},
 		{"A 5 in an earlier step, then A 2", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 5)), end: totalsOf(modelA, calls(modelA, 7))}},
 			modelA, answered(record.ModelCalls{Model: modelA, Calls: 2})},
-		{"A 5 before, A 2 in it, a restart, A 1 more", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 5)), end: totalsOf(modelA, calls(modelA, 8))}},
+		{"A 5 before and A 8 at the end of the same launch make A 3", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 5)), end: totalsOf(modelA, calls(modelA, 8))}},
 			modelA, answered(record.ModelCalls{Model: modelA, Calls: 3})},
 		{"the first launch's final totals never came", []launchSpan{
 			{setModel: modelA, start: totalsOf(modelA, calls(modelA, 5))},
@@ -77,8 +76,7 @@ func TestCountStepGivesEachRowsArithmetic(t *testing.T) {
 		{"the first launch's final totals came", []launchSpan{
 			{setModel: modelA, start: totalsOf(modelA, calls(modelA, 5)), end: totalsOf(modelA, calls(modelA, 6))},
 			{setModel: modelA, start: fromZero, end: totalsOf(modelA, calls(modelA, 2))}}, modelA, answered(record.ModelCalls{Model: modelA, Calls: 3})},
-		{"no connection at the end", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 5))}}, modelA, nil},
-		{"a launch with no answer at the end", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 5))}}, modelA, nil},
+		{"a launch with a start and no end is not known", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 5))}}, modelA, nil},
 		{"a model outside the form answered", []launchSpan{{setModel: modelA, start: fromZero, end: outside}}, modelA, nil},
 		{"17 models answered", []launchSpan{{setModel: modelA, start: fromZero, end: totalsOf(modelA, seventeen...)}}, modelA, nil},
 		{"two launches set to A and to B", []launchSpan{
@@ -86,11 +84,10 @@ func TestCountStepGivesEachRowsArithmetic(t *testing.T) {
 			{setModel: modelB, start: fromZero, end: totalsOf(modelB, calls(modelB, 1))}}, "", answered(record.ModelCalls{Model: modelA, Calls: 1}, record.ModelCalls{Model: modelB, Calls: 1})},
 		{"no call", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 5)), end: totalsOf(modelA, calls(modelA, 5))}}, modelA, answered()},
 		{"relaunched between the read and the start", []launchSpan{{setModel: modelA, end: totalsOf(modelA, calls(modelA, 1))}}, modelA, nil},
-		{"a step ended by a newer read holds A 2", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 1)), end: totalsOf(modelA, calls(modelA, 3))}},
+		{"a step from A 1 to A 3 holds A 2", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 1)), end: totalsOf(modelA, calls(modelA, 3))}},
 			modelA, answered(record.ModelCalls{Model: modelA, Calls: 2})},
-		{"the next step starts from that kept read and gives A 1", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 3)), end: totalsOf(modelA, calls(modelA, 4))}},
+		{"the next step, from that end at A 3 to A 4, gives A 1", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 3)), end: totalsOf(modelA, calls(modelA, 4))}},
 			modelA, answered(record.ModelCalls{Model: modelA, Calls: 1})},
-		{"a settle that read nothing", []launchSpan{{setModel: modelA, start: totalsOf(modelA, calls(modelA, 5))}}, modelA, nil},
 		{"two launches set to A give A", []launchSpan{
 			{setModel: modelA, start: fromZero, end: totalsOf(modelA)},
 			{setModel: modelA, start: fromZero, end: totalsOf(modelA)}}, modelA, answered()},

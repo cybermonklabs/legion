@@ -620,10 +620,10 @@ func (r *stepRecordsRig) person(method, path string, body any, want int, into an
 	}
 }
 
-// personMoves is a person setting the walk's issue, titled title, to status in Dispatch. Dispatch
-// then relays the event of that write, of type kind. The daemon's consumer reads it as it reads any
-// issue event.
-func (r *stepRecordsRig) personMoves(status, kind, title string) {
+// personMoves is a person setting the walk's issue to status in Dispatch. Dispatch then relays the
+// event of that write, of type kind, which carries the issue's title. The daemon's consumer reads
+// it as it reads any issue event.
+func (r *stepRecordsRig) personMoves(status, kind string) {
 	t := r.t
 	t.Helper()
 	var moved createdIssue
@@ -632,7 +632,7 @@ func (r *stepRecordsRig) personMoves(status, kind, title string) {
 		"id": moved.LastSeq, "issue_key": r.key, "project": r.cfg.Project, "seq": moved.LastSeq, "type": kind,
 		"actor": map[string]string{"kind": "user", "id": "a-person"}, "notify": true, "created_at": time.Now().UTC().Format(time.RFC3339Nano),
 		"payload": map[string]any{
-			"key": r.key, "status": status, "title": title, "parent": nil, "rank": moved.Rank,
+			"key": r.key, "status": status, "title": r.title, "parent": nil, "rank": moved.Rank,
 			"labels": liveDispatchLabels(true), "last_seq": moved.LastSeq, "project": r.cfg.Project, "resolved_repo": liveRepo,
 		},
 	})

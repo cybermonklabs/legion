@@ -273,17 +273,23 @@ describe("dispatch plans", () => {
   });
 
   // The route counts the records of a finished issue that name an agent: on its set model, off
-  // it, and unknown. Here two are on, one is off and two are unknown, so a line that printed one
-  // count in another's place reads differently.
+  // it, and unknown. INFRA-11 has two on, one off and two unknown, which print the same with on
+  // and unknown swapped. INFRA-12 has three on, one off and none unknown, so its line reads
+  // differently if a printer puts any count in another's place.
   test("an issue prints its three counts after its failed steps", async () => {
     const answer: ProjectPlans = {
       project: "INFRA",
-      issues: [{ ...unrated, set_model_steps: { on: 2, off: 1, unknown: 2 } }],
+      issues: [
+        { ...ratedOnce, set_model_steps: { on: 3, off: 1, unknown: 0 } },
+        { ...unrated, set_model_steps: { on: 2, off: 1, unknown: 2 } },
+      ],
     };
 
     const { result } = await readPlans({ project: "INFRA" }, answer);
 
-    expect(result.text.split("\n")[1]).toEndWith(
+    const lines = result.text.split("\n");
+    expect(lines[1]).toEndWith(" time 1h30m failed steps 1 on set model 3 off 1 unknown 0");
+    expect(lines[2]).toEndWith(
       " ratings none time 1h2m failed steps 0 on set model 2 off 1 unknown 2"
     );
     expect(result.details).toEqual({ project: "INFRA", issues: answer.issues });

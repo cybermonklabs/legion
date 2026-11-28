@@ -53,7 +53,7 @@ function holdsCompletion(content: unknown, type: string, tool: string, field: st
 }
 
 /** The message of the daemon's log line for each read that a step's start or end used. */
-export const READ_LINE = "workflow: a step used a read of its agent's calls";
+const READ_LINE = "workflow: a step used a read of its agent's calls";
 
 /** Evidence the comparison cannot read. Each reason prints as `UNKNOWN: <reason>`, exit 2. */
 class Unknown extends Error {
@@ -68,6 +68,15 @@ function object(value: unknown): Json | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Json)
     : null;
+}
+
+/** The JSON object `text` holds, or null where it holds no JSON or another JSON value. */
+function jsonObject(text: string): Json | null {
+  try {
+    return object(JSON.parse(text));
+  } catch {
+    return null;
+  }
 }
 
 function readText(path: string, what: string): string {
@@ -102,12 +111,7 @@ function transcriptLines(path: string, what: string): Array<[number, Json]> {
   const texts = readText(path, what).split("\n");
   for (let index = 0; index < texts.length; index++) {
     if (texts[index].trim() === "") continue;
-    let entry: Json | null;
-    try {
-      entry = object(JSON.parse(texts[index]));
-    } catch {
-      entry = null;
-    }
+    const entry = jsonObject(texts[index]);
     if (entry === null) {
       throw new Unknown([`line ${index + 1} of ${what} ${path} is no JSON object`]);
     }
@@ -244,7 +248,6 @@ interface Answer {
 /** One run line of `dispatch steps`, with the issue that was read. */
 interface StepLine {
   issue: string;
-  line: string;
   task: string;
   place: number;
   kind: string;
@@ -307,7 +310,6 @@ function stepLine(issue: string, line: string): StepLine {
   }
   return {
     issue,
-    line,
     task: words[0],
     place: Number(words[1]),
     kind: words[2],
@@ -363,12 +365,7 @@ interface Agent {
 /** The agents file. A relative transcript path is read from the file's own directory. */
 function agentsOf(path: string): Map<string, Agent> {
   const text = readText(path, "the agents file");
-  let file: Json | null;
-  try {
-    file = object(JSON.parse(text));
-  } catch {
-    file = null;
-  }
+  const file = jsonObject(text);
   if (file === null) throw new Unknown([`the agents file ${path} is no JSON object`]);
   const agents = new Map<string, Agent>();
   for (const [claim, value] of Object.entries(file)) {
@@ -422,12 +419,7 @@ function readLines(path: string): ReadLine[] {
   const reads: ReadLine[] = [];
   const texts = readText(path, "the daemon log").split("\n");
   for (let index = 0; index < texts.length; index++) {
-    let entry: Json | null;
-    try {
-      entry = object(JSON.parse(texts[index]));
-    } catch {
-      entry = null;
-    }
+    const entry = jsonObject(texts[index]);
     if (entry === null && texts[index].includes(READ_LINE)) {
       throw new Unknown([
         `line ${index + 1} of the daemon log ${path} holds "${READ_LINE}" and is no JSON object`,
@@ -748,17 +740,22 @@ function compare(
   return { lines, verdict: failed ? "FAIL" : unknown ? "UNKNOWN" : "PASS" };
 }
 
+/** Each model a record names, with which it is: its set model, each answering model, its last. */
+function namedModels(step: StepLine): Array<[string, string]> {
+  const named: Array<[string, string | null]> = [
+    ["set", step.setModel],
+    ...(step.answers ?? []).map((answer): [string, string] => ["answering", answer.model]),
+    ["last", step.lastModel],
+  ];
+  return named.filter((entry): entry is [string, string] => entry[1] !== null);
+}
+
 /** No record may name a model that its agent's transcript does not hold: set, answering or last. */
 function unheldModels(judged: Judged[]): string[] {
   const lines: string[] = [];
   for (const { step, transcript } of judged) {
-    const named: Array<[string, string | null]> = [
-      ["set", step.setModel],
-      ...(step.answers ?? []).map((answer): [string, string] => ["answering", answer.model]),
-      ["last", step.lastModel],
-    ];
-    for (const [which, model] of named) {
-      if (model === null || transcript.held.has(model)) continue;
+    for (const [which, model] of namedModels(step)) {
+      if (transcript.held.has(model)) continue;
       lines.push(
         `FAIL: c-real: ${stepName(step)}: its ${which} model ${model} is held by no entry of the transcript of ${step.agent}`
       );
@@ -806,10 +803,7 @@ function stepModelsCheck(argv: string[]): { lines: string[]; code: number } {
   const missing = [
     ...new Set(
       steps
-        .filter(
-          (step) =>
-            step.setModel !== null || step.lastModel !== null || (step.answers ?? []).length > 0
-        )
+        .filter((step) => namedModels(step).length > 0)
         .flatMap((step) => (agents.has(step.agent) ? [] : [step.agent]))
     ),
   ];

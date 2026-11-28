@@ -289,8 +289,8 @@ func TestTheDriverReadsEachRunsSetModelAndAnswers(t *testing.T) {
 	}
 }
 
-// variantPlace reads each run below the Experiment line as `dispatch steps` prints it now: 16
-// words that end `set <set model> answered <answers>`. The walk's ten runs below the line pass.
+// variantPlace reads each run below the Experiment line as `dispatch steps` prints it: 16 words
+// that end `set <set model> answered <answers>`. The walk's ten runs below the line pass.
 // The same runs in the 12 words of the command before the set model are no runs, and the place
 // fails naming the first.
 func TestVariantPlaceReadsEachRunInTheWordsDispatchStepsPrints(t *testing.T) {

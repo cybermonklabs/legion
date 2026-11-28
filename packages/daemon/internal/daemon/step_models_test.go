@@ -2,9 +2,9 @@
 // A record names the step's set model and each model that answered, with its calls, most first.
 // Where the daemon cannot know those calls, the record's list of answers is null.
 //
-// Each test boots the whole daemon over the real Dispatch (stepRecordsRig). The rig's stand-in
+// Each walk boots the whole daemon over the real Dispatch (stepRecordsRig). The rig's stand-in
 // shim counts each answer of its agent as the real shim does, and it answers the daemon's reads of
-// those counts. A test reads each record back from Dispatch, and each read a step used from the
+// those counts. A walk reads each record back from Dispatch, and each read a step used from the
 // daemon's own log.
 //
 // Four walks run their reads on a held clock (heldClock), whose bounds fire only when the walk
@@ -281,7 +281,7 @@ func TestAStepRecordSaysWhenItDoesNotKnow(t *testing.T) {
 		r.publishReview(number, "CHANGES_REQUESTED")
 		r.waitPhaseOf(child, phase.Implementing)
 		childImpl.take()
-		r.personMoves(record.DoneStatus, "issue.closed", r.title)
+		r.personMoves(record.DoneStatus, "issue.closed")
 		stopped := r.waitModels(child, 2, 1, stepModels{result: "stopped", setModel: stepRecordsModel, model: stepRecordsModel})
 		// The control: the step's start used a read of the child's implementer. So the log does name
 		// the record's id where the step used a read.
@@ -576,8 +576,8 @@ func holdReadClock(r *stepRecordsRig) *heldClock {
 // (stop_task, as stopAtTesting does), which must answer 200.
 func stopTheTask(r *stepRecordsRig) {
 	r.t.Helper()
-	status, body := r.d.request(http.MethodPost, "/legion/v1/tasks/stop", map[string]any{
-		"grantId": r.worker(claim.RoleArchitect).grant(), "issue": r.key, "task": "default"}, false)
+	status, body := r.d.request(http.MethodPost, "/legion/v1/tasks/stop", api.TaskStopRequest{
+		GrantID: r.worker(claim.RoleArchitect).grant(), Issue: r.key, Task: "default"}, false)
 	if status != http.StatusOK {
 		r.t.Fatalf("the architect's stop of %s's task default = %d %s, want 200", r.key, status, body)
 	}

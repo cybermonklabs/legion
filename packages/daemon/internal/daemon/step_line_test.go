@@ -21,7 +21,7 @@ func TestRunFieldsReadsTheWordsDispatchStepsPrints(t *testing.T) {
 		text string
 		ok   bool
 	}{
-		{"the current line", run, true},
+		{"a run line", run, true},
 		{"the line before the set model", strings.Join(strings.Fields(run)[:12], " "), false},
 		{"a different attempt word", strings.Replace(run, " attempt ", " tries ", 1), false},
 		{"a different set word", strings.Replace(run, " set ", " with ", 1), false},

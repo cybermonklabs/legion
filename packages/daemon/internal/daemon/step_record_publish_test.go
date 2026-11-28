@@ -566,8 +566,9 @@ func TestAStepRecordLandsWhileItsVariantWaitsForItsRoute(t *testing.T) {
 // publication copies them one by one (stepWriteOf), since the dispatch package imports no record
 // of the daemon's. A field added to both types and left out of the copy compiles and drops that
 // field from every write. So the record's fields but its rating and its experiment are held to the
-// step write's, each of the same type under the same JSON name. Three are held to a mirror the
-// copy converts to, each struct of the same fields of the same types under the same JSON names:
+// step write's, each under the same JSON name, and each of the same type but the answers, which
+// are of their mirror's type. Three are held to a mirror the copy converts to, each struct of the
+// same fields of the same types under the same JSON names:
 // the record's answers (record.ModelCalls) to the write's (dispatch.ModelCalls), its rating
 // (record.PlanRating) to the rating route's own argument (dispatch.PlanRating,
 // Client.PutStepRating), and its experiment (record.StepExperiment) to the experiment route's

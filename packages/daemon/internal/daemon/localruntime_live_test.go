@@ -403,10 +403,6 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
 	cmd.Env = append(r.paneEnvironment(spec.Claim, variables, workDir), pairs...)
-	// A resume is held to its session as every runtime holds it (runtime.SessionExclusiveVariable).
-	if spec.ResumeSessionFile != "" {
-		cmd.Env = append(cmd.Env, runtime.SessionExclusiveVariable+"="+runtime.SessionExclusiveValue)
-	}
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	// Its own process group: one signal ends the shim, Oh My Pi and whatever Oh My Pi started.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -454,14 +450,16 @@ var standInCommand = []string{"sleep", "86400"}
 // what a pane is told. The child is the shim around the agent either way, as a pane runs it. A
 // claim the proof stands in for runs the placeholder instead (standInCommand).
 //
-// On Oh My Pi the shim's argv names the Oh My Pi this runtime was given, which needs no shell. On
-// Claude Code the inner command is the one `internal/runtime/tmux`'s own launcher builds
-// (claudeLauncher.Launch). That launch makes the claim's Claude Code directory, writes its MCP
-// configuration and starts or continues its session. The inner command's words are already quoted
-// for a pane's shell. So it is spliced after the shim's `--` unquoted, and the whole is run by
-// `sh -c`, as shimShellCommand splices it into a pane's command. Launch's pairs are tmux's
-// `-e NAME=VALUE` form, which this runtime has no tmux for. Each value is a pair of the child's
-// own environment, after the ones a pane is told, as tmux puts them after the operator's.
+// On Oh My Pi the shim's argv names the Oh My Pi this runtime was given, which needs no shell. A
+// resume of it carries the pair runtime.SessionExclusiveVariable, as tmux's ompLauncher gives a
+// resumed pane, and no other launch carries it. On Claude Code the inner command is the one
+// `internal/runtime/tmux`'s own launcher builds (claudeLauncher.Launch). That launch makes the
+// claim's Claude Code directory, writes its MCP configuration and starts or continues its
+// session. The inner command's words are already quoted for a pane's shell. So it is spliced after
+// the shim's `--` unquoted, and the whole is run by `sh -c`, as shimShellCommand splices it into a
+// pane's command. Launch's pairs are tmux's `-e NAME=VALUE` form, which this runtime has no tmux
+// for. Each value is a pair of the child's own environment, after the ones a pane is told, as tmux
+// puts them after the operator's.
 func (r *localRuntime) agentCommand(spec runtime.SpawnSpec, bootToken runtime.SecretFile, promptFile string) (argv, pairs []string, err error) {
 	if r.standsIn != nil && r.standsIn(spec.Claim) {
 		return slices.Clone(standInCommand), nil, nil
@@ -475,8 +473,9 @@ func (r *localRuntime) agentCommand(spec runtime.SpawnSpec, bootToken runtime.Se
 		}
 		if spec.ResumeSessionFile != "" {
 			argv = slices.Insert(argv, len(argv)-4, "--resume="+spec.ResumeSessionFile)
+			pairs = []string{runtime.SessionExclusiveVariable + "=" + runtime.SessionExclusiveValue}
 		}
-		return argv, nil, nil
+		return argv, pairs, nil
 	}
 	if r.claude.Binary == "" {
 		return nil, nil, fmt.Errorf("spawn %s: its role runs on claude, and this proof gave the runtime no Claude Code launch", spec.Claim)

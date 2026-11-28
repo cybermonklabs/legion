@@ -358,6 +358,25 @@ describe("step-models-check.sh", () => {
     expect(run.code).toBe(2);
   });
 
+  test("a usage error exits 2, with the usage on stderr and both verdicts", () => {
+    for (const [args, reason] of [
+      [
+        ["--issue", A, "--daemon-log", daemonLog],
+        "it needs at least one --issue, a --daemon-log and an --agents",
+      ],
+      [["--issue", A, "--issue", A], `--issue ${A} is given twice`],
+      [["--issue", "legion-1"], "--issue takes the key of one issue, such as LEGION-1"],
+    ] as const) {
+      const run = readOf({}, [...args], 0, path);
+      expect(run.stderr).toBe(
+        "usage: scripts/e2e/step-models-check.sh --issue <KEY> [--issue <KEY> …] --daemon-log <file> --agents <file> [--lower-one]\n"
+      );
+      expect(run.stdout).toBe(`UNKNOWN: ${reason}\nc-real: UNKNOWN\nlive-at-both-reads: UNKNOWN\n`);
+      expect(run.code).toBe(2);
+      expect(run.calls).toBe("");
+    }
+  });
+
   test("c-real takes no step that another fact ended", () => {
     const run = check({ [A]: [A6] }, agentsFile("implementer"));
     expect(run.stdout).toContain("GAP: harness omp: saw no step that its agent ended");
@@ -544,12 +563,12 @@ describe("step-models-check.sh", () => {
       });
       return `${result.text}\n`;
     };
-    expect(await rendered({ issue: A, tasks: [{ task: "default", needs: null, steps: records }] })).toBe(
-      readFileSync(join(data, "printed-steps-16.txt"), "utf8")
-    );
-    expect(await rendered({ issue: B, tasks: [{ task: "default", needs: null, steps: recordsB }] })).toBe(
-      readFileSync(join(data, "printed-steps-16-b.txt"), "utf8")
-    );
+    expect(
+      await rendered({ issue: A, tasks: [{ task: "default", needs: null, steps: records }] })
+    ).toBe(readFileSync(join(data, "printed-steps-16.txt"), "utf8"));
+    expect(
+      await rendered({ issue: B, tasks: [{ task: "default", needs: null, steps: recordsB }] })
+    ).toBe(readFileSync(join(data, "printed-steps-16-b.txt"), "utf8"));
   });
 
   test("two issues each answer their own records", () => {

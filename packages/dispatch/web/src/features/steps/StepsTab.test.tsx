@@ -111,7 +111,7 @@ test("the Steps tab names each run's last model, its set model and the models th
     tasks: [
       {
         steps: [
-          record({ id: "main-fields", model: "X" }),
+          record({ id: "last-model-only", model: "X" }),
           record({ ended_at: null, id: "running", model: "", result: "" }),
           record({ attempt: 2, id: "no-counts", model: "A", set_model: "A" }),
           record({

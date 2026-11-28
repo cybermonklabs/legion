@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The comparison, after the release, of the step records of one or more issues with their agents'
 # transcripts. It also reads the daemon's log lines of the reads each record used. It runs the
-# check c-real word for word. Beside it, it runs live-at-both-reads, which is not c-real.
+# check c-real. Beside it, it runs live-at-both-reads, which is not c-real.
 #
 #   scripts/e2e/step-models-check.sh --issue <KEY> [--issue <KEY> …] --daemon-log <file> \
 #     --agents <file> [--lower-one]
@@ -20,16 +20,17 @@
 # known, at least 1, and equal to the transcript's responses between the two reads, with the
 # completion's response. No record may name a model its transcript does not hold.
 # live-at-both-reads holds a step that another fact ended to the same four things. --lower-one
-# lowers the first count of each taken step by 1, the negative control. Both verdicts then FAIL.
+# lowers the first count of each taken step by 1, the negative control. Each verdict whose
+# comparison took a step then FAILs. A comparison that took none still prints UNKNOWN.
 #
 # Its last two lines are `c-real: PASS|FAIL|UNKNOWN` and `live-at-both-reads: PASS|FAIL|UNKNOWN`.
 # It exits with the c-real verdict's code: 0, 1 or 2. It answers UNKNOWN, exit 2, for a harness
 # with no step to take. It answers UNKNOWN too when it could read nothing to judge. That is a
 # failed command, a line of other than 16 words, or a log with no read line. So does a log line
-# that holds the read line's message and is no JSON, and a record whose agent the agents file
-# lacks. The line `Experiment <experiment>: variant <variant>.` is no run, and is read only right
-# after the header, as step-records-read.sh reads it. A usage error is exit 2 too, with the usage
-# on stderr.
+# that holds the read line's message and is no JSON, and a record that names a set, answering or
+# last model whose agent the agents file lacks. The line
+# `Experiment <experiment>: variant <variant>.` is no run, and is read only right after the
+# header, as step-records-read.sh reads it. A usage error is exit 2 too, with the usage on stderr.
 #
 # It runs where the operator runs `dispatch` by hand, with the operator's own credential. That is
 # the `dispatch` command on PATH (packages/envoy-client's bin), and the session the shell names
@@ -64,7 +65,7 @@ while [ "$#" -gt 0 ]; do
   case $1 in
     --issue)
       [ "$#" -ge 2 ] && [[ $2 =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || refuse_usage "--issue takes the key of one issue, such as LEGION-1"
-      for seen in "${issues[@]}"; do
+      for seen in ${issues[@]+"${issues[@]}"}; do
         [ "$seen" != "$2" ] || refuse_usage "--issue $2 is given twice"
       done
       issues+=("$2")
@@ -99,7 +100,7 @@ done
 # The comparison prints both verdicts last, and exits 0, 1 or 2. Any other end is a comparison
 # that judged nothing.
 code=0
-judged=$(bun "$here/lib/step-models-check.ts" "${steps[@]}" --daemon-log "$daemon_log" --agents "$agents" "${lower_one[@]}") || code=$?
+judged=$(bun "$here/lib/step-models-check.ts" "${steps[@]}" --daemon-log "$daemon_log" --agents "$agents" ${lower_one[@]+"${lower_one[@]}"}) || code=$?
 printf '%s\n' "$judged"
 case $code:${judged##*$'\n'} in
   [012]:"live-at-both-reads: "*) exit "$code" ;;

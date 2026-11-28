@@ -193,7 +193,7 @@ func (r *ownerStepsRig) waitLingerEnded(generation uint64) {
 // that write (personMoves). The daemon's consumer reads it as it reads any issue event.
 func (r *ownerStepsRig) todoAgain() {
 	r.t.Helper()
-	r.personMoves("todo", "issue.updated", r.title())
+	r.personMoves("todo", "issue.updated")
 }
 
 // waitStands waits for issue to stand in want at generation.

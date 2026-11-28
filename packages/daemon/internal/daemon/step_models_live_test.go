@@ -41,6 +41,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -163,7 +164,7 @@ type stepModelsStandin struct {
 	*modelStandin
 
 	token   claim.Token
-	harness string
+	harness runtime.Backend
 	// served is the model id every answer of this stand-in names, and asked the one a turn of its
 	// pane asks for. They are one model everywhere in the chain. Only the capture that measures
 	// what a transcript holds of a model that never answered serves another.
@@ -193,7 +194,7 @@ type stepModelsStandin struct {
 
 // newStepModelsStandin serves one pane's endpoint under name. For an Oh My Pi implementer, name is
 // also the provider half of its model (standinModel). For a Claude Code pane it is a label alone.
-func newStepModelsStandin(t *testing.T, name, harness, served, asked, marker string, token claim.Token, steps []stepModelsStep,
+func newStepModelsStandin(t *testing.T, name string, harness runtime.Backend, served, asked, marker string, token claim.Token, steps []stepModelsStep,
 	events chan<- stepModelsEvent, stopped <-chan struct{},
 ) *stepModelsStandin {
 	t.Helper()
@@ -218,7 +219,7 @@ var (
 // its names, it is the stand-in's own first name for it.
 func (s *stepModelsStandin) toolName(offered []string, place int) string {
 	names := ompTools[place]
-	if s.harness == "claude" {
+	if s.harness == runtime.BackendClaude {
 		names = claudeTools[place]
 	}
 	for _, name := range names {
@@ -253,7 +254,7 @@ func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 	turn := readStepModelsTurn([]byte(body))
 	served := servedResponse{Claim: string(s.token), Asked: turn.model, Model: s.served, Turn: turn.shape}
 	served.Subagent = strings.Contains(turn.system, deepWorkerSystemLine)
-	if s.harness == "claude" {
+	if s.harness == runtime.BackendClaude {
 		served.Subagent = strings.Contains(turn.firstUser, stepModelsSubagentMarker)
 	}
 	// Every turn of a session offers the session's tools. A request that offers none is the
@@ -366,13 +367,11 @@ func (s *stepModelsStandin) answerAt(offered []string, script stepModelsStep, pl
 // input is a tool call's input as the harness takes it. On Oh My Pi it carries the one-line intent
 // every tool of it requires (busy_relaunch_live_test.go, callTool).
 func (s *stepModelsStandin) input(input map[string]any) map[string]any {
-	if s.harness == "claude" {
+	if s.harness == runtime.BackendClaude {
 		return input
 	}
 	called := map[string]any{"i": "Running the chain's step"}
-	for key, value := range input {
-		called[key] = value
-	}
+	maps.Copy(called, input)
 	return called
 }
 
@@ -381,7 +380,7 @@ func (s *stepModelsStandin) input(input map[string]any) map[string]any {
 // (deepWorkerSystemLine). On Claude Code it is a `Task` of the general-purpose agent. Its prompt
 // carries the marker this stand-in finds in the subagent's own first user message.
 func (s *stepModelsStandin) subagentInput() map[string]any {
-	if s.harness == "claude" {
+	if s.harness == runtime.BackendClaude {
 		return map[string]any{
 			"subagent_type": "general-purpose",
 			"description":   "Run the scratch check",
@@ -668,11 +667,6 @@ const (
 // developer's run leaves nothing behind.
 const stepModelsEvidenceEnv = "LEGION_E2E_STEP_MODELS_EVIDENCE"
 
-// stepModelsReadLine is the daemon's line for each read a step's start or end used. The
-// comparator joins it to each printed record, and checks 2 to 5 read the step's two read times
-// from it.
-const stepModelsReadLine = "workflow: a step used a read of its agent's calls"
-
 // The endedBy of a step's end line: its own agent's completion, and the owner's stop of its task.
 const (
 	stepModelsEndedByAgent = "agent"
@@ -733,7 +727,7 @@ type stepModelsIssue struct {
 }
 
 // stepModelsLive is the run: the daemon booted over the local runtime and the real Dispatch this
-// branch builds. It holds two issues whose implementers are real Oh My Pi panes and whose testers
+// checkout builds. It holds two issues whose implementers are real Oh My Pi panes and whose testers
 // are real Claude Code panes. It also holds the evidence the job uploads.
 type stepModelsLive struct {
 	liveAgentProof
@@ -745,8 +739,9 @@ type stepModelsLive struct {
 	githubAPI string
 	// root is the checkout this driver was built from, and work the run's own temporary directory.
 	// home and profile are the Oh My Pi home and profile every pane runs under. cliHome is the home
-	// of the person's `dispatch`.
-	root, work, home, profile, cliHome string
+	// of the person's `dispatch`, and personsPath the PATH setting of the person's shell, which
+	// finds the `dispatch` that runs this checkout's CLI first.
+	root, work, home, profile, cliHome, personsPath string
 	// bun, claude and pluginDir are what a Claude Code pane runs. They are the bun its MCP server
 	// runs on, the pinned Claude Code, and the claude-envoy plugin this run built from the
 	// checkout.
@@ -884,7 +879,7 @@ func (r *stepModelsLive) token(key string, role claim.Role) claim.Token {
 // is the one model an implementer's overlay names, or a tester's ANTHROPIC_MODEL under the provider
 // name Claude Code's models carry.
 func (r *stepModelsLive) setModelOf(pane *stepModelsStandin) string {
-	if pane.harness == "claude" {
+	if pane.harness == runtime.BackendClaude {
 		return stepModelsClaudeSetModel
 	}
 	return standinModel(pane.name)
@@ -971,6 +966,7 @@ func newStepModelsLive(t *testing.T) *stepModelsLive {
 	if err := os.MkdirAll(r.cliHome, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	r.personsPath = personsDispatchPATH(t, r.root, r.cliHome)
 	r.evidence = os.Getenv(stepModelsEvidenceEnv)
 	if r.evidence == "" {
 		r.evidence = filepath.Join(r.work, "step-models-evidence")
@@ -1118,9 +1114,9 @@ func (r *stepModelsLive) serveStandins() {
 		script := scripts[issue.name]
 		lower := strings.ToLower(issue.name)
 		implementer := "smimplementer" + lower
-		r.panes[issue.implementer] = newStepModelsStandin(t, implementer, "omp", implementer+standinModelID, implementer+standinModelID,
+		r.panes[issue.implementer] = newStepModelsStandin(t, implementer, runtime.BackendOmp, implementer+standinModelID, implementer+standinModelID,
 			"Phase: "+string(phase.Implementing)+".", issue.implementer, script[0], r.events, r.done)
-		r.panes[issue.tester] = newStepModelsStandin(t, "smtester"+lower, "claude", stepModelsClaudeModel, stepModelsClaudeModel,
+		r.panes[issue.tester] = newStepModelsStandin(t, "smtester"+lower, runtime.BackendClaude, stepModelsClaudeModel, stepModelsClaudeModel,
 			"Phase: "+string(phase.Testing)+".", issue.tester, script[1], r.events, r.done)
 	}
 	r.spare = newPaneStandin(t, stepModelsSpareProvider)
@@ -1225,13 +1221,13 @@ func (r *stepModelsLive) startRuntime() {
 		if overlays, driven := r.overlays[token]; driven {
 			return overlays
 		}
-		if pane, driven := r.panes[token]; driven && pane.harness == "claude" {
+		if pane, driven := r.panes[token]; driven && pane.harness == runtime.BackendClaude {
 			return nil
 		}
 		return r.spareOverlays
 	}
 	r.rt.claimEnvironment = func(token claim.Token) []string {
-		if pane, driven := r.panes[token]; driven && pane.harness == "claude" {
+		if pane, driven := r.panes[token]; driven && pane.harness == runtime.BackendClaude {
 			return claudeStandinEnvironment(pane.url)
 		}
 		return nil
@@ -1385,14 +1381,14 @@ func (r *stepModelsLive) seed() {
 }
 
 // boot starts the whole daemon over the local runtime. Its one log goes twice. It goes as text
-// where the base's live proofs write theirs (liveProof.log, which LEGION_E2E_DAEMON_LOG names). It
-// also goes as JSON into daemon.jsonl of the evidence, the log the comparator reads, as
+// where the package's other live proofs write theirs (liveProof.log, which LEGION_E2E_DAEMON_LOG
+// names). It also goes as JSON into daemon.jsonl of the evidence, the log the comparator reads, as
 // `legion start` writes its log (cmd/legion's start).
 func (r *stepModelsLive) boot() {
 	t := r.t
 	t.Helper()
 	jsonLog := slog.NewJSONHandler(evidenceFile(t, r.evidenceFileAt("daemon.jsonl")), &slog.HandlerOptions{Level: slog.LevelDebug})
-	r.daemon = newRecordingLog(slog.New(stepModelsLogs{r.log().Handler(), jsonLog}))
+	r.daemon = newRecordingLog(slog.New(slog.NewMultiHandler(r.log().Handler(), jsonLog)))
 	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.note("Dispatch %s (database of its own), project %s with default repository %s, issues %s and %s; daemon at dispatch_url %s",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.issues[0].key, r.issues[1].key, r.cfg.DispatchURL)
@@ -1411,39 +1407,6 @@ func (r *stepModelsLive) overrides() overrides {
 	return o
 }
 
-// stepModelsLogs is one log written to each of its handlers.
-type stepModelsLogs []slog.Handler
-
-func (h stepModelsLogs) Enabled(ctx context.Context, level slog.Level) bool {
-	return slices.ContainsFunc(h, func(handler slog.Handler) bool { return handler.Enabled(ctx, level) })
-}
-
-func (h stepModelsLogs) Handle(ctx context.Context, entry slog.Record) error {
-	var failed []error
-	for _, handler := range h {
-		if handler.Enabled(ctx, entry.Level) {
-			failed = append(failed, handler.Handle(ctx, entry.Clone()))
-		}
-	}
-	return errors.Join(failed...)
-}
-
-func (h stepModelsLogs) WithAttrs(attrs []slog.Attr) slog.Handler {
-	derived := make(stepModelsLogs, len(h))
-	for i, handler := range h {
-		derived[i] = handler.WithAttrs(attrs)
-	}
-	return derived
-}
-
-func (h stepModelsLogs) WithGroup(name string) slog.Handler {
-	derived := make(stepModelsLogs, len(h))
-	for i, handler := range h {
-		derived[i] = handler.WithGroup(name)
-	}
-	return derived
-}
-
 // ---- the architects: the driver's own sessions on the worker stream -------------------------------
 
 // stepModelsArchitect is one issue's architect, the driver's own session on the worker stream. It
@@ -1456,7 +1419,6 @@ func (h stepModelsLogs) WithGroup(name string) slog.Handler {
 // reads a turn of an architect's task that nothing ended as the issue's working copy in use. The
 // issue's next phase would wait on it. No check reads its record.
 type stepModelsArchitect struct {
-	issue           *stepModelsIssue
 	session, secret string
 	sh              *shim
 }
@@ -1476,7 +1438,7 @@ func (r *stepModelsLive) meetArchitect(issue *stepModelsIssue) *stepModelsArchit
 		spec = launches[len(launches)-1]
 		return true
 	})
-	a := &stepModelsArchitect{issue: issue, session: "ses_architect_" + strings.ToLower(issue.name) + "_" + randomSuffix(t)[:6]}
+	a := &stepModelsArchitect{session: "ses_architect_" + strings.ToLower(issue.name) + "_" + randomSuffix(t)[:6]}
 	// A session file that exists, so a relaunch that resumes it is not refused for a missing one.
 	sessionFile := filepath.Join(r.work, "architect-sessions", a.session+".jsonl")
 	if err := os.MkdirAll(filepath.Dir(sessionFile), 0o700); err != nil {
@@ -1607,8 +1569,8 @@ func (r *stepModelsLive) givePlan(issue *stepModelsIssue) {
 func (r *stepModelsLive) openGate(issue *stepModelsIssue) {
 	r.t.Helper()
 	r.dispatch.user(http.MethodPost, "/api/v1/artifacts/"+issue.spec+"/reviews", map[string]any{"state": "approved"}, http.StatusCreated, nil)
-	status, body := r.d.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
-		"grantId": r.architectGrant(issue), "issue": issue.key, "artifactId": issue.spec, "version": 1}, false)
+	status, body := r.d.request(http.MethodPost, "/legion/v1/gates/register", api.GateRegisterRequest{
+		GrantID: r.architectGrant(issue), Issue: issue.key, ArtifactID: issue.spec, Version: 1}, false)
 	if status != http.StatusOK {
 		r.fails("the gate's registration", "register_gate of %s = %d %s, want 200", issue.key, status, body)
 	}
@@ -1784,9 +1746,9 @@ func (r *stepModelsLive) keepEvidence() {
 // transcript and the model the run's settings gave its role. A relative path names the transcript
 // from the file's own directory.
 type stepModelsAgent struct {
-	Harness    string `json:"harness"`
-	Transcript string `json:"transcript"`
-	SetModel   string `json:"setModel"`
+	Harness    runtime.Backend `json:"harness"`
+	Transcript string          `json:"transcript"`
+	SetModel   string          `json:"setModel"`
 }
 
 // copyEvidenceFile copies the file at from to to, 0600.
@@ -1835,10 +1797,7 @@ func (r *stepModelsLive) claudePaneRegisters() {
 // out each subagent's response. The stand-in's own list is the oracle, not the transcript.
 func (r *stepModelsLive) recordHolds(issueName string, role claim.Role, attempt int, endedBy string) {
 	issue := r.issueNamed(issueName)
-	token := issue.implementer
-	if role == claim.RoleTester {
-		token = issue.tester
-	}
+	token := r.token(issue.key, role)
 	pane := r.panes[token]
 	model := r.setModelOf(pane)
 	if issue.lines == nil {
@@ -1884,7 +1843,7 @@ func stepModelsLineOf(lines []stepLine, role claim.Role, attempt int) (stepLine,
 	return stepLine{}, false
 }
 
-// stepModelsRead is one line of the daemon's JSON log for a read a step used (stepModelsReadLine),
+// stepModelsRead is one line of the daemon's JSON log for a read a step used (usedReadMessage),
 // by the keys the comparator reads.
 type stepModelsRead struct {
 	Msg        string    `json:"msg"`
@@ -1929,13 +1888,13 @@ func (r *stepModelsLive) readsOf(issue *stepModelsIssue, line stepLine) (start, 
 	}
 	if len(starts) != 1 || len(ends) != 1 {
 		return start, end, fmt.Errorf("the daemon's log holds %d start and %d end lines %q of %s's record %q, want one of each",
-			len(starts), len(ends), stepModelsReadLine, issue.key, line.text)
+			len(starts), len(ends), usedReadMessage, issue.key, line.text)
 	}
 	return starts[0], ends[0], nil
 }
 
 // readStepModelsReads is every line of the daemon's JSON log at path whose message is
-// stepModelsReadLine. A log with none answers an error: a check that read no line has read
+// usedReadMessage. A log with none answers an error: a check that read no line has read
 // nothing.
 func readStepModelsReads(path string) ([]stepModelsRead, error) {
 	lines, err := readStepModelsJSONLines(path)
@@ -1945,12 +1904,12 @@ func readStepModelsReads(path string) ([]stepModelsRead, error) {
 	var reads []stepModelsRead
 	for _, raw := range lines {
 		var read stepModelsRead
-		if json.Unmarshal(raw.text, &read) == nil && read.Msg == stepModelsReadLine {
+		if json.Unmarshal(raw.text, &read) == nil && read.Msg == usedReadMessage {
 			reads = append(reads, read)
 		}
 	}
 	if len(reads) == 0 {
-		return nil, fmt.Errorf("the daemon's log %s holds no line %q among its %d lines", path, stepModelsReadLine, len(lines))
+		return nil, fmt.Errorf("the daemon's log %s holds no line %q among its %d lines", path, usedReadMessage, len(lines))
 	}
 	return reads, nil
 }
@@ -1991,29 +1950,18 @@ type stepModelsCompared struct {
 // compare runs scripts/e2e/step-models-check.sh over both issues, the daemon's JSON log and the
 // agents file agents, with extra after them, in the person's shell. The `dispatch` on its PATH
 // runs this checkout's CLI under bun as the person, as the installed command does
-// (plan_ratings_live_test.go, readScript).
+// (personsDispatchPATH, which the run's setup called once).
 func (r *stepModelsLive) compare(agents string, extra ...string) stepModelsCompared {
 	r.t.Helper()
 	if !r.chained {
 		r.fails("the chain", "the chain's turns did not reach both stops and each issue's records, so there is nothing to compare")
-	}
-	cli := dispatchCLI(r.root)
-	if strings.Contains(cli, "'") {
-		r.fails("the dispatch command", "the checkout's path %s holds a quotation mark the dispatch wrapper cannot quote", r.root)
-	}
-	bin := filepath.Join(r.cliHome, "bin")
-	if err := os.MkdirAll(bin, 0o700); err != nil {
-		r.t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun '"+cli+"' \"$@\"\n"), 0o700); err != nil {
-		r.t.Fatalf("write the dispatch command of the person's shell: %v", err)
 	}
 	args := []string{filepath.Join(r.root, "scripts", "e2e", "step-models-check.sh")}
 	for _, issue := range r.issues {
 		args = append(args, "--issue", issue.key)
 	}
 	args = append(args, "--daemon-log", r.evidenceFileAt("daemon.jsonl"), "--agents", agents)
-	out, code := r.personsShell().run([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")}, "bash", append(args, extra...)...)
+	out, code := r.personsShell().run([]string{r.personsPath}, "bash", append(args, extra...)...)
 	return stepModelsCompared{out: string(out.stdout) + string(out.stderr), code: code}
 }
 
@@ -2046,10 +1994,7 @@ func (r *stepModelsLive) liveAtBothReadsVerdict() {
 		attempt int
 	}{{"A", claim.RoleImplementer, 3}, {"B", claim.RoleTester, 2}} {
 		issue := r.issueNamed(stopped.issue)
-		token := issue.implementer
-		if stopped.role == claim.RoleTester {
-			token = issue.tester
-		}
+		token := r.token(issue.key, stopped.role)
 		line, found := stepModelsLineOf(issue.lines, stopped.role, stopped.attempt)
 		if !found {
 			r.fails("the stopped step", "`dispatch steps --issue %s` holds no record of the %s's attempt %d", issue.key, stopped.role, stopped.attempt)
@@ -2193,7 +2138,7 @@ func (r *stepModelsLive) captureClaude(name, served string) *stepModelsCapture {
 			t.Fatal(err)
 		}
 	}
-	standin := newStepModelsStandin(t, name, "claude", served, stepModelsClaudeModel, stepModelsCaptureMarker,
+	standin := newStepModelsStandin(t, name, runtime.BackendClaude, served, stepModelsClaudeModel, stepModelsCaptureMarker,
 		claim.Token(name), []stepModelsStep{{}}, nil, r.done)
 	capture := &stepModelsCapture{name: name, stream: r.evidenceFileAt(name + "-stream.jsonl"), projects: r.evidenceFileAt(name + "-projects")}
 	stdout, err := os.Create(capture.stream)

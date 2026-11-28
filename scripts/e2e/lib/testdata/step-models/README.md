@@ -10,8 +10,8 @@ The clock was read with `date -u` at 2026-11-23T20:59:25Z before the first captu
 
 | File | Shape | Source | Command that captured it | What was changed |
 |---|---|---|---|---|
-| `omp-session-fallback.jsonl` | An Oh My Pi session file (version 3, written by Oh My Pi 18.18.6, the version of the pin `18.18.6-sami.20261122-091943` that `.omp-pin` named then. Main now pins `18.18.6-sami.20261123-024918`, and between the two tags no file of the RPC mode changed) | A session of a Legion worktree under `~/.omp/agent/sessions/`, file `2026-11-19T23-59-52-466Z_01a1f640-….jsonl`, sha256 `522743cfaacd2be7…`, 483 lines | `jq -c '<reduction>' <session file>` over lines 1 to 3 and 51 to 135. The filter keeps the `type` and `timestamp` of each entry. For `message` it keeps `message.role`, and for an assistant message also `provider`, `model` and `stopReason`. For `model_change` it keeps `model`, `role` and `resolvedModelIsFallback`. For `model_usage` it keeps `purpose`, `provider`, `model` and `stopReason`. For `session` it keeps `version`. | The two providers of a private model gateway are renamed `gateway-openai` and `gateway`. Every other value is as captured. The two old names are kept out of this repository. |
-| `printed-steps-main.txt` | `dispatch steps` as main prints it: a header and 12 words a line | The deployed Dispatch, one finished issue that Legion ran | `dispatch steps --issue <the issue>` | The issue's key and its claims are renamed with `sed` to `LEGION-3550`, `legion-legion-legion-3550-<role>` and `legion-legion-legion-455-architect`. The file's sha256 equals that pipeline's output (`68713666cb27cab1…`). The issue and the `sed` command are kept out of this repository. |
+| `omp-session-fallback.jsonl` | An Oh My Pi session file (version 3, written by Oh My Pi 18.18.6, the version of the pin `18.18.6-sami.20261122-091943` that `.omp-pin` named then) | A session of a Legion worktree under `~/.omp/agent/sessions/`, file `2026-11-19T23-59-52-466Z_01a1f640-….jsonl`, sha256 `522743cfaacd2be7…`, 483 lines | `jq -c '<reduction>' <session file>` over lines 1 to 3 and 51 to 135. The filter keeps the `type` and `timestamp` of each entry. For `message` it keeps `message.role`, and for an assistant message also `provider`, `model` and `stopReason`. For `model_change` it keeps `model`, `role` and `resolvedModelIsFallback`. For `model_usage` it keeps `purpose`, `provider`, `model` and `stopReason`. For `session` it keeps `version`. | The two providers of a private model gateway are renamed `gateway-openai` and `gateway`. Every other value is as captured. The two old names are kept out of this repository. |
+| `printed-steps-main.txt` | `dispatch steps` as the release before set models prints it: a header and 12 words a line | The deployed Dispatch, one finished issue that Legion ran | `dispatch steps --issue <the issue>` | The issue's key and its claims are renamed with `sed` to `LEGION-3550`, `legion-legion-legion-3550-<role>` and `legion-legion-legion-455-architect`. The file's sha256 equals that pipeline's output (`68713666cb27cab1…`). The issue and the `sed` command are kept out of this repository. |
 | `claude-stream-background-turn.jsonl` | Claude Code's `stream-json` output: an `init` line with the set model, and seven assistant lines of three responses | `packages/daemon/internal/claudebridge/testdata/background-turn.jsonl` at main `7cb1f229367`, a recorded Claude Code stream (`bridge_test.go`, the `replay <file>` mode). The command that recorded it is not in the repository. | `git show origin/main:packages/daemon/internal/claudebridge/testdata/background-turn.jsonl \| jq -c '<reduction>'`. The filter keeps the `type` of each line. For an assistant line it keeps `message.id`, `message.role`, `message.model`, `parent_tool_use_id` and `timestamp`. For an `init` line it keeps `subtype` and `model`. For a user line it keeps `parent_tool_use_id` and `timestamp`. For any other line it keeps `subtype`. | Nothing beyond the cut. |
 | `claude-stream-refusal-turn.jsonl` | The same shape, with a line whose model is `<synthetic>` | `packages/daemon/internal/claudebridge/testdata/refusal-turn.jsonl` at main `7cb1f229367`, recorded against a stand-in endpoint (its ids are `msg_standin` and `req_standin`) | The same command and filter, with `message.stop_reason` kept | Nothing beyond the cut. |
 | `daemon-log-envelope.jsonl` | The daemon's log: one JSON object a line, written by `slog.NewJSONHandler`, the handler `legion start` uses (`packages/daemon/cmd/legion/main.go`, `start`) | Lines 15 to 19 of the verbose output of a whole-daemon test, which printed the daemon's lines. The saved output is kept out of this repository. | `go test ./internal/daemon -run '^TestARestartedDaemonRelaunchesAPlanRolesAgentWhoseLaunchRanAnotherDefinition$' -v` in `packages/daemon`, at commit `cd8f8524f091a367cd537d7f8b138c11c0496d39` | The test's indentation is taken off. |
@@ -27,7 +27,7 @@ What the real files settle:
 
 ## Files made for the comparator: MADE
 
-Each file in this section is **made**, not captured. These shapes did not exist until the change was built. Each file uses the real values above. This copy in the repository keeps this section and these marks. The section "Files captured from the whole-chain test in CI" holds a real capture of each shape, and each made file stays a made case.
+Each file in this section is **made**, not captured. Each file uses the real values above. The section "Files captured from the whole-chain test in CI" holds a real capture of each shape, and each made file stays a made case.
 
 | File | Shape | How it was made | Where the real one comes from |
 |---|---|---|---|
@@ -42,11 +42,6 @@ Each file in this section is **made**, not captured. These shapes did not exist 
 | `claude-transcript-completion.jsonl` (**made**) | A Claude Code transcript's lines, cut to `type`, `message.id`, `message.role`, `message.model`, `message.content`, `isSidechain` and `timestamp` | `LEGION-3552`'s tester. Its first response has a text line and then a call line. Its third response has the call on its first line and text on its second. That call is to `mcp__legion__legion` with `handoff_complete`. | `claude-session-chain-A-tester.jsonl` and `claude-session-chain-B-tester.jsonl`, the transcripts of the whole chain's evidence. |
 
 The records of `printed-steps-16.txt` are other cases over one transcript, so some overlap in time. Each test row prints only the records it names.
-
-## Shapes with no real source on this box
-
-1. **The Claude Code session transcript** (`<CLAUDE_CONFIG_DIR>/projects/<dir>/<session>.jsonl`), which `c-real` names as the Claude Code input. This box holds no Claude Code transcript: `~/.claude/projects` does not exist. The repository's `packages/daemon/internal/runtime/tmux/testdata/claude-transcript.jsonl` is made by hand (its ids are `msg_01` and `aaaaaaaa-…`, its model `claude-test`), so it is no capture. The whole-chain test captured real ones in CI, which the next section names.
-2. **A Claude Code subagent's assistant line**, in either form. No capture on this box holds one. The whole-chain test captured both forms in CI. The bridge's `packages/daemon/internal/claudebridge/testdata/subagent-turn.jsonl` is now that capture's whole `stream-json` output.
 
 ## Files captured from the whole-chain test in CI
 
@@ -76,6 +71,8 @@ The test ran two issues of its own, A (`SM7DBA47-1`) and B (`SM7DBA47-2`). Then 
 | `capture-differ-served.json` | The same name: the stand-in's list of each response it served, with the model asked for and the model served | Copied as it is. Its `turn` field quotes the start of what each request sent. |
 
 The bridge's `subagent-turn.jsonl` is `capture-differ-stream.jsonl`, the attempt's stdout, copied whole.
+
+The Claude Code session transcript (`<CLAUDE_CONFIG_DIR>/projects/<dir>/<session>.jsonl`), which `c-real` names as the Claude Code input, and a Claude Code subagent's assistant line in either form come only from these captures. The repository's `packages/daemon/internal/runtime/tmux/testdata/claude-transcript.jsonl` is made by hand (its ids are `msg_01` and `aaaaaaaa-…`, its model `claude-test`), so it is no capture.
 
 The read lines were taken with jq 1.7:
 
@@ -132,7 +129,7 @@ What the captures settle:
 
 ## Which test row reads which file
 
-Each row is a test of `scripts/e2e/lib/step-models-check.test.ts`. Every row prints both verdict lines, `c-real: …` and `live-at-both-reads: …`, and exits with the `c-real` verdict's code. The fake `dispatch` answers each `--issue` with that issue's records. The names are these records:
+Each numbered row is a test of `scripts/e2e/lib/step-models-check.test.ts`. The row "Control of row 18" is no test: it says why row 18's input fails a join that leaves out the issue. Each numbered row but row 17 runs `step-models-check.sh`, which prints both verdict lines, `c-real: …` and `live-at-both-reads: …`, and exits with the `c-real` verdict's code. Row 17 runs only the printer, and prints no verdict. The fake `dispatch` answers each `--issue` with that issue's records. The names are these records:
 
 - A1 to A8: implementer attempts 1 to 8 of `LEGION-3550` (Oh My Pi, `omp-session-fallback.jsonl`). A1 to A5 end by their agent. A6 ends by `TaskStopped`. A7 and A8 have no read lines.
 - C1 to C3: tester attempts 1 to 3 of `LEGION-3550` (Claude Code). C1 and C3 read the background stream, C2 the refusal stream. C1 and C2 end by their agent, C3 by `TaskStopped`.
@@ -177,7 +174,16 @@ The last column answers one question for each row: does the row's input hold wha
 | 28. the step's completion call is the last one between its reads | D9 | `daemon-log-reads-completion.jsonl` | `LEGION-3552`'s implementer | exit 0, `c-real: PASS` with `gateway-openai/openai/gpt-6.1-sol=4`. Its `GAP:` line leaves out the response 0.050 s before the end read. | Yes. D9's second response calls `legion` with `handoff_complete` 5.000 s before the end read, and its fourth calls it again 0.050 s before it. Its third ends 3.000 s before the end read. |
 | 29. a call after the end read and after the claim's next read is no completion call | D10 | the same | the same | exit 2. D10's `GAP:` line says that no response holds the completion call, and names 0.080 s after its end read. | Yes. D10's third response calls `legion` with `handoff_complete` 0.080 s after its end read. The claim's next read comes 0.040 s after the end read, before that call. |
 
-Arithmetic each row rests on, read from the files with Python. It was checked again after the records A6 to A8, C3, C1b and C3b were added, and again after D1 to D10, T1 and S1. A gap counts every response of the agent's own conversation, error and synthetic ones too. At the end read of a step that its agent ended, the gaps leave out the response of its completion call.
+Six more tests of that file run `step-models-check.sh`, and each prints both verdict lines. They are in neither table:
+
+- a read line cut short exits 2, and takes no other step in its place: A2 and A1, with `daemon-log-reads.jsonl` cut in line 6, A2's end read, to its first 200 bytes. Exit 2, `UNKNOWN` names that line.
+- the line of the issue's experiment right after the header is no fault: A1 and A0 after `Experiment planning: variant b.`. Exit 0, row 1's `PASS`.
+- the same line anywhere but right after the header is no run: that line after A1, after A0, or twice. Exit 2, `UNKNOWN` names that line's 4 words.
+- the line of a task of the plan is no run: A1 and A0 after `task default needs []: …`, with and without the experiment line before it. Exit 0, row 1's `PASS`.
+- a dispatch steps that fails exits 2: A1, with the fake `dispatch` exiting 1. Exit 2, `UNKNOWN` names the command and its stderr.
+- a usage error exits 2: arguments the script refuses, so the fake `dispatch` is never called. Exit 2, the usage on stderr, and `UNKNOWN` names the refusal.
+
+Arithmetic each row rests on, read from the files with Python. A gap counts every response of the agent's own conversation, error and synthetic ones too. At the end read of a step that its agent ended, the gaps leave out the response of its completion call.
 
 - Between A1's two reads the implementer's transcript holds 4 responses of `gateway-openai/openai/gpt-6.1-sol` and 2 of `gateway/openai/gpt-6.1-sol`. It holds none between A2's reads, 2 and 1 between A3's, and 2 of `gateway-openai/openai/gpt-6.1-sol` between A6's.
 - The background stream holds 3 response ids between C1's reads and 2 between C1b's. It holds 1 between C3's reads and 1 between C3b's. The refusal stream holds 1 counted response between C2's.

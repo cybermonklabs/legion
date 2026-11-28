@@ -571,7 +571,7 @@ Each item below names a script, then what it proves.
 
 - `step-models-check.sh`
 
-  the check `c-real`, word for word: the step records of each issue, read with `dispatch steps`, against their agents' transcripts and the daemon's read lines.
+  the check `c-real`: the step records of each issue, read with `dispatch steps`, against their agents' transcripts and the daemon's read lines.
   For each harness it takes one step its agent ended, with both reads more than 2 s from any response.
   The end read leaves out the response of the step's completion call, which the count includes.
   That step's set model must be the settings', and its counts known, at least 1, and the transcript's between the reads.
@@ -5946,7 +5946,7 @@ Among its cases: a whole answer passes, an issue rated twice passes, an issue it
 scripts/e2e/step-models-check.sh --issue <KEY> [--issue <KEY> …] --daemon-log <file> --agents <file> [--lower-one]     # → "c-real: PASS", exit 0
 ```
 
-The check `c-real` after the release, word for word, and a second comparison beside it, `live-at-both-reads`.
+The check `c-real` after the release, and a second comparison beside it, `live-at-both-reads`.
 It runs `dispatch steps --issue <KEY>` once for each `--issue`, in the order given, and prints what each run printed.
 Then `bun` runs `lib/step-models-check.ts`, which joins each record to the daemon's log lines of its reads and judges it.
 It runs where the operator runs `dispatch` by hand, with the operator's own credential, as [`step-records-read.sh`](#step-records-readsh) does.
@@ -5967,7 +5967,8 @@ Each item below names an input, then what it means.
   A record names a model where its set model, an answering model or its last model is not `-`.
 
 - `--lower-one` lowers the first count of each taken step of both comparisons by 1, and keeps its set model.
-  It is the negative control of `c-real`: both verdicts must then be `FAIL`, exit 1.
+  It is the negative control of `c-real`: each verdict whose comparison took a step must then be `FAIL`, and a `c-real` of `FAIL` exits 1.
+  A comparison that took no step still prints `UNKNOWN`.
 
 Each item below names what it reads, then how.
 
@@ -6039,7 +6040,7 @@ Each item below names a comparison, then what it takes and judges.
 | 2 | `UNKNOWN: <reason>` or `c-real: UNKNOWN: took no step of harness <harness>`, then `c-real: UNKNOWN` | a harness took no step, or it could read nothing to judge |
 
 It could read nothing to judge where a command failed, a line has other than 16 words, or the log holds no read line.
-The same holds where a log line holds the read line's message and is no JSON, or where a record's agent has no transcript.
+The same holds where a log line holds the read line's message and is no JSON, or where a record that names a set, answering or last model has an agent that the agents file lacks.
 Each `PASS:` or `FAIL:` line of a taken step names its harness, so a pass shows each harness that it covered.
 Its last two lines are `c-real: <verdict>` and `live-at-both-reads: <verdict>`, on every exit.
 A usage error is exit 2 too, with the usage on stderr.
@@ -6048,7 +6049,7 @@ A run on real harnesses may show that `c-real` cannot be met as written.
 One case is a `c-real: UNKNOWN` because no step that its agent ended meets the 2 s rule.
 Another is a model sentence that fails on a model that the transcript's form cannot hold.
 The person who ran it then stops, and changes nothing in the comparator, the stand-ins or the steps to make it pass.
-They report the `GAP:` lines and the transcript entries they read, and only whoever approved the check may change it.
+They report the `GAP:` lines and the transcript entries they read, and only whoever approved the check may change the definition of `c-real` above.
 A reviewer's step that a GitHub review ends, and each merge step, never counts as ended by its agent.
 So a deployment that runs a harness only on reviewers or mergers prints `UNKNOWN` for that harness.
 

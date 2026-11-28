@@ -347,11 +347,11 @@ func fakeClaude() int {
 }
 
 // replay writes a recorded Claude Code stream line for line, holding its last line back until the
-// gate opens. The recordings are of the pinned Claude Code (2.1.310, the version
-// docker/claude-code/package-lock.json pins) in print mode: a line is what that binary wrote,
-// never written by hand. background-turn.jsonl and background-during-prompt.jsonl were recorded
-// against the provider; refusal-turn.jsonl, api-error-529.jsonl and api-error-429.jsonl against
-// a stand-in endpoint that answered one refusal, one 529 and one 429
+// gate opens. The recordings of Claude Code 2.1.310, the version
+// docker/claude-code/package-lock.json pins, are of print mode: each of their lines is what that
+// binary wrote, never written by hand. background-turn.jsonl and background-during-prompt.jsonl
+// were recorded against the provider; refusal-turn.jsonl, api-error-529.jsonl and
+// api-error-429.jsonl against a stand-in endpoint that answered one refusal, one 529 and one 429
 // (dispatch://INFRA-956/artifact/claude-code-2-1-310-refusal-measurement-tgz, whose
 // out-refusal.jsonl, out-e529.jsonl and out-e429.jsonl these are). A stream is one recording
 // trimmed to the lines a case needs, and commandBlockInTurn is the only one whose lines stand in

@@ -313,10 +313,10 @@ func failedStepsPrinted(issue string, got, want int) string {
 // merger the merge launches never registers, so the merge's counts are unknown (printedModels).
 func standInCounts(read stepRecordsRead) setModelCounts {
 	on, unknown := 0, 0
-	for _, record := range read.records() {
+	for _, step := range read.records() {
 		switch {
-		case record.Agent == "":
-		case record.Kind == "merge":
+		case step.Agent == "":
+		case step.Kind == "merge":
 			unknown++
 		default:
 			on++

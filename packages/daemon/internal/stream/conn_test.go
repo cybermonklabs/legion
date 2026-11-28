@@ -1058,13 +1058,7 @@ func TestWorkspaceWorkOfAnOlderShimIsARefusal(t *testing.T) {
 // hello sent, hello_ack read, and the Hello event consumed.
 func (h *harness) connectCounting() *peer {
 	h.t.Helper()
-	p := dial(h.t, h.listener.Addr())
-	p.send(shimwire.Hello2{BootToken: testToken, ModelTotals: true})
-	p.expect(shimwire.TypeHelloAck)
-	if event, ok := h.next().(Hello); !ok {
-		h.t.Fatalf("first event = %#v, want Hello", event)
-	}
-	return p
+	return h.connectWith(shimwire.Hello2{BootToken: testToken, ModelTotals: true})
 }
 
 // someTotals is what a shim counted by its fourth read: two models, and one call whose model name
@@ -1089,19 +1083,6 @@ func readModelTotals(ctx context.Context, conn *Conn) (<-chan error, *runtime.La
 		got, err = conn.ModelTotals(ctx)
 		return err
 	}), &got
-}
-
-// awaitReturn is what a call returned. The wait only ends a test that hangs, and failing says
-// what did not happen.
-func awaitReturn(t *testing.T, result <-chan error, failure string) error {
-	t.Helper()
-	select {
-	case err := <-result:
-		return err
-	case <-time.After(wait):
-		t.Fatal(failure)
-		return nil
-	}
 }
 
 // The shim counts its launch's calls by model. The daemon reads them with a round trip that the

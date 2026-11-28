@@ -293,8 +293,9 @@ describe("dispatch steps", () => {
     );
   });
 
-  // The five records the route's test writes and reads back. Each line keeps main's twelve words,
-  // and then names the set model, `-` for none, and the models that answered, by the record.
+  // The five records the route's test writes and reads back. Each line's first twelve words are
+  // the run's fields, and its last four name the set model, `-` for none, and the models that
+  // answered, by the record.
   test("the five records end in their set model and their answers", async () => {
     const records: readonly StepRecord[] = [
       // Only the fields a record held before the set model and the answers, and the model X.
@@ -331,7 +332,7 @@ describe("dispatch steps", () => {
         answers: [],
       },
     ];
-    const mainWords = [
+    const firstWords = [
       "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer X 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
       "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running",
       "default 2 step implementer implementation attempt 2 legion-leg-leg-1-implementer A 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
@@ -357,7 +358,7 @@ describe("dispatch steps", () => {
     for (const [index, line] of lines.entries()) {
       const words = line.split(" ");
       expect(words, line).toHaveLength(16);
-      expect(words.slice(0, 12).join(" "), line).toBe(mainWords[index]);
+      expect(words.slice(0, 12).join(" "), line).toBe(firstWords[index]);
       expect(words.slice(12).join(" "), line).toBe(ends[index]);
     }
     expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
