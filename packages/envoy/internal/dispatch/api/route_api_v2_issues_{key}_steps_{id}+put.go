@@ -10,10 +10,10 @@ var _ = declareRow(func(s *server) routeRow {
 	return routeRow{
 		Method: http.MethodPut, Pattern: "/issues/{key}/steps/{id}", Auth: authAny, Versions: onlyV2,
 		Description: "Write one run of one step of the issue's workflow {task?, step?, kind?, role?, type?, agent?, " +
-			"session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming " +
-			"its session in actor: the Legion daemon writes it at the run's start and at its end under one id, the " +
-			"uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is " +
-			"left, but returned_to, which only the write that sets the result sets, so a start and an end land in " +
+			"session?, model?, set_model?, answers?, generation?, started_at?, ended_at?, result?, returned_to?, " +
+			"report?}, a bearer naming its session in actor: the Legion daemon writes it at the run's start and at its " +
+			"end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and " +
+			"every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in " +
 			"either order; a field left out or null states nothing, and so does an empty text, while returned_to 0 " +
 			"names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. " +
 			"The actor must be session legion-daemon:<PROJECT> of the issue's project, or session legion-daemon:<P> of " +

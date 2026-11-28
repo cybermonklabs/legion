@@ -12,10 +12,10 @@ var _ = declareRow(func(s *server) routeRow {
 	return routeRow{
 		Method: http.MethodPut, Pattern: "/issues/{key}/steps/{id}/rating", Auth: authAny, Versions: onlyV2,
 		Description: fmt.Sprintf("Write the rating of a retro's run {rating, rating_reason, task?, step?, kind?, "+
-			"role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, "+
-			"report?}, a bearer naming its session in actor: rating, %d to %d, is how well the plan the issue ran "+
-			"fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and "+
-			"at most %d characters counted as Unicode code points. The Legion daemon writes it under the id of the "+
+			"role?, type?, agent?, session?, model?, set_model?, answers?, generation?, started_at?, ended_at?, "+
+			"result?, returned_to?, report?}, a bearer naming its session in actor: rating, %d to %d, is how well "+
+			"the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its "+
+			"reason, not blank and at most %d characters counted as Unicode code points. The Legion daemon writes it under the id of the "+
 			"retro's run, with the fields PUT /api/v2/issues/{key}/steps/{id} takes, which make the record where "+
 			"the retro's start and end have not landed yet; each field the record does not hold yet is set and "+
 			"every field it holds is left, but returned_to, which only the write that sets the result sets, so the "+

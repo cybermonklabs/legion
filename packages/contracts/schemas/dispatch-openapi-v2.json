@@ -13090,7 +13090,7 @@
     },
     "/api/v2/issues/{key}/step-tasks": {
       "get": {
-        "description": "The tasks of the issue's workflow and every run of their steps, one task an item: each {task, needs, planned?, steps}. The tasks of the issue's newest plan come first, in the plan's order, whether a step of them ran or not, with needs and planned as GET /api/v1/issues/{key}/steps describes them: needs the ids of the tasks of that plan the task needs ([] for a task that needs none, and null where the plan's node recorded none), and planned each step the plan gives it, {step, name, state}: its place from 1, its role or role:key, and where it stands among the records of the plan's own run of the issue (its generation) - not started where none of them is a run of it, running while its newest run there has no end, and that run's result once it has one. Then each other task with a run, in the order of its first run, with null needs and no planned. Each task's runs come in the order they ran, each {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too; an issue with no plan and no run reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+        "description": "The tasks of the issue's workflow and every run of their steps, one task an item: each {task, needs, planned?, steps}. The tasks of the issue's newest plan come first, in the plan's order, whether a step of them ran or not, with needs and planned as GET /api/v1/issues/{key}/steps describes them: needs the ids of the tasks of that plan the task needs ([] for a task that needs none, and null where the plan's node recorded none), and planned each step the plan gives it, {step, name, state}: its place from 1, its role or role:key, and where it stands among the records of the plan's own run of the issue (its generation) - not started where none of them is a run of it, running while its newest run there has no end, and that run's result once it has one. Then each other task with a run, in the order of its first run, with null needs and no planned. Each task's runs come in the order they ran, each {id, issue, task, step, kind, role, type, agent, session, model, set_model, answers, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too; an issue with no plan and no run reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
         "operationId": "getApiV2IssuesByKeyStepTasks",
         "parameters": [
           {
@@ -13204,7 +13204,7 @@
     },
     "/api/v2/issues/{key}/steps": {
       "get": {
-        "description": "Every run of every step of the issue's workflow, as the Legion daemon wrote them, task by task - the tasks of the issue's newest plan first, in the plan's order, then each other task with a run, in the order of its first run - and each task's runs in the order they ran: each {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. GET /api/v2/issues/{key}/step-tasks reads each task's needs and planned steps. A closed issue's read too; an issue no step ran on reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+        "description": "Every run of every step of the issue's workflow, as the Legion daemon wrote them, task by task - the tasks of the issue's newest plan first, in the plan's order, then each other task with a run, in the order of its first run - and each task's runs in the order they ran: each {id, issue, task, step, kind, role, type, agent, session, model, set_model, answers, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. GET /api/v2/issues/{key}/step-tasks reads each task's needs and planned steps. A closed issue's read too; an issue no step ran on reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
         "operationId": "getApiV2IssuesByKeySteps",
         "parameters": [
           {
@@ -13318,7 +13318,7 @@
     },
     "/api/v2/issues/{key}/steps/{id}": {
       "put": {
-        "description": "Write one run of one step of the issue's workflow {task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes a write too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none; a body every field of which the record holds as sent answers the record and writes nothing. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+        "description": "Write one run of one step of the issue's workflow {task?, step?, kind?, role?, type?, agent?, session?, model?, set_model?, answers?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes a write too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, set_model, answers, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none; a body every field of which the record holds as sent answers the record and writes nothing. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist.",
         "operationId": "putApiV2IssuesByKeyStepsById",
         "parameters": [
           {
@@ -13443,7 +13443,7 @@
     },
     "/api/v2/issues/{key}/steps/{id}/experiment": {
       "put": {
-        "description": "Write the experiment and the variant of a run's issue {experiment, variant, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: experiment is the experiment a draw put the issue in and variant the variant it drew there, each a name of 1 to 32 characters of a-z, 0-9 and -. The Legion daemon writes it under the id of the run, after the run's own write, with the fields PUT /api/v2/issues/{key}/steps/{id} takes, which make the record where the run's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the experiment and the variant are written once. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none; a body every field of which the record holds as sent answers the record and writes nothing. A body naming neither, one naming one alone, and a name outside its form are 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+        "description": "Write the experiment and the variant of a run's issue {experiment, variant, task?, step?, kind?, role?, type?, agent?, session?, model?, set_model?, answers?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: experiment is the experiment a draw put the issue in and variant the variant it drew there, each a name of 1 to 32 characters of a-z, 0-9 and -. The Legion daemon writes it under the id of the run, after the run's own write, with the fields PUT /api/v2/issues/{key}/steps/{id} takes, which make the record where the run's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the experiment and the variant are written once. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, set_model, answers, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none; a body every field of which the record holds as sent answers the record and writes nothing. A body naming neither, one naming one alone, and a name outside its form are 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist.",
         "operationId": "putApiV2IssuesByKeyStepsByIdExperiment",
         "parameters": [
           {
@@ -13568,7 +13568,7 @@
     },
     "/api/v2/issues/{key}/steps/{id}/rating": {
       "put": {
-        "description": "Write the rating of a retro's run {rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v2/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none; a body every field of which the record holds as sent answers the record and writes nothing. A rating or reason outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+        "description": "Write the rating of a retro's run {rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, set_model?, answers?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v2/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, set_model, answers, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none; a body every field of which the record holds as sent answers the record and writes nothing. A rating or reason outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist.",
         "operationId": "putApiV2IssuesByKeyStepsByIdRating",
         "parameters": [
           {
@@ -20111,7 +20111,7 @@
     },
     "/api/v2/projects/{key}/plans": {
       "get": {
-        "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within from and to on closed_at, RFC3339, from inclusive and to exclusive (400 INVALID_QUERY when from is not before to): each {issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps, needs}]}, needs null where the write recorded none, and the plan null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing, and a read-only token may call it. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within from and to on closed_at, RFC3339, from inclusive and to exclusive (400 INVALID_QUERY when from is not before to): each {issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant, set_model_steps}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps, needs}]}, needs null where the write recorded none, and the plan null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing, and a read-only token may call it. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist.",
         "operationId": "getApiV2ProjectsByKeyPlans",
         "parameters": [
           {
@@ -31706,6 +31706,9 @@
               "null"
             ]
           },
+          "set_model_steps": {
+            "$ref": "#/components/schemas/SetModelSteps"
+          },
           "started_at": {
             "format": "date-time",
             "type": [
@@ -31734,7 +31737,8 @@
           "duration_seconds",
           "failed_steps",
           "experiment",
-          "variant"
+          "variant",
+          "set_model_steps"
         ],
         "type": "object"
       },
@@ -41052,6 +41056,26 @@
         ],
         "type": "object"
       },
+      "SetModelSteps": {
+        "additionalProperties": false,
+        "properties": {
+          "off": {
+            "type": "integer"
+          },
+          "on": {
+            "type": "integer"
+          },
+          "unknown": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "on",
+          "off",
+          "unknown"
+        ],
+        "type": "object"
+      },
       "SignInRevokedV2": {
         "additionalProperties": false,
         "properties": {
@@ -41313,6 +41337,39 @@
         ],
         "type": "object"
       },
+      "StepAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "calls": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "calls"
+        ],
+        "type": "object"
+      },
+      "StepAnswerInput": {
+        "properties": {
+          "calls": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "calls"
+        ],
+        "type": "object"
+      },
       "StepExperimentInput": {
         "properties": {
           "actor": {
@@ -41329,6 +41386,15 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/StepAnswerInput"
+            },
+            "type": [
+              "null",
+              "array"
             ]
           },
           "ended_at": {
@@ -41404,6 +41470,12 @@
               "string"
             ]
           },
+          "set_model": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "started_at": {
             "format": "date-time",
             "type": [
@@ -41458,6 +41530,15 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/StepAnswerInput"
+            },
+            "type": [
+              "null",
+              "array"
             ]
           },
           "ended_at": {
@@ -41539,6 +41620,12 @@
               "string"
             ]
           },
+          "set_model": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "started_at": {
             "format": "date-time",
             "type": [
@@ -41576,6 +41663,15 @@
         "properties": {
           "agent": {
             "type": "string"
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/StepAnswer"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "attempt": {
             "type": "integer"
@@ -41653,6 +41749,9 @@
           "session": {
             "type": "string"
           },
+          "set_model": {
+            "type": "string"
+          },
           "started_at": {
             "format": "date-time",
             "type": [
@@ -41687,6 +41786,8 @@
           "agent",
           "session",
           "model",
+          "set_model",
+          "answers",
           "generation",
           "attempt",
           "started_at",
@@ -41717,6 +41818,15 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/StepAnswerInput"
+            },
+            "type": [
+              "null",
+              "array"
             ]
           },
           "ended_at": {
@@ -41781,6 +41891,12 @@
             ]
           },
           "session": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "set_model": {
             "type": [
               "null",
               "string"

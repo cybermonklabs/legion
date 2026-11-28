@@ -49,11 +49,11 @@ var resultMissingRefusal = apicode.Refusal{Condition: apicode.ResultMissing, Cod
 var stepMissingRefusal = apicode.Refusal{Condition: apicode.StepMissing, Code: apicode.StepNotFound}
 
 // stepRecordText is what every step route's description says of the record it answers.
-const stepRecordText = "{id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, " +
-	"started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, attempt its " +
-	"place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's " +
-	"alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each " +
-	"null where the run holds none"
+const stepRecordText = "{id, issue, task, step, kind, role, type, agent, session, model, set_model, answers, " +
+	"generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, " +
+	"variant}, attempt its place among the issue's runs of the same task, step and kind from 1, rating and " +
+	"rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the " +
+	"variant it drew there, each null where the run holds none"
 
 // The refusals of a parent or blocked_by write that would make a loop, which /api/v2 answers with
 // one code, 409 ISSUE_CYCLE, where /api/v1 answers PARENT_INPUT and DEPENDENCY_CYCLE (R7).
@@ -1300,7 +1300,9 @@ func (s *server) putIssueStepV2(w http.ResponseWriter, r *http.Request) {
 
 // stepHeld is the record stored in the body's own type, for the members sent states alone: a
 // member sent leaves out, or sends null or "", states nothing (stepRecordInput), and stands as
-// sent, and so does its actor, which is no field of the record.
+// sent, and so does its actor, which is no field of the record. answers sent, [] included, stands
+// as the record's answers, null where the record holds none, since [] states a run whose agent
+// made no call.
 func stepHeld(sent stepRecordInput, stored workflowstore.StepRead) stepRecordInput {
 	held := sent
 	text := func(member *string, value string) *string {
@@ -1316,6 +1318,7 @@ func stepHeld(sent stepRecordInput, stored workflowstore.StepRead) stepRecordInp
 	held.Agent = text(sent.Agent, stored.Agent)
 	held.Session = text(sent.Session, stored.Session)
 	held.Model = text(sent.Model, stored.Model)
+	held.SetModel = text(sent.SetModel, stored.SetModel)
 	held.Result = text(sent.Result, stored.Result)
 	held.Report = text(sent.Report, stored.Report)
 	if sent.Step != nil {
@@ -1332,6 +1335,16 @@ func stepHeld(sent stepRecordInput, stored workflowstore.StepRead) stepRecordInp
 	}
 	if sent.ReturnedTo != nil {
 		held.ReturnedTo = stored.ReturnedTo
+	}
+	if sent.Answers != nil {
+		held.Answers = nil
+		if stored.Answers != nil {
+			answers := make([]stepAnswerInput, len(*stored.Answers))
+			for index, answer := range *stored.Answers {
+				answers[index] = stepAnswerInput(answer)
+			}
+			held.Answers = &answers
+		}
 	}
 	return held
 }

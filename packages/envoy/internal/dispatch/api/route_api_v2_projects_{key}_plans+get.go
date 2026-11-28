@@ -12,7 +12,8 @@ var _ = declareRow(func(s *server) routeRow {
 		Description: "Each finished issue of the project, one whose status is done and whose closed_at is set, " +
 			"newest close first, its close within from and to on closed_at, RFC3339, from inclusive and to exclusive " +
 			"(400 INVALID_QUERY when from is not before to): each {issue, title, closed_at, plan, ratings, " +
-			"started_at, ended_at, duration_seconds, failed_steps, experiment, variant}. plan is the plan of the " +
+			"started_at, ended_at, duration_seconds, failed_steps, experiment, variant, set_model_steps}. plan is " +
+			"the plan of the " +
 			"issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, " +
 			"tasks: [{id, steps, needs}]}, needs null where the write recorded none, and the plan null for an issue " +
 			"with none; ratings is the rating of each of its retros, in the " +

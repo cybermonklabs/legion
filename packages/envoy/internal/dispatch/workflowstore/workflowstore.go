@@ -20,9 +20,10 @@
 // run with its attempt, which no write stores (IssueSteps), and the plan of its newest run
 // (NewestPlan); the read of a project (ProjectPlans) answers each of its finished issues with its
 // plan, its ratings, its time, its count of failed steps, and the experiment and the variant the
-// step records of its newest run name, nil where they name none. A run's write that appends a
-// tuple signals its issue on RunsChannel at its commit, and IssueRunsRevision counts the tuples of
-// an issue's runs, which each such commit raises.
+// step records of its newest run name, nil where they name none. That read also counts each
+// issue's runs against their set model. A run's write that appends a tuple signals its issue on
+// RunsChannel at its commit, and IssueRunsRevision counts the tuples of an issue's runs, which each
+// such commit raises.
 //
 // The vocabulary is the graph's node and tuple store's, which this tree does not hold yet, as
 // internal/dispatch/prioritystore's is: the rows copy into that store's tables column for column
@@ -94,7 +95,10 @@ const (
 // `attributes`. A retro's run alone also holds AttributeRating and AttributeRatingReason: the
 // rating, 1 to 5, the agent that did the retro gave the plan the issue ran, and its reason. A run of
 // an issue that a draw put in an experiment also holds AttributeExperiment and AttributeVariant:
-// the experiment and the variant drawn.
+// the experiment and the variant drawn. A run's end states AttributeSetModel, the model its role
+// set its agent to. It also states AttributeAnswers, each model that answered the agent during the
+// run with its count of calls. The answers' value tuple holds them as JSON text, as a plan's tasks
+// are held.
 const (
 	AttributeIssue        = "issue"
 	AttributeProject      = "project"
@@ -107,6 +111,8 @@ const (
 	AttributeAgent        = "agent"
 	AttributeSession      = "session"
 	AttributeModel        = "model"
+	AttributeSetModel     = "set_model"
+	AttributeAnswers      = "answers"
 	AttributeStartedAt    = "started_at"
 	AttributeEndedAt      = "ended_at"
 	AttributeResult       = "result"
@@ -160,14 +166,25 @@ var (
 // attribute `step`: from 1 for kind step, 0 for a retro and a merge; it is not named Step, which
 // StepRead's embedded Step would shadow. A text field the node does not hold reads "", Place 0,
 // and a time, ReturnedTo, Rating or Experiment nil; a ReturnedTo of 0 is place 0 (StepWrite).
+// Answers is nil where the node holds none, and an empty list is a run whose agent made no call.
 type Step struct {
-	ID, Issue, Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report string
-	Generation                                                                        int64
-	Place                                                                             int
-	ReturnedTo                                                                        *int
-	Rating                                                                            *StepRating
-	Experiment                                                                        *StepExperiment
-	StartedAt, EndedAt                                                                *time.Time
+	ID, Issue, Project, Task, Kind, Role, Type, Agent, Session, Model, SetModel, Result, Report string
+	Generation                                                                                  int64
+	Place                                                                                       int
+	ReturnedTo                                                                                  *int
+	Rating                                                                                      *StepRating
+	Experiment                                                                                  *StepExperiment
+	Answers                                                                                     *[]StepAnswer
+	StartedAt, EndedAt                                                                          *time.Time
+}
+
+// StepAnswer is one model that answered a run's agent, with its count of calls, 1 or more. Its
+// JSON names are the ones the node row holds. It has the fields of model.StepAnswer and of the
+// step write's body, which the routes convert between. So a field added to one alone fails the
+// build rather than being dropped.
+type StepAnswer struct {
+	Model string `json:"model"`
+	Calls int64  `json:"calls"`
 }
 
 // StepRating is the rating the agent that did a retro gave the plan its issue ran, 1 to 5, with
@@ -191,15 +208,17 @@ type StepExperiment struct {
 // leaves the model to a later write that knows it. ReturnedTo is the place a run returned its task
 // to, and 0 is a place: the retro's and the merge's, which a place alone does not tell apart.
 // Nothing moves back to the merge, the last phase, so a ReturnedTo of 0 is a return to the retro.
-// Only a retro takes a Rating. Any run takes an Experiment.
+// Only a retro takes a Rating. Any run takes an Experiment. Answers pointing to an empty list
+// states a run whose agent made no call, which a nil Answers does not: it states nothing.
 type StepWrite struct {
-	ID, Issue                                                              string
-	Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report *string
-	Generation                                                             *int64
-	Place, ReturnedTo                                                      *int
-	Rating                                                                 *StepRating
-	Experiment                                                             *StepExperiment
-	StartedAt, EndedAt                                                     *time.Time
+	ID, Issue                                                                        string
+	Project, Task, Kind, Role, Type, Agent, Session, Model, SetModel, Result, Report *string
+	Generation                                                                       *int64
+	Place, ReturnedTo                                                                *int
+	Rating                                                                           *StepRating
+	Experiment                                                                       *StepExperiment
+	Answers                                                                          *[]StepAnswer
+	StartedAt, EndedAt                                                               *time.Time
 }
 
 // StepRead is a run as the read of its issue answers it: its node, and its attempt, the place of
@@ -257,6 +276,7 @@ type PlanWrite struct {
 // where no retro rated it; the route answers that as []), the earliest start and the latest end its
 // runs hold (each nil where none holds one), its count of runs of kind step that failed, and the
 // experiment and the variant the records of its newest run name (nil where they name none).
+// SetModelSteps counts its runs that name an agent against their set model.
 type IssuePlan struct {
 	Issue, Title       string
 	ClosedAt           time.Time
@@ -265,6 +285,16 @@ type IssuePlan struct {
 	StartedAt, EndedAt *time.Time
 	FailedSteps        int
 	Experiment         *StepExperiment
+	SetModelSteps      SetModelSteps
+}
+
+// SetModelSteps counts the runs of one finished issue that name an agent, each run in one count.
+// On holds a run that names its set model, knows its answers and names no other model, an empty
+// list included. Off holds a run that names its set model, knows its answers and names another
+// model. Unknown holds every other run. It has the fields of model.SetModelSteps, which the route
+// converts it to. So a field added to one alone fails the build rather than being dropped.
+type SetModelSteps struct {
+	On, Off, Unknown int
 }
 
 // Rating is the rating of one retro: the rating and its reason, the id of the retro's run and the

@@ -25,13 +25,12 @@ import (
 // word of lowercase letters, digits and hyphens (roleRule), and so is the role a plan's step names
 // before its key. The agent, the session and the model are printable ASCII with no space, at most
 // 128 characters (contracts.StepAgentTextPattern), since `dispatch steps` joins a record's fields
-// with spaces. An experiment and its variant are a name the daemon's settings declare, under the
-// daemon's rule for those names.
+// with spaces. So are the set model and each model of the answers. An experiment and its variant
+// are a name the daemon's settings declare, under the daemon's rule for those names.
 var (
-	taskForm      = regexp.MustCompile(contracts.StepTaskPattern)
-	roleForm      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
-	agentTextForm = regexp.MustCompile(contracts.StepAgentTextPattern)
-	nameForm      = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+	taskForm = regexp.MustCompile(contracts.StepTaskPattern)
+	roleForm = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	nameForm = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 )
 
 // taskRule and roleRule are taskForm and roleForm as a refusal states them.
@@ -297,7 +296,8 @@ type attribute struct {
 // its canonical spelling with the fields it states, in one order whatever order they were given
 // in. A text field that is empty states nothing; a ReturnedTo of 0 is place 0 and states it; a
 // rating and its reason are stated together, of a retro, or neither is; an experiment and its
-// variant are stated together, or neither is.
+// variant are stated together, or neither is. An empty list of answers states a run whose agent
+// made no call.
 func (write StepWrite) attributes() (string, []attribute, error) {
 	parsed, err := uuid.Parse(write.ID)
 	if err != nil {
@@ -371,10 +371,17 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	for _, field := range []struct {
 		name  string
 		value *string
-	}{{AttributeAgent, write.Agent}, {AttributeSession, write.Session}, {AttributeModel, write.Model}} {
-		if value := text(field.name, field.value); value != "" && !agentTextForm.MatchString(value) {
+	}{{AttributeAgent, write.Agent}, {AttributeSession, write.Session}, {AttributeModel, write.Model}, {AttributeSetModel, write.SetModel}} {
+		if value := text(field.name, field.value); value != "" && !contracts.StepAgentTextHolds(value) {
 			return "", nil, refusal(ErrStepInput, "%s %q is not an agent's text: %s", field.name, value, contracts.StepAgentTextRule)
 		}
+	}
+	if write.Answers != nil {
+		answers, err := answersAttribute(*write.Answers)
+		if err != nil {
+			return "", nil, err
+		}
+		stated = append(stated, answers)
 	}
 	if err := moment(AttributeStartedAt, write.StartedAt); err != nil {
 		return "", nil, err
@@ -420,6 +427,45 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		return "", nil, err
 	}
 	return id, append(append(stated, rated...), drawn...), nil
+}
+
+// answersAttribute checks the models that answered a run's agent against the rules of a step
+// record's answers (contracts.CheckStepAnswers), and answers the attribute that holds them, in the
+// order the write gives them. A record names at most contracts.StepAnswersMax models, each in the
+// form of an agent's text, each once and with 1 call or more. Its value tuple holds the list as
+// JSON text, an empty list as [], which is a run whose agent made no call. A fault
+// contracts.CheckStepAnswers names that this Dispatch does not know is refused by its number.
+func answersAttribute(answers []StepAnswer) (attribute, error) {
+	fault, at := contracts.CheckStepAnswers(answers, func(answer StepAnswer) (string, int64) { return answer.Model, answer.Calls })
+	switch fault {
+	case contracts.StepAnswersHold:
+		// The answers keep every rule; their attribute follows the switch.
+	case contracts.StepAnswersTooMany:
+		return attribute{}, refusal(ErrStepInput, "%s holds %d entries, more than the %d a step record holds",
+			AttributeAnswers, len(answers), contracts.StepAnswersMax)
+	case contracts.StepAnswerModelForm:
+		return attribute{}, refusal(ErrStepInput, "%s entry %d names %q, which is not an agent's text: %s",
+			AttributeAnswers, at+1, answers[at].Model, contracts.StepAgentTextRule)
+	case contracts.StepAnswerNoCall:
+		return attribute{}, refusal(ErrStepInput, "%s entry %d (%s) has %d calls: a model that answered has 1 or more",
+			AttributeAnswers, at+1, answers[at].Model, answers[at].Calls)
+	case contracts.StepAnswerModelTwice:
+		return attribute{}, refusal(ErrStepInput, "%s names %s twice: each model is listed once with all its calls",
+			AttributeAnswers, answers[at].Model)
+	default:
+		return attribute{}, refusal(ErrStepInput, "%s breaks rule %d of a step record's answers, which this Dispatch does not know",
+			AttributeAnswers, fault)
+	}
+	// A pointer to a nil list states the empty list, as a pointer to an empty one does, and JSON
+	// writes a nil list as null.
+	if answers == nil {
+		answers = []StepAnswer{}
+	}
+	text, err := json.Marshal(answers)
+	if err != nil {
+		return attribute{}, fmt.Errorf("encode the answers: %w", err)
+	}
+	return attribute{AttributeAnswers, json.RawMessage(text), string(text)}, nil
 }
 
 // rating checks the rating a write states with its reason, the rating the agent that did a retro
@@ -562,28 +608,31 @@ func appendTuples(ctx context.Context, tx pgx.Tx, fromKind, fromID string, tuple
 	return nil
 }
 
-// stepAttributes is the node row's attributes as a step reads them.
+// stepAttributes is the node row's attributes as a step reads them. Answers is nil where the node
+// holds none, and points to an empty list where it holds [].
 type stepAttributes struct {
-	Issue        string     `json:"issue"`
-	Project      string     `json:"project"`
-	Generation   int64      `json:"generation"`
-	Task         string     `json:"task"`
-	Step         int        `json:"step"`
-	Kind         string     `json:"kind"`
-	Role         string     `json:"role"`
-	Type         string     `json:"type"`
-	Agent        string     `json:"agent"`
-	Session      string     `json:"session"`
-	Model        string     `json:"model"`
-	StartedAt    *time.Time `json:"started_at"`
-	EndedAt      *time.Time `json:"ended_at"`
-	Result       string     `json:"result"`
-	ReturnedTo   *int       `json:"returned_to"`
-	Report       string     `json:"report"`
-	Rating       int        `json:"rating"`
-	RatingReason string     `json:"rating_reason"`
-	Experiment   string     `json:"experiment"`
-	Variant      string     `json:"variant"`
+	Issue        string        `json:"issue"`
+	Project      string        `json:"project"`
+	Generation   int64         `json:"generation"`
+	Task         string        `json:"task"`
+	Step         int           `json:"step"`
+	Kind         string        `json:"kind"`
+	Role         string        `json:"role"`
+	Type         string        `json:"type"`
+	Agent        string        `json:"agent"`
+	Session      string        `json:"session"`
+	Model        string        `json:"model"`
+	SetModel     string        `json:"set_model"`
+	Answers      *[]StepAnswer `json:"answers"`
+	StartedAt    *time.Time    `json:"started_at"`
+	EndedAt      *time.Time    `json:"ended_at"`
+	Result       string        `json:"result"`
+	ReturnedTo   *int          `json:"returned_to"`
+	Report       string        `json:"report"`
+	Rating       int           `json:"rating"`
+	RatingReason string        `json:"rating_reason"`
+	Experiment   string        `json:"experiment"`
+	Variant      string        `json:"variant"`
 }
 
 // stepFrom reads one node row's attributes as the step they hold. A rating of 0 is a run that
@@ -598,8 +647,9 @@ func stepFrom(id string, attributes []byte) (Step, error) {
 	step := Step{
 		ID: id, Issue: held.Issue, Project: held.Project, Task: held.Task, Kind: held.Kind,
 		Role: held.Role, Type: held.Type, Agent: held.Agent, Session: held.Session, Model: held.Model,
-		Result: held.Result, Report: held.Report, Generation: held.Generation, Place: held.Step,
-		ReturnedTo: held.ReturnedTo, StartedAt: held.StartedAt, EndedAt: held.EndedAt,
+		SetModel: held.SetModel, Answers: held.Answers, Result: held.Result, Report: held.Report,
+		Generation: held.Generation, Place: held.Step, ReturnedTo: held.ReturnedTo,
+		StartedAt: held.StartedAt, EndedAt: held.EndedAt,
 	}
 	if held.Rating != 0 {
 		step.Rating = &StepRating{Rating: held.Rating, Reason: held.RatingReason}

@@ -7,7 +7,16 @@
 // For the same reason this module registers no hook in its body: a hook here would take the scope
 // of whichever test file imported it first. Each file calls `useExtensionHarness()` at its own
 // module scope instead.
-import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, mock } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  expect,
+  jest,
+  mock,
+  setSystemTime,
+} from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,15 +30,15 @@ import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
 import type { TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { resetEnvoyPluginInterfaceForTests } from "@legion/pi-shared/interface";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
-import type { connect } from "nats";
 import type { z } from "zod";
 import type * as EnvoyEntry from "../extensions/envoy";
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import {
-  natsStandInConnect,
+  natsStandIn,
   originalFetch,
   resetNatsStandIn,
   responseWithRegistration,
@@ -211,6 +220,9 @@ function setUpRow(): void {
   delete process.env.ENVOY_SESSION_ROLE_SESSION;
   resetSessionRoleLoggedForTests();
   process.env.HOME = "/nonexistent-home-for-envoy-tests";
+  // Each Bun process a row or the extension starts inherits that HOME, under which Bun would keep
+  // its runtime transpiler cache (docs/testing.md, "Bun tests"): the key turns that cache off.
+  Object.assign(process.env, bunCacheOff);
   delete process.env.TMUX;
   delete process.env.TMUX_PANE;
   // The place cache refreshes itself on a timer at its lifetime, and a case here boots sessions
@@ -236,6 +248,10 @@ function setUpRow(): void {
 async function tearDownRow(): Promise<void> {
   // A managed-timer callback that rejects fails the test that scheduled it.
   await Promise.all(contextTimers.splice(0));
+  // A row that runs on Bun's fake clock (`jest.useFakeTimers`) leaves it to this hook to put the
+  // real clock back, so a row aborted at Bun's own timeout cannot leave it on for the next.
+  setSystemTime();
+  jest.useRealTimers();
   process.chdir(originalStartCwd);
   if (originalNatsUrl === undefined) delete process.env.ENVOY_NATS_URL;
   else process.env.ENVOY_NATS_URL = originalNatsUrl;
@@ -314,6 +330,7 @@ export function useExtensionHarness(): void {
     "ENVOY_TMUX_PLACE_CACHE_MS",
     "ENVOY_SESSION_ROLE",
     "ENVOY_SESSION_ROLE_SESSION",
+    "BUN_RUNTIME_TRANSPILER_CACHE_PATH",
   ]);
   // The slot the setter writes is the process's, not the calling file's, so the set and the reset
   // are one pair of hooks: a `bun test -t <pattern>` that selects no row of that file runs
@@ -321,11 +338,14 @@ export function useExtensionHarness(): void {
   // dialling this stand-in. No pane starts before this `beforeAll`: every row builds its own
   // instance in its own body.
   // The stand-in carries only the part of a connection the extension uses.
-  beforeAll(() => setNatsConnectForTests(natsStandInConnect as unknown as typeof connect));
+  beforeAll(() => setNatsConnectForTests(natsStandIn));
   afterAll(() => resetNatsConnectForTests());
   beforeEach(setUpRow);
   afterEach(tearDownRow);
 }
+
+/** One stand-in host and its records, as `createPi` builds it. */
+export type PiFixture = ReturnType<typeof createPi>;
 
 export function createPi(
   options: { readonly clipboardError?: Error; readonly zod?: typeof z } = {}
@@ -444,31 +464,6 @@ export async function settle(): Promise<void> {
     const { promise, resolve } = Promise.withResolvers<void>();
     setImmediate(resolve);
     await promise;
-  }
-}
-
-// Polls `condition` between event-loop turns. Only the resubscribe path waits on a real timer
-// (`ENVOY_RESUBSCRIBE_DELAY_MS`, 10 ms in these tests), which no fake clock reaches, and a busy
-// machine runs it later than any fixed sleep allows; the deadline is measured on the monotonic
-// clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
-// than on this process's own work passes a longer bound: starting a shell and killing its group
-// is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
-// A row whose wait can still be parked when the row ends (bun fails a row at its timeout and
-// goes on to the next while the row's own code waits on a turn of `settle`) passes `ended`, which
-// its teardown aborts: once it is aborted the wait reads the condition no more and returns, so it
-// neither polls on after the row nor throws into a later one.
-export async function until(
-  condition: () => boolean,
-  what: string,
-  timeoutMs = 2_000,
-  ended?: AbortSignal
-): Promise<void> {
-  const deadline = performance.now() + timeoutMs;
-  for (;;) {
-    if (ended?.aborted === true) return;
-    if (condition()) return;
-    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await settle();
   }
 }
 

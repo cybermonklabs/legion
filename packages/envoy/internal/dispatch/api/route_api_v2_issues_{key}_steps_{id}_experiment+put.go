@@ -10,10 +10,10 @@ var _ = declareRow(func(s *server) routeRow {
 	return routeRow{
 		Method: http.MethodPut, Pattern: "/issues/{key}/steps/{id}/experiment", Auth: authAny, Versions: onlyV2,
 		Description: "Write the experiment and the variant of a run's issue {experiment, variant, task?, step?, kind?, " +
-			"role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, " +
-			"report?}, a bearer naming its session in actor: experiment is the experiment a draw put the issue in " +
-			"and variant the variant it drew there, each a name of 1 to 32 characters of a-z, 0-9 and -. The Legion " +
-			"daemon writes it under the id of the run, after the run's own write, with the fields PUT " +
+			"role?, type?, agent?, session?, model?, set_model?, answers?, generation?, started_at?, ended_at?, " +
+			"result?, returned_to?, report?}, a bearer naming its session in actor: experiment is the experiment a " +
+			"draw put the issue in and variant the variant it drew there, each a name of 1 to 32 characters of a-z, " +
+			"0-9 and -. The Legion daemon writes it under the id of the run, after the run's own write, with the fields PUT " +
 			"/api/v2/issues/{key}/steps/{id} takes, which make the record where the run's start and end have not " +
 			"landed yet; each field the record does not hold yet is set and every field it holds is left, but " +
 			"returned_to, which only the write that sets the result sets, so the experiment and the variant are " +

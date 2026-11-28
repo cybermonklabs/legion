@@ -11,10 +11,13 @@
  * listener's HTTP routes in `globalThis.fetch` (`standInListenerFetch`: every registration
  * accepted, no role held) and hands the broker's token exchange to the real fetch; then it opens
  * the session `<session id>` and lets its first pass settle, and, given `<wait for>`, waits until
- * a notice or a line holds that text, for 20 s at most. The relay socket itself is Bun's own
- * WebSocket, to the stand-in. What it prints is its `RelaySessionReport`.
+ * a notice or a line holds that text, through the shared wait, whose one bound is the deadline its
+ * caller hands it (`LEGION_PROOF_DEADLINE_MS`, `runRelaySession`): a text that never comes ends the
+ * process there with no report, naming the wait. The relay socket itself is Bun's own WebSocket, to
+ * the stand-in. What it prints is its `RelaySessionReport`.
  */
 import type { PiApi } from "@legion/pi-shared/pi-types";
+import { until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import envoyExtension from "../extensions/envoy";
 import { RELAY_SESSION_REPORT, type RelaySessionReport } from "./relay-session-report";
@@ -56,10 +59,9 @@ if (start === undefined) throw new Error("the extension registered no session_st
 await start({}, context);
 
 if (waitFor !== undefined) {
-  const ends = Date.now() + 20_000;
-  while (![...notices, ...lines].some((text) => text.includes(waitFor)) && Date.now() < ends) {
-    await Bun.sleep(25);
-  }
+  await until(`a notice or a line that holds ${JSON.stringify(waitFor)}`, () =>
+    [...notices, ...lines].some((text) => text.includes(waitFor))
+  );
 }
 
 const report: RelaySessionReport = { notices, lines };

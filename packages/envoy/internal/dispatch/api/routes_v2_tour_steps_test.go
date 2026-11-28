@@ -238,8 +238,11 @@ func refusalStepOfAnotherIssue(t *testing.T, tour *routeTour, request tourReques
 // TestV2StepWriteOfWhatTheRecordHoldsWritesNothing: a write of a run every field of which the
 // record already holds as sent is the no-op PUT of decision 8. It answers the record as it stands
 // and makes no write: it answers while another transaction holds the run's row, which a write's
-// lock would wait on. An end the record does not hold yet is a change, and is stored; and the list
-// reads the run as the write answered it.
+// lock would wait on. An end the record does not hold yet is a change, and is stored. Sent again
+// beside that end once the record holds it, answers that break a rule of a step record's answers
+// (a model with 0 calls) are refused 400 STEP_INPUT, and a set model, then answers, that the record
+// does not hold yet are each a change, and stored (#6006). The list reads the run as the writes
+// answered it.
 func TestV2StepWriteOfWhatTheRecordHoldsWritesNothing(t *testing.T) {
 	tour := newRouteTour(t)
 	route := tour.stepRoute(t, tourStep{Method: http.MethodPut, Pattern: "/issues/{key}/steps/{id}"})
@@ -281,11 +284,34 @@ func TestV2StepWriteOfWhatTheRecordHoldsWritesNothing(t *testing.T) {
 	if ended.Result != "passed" || ended.EndedAt == nil || ended.Role != "implementer" {
 		t.Fatalf("the end answered %+v, want the started record ended passed", ended)
 	}
+
+	broken := tour.send(t, route, stepWriteOf(issue, run, withFields(tourStepEnd(), map[string]any{
+		"answers": []map[string]any{modelCalls(modelA, 0)},
+	})), "")
+	if code, text := refusalOf(t, broken); broken.Code != apicode.StepInput.Status() || code != apicode.StepInput.Name() {
+		t.Errorf("the end again with an answer of 0 calls answered %d %s %q, want %d %s",
+			broken.Code, code, text, apicode.StepInput.Status(), apicode.StepInput.Name())
+	}
+	set := tour.writeStep(t, issue, run, withFields(tourStepEnd(), map[string]any{"set_model": modelA}))
+	if set.SetModel != modelA || set.Answers != nil {
+		t.Errorf("the end again with set_model %s answered set_model %q and answers %v, want set_model %s and answers null",
+			modelA, set.SetModel, set.Answers, modelA)
+	}
+	answers := []model.StepAnswer{{Model: modelA, Calls: 41}, {Model: modelB, Calls: 3}}
+	counted := tour.writeStep(t, issue, run, withFields(tourStepEnd(), map[string]any{
+		"answers": []map[string]any{modelCalls(modelA, 41), modelCalls(modelB, 3)},
+	}))
+	if counted.SetModel != modelA || !reflect.DeepEqual(counted.Answers, answers) {
+		t.Errorf("the end again with answers answered set_model %q and answers %v, want set_model %s and answers %v",
+			counted.SetModel, counted.Answers, modelA, answers)
+	}
 	listed := tour.send(t, tour.stepRoute(t, tourStep{Method: http.MethodGet, Pattern: "/issues/{key}/steps"}),
 		tourRequest{Path: map[string]string{"key": issue.Key}, As: tourPerson("alice")}, "")
 	if read := decodeBody[page[model.StepRecord]](t, listed); listed.Code != http.StatusOK || read.Total != 1 ||
-		len(read.Items) != 1 || read.Items[0].ID != run || read.Items[0].Result != "passed" {
-		t.Fatalf("the list answered %d %s, want the one run, ended passed", listed.Code, listed.Body.String())
+		len(read.Items) != 1 || read.Items[0].ID != run || read.Items[0].Result != "passed" ||
+		read.Items[0].SetModel != modelA || !reflect.DeepEqual(read.Items[0].Answers, answers) {
+		t.Fatalf("the list answered %d %s, want the one run, ended passed, on set model %s with answers %v",
+			listed.Code, listed.Body.String(), modelA, answers)
 	}
 }
 
