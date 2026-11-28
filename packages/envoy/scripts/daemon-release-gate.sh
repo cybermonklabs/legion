@@ -219,7 +219,14 @@ compared=0
 # a tab and an escape among them, written as \x<hh> (\u<hhhh> or \U<hhhhhhhh> past U+00FF), so text
 # the gate reads from outside it (an image, an archive, a marketplace, the dotfiles, an error a
 # command printed) can neither start a line of the gate's output nor rewrite one on a terminal.
+# Text whose every byte is printable ASCII (0x20 to 0x7E) is printed as it is, which is what the
+# python3 below prints for it; any other text goes to that python3, which reads it as its argv
+# (so a launcher that changes an argument that is no UTF-8 changes it there too, as it always did).
 printable() {
+  if printable_ascii "$1"; then
+    printf '%s\n' "$1"
+    return 0
+  fi
   python3 -c '
 import sys
 
@@ -231,6 +238,14 @@ def shown(c):
 
 print("".join(shown(c) for c in sys.argv[1]))
 ' "$1"
+}
+
+# printable_ascii <text>: true when every byte of <text> is 0x20 to 0x7E. It is judged under the C
+# locale, where [:print:] is exactly those bytes: under a UTF-8 locale it takes in characters past
+# ASCII, and a byte that is no UTF-8 can read as no character at all.
+printable_ascii() {
+  local LC_ALL=C
+  [[ $1 != *[![:print:]]* ]]
 }
 
 # first_line <file> and last_line <file>: that line of an error a command left, printable.
