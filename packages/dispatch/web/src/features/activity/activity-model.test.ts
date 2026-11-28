@@ -240,3 +240,41 @@ test("a recorded handoff names its phase and version", () => {
     })
   ).toEqual(["recorded the implement handoff, version 2"]);
 });
+
+// A result's role is the one the recording session holds on the issue it recorded on, and empty
+// where it holds none there: the line ends by naming that issue in place of a role named "", and
+// a person, who holds no role, reads as a person.
+test("a recorded result of a session or a person with no role says it holds no role of the issue", () => {
+  const commit = "1".repeat(40);
+  const recorded = (role: string, actor: DispatchEvent["actor"]): DispatchEvent => ({
+    actor,
+    created_at: "2026-11-28T00:00:00Z",
+    id: 3,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      result_id: "res-1",
+      issue: "CORE-9",
+      check_issue: "CORE-1",
+      check_artifact_id: "artifact-1",
+      check_block_id: "k1",
+      check_version: 1,
+      when: "before_merge",
+      verdict: "pass",
+      role,
+      commit_sha: commit,
+    },
+    seq: 3,
+    type: "result.recorded",
+  });
+  const session = { id: "ses-none", kind: "session" } as const;
+  expect(activityDescription(recorded("tester", session))).toEqual([
+    `recorded pass for check k1 at ${commit} as tester`,
+  ]);
+  expect(activityDescription(recorded("", session))).toEqual([
+    `recorded pass for check k1 at ${commit} as a session that holds no role of CORE-9`,
+  ]);
+  expect(activityDescription(recorded("", { id: "alice", kind: "user" }))).toEqual([
+    `recorded pass for check k1 at ${commit} as a person who holds no role of CORE-9`,
+  ]);
+});

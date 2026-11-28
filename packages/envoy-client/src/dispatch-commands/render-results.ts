@@ -147,6 +147,18 @@ function checkWordsText(check: CheckBlock, result: CheckResult, asOf: string | u
     : `The check's words did not move after this result (${versions})`;
 }
 
+/** Whom a pass that stands came from, as `A pass stands: yes` names them: each role, then a
+ *  session with no role of the issue where the server says the pass of one stands (`no_role`).
+ *  The server never names that session among the roles. Empty where it names neither. */
+function passFromText(pass: CheckPassStands): string {
+  const roles = pass.roles ?? [];
+  const from = [
+    ...(roles.length === 0 ? [] : [roles.join(", ")]),
+    ...(pass.no_role === true ? ["a session with no role of the issue"] : []),
+  ];
+  return from.length === 0 ? "" : `, from ${from.join(" and from ")}`;
+}
+
 /** Head checks and CI keep their wording; branch checks name the fact that decides them. At a cut
  *  (`asOf`) whether a pass stands is left out: it is read from GitHub and the deploys now. */
 function passStandsText(
@@ -179,9 +191,8 @@ function passStandsText(
     const repo = repository ?? check.compared_with?.[0]?.repo ?? "the repository";
     const deploy = pass.deploy;
     const program = deploy?.program ?? check.program ?? "the program";
-    const roles = (pass.roles ?? []).join(", ");
     if (pass.answer === "yes" && passed !== undefined)
-      return `A pass stands: yes, from ${roles}, as the newest result is pass ${passed.id} at ${pass.commit ?? passed.commit_sha}`;
+      return `A pass stands: yes${passFromText(pass)}, as the newest result is pass ${passed.id} at ${pass.commit ?? passed.commit_sha}`;
     switch (pass.reason) {
       case "fail":
         if (failed !== undefined)
@@ -213,12 +224,7 @@ function passStandsText(
         break;
     }
   }
-  if (pass.answer === "yes") {
-    const roles = pass.roles ?? [];
-    return roles.length === 0
-      ? "A pass stands: yes"
-      : `A pass stands: yes, from ${roles.join(", ")}`;
-  }
+  if (pass.answer === "yes") return `A pass stands: yes${passFromText(pass)}`;
   if (pass.answer === "no") return "A pass stands: no";
   return "A pass stands: not known";
 }
@@ -239,8 +245,19 @@ function readingLines(result: CheckResult, brief: boolean, indent = "    "): str
   return [`${indent}Reading: ${observed}`];
 }
 
-/** One result, in the order the API served it: the verdict, the role, the whole commit, R4's two
- *  facts, the time, the id, the retraction that stands against it, and the reading. */
+/** Who recorded a result, as its line names them: the role its session holds on the issue it was
+ *  recorded on, or, where it holds none there, that session and that it holds no role of the
+ *  issue, closed by a comma so the commit after it reads apart from the issue. A person holds no
+ *  role, and is named as the actor they are. */
+function recorderText(result: CheckResult): string {
+  if (result.role !== "") return result.role;
+  return result.session === ""
+    ? `${actorText(result.actor)}, who holds no role of ${result.issue_key},`
+    : `session ${result.session}, which holds no role of ${result.issue_key},`;
+}
+
+/** One result, in the order the API served it: the verdict, who recorded it, the whole commit,
+ *  R4's two facts, the time, the id, the retraction that stands against it, and the reading. */
 function resultLines(
   check: CheckBlock,
   result: CheckResult,
@@ -248,7 +265,7 @@ function resultLines(
   asOf: string | undefined
 ): string[] {
   const lines = [
-    `  - ${result.verdict} by ${result.role} at ${result.commit_sha}. ${commitStandsText(result.commit_stands, asOf)}. ${checkWordsText(check, result, asOf)}. Recorded ${result.created_at}. Result ${result.id}.`,
+    `  - ${result.verdict} by ${recorderText(result)} at ${result.commit_sha}. ${commitStandsText(result.commit_stands, asOf)}. ${checkWordsText(check, result, asOf)}. Recorded ${result.created_at}. Result ${result.id}.`,
   ];
   const retracted = result.retracted;
   if (retracted !== undefined) {

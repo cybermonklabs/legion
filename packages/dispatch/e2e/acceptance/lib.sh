@@ -7,7 +7,8 @@
 # The functions below read what the run sets: `token` (read_bearer), `work` (work_dir), and
 # `bun_bin`, `saved_path`, `saved_tmpdir` and the `home` and `state` directories under $work
 # (cli_env). `cli` needs three more, which each driver sets itself and nothing here sets: the
-# `base` URL it talks to, the driver's own `session` and its `cli_entry`.
+# `base` URL it talks to, the driver's own `session` and its `cli_entry`. `hold_roles` sends
+# through the driver's own `send` function, which nothing here defines either.
 #
 # The check vocabulary below (body, want_status, expect, query) reads the caller's own `work`,
 # `status`, `base` and `database_url`, which every driver sets after sourcing this file and before
@@ -180,6 +181,27 @@ run() {
   local section="$1" what="$2"
   shift 2
   cli "$@" >"$work/out" 2>&1 || fail "$section" "$what" "dispatch $1 exited $?: $(<"$work/out")"
+}
+
+# hold_roles SECTION ISSUE ROLE=SESSION...: publishes the session that holds each named Legion role
+# of ISSUE, the issue's whole set, as the Legion daemon of ISSUE's project publishes it: PUT
+# /api/v1/issues/ISSUE/role-holders through the caller's own `send` (METHOD PATH JSON, over the
+# agent bearer), naming the session legion-daemon:<PROJECT>, <PROJECT> the key up to its first `-`.
+# Dispatch stores, as a result's role, the role its recording session holds on the issue it is
+# recorded on, so a driver that reads a role back gives its session that role before its first
+# result there. A server with DISPATCH_LEGION_STATUS_SCOPE on takes the write from a daemon's own
+# broker token alone, and a project with proven_sessions on from a credential that proves that
+# session, so the shared bearer publishes only where both are off, as on the local harness.
+# shellcheck disable=SC2016 # the jq filter names jq variables, not shell ones
+hold_roles() {
+  local section="$1" issue="$2"
+  shift 2
+  send PUT "/api/v1/issues/$issue/role-holders" "$(jq -nc --arg d "legion-daemon:${issue%%-*}" \
+    '{actor: {kind: "session", id: $d},
+      holders: [$ARGS.positional[] | split("=") | {role: .[0], session: (.[1:] | join("="))}]}' \
+    --args "$@")"
+  want_status 200 "$section" "give the roles of $issue: $*"
+  pass "$section" "gave the roles of $issue: $*"
 }
 
 # The two looks at production, priorities-production.sh and priority-list-production.sh, share

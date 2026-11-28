@@ -69,6 +69,18 @@ const cases: readonly [string, CheckPassStands, CheckResult[], string][] = [
     `A pass stands: yes, from tester, as the newest result is pass pass-1 at ${commit}.`,
   ],
   [
+    "yes, from a role and a session with no role",
+    { answer: "yes", roles: ["tester"], no_role: true, results: [pass.id], commit },
+    [pass],
+    `A pass stands: yes, from tester and from a session with no role of the issue, as the newest result is pass pass-1 at ${commit}.`,
+  ],
+  [
+    "yes, from a session with no role alone",
+    { answer: "yes", no_role: true, results: [pass.id], commit },
+    [{ ...pass, role: "", session: "ses-none" }],
+    `A pass stands: yes, from a session with no role of the issue, as the newest result is pass pass-1 at ${commit}.`,
+  ],
+  [
     "no, fail",
     { answer: "no", reason: "fail", results: [fail.id], commit },
     [fail],
@@ -188,5 +200,38 @@ test("a before-merge check keeps its existing result head wording", () => {
     })
   ).toContain(
     `- live (before_merge). Compared with the head of pull request #7 at ${commit}. A pass stands: yes, from tester.`
+  );
+});
+
+// A session that holds no role of the issue it recorded on records its result with no role, and
+// the server names its pass in no_role, never as a role of its own: the head line says a session
+// with no role stands, beside the roles or alone, and the result's line names that session.
+test("a before-merge check names a pass of a session with no role, with and without roles", () => {
+  const head = { kind: "pull_request" as const, commit, pull_request: 7 };
+  const headLine = `- live (before_merge). Compared with the head of pull request #7 at ${commit}. A pass stands:`;
+  expect(
+    render({
+      when: "before_merge",
+      compared_with: [head],
+      pass_stands: { answer: "yes", roles: ["tester"], no_role: true },
+    })
+  ).toContain(`${headLine} yes, from tester and from a session with no role of the issue.`);
+  const alone = render({
+    when: "before_merge",
+    compared_with: [head],
+    pass_stands: { answer: "yes", no_role: true },
+    results: [{ ...pass, role: "", session: "ses-none" }],
+  });
+  expect(alone).toContain(`${headLine} yes, from a session with no role of the issue.`);
+  expect(alone).toContain(
+    `  - pass by session ses-none, which holds no role of DSP-1, at ${commit}. That commit is one of the compared commits.`
+  );
+});
+
+// A person holds no role of an issue, and their result is stored with no role and no session:
+// the line names the person as the actor they are.
+test("a person's result with no role names the person", () => {
+  expect(render({ results: [{ ...pass, role: "" }] })).toContain(
+    `  - pass by user alice, who holds no role of DSP-1, at ${commit}.`
   );
 });

@@ -31,6 +31,12 @@
 # jar; with DEV_SIGNIN_LOGIN unset each prints one `SKIP: … POST /api/v1/artifacts/{id}/reviews
 # needs a person's credential holding the approve scope …` line and every other section runs.
 #
+# Dispatch stores, as a result's role, the role its recording session holds on the issue, so the
+# run gives its own session the tester role of each issue it records a result on, as the Legion
+# daemon of PROJECT publishes it (`hold_roles`, lib.sh). The shared bearer may publish that only on
+# a server with DISPATCH_LEGION_STATUS_SCOPE off and a PROJECT with proven sessions off, as on the
+# local harness; elsewhere the write is refused 403 and the run fails there.
+#
 # The server must be a Dispatch release that lists `default_repo` on GET /api/v1/projects and
 # serves PUT /api/v1/projects/{key}/default-repository (dispatch://INFRA-4402). An earlier release
 # lists no default repository and refuses that write, so the run fails against it.
@@ -639,6 +645,10 @@ expect move "r1 keeps both edges that serve it through the move" 2 \
 
 # --- result: recording one, and the two refusals a result's own fields earn ----------------------
 
+# Dispatch stores the role the recording session holds on the issue it records on, and the reads
+# below print the tester's passes by that role, so this run's session holds the tester role of
+# each issue it records on before its first result there.
+hold_roles result "$root" "tester=$session"
 record result "record a pass for c1" "$root" --check c1 --role tester --verdict pass \
   --commit "$commit_one" --surface cli --run "bash e2e/acceptance/verification.sh" \
   --observed "every check passed" --negative-control "Deleted the check and the flag came back."
@@ -666,6 +676,7 @@ refused_result result "a pass counting a skipped case" "$root" \
 
 # --- closed: the after-merge result a closed issue takes -----------------------------------------
 
+hold_roles closed "$child" "tester=$session"
 close_issue closed "$child"
 record closed "record a pass for the after-merge check on the closed $child" "$child" \
   --check cafter --role tester --verdict pass --commit "$commit_two" --surface api \

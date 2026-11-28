@@ -40,6 +40,11 @@
 # PROJECT has one, since every issue then resolves to it and a recorded result's commit must be
 # one it holds, and otherwise one of this run's own, which is no project's default.
 #
+# Dispatch stores, as a result's role, the role its recording session holds on the issue, so
+# before its first result the run gives its own session the tester role of k1's issue, as the
+# Legion daemon of PROJECT publishes it (`hold_roles`, lib.sh), which the shared bearer may write
+# only on a server with DISPATCH_LEGION_STATUS_SCOPE off and a PROJECT with proven sessions off.
+#
 # It writes nine issues in PROJECT and closes every one of them, also when a check fails; on exit
 # it deletes the pull_request_heads rows it staged and empties the fake GitHub. Nothing it writes
 # is read by a second run, so it may be run again at once. Each passing check prints
@@ -490,6 +495,9 @@ line k1 "dispatch doc-read reads c-contracts back with its ci_check" \
 line k1 "a check carrying neither ci_check nor run is stored as it is today" \
   ":::check{#c-plain surface=\"cli\" when=\"before_merge\" negative_control=\"$k1_control\"}"
 
+# Dispatch stores the role the recording session holds on the issue, and k4 reads the tester's
+# pass back by that role, so this run's session holds k1's tester role before its first result.
+hold_roles k1 "$k1" "tester=$session"
 run k1 "record a tester's pass for c-held" result --issue "$k1" --check c-held --role tester \
   --verdict pass --commit "$held_commit" --surface cli --run "bash e2e/acceptance/ci-check.sh" \
   --observed "the ci-check acceptance run recorded it"

@@ -464,7 +464,9 @@ export function changeIssueStatus(
 
 /** `POST /api/v1/issues/{key}/results`: one result of one check, recorded on `issue`, which
  *  need not be the issue whose Verification document holds the check. The answer carries the
- *  stored result and the pull-request body line it implies. */
+ *  stored result and the pull-request body line it implies. The role stored is the one the
+ *  recording session, `options.actor`, holds on `issue` (`putIssueRoleHolders`), and "" for a
+ *  session that holds none, whatever role `input` names. */
 export function recordCheckResult(
   issue: string,
   input: Body<"/api/v1/issues/{key}/results", "post">,
@@ -1280,7 +1282,8 @@ export function putStep(
  *  `DISPATCH_LEGION_STATUS_SCOPE`, so the shared bearer may name that session in the body, and a
  *  project of the harness has `proven_sessions` off, so the session it names is taken at its word
  *  (the route's comment in `issue_role_holders.go`). The server reads the set where a role decides
- *  a write, such as the architect of a P0 issue filing a child under it with no p0. */
+ *  a write, such as the architect of a P0 issue filing a child under it with no p0, and for the role
+ *  a recorded result stores: the role its recording session holds on the issue. */
 export function putIssueRoleHolders(
   key: string,
   holders: NonNullable<Body<"/api/v1/issues/{key}/role-holders", "put">["holders"]>

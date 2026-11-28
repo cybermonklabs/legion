@@ -347,25 +347,33 @@ uses the stack runs only with `LEGION_E2E_ENVOY_STACK=1`.
 a real Dispatch server: it builds `./cmd/dispatch` with `go build` from `packages/envoy` into its
 own scratch directory, makes a database of its own on the server `DISPATCH_TEST_DATABASE_URL`
 names and drops it at the end, starts the server, which migrates that database as it boots, and
-answers its URL and the agent bearer token it minted for the run. Two tests run on it:
-`src/__tests__/design-gate-advice.live.test.ts`, which proves the design-gate clause end to end,
-and `src/__tests__/moved-approval-advice.live.test.ts`, which proves the moved-approval line of a
-document write's advice the same way; each is the real CLI entry `bin/dispatch.ts` writing to that
-server, the server's record and the client's sentence together. They share
-`@legion/envoy-client/test/dispatch-cli-live` (Bun only, not built, in `test/`), which holds the
-real CLI's `docEdit`, the person's and the machine's writes, and the issue and document a row
-writes about; each file keeps the constants and the sentences that are its own. A test that uses
-this stack runs only with `LEGION_E2E_DISPATCH_STACK=1`, and it needs `DISPATCH_TEST_DATABASE_URL`
-and `go` on `PATH`; with the variable set it fails rather than skips. So, to run them here:
+answers its URL and the agent bearer token it minted for the run. Among the tests that run on it,
+`src/__tests__/design-gate-advice.live.test.ts` proves the design-gate clause end to end,
+`src/__tests__/moved-approval-advice.live.test.ts` proves the moved-approval line of a document
+write's advice the same way, `src/__tests__/comment-mention.live.test.ts` proves a comment's
+`--mention`, and `src/__tests__/result-role.live.test.ts` proves that a recorded result stores the
+role its session holds on the issue, not the role the call names, and what the CLI prints of it;
+each is the real CLI writing to that server, the server's record and the client's sentence
+together. They share `@legion/envoy-client/test/dispatch-cli-live` (Bun only, not built, in
+`test/`), which holds the real CLI's `docEdit` and `read`, `runAs` (one run of the CLI as the
+session a row names, with its exit status and both streams), `holdRoles` (an issue's role holders,
+published as the Legion daemon publishes them), the person's and the machine's writes, and the
+issue and document a row writes about; each file keeps the constants and the sentences that are
+its own. The CLI each row runs is this checkout's entry `bin/dispatch.ts`, or the built `dispatch`
+whose absolute path `DISPATCH_CLI_ENTRY` names, such as another tree's build for a negative
+control. A test that uses this stack runs only with `LEGION_E2E_DISPATCH_STACK=1`, and it needs
+`DISPATCH_TEST_DATABASE_URL` and `go` on `PATH`; with the variable set it fails rather than skips.
+So, to run them here:
 
 ```sh
 cd packages/envoy-client
 LEGION_E2E_DISPATCH_STACK=1 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" \
   bun test src/__tests__/design-gate-advice.live.test.ts \
-  src/__tests__/moved-approval-advice.live.test.ts
+  src/__tests__/moved-approval-advice.live.test.ts src/__tests__/comment-mention.live.test.ts \
+  src/__tests__/result-role.live.test.ts
 ```
 
-CI runs both in `ci.yaml`'s `envoy-session-stall` job, which is the one lane of this package with
+CI runs each in `ci.yaml`'s `envoy-session-stall` job, which is the one lane of this package with
 both a PostgreSQL and a Go.
 
 ## The listener's relay socket

@@ -90,7 +90,7 @@ jobs:
         working-directory: packages/contracts
       # why: .github/ci-notes/ci.md#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack
       # The Go commands of packages/envoy the suites below build that the go-envoy entry does not
-      # hold: the Dispatch server (the six Dispatch suites), the NATS auth service (the broker
+      # hold: the Dispatch server (the seven Dispatch suites), the NATS auth service (the broker
       # credential tests), and the secrets broker, the cluster token issuer, the airlock's authority
       # and fronts and agent-secrets (the two CI-result suites). It compiles each once, before any
       # suite starts, so that no suite compiles one beside rows that read real clocks; each suite
@@ -191,6 +191,13 @@ jobs:
       # open approval request back from the person is the field the CLI reads and prints.
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/moved-approval-advice.live.test.ts bun test src/__tests__/moved-approval-advice.live.test.ts
+        working-directory: packages/envoy-client
+      # The role a recorded result stores, over the same real CLI and real Dispatch
+      # (dispatch://INFRA-3994): Dispatch stores the role the recording session holds on the issue,
+      # as the Legion daemon published it, never the role the call names, and the CLI prints what
+      # it stored and what became of the role the call named.
+      - name: The role of a recorded result over the real CLI against a real Dispatch
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/result-role.live.test.ts bun test src/__tests__/result-role.live.test.ts
         working-directory: packages/envoy-client
       # The verdict on the suites the steps above queued: it waits for the last of them, prints
       # each one's log in a group of its own with its wall and CPU seconds, and fails naming each

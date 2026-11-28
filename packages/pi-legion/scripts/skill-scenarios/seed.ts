@@ -11,9 +11,13 @@
 //   seed.ts implement-handoff <file> <body file> <commit>
 //                                          records <body file>, one JSON object, as the implement
 //                                          handoff of the issue <file> names, under the session
-//                                          IMPLEMENTER (never the run's), records its passing
-//                                          result on check k1 at <commit>, and writes {issue,
-//                                          implement: {id, version}} to <file>
+//                                          IMPLEMENTER (never the run's), gives that session the
+//                                          issue's implementer role as the Legion daemon publishes
+//                                          it, records its passing result on check k1 at <commit>,
+//                                          and writes {issue, implement: {id, version}} to <file>
+//   seed.ts tester-role <file> <session>   gives <session>, the run's own, the tester role of the
+//                                          issue <file> names, as the Legion daemon publishes it
+//                                          once the tester's claim registers
 //   seed.ts capture-handoffs <file> <run dir>
 //                                          every handoff record of the issue <file> names, newest
 //                                          first as Dispatch lists them, each with the body it
@@ -110,6 +114,7 @@ import {
   listComments,
   listIssueAsks,
   listIssueMessages,
+  putIssueRoleHolders,
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
@@ -655,8 +660,11 @@ export async function testerProofIssue(file: string): Promise<void> {
 
 /** `implement-handoff <file> <body file> <commit>`: the implementer's handoff on the run's issue,
  * as `dispatch handoff-write` records it under the implementer's session, and its passing result
- * against the issue's check `k1` at `<commit>`, as `dispatch result` records it. A body that is no
- * JSON object is the fixture's fault, refused before anything is written. */
+ * against the issue's check `k1` at `<commit>`, as `dispatch result` records it. Dispatch stores, as
+ * a result's role, the role its recording session holds on the issue, as the Legion daemon
+ * published it, so the implementer's session is given the implementer role first, as the daemon
+ * publishes it while the implementer's claim is live. A body that is no JSON object is the
+ * fixture's fault, refused before anything is written. */
 export async function implementHandoff(
   file: string,
   bodyFile: string,
@@ -667,6 +675,7 @@ export async function implementHandoff(
   if (typeof body !== "object" || body === null || Array.isArray(body))
     throw new Error(`${bodyFile} holds no JSON object, which a handoff body is`);
   const recorded = await createHandoff(issue, "implement", body, IMPLEMENTER);
+  await putIssueRoleHolders(issue, [{ role: "implementer", session: IMPLEMENTER.id }]);
   await agentPost(`/api/v1/issues/${encodeURIComponent(issue)}/results`, {
     check: "k1",
     role: "implementer",
@@ -684,6 +693,18 @@ export async function implementHandoff(
   };
   writeFileSync(file, `${JSON.stringify(fixture)}\n`);
   console.log(`seeded ${issue}'s implement handoff, version ${recorded.version} (${recorded.id})`);
+}
+
+/** `tester-role <file> <session>`: the run's own session, `tester`, holds the tester role of the
+ * run's issue, as the Legion daemon publishes it once the tester's claim registers. The daemon
+ * sends the issue's whole set, which holds the tester alone: the implementer's claim retired when
+ * the issue left its phase. Dispatch stores, as a result's role, the role its recording session
+ * holds on the issue, and score.ts's testerProof reads the tester's line in the PR body by that
+ * role (`recorded by tester`). rig.sh runs it once the session's claim registration names it. */
+export async function testerRole(file: string, tester: string): Promise<void> {
+  const { issue } = TesterFixture.parse(JSON.parse(readFileSync(file, "utf8")));
+  await putIssueRoleHolders(issue, [{ role: "tester", session: tester }]);
+  console.log(`seeded ${issue}'s tester, session ${tester}`);
 }
 
 /** `POST route` as the agent bearer, with `input` as its JSON body; a refusal names the route and
@@ -907,7 +928,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | owner-walk <file> <kind> <answer> | capture-scored <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | tester-role <file> <session> | capture-handoffs <file> <run dir> | owner-walk <file> <kind> <answer> | capture-scored <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -948,6 +969,8 @@ async function main(argv: string[]): Promise<boolean> {
     n === 4
   )
     await implementHandoff(file, second, third);
+  else if (command === "tester-role" && file !== undefined && second !== undefined && n === 3)
+    await testerRole(file, second);
   else if (command === "capture-handoffs" && file !== undefined && second !== undefined && n === 3)
     await captureHandoffs(file, second);
   else if (
