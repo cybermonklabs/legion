@@ -1,0 +1,19 @@
+{
+  "answers": [
+    {
+      "answer": "register-controller",
+      "addKeyPaths": [
+        "watchedWorkflows",
+        "watchedWorkflows.*",
+        "watchedWorkflows.*.events",
+        "watchedWorkflows.*.events.*",
+        "watchedWorkflows.*.owner",
+        "watchedWorkflows.*.repo",
+        "watchedWorkflows.*.workflow"
+      ]
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": []
+}

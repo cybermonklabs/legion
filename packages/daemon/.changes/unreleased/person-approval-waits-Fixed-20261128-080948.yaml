@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A person's approval of a pull request ends its review round only once the reviewer has completed
+  the round. Before, an approval from any account with write access ended the round at once, and
+  an agent can approve on a person's account: an issue whose reviewer never approved the head went
+  on to acceptance, or to its retro and the merge where its steps hold no acceptance. Until the
+  reviewer's completion the issue stays in reviewing, and a review the reviewer submits after the
+  person's decides the round instead; the reviewer's completion with no review of its own ends the
+  round on the person's approval. A person's request for changes still sends the work back at once,
+  and the reviewer's own approval still ends the round without the completion.
+time: 2026-11-28T08:09:48Z
+custom:
+    Issue: person-approval-waits

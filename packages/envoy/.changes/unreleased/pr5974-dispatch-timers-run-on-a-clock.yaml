@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The Dispatch server's stop arms three of its waits on Envoy's one module clock (the real clock in
+  production): its share of the wait for the requests in flight, its timeout around the document
+  service's shutdown, and its wait for the events outbox. Each boot repair, the retirement of the
+  refresh tokens stored in plain text among them, arms its bound on that clock too, and so do each
+  revocation of a refresh token at the sign-in pool (its 10 s) and the client's 10 s deadline on
+  each read of the keyword fill's deferral line. A test process sets that deadline with
+  `DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT`, which a deployment never sets. The stop's pauses while
+  the pool goes idle, its poll as it closes the pool and its health probes stay on the wall clock.
+  No timer's length changes.

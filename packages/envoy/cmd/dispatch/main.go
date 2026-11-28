@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -47,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
@@ -200,6 +202,25 @@ type bootConfig struct {
 	// keeps its ratio of three beats to it, since no process-level test can wait a live window
 	// and a heartbeat for a refusal to stand.
 	ProcessHeartbeat time.Duration
+	// SearchFillReadTimeout is the client's own deadline on each read of the keyword fill's
+	// deferral line (searchFillTableHoldsRow), zero for the one searchFillBounds gives, four seconds
+	// past the statement timeout; only DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT, under the test hooks,
+	// sets it, so an end-to-end test can stage it past its run and leave each read to Postgres's own
+	// timeouts, however slowly a loaded machine dials. resolveBootConfig refuses one that is not
+	// past the statement timeout, so no setting orders the client's deadline before Postgres's.
+	SearchFillReadTimeout time.Duration
+	// CoverageFillTimeout bounds the whole fill of the search coverage counts in place of
+	// embedqueue's own, zero for that; only DISPATCH_TEST_COVERAGE_FILL_TIMEOUT, under the test
+	// hooks, sets it, so a test sees a fill reach its timeout without waiting a deployment's out.
+	CoverageFillTimeout time.Duration
+	// CoverageStatementTimeout bounds the search coverage route's statement in place of
+	// embedqueue's 10 s, zero for that; only DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT, under the
+	// test hooks, sets it, so a test sees the route's 503 SEARCH_COVERAGE_TIMEOUT at once.
+	CoverageStatementTimeout time.Duration
+	// CoverageFillFailures is how many fills of the search coverage counts fail before their first
+	// statement, zero for none; only DISPATCH_TEST_COVERAGE_FILL_FAILURES, under the test hooks,
+	// sets it, so a test sees a failed fill logged and tried again.
+	CoverageFillFailures int
 	// SearchFillLockTimeout is the lock timeout of each read the keyword fill's deferral line makes
 	// at boot (searchFillTableRows), zero for searchFillTableLockTimeout's five seconds; the
 	// statement timeout and the client's deadline keep their margins past it (searchFillBounds).
@@ -581,7 +602,7 @@ func main() {
 		slog.Error("dispatch: load signing key", "error", err)
 		os.Exit(1)
 	}
-	retirePlainRefreshTokens(ctx, people, plainRefreshTokenRetireTimeout)
+	retirePlainRefreshTokens(ctx, people, clock.Real(), plainRefreshTokenRetireTimeout)
 	sessions := store.NewPgSessionStore(database.Pool)
 
 	if boot.IdentityHeader != "" {
@@ -779,6 +800,10 @@ func main() {
 	//
 	// The keyword fill writes search_text_versions under a hold of its own as well
 	// (textversions.Run): one process fills at a time, and the others stand by for its hold.
+	//
+	// The search coverage counts loop (embedqueue.RunCounts) takes no lease either: its fill,
+	// each fold and each recount take one transaction-scoped advisory lock, so two processes'
+	// loops, as during a roll, run one of them at a time, and each is exact beside the other's.
 	//
 	// Deliberately NOT leased, in three classes:
 	//   - already claims its own work, so two processes never do one unit of it twice: the
@@ -1381,8 +1406,12 @@ func main() {
 	fillStopped := make(chan struct{})
 	if boot.SearchFillOff {
 		close(fillStopped)
+		bounds := searchFillBounds(boot.SearchFillLockTimeout)
+		if boot.SearchFillReadTimeout > 0 {
+			bounds.client = boot.SearchFillReadTimeout
+		}
 		slog.Info(searchFillDeferredLine, append([]any{"setting", "DISPATCH_SEARCH_FILL", "value", "off"},
-			searchFillTableRows(ctx, database.Pool, searchFillBounds(boot.SearchFillLockTimeout))...)...)
+			searchFillTableRows(ctx, database.Pool, clock.Real(), bounds)...)...)
 	} else {
 		go func() {
 			defer close(fillStopped)
@@ -1400,14 +1429,43 @@ func main() {
 	}
 	// waitFill waits for the keyword fill to stop; only a cancelled ctx stops it.
 	waitFill := func() { <-fillStopped }
-	// exitAfterIntakes ends a process that started its intakes and its keyword fill and will not
-	// serve: it cancels ctx, waits for both to stop, which releases the intakes' holds, and exits
-	// 1. The deferred stop (stopIntakesOnExit) does not run on an os.Exit, so every exit here goes
-	// through this.
+	// The search coverage counts loop (embedqueue.RunCounts) keeps the counts GET
+	// /api/v1/search/coverage reads: it fills them where no fill has ended, folds the delta rows the
+	// counting triggers write every 10 s, and recounts every kind, each recount starting 11 minutes
+	// less the recount's bound (coverageRecountTimeout) after the one before started, or at a random
+	// time from 10 minutes up to that while the bound is under a minute, so a write the triggers
+	// missed is counted within 11 minutes. It starts at every start, with an embedder or with none,
+	// since the counts follow every write whatever embeds; its goroutine starts here, but like the
+	// keyword fill it takes nothing and writes nothing until serving closes, so no start waits for a
+	// count and the route answers 503 SEARCH_COVERAGE_NOT_FILLED until the first fill ends. Every
+	// way out from here waits for it (waitCounts) before the pool closes: once ctx is cancelled it
+	// returns at once, rolling back the fill, fold or recount in flight. The three
+	// DISPATCH_TEST_COVERAGE_* settings, read only under DISPATCH_TEST_HOOKS=1, shorten the fill's
+	// timeout and the route's bound and make fills fail, for a test of each.
+	if boot.CoverageFillTimeout > 0 {
+		embedqueue.ShortenCoverageFillTimeoutForTest(boot.CoverageFillTimeout)
+	}
+	if boot.CoverageStatementTimeout > 0 {
+		embedqueue.ShortenCoverageBoundForTest(boot.CoverageStatementTimeout)
+	}
+	if boot.CoverageFillFailures > 0 {
+		embedqueue.FailCoverageFillsForTest(boot.CoverageFillFailures)
+	}
+	countsStopped := make(chan struct{})
+	go func() {
+		defer close(countsStopped)
+		embedqueue.RunCounts(ctx, embedqueue.CountsDeps{Store: database, Serving: serving})
+	}()
+	waitCounts := func() { <-countsStopped }
+	// exitAfterIntakes ends a process that started its intakes, its keyword fill and its counts
+	// loop and will not serve: it cancels ctx, waits for all three to stop, which releases the
+	// intakes' holds, and exits 1. The deferred stop (stopIntakesOnExit) does not run on an
+	// os.Exit, so every exit here goes through this.
 	exitAfterIntakes := func() {
 		cancel()
 		waitIntakes()
 		waitFill()
+		waitCounts()
 		os.Exit(1)
 	}
 	// LEGION-550: resolves write_suggestions outcomes off the write path, from the events written
@@ -1479,6 +1537,7 @@ func main() {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			waitIntakes()
 			waitFill()
+			waitCounts()
 			slog.Info("dispatch: stopped while waiting for admission to the registry of live server processes")
 			return
 		}
@@ -1493,16 +1552,19 @@ func main() {
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
-	// The registry admitted this process, so it serves: the keyword fill starts (above).
+	// The registry admitted this process, so it serves: the keyword fill and the coverage counts
+	// loop start (above).
 	close(serving)
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
 	// fetching then would write into a closing pool. The keyword fill is waited for here too, so
-	// its hold is released before the pool closes.
+	// its hold is released before the pool closes, and so is the coverage counts loop, whose
+	// statement in flight rolls back through the pool.
 	waitBackground := func() {
 		background.Wait()
 		appCtx.Architecture().Close()
 		waitFill()
+		waitCounts()
 	}
 	httpDrain := httpDrainBeforeDocuments
 	if boot.HTTPDrain > 0 {
@@ -1800,16 +1862,26 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT", &boot.CoverageFillTimeout},
+		{"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT", &boot.CoverageStatementTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", &boot.SearchFillLockTimeout},
+		{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT", &boot.SearchFillReadTimeout},
 		{"DISPATCH_TEST_HTTP_DRAIN", &boot.HTTPDrain},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
 	}
+	if err := testHookCount(env, "DISPATCH_TEST_COVERAGE_FILL_FAILURES", boot.TestHooksEnabled, &boot.CoverageFillFailures); err != nil {
+		return bootConfig{}, err
+	}
 	if lock := boot.SearchFillLockTimeout; lock > 0 && lock < searchFillTableLockTimeoutFloor {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT=%q (expected at least %s: the reads send their lock timeout to Postgres in whole milliseconds, and Postgres reads 0ms as no lock timeout)",
 			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT")), searchFillTableLockTimeoutFloor)
+	}
+	if read, statement := boot.SearchFillReadTimeout, searchFillBounds(boot.SearchFillLockTimeout).statement; read > 0 && read <= statement {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=%q (expected longer than %s, the reads' statement timeout, so that Postgres's own timeouts still end a read before the client's deadline)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT")), statement)
 	}
 	if boot.HTTPDrain > httpDrainBeforeDocuments {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_HTTP_DRAIN=%q (expected at most %s, a deployment's drain: what the %s stop grace leaves after the document service's %s budget and a 5s reserve)",
@@ -1880,11 +1952,16 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if boot.IdentityHeader == "" {
 			return bootConfig{}, errors.New("DISPATCH_IDENTITY header name required")
 		}
+		// The header is fixed (identity.UserHeader), so header identity never reads a credential
+		// header such as Authorization or Cookie as a person.
+		if http.CanonicalHeaderKey(boot.IdentityHeader) != identity.UserHeader {
+			return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q: header identity reads %s alone; set DISPATCH_IDENTITY=header:%s", mode, identity.UserHeader, identity.UserHeader)
+		}
 		if env.get("DISPATCH_IDENTITY_HEADER_TRUSTED") != "1" {
 			return bootConfig{}, errors.New("DISPATCH_IDENTITY_HEADER_TRUSTED=1 required: header identity is only for tests and local harnesses")
 		}
 	default:
-		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie, iap or header:<Header-Name>)", mode)
+		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie, iap or header:%s)", mode, identity.UserHeader)
 	}
 	if iapAudience != "" && boot.IAPAudience == "" {
 		return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap; unset it, or set DISPATCH_IDENTITY=iap")
@@ -2216,7 +2293,7 @@ const repoRenamesReadTimeout = 30 * time.Second
 // or runs out of time is logged and the start goes on, since each document's next settlement
 // restores its own asks.
 func restoreDecidedWordings(ctx context.Context, documents *docs.Service, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: restore decided asks' wordings", "dispatch: restored decided asks' wordings",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: restore decided asks' wordings", "dispatch: restored decided asks' wordings",
 		func(ctx context.Context) ([]any, error) {
 			restored, copies, err := documents.RestoreDecidedWordings(ctx)
 			if err != nil {
@@ -2230,7 +2307,7 @@ const reviewContentHashFillTimeout = 30 * time.Second
 
 // fillReviewContentHashes pins reviews from before the hash columns were added.
 func fillReviewContentHashes(ctx context.Context, pool *store.Pool, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: fill reviews' content hashes", "dispatch: filled reviews' content hashes",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: fill reviews' content hashes", "dispatch: filled reviews' content hashes",
 		func(ctx context.Context) ([]any, error) {
 			result, err := docs.FillReviewContentHashes(ctx, pool)
 			return []any{"filled", result.Filled, "unhashable", result.Unhashable}, err
@@ -2253,7 +2330,7 @@ const repoRenamePassTimeout = 30 * time.Second
 // next boot tries again.
 func renameRepositories(ctx context.Context, pool *store.Pool, pairs []store.RepoRename, readErr error, timeout time.Duration) {
 	const summary = "dispatch: rewrote renamed repositories' old names"
-	bootTask(ctx, timeout, summary, summary, func(ctx context.Context) ([]any, error) {
+	bootTask(ctx, clock.Real(), timeout, summary, summary, func(ctx context.Context) ([]any, error) {
 		pass := store.RewriteRenamedRepositories(ctx, pool, pairs)
 		if readErr != nil {
 			pass.Failures++
@@ -2277,7 +2354,7 @@ const issueAskRepairBootTimeout = 30 * time.Second
 // runs out of time is logged and the start goes on, since api.RunIssueAskRepair repairs the rest
 // every api.IssueAskRepairInterval.
 func repairIssueAsks(ctx context.Context, deps api.Deps, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: repair the asks of closed and reopened issues", "dispatch: repaired the asks of closed and reopened issues",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: repair the asks of closed and reopened issues", "dispatch: repaired the asks of closed and reopened issues",
 		func(ctx context.Context) ([]any, error) {
 			markedSince := time.Now().Add(-api.IssueAskRepairInterval)
 			repair, err := api.RepairIssueAsks(ctx, deps, &markedSince)
@@ -2285,11 +2362,11 @@ func repairIssueAsks(ctx context.Context, deps api.Deps, timeout time.Duration) 
 		})
 }
 
-// bootTask runs task, a repair the boot makes before it serves, bounded by timeout, and logs what
-// it reports: the counts task returns under done at INFO, or, when task fails or runs out of time,
-// those counts and the error under failed at ERROR. Either way the start goes on.
-func bootTask(ctx context.Context, timeout time.Duration, failed, done string, task func(context.Context) ([]any, error)) {
-	taskCtx, cancel := context.WithTimeout(ctx, timeout)
+// bootTask runs task, a repair the boot makes before it serves, bounded by timeout on clk, and logs
+// what it reports: the counts task returns under done at INFO, or, when task fails or runs out of
+// time, those counts and the error under failed at ERROR. Either way the start goes on.
+func bootTask(ctx context.Context, clk bootClock, timeout time.Duration, failed, done string, task func(context.Context) ([]any, error)) {
+	taskCtx, cancel := clk.WithTimeout(ctx, timeout)
 	defer cancel()
 	counts, err := task(taskCtx)
 	if err != nil {
@@ -2297,6 +2374,13 @@ func bootTask(ctx context.Context, timeout time.Duration, failed, done string, t
 		return
 	}
 	slog.Info(done, counts...)
+}
+
+// bootClock is the clock a boot task's bound runs on, and each read of the keyword fill's deferral
+// line (searchFillTableHoldsRow), a narrowing of clock.Clock: clock.Real in main, and a
+// clocktest.Fake in a test, which moves a bound or never moves it.
+type bootClock interface {
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
 
 // appContextOptions is what main hands routes.BuildAppContext: built, what main made from the
@@ -2382,7 +2466,8 @@ var searchFillTables = [...]string{"search_text_versions", "search_text_versions
 // the client's own deadline for each table, for a server that answers nothing: pgx then closes the
 // connection and asks the server to cancel the statement. The two reads run one after the other
 // before the server listens, so they delay the boot by at most twice client in all; a lock on a
-// table alone delays it by about lock for that table.
+// table alone delays it by about lock for that table. A test process may stage client past its run
+// instead (bootConfig.SearchFillReadTimeout).
 type searchFillReadBounds struct{ lock, statement, client time.Duration }
 
 // A deployment's lock timeout of the reads, and the margins the other two bounds keep past it. The
@@ -2418,15 +2503,15 @@ func searchFillBounds(lock time.Duration) searchFillReadBounds {
 
 // searchFillTableRows answers the deferral line's fields that say whether each of
 // searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow within
-// bounds. A read that fails, a timeout included, gives <table>_rows=unknown and the error in
-// <table>_rows_error, and the boot goes on: the line reports the tables and never decides whether
-// the process starts. The line is how a deployment learns, from the boot log alone, that a process
-// booted with the fill off found both tables empty.
-func searchFillTableRows(ctx context.Context, pool *store.Pool, bounds searchFillReadBounds) []any {
+// bounds, the client's deadline armed on clk. A read that fails, a timeout included, gives
+// <table>_rows=unknown and the error in <table>_rows_error, and the boot goes on: the line reports
+// the tables and never decides whether the process starts. The line is how a deployment learns,
+// from the boot log alone, that a process booted with the fill off found both tables empty.
+func searchFillTableRows(ctx context.Context, pool *store.Pool, clk bootClock, bounds searchFillReadBounds) []any {
 	fields := make([]any, 0, 4*len(searchFillTables))
 	for _, table := range searchFillTables {
 		key := table + "_rows"
-		holdsRow, err := searchFillTableHoldsRow(ctx, pool, table, bounds)
+		holdsRow, err := searchFillTableHoldsRow(ctx, pool, clk, table, bounds)
 		switch {
 		case err != nil:
 			fields = append(fields, key, "unknown", key+"_error", err.Error())
@@ -2443,13 +2528,14 @@ func searchFillTableRows(ctx context.Context, pool *store.Pool, bounds searchFil
 // `select exists(select 1 from public.<table>)`, which reads no column and stops at the first
 // visible row; it may scan dead rows before that one, which the statement timeout bounds. It reads
 // in a read-only transaction of its own that first sets bounds' lock and statement timeouts, local
-// to that transaction, under bounds' client deadline. The read takes ACCESS SHARE on the table and
-// holds it until that transaction rolls back (the deferred Rollback) or its connection ends,
-// normally milliseconds after the read; no statement timeout bounds how long it holds it. Row
-// writes go on beside it, but a TRUNCATE or another statement that wants ACCESS EXCLUSIVE waits
-// behind it for that long.
-func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, table string, bounds searchFillReadBounds) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, bounds.client)
+// to that transaction, under bounds' client deadline armed on clk: clock.Real in main, and a test's
+// clocktest.Fake that the test never moves, so only Postgres's own timeouts end the read. The read
+// takes ACCESS SHARE on the table and holds it until that transaction rolls back (the deferred
+// Rollback) or its connection ends, normally milliseconds after the read; no statement timeout
+// bounds how long it holds it. Row writes go on beside it, but a TRUNCATE or another statement that
+// wants ACCESS EXCLUSIVE waits behind it for that long.
+func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, clk bootClock, table string, bounds searchFillReadBounds) (bool, error) {
+	ctx, cancel := clk.WithTimeout(ctx, bounds.client)
 	defer cancel()
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -2930,6 +3016,24 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
 	}
 	*target = raw == "1"
+	return nil
+}
+
+// testHookCount reads the test-only count setting name into target, leaving target as it is when
+// the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so is any
+// value positiveSetting refuses.
+func testHookCount(env settingValues, name string, testHooksEnabled bool, target *int) error {
+	if strings.TrimSpace(env.get(name)) == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	value, err := positiveSetting(env, name)
+	if err != nil {
+		return err
+	}
+	*target = value
 	return nil
 }
 
