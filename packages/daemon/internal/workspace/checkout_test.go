@@ -265,6 +265,36 @@ func TestProvisionMarksAWorkspaceWhoseRegistrationFailedAfterItsAdd(t *testing.T
 	requireCutShortCheckoutRedone(t, run, req)
 }
 
+// A provision that fails at the registration's last step, the `jj bookmark set` that puts the
+// bookmark of an issue whose branch GitHub does not have on the new workspace, leaves the workspace
+// registered and marked with no bookmark. The provision after it reports the workspace on that
+// bookmark (Workspace.Bookmark, workspace-init's last line), so it is there: on the workspace's
+// working-copy commit, where a first provision that did not fail puts it.
+func TestProvisionSetsTheBookmarkOfAWorkspaceWhoseRegistrationFailedAfterItsAdd(t *testing.T) {
+	t.Parallel()
+	run := newLocalRunner(t)
+	pushTreeFiles(t, run.remote, "main", markedCheckoutTree)
+	req := provisionRequest(t)
+
+	realTools := run.tools
+	run.tools = jjTools(t, "*' bookmark set '*) echo 'the test fails jj bookmark set' >&2; exit 1 ;;\n")
+	_, err := Provision(context.Background(), run, req)
+	run.tools = realTools
+	if err == nil || !strings.Contains(err.Error(), "bookmark set") {
+		t.Fatalf("Provision whose jj bookmark set failed = %v, want that command's failure", err)
+	}
+
+	working, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("the Provision after the failed jj bookmark set: %v", err)
+	}
+	requireCheckedOut(t, working)
+	at := commitOf(t, working.Dir, "@")
+	if got := commitOf(t, working.Dir, `bookmarks(exact:"`+working.Bookmark+`")`); got != at {
+		t.Errorf("after the provision that followed a failed jj bookmark set, bookmark %s is on %q, want the workspace's working-copy commit %s", working.Bookmark, got, at)
+	}
+}
+
 // R3-4: a workspace that Legion finished checking out leaves no `.jj/legion-checkout`. When an
 // agent later clears its sparse patterns and leaves an untracked file, the next provision writes
 // no marker and keeps the untracked file.
