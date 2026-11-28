@@ -13,6 +13,6 @@ var _ = declareRoute(routeDecl{
 	Description: "Cross-references to and from a document.",
 	Handler:     (*server).getArtifactReferences,
 	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: model.ArtifactReferences{}},
 })

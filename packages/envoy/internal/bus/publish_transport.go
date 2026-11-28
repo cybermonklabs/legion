@@ -105,14 +105,15 @@ func (c *Client) PublishEachWithin(ctx context.Context, item contracts.Envelope,
 }
 
 // PublishAckWithin publishes item on its own topic as PublishReportingDuplicateWithin does, over
-// the same two transports and with ctx as its bound as PublishWithin's is, and returns the
-// stream's whole acknowledgement rather than its duplicate verdict alone: the sequence, the
-// verdict, and whether the verdict answers a resend (StoredAck.Resent), which can make a duplicate
-// this call's own first copy. A core-transport topic has no acknowledgement, so it answers the
-// zero StoredAck beside PublishCoreContext's error. The listener's send route publishes this way:
-// its sender limit charges nothing for a copy the stream already held, and one for a copy this
-// call may have stored (cmd/listener's senderCharge.published). It is the transport's judgement
-// (PublishTakesJetStream) followed by the publish on the transport it chose (PublishAckOn).
+// the same two transports and bounded as PublishWithin is, by the earlier of ctx's own deadline and
+// publishBound on either path, and returns the stream's whole acknowledgement rather than its
+// duplicate verdict alone: the sequence, the verdict, and whether the verdict answers a resend
+// (StoredAck.Resent), which can make a duplicate this call's own first copy. A core-transport topic
+// has no acknowledgement, so it answers the zero StoredAck beside PublishCoreContext's error. The
+// listener's send route publishes this way: its sender limit charges nothing for a copy the stream
+// already held, and one for a copy this call may have stored (cmd/listener's
+// senderCharge.published). It is the transport's judgement (PublishTakesJetStream) followed by the
+// publish on the transport it chose (PublishAckOn).
 //
 // The path is publishPathOf's, the one the other five publish functions take through this one. A
 // topic this build stores goes through JetStream while the deployed stream captures it and is
@@ -124,7 +125,7 @@ func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) 
 	return c.PublishAckOn(ctx, item, c.PublishTakesJetStream(ctx, item.Topic))
 }
 
-// PublishAckOn publishes item on its own topic as PublishAckWithin does, with ctx as its bound, on
+// PublishAckOn publishes item on its own topic as PublishAckWithin does, bounded as it is, on
 // the transport its caller decided rather than one it judges itself: JetStream when jetStream,
 // answering the stream's whole acknowledgement, and core NATS otherwise (PublishCoreContext),
 // answering the zero StoredAck. It is for a caller that decides something else of the publish by

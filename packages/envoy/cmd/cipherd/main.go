@@ -707,12 +707,20 @@ func main() {
 		Exchange:  exchangeConfig,
 		Airlock:   resultAirlock(cfg, fileRules, entryDigest, airlockCA),
 		Approve:   approveSettings,
+		// Config.Load refuses BROKER_DISPATCH_SIGNIN=on without BROKER_MACHINE_LOGIN_URL, as
+		// oauth.New does, so a provider serves a Dispatch sign-in only beside its device grant.
+		DispatchSignIn: cfg.DispatchSignIn,
 	}, oauthStore)
 	fatal(err)
 	if provider.DeviceGrant() {
 		slog.Info("machine login device grant", "state", "on", "verification_uri", redact.URL(cfg.MachineLoginURL))
 	} else {
 		slog.Info("machine login device grant", "state", "off", "detail", "BROKER_MACHINE_LOGIN_URL is unset, so no person types a code and POST /v1/oauth/device_authorization is not served")
+	}
+	if provider.ServesDispatchSignIn() {
+		slog.Info("Dispatch sign-in", "state", "on", "detail", "BROKER_DISPATCH_SIGNIN=on: a device login may name the scope dispatch, and its metadata's scopes_supported names it")
+	} else {
+		slog.Info("Dispatch sign-in", "state", "off", "detail", "BROKER_DISPATCH_SIGNIN is off: every step of a Dispatch sign-in, its device request, approval, refresh and trade, is refused DISPATCH_SIGNIN_OFF")
 	}
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
@@ -1126,8 +1134,9 @@ func fatal(err error) {
 // minted from that configuration, so it is loaded before the database is opened; awsAlso asks for
 // it where the database does not, for the Secrets Manager and KMS clients of the AWS store, and
 // with neither the answer is the zero aws.Config. It migrates nothing: the server migrates after
-// this, and the end-sessions and versions subcommands must not. All three open the store here, so
-// each subcommand reaches the same database and signs in to it the same way as the server.
+// this, and the end-sessions, versions and revoke-dispatch-signins subcommands must not. All
+// four open the store here, so each subcommand reaches the same database and signs in to it the
+// same way as the server.
 func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Store, aws.Config, error) {
 	var awsCfg aws.Config
 	var err error
@@ -2063,8 +2072,9 @@ func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.St
 	}
 }
 
-// endSessionsCommand and versionsCommand are two of the three subcommands the broker takes in
-// place of serving; the third is `profiles check` (profilesCommand, profilescheck.go).
+// endSessionsCommand and versionsCommand are two of the four subcommands the broker takes in
+// place of serving; the others are `revoke-dispatch-signins` (revokeDispatchSignInsCommand) and
+// `profiles check` (profilesCommand, profilescheck.go).
 const (
 	endSessionsCommand = "end-sessions"
 	versionsCommand    = "versions"
@@ -2073,7 +2083,7 @@ const (
 // runSubcommand runs the subcommand args name and answers its exit code. It is every argument
 // this binary takes: an unknown name, a missing or malformed argument to a name it knows, is
 // refused with 2 and a usage line, never a fall-through to serving. A removed subcommand is
-// refused the same way, naming the one that replaced it. There are four names, so a switch still
+// refused the same way, naming the one that replaced it. There are five names, so a switch still
 // reads as one thing (cmd/dispatch/subcommands.go keeps a table for its eleven).
 func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
@@ -2089,6 +2099,12 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return 2
 		}
 		return versions(ctx, stdout, stderr)
+	case revokeDispatchSignInsCommand:
+		if len(args) != 1 {
+			fmt.Fprintf(stderr, "broker: usage: broker %s, with no argument\n", revokeDispatchSignInsCommand)
+			return 2
+		}
+		return revokeDispatchSignIns(ctx, stdout, stderr)
 	case profilesCommand:
 		if len(args) < 2 || args[1] != profilesCheckCommand {
 			fmt.Fprintln(stderr, profilesCheckUsage)
@@ -2100,8 +2116,8 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			removedAirlockCheckCommand, profilesCheckForm)
 		return 2
 	}
-	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s, and broker with no argument serves\n",
-		args[0], endSessionsCommand, versionsCommand, profilesCheckForm)
+	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s, %s and %s, and broker with no argument serves\n",
+		args[0], endSessionsCommand, versionsCommand, revokeDispatchSignInsCommand, profilesCheckForm)
 	return 2
 }
 

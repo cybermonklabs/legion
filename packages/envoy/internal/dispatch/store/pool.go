@@ -17,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 )
 
 // ErrNestedAcquire is the shared pool refusing a second connection to a caller that already
@@ -175,6 +177,19 @@ func logRefusal() {
 // Pool is the shared Dispatch connection pool. Every way it hands out a connection refuses one
 // asked for while the caller already holds one; see ErrNestedAcquire. The pgx pool is private
 // so no caller can reach past the refusal.
+//
+// Under a context that carries a cut (asof.WithCut), the pool binds each statement that it
+// sends to the cut (asof.Bind) before it sends it: a statement of Query, QueryRow, Exec or
+// SendBatch, and each statement of a transaction that Begin or BeginTx opens and of its
+// savepoints. Each of them runs in a read-only transaction, so the database refuses a write that
+// Bind cannot see, such as a read that calls nextval: a transaction that Begin or BeginTx opens is
+// read-only, and a statement of Query, QueryRow or Exec, and a batch, run in a read-only
+// transaction of their own (pool_cut.go says what that costs). A statement that Bind refuses is
+// not sent, and the call returns the refusal. The pool refuses a connection that it hands out
+// (Acquire, AcquireFunc, Listener, Dedicated) and a copy (RefusedAtCutError). The separate pools
+// that Rooms, RoomAppends, Compaction and Horizon hand out check no cut: a statement sent through
+// one of them goes as the caller wrote it. Under a context with no cut, the pool sends each
+// statement as the caller wrote it.
 type Pool struct {
 	pool *pgxpool.Pool
 	// mu guards each separate pool's creation against this pool's close: one lock, so a
@@ -384,6 +399,9 @@ const listenerPoolSize = 1
 // of the shared pool held that long would be one fewer for every request, and a LISTEN on a
 // pooled connection would end when the pool recycled it.
 func (p *Pool) Listener(ctx context.Context) (*pgx.Conn, error) {
+	if err := refuseAtCut(ctx, "Listener"); err != nil {
+		return nil, err
+	}
 	listen, err := p.separate(&p.listen, listenerPoolSize, "listener", "")
 	if err != nil {
 		return nil, err
@@ -404,6 +422,9 @@ func (p *Pool) Listener(ctx context.Context) (*pgx.Conn, error) {
 // processes are listening (docs.ListenerApplicationPrefix), and the document rooms' NOTIFY sender
 // (docs/room_sync.go), which a request inside a transaction sends through.
 func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn, error) {
+	if err := refuseAtCut(ctx, "Dedicated"); err != nil {
+		return nil, err
+	}
 	conn, err := p.Listener(ctx)
 	if err != nil {
 		return nil, err
@@ -997,6 +1018,9 @@ func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, er
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return p.queryAtCut(ctx, cut, sql, args)
+	}
 	rows, err := p.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
@@ -1050,6 +1074,9 @@ func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if err := p.guard(ctx); err != nil {
 		return errRow{err: err}
 	}
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return p.queryRowAtCut(ctx, cut, sql, args)
+	}
 	return p.pool.QueryRow(ctx, sql, args...)
 }
 
@@ -1058,12 +1085,18 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 	if err := p.guard(ctx); err != nil {
 		return pgconn.CommandTag{}, err
 	}
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return p.execAtCut(ctx, cut, sql, args)
+	}
 	return p.pool.Exec(ctx, sql, args...)
 }
 
 // Acquire takes a pooled connection the caller holds until it releases it.
 func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	if err := p.guard(ctx); err != nil {
+		return nil, err
+	}
+	if err := refuseAtCut(ctx, "Acquire"); err != nil {
 		return nil, err
 	}
 	return p.pool.Acquire(ctx)
@@ -1074,12 +1107,19 @@ func (p *Pool) AcquireFunc(ctx context.Context, fn func(*pgxpool.Conn) error) er
 	if err := p.guard(ctx); err != nil {
 		return err
 	}
+	if err := refuseAtCut(ctx, "AcquireFunc"); err != nil {
+		return err
+	}
 	return p.pool.AcquireFunc(ctx, fn)
 }
 
-// AcquireAllIdle takes every idle connection the pool holds.
+// AcquireAllIdle takes every idle connection the pool holds. Under a cut it takes none, as
+// Acquire refuses one: its only caller is a test with no cut.
 func (p *Pool) AcquireAllIdle(ctx context.Context) []*pgxpool.Conn {
 	if err := p.guard(ctx); err != nil {
+		return nil
+	}
+	if _, atCut := asof.CutFrom(ctx); atCut {
 		return nil
 	}
 	return p.pool.AcquireAllIdle(ctx)
@@ -1095,6 +1135,9 @@ func (p *Pool) CopyFrom(
 	if err := p.guard(ctx); err != nil {
 		return 0, err
 	}
+	if err := refuseAtCut(ctx, "CopyFrom"); err != nil {
+		return 0, err
+	}
 	return p.pool.CopyFrom(ctx, table, columns, source)
 }
 
@@ -1102,6 +1145,9 @@ func (p *Pool) CopyFrom(
 func (p *Pool) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
 	if err := p.guard(ctx); err != nil {
 		return errBatchResults{err: err}
+	}
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return p.sendBatchAtCut(ctx, cut, batch)
 	}
 	return p.pool.SendBatch(ctx, batch)
 }
@@ -1140,18 +1186,31 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 // so a refusal records the caller that asked for the transaction rather than one of this
 // pool's own frames. A transaction with nothing to do at either end - no hold mark to clear and no
 // BeforeCommit step to take - is handed on as pgx opened it: a trackedTx around it would only
-// forward its Commit and Rollback.
+// forward its Commit and Rollback. A transaction opened under a cut is read-only, whatever access
+// mode options name, and binds its statements to that cut (cutTx), around whatever begin would
+// hand on without one. A begin query that options name (pgx.TxOptions.BeginQuery) sets its own
+// access mode, so under a cut the pool refuses it.
 func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+	cut, atCut := asof.CutFrom(ctx)
+	if atCut {
+		if options.BeginQuery != "" {
+			return nil, &RefusedAtCutError{Method: "BeginTx with BeginQuery", Cut: cut}
+		}
+		options.AccessMode = pgx.ReadOnly
+	}
 	tx, err := p.pool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}
 	release := hold(ctx)
 	beforeCommit, _ := ctx.Value(beforeCommitKey{}).(BeforeCommit)
-	if release == nil && beforeCommit == nil {
-		return tx, nil
+	if release != nil || beforeCommit != nil {
+		tx = &trackedTx{Tx: tx, release: release, beforeCommit: beforeCommit}
 	}
-	return &trackedTx{Tx: tx, release: release, beforeCommit: beforeCommit}, nil
+	if atCut {
+		tx = &cutTx{Tx: tx, cut: cut}
+	}
+	return tx, nil
 }
 
 // BeforeCommit is a step every transaction a request opens takes just before its COMMIT, inside

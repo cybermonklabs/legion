@@ -1,0 +1,62 @@
+{
+  "id": 452,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 6,
+  "type": "ask.answered",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-10-16T17:54:44.976182Z",
+  "payload": {
+    "anchor": null,
+    "answer": {
+      "at": "2026-10-16T17:54:45.005115446Z",
+      "id": "b4",
+      "selected": [],
+      "text": "lorem ipsum dolor sit",
+      "user": "alice@example.com"
+    },
+    "artifact_id": null,
+    "author": {
+      "id": "01a14313-f0d7-765d-91c1-f2e043218727",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+        "host": "lor",
+        "machine": "lorem ipsum d",
+        "pane": "lor",
+        "session_title": "lorem ipsum dolor sit amet",
+        "tmux": "lorem ip"
+      }
+    },
+    "block_id": null,
+    "created_at": "2026-10-16T17:40:37.354192Z",
+    "edited_at": null,
+    "id": "9b1d79b8-da3d-4de3-acb5-eaea3f2d5aea",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 357,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ip",
+        "id": "b2",
+        "label": "lorem ipsum "
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum",
+        "id": "b3",
+        "label": "lore"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem",
+    "referenced_by_count": 0,
+    "revision": 1,
+    "state": "answered",
+    "urgency": "med"
+  }
+}

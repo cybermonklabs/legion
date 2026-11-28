@@ -2736,7 +2736,7 @@ func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T
 	peer.waitHealthy(t)
 
 	waiting := startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{NATSURL: pair.nats, SigningKey: "a-key-the-peer-does-not-share", Env: app, Binary: binary})
-	waiting.waitForLog(t, 30*time.Second, admissionRefusedLine)
+	waiting.waitForLog(t, 30*time.Second, registryRefusalLine)
 	for _, durable := range deliveryDurables {
 		waiting.waitForLog(t, 10*time.Second, `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
 	}
@@ -4498,12 +4498,6 @@ func TestASessionMintedOnOneProcessAuthenticatesOnTheOtherUnderOneSigningKey(t *
 	}
 }
 
-// quickProcessHeartbeat is the registry pace every process of the row below runs at
-// (DISPATCH_TEST_PROCESS_HEARTBEAT) in place of production's five seconds: the live window stays
-// three beats of it (cmd/dispatch/main.go), so a refused process waits four seconds for its
-// refuser to lapse where a deployment's waits twenty, and the row waits no production period out.
-const quickProcessHeartbeat = time.Second
-
 // The registry of live server processes refuses a process whose signing key set a live peer does
 // not share both ways (processes.Register): with a pair live under one key, a process carrying a
 // key of its own - a task rolled with a changed secret - and one with no DISPATCH_SIGNING_KEY,
@@ -4517,9 +4511,9 @@ func TestAProcessWhoseKeySetALivePeerDoesNotShareRefusesToStart(t *testing.T) {
 	// Three Dispatch processes at once: the pair, and beside it each refused process in turn, then the
 	// rotating one.
 	dispatchSlots.reserve(t, 3)
-	// Every process here takes that pace, the pair included: the refusal stands only while the
-	// refusing process keeps heartbeating inside the window the refused one judges it by, and a
-	// pair beating slower than that window would lapse between beats and refuse nobody.
+	// Every process here takes quickProcessHeartbeat's pace, the pair included: the refusal stands
+	// only while the refusing process keeps heartbeating inside the window the refused one judges
+	// it by, and a pair beating slower than that window would lapse between beats and refuse nobody.
 	quick := map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": quickProcessHeartbeat.String()}
 	pair := startPair(t, quick)
 	for _, refused := range []struct{ name, key string }{

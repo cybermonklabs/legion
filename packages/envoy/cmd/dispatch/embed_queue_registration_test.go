@@ -23,9 +23,6 @@ import (
 
 // The lines of a process's own log the row below reads, as the binary writes them.
 const (
-	// admissionRefusedLine is processes.Register's wait on a live peer whose key set this process
-	// does not share: the process is in joinRegistry and has not registered.
-	admissionRefusedLine = "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse"
 	// registeredLine is joinRegistry's, once the process's row is written.
 	registeredLine = `msg="dispatch: registered this server process"`
 	// coveragePassLine is the embedding queue's boot coverage pass (embedqueue.Cover), which
@@ -117,8 +114,8 @@ func TestTwoProcessesStartingAtOnceWithDifferentEmbeddersAgreeOnOneAndKeepItsVec
 	var releaseBy time.Time
 	for _, name := range names {
 		process := named[name]
-		process.waitForLog(t, 2*time.Minute, admissionRefusedLine)
-		refused, err := time.Parse(time.RFC3339Nano, logAttributes(process.logLines(admissionRefusedLine)[0])["time"])
+		process.waitForLog(t, 2*time.Minute, registryRefusalLine)
+		refused, err := time.Parse(time.RFC3339Nano, logAttributes(process.logLines(registryRefusalLine)[0])["time"])
 		if err != nil {
 			t.Fatalf("read when %s was first refused: %v", name, err)
 		}

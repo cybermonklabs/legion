@@ -6,8 +6,9 @@
  * This module imports nothing: the docs generator's program is `dispatch-command.ts`'s, which
  * imports this module and holds no `@legion/cipher-client` source (`.github/scripts/ci_job_reads.py`,
  * the docs gate's read of envoy-client's sources). So the help writes out the variables and the
- * command that `@legion/cipher-client` names, and `__tests__/device-login.test.ts` holds each to
- * that package's constant.
+ * command that `@legion/cipher-client` names, the scopes a Dispatch sign-in may ask for
+ * (`DISPATCH_SIGN_IN_SCOPES`) and the reason's bound (`BROKER_REQUEST_REASON_MAX`) that
+ * `@legion/contracts` names, and `__tests__/device-login.test.ts` holds each to its constant.
  */
 
 /** The login's command word. */
@@ -20,21 +21,25 @@ export const LOGIN_SENTENCE =
 /** What `dispatch login --help` prints. */
 export function loginHelp(): string {
   return [
-    "Usage: dispatch login --device [--person <address>]",
+    "Usage: dispatch login --device [--person <address>] [--scope <list>] [--reason <text>]",
     "",
-    `${LOGIN_SENTENCE} It prints a code and the page to type it into; the person the login names approves it there, signed in to Dispatch. The login is then kept in the file AGENT_SECRETS_DEVICE_LOGIN_FILE names (default ~/.config/legion/device-login.json), mode 0600, and every session that sets AGENT_SECRETS_MACHINE_IDENTITY=device-login trades it for its broker token.`,
+    `${LOGIN_SENTENCE} With --scope, it makes a Dispatch sign-in for a session or tool instead: the person approves the scopes it asks for, ticking some or all of them, and its tokens hold those scopes alone, never approve; it enrolls no session and reads no secret. Whatever is ticked, the session writes in Dispatch and works on Envoy as its own session within its person's projects; the scope person adds acting as the person, the scope p0, which the page shows unticked until the person ticks it, adds making an issue's own priority 0, and --scope none asks for no scope. A broker serves Dispatch sign-ins only where its deployment turns them on. It prints a code and the page to type it into; the person the login names approves it there, signed in to Dispatch. The login is then kept in the file AGENT_SECRETS_DEVICE_LOGIN_FILE names (default ~/.config/legion/device-login.json), mode 0600, in place of any login that file held, and every session started after that sets AGENT_SECRETS_MACHINE_IDENTITY=device-login trades it for its broker token. A session already running refuses to trade a new login, a scope change included: start a new session to trade it, since the broker keeps a session's name for the principal that wrote under it, and each Dispatch sign-in is a principal of its own, as is each person's machine login, so that session started again is refused, except where a machine login replaced the same person's machine login, which the client cannot tell, since the login file names no person. To keep a machine login and a Dispatch sign-in on one machine, name another file for one of them.`,
     "",
     "Flags:",
     "  --device",
     "      Log in with the broker's device grant: the only way there is, and required.",
     "  --person <address>",
     "      The person who approves the login, by the address they sign in to Dispatch with; else AGENT_SECRETS_PERSON.",
+    "  --scope <list>",
+    "      Create a Dispatch sign-in for the comma-separated scopes person, p0, or none. Omit it for a machine login.",
+    "  --reason <text>",
+    "      Name the session or tool. It may have at most 400 characters.",
     "",
     "It reads AGENT_SECRETS_URL, the broker, and needs no Dispatch host or session.",
     "",
     "It exits 0 once the login is kept; 1 when the broker could not be reached or refused it, the person denied it, its code expired, or the login could not be kept; and 2 on a usage error, before any request.",
     "",
-    "Example: dispatch login --device --person ada@example.com",
+    "Example: dispatch login --device --person ada@example.com --scope person",
     "",
   ].join("\n");
 }

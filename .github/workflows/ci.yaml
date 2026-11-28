@@ -110,11 +110,12 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
-    # Above the sum of its steps' own timeouts, 38 minutes: the filter generation's 9
+    # Above the sum of its steps' own timeouts, 39 minutes: the filter generation's 9
     # (ci-filters-generate.sh stops this tree's run at 300 s and kills it 15 s later, and bounds the
     # base's fetch at 65 s and its install at 125 s, so it ends within 505 s), 3 each for the two
     # cache restores, the checkout, the Go install, Bun's setup and install, the merge base, the
-    # upload and the paths filter, and 1 each for the ref and the scope.
+    # upload and the paths filter, and 1 each for the ref, the scope and the statement of what
+    # decided each slow suite.
     timeout-minutes: 40
     outputs:
       # why, for each output below with a `lane:` term: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
@@ -281,6 +282,16 @@ jobs:
           filters: ${{ runner.temp }}/ci-filters.yaml
           base: ${{ github.event_name == 'workflow_dispatch' && 'main' || '' }}
           ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || '' }}
+      # why: .github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite
+      - name: Say what decided each slow suite on this run
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          EVERY_JOB: ${{ steps.scope.outputs.every_job }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          FILTER: ${{ toJSON(steps.filter.outputs) }}
+          FILTERS_FILE: ${{ runner.temp }}/ci-filters.yaml
+        run: .github/scripts/lane-verdicts.py
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
   lint:

@@ -7,7 +7,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
-import { type DispatchToolResult, executeDispatchTool } from "../dispatch-execute";
+import type { DispatchToolResult } from "../dispatch-execute";
 import { DISPATCH_WRITE_RETRY, DispatchClient, DispatchServiceError } from "../dispatch-http";
 import {
   forgetShownPictures,
@@ -18,6 +18,7 @@ import {
 } from "../dispatch-picture-tools";
 import { pictureAddresses } from "../dispatch-pictures";
 import { ToolInputError } from "../tool-input-errors";
+import { executeDispatchTool } from "./whoami-stand-in";
 
 const config = {
   enabled: true,

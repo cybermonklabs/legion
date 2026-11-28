@@ -33,6 +33,10 @@ const bootProbeDialDelay = 3 * time.Second
 const bootProbeDeadline = `msg="dispatch: register this server process" ` +
 	`error="probe the database: context deadline exceeded"`
 
+// registryRefusalLine is what a process logs when a live server process refuses its signing keys
+// and it waits for that process's heartbeat to lapse (processes.Register).
+const registryRefusalLine = "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse"
+
 // The boot's one probe of the database outlasts the bound /healthz's probe reads within, and it
 // leaves that pool warm for the first /healthz a prober makes. Why that read is the one that is
 // always cold, and why the warm bound is no bound for it, is on store.Pool.HealthyWithin; the
@@ -109,7 +113,7 @@ func TestAProcessStoppedWhileWaitingForAdmissionExitsCleanly(t *testing.T) {
 	peer.waitHealthy(t)
 
 	waiting := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{SigningKey: "a-key-the-peer-does-not-share"})
-	waiting.WaitForOutput(t, admissionRefusedLine)
+	waiting.WaitForOutput(t, registryRefusalLine)
 	waiting.Terminate(t)
 	waiting.WaitExit(t, "SIGTERM")
 
