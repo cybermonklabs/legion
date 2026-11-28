@@ -5373,9 +5373,12 @@ func (m *Machine) nextTimer(kind TimerKind, deliveryID string) Timer {
 func (m *Machine) fire(ev Timer) {
 	ctx := m.worker()
 	if err := m.Handle(ctx, ev); err != nil {
-		m.log.Log(ctx, decisionErrorLevel(err), "supervise: timer", "timer", string(ev.Kind), "error", err)
+		m.log.Log(ctx, decisionErrorLevel(err), timerLine, "timer", string(ev.Kind), "error", err)
 	}
 }
+
+// timerLine is the line fire writes for the error a timer's decision answered.
+const timerLine = "supervise: timer"
 
 // decisionErrorLevel is the level a goroutine the machine starts logs its decision's error at
 // (fire, startSend), as the daemon's feeder of a worker's events logs it (internal/daemon's

@@ -491,8 +491,8 @@ var errReleaseHolds = fmt.Errorf("launch %s: %w", testToken, wait.Routine(wait.N
 // project release holds every start, is logged at Info at the refusal that begins the wait and at
 // Debug at each probe interval's retry it refuses after that, and nothing of the wait is logged at
 // Warn or above: the release holds for up to its bound, and the operator who released the project
-// asked for that. That holds for the timer that retries it too ("supervise: timer", fire): the
-// wait is answered to no caller, so the timer writes no line for it. A refusal that is no routine
+// asked for that. That holds for the timer that retries it too (timerLine, fire): the wait is
+// answered to no caller, so the timer writes no line for it. A refusal that is no routine
 // wait, a store that did not answer, is still logged at Warn at each retry, its timer's line at
 // Error, and it ends the wait, so the next wait logs at Info again; so do a launch check that
 // passes (launchAfter) and a let-go of the claim's process (letGo), here the check of the retry
@@ -523,14 +523,13 @@ func TestARelaunchTheLaunchCheckRefusesWithAWaitLogsTheWaitOnceAtInfo(t *testing
 			t.Fatalf("%s, the refusal's lines are at %v; want %v", when, got, refusals)
 		}
 	}
-	// quiet fails where a record from the from'th on is at Warn or above, or is the timer's line,
-	// which fire writes only for a decision that answered an error.
+	// quiet fails where a record from the from'th on is at Warn or above, or is the timer's line
+	// (timerLine), which fire writes only for a decision that answered an error, at Debug where
+	// that error holds a routine wait (decisionErrorLevel).
 	quiet := func(when string, from int) {
 		t.Helper()
-		h.records.mu.Lock()
-		defer h.records.mu.Unlock()
-		for _, r := range h.records.kept[from:] {
-			if r.level >= slog.LevelWarn || r.message == "supervise: timer" {
+		for _, r := range h.records.since(from) {
+			if r.level >= slog.LevelWarn || r.message == timerLine {
 				t.Fatalf("%s, the log holds %q at %s; want nothing at Warn or above, and no timer's line, while the release holds the relaunch",
 					when, r.message, r.level)
 			}
@@ -538,16 +537,13 @@ func TestARelaunchTheLaunchCheckRefusesWithAWaitLogsTheWaitOnceAtInfo(t *testing
 	}
 	// written is how many records the log holds, and began the index of the newest wait's line.
 	written := func() int {
-		h.records.mu.Lock()
-		defer h.records.mu.Unlock()
-		return len(h.records.kept)
+		return len(h.records.since(0))
 	}
 	began := func() int {
 		t.Helper()
-		h.records.mu.Lock()
-		defer h.records.mu.Unlock()
-		for i := len(h.records.kept) - 1; i >= 0; i-- {
-			if h.records.kept[i].message == relaunchWaitLine {
+		kept := h.records.since(0)
+		for i := len(kept) - 1; i >= 0; i-- {
+			if kept[i].message == relaunchWaitLine {
 				return i
 			}
 		}
@@ -612,9 +608,7 @@ func TestARegistrationDeadlineTheReleaseHoldsLogsNothingAtWarnAtAnyRetry(t *test
 	h := newHarness(t)
 	h.reach(StateRegistered)
 	h.m.deps.Store = &heldCheckStore{memStore: h.store, refusal: errReleaseHolds}
-	h.records.mu.Lock()
-	from := len(h.records.kept)
-	h.records.mu.Unlock()
+	from := len(h.records.since(0))
 
 	h.advance(deadline)
 	for range 3 {
@@ -623,7 +617,7 @@ func TestARegistrationDeadlineTheReleaseHoldsLogsNothingAtWarnAtAnyRetry(t *test
 
 	h.wantCalls("Suspend", 0)
 	h.wantState(StateRegistered)
-	fired := h.records.of("supervise: timer")
+	fired := h.records.of(timerLine)
 	if len(fired) != 4 {
 		t.Fatalf("the timer wrote %d lines, want 4: one at the deadline and one at each of its three retries at the probe interval", len(fired))
 	}
@@ -632,9 +626,7 @@ func TestARegistrationDeadlineTheReleaseHoldsLogsNothingAtWarnAtAnyRetry(t *test
 			t.Fatalf("the timer wrote its line at %s for the %q timer, want Debug for the registration deadline: the release's wait is routine", r.level, kind)
 		}
 	}
-	h.records.mu.Lock()
-	defer h.records.mu.Unlock()
-	for _, r := range h.records.kept[from:] {
+	for _, r := range h.records.since(from) {
 		if r.level >= slog.LevelWarn {
 			t.Fatalf("the log holds %q at %s; want nothing at Warn or above while the release holds the deadline's retirement", r.message, r.level)
 		}
@@ -667,7 +659,7 @@ func TestARelaunchTheLaunchCheckRefusesWithAWaitThatIsNotRoutineIsLoggedAtWarn(t
 	if waits := h.records.of(relaunchWaitLine); len(waits) != 0 {
 		t.Fatalf("the refusal wrote the routine wait's line %d times, want none: the wait is not routine", len(waits))
 	}
-	for line, want := range map[string]slog.Level{relaunchRefusedLine: slog.LevelWarn, "supervise: timer": slog.LevelError} {
+	for line, want := range map[string]slog.Level{relaunchRefusedLine: slog.LevelWarn, timerLine: slog.LevelError} {
 		got := h.records.of(line)
 		if len(got) != 2 {
 			t.Fatalf("the log holds %q %d times, want twice: at the refusal and at its retry", line, len(got))
