@@ -1873,6 +1873,46 @@ replace "$root/mod/lib/nested_test.go" $'package lib\n\nimport (' \
 run_check "$root"
 check "and passes once a //ci:reads line names it" "$(is "$status" 0)"
 
+# A test that reads a file of its own module outside its package names it in a //ci: line too, when
+# no package the job builds holds the file: go list sees no such read, so a line taken out drops the
+# file from the filter, and a change to it starts no job that runs the test
+# (dispatch://INFRA-5794/spec, Design, "It fails when a test file's //ci: lines no longer name a path
+# outside its package that the test reads"). At cab8a563 the check passed with
+# packages/envoy/internal/dispatch/api/delivery_test.go's line for
+# packages/envoy/internal/dispatch/delivery/testdata/dev-only-run-jobs.json taken out, and
+# envoy-go-race-api, which runs that test under -race, read 2737 files where it had read 2738.
+echo "case: a test that reads a file of its own module outside its package, which no package of the job holds, and no //ci: line of its file names the path"
+root=$(fixture declared-read-own-module)
+mkdir -p "$root/mod/assets"
+echo '{}' > "$root/mod/assets/data.json"
+cat > "$root/mod/lib/assets_test.go" <<'GO'
+package lib
+
+//ci:reads mod/assets/data.json TestAssets reads ../assets/data.json
+
+import (
+	"os"
+	"testing"
+)
+
+func TestAssets(t *testing.T) {
+	if _, err := os.ReadFile("../assets/data.json"); err != nil {
+		t.Fatal(err)
+	}
+}
+GO
+run_check "$root"
+check "the declared read of a file of its own module passes" "$(is "$status" 0)"
+run_generate "$root"
+check "and puts that file in the job's filter" "$(contains "$(filter_of app)" '^mod/assets/')"
+replace "$root/mod/lib/assets_test.go" $'//ci:reads mod/assets/data.json TestAssets reads ../assets/data.json\n' ""
+run_generate "$root"
+check "without the line the file leaves the job's filter" "$(is "$(contains "$(filter_of app)" '^mod/assets/')" false)"
+run_check "$root"
+check "so the check fails once the line is taken out" "$(is "$status" 1)"
+check "naming the test file and the path it reads" \
+  "$(contains "$out" '::error file=mod/lib/assets_test.go::mod/lib/assets_test.go reads mod/assets/data.json')"
+
 # Rule 22: a gate that reads a harness under .github/scripts reads every script that harness links
 # into its fixtures (through every `for linked in ...` loop of the harness, not the last one only),
 # runs or sources, every module it imports in any form, and what each script it reaches sources or
