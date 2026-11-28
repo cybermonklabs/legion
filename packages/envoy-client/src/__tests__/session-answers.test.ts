@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { settled } from "@legion/test-fixtures/wait";
@@ -40,22 +41,13 @@ const stateDir = temporaryDirectories("session-answers");
 /** The Dispatch bearer each test's Dispatch is reached with. */
 const TOKEN = fixtureSecret("dsp");
 
-// A row on Bun's fake clock that fails part way would leave the next row on it.
+// A row on Bun's fake clock reads what a read did after one turn of the event loop (`turn`, whose
+// `setImmediate` Bun's fake timers leave real): the stand-in Dispatch answers in promise jobs alone
+// and the cache is written synchronously, so by then a read has gone as far as it can without the
+// clock. Such a row that fails part way would leave the next row on that clock.
 afterEach(() => {
   jest.useRealTimers();
 });
-
-/**
- * Lets every job already queued run before a row on Bun's fake clock reads what they did. The
- * stand-in Dispatch answers in promise jobs alone and the cache is written synchronously, so by
- * the event loop's next turn (`setImmediate`, which Bun's fake timers leave real) a read has gone
- * as far as it can without the clock.
- */
-async function runQueued(): Promise<void> {
-  const turn = Promise.withResolvers<void>();
-  setImmediate(turn.resolve);
-  await turn.promise;
-}
 
 function message(id: string, at: string, text: string): SessionAnswer {
   return {
@@ -1124,12 +1116,12 @@ describe("readSessionAnswers", () => {
     void readSessionAnswers({ ...options, deadlineMs: 50 }).then((read) => {
       first = read;
     });
-    await runQueued();
+    await turn();
     jest.advanceTimersByTime(49);
-    await runQueued();
+    await turn();
     expect(first).toBeUndefined();
     jest.advanceTimersByTime(1);
-    await runQueued();
+    await turn();
     expect(first).toEqual({
       text: sessionAnswersFailureLine("Dispatch did not answer within 50 ms"),
       source: "failure",
@@ -1141,7 +1133,7 @@ describe("readSessionAnswers", () => {
     void readSessionAnswers({ ...options, deadlineMs: 120_000 }).then((read) => {
       second = read;
     });
-    await runQueued();
+    await turn();
     expect(second?.source).toBe("failure");
     expect(second?.reason).toBe("an earlier read is still waiting on Dispatch");
     expect(calls).toHaveLength(1);
@@ -1257,7 +1249,7 @@ describe("readSessionAnswers", () => {
     }).then((answered) => {
       read = answered;
     });
-    await runQueued();
+    await turn();
     expect(read).toEqual({
       text: undefined,
       source: "unavailable",

@@ -27,8 +27,6 @@ export interface DrivenDialClock {
   readonly clock: NatsDialClock;
   /** The waits and bounds armed and neither ended nor disarmed yet, in the order armed. */
   held(): readonly HeldTimer[];
-  /** The clock's reading. */
-  now(): number;
   /** Moves the reading `ms` on and ends nothing: time the dial's own code took, such as an event
    *  loop its host blocked. */
   advance(ms: number): void;
@@ -67,7 +65,6 @@ export function drivenDialClock(write: (step: string) => void): DrivenDialClock 
       },
     },
     held: () => [...held.keys()],
-    now: () => reading,
     advance: (ms) => {
       reading += ms;
       write(`clock moved ${ms} ms on`);

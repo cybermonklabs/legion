@@ -10,6 +10,7 @@ import {
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import envelopeWithoutRole from "../../../contracts/fixtures/envelope-without-role.json";
 import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
@@ -55,22 +56,13 @@ const REDIRECT_TOKEN = fixtureSecret("listener");
  *  expectations with it, rather than leaving the text saying a number nothing enforces. */
 const GRACE_MINUTES = ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS / 60_000;
 
-// A row on Bun's fake clock that fails part way would leave the next row on it.
+// A row on Bun's fake clock reads what the client did after one turn of the event loop (`turn`,
+// whose `setImmediate` Bun's fake timers leave real): the stand-in listener answers in promise jobs
+// alone, so by then the client has gone as far as it can without the clock. Such a row that fails
+// part way would leave the next row on that clock.
 afterEach(() => {
   jest.useRealTimers();
 });
-
-/**
- * Lets every job already queued run before a row on Bun's fake clock reads what they did. The
- * stand-in listener answers in promise jobs alone, so by the event loop's next turn
- * (`setImmediate`, which Bun's fake timers leave real) the client has gone as far as it can
- * without the clock.
- */
-async function settle(): Promise<void> {
-  const turn = Promise.withResolvers<void>();
-  setImmediate(turn.resolve);
-  await turn.promise;
-}
 
 type RecordedFetch = {
   readonly fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -3027,21 +3019,21 @@ describe("EnvoyClient", () => {
     });
     const aborted = () => attempts.map((signal) => signal.aborted);
 
-    await settle();
+    await turn();
     jest.advanceTimersByTime(49);
-    await settle();
+    await turn();
     expect(aborted()).toEqual([false]);
     jest.advanceTimersByTime(1);
-    await settle();
+    await turn();
     expect(aborted()).toEqual([true]);
     // The second attempt, after the retry delay, gives up at the same deadline, and so does the call.
     jest.advanceTimersByTime(LISTENER_CALL_RETRY_DELAY_MS);
-    await settle();
+    await turn();
     jest.advanceTimersByTime(49);
-    await settle();
+    await turn();
     expect({ aborted: aborted(), failure }).toEqual({ aborted: [true, false], failure: undefined });
     jest.advanceTimersByTime(1);
-    await settle();
+    await turn();
     expect(aborted()).toEqual([true, true]);
     expect(failure).toBeInstanceOf(Error);
   });

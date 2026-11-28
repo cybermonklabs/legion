@@ -16,7 +16,13 @@ import {
   type BrokerTokenRefusal,
   noAuthService,
 } from "../nats-credential";
-import { dialOnDrivenClock, heldBound, type Outcome, outcomeOf } from "./driven-dial-clock";
+import {
+  type DrivenDial,
+  dialOnDrivenClock,
+  heldBound,
+  type Outcome,
+  outcomeOf,
+} from "./driven-dial-clock";
 import { type FakeNatsBehaviour, type FakeNatsServer, startFakeNats } from "./fake-nats-server";
 import { type HeldNatsTimers, holdNatsTimers } from "./held-nats-timers";
 
@@ -67,8 +73,26 @@ interface DialRun {
   readonly bounds: readonly number[];
   /** The driven clock's reading when the dial ended. */
   readonly endedAt: number;
-  readonly nc?: NatsConnection;
   readonly error?: { code?: unknown; message: string };
+}
+
+/**
+ * Ends each wait `run`'s dial arms, and each bound it holds while `endBound()` holds, until the
+ * run ends, and resolves with how it ended. `what` names the row's wait for the next of those.
+ */
+async function endingWaits(
+  run: DrivenDial,
+  what: string,
+  endBound: () => boolean = () => false
+): Promise<Outcome<NatsConnection>> {
+  for (;;) {
+    const next = await until(
+      what,
+      () => run.ended() ?? run.driven.held().find((timer) => timer.kind === "wait" || endBound())
+    );
+    if (!("kind" in next)) return next;
+    run.driven.end(next);
+  }
 }
 
 /**
@@ -114,26 +138,19 @@ async function dialWith(
     }
   );
   const silent = extra.silent ?? (() => false);
-  const silentBound = () => silent(run.dials.length) && server.connections() >= run.dials.length;
-  for (;;) {
-    const next = await until(
-      "the dial's next wait, or the bound of a dial the server holds silent, or the dial's end",
-      () => run.ended() ?? run.driven.held().find((timer) => timer.kind === "wait" || silentBound())
-    );
-    if ("kind" in next) {
-      run.driven.end(next);
-      continue;
-    }
-    if (next.value !== undefined) connections.push(next.value);
-    return {
-      steps: run.steps,
-      delays,
-      bounds: run.dials.map((dial) => dial.options.timeout ?? Number.NaN),
-      endedAt: run.driven.now(),
-      nc: next.value,
-      error: next.error,
-    };
-  }
+  const ended = await endingWaits(
+    run,
+    "the dial's next wait, or the bound of a dial the server holds silent, or the dial's end",
+    () => silent(run.dials.length) && server.connections() >= run.dials.length
+  );
+  if (ended.value !== undefined) connections.push(ended.value);
+  return {
+    steps: run.steps,
+    delays,
+    bounds: run.dials.map((dial) => dial.options.timeout ?? Number.NaN),
+    endedAt: run.driven.clock.now(),
+    error: ended.error,
+  };
 }
 
 /** The dials and waits of `steps`, in order: the timers of the bounds left out. */
@@ -401,17 +418,8 @@ async function scriptedDials(
       onTokenDropped: (_error, attempt) => dropsAt.push(attempt),
     }
   );
-  for (;;) {
-    const next = await until(
-      "the dial's next wait, or the dial's end",
-      () => run.ended() ?? run.driven.held().find((timer) => timer.kind === "wait")
-    );
-    if ("kind" in next) {
-      run.driven.end(next);
-      continue;
-    }
-    return { opened: next.error === undefined, dials, delays, dropsAt, steps: run.steps };
-  }
+  const ended = await endingWaits(run, "the dial's next wait, or the dial's end");
+  return { opened: ended.error === undefined, dials, delays, dropsAt, steps: run.steps };
 }
 
 const REFUSED = "AUTHORIZATION_VIOLATION";

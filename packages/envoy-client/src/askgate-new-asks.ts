@@ -907,8 +907,8 @@ export function fenceColonsReads(): number {
 }
 
 /** directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces
- *  and tabs. Each loop stops at the first character it does not skip, so no character is read
- *  more than twice. */
+ *  and tabs. Each loop stops at the first character it does not skip, and only the characters
+ *  the first two stop at are read again, so a line costs at most its length and two reads more. */
 function fenceColons(text: string): number {
   let read = 0;
   let start = 0;

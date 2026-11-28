@@ -15,6 +15,7 @@ import {
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import { settled, until } from "@legion/test-fixtures/wait";
 import { type KeyedLayerOptions, keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
@@ -217,19 +218,10 @@ function failure(call: Promise<unknown>): Promise<Error> {
   );
 }
 
-/**
- * Lets every job already queued run before a row on Bun's fake clock reads what they did. A
- * scripted Dispatch answers in promise jobs alone, so by the event loop's next turn (`setImmediate`,
- * which Bun's fake timers leave real) the client has gone as far as it can without the clock: to
- * its next timer, or to its end.
- */
-async function settle(): Promise<void> {
-  const turn = Promise.withResolvers<void>();
-  setImmediate(turn.resolve);
-  await turn.promise;
-}
-
-// A row on Bun's fake clock that fails part way would leave the next row on it.
+// A row on Bun's fake clock reads what the client did after one turn of the event loop (`turn`,
+// whose `setImmediate` Bun's fake timers leave real): a scripted Dispatch answers in promise jobs
+// alone, so by then the client has gone as far as it can without the clock, to its next timer or
+// to its end. Such a row that fails part way would leave the next row on that clock.
 afterEach(() => {
   jest.useRealTimers();
 });
@@ -691,12 +683,12 @@ describe("DispatchClient's writes", () => {
       });
 
     // The 502 is in and the client pauses: a millisecond short of the pause, nothing more went.
-    await settle();
+    await turn();
     jest.advanceTimersByTime(49);
-    await settle();
+    await turn();
     expect({ sent: sent.length, answered }).toEqual({ sent: 1, answered: undefined });
     jest.advanceTimersByTime(1);
-    await settle();
+    await turn();
     expect({ sent: sent.length, answered }).toEqual({ sent: 2, answered: posted });
     await call;
 
@@ -712,12 +704,12 @@ describe("DispatchClient's writes", () => {
     ).then((error) => {
       ended = error;
     });
-    await settle();
+    await turn();
     jest.advanceTimersByTime(49);
-    await settle();
+    await turn();
     expect(ended).toBeUndefined();
     jest.advanceTimersByTime(1);
-    await settle();
+    await turn();
     expect(ended).toBeInstanceOf(DispatchWriteUnsettledError);
     expect((ended as DispatchWriteUnsettledError).last.name).toBe("TimeoutError");
     expect(stalled.sent).toHaveLength(1);
@@ -748,12 +740,12 @@ describe("DispatchClient's writes", () => {
       });
 
     // A millisecond short of the bound the first attempt is still out, and nothing else went.
-    await settle();
+    await turn();
     jest.advanceTimersByTime(DISPATCH_WRITE_RETRY.silenceMs - 1);
-    await settle();
+    await turn();
     expect({ sent: sent.length, cut: firstAttempt?.aborted }).toEqual({ sent: 1, cut: false });
     jest.advanceTimersByTime(1);
-    await settle();
+    await turn();
     expect((firstAttempt?.reason as Error | undefined)?.message).toBe(
       "made no progress for 20 s, so it was cut off"
     );

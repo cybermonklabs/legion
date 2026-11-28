@@ -18,7 +18,13 @@ import {
   NATS_MIN_REDIAL_BOUND_MS,
   natsConnectionOptions,
 } from "../nats-connection";
-import { type DrivenDial, dialOnDrivenClock, heldBound, outcomeOf } from "./driven-dial-clock";
+import {
+  type DrivenDial,
+  dialOnDrivenClock,
+  heldBound,
+  type Outcome,
+  outcomeOf,
+} from "./driven-dial-clock";
 import { type FakeNatsBehaviour, type FakeNatsServer, startFakeNats } from "./fake-nats-server";
 import { type HeldNatsTimers, holdNatsTimers, NATS_ROOT } from "./held-nats-timers";
 
@@ -44,11 +50,6 @@ const TIMED_ROOTS = [NATS_ROOT, join(import.meta.dir, "..")];
 
 /** One dial, with no redial. */
 const ONCE = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 };
-
-/** A row's own step in the timer record, which puts its moments in one order with the timers. */
-interface RowMark {
-  readonly mark: string;
-}
 
 const servers: FakeNatsServer[] = [];
 const connections: NatsConnection[] = [];
@@ -85,11 +86,8 @@ function options(urls: readonly string[]) {
  * Records each timer nats.js's code and this package's arm and run, from now to the row's end, in
  * one order with the row's marks; `mark` returns the index of its step.
  */
-function recordTimed(): {
-  readonly steps: readonly (TimerStep | RowMark)[];
-  mark(what: string): number;
-} {
-  const steps: (TimerStep | RowMark)[] = [];
+function recordTimed(): { readonly steps: readonly TimerStep[]; mark(what: string): number } {
+  const steps: TimerStep[] = [];
   stopRecording = recordTimers(TIMED_ROOTS, (step) => steps.push(step));
   return { steps, mark: (what) => steps.push({ mark: what }) - 1 };
 }
@@ -100,17 +98,13 @@ function recordTimed(): {
  * waited on there. Refuses a timer the record could not place, as `timersBetween` does, since what
  * it leaves out could only read less than the way waited.
  */
-function ranBetween(
-  steps: readonly (TimerStep | RowMark)[],
-  after: number,
-  before: number
-): TimerOnTheWay[] {
+function ranBetween(steps: readonly TimerStep[], after: number, before: number): TimerOnTheWay[] {
   const armed = new Map<number, TimerOnTheWay | undefined>();
   const ran: TimerOnTheWay[] = [];
   steps.slice(0, before).forEach((step, index) => {
     if ("timer" in step) armed.set(step.timer, { delayMs: step.delayMs, from: step.from });
     if ("unplaced" in step) armed.set(step.unplaced, undefined);
-    if (!("fired" in step) || index <= after || !armed.has(step.fired)) return;
+    if (!("fired" in step) || index <= after) return;
     const timer = armed.get(step.fired);
     if (timer === undefined) {
       throw new Error(`the timer record could not place timer ${step.fired}, which ran on the way`);
@@ -123,6 +117,25 @@ function ranBetween(
 /** The sum of the delays `timers` were armed with. */
 function delaysOf(timers: readonly TimerOnTheWay[]): number {
   return timers.reduce((sum, timer) => sum + timer.delayMs, 0);
+}
+
+/**
+ * Dials with `dialing` under the timer record, and resolves with how the dial ended once it has.
+ * "At once" is held to nats.js's own timers: what ran out between the dial and its end must stay
+ * under 1 s, where a dial that waited out its handshake's timeout would show its 10 s.
+ */
+async function dialedAtOnce(
+  what: string,
+  dialing: () => Promise<NatsConnection>
+): Promise<Outcome<NatsConnection>> {
+  const record = recordTimed();
+  const dialed = record.mark("dial");
+  const dial = await settled(what, outcomeOf(dialing()));
+  const ran = ranBetween(record.steps, dialed, record.mark("failed"));
+  expect(delaysOf(ran), `the timers that ran out on the way: ${JSON.stringify(ran)}`).toBeLessThan(
+    1_000
+  );
+  return dial;
 }
 
 /** Where nats.js arms a dial's handshake timer: the `setTimeout` of its `util.js` `timeout()`, as
@@ -141,7 +154,7 @@ const HANDSHAKE_TIMER = (() => {
 /** The handshake timers nats.js armed between the steps at `after` and `before`, in order, each
  *  with the delay it was armed with: one for each address a dial tries. */
 function handshakeTimers(
-  steps: readonly (TimerStep | RowMark)[],
+  steps: readonly TimerStep[],
   after: number,
   before: number = steps.length
 ): number[] {
@@ -197,18 +210,9 @@ function connectResolving(lookup: () => Promise<string[]>) {
 }
 
 describe("a NATS dial that the server closes during the handshake", () => {
-  // "At once" is held to nats.js's own timers: what ran out between the dial and its failure
-  // stays under 1 s, where a dial that waited out its handshake's timeout would show its 10 s.
   test("fails at once with the server's authentication timeout", async () => {
     const server = fake(() => "refuse");
-    const record = recordTimed();
-    const dialed = record.mark("dial");
-    const dial = await settled("the refused dial", outcomeOf(connect(options([server.url]))));
-    const ran = ranBetween(record.steps, dialed, record.mark("failed"));
-    expect(
-      delaysOf(ran),
-      `the timers that ran out on the way: ${JSON.stringify(ran)}`
-    ).toBeLessThan(1_000);
+    const dial = await dialedAtOnce("the refused dial", () => connect(options([server.url])));
     expect(dial.error?.code).toBe("AUTHENTICATION_TIMEOUT");
   });
 
@@ -218,31 +222,16 @@ describe("a NATS dial that the server closes during the handshake", () => {
 
   test("fails at once with the socket's error, or DISCONNECT, when the server closes with no -ERR", async () => {
     const server = fake(() => "close");
-    const record = recordTimed();
-    const dialed = record.mark("dial");
-    const dial = await settled("the closed dial", outcomeOf(connect(options([server.url]))));
-    const ran = ranBetween(record.steps, dialed, record.mark("failed"));
-    expect(
-      delaysOf(ran),
-      `the timers that ran out on the way: ${JSON.stringify(ran)}`
-    ).toBeLessThan(1_000);
+    const dial = await dialedAtOnce("the closed dial", () => connect(options([server.url])));
     expect(CLOSE_CODES).toContain(String(dial.error?.code));
   });
 
   test("fails at once with the last server's failure, not an earlier server's refusal", async () => {
     const refusing = fake(() => "refuse");
     const closing = fake(() => "close");
-    const record = recordTimed();
-    const dialed = record.mark("dial");
-    const dial = await settled(
-      "the dial of both servers",
-      outcomeOf(connect(options([refusing.url, closing.url])))
+    const dial = await dialedAtOnce("the dial of both servers", () =>
+      connect(options([refusing.url, closing.url]))
     );
-    const ran = ranBetween(record.steps, dialed, record.mark("failed"));
-    expect(
-      delaysOf(ran),
-      `the timers that ran out on the way: ${JSON.stringify(ran)}`
-    ).toBeLessThan(1_000);
     expect(closing.connections()).toBe(1);
     expect(CLOSE_CODES).toContain(String(dial.error?.code));
   });

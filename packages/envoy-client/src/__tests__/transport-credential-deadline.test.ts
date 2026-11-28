@@ -27,8 +27,9 @@ afterEach(() => {
 /** The session the credential's refusal names. */
 const POD_SESSION = "implementer-g1";
 
-/** The credential's share of a listener attempt (`credentialDeadline`): the call's 5 s
- *  (`LISTENER_CALL_TIMEOUT_MS`) less the request's reserve, 1 s or half the deadline. */
+/** The credential's share of an attempt whose deadline is `deadlineMs` (`credentialDeadline`):
+ *  the deadline less the request's reserve, 1 s or half the deadline. A listener call's attempt
+ *  has `LISTENER_CALL_TIMEOUT_MS`, 5 s, of which the credential's share is 4 s. */
 function shareOf(deadlineMs: number): number {
   return Math.ceil(deadlineMs - Math.min(1_000, deadlineMs / 2));
 }
