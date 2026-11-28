@@ -42,6 +42,7 @@ func requireDeliveredTo(t *testing.T, d *listenerDeps, frames <-chan contracts.E
 // A role a live session holds is delivered a publish that names no source session exactly as one
 // that names a session: 200 naming the holder, the forward on its agent subject, nothing kept.
 func TestAPublishWithNoSourceSessionToAHeldRoleIsDelivered(t *testing.T) {
+	t.Parallel()
 	d, _ := keptRoleDeps(t)
 	const role, holder = "no-session-held", "ses_no_session_held"
 	claimRoleFor(t, d.registry, d.sessions, holder, role, nil)
@@ -58,6 +59,7 @@ func TestAPublishWithNoSourceSessionToAHeldRoleIsDelivered(t *testing.T) {
 // and says why nothing was kept. The refusal's exception goes out as a keep: false refusal's does,
 // and a lapsed holder's claim stands.
 func TestAPublishWithNoSourceSessionToARoleWithNoLiveHolderIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		role   string
@@ -147,6 +149,7 @@ func TestAPublishWithNoSourceSessionToARoleWithNoLiveHolderIsRefused(t *testing.
 // role's next live holder and answered 202: the dead letter of a copy that expires reaches that
 // session.
 func TestAPublishWithASourceSessionToARoleWithNoLiveHolderIsStillKept(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	const role = "no-session-control-kept"
 	recorder, answer := publishToRole(t, d, role,
@@ -184,6 +187,7 @@ func (kv claimlessRoleKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // publish is delivered to that holder. Control, in each row: the copy is behind for the row (a
 // direct get answers no claim, or no registration).
 func TestAPublishWithNoSourceSessionReadsTheHolderFromTheLeaderWhileACopyIsBehind(t *testing.T) {
+	t.Parallel()
 	t.Run("the role bucket's copy holds no claim", func(t *testing.T) {
 		d, _ := keptRoleDeps(t)
 		const role, holder = "no-session-claim-behind", "ses_no_session_claim_behind"
@@ -232,6 +236,7 @@ func TestAPublishWithNoSourceSessionReadsTheHolderFromTheLeaderWhileACopyIsBehin
 // Controls: the cache reads the old registration live before the clock moves, and the leader's
 // registration is live at the resolution's time.
 func TestANoSessionResolutionNeverJudgesTheCachedHolder(t *testing.T) {
+	t.Parallel()
 	var armed atomic.Bool
 	var reads atomic.Int64
 	start := time.Now().Truncate(time.Millisecond)

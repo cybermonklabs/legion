@@ -80,6 +80,7 @@ func commentAnchorEvents(t *testing.T, database *store.Store, id string, afterID
 // event leaves the flag out and names it absent, and still does once the comment's delete, which
 // carries the flag however it came to be set, is written after the cut.
 func TestAnAnchorOrphanedWithNoEventThatDatesItIsNamedAbsentAtTheCut(t *testing.T) {
+	t.Parallel()
 	documentService, handler, database, served := browserDocumentServer(t)
 	world := &asOfThreadWorld{handler: handler, served: served}
 	takeCut := func() asof.Cut {
@@ -260,6 +261,7 @@ func elementWhere(list any, value string, key ...string) int {
 // records the wording it replaced, keeps that wording at the cut and names none of the four
 // absent.
 func TestAnAsksWordingARestoreChangedIsNamedAbsentAtTheCut(t *testing.T) {
+	t.Parallel()
 	documentService, handler, database, served := browserDocumentServer(t)
 	world := &asOfThreadWorld{handler: handler, served: served}
 	takeCut := func() asof.Cut {
@@ -441,6 +443,7 @@ func TestAnAsksWordingARestoreChangedIsNamedAbsentAtTheCut(t *testing.T) {
 // whose own event names the block gives it, and a cut whose next event names none gives the null
 // it read then, though the backfill wrote the row after that event.
 func TestAnAnchorsBlockABackfillPinnedIsNamedAbsentAtTheCut(t *testing.T) {
+	t.Parallel()
 	documentService, handler, database, served := browserDocumentServer(t)
 	world := &asOfThreadWorld{handler: handler, served: served}
 	takeCut := func() asof.Cut {

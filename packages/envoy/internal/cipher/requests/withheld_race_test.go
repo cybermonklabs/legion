@@ -36,6 +36,7 @@ func lateAutomaticGrants(t *testing.T, m *Machine) int {
 // in-flight request already holds one of the secret names. No automatic grant of a withheld name
 // may be written after the withhold that covers it committed.
 func TestCreateAndRevokeByApproverUnderLoadNeverDeadlockOrFail(t *testing.T) {
+	t.Parallel()
 	m, enr0, key0, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
@@ -126,6 +127,7 @@ func TestCreateAndRevokeByApproverUnderLoadNeverDeadlockOrFail(t *testing.T) {
 // order, surfaces 40P01 against RevokeByApprover, so the load test would report a lock-order
 // inversion had one been introduced.
 func TestReverseLockOrderAgainstRevokeByApproverDeadlocks(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
 	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
@@ -162,6 +164,7 @@ func TestReverseLockOrderAgainstRevokeByApproverDeadlocks(t *testing.T) {
 // write an automatic AUTO_TOKEN grant after the withhold, and none written before it may be left
 // live: the withhold ends it.
 func TestRequestsRacingTheWithholdOnFreshSessions(t *testing.T) {
+	t.Parallel()
 	m, _, _, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()

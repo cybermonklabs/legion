@@ -107,6 +107,7 @@ func TestAnEdgeShowsALegionAgentOnlyOfASessionOfItsIssuesProject(t *testing.T) {
 // project reads false however that project's answering record reads. The control is a role of the
 // token's own project under a record that says it answers, which reads true.
 func TestAnEdgeAnswersTheRoleReadsAnsweringFlagOnlyOfItsOwnProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const outside = "ses_role_answering_outside"
 	token := rig.personToken(outside, "PRIV")

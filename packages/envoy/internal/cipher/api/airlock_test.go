@@ -77,6 +77,7 @@ type wireAirlockValues struct {
 // hosts, the hosts of its kind. A session that gets this and no "values" entry for the name is
 // what makes an old CLI refuse to run rather than run with a placeholder it does not understand.
 func TestTheValuesAnswerCarriesTheAirlock(t *testing.T) {
+	t.Parallel()
 	const proxyURL, caCertificate = testProxyURL, testCACertificate
 	ts := newProxiedTestServer(t, []string{"WORKER_TOKEN"}, func(*api.Deps) {})
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
@@ -149,6 +150,7 @@ func TestTheValuesAnswerCarriesTheAirlock(t *testing.T) {
 // the set the loader builds before the profiles' apply, the one set where a dpop block binds a
 // name the policy serves.
 func TestAStoredSecretUnderADPoPBlockIsRefusedItsRelease(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	logged := policytest.CaptureLog(t)
 	ts := newProxiedTestServer(t, nil, func(*api.Deps) {})
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)

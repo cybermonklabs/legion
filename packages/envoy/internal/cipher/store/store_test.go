@@ -15,23 +15,27 @@ import (
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
-// TestMain runs the package's tests through testdb.Main, which drops the database testDatabaseURL
-// makes for them.
-func TestMain(m *testing.M) { os.Exit(testdb.Main(m)) }
-
-// testDatabaseURL is this test binary's own database on the BROKER_TEST_DATABASE_URL server
-// (testdb.ProcessDatabaseOn), skipping t when the variable is unset. Every migration takes the
-// broker's advisory lock, which Postgres holds for the whole database, so the tests here migrate in
-// a database of their own rather than in the one the variable names, where the migrations of every
-// other package's tests and of every other run on the server would hold it too
-// (storetest's package comment).
-func testDatabaseURL(t *testing.T) string {
+// testServerURL is the URL BROKER_TEST_DATABASE_URL names, skipping t when the variable is unset.
+// A test makes its databases on that server (testDatabaseURL, emptySchemaStore, passwordRole) and
+// runs its own statements, roles' included, only in those, never in the database it names.
+func testServerURL(t *testing.T) string {
 	t.Helper()
 	url := os.Getenv("BROKER_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("BROKER_TEST_DATABASE_URL must be set to run Postgres store tests")
 	}
-	return testdb.ProcessDatabaseOn(t, url, "broker_store_test_binary")
+	return url
+}
+
+// testDatabaseURL is a new empty database on the BROKER_TEST_DATABASE_URL server
+// (testdb.DatabaseOn), dropped when the test ends, skipping t when the variable is unset. Each call
+// makes another database, so a test that needs one database in two places calls it once. Every
+// migration takes the broker's advisory lock, which Postgres holds for the whole database, so a
+// test here migrates in a database of its own rather than in the one the variable names, where the
+// migrations of every other test and of every other run on the server would hold it too.
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+	return testdb.DatabaseOn(t, testServerURL(t), "", "broker_store_test")
 }
 
 func TestMigrateIsIdempotentAndCreatesTables(t *testing.T) {

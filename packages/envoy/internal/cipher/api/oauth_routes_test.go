@@ -91,6 +91,7 @@ func signedDeviceForm(t *testing.T, ts *testServer) url.Values {
 }
 
 func TestTheOAuthRoutesNeedTheProvider(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) { d.OAuth = nil })
 	for _, path := range []string{"/v1/oauth/device_authorization", "/v1/oauth/token", "/v1/oauth/revoke"} {
 		if status, _, _ := postForm(t, ts.URL+path, deviceForm); status != http.StatusNotFound {
@@ -103,6 +104,7 @@ func TestTheOAuthRoutesNeedTheProvider(t *testing.T) {
 // DeviceLogin or either token hook would answer every request with a nil call, so Register refuses
 // it at wiring.
 func TestRegisterRefusesAProviderWithoutItsSteps(t *testing.T) {
+	t.Parallel()
 	provider, err := oauth.New(oauth.Config{
 		Secret: make([]byte, 32), DeviceLifetime: time.Minute, AccessLifetime: 15 * time.Minute,
 		RefreshLifetime: time.Hour, VerificationURL: "https://dispatch.example/credentials/machine",
@@ -133,6 +135,7 @@ func TestRegisterRefusesAProviderWithoutItsSteps(t *testing.T) {
 }
 
 func TestADeviceAuthorizationSpendsItsAddressesLauncherBucket(t *testing.T) {
+	t.Parallel()
 	adjust := withOAuth(t, func(context.Context, url.Values, string) error { return nil })
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		adjust(d)
@@ -152,6 +155,7 @@ func TestADeviceAuthorizationSpendsItsAddressesLauncherBucket(t *testing.T) {
 }
 
 func TestADeviceLoginsRefusalNamesItsBrokerCode(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		err    error
 		status int
@@ -169,6 +173,7 @@ func TestADeviceLoginsRefusalNamesItsBrokerCode(t *testing.T) {
 }
 
 func TestTheTokenRouteIsTheProvidersTokenEndpoint(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withOAuth(t, func(context.Context, url.Values, string) error { return nil }))
 	status, _, body := postForm(t, ts.URL+"/v1/oauth/token", url.Values{
 		"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "device_code": {"no-such-code"}, "client_id": {oauthwire.ClientID},
@@ -181,6 +186,7 @@ func TestTheTokenRouteIsTheProvidersTokenEndpoint(t *testing.T) {
 // TestTheOAuthRoutesCapTheirBodies: a form past 64 KiB is refused 400 invalid_request at both
 // OAuth routes before the provider parses or stores it, and the device login never runs.
 func TestTheOAuthRoutesCapTheirBodies(t *testing.T) {
+	t.Parallel()
 	ran := false
 	ts := newTestServerWith(t, withOAuth(t, func(context.Context, url.Values, string) error { ran = true; return nil }))
 	for _, c := range []struct {
@@ -207,6 +213,7 @@ var tokenForm = url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:devi
 // address's own bucket before the provider does any work, and a refused request is OAuth's JSON,
 // 429 invalid_request RATE_LIMITED with Retry-After.
 func TestATokenRequestSpendsItsAddressesTokenBucket(t *testing.T) {
+	t.Parallel()
 	adjust := withOAuth(t, func(context.Context, url.Values, string) error { return nil })
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		adjust(d)
@@ -227,6 +234,7 @@ func TestATokenRequestSpendsItsAddressesTokenBucket(t *testing.T) {
 // behind one gateway polling and refreshing) is served where the login bucket would refuse, and
 // spends nothing of the login bucket.
 func TestTheDefaultTokenBucketIsNotTheLoginBucket(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withOAuth(t, func(context.Context, url.Values, string) error { return nil }))
 	for i := range 25 {
 		if status, _, body := postForm(t, ts.URL+"/v1/oauth/token", tokenForm); status != http.StatusBadRequest {

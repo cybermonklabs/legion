@@ -70,6 +70,7 @@ func legionRegistryConsumerCalls(calls []string) int {
 // answers, that the registry holds no entry for make the confirmation's leader reads and the
 // registry's scan, which the counts see.
 func TestAPlainRolePublishWithNoLiveHolderMakesNoLeaderRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		role    string

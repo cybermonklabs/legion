@@ -22,6 +22,7 @@ import (
 // stamp fails here. Then the issue is reopened at once, and a read at a cut between the close and
 // the reopen answers the stamp that the close left on the row.
 func TestAClosesEventCarriesTheRowsFinalClosedAt(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{testHooks: true})
 	settle := func() {
 		t.Helper()

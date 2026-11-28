@@ -157,6 +157,7 @@ func pendingOf(t *testing.T, m *Machine, enr string) []string {
 // session gets a new request of this broker, which is not coalesced onto the old one, is handed to
 // the judge, and, once the judge's hold has ended, is the one its approver's list shows here.
 func TestAskingAgainWithTheSameNamesEndsARequestSignedForAnotherBroker(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
@@ -181,6 +182,7 @@ func TestAskingAgainWithTheSameNamesEndsARequestSignedForAnotherBroker(t *testin
 // request left waiting on another broker without matching it, by another lifetime or by more
 // names, was refused REQUEST_PENDING before; it ends that request and gets a new one all the same.
 func TestAskingAgainWithOverlappingNamesEndsARequestSignedForAnotherBroker(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name  string
 		names []string
@@ -217,6 +219,7 @@ func TestAskingAgainWithOverlappingNamesEndsARequestSignedForAnotherBroker(t *te
 // coalesces onto it and is handed to no judge, an overlapping one is refused REQUEST_PENDING
 // naming it, and it stays pending, ended by nobody.
 func TestAskingAgainLeavesARequestSignedForThisBrokerAsItIs(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	retagStripeKey(t, m)
@@ -246,6 +249,7 @@ func TestAskingAgainLeavesARequestSignedForThisBrokerAsItIs(t *testing.T) {
 // another broker for different names, when the session's box adopts what two earlier boxes held.
 // One ask that overlaps both ends both and makes one new request, the only one left pending.
 func TestAskingAgainEndsEveryStaleRequestItOverlaps(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	retagStripeKey(t, m)
 	first := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
@@ -272,6 +276,7 @@ func TestAskingAgainEndsEveryStaleRequestItOverlaps(t *testing.T) {
 // that verifies: the same names and lifetime coalesce onto it, with no judge run, and another
 // lifetime is refused REQUEST_PENDING naming it, the stale request's end committed all the same.
 func TestAStaleRequestBeforeOneThatVerifies(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name      string
 		coalesces bool
@@ -318,6 +323,7 @@ func TestAStaleRequestBeforeOneThatVerifies(t *testing.T) {
 // applyDecisionAttempt does, so Create's end waits for it, then finds the request no longer pending
 // and ends nothing: the decision stands, and the session gets a new request of this broker.
 func TestAStaleRequestDecidedOnTheOtherBrokerMeanwhile(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
@@ -396,6 +402,7 @@ func staleAfterOneThatVerifies(t *testing.T, m *Machine, enr string, key *ecdsa.
 // A Create that stops at the oldest request because it verifies leaves the stale one pending,
 // which the parent's check A7 fails.
 func TestAStaleRequestAfterOneThatVerifies(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name      string
 		coalesces bool
@@ -452,6 +459,7 @@ var askDecidedAtOnce = []struct {
 // written as today, granted or denied, and handed to no judge. A Create that ends stale requests
 // only for an ask that waits for a person leaves it pending, which the parent's check A7 fails.
 func TestAStaleRequestEndsWhenTheAskIsDecidedAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, c := range askDecidedAtOnce {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
@@ -500,6 +508,7 @@ func liveGrantBesideAStaleRequest(t *testing.T, m *Machine, enr string, key *ecd
 // is ended all the same. A Create that returns the reused grant before it looks at the pending
 // requests leaves the stale one pending, which the parent's check A7 fails.
 func TestAStaleRequestEndsWhenALiveGrantAnswersTheAsk(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	granted, grantID, stale := liveGrantBesideAStaleRequest(t, m, enr, key, approver)
 	watched := watchJudgeOf(t, m, "DEEL_API_KEY")
@@ -525,6 +534,7 @@ func TestAStaleRequestEndsWhenALiveGrantAnswersTheAsk(t *testing.T) {
 // the live grant inside the bound: a reuse that took the enrollment's lock for share beside every
 // such ask would wait for that writer's commit and run out of time.
 func TestAReuseWithNoStaleRequestWaitsOnNoWriterOfTheEnrollment(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	own, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "")
@@ -576,6 +586,7 @@ var askRefusedBeforeAnyWrite = []struct {
 // refuses before it writes a request ends no stale request: no request of that ask exists for the
 // end to name, and the session's next valid ask ends it.
 func TestAnAskRefusedBeforeAnythingIsWrittenEndsNothing(t *testing.T) {
+	t.Parallel()
 	for _, c := range askRefusedBeforeAnyWrite {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)

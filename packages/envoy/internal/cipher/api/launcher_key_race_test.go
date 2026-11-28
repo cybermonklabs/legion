@@ -46,6 +46,7 @@ func (ts *testServer) podLogin(t *testing.T, key *ecdsa.PrivateKey, podUID strin
 // is read. The request is now refused 401 LAUNCHER_INVALID, since the key it proved holds no row,
 // and the sibling's enrollment stays live and renews.
 func TestALauncherProofEndsNothingUnderAKeyTheRowNoLongerHolds(t *testing.T) {
+	t.Parallel()
 	// armed is false for every proof of the setup below and true for the one request this test
 	// turns on, so the sibling logs in once and at that one moment.
 	var armed atomic.Bool

@@ -39,6 +39,7 @@ func (rig *copiesRig) handoverRecords(t *testing.T, role, previous, successor st
 // however often it claims, and a claim whose record did not store is answered 503 so its client
 // claims again, which writes the record.
 func TestAClaimNamingTheSessionItReplacesWritesOneHandoverRecord(t *testing.T) {
+	t.Parallel()
 	t.Run("a claim made again naming the same session", func(t *testing.T) {
 		rig := newCopiesRig(t)
 		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayCopy: copiesRelayCopyHeld(handoverRole)})
@@ -118,6 +119,7 @@ func TestAClaimNamingTheSessionItReplacesWritesOneHandoverRecord(t *testing.T) {
 // session id a consumer can be named for, which no session registered, so it lands and is answered
 // the rule's refusal as its warning.
 func TestAClaimNamingAnIDNoConsumerCanBeNamedForIsRefused400(t *testing.T) {
+	t.Parallel()
 	rig := newCopiesRig(t)
 	rig.startTaker(t, handoverNew)
 	for _, row := range []struct {
@@ -161,6 +163,7 @@ func TestAClaimNamingAnIDNoConsumerCanBeNamedForIsRefused400(t *testing.T) {
 // form; a record of a role taken with no session named copies no such message, and no pass copies
 // a message to another session or a topic the previous session followed.
 func TestAHandoverPassTellsAMessageToTheReplacedSessionByEitherFormOfItsTopic(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name, topic string
 		want        takenKind
@@ -192,6 +195,7 @@ func TestAHandoverPassTellsAMessageToTheReplacedSessionByEitherFormOfItsTopic(t 
 // frame each hop reads it from, which is new at every hop. The control is a message with an event
 // id, which every copy keeps as it is.
 func TestAHandedOverMessageKeepsOneIdentityAcrossHops(t *testing.T) {
+	t.Parallel()
 	type published struct {
 		item  contracts.Envelope
 		msgID string

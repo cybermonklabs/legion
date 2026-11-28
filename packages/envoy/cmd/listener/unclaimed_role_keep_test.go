@@ -52,6 +52,7 @@ func withAuditHandoff(t *testing.T, d *listenerDeps) {
 // rig reaches the hand-off and only the missing entry keeps the first publish. A hand-off that
 // waits for the role's entry to be finished keeps that control too.
 func TestAuditAPublishToALegionRoleWithNoEntryIsStillKeptForItsNextHolder(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	withAuditHandoff(t, d)
 	const noEntryRole = "legion-infra-infra-204-reviewer"

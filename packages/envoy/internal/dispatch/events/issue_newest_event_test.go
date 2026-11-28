@@ -19,6 +19,7 @@ import (
 // naming the event just appended, read back from the events row of the issue's last_seq; an issue
 // no append reached keeps both null.
 func TestAnIssueAppendWritesTheNewestEventPairOnTheIssueRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	seedEventOwners(t, database)

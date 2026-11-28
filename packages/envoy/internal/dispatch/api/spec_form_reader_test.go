@@ -58,6 +58,7 @@ func requireFormRows(t *testing.T, tree specFormTree, rows []formRow) {
 // end of a statement, two sentences of 16 and 15 words with a hard break between them, and three
 // sentences that hard breaks join. The other rows are the review's other places of a stored space.
 func TestTheFormJudgesTheBlocksAndTheTextsThatThePersonReads(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
 		{name: "a requirement in a block quote",
@@ -88,6 +89,7 @@ func TestTheFormJudgesTheBlocksAndTheTextsThatThePersonReads(t *testing.T) {
 // The pinned ste-lint program reports a hard finding on each statement, and the sentences that the
 // form counts are both short: each is refused, by the rule of ste-lint.
 func TestEachHardFindingOfSteLintRefusesTheRequest(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
 		{name: "two quoted stops, 26 words for ste-lint",
@@ -108,6 +110,7 @@ func TestEachHardFindingOfSteLintRefusesTheRequest(t *testing.T) {
 // A person's name is the name of one signed-in person: the pieces of that person's email, in
 // order, each with a capital letter. An e-mail address has a domain whose last label is letters.
 func TestThePersonRuleReadsTheNameOfOnePerson(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	seedPeople(t, tree.database, "will.hart@example.com", "sam.page@example.com")
 	requireFormRows(t, tree, []formRow{
@@ -130,6 +133,7 @@ func TestThePersonRuleReadsTheNameOfOnePerson(t *testing.T) {
 // person, is refused. A name that holds a character other than the letters a to z, the digits,
 // spaces and hyphens also breaks the rule term-name of R50, on the definition.
 func TestTheReferenceRulesJudgeTheNameOfATerm(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
 		{name: "a term named by a link",
@@ -199,6 +203,7 @@ var formContainers = []struct {
 // number sign. Code font hides no number sign from the reference rules (the claim's one finding),
 // and a stop in code font breaks no rule of a sentence (the statement's one finding).
 func TestTheFormJudgesEachBlockThatTheApplicationLists(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	const statement = "Dispatch keeps each [record](https://example.com/Web.Config) in `Web.Config`. Dispatch reads each record. Dispatch shows each record."
 	const claim = "Legion merges each [change](https://example.com/guide#12), as `#`12 says."

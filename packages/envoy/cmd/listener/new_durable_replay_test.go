@@ -223,9 +223,6 @@ func deliverPolicyName(policy natsgo.DeliverPolicy) string {
 	return string(name)
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: a wake stored inside 2 s past the latest time the agent wait allows (aloneLatest).
-//
 // TestANewListenerDurableDoesNotReplayTheStream is check l24. Its rows run in order on one rig,
 // each on what the row before it left.
 //
@@ -256,6 +253,8 @@ func deliverPolicyName(policy natsgo.DeliverPolicy) string {
 // "listener received" line is there, and takes no agent message its durable had already
 // acknowledged.
 func TestANewListenerDurableDoesNotReplayTheStream(t *testing.T) {
+	// Not parallel: it holds a wall-clock bound within a second or two of what it waits for: a wake
+	// stored inside 2 s past the latest time the agent wait allows (aloneLatest).
 	rig := startReplayRig(t)
 	stale := "ses_l24_stale_" + id.New()
 	staleItem, _, _ := rig.storeAgent(t, stale)

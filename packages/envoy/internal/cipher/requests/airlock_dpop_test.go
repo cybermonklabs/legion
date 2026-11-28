@@ -114,6 +114,7 @@ func withMintedKind(m *Machine, grants *memoryGrants, tokens *mintedTokens) *Mac
 // in it the stored AUTO_TOKEN is served by its own name and the dpop block of its name binds it,
 // under the grant the session got of AUTO_TOKEN while no block held its name.
 func TestAStoredSecretUnderADPoPEntryIsNeverReleased(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	checked, err := m.checkRelease(t.Context(), grantID, enr, "")
@@ -149,6 +150,7 @@ func TestAStoredSecretUnderADPoPEntryIsNeverReleased(t *testing.T) {
 // row of airlock_placeholders holds the same hash for a live secret grant: the connection read
 // never falls through to the secret store's placeholders.
 func TestAnEndedMintedPlaceholderIsNeverReadAsASecretPlaceholder(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	grants := &memoryGrants{}
 	withMintedKind(m, grants, &mintedTokens{})
@@ -169,6 +171,7 @@ func TestAnEndedMintedPlaceholderIsNeverReadAsASecretPlaceholder(t *testing.T) {
 // a minted grant's, so one whose word no kind of this broker serves opens nothing and is never
 // read as a secret grant's placeholder, even where airlock_placeholders holds its hash.
 func TestAPlaceholderOfNoMintedKindOpensNothing(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	withMintedKind(m, &memoryGrants{}, &mintedTokens{})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
@@ -196,6 +199,7 @@ func TestAPlaceholderOfNoMintedKindOpensNothing(t *testing.T) {
 // the grant's token for the pod's key, with no end of its own, since the grant's end is the
 // connection read's. A minted grant is answered no access-token placeholder.
 func TestAMintedPlaceholderIsAnsweredFromItsGrant(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{})
 	grants, tokens := &memoryGrants{}, &mintedTokens{}
 	withMintedKind(m, grants, tokens)
@@ -232,6 +236,7 @@ func TestAMintedPlaceholderIsAnsweredFromItsGrant(t *testing.T) {
 // no values, and no token is minted for it; nor does any grant on a broker whose kind serves under
 // no digest at all.
 func TestAMintedGrantOfAnotherEntryIsNotLive(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{})
 	grants, tokens := &memoryGrants{}, &mintedTokens{}
 	withMintedKind(m, grants, tokens)

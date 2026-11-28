@@ -86,6 +86,7 @@ func postTokenAt(t *testing.T, addr, publicURL string, form url.Values) (int, ma
 // result entry's run for a placeholder through its API port: the trade never calls the broker's
 // own public URL.
 func TestAPlaceholderExchangeNeedsNoRouteToTheBrokersOwnPublicURL(t *testing.T) {
+	t.Parallel()
 	const publicURL = "https://secrets.unreachable.test"
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)

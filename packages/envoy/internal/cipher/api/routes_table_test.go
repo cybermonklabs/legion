@@ -12,6 +12,7 @@ import "testing"
 // — Dispatch's relay of a person's decisions, or reading a token back — rather than a row that
 // inherits whichever one the row above it happened to have, or none.
 func TestEveryAccountRouteDeclaresItsPower(t *testing.T) {
+	t.Parallel()
 	accountRoutes := 0
 	for _, route := range routes() {
 		if route.Handler.auth != authAccount {

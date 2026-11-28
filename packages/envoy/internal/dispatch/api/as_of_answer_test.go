@@ -30,6 +30,7 @@ import (
 // in a test build the handler panics, naming the member, rather than name a member the contract
 // does not hold.
 func TestAPastTimeAnswerNamesItsCutAndItsAbsentFields(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: newAsOfListener(t), testHooks: true})
 	settle := func() {
 		t.Helper()
@@ -271,6 +272,7 @@ func TestAPastTimeAnswerThatNamesWhatItMayNotLeaveOutFailsClosed(t *testing.T) {
 // trees under the cut fails each time and logs a warning; the read stores nothing and logs
 // nothing. A tree is keyed by its text alone, so the present read stores it.
 func TestAPastTimeReadStoresNoDisplayTrees(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault).
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	asOfWrite(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ASTR", "name": "Trees at a cut"}, "alice")
 	issue := asOfIssue(t, handler, map[string]any{"project": "ASTR", "title": "A thread read with its trees"})

@@ -155,6 +155,7 @@ func decodeHandoff(t *testing.T, data []byte) wireHandoff {
 // project token, a body without answering or with an updated_at that is not RFC 3339 UTC, a body
 // that is not JSON and a method other than PUT are refused and write nothing.
 func TestLegionProjectRouteStoresTheAnsweringRecord(t *testing.T) {
+	t.Parallel()
 	rig := newHandoffRig(t, 0)
 	body := rig.want(t, http.StatusOK, http.MethodPut, "/v1/legion/projects/infra",
 		`{"answering":true,"updated_at":"2026-10-26T04:00:00Z"}`)
@@ -190,6 +191,7 @@ func TestLegionProjectRouteStoresTheAnsweringRecord(t *testing.T) {
 // repeated under one idempotency key - collapse on their MsgId, so the stream stores one, and the
 // second is answered duplicate.
 func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
+	t.Parallel()
 	rig := newHandoffRig(t, 0)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
 	rig.register(t, handoffArchitect, "INFRA-204", "architect", "2026-10-26T03:00:00Z")
@@ -251,6 +253,7 @@ func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 // controls are the first of each and a send under another key, which are hand-offs of their own
 // and answer no duplicate.
 func TestARepeatedHandOffIsAnsweredDuplicate(t *testing.T) {
+	t.Parallel()
 	rig := newHandoffRig(t, 0)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
 	rig.beat(t, true, time.Now())
@@ -329,6 +332,7 @@ type handedRepeatAnswer struct {
 //   - control: the first hand-off answers no duplicate, and the stream holds that one hand-off
 //     after all four requests.
 func TestARepeatOfAHandOffIsAnsweredWithTheHandOffTheStreamHolds(t *testing.T) {
+	t.Parallel()
 	const asker, bystander = "ses-asker", "ses-bystander"
 	const asked, otherAsked = "can you answer this?", "and what about mine?"
 	answerOf := func(t *testing.T, what string, recorder *httptest.ResponseRecorder, recipient string) handedRepeatAnswer {
@@ -412,6 +416,7 @@ func TestARepeatOfAHandOffIsAnsweredWithTheHandOffTheStreamHolds(t *testing.T) {
 // to it. A project that stated answering: false, and one that stated nothing at all, keep the
 // refusal they had before hand-off.
 func TestHandOffToLegionKeysOnTheLastStatedAnsweringFlag(t *testing.T) {
+	t.Parallel()
 	rig := newHandoffRig(t, 0)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
 
@@ -464,6 +469,7 @@ func TestHandOffToLegionKeysOnTheLastStatedAnsweringFlag(t *testing.T) {
 // (TestHandOffToLegionHandsAStoppedAgentToItsDaemon), and so is one whose newest entry is an agent
 // the daemon released when its pod was idle (TestReleasedRolesPublishIsHandedToItsDaemonAndRaisesNoWake).
 func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
+	t.Parallel()
 	rig := newHandoffRig(t, time.Nanosecond)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
 	rig.beat(t, true, time.Now())
@@ -565,6 +571,7 @@ func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 //   - control: the same raw write with legion_project infra is handed off on infra's subject, and
 //     logs no such line.
 func TestHandOffToLegionHandsARoleOnlyToItsTokensOwnProject(t *testing.T) {
+	t.Parallel()
 	const stray = "ses-stray"
 	rig := newHandoffRig(t, 0)
 	rig.beat(t, true, time.Now())
@@ -660,6 +667,7 @@ func TestHandOffToLegionHandsARoleOnlyToItsTokensOwnProject(t *testing.T) {
 // delivery. Every session that is not a Legion agent's is in this shape, which is why the hand-off
 // is offered and not assumed: what it does not take keeps the answer it has without it.
 func TestAnInterestPathMissForASessionTheLegionRegistryDoesNotHoldIsGivenUpAsWithoutTheHandoff(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -739,6 +747,7 @@ func subscribeWakes(t *testing.T, conn *nats.Conn) *nats.Subscription {
 // agents.<session> and nothing else, so a listener's durable acknowledges a hand-off unread and
 // treats no other retained message as one.
 func TestIsLegionHandoffSubjectNamesTheHandOffSubjectAlone(t *testing.T) {
+	t.Parallel()
 	for subject, want := range map[string]bool{
 		"notifications.legion.infra.agents.ses-impl":             true,
 		listenerwire.LegionHandoffSubject("infra", handoffAgent): true,

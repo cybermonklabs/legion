@@ -81,6 +81,7 @@ func grantOfJudgedRecord(t *testing.T, ts *testServer, enrollmentID string, sess
 // no decision of anyone's — which is what makes the two refusals the tags' doing and not the
 // rewrite's.
 func TestAForgedJudgedRecordReleasesNothing(t *testing.T) {
+	t.Parallel()
 	const judgeableReason = "INFRA-1353 needs the key to drive the stack"
 	for _, c := range []struct {
 		name         string

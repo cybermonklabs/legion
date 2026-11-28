@@ -22,6 +22,7 @@ var accessSlot = SlotAzureAccessPrefix + base64.RawURLEncoding.EncodeToString([]
 // The name here is the fixture's ordinary one: what this answers is about the grant's row and
 // the slot, and nothing of it reads the secret's type.
 func TestAnAccessPlaceholderIsMintedOnceAndGoesWithTheGrant(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
@@ -86,6 +87,7 @@ func TestAnAccessPlaceholderIsMintedOnceAndGoesWithTheGrant(t *testing.T) {
 // TestAnAccessPlaceholderOfAGrantThatIsGoneIsRefused: the proxy mints one while it serves a
 // request, and a grant revoked in the middle of that is no grant to write a row for.
 func TestAnAccessPlaceholderOfAGrantThatIsGoneIsRefused(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	if _, err := m.AirlockAccessPlaceholder(t.Context(), "00000000-0000-0000-0000-000000000000", "AUTO_TOKEN", accessSlot); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("AirlockAccessPlaceholder for no grant = %v; want ErrGrantNotLive", err)

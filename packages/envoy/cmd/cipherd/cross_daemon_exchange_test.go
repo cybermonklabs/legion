@@ -34,6 +34,7 @@ const secondRegistrarAccount = "system:serviceaccount:example-ns:example-daemon-
 // All three pods run as podAccount, one principal at the exchange, so the claim on the name
 // refuses none of them: what refuses b-1 is that S is A's. Every failure names S.
 func TestAPodAnotherDaemonRegisteredCannotTradeForASessionThisDaemonsPodHolds(t *testing.T) {
+	t.Parallel()
 	const session = "example-cross-daemon-session"
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)

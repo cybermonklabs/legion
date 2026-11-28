@@ -33,6 +33,9 @@ import (
 // (benchtime.Runner.PairBuffers). Each of these is a subtest, so one that fails leaves the rest of
 // the run to log its own numbers.
 func TestStatementTimings(t *testing.T) {
+	// Not parallel: its assertion compares two timings. Each pair fails unless the after text's
+	// median is below the before text's (benchtime.Pair, PairSeries) or within a bound of it
+	// (PairWithin), and a reading taken beside another test's work is that test's reading too.
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 	database := benchtime.OpenStore(t, os.Getenv(benchtime.DatabaseURLEnv))

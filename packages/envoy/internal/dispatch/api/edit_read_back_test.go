@@ -211,6 +211,7 @@ func TestDocumentEditReadBackUnderABlockPreconditionIsTheSame(t *testing.T) {
 // (`cut 2001 characters in 1 blocks` is 31 characters, which leaves 1,967), less the blocks
 // printed whole before it and their blank lines. A cut that stops short of that place fails.
 func TestDocumentEditReadBackBoundIsCharactersNotBytes(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		blocks []string

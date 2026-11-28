@@ -1,17 +1,16 @@
 // Package testdb is the half of internal/testpg that needs no container runtime: DatabaseOn makes
-// an empty Postgres database of a test's own on a server the test already holds, and
-// ProcessDatabaseOn one of the test binary's own, which Main drops after the binary's tests. It
-// imports no testcontainers package, so a test helper every Postgres-backed test links (the
-// broker's storetest among them) does not pay testcontainers' package init, which walks every
-// process on the machine before any test runs. internal/testpg keeps the container path and calls
-// this. Every database made here runs with JIT off, as production's databases do (WithoutJIT).
+// a Postgres database of a test's own on a server the test already holds, empty or a copy of a
+// template, and DatabaseURL names a database on such a server. It imports no testcontainers
+// package, so a test helper every Postgres-backed test links (the broker's storetest among them)
+// does not pay testcontainers' package init, which walks every process on the machine before any
+// test runs. internal/testpg keeps the container path and calls this. Every database made here
+// runs with JIT off, as production's databases do (WithoutJIT).
 package testdb
 
 import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -26,14 +25,18 @@ import (
 )
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
-// test ends, and returns a URL of that database (databaseURL: adminURL with its path replaced by
-// it, and its query's pairs kept byte for byte but for any dbname or database). The name is
-// prefix, an underscore and eight random bytes in hex: it is random because every test of every
-// package sharing one server takes a name there.
+// test ends, and returns a URL of that database with each of set added (DatabaseURL: adminURL with
+// its path replaced by it, and its query's pairs kept byte for byte but for any dbname or database
+// and those set replaces). The database is a copy of template's files, or of template1's where
+// template is "", Postgres's own default. The name is prefix, an underscore and eight random bytes
+// in hex (NewDatabaseName): it is random because every test of every package sharing one server
+// takes a name there.
 //
-// Both statements run on adminURL itself, which is exact for every caller because a caller passes
-// the URL its own statements run on, and that URL and the result differ only in the database they
-// select.
+// Its three statements — the create, the `alter database … set jit = off` after it (WithoutJIT,
+// since a copy keeps none of its template's settings) and the drop in the test's cleanup — all run
+// on adminURL itself, which is exact for every caller because a caller passes the URL its own
+// statements run on, and that URL and the result differ only in the database they select and the
+// pairs set adds. Each opens a connection of its own, so no pool outlives the test.
 //
 // A failure names the server's host and the database, never adminURL: a DSN carries a credential,
 // and a test here prints none (docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-INFRA-229.md).
@@ -41,21 +44,29 @@ import (
 // neither.
 // Every connect to adminURL here, and to the URL it returns, waits until the test binary's deadline
 // less testwait.Margin (WithConnectDeadline), whatever connect_timeout adminURL names.
-func DatabaseOn(t testing.TB, adminURL, prefix string) string {
+func DatabaseOn(t testing.TB, adminURL, template, prefix string, set ...string) string {
 	t.Helper()
 	adminURL = WithConnectDeadline(t, adminURL)
 	server, err := url.Parse(adminURL)
 	if err != nil {
-		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
-		t.Fatalf("parse the admin URL of the Postgres server: %v", errors.Unwrap(err))
+		// WithConnectDeadline already parsed adminURL, failing the test on a URL that does not
+		// parse, so this parse of the URL it returned does not fail. Were it to, no part of it is
+		// printed: url.Parse's error quotes the URL, and even the error it wraps can (an invalid
+		// port's quotes what follows the authority's last colon, which for a password holding an
+		// unescaped '#', '/' or '?' is the password's first part).
+		t.Fatal("the admin URL of the Postgres server does not parse")
 	}
-	name, err := newDatabaseName(prefix)
+	name, err := NewDatabaseName(prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A copy of template1's files: created the default way, through the write-ahead log, an empty
+	from := ""
+	if template != "" {
+		from = " template " + pgx.Identifier{template}.Sanitize()
+	}
+	// A copy of the source's files: created the default way, through the write-ahead log, an empty
 	// database costs 4.4 MB of log (docs/testing.md, "A database a Go test creates").
-	adminExec(t, adminURL, server.Host, "create database "+name+" strategy file_copy")
+	adminExec(t, adminURL, server.Host, "create database "+name+from+" strategy file_copy")
 	// `with (force)` ends every backend attached to the database, which the drop needs because a
 	// database a connection still holds cannot be dropped. That covers a connection the test left
 	// open, so one leaked pool cannot keep a database on a shared server for the rest of the run.
@@ -65,7 +76,7 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	// dropRoleAfterTestDatabase).
 	t.Cleanup(func() { adminExec(t, adminURL, server.Host, "drop database if exists "+name+" with (force)") })
 	adminExec(t, adminURL, server.Host, WithoutJIT(name))
-	return databaseURL(*server, name)
+	return DatabaseURL(*server, name, set...)
 }
 
 // WithoutJIT is the statement that turns JIT off for every session that connects to the database
@@ -84,8 +95,9 @@ func WithoutJIT(name string) string {
 	return "alter database " + name + " set jit = off"
 }
 
-// newDatabaseName is prefix, an underscore and eight random bytes in hex.
-func newDatabaseName(prefix string) (string, error) {
+// NewDatabaseName is prefix, an underscore and eight random bytes in hex: the name of a database a
+// test, or a harness, makes of its own on a server others share.
+func NewDatabaseName(prefix string) (string, error) {
 	var suffix [8]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return "", fmt.Errorf("random database name: %w", err)
@@ -93,21 +105,30 @@ func newDatabaseName(prefix string) (string, error) {
 	return prefix + "_" + hex.EncodeToString(suffix[:]), nil
 }
 
-// databaseURL is server's URL naming database in every field pgx selects a database by: its path
-// is replaced by database, and its query loses each dbname or database pair, which pgx reads over
-// the path, so a server URL that carried one would put every caller in the one database it names.
-// Every other pair is kept byte for byte, as are the pairs' order and escapes: re-encoding the
-// query (url.Values.Encode) would write a space as a plus, which pgx reads as a plus, so an
-// options pair such as -c%20statement_timeout%3D5000 would stop connecting. An empty pair is
-// dropped.
-func databaseURL(server url.URL, database string) string {
+// DatabaseURL is server's URL naming database in every field pgx selects a database by, with each
+// of set, a raw key=value query pair, added: its path is replaced by database, and its query loses
+// each dbname or database pair, which pgx reads over the path, so a server URL that carried one
+// would put every caller in the one database it names, and each pair of a key set names, which
+// set's pair replaces (a test's search_path or pool size). Every other pair is kept byte for byte,
+// as are the pairs' order and escapes: re-encoding the query (url.Values.Encode) would write a
+// space as a plus, which pgx reads as a plus, so an options pair such as
+// -c%20statement_timeout%3D5000 would stop connecting. An empty pair is dropped, and set's pairs
+// follow the kept ones, in set's order.
+func DatabaseURL(server url.URL, database string, set ...string) string {
+	replaced := []string{"dbname", "database"}
+	for _, pair := range set {
+		key, _, _ := strings.Cut(pair, "=")
+		if name, err := url.PathUnescape(key); err == nil {
+			replaced = append(replaced, name)
+		}
+	}
 	server.Path, server.RawPath = "/"+database, ""
-	server.RawQuery = strings.Join(otherPairs(server.RawQuery, "dbname", "database"), "&")
+	server.RawQuery = strings.Join(append(otherPairs(server.RawQuery, replaced...), set...), "&")
 	return server.String()
 }
 
 // otherPairs is the pairs of rawQuery but those whose key, unescaped, is one of names: every other
-// pair kept byte for byte and in its order, an empty pair dropped (databaseURL says why).
+// pair kept byte for byte and in its order, an empty pair dropped (DatabaseURL says why).
 func otherPairs(rawQuery string, names ...string) []string {
 	var kept []string
 	for _, pair := range strings.Split(rawQuery, "&") {
@@ -139,22 +160,24 @@ func otherPairs(rawQuery string, names ...string) []string {
 // A shorter connect_timeout in the URL would make the test depend on load again, so it is
 // replaced. Where t names no deadline (ConnectEnd says which callers) it is
 // NoDeadlineConnectTimeout, two minutes. Every other pair of the query is kept byte for byte
-// (otherPairs), as databaseURL keeps them, so an options pair still connects. A failure prints
-// only what url.Parse wraps, since the URL carries a credential.
+// (otherPairs), as DatabaseURL keeps them, so an options pair still connects. A URL that does
+// not parse fails t with no part of it printed, since the URL carries a credential.
 func WithConnectDeadline(t testing.TB, databaseURL string) string {
 	t.Helper()
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("parse the URL of the test database: %v", errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the URL of the test database does not parse")
 	}
 	parsed.RawQuery = strings.Join(append(otherPairs(parsed.RawQuery, "connect_timeout"), "connect_timeout="+connectTimeout(t)), "&")
 	return parsed.String()
 }
 
-// serverKey is adminURL without its connect_timeout pairs, the server and query a test names apart
+// ServerKey is adminURL without its connect_timeout pairs, the server and query a test names apart
 // from the bound WithConnectDeadline gives that test's connects, which differs from test to test
-// of one binary. A URL url.Parse refuses is its own key.
-func serverKey(adminURL string) string {
+// of one binary: the key of a cache a harness keeps per server, such as the broker storetest's
+// templates. A URL url.Parse refuses is its own key.
+func ServerKey(adminURL string) string {
 	parsed, err := url.Parse(adminURL)
 	if err != nil {
 		return adminURL
@@ -212,25 +235,16 @@ func TimeoutUntil(end time.Time) time.Duration {
 
 // adminExec runs one statement over a connection of its own to adminURL, failing t: neither
 // create database nor drop database may run inside a transaction or against the database it
-// names.
+// names. host is that server's host, printed in place of adminURL, which carries a credential.
 func adminExec(t testing.TB, adminURL, host, statement string) {
 	t.Helper()
-	if err := execOn(adminURL, host, statement); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// execOn runs statement over a connection of its own to adminURL. host is that server's host,
-// printed in place of adminURL, which carries a credential.
-func execOn(adminURL, host, statement string) error {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
-		return fmt.Errorf("connect to the Postgres server at %s: %w", host, err)
+		t.Fatalf("connect to the Postgres server at %s: %v", host, err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, statement); err != nil {
-		return fmt.Errorf("%s on %s: %w", statement, host, err)
+		t.Fatalf("%s on %s: %v", statement, host, err)
 	}
-	return nil
 }

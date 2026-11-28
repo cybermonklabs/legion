@@ -235,6 +235,7 @@ func (s *spentProofs) CheckAndSetDPoPProofUsed(_ context.Context, jti, _, _, _, 
 // logged at start; and Dispatch's own verifier, with Dispatch's public origin, accepts the write
 // as it arrived.
 func TestAResultWriteLeavesTheProxyWithTheRunsTokenAndAProofOfThePodsKey(t *testing.T) {
+	t.Parallel()
 	e := newResultsEnvironment(t)
 	b := e.start(t)
 	g := e.grant(t, b, "7")
@@ -271,6 +272,7 @@ func TestAResultWriteLeavesTheProxyWithTheRunsTokenAndAProofOfThePodsKey(t *test
 // broker B and then through A, the two processes on one database: each pod mints its own token,
 // bound to its own key, and neither token's text is kept in any table.
 func TestTwoBrokersMintTheirOwnTokensForOneGrant(t *testing.T) {
+	t.Parallel()
 	e := newResultsEnvironment(t)
 	a, b := e.start(t), e.start(t)
 	if a.thumbprint == b.thumbprint {
@@ -311,6 +313,7 @@ func TestTwoBrokersMintTheirOwnTokensForOneGrant(t *testing.T) {
 // TestAResultGrantOutlivesTheBrokerThatMadeIt: broker A makes the grant and stops; broker B,
 // started afterwards on the same database, serves the grant's write.
 func TestAResultGrantOutlivesTheBrokerThatMadeIt(t *testing.T) {
+	t.Parallel()
 	e := newResultsEnvironment(t)
 	a := e.start(t)
 	g := e.grant(t, a, "7")
@@ -324,6 +327,7 @@ func TestAResultGrantOutlivesTheBrokerThatMadeIt(t *testing.T) {
 // TestTwoRunsNeverShareACapability: two runs' grants through one broker: the token each write
 // reaches Dispatch with is its own run's.
 func TestTwoRunsNeverShareACapability(t *testing.T) {
+	t.Parallel()
 	e := newResultsEnvironment(t)
 	b := e.start(t)
 	first, second := e.grant(t, b, "1"), e.grant(t, b, "2")
@@ -368,6 +372,7 @@ func rawConnect(t *testing.T, b *resultsBroker, password string) *http.Response 
 // each answered 407 GRANT_NOT_LIVE by the proxy itself, and the token the pod minted for the
 // grant introspects inactive.
 func TestAnExpiredResultGrantEndsTheProxysUse(t *testing.T) {
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (its first write must land inside a 2 s grant, `BROKER_RESULT_GRANT_TEST_SECONDS=2`).
 	e := newResultsEnvironment(t, "BROKER_RESULT_GRANT_TEST_SECONDS=2")
 	b := e.start(t)
 	g := e.grant(t, b, "7")
@@ -397,6 +402,7 @@ func TestAnExpiredResultGrantEndsTheProxysUse(t *testing.T) {
 // results and the project scope results, the entry's person and project, the workflow's session,
 // the run whole, and the pod's key.
 func TestTheResultsTokenIntrospectsAsResultsAlone(t *testing.T) {
+	t.Parallel()
 	e := newResultsEnvironment(t)
 	b := e.start(t)
 	g := e.grant(t, b, "7")

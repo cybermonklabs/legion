@@ -90,6 +90,7 @@ func requestState(t *testing.T, m *Machine, id string) string {
 // account to sami, the pod has sami's owner. The pod reads the request of sami's box and cancels
 // it. Sami's box reads the request of the pod.
 func TestPersonPodSharesItsPersonsRequestsWhileMapped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, pod, podKey, box, boxKey := samisBoxAndPod(t)
 	boxReq := askPending(t, m, box, boxKey)
@@ -123,6 +124,7 @@ func TestPersonPodSharesItsPersonsRequestsWhileMapped(t *testing.T) {
 // That makes each refusal reachable. Once the entry is back, the pod cancels the request of sami's
 // box. That shows that the setting, and nothing else, refused the pod.
 func TestPersonPodRequestsFollowTheSetting(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// change applies the setting's change to the map.

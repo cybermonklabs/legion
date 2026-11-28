@@ -19,6 +19,7 @@ import (
 // pending request gets before its owner is asked (profile_check.go) releases nothing, so it is no
 // release this counts.
 func TestATypeSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newAppFixture(t, "OWNERS_APP_KEY")
 	retag(t, machine, requestTypeSecret("OWNERS_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var calls atomic.Int32
@@ -56,6 +57,7 @@ func TestATypeSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
 // request waits on its owner, releases nothing meanwhile, and once approved mints for the
 // accounts of the profile it is served as.
 func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, approver := newAppFixture(t, "HUMAN_APP_KEY")
 	retag(t, machine, requestTypeSecret("HUMAN_APP_KEY", policy.TypeGitHubApp, policy.TierHuman, ""))
 	var owners []string
@@ -87,6 +89,7 @@ func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
 // TestConcurrentReleasesOfOneTypeSecretAllMint: many releases of one grant at once each mint and
 // each succeeds, and none sees another's token.
 func TestConcurrentReleasesOfOneTypeSecretAllMint(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newAppFixture(t, "BUSY_APP_KEY")
 	retag(t, machine, requestTypeSecret("BUSY_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var calls atomic.Int32

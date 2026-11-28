@@ -340,6 +340,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 // the token's session and the path and never the token. The daemon's own credential, the shared
 // bearer its registry writer sends, still writes each, to a listener that takes broker tokens too.
 func TestNoBrokerTokenWritesTheLegionAgentRegistry(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		bound = "ses_rig_legion_bound"

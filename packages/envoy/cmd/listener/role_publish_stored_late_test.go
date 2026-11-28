@@ -37,6 +37,7 @@ import (
 //     The sender's retry, which that answer invites, then reaches B a second time under a new
 //     event id: the duplicate this branch accepts in place of a loss nothing reports.
 func TestAPublishForwardStoredPastItsFenceIsAnsweredByWhatItsWithdrawalFinds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		stall time.Duration
@@ -189,6 +190,7 @@ func TestAPublishForwardStoredPastItsFenceIsAnsweredByWhatItsWithdrawalFinds(t *
 // and the mark then stopped the takeover's copy, so B never received the message and A never read
 // it.
 func TestALateForwardWhoseHolderStillHoldsTheRoleIsNotWithdrawn(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const a, b, role = "ses_publate_same_a", "ses_publate_same_b", "publate-same"
 	const message = "a late forward to a holder that keeps its role"
@@ -247,6 +249,7 @@ func TestALateForwardWhoseHolderStillHoldsTheRoleIsNotWithdrawn(t *testing.T) {
 // session that then claims the role, once. The head that told a mark by the key's prefix alone
 // ended that copy as a mark, so the session never received it.
 func TestASenderChosenKeyCannotForgeAWithdrawalMark(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const b, role = "ses_forged_mark_b", "forged-mark"
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, withdrawnFrameKeyPrefix+uuid.NewString())

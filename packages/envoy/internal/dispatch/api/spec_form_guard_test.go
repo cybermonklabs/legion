@@ -344,6 +344,7 @@ func plantedSource(t *testing.T, code string) moduleSource {
 // caller that the caller part must refuse, or a plan review's write that it must leave out. The gate
 // a carry asks is set in one place too (formGateSetter); its control plants a second setter.
 func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	if problems := approvalCallerProblems(sources); len(problems) > 0 {
 		t.Fatalf("the calls the form gate's census rests on moved:\n\t%s", strings.Join(problems, "\n\t"))

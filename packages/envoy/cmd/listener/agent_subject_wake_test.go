@@ -417,9 +417,6 @@ func sessionReadDenied() string {
 	return listenerGrant("$JS.API.DIRECT.GET."+bucket, "$JS.API.DIRECT.GET."+bucket+".>", "$JS.API.STREAM.MSG.GET."+bucket)
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: row e's session must register again inside the 2 s agent wait.
-//
 // TestAnAgentMessageIsTheSessionConsumersAlone is check l1. Each subtest is one row of it.
 //
 // Rows a to f and i run on two listener processes A and B, built from this tree, with a wait of
@@ -431,6 +428,8 @@ func sessionReadDenied() string {
 // Rows a, b and i end with a watch of 30 s or 10 s. That watch runs in parallel with the other
 // rows' watches, once every row has run its first part.
 func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
+	// Not parallel: it holds a wall-clock bound within a second or two of what it waits for: row e's
+	// session must register again inside the 2 s agent wait.
 	rig := startAloneRig(t)
 
 	// Rows a and b: the session registered through A, so A holds its interest row, and B's

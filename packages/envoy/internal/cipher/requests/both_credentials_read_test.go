@@ -18,6 +18,7 @@ import (
 // off now — as the decision does (TestADecisionChecksTheProjectsOfBothEnrollments), so a request
 // the decision would refuse a person is one that person is not shown either.
 func TestEveryReaderReadsTheProjectsOfBothCredentials(t *testing.T) {
+	t.Parallel()
 	t.Run("a pending request now on a credential naming PRIV", func(t *testing.T) {
 		// The request comes from a pod that names no person, so every signed-in person's list
 		// reads it (everyonesPod).

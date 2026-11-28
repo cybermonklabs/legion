@@ -67,6 +67,7 @@ func requestAt(method, host, path string) *http.Request {
 // The answers that are no member's of a served or a former address - every one at the canonical
 // and an unknown Host - are what the router answered before either list existed.
 func TestOneTableAnswersEachPickByHost(t *testing.T) {
+	t.Parallel()
 	rig := newServedRig(t)
 	r, handler := &router{ctx: rig.ctx}, rig.handler
 	served := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })

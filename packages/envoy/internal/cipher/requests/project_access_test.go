@@ -212,6 +212,7 @@ func deniedFor(t *testing.T, what string, request Request, err error, name, reas
 // though owner and tier would give it at once; a secret tagged with a project Dispatch does not
 // hold is denied with the same words, so the session cannot tell the two apart.
 func TestARequestForAPrivateSecretFromASessionNamingNoProjectIsDenied(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), "")
 	deniedFor(t, "a request for PRIV_KEY from a session naming no project", request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
@@ -225,6 +226,7 @@ func TestARequestForAPrivateSecretFromASessionNamingNoProjectIsDenied(t *testing
 // TestASessionNamingThePrivateProjectGetsItsSecret: the same session, its enrollment naming PRIV,
 // gets PRIV_KEY at once and its value on release.
 func TestASessionNamingThePrivateProjectGetsItsSecret(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
 	_, grantID := grantOf(t, m, enr, key, "read it", "PRIV_KEY")
@@ -238,6 +240,7 @@ func TestASessionNamingThePrivateProjectGetsItsSecret(t *testing.T) {
 // for a person on PRIV's list, names PRIV and gets its secret; a pod whose entry maps another
 // project is denied it.
 func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	const otherSubject = "system:serviceaccount:example:other-sa"
 	set, err := exchange.NewSet([]exchange.AccountEntry{
@@ -265,6 +268,7 @@ func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 // and none asks whether nobody may see PRIV, whose answer a credential naming no person holds
 // already.
 func TestAJobPodGetsNoSecretOfAPrivateProjectItsListNames(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	retag(t, m, taggedSecret("TEAM_SHARED", policy.OwnerShared, policy.TierAgent, teamProject, "team-shared-v1"))
 	dispatch := m.Projects
@@ -299,6 +303,7 @@ func TestAJobPodGetsNoSecretOfAPrivateProjectItsListNames(t *testing.T) {
 // session does not name it, and TEAM turning public again does not revive it; a grant made while
 // the session named private TEAM ends once its person leaves TEAM's list.
 func TestAGrantOfAPrivateSecretEndsWhenTheSessionNoLongerNamesIt(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
@@ -332,6 +337,7 @@ func TestAGrantOfAPrivateSecretEndsWhenTheSessionNoLongerNamesIt(t *testing.T) {
 // whose live grant TEAM's turning private ended is told project-not-named, not that its grant
 // is gone, and the grant it held is ended (reuseLiveGrant).
 func TestAskingAgainAfterTheProjectIsLostSaysProjectNotNamed(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
@@ -349,6 +355,7 @@ func TestAskingAgainAfterTheProjectIsLostSaysProjectNotNamed(t *testing.T) {
 // the session's person is, every request and release of that session is refused
 // (TestARestrictedOperatorGetsNoSecret).
 func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	_, tagged := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
@@ -378,6 +385,7 @@ func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
 // record.ErrNotApprover, which a reader of the refusal would tell from a missing id by the order
 // of its checks alone; the request stays pending. A person on PRIV's list approves it.
 func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
 	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
@@ -403,6 +411,7 @@ func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 // the expired list of the fixture's operator, the person responsible for it, who is on PRIV's
 // list. A person on PRIV's list then dismisses it. An id no record has answers the same (control).
 func TestOnlyAPersonWhoSeesTheProjectDismissesItsExpiredRequest(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
 	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
@@ -431,6 +440,7 @@ func TestOnlyAPersonWhoSeesTheProjectDismissesItsExpiredRequest(t *testing.T) {
 // reason naming it before a PRIV issue is still PRIV's. The requests come from pods that name no
 // person, so every signed-in person's list reads them (everyonesPod).
 func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	privPod, privKey := everyonesPod(t, m, "pod-t-priv", privProject)
 	tagged, err := m.Create(t.Context(), privPod, signRequest(t, m, privKey, "read it", "PRIV_HUMAN"), "")
@@ -490,6 +500,7 @@ func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 // (listApprovesSecrets); while it cannot say that either, the list holds none of those requests
 // (TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover).
 func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	keyedService, keyedServiceKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-g-keyed-"+t.Name())
 	_, keyedGrant := grantOf(t, m, keyedService, keyedServiceKey, "INFRA-13: deploy the broker", "SERVICE_KEY")
@@ -578,6 +589,7 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 // decision asks, since a restricted member decides nothing (ApplyDecision). "Asks Dispatch nothing"
 // is true of the first broker; of the second it is true of everything but those reads.
 func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
+	t.Parallel()
 	const reason = "INFRA-12: check the SHA-256 of the deploy bundle"
 	reasonReads := []string{"access INFRA", "access SHA", "member kind of " + fixtureOperator, "member kind of " + insider}
 	for _, c := range []struct {
@@ -731,6 +743,7 @@ func (p *lockProbe) States(ctx context.Context, projects []string) (map[string]p
 // airlock connection and an approver's list ask Dispatch is asked while no transaction holds the
 // requesting enrollment's row (lockProbe). The probe must have run, or the test proves nothing.
 func TestNoK3CallRunsInsideATransaction(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, bound(rule("PRIV_KEY", "example")), publicTeam)
 	nameProjects(t, m, enr, privProject)
 	probe := &lockProbe{inner: m.Projects, t: t, m: m, enrollmentID: enr}

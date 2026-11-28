@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  A broker pod on a pool (`BROKER_PROXY_CA_POOL`) logs `proxy intermediate renewal` at INFO right
+  after each `proxy intermediate` line of an intermediate it takes: `serial`, the serial of the
+  intermediate it holds, and `at`, the moment it will ask for the next, in UTC, RFC 3339, with a
+  fraction of a second where the moment has one. That moment is 2 days (`renew_before`) before the
+  intermediate's end, or 5 minutes after the pod took it where that is later.
+time: 2026-11-28T09:11:07Z
+custom:
+    Issue: INFRA-6295

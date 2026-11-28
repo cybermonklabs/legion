@@ -17,6 +17,7 @@ import (
 // machine-login page takes, since that page keeps the looked-up record, and its Approve button,
 // after the first approval lands.
 func TestApprovingADecidedMachineLoginAgainIsRecordTerminal(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	login := struct{ Code string }{ts.openMachineLogin(t, newSigningKey(t), testApprover, "example-host-devbox")}
 	_, body := ts.ui(t, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": login.Code})
@@ -50,6 +51,7 @@ func TestApprovingADecidedMachineLoginAgainIsRecordTerminal(t *testing.T) {
 // on the record's row lock and then finds the first's decision, rather than failing at the mint's
 // live-key unique index with a 500.
 func TestConcurrentApprovesOfAMachineLoginDecideItOnce(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	login := struct{ Code string }{ts.openMachineLogin(t, newSigningKey(t), testApprover, "example-host-devbox")}
 	_, body := ts.ui(t, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": login.Code})
@@ -120,6 +122,7 @@ func TestConcurrentApprovesOfAMachineLoginDecideItOnce(t *testing.T) {
 // credential, so approving the second is 409 KEY_HOLDS_LIVE_CREDENTIAL, not RECORD_TERMINAL, since
 // the second record is still pending and stays so, with no credential minted for it.
 func TestApprovingASecondLoginOnAKeyWithALiveCredentialIsKeyHoldsLiveCredential(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	machineKey := newSigningKey(t)
 	lookUp := func() (recordID, code string) {

@@ -31,6 +31,7 @@ const otherPersonsSecret = "OTHER_PERSON_KEY"
 // a broker that signs people in waits for its approver, which is what makes the denial the
 // switch's doing and not the name's.
 func TestASignInOffBrokerDeniesAtOnceEveryNameThatWouldWait(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, secret, reason string
 		withheld             bool
@@ -91,6 +92,7 @@ func TestASignInOffBrokerDeniesAtOnceEveryNameThatWouldWait(t *testing.T) {
 // released on a broker that signs nobody in exactly as on one that does, and a request naming
 // one of them beside a name that would wait is denied whole, naming the waiting one alone.
 func TestASignInOffBrokerGrantsWhatThePolicyGrantsAtOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 	m.SignInOff = true
@@ -140,6 +142,7 @@ const anotherBroker = "https://another-broker.internal.example"
 // was, and so is a request signed for another broker sharing the database, which that broker
 // still lists. The control is the same sweep with sign-in on, which leaves every request pending.
 func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, enr, key, approver := newFixture(t)
 	other, otherKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)

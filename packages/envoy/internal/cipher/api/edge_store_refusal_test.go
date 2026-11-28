@@ -16,6 +16,7 @@ import (
 // The named revert: verify a request object without holding login_hint to what the store takes,
 // and each row answers 500 server_error.
 func TestALoginHintTheStoreCannotHoldIsRefusedNotAServerError(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	for _, hint := range []string{"nul@outside.example\x00", "a\x00@outside.example"} {
 		status, body := postEdge(t, rig.EdgeURL, "/v1/oauth/device_authorization", edgeDeviceForm(t, rig.EdgeURL, hint),

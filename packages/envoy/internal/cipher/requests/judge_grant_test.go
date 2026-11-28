@@ -49,6 +49,7 @@ func releasedValue(release Release, name string) string {
 // own grant of the same secret is decided by a person and is held to the person's rule
 // throughout: none of this moves it.
 func TestAJudgedGrantLivesByItsJudgeTagAndNotByAnOwner(t *testing.T) {
+	t.Parallel()
 	deel := func(judge int) memory.Secret {
 		s := policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1")
 		if judge == 0 {
@@ -108,6 +109,7 @@ func TestAJudgedGrantLivesByItsJudgeTagAndNotByAnOwner(t *testing.T) {
 // a key whose judge tag still covers the grant's lifetime passes, and one whose tag is gone, is
 // lower than that lifetime, or whose grant names no lifetime is no longer live.
 func TestJudgeStillDecidesReadsTheJudgeTag(t *testing.T) {
+	t.Parallel()
 	store := memory.New(
 		policytest.Judged(policytest.Secret("JUDGED_KEY", fixtureOperator, policy.TierHuman, "v"), 600, ""),
 		policytest.Secret("UNJUDGED_KEY", fixtureOperator, policy.TierHuman, "v"),
@@ -153,6 +155,7 @@ func deelAsAdmin() memory.Secret {
 // same secret that its owner approved releases throughout, a person's approval being all the
 // tag asks.
 func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T) {
+	t.Parallel()
 	t.Run("a release refuses it and ends it for good", func(t *testing.T) {
 		m, session, key := newJudgeFixture(t)
 		judged := judgedGrant(t, m, session, key, 600, "DEEL_API_KEY")
@@ -225,6 +228,7 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 // session's operator's — a service's pod has none — so neither withholds anything from the pod it
 // ended a grant on.
 func TestAJudgedGrantOfASharedSecretIsEverySignedInPersonsToSeeAndEnd(t *testing.T) {
+	t.Parallel()
 	m, _, _ := newJudgeFixture(t)
 	first, firstKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-one-"+t.Name())
 	second, secondKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-two-"+t.Name())
@@ -270,6 +274,7 @@ func TestAJudgedGrantOfASharedSecretIsEverySignedInPersonsToSeeAndEnd(t *testing
 // end, exactly as one the owner approved. It is on no other person's page, and no other person
 // ends it, though it too sits on a pod that acts for nobody.
 func TestAJudgedGrantOfAnOwnedSecretIsItsOwnersAlone(t *testing.T) {
+	t.Parallel()
 	m, _, _ := newJudgeFixture(t)
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
 	grantID := judgedGrant(t, m, pod, podKey, 600, "DEEL_API_KEY")

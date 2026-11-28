@@ -23,6 +23,7 @@ import (
 // is no refusal: it answers 202 with accepted and the fixed reason, the answer every such reread
 // gets whatever it names, writes no record and is counted served.
 func TestTheBinaryRecordsARefusalAndCountsEveryAnswer(t *testing.T) {
+	t.Parallel()
 	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t, storetest.URL(t))})
 	metricsAddr := broker.MetricsAddr(t)
 
@@ -84,6 +85,7 @@ func TestTheBinaryRecordsARefusalAndCountsEveryAnswer(t *testing.T) {
 // one secret its request named, as it named it, and every line of the broker's log is one JSON
 // object.
 func TestTheBinaryKeepsARefusalsNameThatHoldsAByteItEscapes(t *testing.T) {
+	t.Parallel()
 	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t, storetest.URL(t))})
 	status, header, body := post(t, "http://"+broker.Addr+"/v1/secrets/%1Agent-secrets-placeholder-/reread")
 	id := header.Get(answer.Header)

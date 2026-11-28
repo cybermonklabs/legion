@@ -226,6 +226,7 @@ func requirePersonPodLoginRefused(t *testing.T, rig *ciphertest.Rig, key *ecdsa.
 // refused the caller alone, and the mapped account's release of that name leaves the daemon's
 // registration unreleased.
 func TestAPersonPodAccountIsRefusedThePodSessionRoute(t *testing.T) {
+	t.Parallel()
 	rig := newPersonPodRig(t)
 	const session, pod = "implementer-g1", "pod-uid-roles"
 	podToken := rig.MintAccountPodToken(t, ciphertest.ExchangeRolesAccount, pod, 20*time.Minute)
@@ -288,6 +289,7 @@ func TestAPersonPodAccountIsRefusedThePodSessionRoute(t *testing.T) {
 // second machine of the person and the pod's login. Its grant list names the box session's
 // grant. It revokes that grant and the second machine's login.
 func TestAPersonPodLoginIsRefusedTheOperatorRoutesThatServeItsPersonsBox(t *testing.T) {
+	t.Parallel()
 	rig := newPersonPodRig(t)
 	box := newPersonsBox(t, rig)
 	_, _, laptop := approvedLogin(t, rig)
@@ -344,6 +346,7 @@ func TestAPersonPodLoginIsRefusedTheOperatorRoutesThatServeItsPersonsBox(t *test
 // GET /v1/enrollments/self, under the new enrollment's own proof, names the pod's enrollment and
 // the person as its operator.
 func TestAPersonPodLoginEnrolsItsOwnPodForItsPersonOverTheWire(t *testing.T) {
+	t.Parallel()
 	rig := newPersonPodRig(t)
 	login, key := personPodTokenLogin(t, rig, personPodUID)
 	podKey := newSigningKey(t)
@@ -374,6 +377,7 @@ func TestAPersonPodLoginEnrolsItsOwnPodForItsPersonOverTheWire(t *testing.T) {
 // person's box stays live. No route reads the stale login as the person's machine login.
 // POST /v1/enrollments refuses the same enrolment of its own pod, 403 OPERATOR_MISMATCH.
 func TestAStalePersonPodLoginIsRefusedTheOperatorRoutesAndItsOwnPod(t *testing.T) {
+	t.Parallel()
 	for _, change := range []struct{ name, person string }{
 		{"the setting drops the account", ""},
 		{"the setting moves the account to another person", personPodOther},
@@ -408,6 +412,7 @@ func TestAStalePersonPodLoginIsRefusedTheOperatorRoutesAndItsOwnPod(t *testing.T
 // grant to the person as the pod's automatic grant with the person as its operator. It does not
 // list the grant to another person.
 func TestAPersonPodsGrantIsListedToItsPersonOnTheGrantsRoute(t *testing.T) {
+	t.Parallel()
 	rig := newPersonPodRig(t)
 	login, key := personPodTokenLogin(t, rig, personPodUID)
 	podKey := newSigningKey(t)

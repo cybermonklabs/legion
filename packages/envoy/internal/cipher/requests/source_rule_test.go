@@ -33,6 +33,7 @@ const movedOtherProject = "projects/111111111111/secrets/cipher-"
 // row counts; drop the guard against an empty remainder, and the two rows of the bare prefixes
 // count; compare no type, and the rows of another type count.
 func TestSourceRuleOnSecretManagerSources(t *testing.T) {
+	t.Parallel()
 	moved := gcpRule(t, movedConfigured, movedSecond)
 	unset := gcpRule(t, movedConfigured, "")
 	acrossProjects := gcpRule(t, movedConfigured, movedOtherProject)
@@ -92,6 +93,7 @@ func TestSourceRuleOnSecretManagerSources(t *testing.T) {
 // counts; find the prefix where it first appears in the source, with the prefixes as given, and the
 // moves between the prefixes that spell part of the lead do not count.
 func TestSourceRuleOnMemorySources(t *testing.T) {
+	t.Parallel()
 	app := func(store string) string { return policy.TypeSource(policy.TypeGitHubApp, store) }
 	for _, pair := range []struct{ configured, second string }{
 		{"example/agent-secrets/", "example/old-secrets/"},

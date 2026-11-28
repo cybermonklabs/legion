@@ -20,6 +20,7 @@ import (
 // tag-only secret's tag names another kind, each name carries that set's kind, so nothing of it is
 // read from a policy other than the one given.
 func TestARecordsProfilesCarryTheirKindsScopeFromTheSetTheyWereReadIn(t *testing.T) {
+	t.Parallel()
 	const kinds = `[` +
 		`{"name": "deel", "hosts": ["api.deel.example"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/v1/payroll/"}]}, ` +
 		`{"name": "open", "hosts": ["api.open.example", "uploads.open.example"], "ways": ["swap"]}]`

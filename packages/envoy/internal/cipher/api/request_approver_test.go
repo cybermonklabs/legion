@@ -108,6 +108,7 @@ func (ts *testServer) statusOf(t *testing.T, key *ecdsa.PrivateKey, enrollmentID
 // agent-tier secret its session gets without asking, a service's secret granted to that service's
 // pod, or a service's secret denied to a person's session - answers approver null, present.
 func TestARequestNamesWhomItWaitsOn(t *testing.T) {
+	t.Parallel()
 	ts := newApproverTestServer(t)
 	person, personKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "carol@example.com")
 	pod, podKey := ts.newServicePod(t)
@@ -154,6 +155,7 @@ func TestARequestNamesWhomItWaitsOn(t *testing.T) {
 // and the denied request still names them; and a new session's request, which the current policy
 // decides, names the new owner.
 func TestARequestKeepsTheApproverItsRecordNamesAfterTheOwnerChanges(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	const newOwner = "bob@example.com"
 	session, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "carol@example.com")

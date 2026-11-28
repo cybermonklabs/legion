@@ -313,6 +313,7 @@ func TestLegionAgentRoutesIgnoreAProjectKey(t *testing.T) {
 // project has stated none, then the flag it last stated. A listing whose entries are of two
 // projects answers each entry its own project's flag.
 func TestLegionAgentReadsAnswerTheirProjectsAnsweringFlag(t *testing.T) {
+	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
 	other := strings.NewReplacer(`"legion_project":"infra"`, `"legion_project":"other"`, "legion-infra-", "legion-other-").
 		Replace(legionEntry("ses-other", "INFRA-448", "reviewer", "2026-10-26T04:00:00Z"))
@@ -364,6 +365,7 @@ func TestLegionAgentReadsAnswerTheirProjectsAnsweringFlag(t *testing.T) {
 // project's flag rather than infra's: the flag is the token's own project's, whichever entries the
 // read holds.
 func TestTheRoleReadAnswersItsProjectsAnsweringFlagWithOrWithoutAnEntry(t *testing.T) {
+	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
 	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
 	// Each role token read, and how many entries its read holds.

@@ -16,6 +16,7 @@ import (
 // its value is put, the policy's next reload serves it: the request waits on its owner, and the
 // approved grant releases the value.
 func TestASecretWithNoValueIsRefusedBeforeAnyoneApprovesIt(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	retag(t, m, policytest.Secret("UNSEEDED_KEY", fixtureOperator, policy.TierHuman, ""))
@@ -49,6 +50,7 @@ func TestASecretWithNoValueIsRefusedBeforeAnyoneApprovesIt(t *testing.T) {
 // the decided one again) or changed meanwhile (stillAllowed re-checks every name under the new
 // version).
 func TestAGrantStopsWhileItsSecretHasNoValueAndResumesOnceItHasOne(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		meanwhile      func(*testing.T, *Machine)
 		decidedVersion bool

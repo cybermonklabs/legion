@@ -68,6 +68,7 @@ func waitBlockedBy(t *testing.T, m *Machine, holder pgx.Tx, done <-chan error) {
 // COMMITTED: without the name, the second case's transaction reads the grant as it was before the
 // move, and the grant's update fails with a serialization error instead.
 func TestARevokeWaitingOnAnAdoptionDecidesOnWhereTheAdoptionLeftTheGrant(t *testing.T) {
+	t.Parallel()
 	for _, repeatableRead := range []bool{false, true} {
 		name := "the server's default level"
 		if repeatableRead {
@@ -116,6 +117,7 @@ func TestARevokeWaitingOnAnAdoptionDecidesOnWhereTheAdoptionLeftTheGrant(t *test
 // name is withheld on the second box, where the session's next request asks, and not on the box
 // it left.
 func TestAnOperatorsRevokeDuringTheirSessionsAdoptionWithholdsWhereTheSessionRuns(t *testing.T) {
+	t.Parallel()
 	for _, inFlight := range []bool{false, true} {
 		name := "the adoption committed before the revoke"
 		if inFlight {

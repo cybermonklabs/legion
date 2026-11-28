@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The broker no longer panics when the judge's run ends while it writes a verdict's row whose
+  approval it cannot tell applied. That write begins a transaction of its own once its read of the
+  approval fails, and a begin that failed because the run's time was spent left the transaction it
+  rolls back on return nil, which panicked the goroutine and with it the broker process. Such a
+  write now returns the begin's error, and the request goes to its person when the judge's hold
+  runs out, as any unwritten verdict does.
+time: 2026-11-26T06:51:00Z
+custom:
+    Issue: pr5419

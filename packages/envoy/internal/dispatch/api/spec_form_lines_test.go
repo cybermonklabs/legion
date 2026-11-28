@@ -14,6 +14,7 @@ import (
 // form comes first, as the refusal's head counts them. A document out of scope gets the lines of
 // its findings and no head, since nothing refuses its approval.
 func TestTheReadRouteWritesEachFindingInTheLineOfTheRefusal(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	spec := "# Spec\n\n" +
 		formRequirement("store-comment", "Dispatch stores each comment. Dispatch indexes each comment. Dispatch shows each comment.") +

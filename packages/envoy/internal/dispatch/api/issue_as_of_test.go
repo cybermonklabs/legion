@@ -66,6 +66,7 @@ func listedRow(rows []model.IssueSummary, key string) (model.IssueSummary, bool)
 // the cut is the priority's newest state tuple at the cut (prioritiesLiveAtCutTerm), not the
 // state that priority_nodes holds now.
 func TestAPriorityDeletedAfterTheCutIsAdvancedAtTheCut(t *testing.T) {
+	t.Parallel()
 	handler, database, settle := newIssueAtCutServer(t)
 	const project, priority = "ASPD", "asof-deleted-after-the-cut"
 	asOfWrite(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": project, "name": "A priority deleted later"}, "alice")
@@ -117,6 +118,7 @@ func TestAPriorityDeletedAfterTheCutIsAdvancedAtTheCut(t *testing.T) {
 //     its ids and its unknown ids and names both absent: the members and the project's component
 //     model keep no history (reason M).
 func TestAComponentAttachmentChangedAfterTheCutReadsAsItStoodThen(t *testing.T) {
+	t.Parallel()
 	handler, database, settle := newIssueAtCutServer(t)
 	const project = "ASCM"
 	asOfWrite(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": project, "name": "Components read at a cut"}, "alice")

@@ -1,18 +1,24 @@
-// Package testparallel holds the rule of a package whose tests run beside each other: each
-// top-level test of the package's default build calls t.Parallel() as its first statement, or
-// gives the reason it cannot in a `// Not parallel:` comment on its first line. A test that does
-// neither runs alone, before every parallel test, for a reason nobody wrote down, and a lane that
-// looks for the cause of a failure of its own then spends a round ruling it out. Require is the
-// rule's check, which such a package runs from a test of its own (docs/testing.md names them).
+// Package testparallel holds the rule of a package whose tests run beside each other, in either
+// Go module of the repository (docs/testing.md, "A test in a package whose tests run beside each
+// other"): each top-level test of the package calls t.Parallel() as its first statement, or gives
+// the reason it cannot in a `// Not parallel:` comment on its first line. The reason names the
+// call or the bound that makes the test serial, never a line of a file, which the next edit above
+// that line makes false. A test that does neither runs alone, before every parallel test, for a
+// reason nobody wrote down, and a lane that looks for the cause of a failure of its own then
+// spends a round ruling it out. Require is the rule's check, which each such package runs from a
+// test of its own.
+//
+// The package is not internal, so the daemon module's packages, which require this module, call
+// the same check.
 package testparallel
 
 import (
 	"go/ast"
-	"go/build"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
-	"slices"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,7 +44,18 @@ func (f foundTest) at() string {
 const (
 	forgetsBoth  = "neither calls t.Parallel() as its first statement nor gives a reason in a `// Not parallel:` comment on its first line"
 	contradicted = "calls t.Parallel() under a `// Not parallel:` comment"
+	citesALine   = "names a line in its `// Not parallel:` comment, which the next edit above that line makes false: name the call or the bound, and write an address with its host"
 )
+
+// citedLine is a line a comment names: a file's, by colon or by GitHub's anchor (logtest.go:36,
+// logtest.go#L36), a bare one (:85, after a space, a line's start or a parenthesis, so that an
+// address's port such as 127.0.0.1:1 and a time such as 10:30 are not read as one), or one in
+// words (line 85, lines 85-90, with any space between, a line break included). A bare address
+// such as :8080 reads as a line, so a reason that names one writes it with its host (127.0.0.1:8080),
+// which both reads better and keeps the rule. It is matched against the comment's text with each
+// line's // dropped (ast.CommentGroup.Text), so a citation on the comment's second line counts as
+// one on its first.
+var citedLine = regexp.MustCompile(`(?im)\.go(?::|#L)\d+|(?:^|[\s(]):\d+\b|\blines?\s+\d+`)
 
 // Require fails t, naming each top-level test of the package in dir that breaks the rule
 // (serialTests), and logs each test that runs alone with the reason its first line gives. It also
@@ -64,7 +81,7 @@ func Require(t testing.TB, dir string) {
 	}
 	if len(broken) > 0 {
 		t.Errorf("%d of the %d tests in %s break the rule of a package whose tests run beside each other:\n\t%s\n"+
-			"call t.Parallel() first, or write on the test's first line `// Not parallel:` and the reason it cannot run beside the others (docs/testing.md)",
+			"call t.Parallel() first, or write on the test's first line `// Not parallel:` and the call or bound that keeps it from running beside the others, never a line (docs/testing.md)",
 			len(broken), read, dir, joined(broken, func(f foundTest) string { return f.at() + " " + f.note }))
 	}
 }
@@ -80,19 +97,25 @@ func joined(tests []foundTest, line func(foundTest) string) string {
 
 // serialTests answers how many top-level tests the package in dir holds, those that break the
 // rule, and those that keep it by running alone for the reason their first line gives, each in
-// file order. It reads the test files go/build's default context selects: this GOOS and GOARCH and
-// no -tags, so a file behind a tag such as e2e is not read.
+// file order. It reads every _test.go file of dir, whatever its build constraint: a file behind a
+// tag such as e2e or multiprocess still runs in some lane, and its tests run beside each other
+// there.
 func serialTests(dir string) (read int, broken, marked []foundTest, err error) {
-	pkg, err := build.Default.ImportDir(dir, 0)
+	// A directory that is not there globs to nothing, which would read as a package with no test.
+	if _, err := os.Stat(dir); err != nil {
+		return 0, nil, nil, err
+	}
+	names, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
 	if err != nil {
 		return 0, nil, nil, err
 	}
 	fset := token.NewFileSet()
-	for _, name := range slices.Concat(pkg.TestGoFiles, pkg.XTestGoFiles) {
-		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments)
+	for _, path := range names {
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
 		if err != nil {
 			return 0, nil, nil, err
 		}
+		name := filepath.Base(path)
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
@@ -104,7 +127,8 @@ func serialTests(dir string) (read int, broken, marked []foundTest, err error) {
 			}
 			read++
 			at := foundTest{file: name, line: fset.Position(fn.Pos()).Line, name: fn.Name.Name}
-			reason, says := notParallelReason(file, fn.Body)
+			reason, says, text := notParallelReason(file, fn.Body)
+			cited := citedLine.FindString(text)
 			switch {
 			case says && callsParallel(param, fn.Body):
 				at.note = contradicted
@@ -112,6 +136,9 @@ func serialTests(dir string) (read int, broken, marked []foundTest, err error) {
 			case callsParallelFirst(param, fn.Body):
 			case reason == "":
 				at.note = forgetsBoth
+				broken = append(broken, at)
+			case cited != "":
+				at.note = citesALine + " (" + strings.TrimSpace(cited) + ")"
 				broken = append(broken, at)
 			default:
 				at.note = reason
@@ -175,7 +202,9 @@ func callsParallelFirst(param *ast.Ident, body *ast.BlockStmt) bool {
 // method value taken to call later (p := t.Parallel). A function literal that declares a parameter
 // of param's name, as a subtest's func(t *testing.T) does, is passed over, since that name is
 // another *testing.T there and a subtest may run in parallel under a serial test; one that
-// captures param is read as the test's own code.
+// captures param is read as the test's own code. Every other statement is read, a branch of an if
+// included: a test that says it is not parallel and calls t.Parallel() anywhere in its own code
+// says the opposite of what it does, whatever guards the call.
 func callsParallel(param *ast.Ident, body *ast.BlockStmt) bool {
 	if param == nil {
 		return false
@@ -223,11 +252,12 @@ func declares(fn *ast.FuncType, name string) bool {
 }
 
 // notParallelReason reads the first comment of body, before its first statement: says is whether
-// that comment's first line opens with `Not parallel:`, and reason is the rest of that line, ""
-// where the line gives none. The line is read as written (ast.Comment.Text), since
-// ast.CommentGroup.Text drops a group's empty leading lines and would read a reason under an
-// empty `//` as the first line's.
-func notParallelReason(file *ast.File, body *ast.BlockStmt) (reason string, says bool) {
+// that comment's first line opens with `Not parallel:`, reason is the rest of that line, "" where
+// the line gives none, and text is the whole comment group with each line's // dropped
+// (ast.CommentGroup.Text), which citedLine reads. The first line is read as written
+// (ast.Comment.Text), since ast.CommentGroup.Text drops a group's empty leading lines and would
+// read a reason under an empty `//` as the first line's.
+func notParallelReason(file *ast.File, body *ast.BlockStmt) (reason string, says bool, text string) {
 	end := body.Rbrace
 	if len(body.List) > 0 {
 		end = body.List[0].Pos()
@@ -241,10 +271,10 @@ func notParallelReason(file *ast.File, body *ast.BlockStmt) (reason string, says
 			line = strings.TrimPrefix(strings.TrimPrefix(line, "//"), "/*")
 			rest, opens := strings.CutPrefix(strings.TrimSpace(line), "Not parallel:")
 			if !opens {
-				return "", false
+				return "", false, ""
 			}
-			return strings.TrimSpace(strings.TrimSuffix(rest, "*/")), true
+			return strings.TrimSpace(strings.TrimSuffix(rest, "*/")), true, group.Text()
 		}
 	}
-	return "", false
+	return "", false, ""
 }

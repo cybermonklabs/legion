@@ -21,7 +21,8 @@ func testPool(t *testing.T) (*pgxpool.Pool, string) {
 	dsn := storetest.URL(t)
 	parsed, err := url.Parse(dsn)
 	if err != nil {
-		t.Fatal(err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database's URL does not parse")
 	}
 	pool, err := testpool.NewPool(context.Background(), dsn)
 	if err != nil {

@@ -66,6 +66,7 @@ func recordedTarget(t *testing.T, m *Machine, requestID, name string) (*string, 
 // request_secrets records the target the record holds, the account and the repositories' names,
 // which the release and the reuse of a grant read; a request with no target records none.
 func TestTargetIsALocationOfTheSignedRequest(t *testing.T) {
+	t.Parallel()
 	m, enrollmentID, key := targetFixture(t, policy.TierHuman, "")
 	locations := []string{"https://github.com/ada/proofs", "https://github.com/ada/lean"}
 	request, err := m.Create(t.Context(), enrollmentID, signTargetRequest(t, m, key, "APP_KEY", locations...), "")
@@ -111,6 +112,7 @@ func TestTargetIsALocationOfTheSignedRequest(t *testing.T) {
 // release would end (checkRelease), so the reuse ends it instead of handing it back, and the
 // grants of an entry the edit left as it was are reused across it.
 func TestALiveGrantIsReusedOnlyForTheSameProfileAndTarget(t *testing.T) {
+	t.Parallel()
 	m, enrollmentID, key := targetFixture(t, policy.TierAgent, policytest.ProfilesFile(
 		policytest.AppProfile("APP_KEY"),
 		`{"name": "APP_KEY_ADA", "source": "APP_KEY", "github": {"accounts": ["ada"], "permissions": {"metadata": "read"}}}`,
@@ -179,6 +181,7 @@ func TestALiveGrantIsReusedOnlyForTheSameProfileAndTarget(t *testing.T) {
 // the approval makes releases the first request's target. One of another target is refused as a
 // second pending request for the same name (ErrRequestPending), as any other overlap is.
 func TestAPendingRequestIsJoinedOnlyForTheSameTarget(t *testing.T) {
+	t.Parallel()
 	m, enrollmentID, key := targetFixture(t, policy.TierHuman, "")
 	first, err := m.Create(t.Context(), enrollmentID, signTargetRequest(t, m, key, "APP_KEY", "https://github.com/ada"), "")
 	if err != nil || first.State != "pending" {
@@ -209,6 +212,7 @@ func TestAPendingRequestIsJoinedOnlyForTheSameTarget(t *testing.T) {
 // whose every release would refuse its target. A target the rolled profile still holds is
 // approved across the same roll as before.
 func TestAnApprovalHoldsTheTargetToTheProfileItIsGivenUnder(t *testing.T) {
+	t.Parallel()
 	const block = `"permissions": {"contents": "read", "metadata": "read"}`
 	before := policytest.ProfilesFile(`{"name": "APP_KEY", "github": {"accounts": ["ada"], "repositories": ["ada/lean", "ada/proofs"], ` + block + `}}`)
 	after := policytest.ProfilesFile(`{"name": "APP_KEY", "github": {"accounts": ["ada"], "repositories": ["ada/lean"], ` + block + `}}`)
@@ -249,6 +253,7 @@ func TestAnApprovalHoldsTheTargetToTheProfileItIsGivenUnder(t *testing.T) {
 // which every reader of IsRefusal must read as the broker's answer about a request or a grant
 // rather than as a read that did not happen, wrapped as gitHubScope and checkTarget wrap it.
 func TestATargetRefusalIsOneOfThisPackagesRefusals(t *testing.T) {
+	t.Parallel()
 	if err := fmt.Errorf("%w: APP_KEY: the target ada/site is outside the profile", ErrTargetRefused); !IsRefusal(err) {
 		t.Fatalf("IsRefusal(%v) = false; want true", err)
 	}
@@ -260,6 +265,7 @@ func TestATargetRefusalIsOneOfThisPackagesRefusals(t *testing.T) {
 // never answered a target refusal, which names the profile's accounts and repositories to a
 // requester the profile is not for.
 func TestARequesterTheProfileDoesNotListIsDeniedWhateverItsTarget(t *testing.T) {
+	t.Parallel()
 	m, enrollmentID, key := targetFixture(t, policy.TierAgent, policytest.ProfilesFile(
 		`{"name": "APP_KEY", "requesters": ["ada@example.com"], "github": {"accounts": ["ada"], "repositories": ["ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}}`,
 	))
@@ -283,6 +289,7 @@ func TestARequesterTheProfileDoesNotListIsDeniedWhateverItsTarget(t *testing.T) 
 // asked. The grant here names a target at Create, which records it, and loses it in the database
 // afterwards, the one way a grant of such a scope with no target can reach a release.
 func TestAReleaseOfABareTokenOfSeveralAccountsWithNoTargetIsRefused(t *testing.T) {
+	t.Parallel()
 	m, enrollmentID, key := targetFixture(t, policy.TierAgent, policytest.ProfilesFile(
 		`{"name": "APP_KEY", "github": {"accounts": ["acme", "ada"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`,
 	))
@@ -316,6 +323,7 @@ func TestAReleaseOfABareTokenOfSeveralAccountsWithNoTargetIsRefused(t *testing.T
 // A target's repository matches the profile's without regard to case, as GitHub matches it
 // (secrets' heldBy), and the minter is asked for the profile's own spelling of it.
 func TestAReleaseMintsTheTargetsScope(t *testing.T) {
+	t.Parallel()
 	m, enrollmentID, key := targetFixture(t, policy.TierAgent, policytest.ProfilesFile(
 		`{"name": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs", "acme/site"], "permissions": {"contents": "read", "metadata": "read"}}}`,
 	))

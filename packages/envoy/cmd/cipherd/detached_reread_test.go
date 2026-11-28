@@ -30,6 +30,7 @@ const thePeersTold = "the other pods were told to reread"
 //
 // The named revert: drop the WaitDetached call from stop.
 func TestStopWaitsForARereadRunAfterItsAnswer(t *testing.T) {
+	t.Parallel()
 	local := memory.New(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
 	entered := make(chan string, 1)
 	release := make(chan struct{})

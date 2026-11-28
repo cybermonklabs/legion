@@ -251,6 +251,7 @@ func gateClaimDrainHeld(role string) bool { return role == gateRole }
 // whose sessions all register and claim on no credential, so each record names no principal and
 // every claim's credential acts for none.
 func TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// replaced and claimant are the credentials each session registers on, and the
@@ -448,6 +449,7 @@ func wantIf(want bool, eventIDs ...string) []string {
 // claimant whose own registration is not recorded with its principal yet. The control is the same
 // claim where both sessions registered on no credential, as the claim's own does, which stands.
 func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)
 	request := httptest.NewRequest(http.MethodPost, "/v1/roles/set", nil)
@@ -535,6 +537,7 @@ func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 // control is an open store where both sessions registered as one principal, which stands, and
 // one where the successor registered as another, which does not, with no error.
 func TestAHandoverPassReadsAStoreThatCannotAnswerAsAnError(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)
 	const previous, successor, stranger = "ses_gate_stands_previous", "ses_gate_stands_successor", "ses_gate_stands_stranger"
@@ -578,6 +581,7 @@ func TestAHandoverPassReadsAStoreThatCannotAnswerAsAnError(t *testing.T) {
 // one; in the control the claimant receives the unread message and is named. The case fails where
 // a record, once written, hands over whatever the sessions register as later.
 func TestAHandoverEndsWhenTheReplacedSessionRegistersAsAnotherPrincipal(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name       string
 		registered string
@@ -642,6 +646,7 @@ func TestAHandoverEndsWhenTheReplacedSessionRegistersAsAnotherPrincipal(t *testi
 // the pass's start, or before a step that can still let a registration land ahead of the copy.
 // The claim's own handover is held (gateClaimDrainHeld), so the sweep's pass is the record's first.
 func TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name       string
 		registered string
@@ -715,6 +720,7 @@ func TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns(t *
 // state only at its start, or before a step a registration can still land behind. The claim's own
 // handover is held (gateClaimDrainHeld), so the sweep's pass is the record's first.
 func TestAHandoverPassEndsWhenTheReplacedSessionRegistersAgainWhileItRuns(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		returns bool
@@ -793,6 +799,7 @@ func TestAHandoverPassEndsWhenTheReplacedSessionRegistersAgainWhileItRuns(t *tes
 // admitted with its new title. A listener whose bucket is not open is
 // TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmittedWithAWarning's.
 func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_gate_registration_unrecorded"
 	for _, row := range []struct {
 		name      string
@@ -874,6 +881,7 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 // again as the same service through such a bucket: its refused write leaves its own principal
 // recorded, and it is answered 200.
 func TestAFirstRegistrationWhoseRecordTheBucketRefusesIsAnsweredTheStoresRefusal(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_gate_first_registration_refused"
 	rig := newGateRig(t)
 	js := rig.harness.client.JS()
@@ -934,6 +942,7 @@ func (rig *gateRig) registerTitled(t *testing.T, token, sessionID, title string)
 // recorded its principal, and writes no handover record; the case fails where the warning names
 // another cause than the record has, or the claim hands anything over.
 func TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmittedWithAWarning(t *testing.T) {
+	// Not parallel: it resets and backdates knownBucketNotOpenWarnings, the one package-level memory of when the listener last warned that the known-session bucket is not open, which every registration through such a listener reads and writes (warnKnownBucketNotOpen).
 	const line = "listener registered a session with no principal recorded"
 	rig := newGateRig(t)
 	token := rig.personToken(gateClaimant, gatePerson)
@@ -1087,6 +1096,7 @@ func TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmitted
 // record. The control is the same with no pass past the life, which hands the message over either
 // way.
 func TestAHandoverWaitsForAReplacedSessionThatStaysLivePastTheRecordsLife(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name        string
 		pastTheLife bool
@@ -1145,6 +1155,7 @@ func TestAHandoverWaitsForAReplacedSessionThatStaysLivePastTheRecordsLife(t *tes
 // the record, and the message stays on the replaced session's own subject, unread - the end the
 // life states, and the proof that the case's watch sees a record that finished.
 func TestADirectMessageSentAfterTheClaimsHourIsHandedOver(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		after  time.Duration
@@ -1213,6 +1224,7 @@ func TestADirectMessageSentAfterTheClaimsHourIsHandedOver(t *testing.T) {
 // message was stored, and the claimant receives it; it fails where the pass starts an hour before
 // the claim. The control is the same claim made at once, which both starts reach.
 func TestAHandoverWhoseFloorIsUnknownStartsAtTheFirstMessageTheStreamHolds(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name  string
 		later time.Duration

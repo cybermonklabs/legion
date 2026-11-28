@@ -60,6 +60,7 @@ const (
 // The named reverts: count with the setting empty, and its rows count; have readSource answer
 // the frozen source, and the read rows read the second prefix.
 func TestSourceCountsThroughTheSecondPrefix(t *testing.T) {
+	t.Parallel()
 	moved := gcpRule(t, movedConfigured, movedSecond)
 	unset := gcpRule(t, movedConfigured, "")
 	app := func(store string) string { return policy.TypeSource(policy.TypeGitHubApp, store) }

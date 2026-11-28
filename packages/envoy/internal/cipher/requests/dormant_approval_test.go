@@ -48,6 +48,7 @@ func grantHolder(t *testing.T, m *Machine, grantID string) string {
 // as approved, move the request to denied, and leave the session asking again from its next box
 // for something somebody already approved.
 func TestAnApprovalWhileTheEnrollmentIsDormantGrantsOntoTheDormantRow(t *testing.T) {
+	t.Parallel()
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -83,6 +84,7 @@ func TestAnApprovalWhileTheEnrollmentIsDormantGrantsOntoTheDormantRow(t *testing
 // takes no grant. The approval is still recorded as the person's answer, the request moves to
 // denied with the detail the approval page shows, and nothing is minted.
 func TestAnApprovalAfterTheEnrollmentEndedForGoodIsStillDenied(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -126,6 +128,7 @@ func TestAnApprovalAfterTheEnrollmentEndedForGoodIsStillDenied(t *testing.T) {
 // (enroll.Service.testConflictHook is the precedent), which runs exactly where the adoption's
 // commit lands.
 func TestAnApprovalRacingTheAdoptionGrantsToTheEnrollmentTheRequestNamesNow(t *testing.T) {
+	t.Parallel()
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -245,6 +248,7 @@ func grantRevoked(t *testing.T, m *Machine, grantID string) bool {
 // with the grant standing, and the session's next enrolment of the same name adopts it
 // (moveSession moves the rows as enroll.Create's own adoption does).
 func TestAnApprovalOnALapsedRowTheSweepHasNotEndedGrantsAndTheSweepThenCarriesIt(t *testing.T) {
+	t.Parallel()
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
 	nameTheSession(t, m, first, "sess-lapsed-carry", exchange.PersonPrincipal(fixtureOperator))
@@ -299,6 +303,7 @@ func TestAnApprovalOnALapsedRowTheSweepHasNotEndedGrantsAndTheSweepThenCarriesIt
 // The row is left holding a second request nobody answers, so the sweep's answer afterwards
 // turns on the missing principal rather than on the denial having emptied the row.
 func TestAnApprovalOnALapsedRowWithNoPrincipalIsStillDenied(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	nameTheSession(t, m, enr, "sess-lapsed-no-principal", "")
@@ -348,6 +353,7 @@ func TestAnApprovalOnALapsedRowWithNoPrincipalIsStillDenied(t *testing.T) {
 // answer it wants as well, so the test says what the rule is rather than only that the two
 // copies agree.
 func TestTheLapsedRowGrantRuleAnswersWhatTheEndThatFollowsDoes(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	shapes := []struct {

@@ -49,6 +49,7 @@ insert into oauth_refresh_tokens (signature, request_id, credential_id, request,
 // endCredential; and a run with no BROKER_DATABASE_URL, which must refuse rather than report a
 // clean sweep of a database it never opened.
 func TestTheBinaryRevokeDispatchSignInsEndsEverySignInAndItsTokens(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	binary := buildBroker(t)
 	databaseURL := storetest.URL(t)

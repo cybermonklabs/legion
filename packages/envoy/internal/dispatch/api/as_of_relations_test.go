@@ -340,6 +340,7 @@ const asOfStatementLength = 600
 // 404 at the cut. And each row must send at least one statement that the store bound under the
 // cut, so that no row passes with nothing to hold.
 func TestAPastTimeStatementReadsNoShadowedTableDirectly(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	createAsOfProbe(t, database)
 	probe := newRelationProbe()

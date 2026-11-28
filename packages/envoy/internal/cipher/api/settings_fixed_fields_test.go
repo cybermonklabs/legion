@@ -18,6 +18,7 @@ import (
 // The named revert: write the names by hand and leave one out, and the body holds a key the list
 // does not.
 func TestTheFixedSettingsFieldsAreTheBodysOwnKeys(t *testing.T) {
+	t.Parallel()
 	var full settingsResponse
 	v := reflect.ValueOf(&full).Elem()
 	for i := range v.NumField() {

@@ -87,6 +87,7 @@ func accountCall(t *testing.T, ts *testServer, introspect bool, bearer, address 
 // through the same proxy from its own address is still served, on the relay route and on
 // introspection, each spending one request of its bucket and no more.
 func TestAForgedAccountTokenFloodStopsReachingTheVerifier(t *testing.T) {
+	t.Parallel()
 	var counting *countingAccountTokens
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.AccountLimit = &ratelimit.Limit{Every: time.Hour, Burst: 2}
@@ -139,6 +140,7 @@ func TestAForgedAccountTokenFloodStopsReachingTheVerifier(t *testing.T) {
 // the listed caller sending a whole burst at once from one address, relaying a person's page and
 // introspecting in turn, is refused nothing, and every request is verified.
 func TestAListedCallersOrdinaryTrafficIsNotRefused(t *testing.T) {
+	t.Parallel()
 	var counting *countingAccountTokens
 	ts := newTestServerWith(t, func(d *api.Deps) { counting = countVerifications(d) })
 	sent := api.DefaultAccountLimit.Burst
@@ -199,6 +201,7 @@ func forgedFlood(t *testing.T, issuer *oidctest.Issuer, count int) []string {
 // refused 401 ACCOUNT_TOKEN_INVALID — so the flood really did reach the verification this counts —
 // and together cost the issuer one read of its key set, not one per request.
 func TestAForgedAccountTokenFloodFromManyAddressesCostsOneFetchPerMinute(t *testing.T) {
+	t.Parallel()
 	var counting *countingAccountTokens
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.TrustedProxyHeader = "X-Forwarded-For"
@@ -243,6 +246,7 @@ func TestAForgedAccountTokenFloodFromManyAddressesCostsOneFetchPerMinute(t *test
 // every forged token. The one read the test above counts is that bound working, not an issuer
 // nobody asked.
 func TestAForgedAccountTokenFloodCostsAFetchEachWithoutTheKeyCachesMinimumRefresh(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	published := issuer.PublishKey(t, "signing-key")
 	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
@@ -314,6 +318,7 @@ func browserCall(t *testing.T, ts *testServer, path, address string) (int, http.
 // in JSON, and names the address rather than a token too. The page's stylesheet is refused at no
 // point, since it spends nothing, and inside the burst no route of either kind is refused.
 func TestAFloodedPageAnswersThePagesOwn429AndNamesNoToken(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.AccountLimit = &ratelimit.Limit{Every: time.Hour, Burst: 3}
 		d.TrustedProxyHeader = "X-Forwarded-For"

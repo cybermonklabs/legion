@@ -113,6 +113,7 @@ func (taken takenRole) requireReachedNext(t *testing.T, next, eventID string) {
 // 200: the session that took the role never received it. Control: with a current copy the same
 // send is kept for that session and reaches it.
 func TestAMarkedSendReachesTheSessionThatTookTheRoleFromAStoppedAgentWhileTheClaimsCopyIsBehind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		behind bool
@@ -149,6 +150,7 @@ func TestAMarkedSendReachesTheSessionThatTookTheRoleFromAStoppedAgentWhileTheCla
 // it, 200. The publish names a source session, so its first resolution reads the buckets as GET
 // /v1/roles/<role> does (roleSend.resolve): one naming none reads the leaders from the start.
 func TestARolePublishReachesTheSessionThatTookTheRoleFromAStoppedAgentWhileTheClaimsCopyIsBehind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		behind bool

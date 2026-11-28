@@ -255,6 +255,10 @@ var asOfSyntheticQueries = []string{"issue", "dispatch", "snapshot token", "wibb
 // stopped, which the test refuses: make a new one. It is gated on DISPATCH_ASOF_SYNTHETIC_URL, so
 // CI never runs it, and it fails no bound.
 func TestAsOfMeaningCostOnASyntheticCorpus(t *testing.T) {
+	// Not parallel: it times reads with a wall clock, and the clock, the cores and Postgres's shared
+	// buffers are the whole process's and server's, which the package's parallel tests use at the
+	// same time. It runs only where DISPATCH_ASOF_SYNTHETIC_URL is set, which CI never sets, and the
+	// marker holds all the same.
 	databaseURL := os.Getenv(asOfSyntheticURLEnv)
 	if databaseURL == "" {
 		t.Skip(asOfSyntheticURLEnv + " must name an empty database on a server with pgvector " +

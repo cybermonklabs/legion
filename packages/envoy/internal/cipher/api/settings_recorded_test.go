@@ -51,6 +51,7 @@ import (
 // each field the body can carry is in its record: the comparison walks the fields of the body and
 // the record, and a field neither holds is never compared.
 func TestSettingsRecordedOnMain(t *testing.T) {
+	t.Parallel()
 	judged := &requests.Machine{Policy: judgedPolicy(t)}
 	for _, row := range []struct {
 		store, name, prefix string

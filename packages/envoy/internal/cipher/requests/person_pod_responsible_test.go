@@ -98,6 +98,7 @@ func requireNoDispatchRead(t *testing.T, assignees *standInAssignees) {
 // anyone and notifies sami. It is on sami's PendingForApprover list, which Dispatch's Inbox reads,
 // and not on the list of alice, bob or dave. The pod has no claim, so Dispatch is not read.
 func TestPersonPodSharedRequestIsListedForItsPerson(t *testing.T) {
+	t.Parallel()
 	m, pod, key, assignees := samisPodWithDispatch(t)
 	req := askShared(t, m, pod, key)
 	requireListedForSami(t, m, pod, *req.RecordID)
@@ -115,6 +116,7 @@ func TestPersonPodSharedRequestIsListedForItsPerson(t *testing.T) {
 // still records sami as its operator. So the setting, and nothing else, takes the request off
 // sami's list.
 func TestPersonPodSharedRequestFollowsTheSetting(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// change applies the setting's change to the map.

@@ -178,6 +178,7 @@ func auditKinds(t *testing.T, m *Machine, recordID string) []string {
 // verdict that produced it is in the same transaction (D11), naming the grant it granted, and the
 // chain the release re-checks verifies under the judge's arm.
 func TestTheJudgesApprovalGrantsUnderTheRecordsOwnApprover(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct{ secret, approver string }{
 		"an owned secret": {"DEEL_API_KEY", fixtureOperator},
 		"a shared secret": {"SHARED_KEY", record.AnyoneApprover},
@@ -224,6 +225,7 @@ func TestTheJudgesApprovalGrantsUnderTheRecordsOwnApprover(t *testing.T) {
 // person for a pending request, and not pending for one decided before the row. LogJudged answers
 // the verdict it wrote, so the judge's own line can say the same.
 func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
 
@@ -288,6 +290,7 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 // each comes back to the caller as a refusal it can test and leaves the request exactly as it
 // found it.
 func TestApplyJudgeDecisionRefusesARecordTheTagsDoNotAdmit(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		names []string
 		// tagsAfter moves the judge tag once the request is written, as its owner's retag does.
@@ -333,6 +336,7 @@ func TestApplyJudgeDecisionRefusesARecordTheTagsDoNotAdmit(t *testing.T) {
 // leaves the other ErrTerminal. The record keeps exactly one terminal event and one grant, under
 // the actor of whoever decided it (D10).
 func TestOneDecisionBetweenThePersonAndTheJudge(t *testing.T) {
+	t.Parallel()
 	judge := record.JudgeActor(judgeModel)
 	for name, judgeFirst := range map[string]bool{"the judge first": true, "the person after the hand-over": false} {
 		t.Run(name, func(t *testing.T) {
@@ -390,6 +394,7 @@ func TestOneDecisionBetweenThePersonAndTheJudge(t *testing.T) {
 // judge's verdict released a credential, so a row saying applied where nothing was granted is
 // the trail telling them something untrue.
 func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		// before runs between the pending request and the judge's approval.
 		before      func(t *testing.T, m *Machine, enrollmentID string)
@@ -456,6 +461,7 @@ func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
 // today. The guard is the judge's alone: the same withheld name, on the same request, is still
 // the owner's to approve, which is the path a person has had all along.
 func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
 	if _, err := m.Store.Pool.Exec(t.Context(),
@@ -501,6 +507,7 @@ func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
 // The guard is the judge's alone: the same admin secret, on the same request, is still the
 // owner's to approve, which is the path a person has had all along.
 func TestTheJudgeSettlesNoAdminSecret(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	retag(t, m, adminSecret())
 	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the admin console", 600, adminSecretName)
@@ -529,6 +536,7 @@ func TestTheJudgeSettlesNoAdminSecret(t *testing.T) {
 // judge does not hold a request for it, the hook is not called, and the judge's approval is refused
 // and leaves the request pending with no request.judged row; the owner's approval grants it.
 func TestTheJudgeDecidesNoFederationSecret(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	retag(t, m, federationSecret())
 	if _, decided := m.judgeKey(m.Policy.Get(), federationSecretName); decided {

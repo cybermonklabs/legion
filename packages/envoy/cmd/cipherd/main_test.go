@@ -122,6 +122,7 @@ func productionEnv(t *testing.T, env []string) []string {
 // The named reverts: drop refuseHTTPEdgeURLsInProduction's scheme check, and the http rows start;
 // check BROKER_EDGE_URL alone, as before, and the plain-http machine login page starts.
 func TestAnHTTPEdgeURLIsRefusedOutsideALocalRun(t *testing.T) {
+	t.Parallel()
 	const edgeURL, machineLoginURL = "https://edge.invalid", "https://dispatch.edge.invalid/credentials/machine"
 	for _, plain := range []string{"http://edge.invalid", "HTTP://edge.invalid:8080", "ws://edge.invalid", "edge.invalid"} {
 		for _, row := range []struct{ setting, edgeURL, machineLoginURL string }{
@@ -153,6 +154,7 @@ var portZeroPublicURLs = []string{"http://127.0.0.1:0", "http://127.0.0.1:00", "
 //
 // The named revert: compare the port as the text "0", and the ":00" rows load.
 func TestPortZeroPublicURLRefusedInProduction(t *testing.T) {
+	t.Parallel()
 	for _, publicURL := range portZeroPublicURLs {
 		err := refusePortZeroPublicURLInProduction(publicURL, productionStore)
 		if err == nil {
@@ -167,6 +169,7 @@ func TestPortZeroPublicURLRefusedInProduction(t *testing.T) {
 }
 
 func TestPortZeroPublicURLIsFineForALocalRun(t *testing.T) {
+	t.Parallel()
 	for _, publicURL := range portZeroPublicURLs {
 		if err := refusePortZeroPublicURLInProduction(publicURL, localStore); err != nil {
 			t.Errorf("BROKER_PUBLIC_URL %s on the memory store: want nil, got %v", publicURL, err)
@@ -175,6 +178,7 @@ func TestPortZeroPublicURLIsFineForALocalRun(t *testing.T) {
 }
 
 func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
+	t.Parallel()
 	for _, publicURL := range []string{"https://broker.invalid", "https://broker.invalid:443", "http://127.0.0.1:010", "http://127.0.0.1:"} {
 		if err := refusePortZeroPublicURLInProduction(publicURL, productionStore); err != nil {
 			t.Errorf("BROKER_PUBLIC_URL %s: want nil, got %v", publicURL, err)
@@ -189,6 +193,7 @@ func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
 //
 // The named revert: compare the port as the text "0", and the ":00" rows read as no port 0.
 func TestThePublicURLsPortIsReadAsTheBindReadsIt(t *testing.T) {
+	t.Parallel()
 	for _, publicURL := range portZeroPublicURLs {
 		if !publicURLPortZero(publicURL) {
 			t.Errorf("publicURLPortZero(%q) = false, want true: the bind reads that port as 0", publicURL)
@@ -209,6 +214,7 @@ func TestThePublicURLsPortIsReadAsTheBindReadsIt(t *testing.T) {
 // its backoff, so R1's second would become up to ten; at the limit exactly the 503 comes after that
 // wait, and agent-secrets reads again at once, but the ERROR line and the failed count remain.
 func TestTheWaitLimitEndsInsideTheRequestDeadline(t *testing.T) {
+	t.Parallel()
 	if limit := time.Duration(record.MaxRequestWaitSeconds) * time.Second; limit >= requestDeadline {
 		t.Fatalf("record.MaxRequestWaitSeconds is %s, want under requestDeadline (%s)", limit, requestDeadline)
 	}
@@ -259,6 +265,7 @@ func airlockTestSettings() []struct {
 // gives it, moves its clock, or turns a check off, so each on its own refuses a start that is not
 // a local run, naming itself.
 func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
+	t.Parallel()
 	for _, setting := range airlockTestSettings() {
 		var cfg config.Config
 		setting.cfg(&cfg)
@@ -277,6 +284,7 @@ func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 // that makes a start a local run, are accepted - and a production start naming none of them is
 // accepted too, since this refusal must not stand in the way of an ordinary boot.
 func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
+	t.Parallel()
 	var cfg config.Config
 	for _, setting := range airlockTestSettings() {
 		setting.cfg(&cfg)
@@ -313,6 +321,7 @@ func awsSecretsConfig(t *testing.T, prefix string) secretstore.Config {
 // database it is given is unreachable, so a broker that read these settings later would fail on
 // the host instead of on the setting.
 func TestMainRefusesAnAirlockTestSettingInProduction(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 	for _, setting := range airlockTestSettings() {
 		t.Run(setting.name, func(t *testing.T) {
@@ -333,6 +342,7 @@ func TestMainRefusesAnAirlockTestSettingInProduction(t *testing.T) {
 // config holds the config's ServicesByAccount, keyed by account so one service may have several,
 // without which no pod is ever a service's.
 func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
+	t.Parallel()
 	secretFile := signInClientSecretFile(t)
 	cfg, err := config.Load(func(name string) string {
 		return map[string]string{
@@ -376,6 +386,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 // anthropic kind reads both stand-ins' records, so a minter that kept Google's and Anthropic's own
 // endpoints would send the stack's mint to the internet and the check would read nothing.
 func TestTheAnthropicMinterMintsAtTheLocalStacksStandIns(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (ciphertokentest.NewMetadataStand, t.Setenv).
 	const (
 		account   = "robot-1@acme-deployment.iam.gserviceaccount.com"
 		standIn   = "sk-ant-oat01-the-stand-ins-token"
@@ -442,6 +453,7 @@ func TestTheAnthropicMinterMintsAtTheLocalStacksStandIns(t *testing.T) {
 // Listen would still refuse eventually, but only after already printing that line and binding a
 // real socket.
 func TestMainRefusesPortZeroPublicURLInProduction(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command(buildBroker(t))
 	cmd.Env = append(append(os.Environ(), productionEnv(t, nil)...),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
@@ -470,6 +482,7 @@ func TestMainRefusesPortZeroPublicURLInProduction(t *testing.T) {
 // The named revert: drop the call of refuseHTTPEdgeURLsInProduction from main, and the broker goes
 // on to dial the unreachable database instead of naming the refusal.
 func TestMainRefusesAnHTTPEdgeURLInProduction(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command(buildBroker(t))
 	cmd.Env = append(append(os.Environ(), productionEnv(t, nil)...),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
@@ -522,11 +535,16 @@ func buildBroker(t *testing.T) string {
 }
 
 // runRefusedBroker runs the broker binary with env and returns its output, failing t unless it
-// exits non-zero without ever logging "broker listening".
+// exits non-zero without ever logging "broker listening". The run reads no AWS configuration of
+// the machine's (noAWSEnv) and no Postgres password from outside its URL: PGPASSWORD is empty and
+// PGPASSFILE an empty file, since a password from either makes an IAM-form BROKER_DATABASE_URL
+// sign in by password (config.databaseIAM), and the IAM refusals these tests read would not come.
 func runRefusedBroker(t *testing.T, binPath string, env ...string) string {
 	t.Helper()
+	noPassfile := writeTempFile(t, "pgpass", nil)
 	cmd := exec.Command(binPath)
-	cmd.Env = append(append(append(os.Environ(), productionEnv(t, env)...), noAWSEnv(t)...), env...)
+	cmd.Env = append(append(append(append(os.Environ(), productionEnv(t, env)...), noAWSEnv(t)...),
+		"PGPASSWORD=", "PGPASSFILE="+noPassfile), env...)
 	out, err := cmd.CombinedOutput()
 	exitErr, isExit := err.(*exec.ExitError)
 	if err == nil || !isExit || exitErr.ExitCode() == 0 {
@@ -543,6 +561,7 @@ func runRefusedBroker(t *testing.T, binPath string, env ...string) string {
 // which encrypts and verifies nothing: it refuses at startup naming the host, before it reaches
 // for AWS or the database.
 func TestMainRefusesAnIAMURLThatDoesNotVerifyItsHost(t *testing.T) {
+	t.Parallel()
 	out := runRefusedBroker(t, buildBroker(t),
 		"BROKER_DATABASE_URL=postgres://agent_secrets_broker@"+rdsTestHost+":5432/agent_secrets?sslmode=require",
 		"BROKER_PUBLIC_URL=https://secrets.internal.example",
@@ -566,6 +585,7 @@ func signsInBy(log, method string) bool {
 // would fail on the unresolvable host instead. Before the refusal it logs that it signs in by
 // RDS IAM token, and never by password.
 func TestMainMintsTokensBeforeOpeningTheDatabase(t *testing.T) {
+	t.Parallel()
 	out := runRefusedBroker(t, buildBroker(t),
 		"BROKER_DATABASE_URL=postgres://agent_secrets_broker@"+rdsTestHost+":5432/agent_secrets?sslmode=verify-full&sslrootcert=../../docker/rds-global-bundle.pem",
 		"BROKER_PUBLIC_URL=https://secrets.internal.example",
@@ -584,10 +604,12 @@ func TestMainMintsTokensBeforeOpeningTheDatabase(t *testing.T) {
 // boots. A broker that took it for IAM would refuse for the missing AWS region. Its boot log says
 // it signs in by password, the one a passfile supplies from outside the URL, and never by token.
 func TestMainSignsInToALocalPasswordlessURLAsGiven(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatal(err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database's URL does not parse")
 	}
 	password, _ := parsed.User.Password()
 	parsed.User = url.User(parsed.User.Username())
@@ -622,6 +644,7 @@ func TestMainSignsInToALocalPasswordlessURLAsGiven(t *testing.T) {
 // sorted order, so a line that sorted either does not match. Started without the setting, the
 // line says off, names no pairs, and names the setting in what being off means.
 func TestTheBrokerLogsTheSessionAccountPairsItRead(t *testing.T) {
+	t.Parallel()
 	const (
 		workerPair   = "system:serviceaccount:example-ns:example-worker=system:serviceaccount:example-next:example-worker"
 		reviewerPair = "system:serviceaccount:example-ns:example-reviewer=system:serviceaccount:example-next:example-reviewer"
@@ -673,6 +696,7 @@ func TestTheBrokerLogsTheSessionAccountPairsItRead(t *testing.T) {
 // which entry to fix. The database it is given is unreachable, so a broker that read the setting
 // after opening the store would fail on the host instead of on the entry.
 func TestTheBrokerRefusesABadSessionAccountPair(t *testing.T) {
+	t.Parallel()
 	const (
 		good = "system:serviceaccount:example-ns:example-worker=system:serviceaccount:example-next:example-worker"
 		bad  = "system:serviceaccount:example-ns:example-reviewer=system:serviceaccount:example-ns:example-reviewer"
@@ -1039,6 +1063,7 @@ func refusedSecretEnv(t *testing.T, databaseURL string) []string {
 // rest; and one owned by example-service, which BROKER_SERVICES registers, and asserts the binary
 // serves it: the policy loader main builds carries the configured services.
 func TestMainLogsRealBoundAddress(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t, databaseURL)})
 	addr, boot := broker.Addr, broker.Boot
@@ -1078,6 +1103,7 @@ func TestMainLogsRealBoundAddress(t *testing.T) {
 // the address, so a broker writing any other shape fails here, naming the line, rather than in a
 // wait for an address it never reads.
 func TestTheBinaryLogsOneJSONObjectPerLine(t *testing.T) {
+	t.Parallel()
 	broker := startBroker(t, brokerOptions{NoWaitForListening: true, Env: refusedSecretEnv(t, storetest.URL(t))})
 	// line reads the first line of log carrying message as a record, failing t unless it is one
 	// JSON object with time, message and severity as wanted and fields among its fields.
@@ -1135,6 +1161,7 @@ func TestTheBinaryLogsOneJSONObjectPerLine(t *testing.T) {
 // broker that runs no NATS auth service, and nothing else; the API's address answers GET /metrics
 // and GET /livez 404, so no caller of the API reaches either.
 func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t, databaseURL)})
 	metricsAddr := broker.MetricsAddr(t)
@@ -1274,6 +1301,7 @@ func airlockEnv(t *testing.T) []string {
 // database it is given is unreachable, so a broker that read the file after opening the store
 // would fail on the host instead of on the file.
 func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 	missing := filepath.Join(t.TempDir(), "absent.json")
 	refused := func(t *testing.T, path string, want, absent []string) {
@@ -1401,6 +1429,7 @@ func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
 // config.Load before anything binds, naming the setting that replaces it, rather than started
 // with no proxy rules and every credential it named released as its value.
 func TestTheBootRefusesTheRemovedRulesSetting(t *testing.T) {
+	t.Parallel()
 	out := runRefusedBroker(t, buildBroker(t), append(airlockEnv(t),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 		"BROKER_PUBLIC_URL=https://secrets.internal.example",
@@ -1417,6 +1446,7 @@ func TestTheBootRefusesTheRemovedRulesSetting(t *testing.T) {
 // boot, and the broker goes on to serve: a kind with an allow list, and a profile whose own allow
 // narrows its source at the proxy within the kind's.
 func TestMainStartsWithAProfilesFile(t *testing.T) {
+	t.Parallel()
 	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
 	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -1441,6 +1471,7 @@ func TestMainStartsWithAProfilesFile(t *testing.T) {
 // deployment ran before the kinds), and goes on to serve: the file declares no kind, so the
 // broker reads its blocks as the broker before the kinds did (policy.ParseProfiles).
 func TestMainStartsWithAFileOfProxyBlocks(t *testing.T) {
+	t.Parallel()
 	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
 	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -1465,6 +1496,7 @@ func TestMainStartsWithAFileOfProxyBlocks(t *testing.T) {
 // hosts the one grammar a rules host is written in serves, in a case a reader of the file could
 // fold (foldedRuleHosts), are no obstacle to the boot, and the broker goes on to serve.
 func TestMainStartsWithAProxyHostWrittenAsTheProxyReadsIt(t *testing.T) {
+	t.Parallel()
 	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
 	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -1487,6 +1519,7 @@ func TestMainStartsWithAProxyHostWrittenAsTheProxyReadsIt(t *testing.T) {
 // pair and every release hands the command the certificate of it, so the pod that mounted the
 // wrong file has to find out, not the commands it releases to.
 func TestMainRefusesAnAirlockCertificateItCannotRead(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 	missing := filepath.Join(t.TempDir(), "absent.crt")
 	// A key that matches nothing here: what each row is about is the certificate file beside
@@ -1531,6 +1564,7 @@ func TestMainRefusesAnAirlockCertificateItCannotRead(t *testing.T) {
 // reader that answered the file would put the authority's private key in every release, with
 // which a command could sign a certificate for any host that every other airlock command trusts.
 func TestTheReleasesCertificateIsTheAuthoritysOwnAndCarriesNoKey(t *testing.T) {
+	t.Parallel()
 	certFile, keyFile := airlockCAFiles(t)
 	certPEM, err := os.ReadFile(certFile)
 	if err != nil {

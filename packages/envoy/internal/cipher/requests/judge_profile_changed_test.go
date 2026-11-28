@@ -23,6 +23,7 @@ import (
 // behind its own proxy string whose source carries no judge tag, a profile behind no kind, and a
 // secret served by its own name behind no kind read as before.
 func TestAProfileChangedRefusalNamesTheSourcesTagsItsFingerprintHolds(t *testing.T) {
+	t.Parallel()
 	judgedSource := policytest.Judged(policytest.Secret("RELEASE_PAT", fixtureOperator, policy.TierHuman, "v"), 600, "")
 	plainSource := policytest.Secret("PLAIN_PAT", fixtureOperator, policy.TierHuman, "v")
 	taggedSource := policytest.Proxied(policytest.Secret("TAGGED_PAT", fixtureOperator, policy.TierHuman, "v"), "github")

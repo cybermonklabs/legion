@@ -105,6 +105,7 @@ func assertNoticeOf(t *testing.T, notice storedNotice, role string, held laneCop
 // dead letter: the person or session behind a Dispatch event sent no Envoy message. At legion main
 // the walk drops the copy and tells nobody.
 func TestAnOutboxCopyWhoseHourEndsIsToldToDispatch(t *testing.T) {
+	t.Parallel()
 	t.Run("a each outbox copy dropped at the end of its hour stores one expiry notice naming its event, its role and its attempt", func(t *testing.T) {
 		rig := newHourRig(t)
 		const role = "hour-outbox-told"
@@ -252,6 +253,7 @@ func stoppingNotices(t *testing.T, rig *hourRig, role string, stop noticeStop, s
 // one message id, as these two walks do (internal/dispatch/outbox,
 // TestANoticeStoredAgainByTheWalkThatTookTheClaimOverReopensTheRowOnce).
 func TestAnExpiryNoticeReachesDispatchWhenAListenerStopsBetweenItsWrites(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name       string
 		stop       noticeStop

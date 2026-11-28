@@ -12,5 +12,6 @@ import (
 // under the fork lock (docs/testing.md, "A file a test runs"). testexec.RequireGuarded says what
 // it reads and how it fails. The infra module below is read by its own check.
 func TestEveryProgramFileIsWrittenUnderTheForkLock(t *testing.T) {
+	t.Parallel()
 	testexec.RequireGuarded(t, "../..")
 }

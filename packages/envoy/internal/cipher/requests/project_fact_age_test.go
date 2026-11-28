@@ -78,6 +78,7 @@ func (f *slowFront) first(key string) bool {
 // refused. With every question answered at once, TEAM still public, the release proceeds as
 // before (R9).
 func TestAProjectFactCannotAgePastTheBoundBeforeTheRelease(t *testing.T) {
+	t.Parallel()
 	others := []string{"ZZAA", "ZZBB", "ZZCC", "ZZDD"}
 	for _, c := range []struct {
 		name    string
@@ -195,6 +196,7 @@ func (f *agedFront) States(ctx context.Context, projects []string) (map[string]p
 // The last row is a TEAM still public: its aged answer is asked again and stands, so the bound
 // refuses nothing Dispatch still allows.
 func TestEveryDecisionOnAnAgedProjectFactIsMadeOnAFreshOne(t *testing.T) {
+	t.Parallel()
 	const reason = "TEAM-7: rotate the shared key"
 	// pendingShared is a request for SHARED_KEY, which anyone may decide, whose reason names
 	// TEAM-7, made while TEAM was public by a pod that names no person, so every signed-in

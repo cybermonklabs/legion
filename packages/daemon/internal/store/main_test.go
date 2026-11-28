@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/testparallel"
+	"github.com/sjawhar/envoy/testparallel"
 )
 
 // storeTestParallelism is how many of this package's tests run at once when the command line

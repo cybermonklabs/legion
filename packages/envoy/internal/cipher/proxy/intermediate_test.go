@@ -508,8 +508,9 @@ func (r *poolRig) awaitNewCertificate(t *testing.T, old *x509.Certificate) *x509
 
 // TestAThreeDayIntermediateIsRenewedWithTwoDaysLeft: a pool may answer shorter than the 7 days a
 // pod asks for, and the pod asks for the next intermediate once 2 days remain whatever the life:
-// one of 3 days at a day after its start, not halfway through its life. A minute before that it
-// holds the first; at that moment it takes the next.
+// one of 3 days at a day after its start, not halfway through its life, which is the moment its
+// renewal line names, with the serial of the one it holds. A minute before that it holds the
+// first; at that moment it takes the next.
 func TestAThreeDayIntermediateIsRenewedWithTwoDaysLeft(t *testing.T) {
 	hosts := []string{"s.airlock.test"}
 	r, _ := newBoundedPoolRig(t, hosts, boundsAnswer{lifetime: 3 * 24 * time.Hour, names: hosts})
@@ -518,6 +519,13 @@ func TestAThreeDayIntermediateIsRenewedWithTwoDaysLeft(t *testing.T) {
 	target := r.awaitSleeps(t, 1)
 	if want := first.NotBefore.Add(24 * time.Hour); !target.Equal(want) {
 		t.Fatalf("the loop sleeps until %v after the intermediate's start; want %v, when 2 of its 3 days remain", target.Sub(first.NotBefore), want.Sub(first.NotBefore))
+	}
+	// The line is written before the sleep the clock saw, so it is in the log by now.
+	renewals := r.log.lines("proxy intermediate renewal")
+	if len(renewals) != 1 || renewals[0]["level"] != "INFO" || renewals[0]["serial"] != fmt.Sprintf("%x", first.SerialNumber) ||
+		renewals[0]["at"] != target.UTC().Format(time.RFC3339Nano) {
+		t.Errorf("before its sleep the pod logged the renewal lines %v; want one, at INFO, naming the intermediate it holds, %x, and the moment it sleeps until, %s",
+			renewals, first.SerialNumber, target.UTC().Format(time.RFC3339Nano))
 	}
 	r.clock.set(target.Add(-time.Minute))
 	if got := len(r.log.lines("proxy intermediate")); got != 1 {

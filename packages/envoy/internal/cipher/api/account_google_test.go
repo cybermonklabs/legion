@@ -125,6 +125,7 @@ func (ts *testServer) raw(t *testing.T, method, path string, headers map[string]
 // carries, and is refused the relay routes 403 ACCOUNT_LACKS_POWER exactly as a Kubernetes
 // listener is — the kind of token says who the caller is, never what it may do.
 func TestAGoogleCallerIsAnsweredOnTheRoutesItsNameCarries(t *testing.T) {
+	t.Parallel()
 	g := newGoogleCallerServer(t)
 	token := g.live(t, listenerGoogleAccount)
 
@@ -143,6 +144,7 @@ func TestAGoogleCallerIsAnsweredOnTheRoutesItsNameCarries(t *testing.T) {
 // TestTheKubernetesCallerStillCallsBesideAGoogleOne: a broker that lists both kinds judges each
 // token by its own issuer, so the dispatch caller's projected token keeps working unchanged.
 func TestTheKubernetesCallerStillCallsBesideAGoogleOne(t *testing.T) {
+	t.Parallel()
 	g := newGoogleCallerServer(t)
 	if status, body := g.introspect(t, g.uiToken); status != http.StatusOK {
 		t.Fatalf("introspection as the Kubernetes dispatch caller = %d %s, want 200", status, body)
@@ -154,6 +156,7 @@ func TestTheKubernetesCallerStillCallsBesideAGoogleOne(t *testing.T) {
 // broker's list refusing a sound credential (403), and every other row is the credential itself
 // (401).
 func TestEveryGoogleCallerRefusalKeepsItsMeaning(t *testing.T) {
+	t.Parallel()
 	g := newGoogleCallerServer(t)
 	now := time.Now()
 	for _, row := range []struct {
@@ -209,6 +212,7 @@ func TestEveryGoogleCallerRefusalKeepsItsMeaning(t *testing.T) {
 // authenticates no caller on these routes, which is the one refusal that is about the broker and
 // not about the token.
 func TestWithNoIssuerAtAllEveryAccountCallerIsOff(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.AccountTokens = nil
 		d.GoogleAccountTokens = nil

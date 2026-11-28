@@ -56,6 +56,7 @@ func (r *retagOnAsk) States(ctx context.Context, projects []string) (map[string]
 // whose list does not hold them. Read again, the rule reads the tag, hides the record from the
 // outsider, and shows a person PRIV lists the secret's project.
 func TestARecordIsReadOnThePolicyItsPersonRuleChecked(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	pod, podKey := everyonesPod(t, m, "pod-policy-read", "")
 	pending, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "work for "+teamProject+"-1", "SHARED_KEY"), "")
@@ -94,6 +95,7 @@ func TestARecordIsReadOnThePolicyItsPersonRuleChecked(t *testing.T) {
 // approval page as for every other route. The request is a session's naming TEAM, whose reason
 // names TEAM-1, and whose record names its approver, so every field the facts hold is set.
 func TestAPersonsRecordIsJudgedOnTheFactsHideUnseenReads(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, teamProject)
 	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, teamProject+"-1: rotate the deploy key", "DEEL_API_KEY"), "")

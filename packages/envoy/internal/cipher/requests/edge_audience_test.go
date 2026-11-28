@@ -19,6 +19,7 @@ const edgeAddress = "https://secrets.edge.example"
 // The named revert: take the edge address for a record of every kind in
 // record.VerifyStoredRequestObject, and the request is listed.
 func TestASessionRequestSignedForTheEdgeIsAnotherBrokers(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	m.Audience = edgeAddress
@@ -47,6 +48,7 @@ func TestASessionRequestSignedForTheEdgeIsAnotherBrokers(t *testing.T) {
 // The named revert: compare a stored record's aud with the broker's address as text, and the
 // record is left out.
 func TestARecordSignedForAnySpellingOfTheBrokersOriginIsListed(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	m.Audience = "https://secrets.internal.example:443"

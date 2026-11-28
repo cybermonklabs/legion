@@ -157,6 +157,7 @@ func (f *giveBackFixture) live(t *testing.T) (minted, live []string) {
 // back, the proxy's for one it does - revokes nothing, which is what says the revoke is for a token
 // nobody holds.
 func TestAReleaseThatFailsGivesBackTheTokensItMinted(t *testing.T) {
+	t.Parallel()
 	zedForAWS := proxyrules.Rules{Names: []proxyrules.Binding{{Name: "ZED_KEY", Kind: "aws"}}}
 	zedBehind := proxyrules.Rules{Names: []proxyrules.Binding{{Name: "ZED_KEY", Kind: "example"}}}
 	appBehind := proxyrules.Rules{Names: []proxyrules.Binding{{Name: "APP_KEY", Kind: "example"}}}
@@ -263,6 +264,7 @@ func TestAReleaseThatFailsGivesBackTheTokensItMinted(t *testing.T) {
 // back, and the release whose grant.used row fails, which gives it back too, each answer while
 // it is still held; once it is let go it runs, with the secret's name and the value minted.
 func TestAReleaseDoesNotWaitOnItsGiveBack(t *testing.T) {
+	t.Parallel()
 	appBehind := proxyrules.Rules{Names: []proxyrules.Binding{{Name: "APP_KEY", Kind: "example"}}}
 	for _, failing := range []bool{false, true} {
 		t.Run(fmt.Sprintf("a release that fails: %t", failing), func(t *testing.T) {
@@ -305,6 +307,7 @@ func TestAReleaseDoesNotWaitOnItsGiveBack(t *testing.T) {
 // of either form, behind the airlock so the session's release gives its token back, is given back
 // as its own form, and the token it minted is revoked at GitHub.
 func TestAGiveBackIsHandedTheProfilesValueForm(t *testing.T) {
+	t.Parallel()
 	appBehind := proxyrules.Rules{Names: []proxyrules.Binding{{Name: "APP_KEY", Kind: "example"}}}
 	for form, profile := range map[string]string{
 		githubname.ValueInstallations: policytest.AppProfile("APP_KEY"),

@@ -221,7 +221,8 @@ func (r *airlockRereadRig) grant(name string) proxied {
 	}
 	proxyURL, err := url.Parse("http://agent:" + password + "@" + r.proxyAddr)
 	if err != nil {
-		r.t.Fatal(err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		r.t.Fatal("the proxy URL, which holds the grant's password, does not parse")
 	}
 	return proxied{grantID: *granted.GrantID, placeholder: placeholder, client: &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
@@ -287,6 +288,7 @@ func (r *airlockRereadRig) requireReads(g proxied, want int, when string) {
 // signal through the real route and reads, in the audit trail, that the proxy read the grant's
 // values again.
 func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
+	t.Parallel()
 	const boundHost = "reread.airlock.test"
 	r := startAirlockReread(t, []string{boundHost})
 	token := r.grant("AIRLOCK_TOKEN")
@@ -309,6 +311,7 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 // values of a grant of the sibling profile AIRLOCK_SECOND again too, rather than going on
 // swapping the old value into their requests until each grant ends: a stored value has no expiry.
 func TestARereadOfASourceReachesTheProxysValuesOfEachProfileOfIt(t *testing.T) {
+	t.Parallel()
 	const readHost, secondHost = "read.airlock.test", "second.airlock.test"
 	r := startAirlockReread(t, []string{readHost, secondHost},
 		`{"name": "AIRLOCK_READ", "source": "AIRLOCK_TOKEN"}`,
@@ -351,6 +354,7 @@ func rereadAppSecret(t *testing.T, value string) string {
 // no token request to GitHub. A reread that finds a new version of the value has the proxy read
 // the grant's values again, which mints from the new one.
 func TestARereadOfAGitHubAppSourceDropsItsProfilesTokensOnlyWhenItMovedItsValue(t *testing.T) {
+	t.Parallel()
 	const boundHost = "app.airlock.test"
 	service, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Plain: true})
 	if err != nil {

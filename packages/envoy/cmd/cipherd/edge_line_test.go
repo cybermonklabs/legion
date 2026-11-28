@@ -14,6 +14,7 @@ import (
 // a made-up user name and password, and a made-up token in the query, print in neither. A URL with
 // no credential is named as written.
 func TestTheEdgeStartLineNamesNoCredentialOfItsURLs(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const user, secret = "madeUpEdgeUser0123", "madeUpEdgeSecret0123"
 	userinfo := user + ":" + secret + "@"
 	var logged bytes.Buffer

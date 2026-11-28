@@ -23,6 +23,7 @@ import (
 // several times, so a clock started too early fails this test on every run rather than on a race
 // between its first beat and the exit.
 func TestABrokerThatDiesBeforeServingRecordsNoServingBeat(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	// The delay is this stand-in's own, a discovery endpoint that answers slowly: it is three
 	// beats of the serving clock this broker is started with (BROKER_SWEEP_SECONDS=1), so a

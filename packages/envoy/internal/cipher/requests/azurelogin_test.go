@@ -17,6 +17,7 @@ import (
 )
 
 func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "azure-token")
 	const token = "ey" + "JhbGciOiJSUzI1NiJ9.ey" + "JleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
@@ -41,6 +42,7 @@ func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
 }
 
 func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "azure-token")
 	const token = "ey" + "JhbGciOiJSUzI1NiJ9.ey" + "JleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
@@ -115,6 +117,7 @@ func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
 // a shape this test made up - while the session's document keeps both in the clear, as az
 // needs them. A value of another kind carries none.
 func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "azure-token")
 	const token = "ey" + "JhbGciOiJSUzI1NiJ9.ey" + "JleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
@@ -170,6 +173,7 @@ func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *test
 // string is a shape refusal, released neither to the session nor to the proxy. The refusal
 // names the field and carries nothing the document holds.
 func TestAnAzureLoginThatNamesNoApplicationOrTenantIsReleasedNowhere(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct{ name, value, field string }{
 		{"no tenant_id", `{"client_id":"the-application","federated_token":"the-federated-token"}`, "tenant_id"},
 		{"an empty tenant_id", `{"tenant_id":"","client_id":"the-application","federated_token":"the-federated-token"}`, "tenant_id"},

@@ -93,6 +93,7 @@ func requireRoomCounters(t *testing.T, service *Service, artifactID string) Room
 // and alice's departure from task A, a removal of task A's own client, took no entry on task A.
 // ygo fires a room's observers before RemoveExpired returns, so the count is read after it.
 func TestRoomCountersCountTheAwarenessAnotherProcessesNotificationsMakeTheRoomTake(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	pair.taskA.hooks = newTestHooks()
 	pair.taskB.hooks = newTestHooks()
@@ -141,6 +142,7 @@ func requireRelayedAwareness(t *testing.T, service *Service, artifactID string, 
 // recheck. A recheck that finds the room's record matching the issue, as the one after alice
 // reconnects does, closes nothing and counts nothing.
 func TestRoomCountersCountTheIssueNotificationsTheIssueOpenLaneApplies(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service, server := newTestServiceInstance(t, database)
@@ -187,6 +189,7 @@ func TestRoomCountersCountTheIssueNotificationsTheIssueOpenLaneApplies(t *testin
 // carries it, which records the new head as swept, leaves the notified head where it was, and
 // counts a second LISTEN.
 func TestRoomCountersRecordTheHeadsTheNotifiedCatchUpsAndTheSweepsLeave(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pair := newProcessPair(t)
 	pair.taskA.hooks = newTestHooks()

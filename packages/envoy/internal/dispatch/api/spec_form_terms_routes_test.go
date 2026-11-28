@@ -111,6 +111,7 @@ var secondSession = formFault{
 // session again is refused on each of the six paths to a person's approval, and each finding names
 // the term and the document that defines it.
 func TestEveryApprovalRouteRefusesASecondDefinition(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
 	requireEveryApprovalRouteRefuses(t, tree, secondSession)
@@ -118,6 +119,7 @@ func TestEveryApprovalRouteRefusesASecondDefinition(t *testing.T) {
 
 // v-terms, control 3: a definition of two sentences is refused on each of the six paths.
 func TestADefinitionOfTwoSentencesIsRefusedOnEveryRoute(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireEveryApprovalRouteRefuses(t, tree, formFault{
 		name: "a definition of two sentences", node: "heartbeat", kind: specform.KindDefinition,
@@ -131,6 +133,7 @@ func TestADefinitionOfTwoSentencesIsRefusedOnEveryRoute(t *testing.T) {
 // session a new definition and replace heartbeat with lease, and the list keeps the approved
 // definitions of heartbeat and session and has no lease, so a spec that defines lease is opened.
 func TestTheListCountsOnlyApprovedVersions(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	heartbeat := "The registration that a session sends again every 90 seconds."
 	terms := approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition), termLine("heartbeat", heartbeat)))
@@ -153,6 +156,7 @@ func TestTheListCountsOnlyApprovedVersions(t *testing.T) {
 // The terms of an approved change request join the list with no copy: a later spec that defines
 // the same term is refused, naming that request's spec.
 func TestAChangeRequestsApprovedTermsJoinTheList(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	change := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, change.PrimaryArtifactID)
@@ -167,6 +171,7 @@ func TestAChangeRequestsApprovedTermsJoinTheList(t *testing.T) {
 // terms.md: a terms.md that defines it is refused, naming the request's spec, and a second version
 // of that spec with a changed definition is opened.
 func TestATermThatAChangeRequestDefinesIsChangedInThatRequest(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	change := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, change.PrimaryArtifactID)
@@ -184,6 +189,7 @@ func TestATermThatAChangeRequestDefinesIsChangedInThatRequest(t *testing.T) {
 // A request names the documents whose candidate versions replace their approved ones, so a spec
 // whose second version keeps the term its first version defined is no second definition.
 func TestADocumentReplacingItsOwnApprovedTermsIsNotRefused(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	change := createFormIssue(t, tree.handler, tree.root, "Defines lease",
 		specWithTerms(termLine("lease", leaseDefinition))+"\n:::requirement{#store-comment}\nDispatch stores each comment.\n:::\n")
@@ -196,6 +202,7 @@ func TestADocumentReplacingItsOwnApprovedTermsIsNotRefused(t *testing.T) {
 // The root's terms.md is where a term of it changes: a version that changes the definition of
 // session is opened, and once the person approves it the list holds the new definition.
 func TestTermsMdItselfMayChangeADefinition(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	terms := approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
 	reviseDocument(t, tree.handler, terms.ID, termLine("session", sessionDefinition), termLine("session", otherSession), 2)
@@ -212,6 +219,7 @@ func TestTermsMdItselfMayChangeADefinition(t *testing.T) {
 // a spec under that level that defines its term is opened, and the read of it lists only the
 // root's terms.
 func TestALevelsOwnTermsMdMakesNoSecondList(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
 	level := createFormIssue(t, tree.handler, tree.root, "A level", "# Level\n\nThe level.\n")
@@ -225,6 +233,7 @@ func TestALevelsOwnTermsMdMakesNoSecondList(t *testing.T) {
 // Before the person approves the root's terms.md, the list is the terms of the approved covered
 // documents alone: a terms.md that waits for its approval adds nothing.
 func TestBeforeTermsMdIsApprovedTheListIsTheApprovedRequests(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	uploadFormDocument(t, tree.handler, tree.root, "terms.md", termsMd(termLine("session", sessionDefinition)))
 	change := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
@@ -238,6 +247,7 @@ func TestBeforeTermsMdIsApprovedTheListIsTheApprovedRequests(t *testing.T) {
 // term of the root's terms.md again is left resolved, with a reason that names the term and the
 // document that defines it.
 func TestTheRepairPassDoesNotOpenARequestWithASecondDefinition(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixtureFrom(t, 20*time.Millisecond, "ACME-1")
 	tree := seedSpecFormTree(t, f.handler, f.database, f.deps)
 	approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
@@ -252,6 +262,7 @@ func TestTheRepairPassDoesNotOpenARequestWithASecondDefinition(t *testing.T) {
 // issue first: a closed issue takes no approval request, which is the control that shows the step
 // is needed. Once reopened, its second version with a changed definition is opened.
 func TestASecondDefinitionInAClosedIssueSaysToReopenIt(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	change := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, change.PrimaryArtifactID)
@@ -280,6 +291,7 @@ func TestASecondDefinitionInAClosedIssueSaysToReopenIt(t *testing.T) {
 // together, that each define lease are refused at the second. The control: the spec alone is
 // opened.
 func TestARequestOfTwoDocumentsRefusesASecondDefinition(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	issue := createFormIssue(t, tree.handler, tree.root, "Defines lease twice", specWithTerms(termLine("lease", leaseDefinition)))
 	verification := uploadFormDocument(t, tree.handler, issue.Key, "verification.md",
@@ -310,6 +322,7 @@ func termLineFinding(name, artifactID string, version int, term, definition, whe
 // person approved with such a line adds no term to the list. The control: the same line with a
 // name that nothing defines opens the request.
 func TestARequestRefusesATermLineUnderAnotherHeadingThatNamesAListedTerm(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	listed := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
@@ -331,6 +344,7 @@ func TestARequestRefusesATermLineUnderAnotherHeadingThatNamesAListedTerm(t *test
 // no definition of it, are prose and refuse nothing. The control: the document with the line
 // alone is opened.
 func TestARequestRefusesALineOutsideTermsThatItsOtherDocumentDefines(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	leaseUnder := func(heading, definition string) string {
 		return "## " + heading + "\n\n- " + termLine("lease", definition) + "\n"
@@ -369,6 +383,7 @@ func TestARequestRefusesALineOutsideTermsThatItsOtherDocumentDefines(t *testing.
 // read of A names B's definition, and A's next approval request is refused. A change of this order
 // is a decision.
 func TestALineOutsideTermsOfANameThatNothingDefinesIsApprovedAndRefusedAtItsNextRequest(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	const (
 		cold = "A cold wind."
@@ -403,6 +418,7 @@ func TestALineOutsideTermsOfANameThatNothingDefinesIsApprovedAndRefusedAtItsNext
 // both at the same moment. At most one approval passes: the second definition is refused, as it is
 // when the two approvals come one after the other (the control).
 func TestTwoApprovalsAtOneTimeLeaveOneDefinitionOfANewTerm(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	open := func(term, definition string) formIssue {
 		issue := createFormIssue(t, tree.handler, tree.root, "Defines "+term+": "+definition, specWithTerms(termLine(term, definition)))
@@ -443,6 +459,7 @@ func TestTwoApprovalsAtOneTimeLeaveOneDefinitionOfANewTerm(t *testing.T) {
 // root's approved terms.md defines the same term. Dispatch takes the move, and the list then holds
 // one definition of the term, terms.md's. The control: before the move, the list holds the same.
 func TestAMoveUnderTheRootLeavesOneDefinitionOfATerm(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
 	outside := createFormIssue(t, tree.handler, tree.outside, "Defines session outside the root", specWithTerms(termLine("session", otherSession)))
@@ -462,6 +479,7 @@ func TestAMoveUnderTheRootLeavesOneDefinitionOfATerm(t *testing.T) {
 // an approval of a named version at one time, each of a request that defines one new term, leave
 // one definition of it. The second is refused, and so the list holds the term once.
 func TestTwoApprovalsAtOneTimeOnTheInboxAndAVersionLeaveOneDefinition(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	const pairs = 8
 	both := 0
@@ -507,6 +525,7 @@ func TestTwoApprovalsAtOneTimeOnTheInboxAndAVersionLeaveOneDefinition(t *testing
 // person approved outside the root before terms.md, and that moves under the root, adds no second
 // definition. Its own read names the definition that the list holds.
 func TestTheRootsTermsMdComesFirstInTheList(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	moved := createFormIssue(t, tree.handler, tree.outside, "Defines session first", specWithTerms(termLine("session", otherSession)))
 	approveFormDocument(t, tree.handler, moved.PrimaryArtifactID)
@@ -527,6 +546,7 @@ func TestTheRootsTermsMdComesFirstInTheList(t *testing.T) {
 // keeps it when that document changes its definition. The read of the other document names that
 // definition, and its next approval request is refused.
 func TestTheListHoldsTheDefinitionThatJoinedFirst(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	first := createFormIssue(t, tree.handler, tree.root, "Defines lease first", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, first.PrimaryArtifactID)
@@ -567,6 +587,7 @@ func TestTheListHoldsTheDefinitionThatJoinedFirst(t *testing.T) {
 // root, the request opens, the approval passes, and the list holds the Verification document's
 // definition.
 func TestARequestThatDropsTheListedDefinitionIsJudgedAgainstTheNextOne(t *testing.T) {
+	t.Parallel()
 	const (
 		sirocco    = "The wind of one desert."
 		thirdLease = "The hold that one session keeps on one work unit."
@@ -616,6 +637,7 @@ func TestARequestThatDropsTheListedDefinitionIsJudgedAgainstTheNextOne(t *testin
 // the setting named it) before B1 moved in, so B2 joined first, though Dispatch created B1 first.
 // The control: before terms.md drops the term, the list holds its definition.
 func TestWhenTermsMdDropsATermTheDefinitionThatJoinedNextGoverns(t *testing.T) {
+	t.Parallel()
 	const thirdSession = "The time that one agent spends on one task."
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	terms := approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
@@ -653,6 +675,7 @@ func approveRevisionThrough(t *testing.T, tree specFormTree, handler http.Handle
 // second definition through. The control: of two documents whose first versions both define the
 // term, the one approved first keeps it, also when it changes its definition later.
 func TestEachDefinitionJoinsTheListAtItsOwnApproval(t *testing.T) {
+	t.Parallel()
 	const (
 		sirocco    = "The wind of one desert."
 		thirdLease = "The hold that one session keeps on one work unit."
@@ -733,6 +756,7 @@ func TestEachDefinitionJoinsTheListAtItsOwnApproval(t *testing.T) {
 // definition that the person approved first, the spec's, which the answer names first; the read
 // of the Verification document names it.
 func TestTwoDocumentsThatJoinAtOneMoveKeepTheOrderOfTheirApprovals(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	issue := createFormIssue(t, tree.handler, tree.outside, "Defines lease twice", specWithTerms(termLine("lease", leaseDefinition)))
 	verification := uploadFormDocument(t, tree.handler, issue.Key, "verification.md",
@@ -767,6 +791,7 @@ var termsLineFault = formFault{
 // a person's approval, and in the root's terms.md. The finding names the line and shows the form
 // of a term line.
 func TestEveryApprovalRouteRefusesALineUnderTermsThatIsNoTermLine(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireEveryApprovalRouteRefuses(t, tree, termsLineFault)
 	terms := uploadFormDocument(t, tree.handler, tree.root, "terms.md", termsMd(termLine("session", sessionDefinition), termsLineFault.broken))
@@ -802,6 +827,7 @@ func listedOf(t *testing.T, handler http.Handler, artifactID, term string) (spec
 // list keeps the definition it held. The control: before the move, the list holds the definition
 // approved under the root.
 func TestAMoveUnderTheRootChangesNoDefinitionOfTheList(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	earlier := createFormIssue(t, tree.handler, tree.outside, "Defines lease outside the root, first", specWithTerms(termLine("lease", otherLease)))
 	approveFormDocument(t, tree.handler, earlier.PrimaryArtifactID)
@@ -821,6 +847,7 @@ func TestAMoveUnderTheRootChangesNoDefinitionOfTheList(t *testing.T) {
 // one approved later moves in first, and the list holds its definition; then the one approved
 // first moves in. The second move changes no definition that the list holds.
 func TestTheSecondMoveUnderTheRootChangesNoDefinitionOfTheList(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	first := createFormIssue(t, tree.handler, tree.outside, "Defines lease, approved first", specWithTerms(termLine("lease", otherLease)))
 	approveFormDocument(t, tree.handler, first.PrimaryArtifactID)
@@ -843,6 +870,7 @@ func TestTheSecondMoveUnderTheRootChangesNoDefinitionOfTheList(t *testing.T) {
 // passed, the list holds the definition that the person approved; when it was refused, the
 // definition that moved in first.
 func TestAnApprovalAndAMoveAtOneTimeLeaveTheApprovedDefinition(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	const rounds = 8
 	displaced := 0
@@ -885,6 +913,7 @@ func TestAnApprovalAndAMoveAtOneTimeLeaveTheApprovedDefinition(t *testing.T) {
 // level under the root to another, and the list keeps its definition, though a definition that
 // arrived after it waits under the root.
 func TestAMoveInsideTheRootChangesNoDefinitionOfTheList(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	first := createFormIssue(t, tree.handler, tree.root, "The first level", "# Level\n\nThe first level.\n")
 	second := createFormIssue(t, tree.handler, tree.root, "The second level", "# Level\n\nThe second level.\n")
@@ -908,6 +937,7 @@ func TestAMoveInsideTheRootChangesNoDefinitionOfTheList(t *testing.T) {
 // of two definitions that moved in after the keeper, the one that moved in first. Its own read
 // then names no finding, and the read of the last one names it.
 func TestWhenTheKeeperMovesOutTheListHoldsTheDefinitionThatJoinedNext(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	keeper := createFormIssue(t, tree.handler, tree.root, "Defines lease under the root", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, keeper.PrimaryArtifactID)
@@ -955,6 +985,7 @@ func olderBuild(t *testing.T, tree specFormTree) http.Handler {
 // definition waits for the approval of the person." The control: the same move through the server
 // that names the root.
 func TestAMoveByABuildThatNamesNoRootChangesNoDefinitionOfTheList(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	older := olderBuild(t, tree)
 	for _, c := range []struct {
@@ -988,6 +1019,7 @@ func TestAMoveByABuildThatNamesNoRootChangesNoDefinitionOfTheList(t *testing.T) 
 // document that the list keeps its term from, by the order the decision gives: a definition joins
 // the list at the later of its approval and the move that brought it under the root.
 func TestTheListIsTheSameWhicheverBuildMadeTheMoves(t *testing.T) {
+	t.Parallel()
 	type moves func(tree specFormTree, move func(issue, parent string)) (keeper string, read string)
 	cases := []struct {
 		name  string
@@ -1060,6 +1092,7 @@ func TestTheListIsTheSameWhicheverBuildMadeTheMoves(t *testing.T) {
 // version 1 in unread, so a client can say that the list can lack terms. The control: the read of
 // another document (Y) names it too.
 func TestTheReadOfADocumentNamesItsOwnUnreadableApprovedVersion(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	x := createFormIssue(t, tree.handler, tree.root, "X", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, x.PrimaryArtifactID)

@@ -17,6 +17,7 @@ import (
 // commas: each is trimmed, a key named twice counts once, and blank names no root. An item that is
 // no issue key, an empty item among them, refuses startup naming the setting.
 func TestParseSpecRoots(t *testing.T) {
+	t.Parallel()
 	for raw, want := range map[string][]string{
 		" ACME-1, ACME-7 ": {"ACME-1", "ACME-7"},
 		"ACME-1,ACME-1":    {"ACME-1"},
@@ -82,6 +83,7 @@ func specFormResultOf(findings []specFormFinding) specFormResult {
 // 20 and names the command, which lists them, the first 500 at most. The refusal is the one the
 // judgment writes (specFormResult.refusal), so the command it names is the one the server names.
 func TestTheRefusalBodyHoldsAtMost500Findings(t *testing.T) {
+	t.Parallel()
 	findings := make([]specFormFinding, 501)
 	for index := range findings {
 		findings[index] = specFormFinding{
@@ -130,6 +132,7 @@ func TestTheRefusalBodyHoldsAtMost500Findings(t *testing.T) {
 // each write that set its parent. A move inside the root, a move of the root itself and an issue
 // made under the root are no arrival; a move in, a move back in and a move of an ancestor are.
 func TestAnArrivalIsReadFromTheParentsAsTheyWereAtEachMove(t *testing.T) {
+	t.Parallel()
 	base := parentHistory{
 		"R": {{1, ""}}, "O": {{2, ""}}, "L1": {{3, "R"}}, "L2": {{4, "R"}}, "R2": {{5, "L1"}}, "P": {{6, "O"}},
 	}

@@ -13,6 +13,7 @@ import (
 // meets a closed connection. Nothing applied, so the request is still pending, and LogJudged's
 // row for the verdict says applied false: the approval's own row is not there.
 func TestADecisionWhoseCommitGotNoAnswerSaysSo(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "INFRA-12: rotate the deploy key", 600, "DEEL_API_KEY")
 	ended := false

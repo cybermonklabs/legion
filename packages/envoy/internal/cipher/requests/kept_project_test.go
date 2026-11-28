@@ -38,6 +38,7 @@ func (p keptProcess) projectUnchecked(t *testing.T, kept string) int {
 // wherever their kept member kinds serve them. The fault: maySee reading without OrKept; insider's
 // list holds none of the rows that name a project.
 func TestWhileDispatchCannotBeAskedARowIsShownByTheKeptProjectAnswer(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	rows := dispatchRows(publicTeam)
@@ -135,6 +136,7 @@ func TestWhileDispatchCannotBeAskedARowIsShownByTheKeptProjectAnswer(t *testing.
 // Control: while Dispatch is down before ACME is made, outsider's list holds the row on the kept no
 // project, so the row's later absence rests on insider's answer and not on the outage alone.
 func TestAKeptNoSuchProjectShowsNoRowOnceTheProjectIsMade(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	dispatch := projectaccesstest.NewServer(t, dispatchRows(publicTeam), map[string]string{
@@ -199,6 +201,7 @@ func TestAKeptNoSuchProjectShowsNoRowOnceTheProjectIsMade(t *testing.T) {
 // kept public answer, so the row's later absence rests on insider's answer and not on the outage
 // alone.
 func TestAKeptPublicShowsNoRowOnceTheProjectIsMadePrivate(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	rows := dispatchRows(publicTeam)
