@@ -2859,7 +2859,7 @@ test("a press on an option of a closed row picks it and opens the row in one", a
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <NoTooltips>
-          <OutlineWriterProvider issueKey="CORE-1">
+          <OutlineWriterProvider issueKey="CORE-1" openAsks={[]}>
             <RowOpenedByFocus drawn={asked} />
           </OutlineWriterProvider>
         </NoTooltips>
@@ -2959,7 +2959,9 @@ function focusedControls(
       <MemoryRouter>
         <NoTooltips>
           {withWriter ? (
-            <OutlineWriterProvider issueKey="CORE-1">{row}</OutlineWriterProvider>
+            <OutlineWriterProvider issueKey="CORE-1" openAsks={[]}>
+              {row}
+            </OutlineWriterProvider>
           ) : (
             row
           )}
@@ -3121,7 +3123,7 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
           <NoTooltips>
-            <OutlineWriterProvider issueKey="CORE-1">
+            <OutlineWriterProvider issueKey="CORE-1" openAsks={[]}>
               <Probe />
             </OutlineWriterProvider>
           </NoTooltips>

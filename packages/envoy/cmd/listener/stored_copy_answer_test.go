@@ -84,7 +84,7 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
 	topic := "notifications.team.own-copy-" + id.New()
-	key := publishDedupePrefix + uuid.NewString()
+	key := bus.PublishDedupePrefix + uuid.NewString()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// storedThen stores stored on topic under key's message id, as the stream holds the first
@@ -118,7 +118,7 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 
 	t.Run("control: the verdict names another request's copy, answered with duplicate and that copy", func(t *testing.T) {
 		item := envelope()
-		item.DedupeKey = publishDedupePrefix + uuid.NewString()
+		item.DedupeKey = bus.PublishDedupePrefix + uuid.NewString()
 		other := item
 		other.EventID = id.New()
 		duplicate, err := publishHeld(ctx, client, storedThen(other), &requestRecord{}, requestSender{source: item.Source, session: item.SourceSession}, &item)

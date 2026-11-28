@@ -86,9 +86,16 @@ func ScanAsk(row pgx.Row, extra ...any) (model.Ask, error) {
 // held for the ask.resolved event the caller appends after it, which the caller hands to
 // graphstore.QueueCaused once it has queued that event (graphstore.Caused where nothing queues).
 // A caller that plans in its read phase and queues later plans the same close with
-// PlanAskResolution instead.
+// PlanAskResolution instead. It is WriteAskResolutionAt at time.Now(), which a caller moved to a
+// moment of its own calls; this form goes with its last caller.
 func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor, held *graphstore.Uncaused) (model.Ask, error) {
-	settled, ask, err := PlanAskResolution(ctx, tx, ask, kind, reason, actor, held)
+	return WriteAskResolutionAt(ctx, tx, ask, kind, reason, actor, time.Now(), held)
+}
+
+// WriteAskResolutionAt is WriteAskResolution with the resolution made at at, the moment the
+// caller takes it: a server's stamp of its own clock, or a test's fake's reading.
+func WriteAskResolutionAt(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor, at time.Time, held *graphstore.Uncaused) (model.Ask, error) {
+	settled, ask, err := PlanAskResolution(ctx, tx, ask, kind, reason, actor, at, held)
 	if err != nil {
 		return model.Ask{}, err
 	}
@@ -98,20 +105,17 @@ func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, rea
 	return ask, nil
 }
 
-// PlanAskResolution decides the close of ask as WriteAskResolution writes it - the kind, the
-// reason, who closed it, and the Dispatch words a decline alone carries - and plans it through the
-// one writer of an ask's answer state (planSettle: from the ledger joined to ctx where one queues
-// tx's writes, which records the plan as the ask's latest), writing nothing. It answers the
-// planned write, which the caller queues where it makes the write (asks.Settled.Queue), and the
-// ask as that write leaves it. What the write states on the ask's node waits in held, as
-// WriteAskResolution's does. It is for a transaction that reads before its first write: the
-// close of an issue plans the withdrawal of each open ask before its own update, and queues each
-// after it.
-func PlanAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor, held *graphstore.Uncaused) (asks.Settled, model.Ask, error) {
-	resolution := model.AskResolution{Kind: kind, Reason: reason, Actor: actor, At: time.Now().UTC()}
-	if kind == model.AskResolutionDeclined {
-		resolution.DispatchWords = model.DeclineDispatchWords
-	}
+// PlanAskResolution decides the close of ask as WriteAskResolutionAt writes it - the kind, the
+// reason, who closed it, and the Dispatch words a decline alone carries, made at at
+// (askResolution) - and plans it through the one writer of an ask's answer state (planSettle:
+// from the ledger joined to ctx where one queues tx's writes, which records the plan as the ask's
+// latest), writing nothing. It answers the planned write, which the caller queues where it makes
+// the write (asks.Settled.Queue), and the ask as that write leaves it. What the write states on
+// the ask's node waits in held, as WriteAskResolution's does. It is for a transaction that reads
+// before its first write: the close of an issue plans the withdrawal of each open ask before its
+// own update, and queues each after it.
+func PlanAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor, at time.Time, held *graphstore.Uncaused) (asks.Settled, model.Ask, error) {
+	resolution := askResolution(kind, reason, actor, at)
 	change := asks.Resolved(resolution)
 	change.Who, change.At, change.Held = actor, resolution.At, held
 	settled, err := planSettle(ctx, tx, ask.ID, change)
@@ -120,6 +124,17 @@ func PlanAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reas
 	}
 	ask.State, ask.Answer, ask.Resolution = settled.Ask.State, settled.Ask.Answer, settled.Ask.Resolution
 	return settled, ask, nil
+}
+
+// askResolution is the resolution that a close of an ask with kind and reason makes in actor's
+// name at at, as the one writer of an ask's answer state stores it on the ask's node and its row:
+// made at at in UTC, and carrying model.DeclineDispatchWords under a decline alone.
+func askResolution(kind, reason string, actor model.Actor, at time.Time) model.AskResolution {
+	resolution := model.AskResolution{Kind: kind, Reason: reason, Actor: actor, At: at.UTC()}
+	if kind == model.AskResolutionDeclined {
+		resolution.DispatchWords = model.DeclineDispatchWords
+	}
+	return resolution
 }
 
 // WriteRestoredAsks writes back open each of restored, asks an issue's close withdrew whose rows

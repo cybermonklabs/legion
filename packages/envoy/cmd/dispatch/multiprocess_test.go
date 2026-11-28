@@ -86,6 +86,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // start starts both processes on the pair's database and NATS, each on a port held for it from the
@@ -3873,7 +3874,7 @@ func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 			select count(*) filter (where application_name = 'dispatch-room-appends'),
 			       count(*) filter (where application_name <> 'dispatch-room-appends')
 			from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and query like '%insert into doc_updates%'
+			where datname = current_database() and `+lockwaittest.Waiting+` and query like '%insert into doc_updates%'
 		`).Scan(&appends, &others); err != nil {
 			t.Fatalf("count the waits on doc_updates' lock: %v", err)
 		}

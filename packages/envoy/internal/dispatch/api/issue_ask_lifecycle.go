@@ -116,7 +116,7 @@ func planWithdrawal(ctx context.Context, tx pgx.Tx, issueKey string, open []mode
 		held:    make([]graphstore.Uncaused, len(open)),
 	}
 	for index, ask := range open {
-		settled, withdrawn, err := docs.PlanAskResolution(ctx, tx, ask, model.AskResolutionWithdrawn, reason, actor, &planned.held[index])
+		settled, withdrawn, err := docs.PlanAskResolution(ctx, tx, ask, model.AskResolutionWithdrawn, reason, actor, time.Now(), &planned.held[index])
 		if err != nil {
 			return withdrawal{}, err
 		}

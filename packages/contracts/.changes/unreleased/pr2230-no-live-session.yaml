@@ -1,0 +1,7 @@
+kind: Added
+custom:
+  Issue: pr2230
+body: |-
+  `NO_LIVE_SESSION` (`no live session`): the words the Envoy listener's 404 for a session it will
+  not answer for opens with (`no live session <id>`). It is generated into Go as
+  `contracts.NoLiveSession`, which the listener's refusal uses. The text itself does not change.

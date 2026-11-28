@@ -544,6 +544,31 @@ export const RECEIPT_TIMEOUT_CAUSE =
   "The listener didn't answer within the send window; the message may already have been delivered.";
 
 /**
+ * The words that open the Envoy listener's refusal of a session it will not answer for, one it
+ * holds no record of or whose record is past the gone horizon: its `404` to a send and to
+ * `GET /v1/registry/<id>` reads `no live session <id>`, and may say more after the id
+ * (`noLiveSession` in packages/envoy/cmd/listener/api.go). Dispatch writes the same words for
+ * such a session itself: with the id after them when its own resolution finds the session absent
+ * or gone (`resolveDeliveryTarget` in packages/envoy/internal/dispatch/api/envoy_resolve.go), and
+ * bare for a delivery that names no session to send to (`sendResolvedDelivery` in
+ * comment_delivery.go) and for a broadcast recipient it leaves out (`resolveBroadcastTargets` in
+ * broadcasts.go).
+ *
+ * Dispatch reads them back: an attempt whose failure opens with them and a space pins no session
+ * (`resolvedMention` in comment_delivery.go), and a failure that opens with them is one a listener
+ * take-over gives, which the sender tries again (`retryableDeliveryFailure` in envoy_resolve.go).
+ * The comment-delivery report classes a mention that failed with them `session-not-live`
+ * (`mentionErrorClass` in scripts/dispatch/comment-delivery), and the dashboard prints them as
+ * they came. Generated into Go as `contracts.NoLiveSession`, so the listener's refusal, Dispatch's
+ * own failures and every reader of either are one literal. A listener and a Dispatch of different
+ * releases read each other's refusals, so the words themselves do not change.
+ *
+ * It is not `no live session holds the role`, the Legion daemon's role refusal
+ * (`notify.ErrNoHolder`).
+ */
+export const NO_LIVE_SESSION = "no live session";
+
+/**
  * The error a delete settles each send of its post still pending with: the post's delete ended
  * the attempt, and nothing more - not whether its frame had already reached the session. Each
  * such attempt also gets a failed receipt carrying it. Generated into Go as
@@ -566,11 +591,27 @@ export const DELETED_POST_DELIVERY_ERROR = "ended by the post's delete";
 export const STORE_UNCONFIRMED_CAUSE =
   "The listener sent the message but could not confirm it was stored; the message may already have been delivered.";
 
+/**
+ * The cause a delivery attempt of a post to a role records when the copy the Envoy listener kept
+ * for the role ended after a forward of it to the role's holder began and was never confirmed
+ * (the expiry notice's `forward_unconfirmed`): the stream may hold that forward, so the holder may
+ * already have the message, as a receipt timeout's recipient may. Dispatch settles such an
+ * attempt `failed` with it (`model.KeptDeliveryExpiredError` in
+ * packages/envoy/internal/dispatch/model), and the dashboard gives it the receipt timeout's
+ * possible-second-delivery warning (`POSSIBLY_DELIVERED_CAUSES`). Generated into Go as
+ * `contracts.KeptForwardUnconfirmedCause`.
+ *
+ * It is the CAUSE only, as `RECEIPT_TIMEOUT_CAUSE` is.
+ */
+export const KEPT_FORWARD_UNCONFIRMED_CAUSE =
+  "The Envoy listener kept this message for the role, and a forward to its holder was not confirmed before the listener dropped it; the message may already have been delivered.";
+
 /** The causes whose send may already have reached the recipient, so that re-sending it in another
  * mode delivers it a second time: the one list the dashboard keys that warning on. */
 export const POSSIBLY_DELIVERED_CAUSES: readonly string[] = [
   RECEIPT_TIMEOUT_CAUSE,
   STORE_UNCONFIRMED_CAUSE,
+  KEPT_FORWARD_UNCONFIRMED_CAUSE,
 ];
 
 /** `SearchResponse.degraded`'s one value today: meaning search could not run for this request (no

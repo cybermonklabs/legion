@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // opIndex is the batch position of the operation an error came from. The API renders these
@@ -806,9 +807,10 @@ func (b editBatch) outcome(applied int) (EditOutcome, pmdoc.ValidDocument, error
 	}, valid, nil
 }
 
-// editReadBackBound is how many bytes of UTF-8 an edit's read-back may hold. The bound is the
-// server's, so every caller of the edits route reads a bounded field, rather than each command
-// bounding what it prints for itself.
+// editReadBackBound is how many characters an edit's read-back may hold, each Unicode code point
+// one whatever its script and however many bytes of UTF-8 it takes: the unit the line naming a
+// cut counts in (ReadBackCutLine). The bound is the server's, so every caller of the edits route
+// reads a bounded field, rather than each command bounding what it prints for itself.
 const editReadBackBound = 2000
 
 // readBack is what the batch wrote, for the person or agent who reads the edit's answer: the
@@ -990,44 +992,41 @@ func longestRunInOrder(places []int) map[int]bool {
 	return run
 }
 
-// boundedReadBack joins entries, one blank line between them, within editReadBackBound bytes: it
-// writes them in document order until the bound, cuts the entry the bound falls in at a rune
-// boundary, and ends with the line naming what it left out. The room the closing line needs is
+// boundedReadBack joins entries, one blank line between them, within editReadBackBound characters:
+// it writes them in document order until the bound, cuts the entry the bound falls in between two
+// characters, and ends with the line naming what it left out. The room the closing line needs is
 // taken off the bound first, measured at the largest counts it could name, so the whole field
 // holds the bound whatever the cut turns out to be.
 func boundedReadBack(entries []string) string {
-	bytes, characters := 0, 0
-	for index, entry := range entries {
-		if index > 0 {
-			bytes += 2
-		}
-		bytes += len(entry)
+	// characters counts what the field would hold, and then, as entries are kept, what is left
+	// for the closing line to name.
+	characters := 0
+	for _, entry := range entries {
 		characters += utf8.RuneCountInString(entry)
 	}
-	if bytes <= editReadBackBound {
+	if characters+2*(len(entries)-1) <= editReadBackBound {
 		return strings.Join(entries, "\n\n")
 	}
-	budget := editReadBackBound - 2 - len(ReadBackCutLine(characters, len(entries)))
+	budget := editReadBackBound - 2 - utf8.RuneCountInString(ReadBackCutLine(characters, len(entries)))
 	kept, used, cut := make([]string, 0, len(entries)), 0, len(entries)
 	for index, entry := range entries {
 		separator := 0
 		if index > 0 {
 			separator = 2
 		}
-		if used+separator+len(entry) <= budget {
+		count := utf8.RuneCountInString(entry)
+		if used+separator+count <= budget {
 			kept = append(kept, entry)
-			used += separator + len(entry)
+			used += separator + count
+			characters -= count
 			continue
 		}
-		if room := runeBoundaryBelow(entry, budget-used-separator); room > 0 {
-			kept = append(kept, entry[:room])
-			characters -= utf8.RuneCountInString(entry[:room])
+		if room := budget - used - separator; room > 0 {
+			kept = append(kept, text.HeadRunes(entry, room))
+			characters -= room
 		}
 		cut = index
 		break
-	}
-	for _, entry := range entries[:cut] {
-		characters -= utf8.RuneCountInString(entry)
 	}
 	return strings.Join(append(kept, ReadBackCutLine(characters, len(entries)-cut)), "\n\n")
 }
@@ -1036,21 +1035,6 @@ func boundedReadBack(entries []string) string {
 // test reads the line this package writes rather than a copy of its wording.
 func ReadBackCutLine(characters, blocks int) string {
 	return fmt.Sprintf("cut %d characters in %d blocks", characters, blocks)
-}
-
-// runeBoundaryBelow is the largest offset into text at or below bound that opens a rune, so a cut
-// there never splits one.
-func runeBoundaryBelow(text string, bound int) int {
-	if bound >= len(text) {
-		return len(text)
-	}
-	for bound > 0 && !utf8.RuneStart(text[bound]) {
-		bound--
-	}
-	if bound < 0 {
-		return 0
-	}
-	return bound
 }
 
 // batchTree is a tree an edit batch works on, beside the one validation it pays for: the first

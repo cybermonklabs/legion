@@ -928,7 +928,9 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 	}
 	// Committed, the write has no more use for its fork, so the fork goes before the publish. The
 	// publish loads no room: where no room holds the document, it schedules the settlement of the
-	// write's updates and returns (coldFork). The room's shadow keeps the fork (newShadow).
+	// write's updates and returns (coldFork). The room's shadow keeps the fork (newShadow) and
+	// applies the room's later commits to it as it measures them, so from the commit on the fork is
+	// the shadow's and describes no state of the write's.
 	write.releaseFork()
 	if !s.roomHeld(write.artifactID) {
 		if len(write.updates) > 0 {
