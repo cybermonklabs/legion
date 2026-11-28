@@ -6,6 +6,7 @@ import type { Window as HappyDOMWindow } from "happy-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { countEngineParses, displayTree } from "../../__tests__/display-trees";
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { ApiError, api } from "../../api/client";
 import type {
   AskRead,
@@ -34,8 +35,9 @@ const testWindow = window as unknown as HappyDOMWindow;
  *  pod spends on a single pass fails a rewrite that backtracks and nothing else. */
 const BACKTRACKING_BUDGET_MS = 2_000;
 
+/** The card `body` unfurls, under a client signed in as a person, as a page's is. */
 function renderUnfurl(body: string, source?: Parameters<typeof Unfurl>[0]["source"]) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   return render(
     <QueryClientProvider client={queryClient}>
       <Unfurl body={body} source={source} />

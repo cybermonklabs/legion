@@ -28,7 +28,7 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[1] }
   ),
   ...answers(
-    'IssueDetail | ConversationTab | early return | if (issue.isPending || state.isPending || landing?.kind === "pending") return …',
+    'IssueDetail | ConversationTab | early return | if (issue.isPending || state.isLoading || landing?.kind === "pending") return …',
     { reason: REASONS[1] }
   ),
   ...answers(

@@ -1,12 +1,13 @@
 import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type { GraphReferences, IssueReferenceSummary, ReferenceQuestions } from "../../api/types";
 import { MarkdownBody } from "./MarkdownBody";
@@ -114,9 +115,10 @@ function prefixAnswer(
 }
 
 /** A query cache holding what the row says exists: each issue of `issues`, the asks that declare
- *  `questions`, and the graph read that resolves each id the body writes short. */
+ *  `questions`, and the graph read that resolves each id the body writes short, signed in as a
+ *  person, as a page's cache is. */
 function cacheOf(row: (typeof DISPATCH_TEXT_REFERENCES)[number], server: string): QueryClient {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   for (const key of row.issues ?? []) {
     queryClient.setQueryData(["issue-summary", key], summaryOf(key));
   }

@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -175,9 +176,10 @@ const stalled: Agent = {
 
 /** A query client holding the registry's answer - the renamed session, the session that holds
  *  the reviewer role and the unresponsive one that holds the watcher role - and the people
- *  Dispatch knows, of whom dana is one and nobody is not. */
+ *  Dispatch knows, of whom dana is one and nobody is not, signed in as a person, whose sign-in
+ *  holds the `person` scope the people are read under. */
 function clientWithParties(): QueryClient {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = signedInQueryClient();
   client.setQueryData(["agents"], [renamed, reviewing, stalled]);
   client.setQueryData(["users"], [{ login: "dana@example.test" }]);
   return client;
@@ -247,7 +249,7 @@ test("a known person reads as their login with no link, an unknown one as writte
 // (`@legion/proof-editor`'s `whole-addresses.ts`), so it names the person and reads as their login,
 // with no link and no mail address anywhere in the line.
 test("a known person whose login holds a dot or a hyphen reads as their login with no link", async () => {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = signedInQueryClient();
   client.setQueryData(
     ["users"],
     [{ login: "john.doe@example.com" }, { login: "person-2@example.com" }]

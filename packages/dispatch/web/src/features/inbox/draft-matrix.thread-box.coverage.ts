@@ -253,9 +253,11 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[12],
   }),
   ...answers("Inbox | ReadingPane | conditional | (readingView) ? …", { reason: REASONS[12] }),
-  ...answers("Inbox | ReadingPane | early return | if (!person) return …", { reason: REASONS[15] }),
+  ...answers('Inbox | ReadingPane | early return | if (whoAmI.data?.kind === "agent") return …', {
+    reason: REASONS[15],
+  }),
   ...answers(
-    "Inbox | ReadingPane | early return | if (inbox.isPending || whoAmI.isPending) return …",
+    "Inbox | ReadingPane | early return | if (whoAmI.isPending || (person && inbox.isPending)) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
@@ -292,11 +294,11 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("Inbox | ThreadCardRow | conditional | <div hidden={readingView}>", {
     reason: REASONS[12],
   }),
-  ...answers("Inbox | ThreadCardRow | early return | if (!person) return …", {
+  ...answers('Inbox | ThreadCardRow | early return | if (whoAmI.data?.kind === "agent") return …', {
     reason: REASONS[15],
   }),
   ...answers(
-    "Inbox | ThreadCardRow | early return | if (inbox.isPending || whoAmI.isPending) return …",
+    "Inbox | ThreadCardRow | early return | if (whoAmI.isPending || (person && inbox.isPending)) return …",
     { reason: REASONS[12] }
   ),
   ...answers(

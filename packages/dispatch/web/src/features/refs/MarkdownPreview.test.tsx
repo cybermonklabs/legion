@@ -1,10 +1,11 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import type { ComponentProps, ReactNode } from "react";
 
 import { snippetSource } from "../../__tests__/display-trees";
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type { DisplayTree, IssueReferenceSummary } from "../../api/types";
 import fixtures from "./__fixtures__/display-trees.json";
@@ -57,10 +58,11 @@ const issue: IssueReferenceSummary = {
  *  is a live link is the host's property, never a prop of the preview (`ReferenceHostIs`). */
 type PreviewProps = ComponentProps<typeof MarkdownPreview> & { host?: ReferenceHost };
 
-/** Renders one preview under a query client (a reference inside resolves its title through
- *  one), and hands back its root and a rerender with new props. */
+/** Renders one preview under a query client signed in as a person, as a page's is (a reference
+ *  inside resolves its title through one), and hands back its root and a rerender with new
+ *  props. */
 function renderPreview(props: PreviewProps) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = signedInQueryClient();
   const wrap = ({ host = "record", ...next }: PreviewProps): ReactNode => (
     <QueryClientProvider client={client}>
       <ReferenceHostIs host={host}>
