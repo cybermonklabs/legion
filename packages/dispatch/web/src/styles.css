@@ -1015,8 +1015,14 @@ html:has([data-issue-page]) {
    foot's layers (`hooks/useFootInset.ts`) and publishes its own height for this one reader.
    `!important` beats the inline `top` and `left` the library writes beside a selection; the
    docked styling is the library's own, for the bar that is already docked. */
+/* The sheet says it stands expanded by `data-margin-sheet-expanded` on `<body>`
+   (`features/margin/MarginSheet.tsx`), not through `body:has()` of its own `data-expanded`.
+   Chromium checks a `:has()` anchored at `<body>` against every element under it, and the new
+   issue page's kept block editor draws a selection bar from its load, so at 390 px each row a fold
+   took away, or an unfold added, restyled each button, paragraph and text of the page: 3,103
+   elements of a fold of INFRA-1196's size (INFRA-5939, decision 601). */
 @media (max-width: 1279px) {
-  body:has([data-testid="margin-sheet"][data-expanded="true"]) .dispatch-action-bar {
+  body[data-margin-sheet-expanded] .dispatch-action-bar {
     /* biome-ignore lint/complexity/noImportantStyles: the library writes `top` inline beside a selection, and only this beats it. */
     top: auto !important;
     bottom: calc(var(--margin-sheet-height, 0px) + 12px);

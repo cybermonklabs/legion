@@ -155,6 +155,13 @@ interface MarginSheetProps {
   model: MarginSheetModel;
 }
 
+/** What `<body>` carries while a margin sheet stands expanded, which `styles.css` docks the
+ *  editor's selection bar by below 1280 px (`MarginSheet`). */
+const EXPANDED_SHEET_ATTRIBUTE = "data-margin-sheet-expanded";
+
+/** How many margin sheets stand expanded, so `<body>` keeps the mark while any one does. */
+let expandedSheets = 0;
+
 /**
  * The document's review margin. Its groups, in this order (the layout rule of
  * `packages/dispatch/web/src/AGENTS.md`, dispatch://INFRA-5200):
@@ -276,6 +283,21 @@ export function MarginSheet({
       root.style.removeProperty("--margin-sheet-height");
     };
   }, [dialog.containerRef, modalSheet]);
+  // Whether the sheet stands expanded, on `<body>` (`EXPANDED_SHEET_ATTRIBUTE`), which
+  // `styles.css` docks the bar by: an attribute, not `body:has()`. Chromium checks a `:has()`
+  // anchored at `<body>` against every element under it, and then every row the new issue page
+  // added or took away at 390 px restyled each button, paragraph and text of the page, 3,103
+  // elements of a fold of INFRA-1196's size (INFRA-5939, decision 601). Set in the commit that
+  // expands the sheet, before it paints, as the `:has()` read the sheet's own `data-expanded`.
+  useLayoutEffect(() => {
+    if (!sheet.expanded) return;
+    expandedSheets += 1;
+    document.body.setAttribute(EXPANDED_SHEET_ATTRIBUTE, "");
+    return () => {
+      expandedSheets -= 1;
+      if (expandedSheets === 0) document.body.removeAttribute(EXPANDED_SHEET_ATTRIBUTE);
+    };
+  }, [sheet.expanded]);
 
   return (
     <>
