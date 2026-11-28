@@ -12,18 +12,141 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
+const (
+	// loopDebounce and loopTick are the summary loop's debounce and tick as cmd/listener runs it:
+	// ENVOY_CI_DEBOUNCE's default and the loop's one-second tick.
+	loopDebounce = 5 * time.Second
+	loopTick     = time.Second
+)
+
+// loopClock is the fake clock a row's CI store, the writers beside it and its summary loop run on
+// (cistore.WithClock), and the passes that loop ended (summaryPasses, for
+// cistore.WithSummaryObserver). It stands at start, a whole second, until the row moves it, so each
+// record written before the row moves it is stamped at start, where the loop's grid starts too.
+type loopClock struct {
+	fake   *clocktest.Fake
+	start  time.Time
+	passes *summaryPasses
+}
+
+func newLoopClock() *loopClock {
+	start := time.Date(2026, 9, 7, 3, 0, 0, 0, time.UTC)
+	return &loopClock{fake: clocktest.New(start), start: start, passes: &summaryPasses{}}
+}
+
+// settle moves the clock as production's grid runs over a head whose records were all written at
+// start. Once store's cache holds key's record as the CI bucket does (awaitCachedAsStored), so the
+// loop's change feed has named the record's last write, it moves to the grid's first instant,
+// whose pass finds the head inside its debounce, and then to the instant the debounce runs out,
+// which that pass arms; the pass there publishes the head's settlement. Each move waits until the
+// loop has armed the instant it moves to, so a loop that never wakes for the debounce fails naming
+// that instant.
+func (c *loopClock) settle(t *testing.T, store *cistore.Store, conn *natsgo.Conn, key string) {
+	t.Helper()
+	awaitCachedAsStored(t, store, conn, key)
+	first := c.start.Add(loopTick)
+	c.fake.AwaitArmedAt(t, "the summary loop's first pass", first)
+	c.fake.Set(first)
+	due := c.start.Add(loopDebounce)
+	c.fake.AwaitArmedAt(t, "the summary loop's pass at the head's debounce, which its first pass arms", due)
+	c.fake.Set(due)
+}
+
+// runTo moves the clock to each instant the summary loop arms, earliest first, up to until, and
+// then to until, and after each move that reached an armed instant waits for the pass it fired to
+// end (summaryPasses): each pass the moves ran has ended, and published what it publishes, when it
+// returns. While no record is being written the loop's timer is the one armed on the clock.
+func (c *loopClock) runTo(t *testing.T, until time.Time) {
+	t.Helper()
+	for {
+		ended := c.passes.count()
+		var at time.Time
+		c.fake.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+			if len(armed) == 0 || armed[0].After(until) {
+				return until, until.After(now)
+			}
+			at = armed[0]
+			return at, true
+		})
+		if at.IsZero() {
+			return
+		}
+		testwait.Until(t, "the summary pass the move to "+at.Format(time.RFC3339Nano)+" fired to end", func() (int, bool) {
+			got := c.passes.count() - ended
+			return got, got >= 1
+		})
+	}
+}
+
+// ciBucket is the CI record bucket on conn through the jetstream package, whose calls take the
+// test's deadline as their context (testwait.Context): nats.go's older KeyValue, Get and Keys take
+// none, and end at a timeout of their own.
+func ciBucket(t *testing.T, conn *natsgo.Conn) jetstream.KeyValue {
+	t.Helper()
+	js, err := jetstream.New(conn)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	kv, err := js.KeyValue(testwait.Context(t), bus.CIStateBucket)
+	if err != nil {
+		t.Fatalf("bind the CI bucket: %v", err)
+	}
+	return kv
+}
+
+// awaitCachedAsStored waits until store's cache holds key's record as the CI bucket holds it, so
+// the summary loop's change feed has named the record's last write before the row moves the loop's
+// clock: a pass that ran before the cache had that write would judge the record it replaced.
+func awaitCachedAsStored(t *testing.T, store *cistore.Store, conn *natsgo.Conn, key string) {
+	t.Helper()
+	entry, err := ciBucket(t, conn).Get(testwait.Context(t), key)
+	if err != nil {
+		t.Fatalf("read the record of %s: %v", key, err)
+	}
+	var stored cistore.State
+	if err := json.Unmarshal(entry.Value(), &stored); err != nil {
+		t.Fatalf("decode the record of %s: %v", key, err)
+	}
+	testwait.Until(t, fmt.Sprintf("the cache to hold %s at generation %d, snapshot %s, last event %d", key, stored.Generation, stored.Hash(), stored.LastEventAt), func() (string, bool) {
+		for _, st := range store.List() {
+			if cistore.Key(st.Owner, st.Repo, st.Number, st.SHA) == key {
+				return fmt.Sprintf("generation %d, snapshot %s, last event %d", st.Generation, st.Hash(), st.LastEventAt),
+					st.Generation == stored.Generation && st.Hash() == stored.Hash() && st.LastEventAt == stored.LastEventAt
+			}
+		}
+		return "no record of " + key, false
+	})
+}
+
+// nextMsg waits for sub's next message until the test binary's deadline less testwait's margin
+// (testwait.Context), and fails the test naming what, the message it waited for, when none comes.
+func nextMsg(t *testing.T, sub *natsgo.Subscription, what string) *natsgo.Msg {
+	t.Helper()
+	msg, err := sub.NextMsgWithContext(testwait.Context(t))
+	if err != nil {
+		t.Fatalf("gave up waiting for %s: %v", what, err)
+	}
+	return msg
+}
+
 // TestEndToEndCheckRunToChecks drives the listener's real webhook, CI store,
 // and NATS loop. CI webhooks publish nothing raw; one settled checks envelope
-// is emitted for the PR after the quiet period.
+// is emitted for the PR after the quiet period. The store and its loop run at
+// cmd/listener's debounce and tick on a fake clock the test moves (loopClock).
 func TestEndToEndCheckRunToChecks(t *testing.T) {
 	ctx := context.Background()
 	_, uri := testnats.Start(t)
@@ -33,13 +156,12 @@ func TestEndToEndCheckRunToChecks(t *testing.T) {
 		t.Fatalf("bus connect: %v", err)
 	}
 	defer client.Close()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	c := newLoopClock()
+	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithClock(c.fake))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(readyCtx); err != nil {
+	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("cache ready: %v", err)
 	}
 
@@ -50,7 +172,7 @@ func TestEndToEndCheckRunToChecks(t *testing.T) {
 	handler := webhook.GitHubHandler(secret, "@legion", "", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
-	cistore.StartSummaryLoop(loopCtx, store, client, 100*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("e2e"))
+	cistore.StartSummaryLoop(loopCtx, store, client, loopDebounce, loopTick, metrics.New().NewGauge("held", ""), logging.New("e2e"))
 
 	sub, err := client.Conn.SubscribeSync("notifications.github.example-org.example-repo.pr.42.checks")
 	if err != nil {
@@ -90,10 +212,8 @@ func TestEndToEndCheckRunToChecks(t *testing.T) {
 
 	post("build", "completed", "success", "d1")
 	post("lint", "completed", "failure", "d2")
-	msg, err := sub.NextMsg(3 * time.Second)
-	if err != nil {
-		t.Fatalf("expected settled checks envelope, got: %v", err)
-	}
+	c.settle(t, store, client.Conn, cistore.Key("example-org", "example-repo", "42", sha))
+	msg := nextMsg(t, sub, "the settled checks envelope of pull request 42")
 	var env contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &env); err != nil {
 		t.Fatalf("checks envelope not JSON: %v", err)
@@ -113,7 +233,8 @@ func TestEndToEndCheckRunToChecks(t *testing.T) {
 // A check run GitHub names no pull request for still belongs to one: its check suite's head
 // branch is the ref that pull request's head is fetched by. The listener records it under that
 // number, and the settlement it publishes for the number names the failed check among its
-// failing checks.
+// failing checks. The store and its loop run at cmd/listener's debounce and tick on a fake clock
+// the test moves (loopClock).
 func TestEndToEndACheckRunWithNoPullRequestIsAttributedByItsSuiteHeadBranch(t *testing.T) {
 	ctx := context.Background()
 	_, uri := testnats.Start(t)
@@ -123,13 +244,12 @@ func TestEndToEndACheckRunWithNoPullRequestIsAttributedByItsSuiteHeadBranch(t *t
 		t.Fatalf("bus connect: %v", err)
 	}
 	defer client.Close()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	c := newLoopClock()
+	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithClock(c.fake))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(readyCtx); err != nil {
+	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("cache ready: %v", err)
 	}
 
@@ -140,7 +260,7 @@ func TestEndToEndACheckRunWithNoPullRequestIsAttributedByItsSuiteHeadBranch(t *t
 	handler := webhook.GitHubHandler(secret, "@legion", "", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
-	cistore.StartSummaryLoop(loopCtx, store, client, 100*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("e2e"))
+	cistore.StartSummaryLoop(loopCtx, store, client, loopDebounce, loopTick, metrics.New().NewGauge("held", ""), logging.New("e2e"))
 
 	sub, err := client.Conn.SubscribeSync("notifications.github.example-org.example-repo.pr.42.checks")
 	if err != nil {
@@ -175,10 +295,8 @@ func TestEndToEndACheckRunWithNoPullRequestIsAttributedByItsSuiteHeadBranch(t *t
 		"repository": {"name": "example-repo", "owner": {"login": "example-org"}, "default_branch": "main"}
 	}`, sha), "d1")
 
-	msg, err := sub.NextMsg(3 * time.Second)
-	if err != nil {
-		t.Fatalf("expected the settlement of the pull request the head branch names, got: %v", err)
-	}
+	c.settle(t, store, client.Conn, cistore.Key("example-org", "example-repo", "42", sha))
+	msg := nextMsg(t, sub, "the settlement of the pull request the head branch names")
 	var env contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &env); err != nil {
 		t.Fatalf("checks envelope not JSON: %v", err)
@@ -208,7 +326,8 @@ func TestEndToEndACheckRunWithNoPullRequestIsAttributedByItsSuiteHeadBranch(t *t
 
 // A handoff push can carry GitHub's skip-checks trailer, so the pull request's new head runs no CI,
 // and the code head it replaced settles afterwards. That settlement is published, carrying the
-// code head's SHA, though the code head is no longer the pull request's head.
+// code head's SHA, though the code head is no longer the pull request's head. The store and its
+// loop run at cmd/listener's debounce and tick on a fake clock the test moves (loopClock).
 func TestEndToEndACodeHeadSettlesAfterASkippedHandoffHead(t *testing.T) {
 	ctx := context.Background()
 	_, uri := testnats.Start(t)
@@ -217,13 +336,12 @@ func TestEndToEndACodeHeadSettlesAfterASkippedHandoffHead(t *testing.T) {
 		t.Fatalf("bus connect: %v", err)
 	}
 	defer client.Close()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	c := newLoopClock()
+	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithClock(c.fake))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(readyCtx); err != nil {
+	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("cache ready: %v", err)
 	}
 	const (
@@ -234,7 +352,7 @@ func TestEndToEndACodeHeadSettlesAfterASkippedHandoffHead(t *testing.T) {
 	handler := webhook.GitHubHandler(secret, "@legion", "", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
-	cistore.StartSummaryLoop(loopCtx, store, client, 100*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("e2e"))
+	cistore.StartSummaryLoop(loopCtx, store, client, loopDebounce, loopTick, metrics.New().NewGauge("held", ""), logging.New("e2e"))
 	sub, err := client.Conn.SubscribeSync("notifications.github.example-org.example-repo.pr.42.checks")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -276,10 +394,8 @@ func TestEndToEndACodeHeadSettlesAfterASkippedHandoffHead(t *testing.T) {
 		"sender": {"login": "ci", "type": "Bot"},
 		"repository": {"name": "example-repo", "owner": {"login": "example-org"}}
 	}`, code), "d3")
-	msg, err := sub.NextMsg(3 * time.Second)
-	if err != nil {
-		t.Fatalf("the code head's settlement was not published: %v", err)
-	}
+	c.settle(t, store, client.Conn, cistore.Key("example-org", "example-repo", "42", code))
+	msg := nextMsg(t, sub, "the code head's settlement")
 	var env contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &env); err != nil {
 		t.Fatalf("checks envelope not JSON: %v", err)

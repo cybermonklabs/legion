@@ -52,10 +52,12 @@ var testSummarizers = struct {
 	byStore map[*Store]*summarizer
 }{byStore: map[*Store]*summarizer{}}
 
-// runSummaryTick runs one pass at time.Now() on store's summarizer (testSummarizer) and returns how
-// many records it held back (verdictHeld).
+// runSummaryTick runs one pass at the store's own clock (Store.clock) on store's summarizer
+// (testSummarizer) and returns how many records it held back (verdictHeld): on the real clock a
+// pass at the wall clock's moment, and on a clocktest.Fake one at the moment the test moved the fake
+// to, the moment the store stamps its records on.
 func runSummaryTick(store *Store, pub Publisher, debounce time.Duration, logger *logging.Logger) int {
-	held, _, _ := testSummarizer(store, debounce).pass(pub, logger, time.Now().UnixMilli())
+	held, _, _ := testSummarizer(store, debounce).pass(pub, logger, store.clock.Now().UnixMilli())
 	return held
 }
 

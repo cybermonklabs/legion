@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -82,7 +83,8 @@ func (state *liveHeadGatedState) UnmarshalJSON(data []byte) error {
 
 // putHeadGatedRecord stores the record a head-gated listener leaves for a commit it did not
 // settle: every check and suite completed, unsettled, last observed at lastEventAt, and no schema,
-// so it encodes to the bytes that listener wrote. edit adjusts it first.
+// so it encodes to the bytes that listener wrote. edit adjusts it first. The write goes through the
+// bucket's jetstream handle, whose Put takes the test's deadline as its context.
 func putHeadGatedRecord(t *testing.T, s *Store, h head, lastEventAt int64, edit func(*State)) {
 	t.Helper()
 	record := State{
@@ -103,7 +105,7 @@ func putHeadGatedRecord(t *testing.T, s *Store, h head, lastEventAt int64, edit 
 	if err != nil {
 		t.Fatalf("encode the head-gated record: %v", err)
 	}
-	if _, err := s.watcher.KV().Put(h.key(), raw); err != nil {
+	if _, err := s.watcher.KV().WatchHandle().Put(testwait.Context(t), h.key(), raw); err != nil {
 		t.Fatalf("store the head-gated record: %v", err)
 	}
 	waitCached(t, s, h.key(), func(st State) bool { return st.LastEventAt == lastEventAt })
@@ -124,10 +126,11 @@ func waitCached(t *testing.T, s *Store, key string, ok func(State) bool) {
 	})
 }
 
-// storedSchema is the schema field of key's stored record as the bucket holds it, 0 when absent.
+// storedSchema is the schema field of key's stored record as the bucket holds it, 0 when absent,
+// read through the bucket's jetstream handle, whose Get takes the test's deadline as its context.
 func storedSchema(t *testing.T, s *Store, key string) (int, uint64) {
 	t.Helper()
-	entry, err := s.watcher.KV().Get(key)
+	entry, err := s.watcher.KV().WatchHandle().Get(testwait.Context(t), key)
 	if err != nil {
 		t.Fatalf("kv get: %v", err)
 	}
@@ -142,6 +145,13 @@ func storedSchema(t *testing.T, s *Store, key string) (int, uint64) {
 
 var legacyHead = head{"example-org", "example-repo", "42", "1e9ac1000000000000000000000000000000beef"}
 
+// onLegacyFake is a fake clock for a legacy row's store (WithClock), standing until the row moves
+// it: the store stamps its records there, runSummaryTick runs each pass there, and the row takes
+// every moment it writes into a record from it.
+func onLegacyFake() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 9, 28, 5, 0, 0, 0, time.UTC))
+}
+
 // The backlog a head-gated listener leaves - commits it never settled because they were not their
 // pull request's head, some days old - is not published when this listener takes over, including a
 // record whose claim the old listener left behind, which a pass must not reclaim into a
@@ -149,10 +159,11 @@ var legacyHead = head{"example-org", "example-repo", "42", "1e9ac100000000000000
 func TestAHeadGatedListenersUnsettledRecordPastTheGraceIsNotSettled(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	store := openStore(t, conn)
+	fake := onLegacyFake()
+	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	debounce := 50 * time.Millisecond
-	old := time.Now().Add(-65 * time.Hour).UnixMilli()
+	old := fake.Now().Add(-65 * time.Hour).UnixMilli()
 	claimed := head{legacyHead.owner, legacyHead.repo, "43", "c1a1c1000000000000000000000000000000beef"}
 	putHeadGatedRecord(t, store, legacyHead, old, nil)
 	putHeadGatedRecord(t, store, claimed, old, func(st *State) {
@@ -177,7 +188,7 @@ func TestAHeadGatedListenersUnsettledRecordPastTheGraceIsNotSettled(t *testing.T
 		t.Fatalf("the backlog record's stale claim was reclaimed (revision %d -> %d), want it left as it was", beforeClaimed, after)
 	}
 	cached := getState(t, store, legacyHead.owner, legacyHead.repo, legacyHead.number, legacyHead.sha)
-	if _, claimedNow, err := store.ClaimSettlement(legacyHead.key(), cached.Hash(), cached.Generation, time.Now().UnixMilli(), debounce); err != nil || claimedNow {
+	if _, claimedNow, err := store.ClaimSettlement(legacyHead.key(), cached.Hash(), cached.Generation, fake.Now().UnixMilli(), debounce); err != nil || claimedNow {
 		t.Fatalf("ClaimSettlement on the durable backlog record = (%v, %v), want refused", claimedNow, err)
 	}
 }
@@ -187,10 +198,11 @@ func TestAHeadGatedListenersUnsettledRecordPastTheGraceIsNotSettled(t *testing.T
 func TestANewCheckRunOnAHeadGatedRecordSettlesItOnce(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	store := openStore(t, conn)
+	fake := onLegacyFake()
+	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	debounce := 20 * time.Millisecond
-	putHeadGatedRecord(t, store, legacyHead, time.Now().Add(-30*time.Hour).UnixMilli(), nil)
+	putHeadGatedRecord(t, store, legacyHead, fake.Now().Add(-30*time.Hour).UnixMilli(), nil)
 	if held := runSummaryTick(store, pub, debounce, logging.New("test")); held != 1 {
 		t.Fatalf("the tick held back %d records, want 1", held)
 	}
@@ -205,7 +217,7 @@ func TestANewCheckRunOnAHeadGatedRecordSettlesItOnce(t *testing.T) {
 		t.Fatalf("stored schema after the new check run = %d, want %d", schema, recordSchema)
 	}
 	waitCacheChecks(t, store, legacyHead.owner, legacyHead.repo, legacyHead.number, legacyHead.sha, 2)
-	time.Sleep(2 * debounce)
+	fake.Advance(2 * debounce)
 	runSummaryTick(store, pub, debounce, logging.New("test"))
 	runSummaryTick(store, pub, debounce, logging.New("test"))
 
@@ -227,10 +239,11 @@ func TestANewCheckRunOnAHeadGatedRecordSettlesItOnce(t *testing.T) {
 func TestAHeadGatedRecordInsideTheGraceSettles(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	store := openStore(t, conn)
+	fake := onLegacyFake()
+	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	debounce := 50 * time.Millisecond
-	putHeadGatedRecord(t, store, legacyHead, time.Now().Add(-10*time.Second).UnixMilli(), nil)
+	putHeadGatedRecord(t, store, legacyHead, fake.Now().Add(-10*time.Second).UnixMilli(), nil)
 
 	runSummaryTick(store, pub, debounce, logging.New("test"))
 	runSummaryTick(store, pub, debounce, logging.New("test"))
@@ -248,15 +261,17 @@ func TestAHeadGatedRecordInsideTheGraceSettles(t *testing.T) {
 func TestAStampedRecordPendingAcrossARestartSettles(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	before := openStore(t, conn)
+	// Both stores, the one before the restart and the one after it, stand on one clock.
+	fake := onLegacyFake()
+	before := openStore(t, conn, WithClock(fake))
 	if err := record(before, legacyHead.check("build", 702, "completed", "failure", "2026-09-25T10:00:00Z")); err != nil {
 		t.Fatalf("record the check run: %v", err)
 	}
 	waitCacheChecks(t, before, legacyHead.owner, legacyHead.repo, legacyHead.number, legacyHead.sha, 1)
-	setLastEventAt(t, before, legacyHead.owner, legacyHead.repo, legacyHead.number, legacyHead.sha, time.Now().Add(-72*time.Hour).UnixMilli())
+	setLastEventAt(t, before, legacyHead.owner, legacyHead.repo, legacyHead.number, legacyHead.sha, fake.Now().Add(-72*time.Hour).UnixMilli())
 	before.StopWatch()
 
-	after := openStore(t, conn)
+	after := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	runSummaryTick(after, pub, 50*time.Millisecond, logging.New("test"))
 	runSummaryTick(after, pub, 50*time.Millisecond, logging.New("test"))
@@ -270,10 +285,11 @@ func TestAStampedRecordPendingAcrossARestartSettles(t *testing.T) {
 func TestASettledRecordIsNotPublishedAgain(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	store := openStore(t, conn)
+	fake := onLegacyFake()
+	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	debounce := 20 * time.Millisecond
-	now := time.Now()
+	now := fake.Now()
 	settled := func(st *State) { st.SettledEmitted = true; st.EmittedCount = 1 }
 	putHeadGatedRecord(t, store, head{"example-org", "example-repo", "50", "01d5e7000000000000000000000000000000beef"}, now.Add(-65*time.Hour).UnixMilli(), settled)
 	putHeadGatedRecord(t, store, head{"example-org", "example-repo", "51", "4ece47000000000000000000000000000000beef"}, now.Add(-10*time.Second).UnixMilli(), settled)
@@ -283,7 +299,7 @@ func TestASettledRecordIsNotPublishedAgain(t *testing.T) {
 		t.Fatalf("record the check run: %v", err)
 	}
 	waitCacheChecks(t, store, stamped.owner, stamped.repo, stamped.number, stamped.sha, 1)
-	time.Sleep(2 * debounce)
+	fake.Advance(2 * debounce)
 	runSummaryTick(store, pub, debounce, logging.New("test"))
 	if got := pub.count(); got != 1 {
 		t.Fatalf("the stamped record's first settlement published %d envelopes, want 1", got)
@@ -303,10 +319,11 @@ func TestASettledRecordIsNotPublishedAgain(t *testing.T) {
 func TestTheHeldBacklogIsCountedAndLoggedOnce(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	store := openStore(t, conn)
+	fake := onLegacyFake()
+	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	debounce := 20 * time.Millisecond
-	old := time.Now().Add(-65 * time.Hour).UnixMilli()
+	old := fake.Now().Add(-65 * time.Hour).UnixMilli()
 	touched := head{legacyHead.owner, legacyHead.repo, "44", "7ac4ed000000000000000000000000000000beef"}
 	putHeadGatedRecord(t, store, legacyHead, old, nil)
 	putHeadGatedRecord(t, store, touched, old, nil)
@@ -341,7 +358,7 @@ func TestTheHeldBacklogIsCountedAndLoggedOnce(t *testing.T) {
 		t.Fatalf("record the new check run: %v", err)
 	}
 	waitCacheChecks(t, store, touched.owner, touched.repo, touched.number, touched.sha, 2)
-	time.Sleep(2 * debounce)
+	fake.Advance(2 * debounce)
 	backlog.observe(runSummaryTick(store, pub, debounce, logger), logger)
 	if got := gauge(); got != "envoy_ci_legacy_records_held 1" || pub.count() != 1 {
 		t.Fatalf("after the touched record settled: gauge %q, %d settlements, want 1 held and 1 settlement", got, pub.count())
@@ -374,7 +391,7 @@ func TestAHeadGatedListenerDecodesAStampedRecord(t *testing.T) {
 	if pub.count() != 1 {
 		t.Fatalf("published %d settlements, want 1", pub.count())
 	}
-	entry, err := store.watcher.KV().Get(legacyHead.key())
+	entry, err := store.watcher.KV().WatchHandle().Get(testwait.Context(t), legacyHead.key())
 	if err != nil {
 		t.Fatalf("kv get: %v", err)
 	}

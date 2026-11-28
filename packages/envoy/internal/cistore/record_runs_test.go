@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // recordRunsHead is the head every test below writes.
@@ -38,10 +39,11 @@ func recordRunsCheck(name string, id uint64, status, conclusion, observedAt stri
 	}
 }
 
-// recordRunsStored is recordRunsHead's record as the bucket holds it, with its revision.
+// recordRunsStored is recordRunsHead's record as the bucket holds it, with its revision, read
+// through the bucket's jetstream handle, whose Get takes the test's deadline as its context.
 func recordRunsStored(t *testing.T, s *Store) (State, uint64) {
 	t.Helper()
-	entry, err := s.watcher.KV().Get(Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA))
+	entry, err := s.watcher.KV().WatchHandle().Get(testwait.Context(t), Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA))
 	if err != nil {
 		t.Fatalf("read the record: %v", err)
 	}
@@ -140,17 +142,18 @@ func TestRecordRunsPastTheRecordBoundWritesNoneOfThem(t *testing.T) {
 	}
 }
 
-// waitCacheOverflowed waits until the store's cache holds recordRunsHead's record marked
-// Overflowed, so a summary pass reads the record the bucket holds.
+// waitCacheOverflowed waits (testwait.Until) until the store's cache holds recordRunsHead's record
+// marked Overflowed, so a summary pass reads the record the bucket holds.
 func waitCacheOverflowed(t *testing.T, s *Store) {
 	t.Helper()
 	key := Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA)
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if st, ok := s.cachedState(key); ok && st.Overflowed {
-			return
+	testwait.Until(t, "the cache to hold "+key+" marked Overflowed", func() (string, bool) {
+		st, ok := s.cachedState(key)
+		if !ok {
+			return "no record of " + key, false
 		}
-	}
-	t.Fatal("the cache never held the record marked Overflowed")
+		return fmt.Sprintf("overflowed %v, %d checks", st.Overflowed, len(st.Checks)), st.Overflowed
+	})
 }
 
 // A write carries the runs of one head: runs of two heads are refused before anything is read,
@@ -170,8 +173,8 @@ func TestRecordRunsRefusesTheRunsOfTwoHeads(t *testing.T) {
 		t.Fatalf("recordRuns of two heads = %v, %v; want a refusal", changed, err)
 	}
 	for _, sha := range []string{recordRunsSHA, other.SHA} {
-		if _, err := s.watcher.KV().Get(Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, sha)); err == nil {
-			t.Fatalf("head %s has a record after a refused write", sha)
+		if _, err := s.watcher.KV().WatchHandle().Get(testwait.Context(t), Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, sha)); !errors.Is(err, jetstream.ErrKeyNotFound) {
+			t.Fatalf("head %s after a refused write: %v, want no record (%v)", sha, err, jetstream.ErrKeyNotFound)
 		}
 	}
 }

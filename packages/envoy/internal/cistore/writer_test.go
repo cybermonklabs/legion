@@ -9,6 +9,7 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
@@ -16,19 +17,19 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // openListener opens the listener's own store, which creates the CI bucket and starts the cache
-// watcher a writer has not got, and waits for its cache.
-func openListener(t *testing.T, conn *natsgo.Conn) *cistore.Store {
+// watcher a writer has not got, with options after the listener's own (WithClock among them), and
+// waits for its cache.
+func openListener(t *testing.T, conn *natsgo.Conn, options ...cistore.Option) *cistore.Store {
 	t.Helper()
-	store, err := cistore.Open(t.Context(), conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	store, err := cistore.Open(t.Context(), conn, logging.New("listener"), append([]cistore.Option{cistore.WithReplicas(1), cistore.WithTTL(time.Hour)}, options...)...)
 	if err != nil {
 		t.Fatalf("open the listener's cistore: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(ctx); err != nil {
+	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("the listener's cache is not ready: %v", err)
 	}
 	return store
@@ -38,7 +39,8 @@ func openListener(t *testing.T, conn *natsgo.Conn) *cistore.Store {
 // of one head into the bucket with no watcher of its own, and the listener's store sees them
 // through its cache watcher and its real summary loop publishes the head's settlement. The record
 // lands under cistore.Key, the key the listener's own store writes, so the two processes share one
-// record per head rather than each keeping its own.
+// record per head rather than each keeping its own. The writer, the listener's store and its loop
+// run at cmd/listener's debounce and tick on one fake clock the test moves (loopClock).
 func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 	ctx := context.Background()
 	_, uri := testnats.Start(t)
@@ -47,8 +49,9 @@ func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 		t.Fatalf("bus connect: %v", err)
 	}
 	defer client.Close()
-	store := openListener(t, client.Conn)
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+	c := newLoopClock()
+	store := openListener(t, client.Conn, cistore.WithClock(c.fake))
+	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithClock(c.fake))
 	if err != nil {
 		t.Fatalf("open the writer: %v", err)
 	}
@@ -66,7 +69,7 @@ func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 	defer sub.Unsubscribe()
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
-	cistore.StartSummaryLoop(loopCtx, store, client, 100*time.Millisecond, 20*time.Millisecond,
+	cistore.StartSummaryLoop(loopCtx, store, client, loopDebounce, loopTick,
 		metrics.New().NewGauge("held", ""), logging.New("loop"))
 
 	if _, err := writer.RecordRuns(ctx, []contracts.CIObservation{{
@@ -97,10 +100,8 @@ func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 		t.Fatalf("the writer's check suite: %v", err)
 	}
 
-	msg, err := sub.NextMsg(10 * time.Second)
-	if err != nil {
-		t.Fatalf("the writer's head did not settle: %v", err)
-	}
+	c.settle(t, store, client.Conn, cistore.Key(owner, repo, number, sha))
+	msg := nextMsg(t, sub, "the settlement of the writer's head")
 	var env contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &env); err != nil {
 		t.Fatalf("the settlement is not JSON: %v", err)
@@ -115,11 +116,7 @@ func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 
 	// Read straight from the bucket, which is where the listener's store writes the head's record
 	// too: one key per head, whichever process wrote it.
-	entry, err := client.JS().KeyValue(bus.CIStateBucket)
-	if err != nil {
-		t.Fatalf("open the CI bucket: %v", err)
-	}
-	raw, err := entry.Get(cistore.Key(owner, repo, number, sha))
+	raw, err := ciBucket(t, client.Conn).Get(testwait.Context(t), cistore.Key(owner, repo, number, sha))
 	if err != nil {
 		t.Fatalf("get the head's record under cistore.Key: %v", err)
 	}
@@ -153,8 +150,12 @@ func TestOpenWriterFailsAndCreatesNothingWithoutTheBucket(t *testing.T) {
 	if writer != nil {
 		t.Fatalf("OpenWriter returned a writer for a bucket that is not there: %+v", writer)
 	}
-	if _, err := client.JS().KeyValue(bus.CIStateBucket); !errors.Is(err, natsgo.ErrBucketNotFound) {
-		t.Fatalf("the CI bucket after the refused OpenWriter: %v, want %v", err, natsgo.ErrBucketNotFound)
+	streams, err := jetstream.New(client.Conn)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if _, err := streams.KeyValue(testwait.Context(t), bus.CIStateBucket); !errors.Is(err, jetstream.ErrBucketNotFound) {
+		t.Fatalf("the CI bucket after the refused OpenWriter: %v, want %v", err, jetstream.ErrBucketNotFound)
 	}
 }
 
@@ -397,11 +398,7 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 		t.Fatalf("each pair sending one new observation must hold exactly one change: %v", answers)
 	}
 
-	entry, err := client.JS().KeyValue(bus.CIStateBucket)
-	if err != nil {
-		t.Fatalf("open the CI bucket: %v", err)
-	}
-	raw, err := entry.Get(cistore.Key(owner, repo, number, sha))
+	raw, err := ciBucket(t, client.Conn).Get(testwait.Context(t), cistore.Key(owner, repo, number, sha))
 	if err != nil {
 		t.Fatalf("get the head's record: %v", err)
 	}

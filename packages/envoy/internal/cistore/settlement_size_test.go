@@ -1,17 +1,16 @@
 package cistore
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The store accepts a check only while the settlement it would publish stays within
@@ -82,9 +81,7 @@ func TestASettlementAtItsBoundIsStored(t *testing.T) {
 
 	waitCacheChecks(t, store, owner, repo, number, sha, checks)
 	runSummaryTick(store, client, 0, logging.New("test"))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	stored, err := client.NextStoredMessage(ctx, "notifications.github.example-org.example-repo.pr.42.checks", 0)
+	stored, err := client.NextStoredMessage(testwait.Context(t), "notifications.github.example-org.example-repo.pr.42.checks", 0)
 	if err != nil {
 		t.Fatalf("read the stored settlement: %v", err)
 	}

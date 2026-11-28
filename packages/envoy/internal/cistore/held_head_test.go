@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 )
@@ -54,11 +55,13 @@ type heldRig struct {
 	logger *logging.Logger
 }
 
-func newHeldRig(t *testing.T) *heldRig {
+// newHeldRig is a held rig whose store opens with options (openStore), on the real clock unless
+// they name another (WithClock).
+func newHeldRig(t *testing.T, options ...Option) *heldRig {
 	t.Helper()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
-	store := openStore(t, conn)
+	store := openStore(t, conn, options...)
 	logs := &bytes.Buffer{}
 	return &heldRig{
 		t:      t,
@@ -68,6 +71,14 @@ func newHeldRig(t *testing.T) *heldRig {
 		logs:   logs,
 		logger: logging.NewWithWriter("test", logs),
 	}
+}
+
+// newHeldRigOnFake is a held rig whose store's waits and stamps run on a fake clock that stands
+// until the row moves it, and that fake: runSummaryTick runs each pass at the fake's moment.
+func newHeldRigOnFake(t *testing.T) (*heldRig, *clocktest.Fake) {
+	t.Helper()
+	fake := clocktest.New(time.Date(2026, 11, 19, 16, 0, 0, 0, time.UTC))
+	return newHeldRig(t, WithClock(fake)), fake
 }
 
 // record records each observation on the rig's store, failing the test on an error.
@@ -394,12 +405,12 @@ func TestASettlementPublishedLogsOneLine(t *testing.T) {
 	}
 
 	t.Run("a published settlement and its re-settlement", func(t *testing.T) {
-		r := newHeldRig(t)
+		r, fake := newHeldRigOnFake(t)
 		h := head{"example-org", "example-repo", "51", "5e7713000000000000000000000000000000000b"}
 		r.record(h.check("build", 9701, "completed", "success", "2026-11-19T15:50:00Z"))
 		waitCacheChecks(t, r.store, h.owner, h.repo, h.number, h.sha, 1)
 		runSummaryTick(r.store, r.pub, heldDebounce, r.logger)
-		time.Sleep(2 * heldDebounce)
+		fake.Advance(2 * heldDebounce)
 		runSummaryTick(r.store, r.pub, heldDebounce, r.logger)
 		if got := r.pub.count(); got != 1 {
 			t.Fatalf("the ready record published %d settlements, want 1", got)
@@ -417,7 +428,7 @@ func TestASettlementPublishedLogsOneLine(t *testing.T) {
 
 		r.record(h.check("lint", 9702, "completed", "success", "2026-11-19T15:55:00Z"))
 		waitCacheChecks(t, r.store, h.owner, h.repo, h.number, h.sha, 2)
-		time.Sleep(2 * heldDebounce)
+		fake.Advance(2 * heldDebounce)
 		runSummaryTick(r.store, r.pub, heldDebounce, r.logger)
 		if got := r.pub.count(); got != 2 {
 			t.Fatalf("the re-armed record published %d settlements in all, want 2", got)
@@ -430,12 +441,12 @@ func TestASettlementPublishedLogsOneLine(t *testing.T) {
 	})
 
 	t.Run("a publication the bus refuses", func(t *testing.T) {
-		r := newHeldRig(t)
+		r, fake := newHeldRigOnFake(t)
 		h := head{"example-org", "example-repo", "52", "5e7713000000000000000000000000000000000c"}
 		r.pub.setErr(bus.ErrTooLarge)
 		r.record(h.check("build", 9801, "completed", "success", "2026-11-19T15:50:00Z"))
 		waitCacheChecks(t, r.store, h.owner, h.repo, h.number, h.sha, 1)
-		time.Sleep(2 * heldDebounce)
+		fake.Advance(2 * heldDebounce)
 		runSummaryTick(r.store, r.pub, heldDebounce, r.logger)
 		if refused := warnings(r.logs, "checks settlement refused"); len(refused) != 1 {
 			t.Fatalf("%d refusal lines, want one: the bus never refused the settlement\n%s", len(refused), r.logs.String())
@@ -446,12 +457,12 @@ func TestASettlementPublishedLogsOneLine(t *testing.T) {
 	})
 
 	t.Run("a publication that fails, and its retry", func(t *testing.T) {
-		r := newHeldRig(t)
+		r, fake := newHeldRigOnFake(t)
 		h := head{"example-org", "example-repo", "53", "5e7713000000000000000000000000000000000d"}
 		r.pub.setErr(errors.New("nats unavailable"))
 		r.record(h.check("build", 9901, "completed", "success", "2026-11-19T15:50:00Z"))
 		waitCacheChecks(t, r.store, h.owner, h.repo, h.number, h.sha, 1)
-		time.Sleep(2 * heldDebounce)
+		fake.Advance(2 * heldDebounce)
 		runSummaryTick(r.store, r.pub, heldDebounce, r.logger)
 		if failed := warnings(r.logs, "checks publish failed"); len(failed) != 1 {
 			t.Fatalf("%d publish-failed lines, want one: the publication never failed\n%s", len(failed), r.logs.String())
@@ -461,13 +472,14 @@ func TestASettlementPublishedLogsOneLine(t *testing.T) {
 		}
 
 		r.pub.setErr(nil)
-		deadline := time.Now().Add(5 * time.Second)
-		for r.pub.count() == 0 {
-			if time.Now().After(deadline) {
-				t.Fatal("the failed settlement was never published on retry")
-			}
-			time.Sleep(2 * heldDebounce)
-			runSummaryTick(r.store, r.pub, heldDebounce, r.logger)
+		// The failed publication released its claim before the tick that made it returned
+		// (ReleaseClaim): once the cache holds the record so, the next tick past the debounce
+		// retries it.
+		cachedAsStored(t, r.store, h)
+		fake.Advance(2 * heldDebounce)
+		runSummaryTick(r.store, r.pub, heldDebounce, r.logger)
+		if got := r.pub.count(); got != 1 {
+			t.Fatalf("the failed settlement was published %d times on the tick after the cache held its released claim, want once on retry", got)
 		}
 		lines := warnings(r.logs, publishedLine)
 		if len(lines) != 1 {

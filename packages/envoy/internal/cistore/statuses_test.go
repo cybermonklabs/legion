@@ -10,11 +10,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // statusHead is the head the commit status tests record.
@@ -29,9 +29,11 @@ func (h head) status(name, state, createdAt string) contracts.StatusObservation 
 	}
 }
 
-// recordStatus records one status as the reconcile's writer does (Writer.RecordStatus), failing
-// after 10 s rather than hanging.
-func recordStatus(s *Store, observation contracts.StatusObservation) (bool, error) {
+// recordStatus records one status as the reconcile's writer does (Writer.RecordStatus), waiting for
+// the call through the shared wait (testwait.Receive), which fails t naming the call rather than
+// hanging the test binary when it never returns.
+func recordStatus(t *testing.T, s *Store, observation contracts.StatusObservation) (bool, error) {
+	t.Helper()
 	type result struct {
 		changed bool
 		err     error
@@ -41,12 +43,8 @@ func recordStatus(s *Store, observation contracts.StatusObservation) (bool, erro
 		changed, err := s.recordStatus(context.Background(), observation)
 		done <- result{changed, err}
 	}()
-	select {
-	case r := <-done:
-		return r.changed, r.err
-	case <-time.After(10 * time.Second):
-		return false, errors.New("did not return within 10 s")
-	}
+	r := testwait.Receive(t, fmt.Sprintf("the record of the %s status %q to return", observation.State, observation.Context), done)
+	return r.changed, r.err
 }
 
 // lastSettlement decodes the payload of pub's last settlement, and returns it with its one line.
@@ -78,7 +76,7 @@ func TestAStatusIsAnEntryApartFromACheckRunOfItsName(t *testing.T) {
 		h.status("tester", "success", "2026-11-17T05:00:00Z"),
 		h.status("architect", "failure", "2026-11-17T05:00:00Z"),
 	} {
-		if changed, err := recordStatus(s, status); err != nil || !changed {
+		if changed, err := recordStatus(t, s, status); err != nil || !changed {
 			t.Fatalf("record the status %s: changed %v, %v", status.Context, changed, err)
 		}
 	}
@@ -164,7 +162,7 @@ func TestTheNewestTerminalStatusOfAContextIsKept(t *testing.T) {
 		{"a newer status that succeeded", h.status("ci/build", "success", t3), true, "success", t3},
 		{"an older error", h.status("ci/build", "error", t1), false, "success", t3},
 	} {
-		changed, err := recordStatus(s, step.status)
+		changed, err := recordStatus(t, s, step.status)
 		if err != nil || changed != step.changed {
 			t.Fatalf("%s: changed %v, %v; want changed %v", step.what, changed, err, step.changed)
 		}
@@ -177,11 +175,11 @@ func TestTheNewestTerminalStatusOfAContextIsKept(t *testing.T) {
 	}
 	before := getRecord(t, s, h.key()).revision
 	for _, state := range []string{"pending", "expected", "EXPECTED", "SUCCESS", "cancelled", ""} {
-		if changed, err := recordStatus(s, h.status("ci/build", state, t4)); err == nil || changed {
+		if changed, err := recordStatus(t, s, h.status("ci/build", state, t4)); err == nil || changed {
 			t.Fatalf("the store took a status in state %q: changed %v, %v; want it refused", state, changed, err)
 		}
 	}
-	if changed, err := recordStatus(s, h.status("", "success", t4)); err == nil || changed {
+	if changed, err := recordStatus(t, s, h.status("", "success", t4)); err == nil || changed {
 		t.Fatalf("the store took a status with no context: changed %v, %v; want it refused", changed, err)
 	}
 	if after := getRecord(t, s, h.key()).revision; after != before {
@@ -189,7 +187,7 @@ func TestTheNewestTerminalStatusOfAContextIsKept(t *testing.T) {
 	}
 	kept(t, "the refused statuses", "success", t3)
 	other := head{h.owner, h.repo, "8", h.sha}
-	if _, err := recordStatus(s, other.status("ci/build", "pending", t1)); err == nil {
+	if _, err := recordStatus(t, s, other.status("ci/build", "pending", t1)); err == nil {
 		t.Fatal("the store took a pending status of a head it holds no record of")
 	}
 	if held, err := s.HasRecord(other.owner, other.repo, other.number, other.sha); err != nil || held {
@@ -228,7 +226,7 @@ func TestAChangedStatusSettlesAHeadAgain(t *testing.T) {
 		// The head's last event is set far back, so a write that restarts its quiet period shows.
 		const lastEvent = 1
 		setLastEventAt(t, s, h.owner, h.repo, h.number, h.sha, lastEvent)
-		if changed, err := recordStatus(s, status); err != nil || !changed {
+		if changed, err := recordStatus(t, s, status); err != nil || !changed {
 			t.Fatalf("%s: changed %v, %v; want it recorded", what, changed, err)
 		}
 		st := getState(t, s, h.owner, h.repo, h.number, h.sha)
@@ -271,7 +269,7 @@ func TestAChangedStatusSettlesAHeadAgain(t *testing.T) {
 	newer := h.status("ci/preview", "failure", "2026-11-17T05:03:00Z")
 	newer.URL = "https://ci.example.com/ci/preview/2"
 	newer.Description = "The preview build failed again"
-	if changed, err := recordStatus(s, newer); err != nil || !changed {
+	if changed, err := recordStatus(t, s, newer); err != nil || !changed {
 		t.Fatalf("a newer status in the same state: changed %v, %v; want it recorded", changed, err)
 	}
 	st := getState(t, s, h.owner, h.repo, h.number, h.sha)
@@ -315,7 +313,7 @@ func TestARecreatedRecordSettlesAStatusChangeWithItsCreatedAt(t *testing.T) {
 	}
 	status := func(state, createdAt string) func() error {
 		return func() error {
-			changed, err := recordStatus(s, h.status("ci", state, createdAt))
+			changed, err := recordStatus(t, s, h.status("ci", state, createdAt))
 			if err == nil && !changed {
 				return errors.New("the status changed nothing")
 			}
@@ -351,7 +349,7 @@ func TestARecreatedRecordSettlesAStatusChangeWithItsCreatedAt(t *testing.T) {
 		t.Fatalf("before the recreation the head settled naming statuses %+v, want %+v", before.Statuses, want)
 	}
 
-	if err := s.watcher.KV().Delete(h.key()); err != nil {
+	if err := s.watcher.KV().WatchHandle().Delete(testwait.Context(t), h.key()); err != nil {
 		t.Fatalf("delete the record as its TTL would: %v", err)
 	}
 	waitCacheStateMissing(t, s, h.owner, h.repo, h.number, h.sha)
@@ -514,7 +512,7 @@ func TestASettlementNamesStatusesAndKeepsTodaysFields(t *testing.T) {
 			named.status("ci/preview", "success", "2026-11-17T06:01:00Z"),
 			named.status("ci/license", "error", "2026-11-17T06:01:00Z"),
 		} {
-			if changed, err := recordStatus(s, status); err != nil || !changed {
+			if changed, err := recordStatus(t, s, status); err != nil || !changed {
 				t.Fatalf("record the status %s: changed %v, %v", status.Context, changed, err)
 			}
 		}
@@ -676,7 +674,7 @@ func TestAStatusPastTheRecordBoundLeavesTheChecksSettling(t *testing.T) {
 		}); size <= maxRecordBytes {
 			t.Fatalf("the record with the status is %d bytes, within its %d-byte bound; the test needs it past", size, maxRecordBytes)
 		}
-		if changed, err := recordStatus(s, status); err != nil || changed {
+		if changed, err := recordStatus(t, s, status); err != nil || changed {
 			t.Fatalf("a status past the bound: changed %v, %v; want no change and no error", changed, err)
 		}
 		st := getState(t, s, h.owner, h.repo, h.number, h.sha)
@@ -705,7 +703,7 @@ func TestAStatusPastTheRecordBoundLeavesTheChecksSettling(t *testing.T) {
 		pub := &recPub{}
 		h := statusHead
 		for i := range 3 {
-			if changed, err := recordStatus(s, bigStatus(t, h, i)); err != nil || !changed {
+			if changed, err := recordStatus(t, s, bigStatus(t, h, i)); err != nil || !changed {
 				t.Fatalf("record status %d: changed %v, %v", i, changed, err)
 			}
 		}

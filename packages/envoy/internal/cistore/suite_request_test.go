@@ -1,7 +1,6 @@
 package cistore_test
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -13,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -31,15 +31,10 @@ func TestASuiteRequestLeavesTheRecordAsItWas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
-	ready, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(ready); err != nil {
+	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("cache ready: %v", err)
 	}
-	kv, err := client.JS().KeyValue(bus.CIStateBucket)
-	if err != nil {
-		t.Fatalf("bind the CI bucket: %v", err)
-	}
+	kv := ciBucket(t, client.Conn)
 
 	const (
 		secret = "s"
@@ -70,7 +65,7 @@ func TestASuiteRequestLeavesTheRecordAsItWas(t *testing.T) {
 	// stored is the record's revision and the suite 9200 it holds, nil for none.
 	stored := func() (uint64, map[string]any) {
 		t.Helper()
-		entry, err := kv.Get(key)
+		entry, err := kv.Get(testwait.Context(t), key)
 		if err != nil {
 			t.Fatalf("read the record: %v", err)
 		}
