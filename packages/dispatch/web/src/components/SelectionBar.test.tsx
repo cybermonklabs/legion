@@ -153,10 +153,23 @@ function withCss<T>(css: string, read: () => T): T {
   }
 }
 
+/** Sets happy-dom's window `width` px wide, which its `matchMedia` answers from, and answers the
+ *  function that puts the width back. */
+function windowWidth(width: number): () => void {
+  const window_ = window as unknown as {
+    happyDOM: { setViewport(size: { width: number }): void };
+    innerWidth: number;
+  };
+  const was = window_.innerWidth;
+  window_.happyDOM.setViewport({ width });
+  return () => window_.happyDOM.setViewport({ width: was });
+}
+
 // By the architect's ruling of 2026-11-27 18:42Z (INFRA-3135): the compact line, the project
 // List's, wraps at every width, in its groups, and nothing in it scrolls sideways, which the
-// layout rule reads as a breach; its bar stands at the foot, where the List keeps room for its
-// whole height. The comfortable line, the Inbox's, keeps one line that scrolls sideways.
+// layout rule reads as a breach; from `sm` up its bar stands at the foot, where the List keeps
+// room for its whole height. The comfortable line, the Inbox's, keeps one line that scrolls
+// sideways.
 test("the compact bar's line wraps at every width and scrolls nowhere sideways, and the comfortable line keeps one line that scrolls", () => {
   const lineAt = (size: ControlSize) => {
     const view = render(
@@ -185,10 +198,18 @@ test("the compact bar's line wraps at every width and scrolls nowhere sideways, 
 const PLACE_CSS = ".top-14{top:56px}.bottom-4{bottom:16px}";
 const SM_PLACE_CSS = String.raw`.sm\:top-auto{top:auto}.sm\:bottom-4{bottom:16px}`;
 
-// The compact bar stands at the foot of the screen at every width, so the room the List keeps at
-// its end for it is one rule at every width; the comfortable bar, the Inbox's, stands under the
-// header below `sm` and at the foot from `sm` up.
-test("the compact bar stands at the foot at every width, and the comfortable bar under the header below sm", () => {
+/** Where `bar` stands with `css` in the document: its computed `top` and `bottom`. */
+function placeUnder(bar: Element, css: string): string {
+  return withCss(css, () => {
+    const style = getComputedStyle(bar);
+    return `top ${style.top}, bottom ${style.bottom}`;
+  });
+}
+
+// Every bar stands under the header below `sm`, over the top of the page, and at the foot of the
+// screen from `sm` up: the compact bar, the project List's, as the comfortable bar, the Inbox's,
+// and the toolbar size's do.
+test("every bar stands under the header below sm and at the foot from sm up, the compact bar as the comfortable one", () => {
   const placeAt = (size: ControlSize) => {
     const view = render(
       <SelectionBar count={2} label="Selected rows" size={size}>
@@ -197,36 +218,33 @@ test("the compact bar stands at the foot at every width, and the comfortable bar
     );
     try {
       const bar = screen.getByRole("toolbar", { name: "Selected rows" });
-      const read = () => {
-        const style = getComputedStyle(bar);
-        return `top ${style.top}, bottom ${style.bottom}`;
-      };
-      return [withCss(PLACE_CSS, read), withCss(PLACE_CSS + SM_PLACE_CSS, read)];
+      return [placeUnder(bar, PLACE_CSS), placeUnder(bar, PLACE_CSS + SM_PLACE_CSS)];
     } finally {
       view.unmount();
     }
   };
-  const [compactPhone, compactWide] = placeAt("compact");
-  expect(compactPhone).toBe(compactWide);
-  expect(compactPhone).toContain("bottom 16px");
-  expect(compactPhone).not.toContain("top 56px");
-  const [comfortablePhone, comfortableWide] = placeAt("comfortable");
-  expect(comfortablePhone).toContain("top 56px");
-  expect(comfortablePhone).not.toContain("bottom 16px");
-  expect(comfortableWide).toContain("bottom 16px");
+  const sizes: readonly ControlSize[] = ["compact", "comfortable", "toolbar"];
+  for (const size of sizes) {
+    const [phone, wide] = placeAt(size);
+    expect(`${size} below sm: ${phone}`).toContain("top 56px");
+    expect(`${size} below sm: ${phone}`).not.toContain("bottom 16px");
+    expect(`${size} from sm: ${wide}`).toContain("bottom 16px");
+    expect(`${size} from sm: ${wide}`).not.toContain("top 56px");
+  }
 });
 
-// The room the project List keeps at its end is the compact bar's band in the foot inset: how far
-// above the screen's bottom edge the bar's top stands, its whole height and the 1rem under it,
-// published while the bar is drawn (`SELECTION_BAR_TOP_PROPERTY`), so a bar that wraps onto three
-// lines at 360 gives the List room of that height. The Inbox's bar publishes nothing.
-test("the compact bar publishes how far above the screen's foot its top stands while it is drawn, the room of its whole height, and the comfortable bar publishes nothing", () => {
+// From `sm` up the room the project List keeps at its end is the compact bar's band in the foot
+// inset: how far above the screen's bottom edge the bar's top stands, its whole height and the
+// 1rem under it, published while the bar is drawn (`SELECTION_BAR_TOP_PROPERTY`), so a bar that
+// wraps onto three lines gives the List room of that height. The Inbox's bar publishes nothing.
+test("from sm up the compact bar publishes how far above the screen's foot its top stands while it is drawn, the room of its whole height, and the comfortable bar publishes nothing", () => {
+  const restoreWidth = windowWidth(640);
   const property = () =>
     document.documentElement.style.getPropertyValue(SELECTION_BAR_TOP_PROPERTY);
   // Three lines of 36 px controls, two 8 px gaps between them and the compact bar's own 4 px
   // padding above and below.
   let height = 132;
-  // The toolbar laid out `height` px tall, 16 px above the screen's bottom edge, as `bottom-4`
+  // The toolbar laid out `height` px tall, 16 px above the screen's bottom edge, as `sm:bottom-4`
   // stands it: happy-dom lays nothing out.
   const own = Element.prototype.getBoundingClientRect;
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
@@ -255,6 +273,41 @@ test("the compact bar publishes how far above the screen's foot its top stands w
   } finally {
     view.unmount();
     rect.mockRestore();
+    restoreWidth();
+  }
+});
+
+// Below `sm` the compact bar, the project List's, stands under the header, over the top of the
+// page, and is no foot element there: it publishes no band, so the List keeps no room at its end
+// for it. At the foot below `sm` it stood over the List's table at 390x844, which main's row "a
+// refused bulk write retries after reload…" (`e2e/issues-table.e2e.ts`) reads as the phone
+// selection toolbar covering the working table.
+test("below sm the compact bar stands under the header and publishes no band while it is drawn", () => {
+  const restoreWidth = windowWidth(390);
+  // happy-dom lays nothing out, so the toolbar is given a box on the screen, three lines tall
+  // under the header: a bar that counted as a foot element here would publish its band from it.
+  const own = Element.prototype.getBoundingClientRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this.getAttribute("role") !== "toolbar") return own.call(this);
+    return new DOMRect(8, 56, 374, 132);
+  });
+  const view = render(
+    <SelectionBar count={2} label="Selected rows" size="compact">
+      <button type="button">Clear selection</button>
+    </SelectionBar>
+  );
+  try {
+    // Below `sm` only the utilities without `sm:` apply.
+    const place = placeUnder(screen.getByRole("toolbar", { name: "Selected rows" }), PLACE_CSS);
+    expect(place).toContain("top 56px");
+    expect(place).not.toContain("bottom 16px");
+    expect(document.documentElement.style.getPropertyValue(SELECTION_BAR_TOP_PROPERTY)).toBe("");
+  } finally {
+    view.unmount();
+    rect.mockRestore();
+    restoreWidth();
   }
 });
 
