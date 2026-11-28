@@ -509,7 +509,10 @@ type legionBoardPopulation struct {
 //     placed from, the daemon's newest read and observations (readRecorded) and the project's
 //     issues (readIssues), which run side by side, and then the read of the phase work the tree
 //     walk climbs onto and the placing of the cards and their trees: the board's reads before its
-//     read of the closed rows;
+//     read of the closed rows, less priority;
+//   - priority, the read of the priority each issue the daemon reports resolves to and its source
+//     (readResolvedPriorities), which runs once the two card reads have answered, since it climbs
+//     from the issues the snapshot names, and before the rest of cards;
 //   - facts, the read of the closed rows of the trees and the cards the board shows
 //     (legionfacts.ReadShownClosed), its statement and the scan of its rows, less its close of the
 //     rows, which runs once the cards are placed;
@@ -523,12 +526,12 @@ type legionBoardPopulation struct {
 //     in that span, so it bounds the board's own wait for its connections from above, and it lies
 //     inside the other parts' times rather than beside them.
 //
-// The two card reads, open with openGrow, and cursor run side by side, and the rest of cards,
-// then facts and grow, run one after the other once all four have answered, so the read lasts as
-// long as the longest of the four and the rest after it, and the recompute line reports every
-// part rather than a sum of parts that overlap. A part the read did not reach is 0.
+// The two card reads, open with openGrow, and cursor run side by side, and priority, the rest of
+// cards, then facts and grow, run one after the other once all four have answered, so the read
+// lasts as long as the longest of the four and the rest after it, and the recompute line reports
+// every part rather than a sum of parts that overlap. A part the read did not reach is 0.
 type legionBoardReadTimes struct {
-	cards, facts, grow, open, openGrow, cursor, wait time.Duration
+	cards, priority, facts, grow, open, openGrow, cursor, wait time.Duration
 }
 
 // legionBoardDaemonRead is the header's read of the daemon: when the newest record of it was made,
@@ -593,11 +596,13 @@ func (s *server) readLegionBoard(ctx context.Context, project string, now time.T
 	// time among it: the snapshot fills the issues the daemon reports, and the read of the
 	// project's issues answers what Dispatch holds of each beside them (holds), which describe
 	// puts on the daemon's issues once both have answered. The rest is one chain after the four:
-	// the phase work the tree walk climbs onto, since the walk climbs the issues the daemon
-	// reports and the project's issues name; the cards, which stand in the trees that walk places
-	// them in; and the closed rows of the trees and the cards the board shows. The snapshot's
-	// transaction is its own, and each read of the facts opens a read-only transaction of its own
-	// (legionfacts.ReadOpen, legionfacts.ReadShownClosed), never the snapshot's.
+	// the priority each issue the daemon reports resolves to, which climbs from the issues the
+	// snapshot names (readResolvedPriorities); the phase work the tree walk climbs onto, since the
+	// walk climbs the issues the daemon reports and the project's issues name; the cards, which
+	// stand in the trees that walk places them in; and the closed rows of the trees and the cards
+	// the board shows. The snapshot's transaction is its own, and each read of the facts opens a
+	// read-only transaction of its own (legionfacts.ReadOpen, legionfacts.ReadShownClosed), never
+	// the snapshot's.
 	acquired := pool.Stat().AcquireDuration()
 	var recorded, listed time.Duration
 	var holds []legionBoardHeld
@@ -635,6 +640,11 @@ func (s *server) readLegionBoard(ctx context.Context, project string, now time.T
 	); err != nil {
 		return nil, err
 	}
+	resolving := time.Now()
+	if err := population.readResolvedPriorities(ctx, pool); err != nil {
+		return nil, err
+	}
+	population.times.priority = time.Since(resolving)
 	placing := time.Now()
 	population.describe(holds)
 	if err := population.readPhaseWork(ctx, pool); err != nil {
@@ -756,31 +766,23 @@ func (p *legionBoardPopulation) observeProject(field string, value []byte) {
 }
 
 // legionBoardHeld is what Dispatch holds of one of the project's issues that its card shows
-// beside the daemon's observations: its title, its own priority, and the priority it resolves to
-// with the key of the issue that priority comes from (refs.IssuePriorityColumns).
+// beside the daemon's observations: its title and its priority.
 type legionBoardHeld struct {
-	title            string
-	priority         *int
-	resolvedPriority *int
-	priorityFrom     *string
+	title    string
+	priority *int
 }
 
 // readIssues reads the project's issues in Dispatch's rank order, records the parent of every one
 // of them — the chain the tree walk climbs, whatever the daemon reports of each — and answers what
-// Dispatch holds of each, in that order (describe), with the priority that issue resolves to and
-// its source (refs.IssuePriorityTerms). It runs beside readRecorded, which fills p.issues, so it
-// reads nothing of p.issues and writes only p.ranked and p.parents, which no read beside it
-// touches; and so the walk climbs from every issue of the project (`subjects`), as the
-// architecture tree's does, since which of them the daemon reports, the ones that carry a card,
-// is known only once both reads have answered.
+// Dispatch holds of each, in that order (describe). It runs beside readRecorded, which fills
+// p.issues, so it reads nothing of p.issues and writes only p.ranked and p.parents, which no read
+// beside it touches.
 func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool) ([]legionBoardHeld, error) {
 	rows, err := pool.Query(ctx, `
-		with recursive subjects as (select i.key from issues i where i.project_key = $1), `+refs.IssuePriorityTerms+`
-		select i.key, i.title, i.priority, `+refs.IssuePriorityColumns+`, coalesce(i.parent_key, '')
-		from issues i
-		`+refs.IssuePriorityJoin+`
-		where i.project_key = $1
-		order by i.rank asc, i.created_at asc, i.key asc
+		select key, title, priority, coalesce(parent_key, '')
+		from issues
+		where project_key = $1
+		order by rank asc, created_at asc, key asc
 	`, p.project)
 	if err != nil {
 		return nil, err
@@ -790,7 +792,7 @@ func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool
 	for rows.Next() {
 		var key, parent string
 		var issue legionBoardHeld
-		if err := rows.Scan(&key, &issue.title, &issue.priority, &issue.resolvedPriority, &issue.priorityFrom, &parent); err != nil {
+		if err := rows.Scan(&key, &issue.title, &issue.priority, &parent); err != nil {
 			return nil, err
 		}
 		p.ranked = append(p.ranked, key)
@@ -800,18 +802,55 @@ func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool
 	return held, rows.Err()
 }
 
-// describe puts on every issue the daemon reported the title and priority Dispatch holds of it,
-// and the priority it resolves to with its source: held is readIssues' answer, in p.ranked's
-// order. An issue the daemon reports that Dispatch does not hold keeps an empty title: the board
-// shows what the daemon says, and a card with no title is better than a card the reader never
-// sees.
+// describe puts on every issue the daemon reported the title and priority Dispatch holds of it:
+// held is readIssues' answer, in p.ranked's order. An issue the daemon reports that Dispatch does
+// not hold keeps an empty title: the board shows what the daemon says, and a card with no title is
+// better than a card the reader never sees.
 func (p *legionBoardPopulation) describe(held []legionBoardHeld) {
 	for index, key := range p.ranked {
 		if issue := p.issues[key]; issue != nil {
 			issue.title, issue.priority = held[index].title, held[index].priority
-			issue.resolvedPriority, issue.priorityFrom = held[index].resolvedPriority, held[index].priorityFrom
 		}
 	}
+}
+
+// readResolvedPriorities puts on every issue of the project the daemon reported the priority that
+// issue resolves to and its source (refs.IssuePriorityTerms), climbed from the reported issues
+// alone (`subjects`), since only they carry a card. It runs once readRecorded, which fills
+// p.issues, has answered, rather than inside readIssues, which runs beside it and so cannot name
+// them: a climb from every issue of the project would walk every chain of the project on each read
+// for the few issues the daemon reports. An issue the daemon reports that Dispatch does not hold,
+// or one that resolves no priority, keeps null in both, and a board whose daemon reports no issue
+// reads nothing. It is a statement of its own, after readIssues, so a write between the two can
+// put an issue's own priority from before it beside its resolved one from after it; that write's
+// event marks the board's live view (dirtyIssueLocked), whose next read answers both from after it.
+func (p *legionBoardPopulation) readResolvedPriorities(ctx context.Context, pool *store.Pool) error {
+	if len(p.issues) == 0 {
+		return nil
+	}
+	rows, err := pool.Query(ctx, `
+		with recursive subjects as (select unnest($2::text[]) as key), `+refs.IssuePriorityTerms+`
+		select i.key, `+refs.IssuePriorityColumns+`
+		from issues i
+		`+refs.IssuePriorityJoin+`
+		where i.project_key = $1 and i.key = any($2)
+	`, p.project, slices.Collect(maps.Keys(p.issues)))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var resolved *int
+		var from *string
+		if err := rows.Scan(&key, &resolved, &from); err != nil {
+			return err
+		}
+		if issue := p.issues[key]; issue != nil {
+			issue.resolvedPriority, issue.priorityFrom = resolved, from
+		}
+	}
+	return rows.Err()
 }
 
 // readPhaseWork reads which of the issues the tree walk can climb onto carry Legion phase work:
