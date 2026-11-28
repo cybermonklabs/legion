@@ -38,10 +38,12 @@ import {
   unfoldEveryBranch,
 } from "./issue-page-g";
 import {
+  type LensNodes,
   type MarginSeed,
   type NoThreadsSeed,
   readMarginTree,
   readNodeAnchored,
+  seedLensNodes,
   seedMarginIssue,
   seedNoThreads,
 } from "./issue-page-margin";
@@ -2464,6 +2466,137 @@ async function writeOnNodes(
   }
 }
 
+/** A node under row 2's lens on the issue (`seedLensNodes`) that it comments on in Conversation:
+ *  its id in the tree read, the words whose second match it selects, its name, the message its
+ *  write's anchor is read with, and the block of the issue's `tree` the write anchors in, null for
+ *  a finding, which the write anchors on the node itself. */
+interface LensNodeWrite {
+  readonly anchored: string;
+  readonly block: string | null;
+  readonly quote: string;
+  readonly read: string;
+  readonly what: string;
+}
+
+/** (1)'s two typed findings under the lens on the issue, each named by its id, `lens/<uuid>#<block
+ *  id>`, and holding its quote twice: the finding whose text opens a callout ("A callout keeps a
+ *  remark, and the remark keeps its callout.") and the one whose text opens a requirement ("Each
+ *  finding states a rule, and the rule states its finding."), as `e2e/issue-page-margin.ts` writes
+ *  them. */
+function typedFindingWrites(placed: LensNodes): LensNodeWrite[] {
+  return [
+    {
+      anchored: "a finding written as a callout is anchored on its node",
+      block: null,
+      quote: "remark",
+      read: placed.calloutFinding,
+      what: "finding written as a callout",
+    },
+    {
+      anchored: "a finding written as a requirement is anchored on its node",
+      block: null,
+      quote: "rule",
+      read: placed.requirementFinding,
+      what: "finding written as a requirement",
+    },
+  ];
+}
+
+/** (1)'s block written in the conversation that the move put under the lens on the issue, "The
+ *  moved paragraph keeps its page, and the page keeps its words.", which Graph's read `answer`
+ *  holds under that lens as a node of no document. */
+function movedParagraphWrite(
+  seeded: MarginSeed,
+  placed: LensNodes,
+  answer: IssueTreeRead
+): LensNodeWrite {
+  const moved = answer.nodes?.find(
+    (node) =>
+      node.block_id === placed.movedParagraph &&
+      node.document === undefined &&
+      node.parent?.id === placed.lens
+  );
+  if (moved === undefined) {
+    throw new Error(
+      `Graph's tree read of ${seeded.key} holds no block written in the conversation under the lens on the issue`
+    );
+  }
+  return {
+    anchored: "a room's paragraph moved under a lens is anchored in the issue's tree by its block",
+    block: placed.movedParagraph,
+    quote: "page",
+    read: moved.id,
+    what: "paragraph moved under the lens",
+  };
+}
+
+/** The outlines that draw the lens on the issue, its findings and the paragraph under it:
+ *  Conversation, whose read's kinds name a lens, a finding and prose (`CONVERSATION_KINDS`), and
+ *  Graph, which draws every node of its read. */
+const LENS_NODE_VIEWS = ["conversation", "graph"] as const satisfies readonly View[];
+
+/** (1) to (3) on each node of `targets` under the lens on the issue, in Conversation, the nodes'
+ *  ids read from Graph's read `answer`: the selection's Comment, the send and its 201, the write's
+ *  anchor - on a finding its `lens/…#…` id, on the paragraph the issue's `tree` artifact and its
+ *  block - and the anchor the server stored, and the thread beside its node with the focus on its
+ *  root; then, after a reload of each outline, each thread beside its node there. */
+async function writeOnLensNodes(
+  page: Page,
+  traffic: ApiRequests,
+  seeded: MarginSeed,
+  answer: IssueTreeRead,
+  targets: readonly LensNodeWrite[]
+): Promise<void> {
+  const view = "conversation";
+  await openView(page, traffic, seeded.key, view);
+  const written: Spot[] = [];
+  for (const target of targets) {
+    const { block, quote, what } = target;
+    const node = treeIdIn(answer, seeded.key, target.read, `the ${what}`);
+    await selectWords(page, node, quote, 1);
+    const sent = await sendFromControl(
+      page,
+      `A comment on words of the ${what}.`,
+      inView(view, `in the ${what}`)
+    );
+    expect(sent.status, inView(view, `the comment on the ${what} is written`)).toBe(201);
+    expect(sent.anchor, inView(view, target.anchored)).toEqual(
+      block === null
+        ? { node: target.read, occurrence: 1, quote }
+        : { artifact: seeded.treeArtifactId, block_id: block, occurrence: 1, quote }
+    );
+    if (block === null) {
+      const stored = await nodeAnchorOf(sent.id);
+      expect(
+        { node: stored.node.id, occurrence: stored.occurrence, quote: stored.quote },
+        inView(view, `the comment on the ${what} stores occurrence 1 of its words on its node`)
+      ).toEqual({ node: target.read, occurrence: 1, quote });
+    } else {
+      const stored = (await getComment(sent.id)).comment.anchor;
+      expect(
+        { artifact_id: stored?.artifact_id, block_id: stored?.block_id, quote: stored?.quote },
+        inView(
+          view,
+          `the server stores the comment on the ${what} in its block of the issue's tree`
+        )
+      ).toEqual({ artifact_id: seeded.treeArtifactId, block_id: block, quote });
+    }
+    const spot = { id: sent.id, node, occurrence: 1, quote, replies: 0, what };
+    await expectLanded(page, { ...spot, what: `the ${what}` }, view);
+    written.push({ ...spot, what: `the thread written on the ${what}` });
+  }
+  for (const outline of LENS_NODE_VIEWS) {
+    await openView(page, traffic, seeded.key, outline);
+    for (const spot of written) {
+      await expect(
+        threadBox(page, spot.id),
+        inView(outline, `after a reload ${spot.what} stands beside its node`)
+      ).toHaveAttribute("data-text-thread-node", spot.node);
+    }
+    await expectPlaced(page, written, new Set(written.map(({ id }) => id)), outline, true);
+  }
+}
+
 /**
  * (4) in Graph, whose read is `answer`: no control stands on a selection across two rows, after
  * which `$mod+Alt+m` writes nothing and opens no composer; none on a risk's early warning line;
@@ -2590,9 +2723,10 @@ async function readWordsGone(page: Page, traffic: ApiRequests, seeded: MarginSee
 // c-write, row 2. Below 1024 px the composer stands in its node's sheet, which each view's row
 // draws once the part that last reshapes it is on the base (G6, departure five), so on `iphone`
 // the row reads (4) alone and records the writes owed on those parts too.
-// SLOW(>=2s): the whole seeded issue, a comment sent on a block in each of four views and on five
-// nodes in Graph, each read back from the server, six views loaded again, four refused
-// selections, and a send of words an edit took away.
+// SLOW(>=2s): the whole seeded issue, a comment sent on a block in each of four views, on five
+// nodes in Graph and on three nodes under a lens on the issue in Conversation, each read back from
+// the server, six views and then both outlines loaded again, four refused selections, and a send
+// of words an edit took away.
 test("a person comments on selected text of each kind of node @phone", async ({ browser }) => {
   test.setTimeout(900_000);
   const phone = test.info().project.name === "iphone";
@@ -2620,6 +2754,20 @@ test("a person comments on selected text of each kind of node @phone", async ({ 
     "COMPOSER",
     "NODE_ANCHOR",
     ...sheet("graph")
+  );
+  // The nodes of the tester's repro (test handoff v13), which only this row seeds
+  // (`seedLensNodes`): the page's write reads a node's kind as the server does (`nodeKindOf`).
+  const typedFindings = onBase(
+    "(1) to (3) on a lens's finding whose text opens a callout and on one whose text opens a requirement, in Conversation, read back from the server with anchor.node its `lens/…#…` id, quote and occurrence 1, the thread beside its node with the focus on its root, and after a reload the thread beside its node in Conversation and Graph",
+    "COMPOSER",
+    "NODE_ANCHOR",
+    ...sheet("conversation", "graph")
+  );
+  const movedParagraph = onBase(
+    "(1) to (3) on a block written in the conversation that a move put under a lens, in Conversation, read back from the server with the issue's `tree` artifact, block_id, quote and occurrence 1, the thread beside it with the focus on its root, and after a reload the thread beside it in Conversation and Graph",
+    "COMPOSER",
+    "TREE_ARTIFACT_ANCHOR",
+    ...sheet("conversation", "graph")
   );
   onBase(
     "(3) on `iphone` at 390 px each thread under its node (departure five)",
@@ -2677,7 +2825,7 @@ test("a person comments on selected text of each kind of node @phone", async ({ 
     "REPLY_QUOTE",
     ...sheet("conversation")
   );
-  if (blocks || roomBlock || nodes || refused || gone) {
+  if (blocks || roomBlock || nodes || typedFindings || movedParagraph || refused || gone) {
     await phase(browser, seedMarginIssue, async (page, seeded) => {
       await page.setViewportSize(phone ? PHONE : DESKTOP);
       const traffic = watchApiRequests(page);
@@ -2689,6 +2837,14 @@ test("a person comments on selected text of each kind of node @phone", async ({ 
       if (writes.length > 0) await writeOnBlocks(page, traffic, seeded, writes);
       if (nodes) await writeOnNodes(page, traffic, seeded, answer);
       if (refused) await readNoControl(page, traffic, seeded, answer);
+      if (typedFindings || movedParagraph) {
+        const placed = await seedLensNodes(seeded);
+        const placedAnswer = await requestedTreeRead(page, seeded.key);
+        await writeOnLensNodes(page, traffic, seeded, placedAnswer, [
+          ...(typedFindings ? typedFindingWrites(placed) : []),
+          ...(movedParagraph ? [movedParagraphWrite(seeded, placed, placedAnswer)] : []),
+        ]);
+      }
       if (gone) await readWordsGone(page, traffic, seeded);
     });
   }

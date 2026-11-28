@@ -1,5 +1,5 @@
-import { type Query, type Result, routeUrl } from "../web/src/api/paths";
-import type { IssueTreeRead } from "../web/src/api/types";
+import { type Body, type Query, type Result, routeUrl } from "../web/src/api/paths";
+import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import {
   baseUrl,
   claimIssue,
@@ -54,6 +54,14 @@ const ROW_FINDING_TEXT = "The record shows a line, and the line shows the record
 const ROW_RISK_TEXT = "A slow reply leaves a slow reader behind the reply.";
 const ROW_RISK_WARNING = "The warning comes before the reader asks.";
 const ASK_TEXT = "Should a draft stay visible after another draft arrives?";
+// Row 2's lens on the issue (`seedLensNodes`): a finding whose text opens a callout, one whose text
+// opens a requirement, and a block written in the conversation that a move puts under the lens.
+// Each holds one word twice, row 2 selecting its second match, and no such word is in the
+// opening line of a finding's directive.
+const LENS_NODES_VERDICT = "This lens holds two typed findings and a paragraph moved under it.";
+const CALLOUT_FINDING_TEXT = "A callout keeps a remark, and the remark keeps its callout.";
+const REQUIREMENT_FINDING_TEXT = "Each finding states a rule, and the rule states its finding.";
+const MOVED_TEXT = "The moved paragraph keeps its page, and the page keeps its words.";
 const PART = "b1";
 
 type MarginTreeQuery = Query<"/api/v1/issues/{key}/tree", "get">;
@@ -78,6 +86,50 @@ export function readNodeAnchored(id: string): Promise<Result<"/api/v1/comments/{
   return readWithTrees<Result<"/api/v1/comments/{id}", "get">>(
     routeUrl("/api/v1/comments/{id}", { id }, { node_anchor: true })
   );
+}
+
+/** A block written in the conversation of an issue, as its tree read answers it, with its block
+ *  id. */
+type RoomProse = IssueTreeNode & { readonly block_id: string };
+
+/** The block written in the conversation of `key` whose text is `words`, from the tree read of the
+ *  issue's prose, read again every 100 ms for 20 s: the room indexes a block after the edit that
+ *  writes it. */
+async function roomProse(key: string, words: string): Promise<RoomProse> {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const room = await readMarginTree(key, { kind: ["prose"] });
+    const node = room.nodes?.find((one) => one.text.trim() === words);
+    if (node?.block_id !== undefined) return { ...node, block_id: node.block_id };
+    await pause(100);
+  }
+  throw new Error(`${key}'s tree read did not include the room prose "${words}"`);
+}
+
+/** The route that moves a node of an issue under another node. */
+type MoveRoute = "/api/v1/issues/{key}/nodes/{id}";
+
+/** alice's move of the node of issue `key` whose store address is `id`, with `If-Match` naming
+ *  `placement`, the node's placement_seq as its tree read answers it, as a quoted entity tag: the
+ *  move's answer. A refusal throws, naming the path, the status and the body. */
+async function moveNode(
+  key: string,
+  id: string,
+  placement: number,
+  body: Body<MoveRoute, "patch">
+): Promise<Result<MoveRoute, "patch">> {
+  const path = routeUrl("/api/v1/issues/{key}/nodes/{id}", { id, key });
+  const response = await fetch(new URL(path, baseUrl), {
+    body: JSON.stringify(body),
+    headers: {
+      ...(await userHeaders()),
+      "Content-Type": "application/json",
+      "If-Match": `"${placement}"`,
+    },
+    method: "PATCH",
+  });
+  if (!response.ok) throw new Error(`PATCH ${path}: ${response.status} ${await response.text()}`);
+  return (await response.json()) as Result<MoveRoute, "patch">;
 }
 
 function block(kind: string, id: string, words: string, attrs = ""): string {
@@ -355,16 +407,7 @@ async function seedLayout(): Promise<Layout> {
       { after: "end", markdown: roomWords, op: "insert" },
     ],
   });
-  const deadline = Date.now() + 20_000;
-  let conversationBlock: string | undefined;
-  while (conversationBlock === undefined) {
-    const room = await readMarginTree(key, { kind: ["prose"] });
-    conversationBlock = room.nodes?.find((node) => node.text.trim() === roomWords)?.block_id;
-    if (conversationBlock !== undefined) break;
-    if (Date.now() >= deadline)
-      throw new Error(`${key}'s tree read did not include the new room prose`);
-    await pause(100);
-  }
+  const conversationBlock = (await roomProse(key, roomWords)).block_id;
   const { artifact: uncited } = await createIssueArtifact(key, {
     content: `${UNCITED_TEXT.join("\n\n")}\n`,
     name: "background.md",
@@ -718,4 +761,58 @@ export async function seedNoThreads(): Promise<NoThreadsSeed> {
   const layout = await seedLayout();
   await removeOrphanWords(layout);
   return { ...layout, ...(await seedReasoning(layout)) };
+}
+
+/** What `seedLensNodes` wrote: the lens on the issue, by its id, which the tree read names it by;
+ *  its finding whose text opens a callout and the one whose text opens a requirement, each by its
+ *  id (`lens/<uuid>#<block id>`), which the tree read and a node anchor name it by; and the block
+ *  written in the conversation that the move put under the lens, by its block id. */
+export interface LensNodes {
+  calloutFinding: string;
+  lens: string;
+  movedParagraph: string;
+  requirementFinding: string;
+}
+
+/**
+ * Row 2's own seed step (c-write, INFRA-5706 round 13), which no other row calls, so what it writes
+ * adds no row or thread another row counts. On `seeded`'s issue, alice invokes a lens on the issue,
+ * adds to it a finding whose text opens `:::callout` and one whose text opens `:::requirement`
+ * (`POST /api/v1/issues/{key}/nodes/{id}/findings`), writes a paragraph into the issue's `tree`
+ * artifact, and moves it under the lens (`PATCH /api/v1/issues/{key}/nodes/{id}`, its If-Match the
+ * placement_seq the prose read answers): the nodes of the tester's repro (test handoff v13), where
+ * the page wrote a room anchor on the callout finding (400 INVALID_ANCHOR), drew no control on the
+ * requirement finding, and wrote a node anchor on the moved paragraph (400 INVALID_ANCHOR).
+ */
+export async function seedLensNodes(
+  seeded: Pick<MarginSeed, "key" | "treeArtifactId">
+): Promise<LensNodes> {
+  const { key } = seeded;
+  const lens = await invokeLens(key, {
+    kind: "trade-off",
+    on: `dispatch://${key}`,
+    verdict: LENS_NODES_VERDICT,
+  });
+  const callout = await addFinding(key, lens.address, block("callout", "fc", CALLOUT_FINDING_TEXT));
+  const requirement = await addFinding(
+    key,
+    lens.address,
+    block("requirement", "fr", REQUIREMENT_FINDING_TEXT)
+  );
+  await editArtifact(seeded.treeArtifactId, {
+    ops: [{ after: "end", markdown: MOVED_TEXT, op: "insert" }],
+  });
+  const paragraph = await roomProse(key, MOVED_TEXT);
+  if (typeof paragraph.placement_seq !== "number") {
+    throw new Error(
+      `${key}'s tree read answers no placement_seq of the room prose "${MOVED_TEXT}"`
+    );
+  }
+  await moveNode(key, paragraph.id, paragraph.placement_seq, { parent: lens.address });
+  return {
+    calloutFinding: callout.id,
+    lens: lens.id,
+    movedParagraph: paragraph.block_id,
+    requirementFinding: requirement.id,
+  };
 }
