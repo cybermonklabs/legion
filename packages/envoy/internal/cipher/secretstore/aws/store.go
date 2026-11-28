@@ -1,4 +1,7 @@
-package secrets
+// Package aws is the secret store over AWS Secrets Manager, with the agent-secrets key in AWS KMS:
+// Store, the broker's reads, and Backend, its registry entry. Its fake of the Secrets Manager and
+// KMS calls is awstest.Local.
+package aws
 
 import (
 	"context"
@@ -14,19 +17,25 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
+
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
+
+// Name is BROKER_SECRETS_STORE's value for AWS Secrets Manager, with the agent-secrets key in AWS
+// KMS.
+const Name = "aws-secrets-manager"
 
 // awsKeyARNPattern is a KMS key's ARN, whose last segment is the key id.
 var awsKeyARNPattern = regexp.MustCompile(`^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$`)
 
-// ValidAWSKeyARN reports whether arn names a KMS key by its key ARN, the form AWS.KeyARN takes.
-func ValidAWSKeyARN(arn string) bool {
+// ValidKeyARN reports whether arn names a KMS key by its key ARN, the form Store.KeyARN takes.
+func ValidKeyARN(arn string) bool {
 	return awsKeyARNPattern.MatchString(arn)
 }
 
-// AWSKeyARNParts answers the region and account of a key ARN ValidAWSKeyARN accepts,
+// KeyARNParts answers the region and account of a key ARN ValidKeyARN accepts,
 // arn:aws:kms:<region>:<account>:key/<key id>: the region and account every agent secret lives in.
-func AWSKeyARNParts(arn string) (region, account string) {
+func KeyARNParts(arn string) (region, account string) {
 	parts := strings.Split(arn, ":")
 	return parts[3], parts[4]
 }
@@ -57,21 +66,27 @@ func currentVersion(versionsToStages map[string][]string) string {
 
 // SecretsManagerAPI is the three Secrets Manager calls the AWS store reads with: ListSecrets for
 // List, DescribeSecret for Describe and GetSecretValue for Read. Secrets Manager's own client and
-// Local both implement it.
+// awstest.Local both implement it.
 type SecretsManagerAPI interface {
 	secretsmanager.ListSecretsAPIClient
 	DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error)
 	GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error)
 }
 
-// AWS is the Store over AWS Secrets Manager: from Secrets Manager and KMS themselves in
-// production, from a Local in local development and tests.
-type AWS struct {
+// KMSAPI is the KMS call the AWS store reads with: ListAliases, for a secret that names the
+// agent-secrets key by an alias. KMS's own client and awstest.Local both implement it.
+type KMSAPI interface {
+	kms.ListAliasesAPIClient
+}
+
+// Store is the store over AWS Secrets Manager: from Secrets Manager and KMS themselves in
+// production, from an awstest.Local in tests.
+type Store struct {
 	// Client lists, describes and reads the secrets.
 	Client SecretsManagerAPI
 	// KMS resolves the aliases that point at KeyARN, read only when a secret names its key by an
 	// alias: Secrets Manager reports a secret's key in whatever form it was set with.
-	KMS kms.ListAliasesAPIClient
+	KMS KMSAPI
 	// KeyARN is the agent-secrets key's ARN (BROKER_SECRETS_KMS_KEY_ARN); a secret encrypted with
 	// any other key is not OnKey.
 	KeyARN string
@@ -82,7 +97,7 @@ type AWS struct {
 const awsListLag = 5 * time.Minute
 
 // ListLag is ListSecrets' documented lag, five minutes.
-func (AWS) ListLag() time.Duration { return awsListLag }
+func (Store) ListLag() time.Duration { return awsListLag }
 
 // maxSecretNameLength is the longest name Secrets Manager gives a secret. DescribeSecret answers a
 // longer SecretId as invalid input (ValidationException, or InvalidParameterException once it is
@@ -91,22 +106,22 @@ const maxSecretNameLength = 512
 
 // ValidName refuses a name past Secrets Manager's 512-character limit. Secrets Manager names are
 // ASCII, so the length counts bytes.
-func (a AWS) ValidName(id string) error {
+func (a Store) ValidName(id string) error {
 	if len(id) > maxSecretNameLength {
 		return fmt.Errorf("under the prefix it makes a %d-character secret name, past Secrets Manager's %d-character limit", len(id), maxSecretNameLength)
 	}
 	return nil
 }
 
-// List lists every secret under prefix with ListSecrets' name filter, a case-sensitive prefix
-// match, reading every page. Whether a secret has a value, and the id of the version that holds
-// it, are read from the same listing's SecretVersionsToStages, with no call per secret;
-// ListSecrets leaves out a secret scheduled for deletion, since it is not asked to include one. A
-// listing's OnKey reads the key's aliases at most once per List, the first time it is asked about
-// a secret that names its key by one, so a secret the policy refuses for its name or tags costs
-// no KMS call. A failed Secrets Manager call fails the whole List.
-func (a AWS) List(ctx context.Context, prefix string) ([]Listing, error) {
-	var listings []Listing
+// List lists every secret under prefix with ListSecrets' name filter, reading every page, and
+// keeps those whose name starts with prefix byte for byte, whatever the filter matched. Whether a
+// secret has a value, and the id of the version that holds it, are read from the same listing's
+// SecretVersionsToStages, with no call per secret; ListSecrets leaves out a secret scheduled for
+// deletion. A listing's OnKey reads the key's aliases at most once per List, the first time it is
+// asked about a secret that names its key by one, so a secret the policy refuses for its name or
+// tags costs no KMS call. A failed Secrets Manager call fails the whole List.
+func (a Store) List(ctx context.Context, prefix string) ([]secretstore.Listing, error) {
+	var listings []secretstore.Listing
 	keys := a.keys()
 	pages := secretsmanager.NewListSecretsPaginator(a.Client, &secretsmanager.ListSecretsInput{
 		Filters: []types.Filter{{Key: types.FilterNameStringTypeName, Values: []string{prefix}}},
@@ -117,13 +132,13 @@ func (a AWS) List(ctx context.Context, prefix string) ([]Listing, error) {
 			return nil, fmt.Errorf("list secrets under %s: %w", prefix, err)
 		}
 		for _, e := range page.SecretList {
-			version := currentVersion(e.SecretVersionsToStages)
-			tags := TagMap(e.Tags)
-			listings = append(listings, Listing{
-				ID: aws.ToString(e.Name), Source: aws.ToString(e.ARN), Tags: tags,
-				OnKey: a.onKey(aws.ToString(e.KmsKeyId), keys), HasCurrentValue: version != "", Version: version,
-				Created: aws.ToTime(e.CreatedDate), Unfilled: unfilled(tags, e.SecretVersionsToStages),
-			})
+			if !strings.HasPrefix(aws.ToString(e.Name), prefix) {
+				continue
+			}
+			listings = append(listings, a.listing(awsSecret{
+				name: e.Name, arn: e.ARN, kmsKeyID: e.KmsKeyId, tags: e.Tags, versions: e.SecretVersionsToStages,
+				created: e.CreatedDate,
+			}, keys))
 		}
 	}
 	return listings, nil
@@ -133,30 +148,46 @@ func (a AWS) List(ctx context.Context, prefix string) ([]Listing, error) {
 // ListSecrets may lag a change by minutes: ErrNotFound for one Secrets Manager does not hold, and
 // for one scheduled for deletion, which DescribeSecret still answers with its DeletedDate. Its
 // version stages (VersionIdsToStages) answer whether it has a value and the version holding it.
-func (a AWS) Describe(ctx context.Context, id string) (Listing, error) {
+func (a Store) Describe(ctx context.Context, id string) (secretstore.Listing, error) {
 	out, err := a.Client.DescribeSecret(ctx, &secretsmanager.DescribeSecretInput{SecretId: aws.String(id)})
 	var notFound *types.ResourceNotFoundException
 	switch {
 	case errors.As(err, &notFound):
-		return Listing{}, ErrNotFound
+		return secretstore.Listing{}, secretstore.ErrNotFound
 	case err != nil:
-		return Listing{}, fmt.Errorf("describe %s: %w", id, err)
+		return secretstore.Listing{}, fmt.Errorf("describe %s: %w", id, err)
 	case out.DeletedDate != nil:
-		return Listing{}, ErrNotFound
+		return secretstore.Listing{}, secretstore.ErrNotFound
 	}
-	version := currentVersion(out.VersionIdsToStages)
-	tags := TagMap(out.Tags)
-	return Listing{
-		ID: aws.ToString(out.Name), Source: aws.ToString(out.ARN), Tags: tags,
-		OnKey: a.onKey(aws.ToString(out.KmsKeyId), a.keys()), HasCurrentValue: version != "", Version: version,
-		Created: aws.ToTime(out.CreatedDate), Unfilled: unfilled(tags, out.VersionIdsToStages),
-	}, nil
+	return a.listing(awsSecret{
+		name: out.Name, arn: out.ARN, kmsKeyID: out.KmsKeyId, tags: out.Tags, versions: out.VersionIdsToStages,
+		created: out.CreatedDate,
+	}, a.keys()), nil
+}
+
+// awsSecret is what ListSecrets and DescribeSecret both answer of one secret, which listing reads.
+type awsSecret struct {
+	name, arn, kmsKeyID *string
+	tags                []types.Tag
+	versions            map[string][]string
+	created             *time.Time
+}
+
+// listing is the Listing of s, its OnKey over keys.
+func (a Store) listing(s awsSecret, keys *keyIdentifiers) secretstore.Listing {
+	version := currentVersion(s.versions)
+	tags := TagMap(s.tags)
+	return secretstore.Listing{
+		ID: aws.ToString(s.name), Source: aws.ToString(s.arn), Tags: tags,
+		OnKey: a.onKey(aws.ToString(s.kmsKeyID), keys), HasCurrentValue: version != "", Version: version,
+		Created: aws.ToTime(s.created), Unfilled: unfilled(tags, s.versions),
+	}
 }
 
 // unfilled reports whether a Secrets Manager secret with tags and versions is Listing.Unfilled:
 // it carries the CreateLabel tag and holds no version at all.
 func unfilled(tags map[string]string, versions map[string][]string) bool {
-	_, labelled := tags[CreateLabel]
+	_, labelled := tags[secretstore.CreateLabel]
 	return labelled && len(versions) == 0
 }
 
@@ -188,13 +219,13 @@ type keyIdentifiers struct {
 
 // keys is the agent-secrets key's identifiers before any alias is read, shared by every listing of
 // one List or Describe.
-func (a AWS) keys() *keyIdentifiers {
+func (a Store) keys() *keyIdentifiers {
 	return &keyIdentifiers{arn: a.KeyARN, id: a.KeyARN[strings.LastIndex(a.KeyARN, "/")+1:]}
 }
 
 // onKey answers a listing's OnKey: whether kmsKeyID, a secret's KmsKeyId as Secrets Manager lists
 // it, names the agent-secrets key. An empty one is the AWS-managed key.
-func (a AWS) onKey(kmsKeyID string, keys *keyIdentifiers) func(context.Context) (bool, error) {
+func (a Store) onKey(kmsKeyID string, keys *keyIdentifiers) func(context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
 		switch {
 		case kmsKeyID == "":
@@ -232,18 +263,18 @@ func (a AWS) onKey(kmsKeyID string, keys *keyIdentifiers) func(context.Context) 
 // state: GetSecretValue's other refusals name the request itself (InvalidParameterException) or the
 // key (DecryptionFailure), and this one is the only request state a caller can reach. A value that
 // is no non-empty SecretString - one stored as SecretBinary - wraps ErrValueNotText.
-func (a AWS) Read(ctx context.Context, source string) (string, error) {
+func (a Store) Read(ctx context.Context, source string) (string, error) {
 	out, err := a.Client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(source)})
 	var notFound *types.ResourceNotFoundException
 	var deleting *types.InvalidRequestException
 	if errors.As(err, &notFound) || errors.As(err, &deleting) {
-		return "", ErrNotFound
+		return "", secretstore.ErrNotFound
 	}
 	if err != nil {
 		return "", fmt.Errorf("secrets manager %s: %w", source, err)
 	}
 	if out.SecretString == nil || *out.SecretString == "" {
-		return "", fmt.Errorf("secrets manager %s: %w", source, ErrValueNotText)
+		return "", fmt.Errorf("secrets manager %s: %w", source, secretstore.ErrValueNotText)
 	}
 	return *out.SecretString, nil
 }

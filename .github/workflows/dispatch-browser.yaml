@@ -64,7 +64,7 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-envoy-test
+      # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-browser-binaries
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -72,8 +72,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+          key: go-browser-binaries-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-browser-binaries-{0}-{1}-', runner.os, runner.arch) }}
       # why: .github/ci-notes/dispatch-browser.md#what-the-binaries-build-writes-and-why-it-is-static
       - name: Build the binaries the browser suite runs
         run: |

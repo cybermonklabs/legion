@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testtmp"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // recordingAgentEnd is a server's end of agent/v1 that answers no call: the supervisor's agent,
@@ -299,7 +300,7 @@ func TestTheAgentStartsAgainFromTheServersOwnBuild(t *testing.T) {
 
 	// A deploy's new file, written beside the path and renamed over it, while the server runs on.
 	next := binary + ".next"
-	if err := os.WriteFile(next, []byte("#!/bin/sh\nexec cat >/dev/null\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(next, []byte("#!/bin/sh\nexec cat >/dev/null\n"), 0o755); err != nil {
 		t.Fatalf("write the file the deploy puts at the server's path: %v", err)
 	}
 	if err := os.Rename(next, binary); err != nil {
