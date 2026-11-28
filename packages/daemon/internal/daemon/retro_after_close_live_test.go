@@ -1615,9 +1615,13 @@ func (r *retroLive) waitProcessedAny(eventID string) {
 // ---- the walk of an issue through its steps ------------------------------------------------------
 
 // walkTo plays key, an issue whose first phase started, through its steps up to the phase to: the
-// planner's plan, the implementer's push, the tester's pass, the reviewer's turn and a person's
-// approval, and the architect's sign-off. Each role's process registers when the daemon launches its
-// claim and takes the task the daemon sends it.
+// planner's plan, the implementer's push, the tester's pass, the reviewer's turn and its own
+// approval, and the architect's sign-off. Each role's process registers when the daemon launches
+// its claim and takes the task the daemon sends it. The reviewer ends its turn without completing
+// and approves the pull request with a review of its own: the review App's, whose Legion footer
+// names the session the reviewer's claim registered and the head (workflow's byReviewer). That
+// review ends the round with no completion, where a person's approval waits for one (workflow's
+// reviewRound).
 func (r *retroLive) walkTo(key string, to phase.Phase) {
 	r.t.Helper()
 	tree := r.treeOf(key)
@@ -1639,7 +1643,7 @@ func (r *retroLive) walkTo(key string, to phase.Phase) {
 		{phase.Reviewing, phase.Accepting, func() {
 			reviewer := r.registerTask(key, tree, claim.RoleReviewer)
 			reviewer.endTurn()
-			r.publishReview(r.pullRequestOf(key))
+			r.publishReviewBy(r.pullRequestOf(key), reviewAppLogin, legionFooter(reviewer.session, stepRecordsHead))
 		}},
 		{phase.Accepting, phase.Retro, func() { r.signOff(key) }},
 	} {
@@ -1718,9 +1722,9 @@ func (r *retroLive) pullRequestOf(key string) int {
 	return 0
 }
 
-// publishReview is a person with write access approving pull request number at stepRecordsHead, as
-// Envoy relays GitHub's review.
-func (r *retroLive) publishReview(number int) {
+// publishReviewBy is author approving pull request number at stepRecordsHead, the body naming the
+// review's round and ending with footer, as Envoy relays GitHub's review.
+func (r *retroLive) publishReviewBy(number int, author, footer string) {
 	r.t.Helper()
 	r.mu.Lock()
 	r.reviews++
@@ -1728,7 +1732,7 @@ func (r *retroLive) publishReview(number int) {
 	r.mu.Unlock()
 	payload, err := json.Marshal(map[string]string{
 		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": "approved",
-		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "round " + strconv.Itoa(round),
+		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": author, "body": "round " + strconv.Itoa(round) + footer,
 		"review_id": strconv.Itoa(number*10 + round), "submitted_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {

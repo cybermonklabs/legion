@@ -448,8 +448,12 @@ const mainsAppliedSequence = 20261121170714
 // events (20261126163320), which stands above the merge holds' 20261126110259, and the merge of
 // main dc18a1fed31c into dispatch://INFRA-5602's branch set them below that branch's run retros
 // (20261126164240), the newest version this head embeds: no database of an earlier merge holds
-// either, so each lacks both above its newest, and one that main at dc18a1fed31c migrated holds
-// every version this head embeds but the run retros, which it lacks above its newest.
+// either, so each lacks both above its newest. One that main at dc18a1fed31c migrated holds the
+// state events and lacks the run retros, above its newest. The merge of main ac9e87136eaa brought
+// main's launch model totals (20261125171320), which main recorded after dc18a1fed31c and which
+// stands below the state events and above the newest of every other database here: the one of main
+// at dc18a1fed31c lacks it too, below its newest, and the upgrade applies both it and the run
+// retros; each of the others lacks it above its newest.
 // Store.Migrate asks each embedded migration whether its own version is recorded (apply) and never
 // compares it with the newest, so each upgrade applies the versions that database lacks, below its
 // newest and above it alike, and leaves every embedded version recorded once.
@@ -529,6 +533,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "main at dc18a1fed31c",
 			newest: stateEventsVersion,
+			lacks:  []int{launchTotalsVersion},
 			seed:   queueMainsKinds,
 			check: func(t *testing.T, store *Store) {
 				const pending = `select kind from outbox where kind in ('state_change', 'state_admission', 'state_boot') order by kind`
