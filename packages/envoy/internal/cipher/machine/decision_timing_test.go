@@ -22,12 +22,12 @@ var timeApprovals = os.Getenv(timeApprovalsEnv) != ""
 // unchanged: the one way this package's tests decide a machine login. With timeApprovals it prints
 // how long an approval took from the call to its return (its commit, or the refusal it answers),
 // lock waits included.
-func applyDecision(ctx context.Context, s *Service, recordID string, approve bool, login, code string, account store.IssuerSubject, point *int64) (state, credentialID string, err error) {
+func applyDecision(ctx context.Context, s *Service, recordID string, approve bool, login, code string, account store.IssuerSubject, point *int64, scopes *[]string) (state, credentialID string, err error) {
 	if !approve || !timeApprovals {
-		return s.ApplyDecision(ctx, recordID, approve, login, code, account, point)
+		return s.ApplyDecision(ctx, recordID, approve, login, code, account, point, scopes)
 	}
 	began := time.Now()
-	state, credentialID, err = s.ApplyDecision(ctx, recordID, approve, login, code, account, point)
+	state, credentialID, err = s.ApplyDecision(ctx, recordID, approve, login, code, account, point, scopes)
 	fmt.Fprintf(os.Stderr, "APPROVAL-DECIDED-IN %d ns\n", time.Since(began).Nanoseconds())
 	return state, credentialID, err
 }

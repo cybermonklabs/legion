@@ -59,6 +59,14 @@ type PendingEntry struct {
 	// The record's deadline: a secret request's own expiry, the moment its decision compares
 	// with, and a machine login's. A broker from before records had a state sends none.
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// The Dispatch scopes a Dispatch sign-in asks for, none or more: the actions of its launcher
+	// credential detail, which the broker stores with the record when the sign-in opens, so a row
+	// says it is a sign-in in every state, an expired one included. Null for a machine login and
+	// for a secret request. A broker from before Dispatch sign-ins sends none.
+	DispatchScopes *[]string `json:"dispatch_scopes"`
+	// The reason the record's request object signed, verbatim: what the session or tool that asks
+	// says it is for. "" when it signed none. A broker from before this field sends none.
+	Reason string `json:"reason"`
 }
 
 // PendingResponse is GET /v1/pending's answer.
@@ -156,6 +164,15 @@ type LauncherCredentialResp struct {
 	// True once expires_at has passed: the login enrolls nothing more, but sessions it enrolled
 	// still run (each renews with its own key), and revoking it ends them.
 	Expired bool `json:"expired"`
+	// The Dispatch scopes a Dispatch sign-in's person approved, none or more: a device login
+	// approved for Dispatch alone, which enrolls no session and reads no secret
+	// (oauthwire.ScopeDispatch). Written once when its credential is minted and never changed.
+	// Null for every other login.
+	DispatchScopes *[]string `json:"dispatch_scopes"`
+	// The reason the login's request object signed, so a person tells several logins of one host
+	// apart; "" when it signed none, and for every token login, which signs no request object. A
+	// broker from before this field sends none.
+	Reason string `json:"reason"`
 }
 
 // LauncherCredentialsResponse is GET /v1/launcher-credentials's and GET /v1/operator/machines's
@@ -330,6 +347,12 @@ type RecordResponse struct {
 	// The service a machine login is for, when it logs a service in rather than a person's
 	// machine; null otherwise.
 	Service *string `json:"service"`
+	// The Dispatch scopes a Dispatch sign-in asked for, none or more, which the person approves
+	// some or all of (oauthwire.ScopeDispatch): always the scopes asked, in every state, also once
+	// it is decided, expired or its device code is gone, since the broker stores them with the
+	// record. The scopes its person approved are its machine login's
+	// (LauncherCredentialResp.DispatchScopes). Null for a machine login and a secret request.
+	DispatchScopes *[]string `json:"dispatch_scopes"`
 	// The reason the session gave, verbatim.
 	Reason string `json:"reason"`
 	// How many seconds the grant or credential lasts once approved; null for a grant that lasts

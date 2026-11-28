@@ -1,13 +1,16 @@
+import { signInScopes } from "@legion/contracts";
 import type { ReactNode } from "react";
 
 import type { RecordResponse } from "../../api/types";
 import {
+  checkboxAccent,
   quoteAccentBorder,
   quoteBodyText,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { ACT_AS_YOU, signInScopeChoice } from "../settings/dispatch-scope-choices";
 import { machineName } from "./logic/machineLogins";
 
 const LIFETIME_UNITS: ReadonlyArray<{ seconds: number; unit: string }> = [
@@ -47,6 +50,77 @@ function Fact({ children, label }: { children: ReactNode; label: string }): Reac
 }
 
 /**
+ * What a pending Dispatch sign-in asks its person to decide: a box for each scope it asked for, in
+ * the order the broker lists them, a known scope in its Settings words and a word this build does
+ * not know as the word itself, each ticked as `ticked` says (`MachineLoginPage` starts the ticks
+ * from the known scopes but `p0` (`signInScopeStartsTicked`), so `p0` and an unknown word are
+ * unticked until the person ticks them); "It asks for no scope." where it asked for none; and what
+ * an approval allows: where it shows boxes, whatever is ticked, the session writes in Dispatch and
+ * works on Envoy as its own session within the person's projects, and Act as you adds acting as
+ * them; where it asked for none, and so shows no box, only what the sign-in may do.
+ */
+function DispatchSignInConsent({
+  asked,
+  onTickedChange,
+  ticked,
+}: {
+  asked: readonly string[];
+  onTickedChange: (scopes: string[]) => void;
+  ticked: readonly string[];
+}): ReactNode {
+  return (
+    <div className="space-y-3">
+      {asked.length === 0 ? (
+        <p className={`text-sm ${textPrimaryOnCanvas}`}>It asks for no scope.</p>
+      ) : (
+        <fieldset className="space-y-2">
+          <legend className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>
+            What this session or tool may do
+          </legend>
+          {asked.map((scope) => {
+            const choice = signInScopeChoice(scope);
+            return (
+              <div key={scope}>
+                <label className={`flex items-center gap-2 text-sm ${textPrimaryOnCanvas}`}>
+                  <input
+                    checked={ticked.includes(scope)}
+                    className={`size-4 shrink-0 rounded ${checkboxAccent}`}
+                    onChange={(event) =>
+                      onTickedChange(
+                        event.target.checked
+                          ? [...ticked, scope]
+                          : ticked.filter((held) => held !== scope)
+                      )
+                    }
+                    type="checkbox"
+                  />
+                  {choice?.label ?? scope}
+                </label>
+                <p className={`ml-6 text-xs ${textMutedOnCanvas}`}>
+                  {choice?.allows ??
+                    "This page does not know what this scope allows: tick it only if you do."}
+                </p>
+              </div>
+            );
+          })}
+        </fieldset>
+      )}
+      <p className={`text-sm font-medium ${textPrimaryOnCanvas}`}>
+        {asked.length === 0 ? (
+          "Approving lets this session or tool write in Dispatch and work on Envoy as its own session within your projects, and it reads no secret."
+        ) : (
+          <>
+            Whatever is ticked, approving lets this session or tool write in Dispatch and work on
+            Envoy as its own session within your projects, and it reads no secret;{" "}
+            {ACT_AS_YOU.label} adds acting as you.
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
+/**
  * The broker's facts about a machine login, then the agent's stated reason as plain text
  * (no markdown pipeline - a `<blockquote>` with `whitespace-pre-wrap` renders it verbatim), then,
  * for a pending one, the sentence explaining what approving it grants: a person's machine starts
@@ -57,15 +131,30 @@ function Fact({ children, label }: { children: ReactNode; label: string }): Reac
  * logins its code lookup returns (`POST /api/v1/credential-requests/machine-lookup`): the kind is
  * always `launcher_credential`, and the broker leaves such a record's enrollment and both of its
  * session ids empty, so neither has a fact of its own here.
+ *
+ * A record whose `dispatch_scopes` is a list is a Dispatch sign-in (`signInScopes`): a pending
+ * one asks its person which of its scopes to approve (`DispatchSignInConsent`), where `ticked`
+ * holds the boxes ticked now and `onTickedChange` takes the next set.
  */
-export function CredentialRecordFacts({ record }: { record: RecordResponse }): ReactNode {
+export function CredentialRecordFacts({
+  onTickedChange,
+  record,
+  ticked,
+}: {
+  onTickedChange: (scopes: string[]) => void;
+  record: RecordResponse;
+  ticked: readonly string[];
+}): ReactNode {
   // A record with no identifier at all is one the broker sends an empty list for; the facts read
   // the same way they do for any other, with nothing where the machine's name would be.
   const identifiers = record.identifiers ?? [];
+  const askedDispatchScopes = signInScopes(record);
   return (
     <div className="space-y-4">
       <dl className="grid grid-cols-2 gap-3 text-sm">
-        <Fact label="Kind">Machine login</Fact>
+        <Fact label="Kind">
+          {askedDispatchScopes === null ? "Machine login" : "Dispatch sign-in"}
+        </Fact>
         <Fact label="Identifiers">{identifiers.join(", ")}</Fact>
         <Fact label="Lifetime">{formatLifetime(record.lifetime_seconds)}</Fact>
         <Fact label="Requested">
@@ -93,13 +182,19 @@ export function CredentialRecordFacts({ record }: { record: RecordResponse }): R
           </blockquote>
         </div>
       )}
-      {record.state === "pending" ? (
+      {record.state !== "pending" ? null : askedDispatchScopes === null ? (
         <p className={`text-sm font-medium ${textPrimaryOnCanvas}`}>
           {record.service
             ? `${machineName({ host: identifiers[0] ?? "", service: record.service })} is a service's login from before services logged in with their own Kubernetes token, and no one can approve it any more: deny it, or let it expire.`
             : `Approving lets ${machineName({ host: identifiers[0] ?? "", service: null })} start agent sessions as you.`}
         </p>
-      ) : null}
+      ) : (
+        <DispatchSignInConsent
+          asked={askedDispatchScopes}
+          onTickedChange={onTickedChange}
+          ticked={ticked}
+        />
+      )}
     </div>
   );
 }

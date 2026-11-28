@@ -1,0 +1,469 @@
+{
+  "id": 46005406939,
+  "name": "CI",
+  "node_id": "WFR_kwLORFy7ds8AAAAKtiLM2w",
+  "head_branch": "legion/INFRA-3940",
+  "head_sha": "480dd5d418bb723d963c83e62504b328cfb96d18",
+  "path": ".github/workflows/ci.yaml",
+  "display_title": "feat(dispatch): the new issue page whole: documents open in place, every old address works, switched off (part N of INFRA-1196)",
+  "run_number": 32801,
+  "event": "pull_request",
+  "status": "completed",
+  "conclusion": "failure",
+  "workflow_id": 397779729,
+  "check_suite_id": 124461010052,
+  "check_suite_node_id": "CS_kwDORFy7ds8AAAAc-nRMhA",
+  "url": "https://api.github.com/repos/cybermonklabs/legion/actions/runs/46005406939",
+  "html_url": "https://github.com/cybermonklabs/legion/actions/runs/46005406939",
+  "pull_requests": [
+    {
+      "url": "https://api.github.com/repos/cybermonklabs/legion/pulls/5198",
+      "id": 5449041046,
+      "number": 5198,
+      "head": {
+        "ref": "legion/INFRA-3940",
+        "sha": "813450ec23a91539642f41e3b2de9dc18ed5b008",
+        "repo": {
+          "id": 1146927990,
+          "url": "https://api.github.com/repos/cybermonklabs/legion",
+          "name": "legion"
+        }
+      },
+      "base": {
+        "ref": "main",
+        "sha": "8868205a18f3387a5bb8e176b97cb9a2271e0f41",
+        "repo": {
+          "id": 1146927990,
+          "url": "https://api.github.com/repos/cybermonklabs/legion",
+          "name": "legion"
+        }
+      }
+    }
+  ],
+  "created_at": "2026-11-27T13:14:34Z",
+  "updated_at": "2026-11-27T13:39:29Z",
+  "actor": {
+    "login": "legion-implementer[bot]",
+    "id": 343353655,
+    "node_id": "BOT_kgDOFHcpNw",
+    "avatar_url": "https://avatars.githubusercontent.com/u/5074378?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/legion-implementer%5Bbot%5D",
+    "html_url": "https://github.com/apps/legion-implementer",
+    "followers_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/followers",
+    "following_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/following{/other_user}",
+    "gists_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/subscriptions",
+    "organizations_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/orgs",
+    "repos_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/repos",
+    "events_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/received_events",
+    "type": "Bot",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "run_attempt": 1,
+  "referenced_workflows": [
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-dispatch-ui.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-ci-images.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-dispatch-two-builds.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-pi-envoy.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/browser-image.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/worker-image.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-tool-fallback.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-go.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-go-race-docs.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-dispatch-memory.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-broker-multiprocess.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-ci-filters.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-e2e-local.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-dispatch-multiprocess.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-pi-shared.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-session-stall.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-pi-legion.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-proof-sdk-offline.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-go-race.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-test-fixtures.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-typecheck.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-client.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-contracts.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-tool-fallback-arm.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-plugin-pack.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-claude-envoy.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-lint.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/dispatch-browser.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-broker-client.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-daemon-go.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-go-claim-model.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-sessions-script.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-private-names-port.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/docs-site.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-smoke.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-go-build.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-infra-go.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-go-checks.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-listener-server-change.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-text-checks.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-conflicts-script.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-test.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-airlock-lean.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    },
+    {
+      "path": "cybermonklabs/legion/.github/workflows/ci-job-envoy-go-race-api.yaml@dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "sha": "dc2fbe47174859d64c1f2b3ee14c459bfdc503ed",
+      "ref": "refs/pull/5198/merge"
+    }
+  ],
+  "run_started_at": "2026-11-27T13:14:34Z",
+  "triggering_actor": {
+    "login": "legion-implementer[bot]",
+    "id": 343353655,
+    "node_id": "BOT_kgDOFHcpNw",
+    "avatar_url": "https://avatars.githubusercontent.com/u/5074378?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/legion-implementer%5Bbot%5D",
+    "html_url": "https://github.com/apps/legion-implementer",
+    "followers_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/followers",
+    "following_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/following{/other_user}",
+    "gists_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/subscriptions",
+    "organizations_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/orgs",
+    "repos_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/repos",
+    "events_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/legion-implementer%5Bbot%5D/received_events",
+    "type": "Bot",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "jobs_url": "https://api.github.com/repos/cybermonklabs/legion/actions/runs/46005406939/jobs",
+  "logs_url": "https://api.github.com/repos/cybermonklabs/legion/actions/runs/46005406939/logs",
+  "check_suite_url": "https://api.github.com/repos/cybermonklabs/legion/check-suites/124461010052",
+  "artifacts_url": "https://api.github.com/repos/cybermonklabs/legion/actions/runs/46005406939/artifacts",
+  "cancel_url": "https://api.github.com/repos/cybermonklabs/legion/actions/runs/46005406939/cancel",
+  "rerun_url": "https://api.github.com/repos/cybermonklabs/legion/actions/runs/46005406939/rerun",
+  "previous_attempt_url": null,
+  "workflow_url": "https://api.github.com/repos/cybermonklabs/legion/actions/workflows/397779729",
+  "head_commit": {
+    "id": "480dd5d418bb723d963c83e62504b328cfb96d18",
+    "tree_id": "746cb098bbb38f801bed9a0256a1f682cdbd313b",
+    "message": "test(dispatch): c-reference-block's row finds the serving task by its words, as part M's list names it now (INFRA-3940)\n\nPart M's decision 560, on this branch since the merge of 875bde28, names each row of 'What\nreferences this row' by the first line of its node's own words rather than by the edge's word.\nCI at 80077bfa failed 'a reference to a block of a document the outline does not draw opens that\ndocument on the block @phone' on chromium and iphone waiting for a link named 'served by'; the row\nnow finds the task's link by the task's one line of words (taskWords) and keeps its href, its\npress and every reading after it.\n\nOmp-Session: 01a20972-3f30-77dd-829e-c9f115a7499c\nLegion-Role: implementer",
+    "timestamp": "2026-11-27T13:14:14Z",
+    "author": {
+      "name": "legion-implementer[bot]",
+      "email": "343353655+legion-implementer[bot]@users.noreply.github.com"
+    },
+    "committer": {
+      "name": "legion-implementer[bot]",
+      "email": "343353655+legion-implementer[bot]@users.noreply.github.com"
+    }
+  },
+  "repository": {
+    "id": 1146927990,
+    "node_id": "R_kgDORFy7dg",
+    "name": "legion",
+    "full_name": "cybermonklabs/legion",
+    "private": false,
+    "owner": {
+      "login": "cybermonklabs",
+      "id": 351170127,
+      "node_id": "O_kgDOFO5uTw",
+      "avatar_url": "https://avatars.githubusercontent.com/u/351170127?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/cybermonklabs",
+      "html_url": "https://github.com/cybermonklabs",
+      "followers_url": "https://api.github.com/users/cybermonklabs/followers",
+      "following_url": "https://api.github.com/users/cybermonklabs/following{/other_user}",
+      "gists_url": "https://api.github.com/users/cybermonklabs/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/cybermonklabs/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/cybermonklabs/subscriptions",
+      "organizations_url": "https://api.github.com/users/cybermonklabs/orgs",
+      "repos_url": "https://api.github.com/users/cybermonklabs/repos",
+      "events_url": "https://api.github.com/users/cybermonklabs/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/cybermonklabs/received_events",
+      "type": "Organization",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "html_url": "https://github.com/cybermonklabs/legion",
+    "description": null,
+    "fork": false,
+    "url": "https://api.github.com/repos/cybermonklabs/legion",
+    "forks_url": "https://api.github.com/repos/cybermonklabs/legion/forks",
+    "keys_url": "https://api.github.com/repos/cybermonklabs/legion/keys{/key_id}",
+    "collaborators_url": "https://api.github.com/repos/cybermonklabs/legion/collaborators{/collaborator}",
+    "teams_url": "https://api.github.com/repos/cybermonklabs/legion/teams",
+    "hooks_url": "https://api.github.com/repos/cybermonklabs/legion/hooks",
+    "issue_events_url": "https://api.github.com/repos/cybermonklabs/legion/issues/events{/number}",
+    "events_url": "https://api.github.com/repos/cybermonklabs/legion/events",
+    "assignees_url": "https://api.github.com/repos/cybermonklabs/legion/assignees{/user}",
+    "branches_url": "https://api.github.com/repos/cybermonklabs/legion/branches{/branch}",
+    "tags_url": "https://api.github.com/repos/cybermonklabs/legion/tags",
+    "blobs_url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs{/sha}",
+    "git_tags_url": "https://api.github.com/repos/cybermonklabs/legion/git/tags{/sha}",
+    "git_refs_url": "https://api.github.com/repos/cybermonklabs/legion/git/refs{/sha}",
+    "trees_url": "https://api.github.com/repos/cybermonklabs/legion/git/trees{/sha}",
+    "statuses_url": "https://api.github.com/repos/cybermonklabs/legion/statuses/{sha}",
+    "languages_url": "https://api.github.com/repos/cybermonklabs/legion/languages",
+    "stargazers_url": "https://api.github.com/repos/cybermonklabs/legion/stargazers",
+    "contributors_url": "https://api.github.com/repos/cybermonklabs/legion/contributors",
+    "subscribers_url": "https://api.github.com/repos/cybermonklabs/legion/subscribers",
+    "subscription_url": "https://api.github.com/repos/cybermonklabs/legion/subscription",
+    "commits_url": "https://api.github.com/repos/cybermonklabs/legion/commits{/sha}",
+    "git_commits_url": "https://api.github.com/repos/cybermonklabs/legion/git/commits{/sha}",
+    "comments_url": "https://api.github.com/repos/cybermonklabs/legion/comments{/number}",
+    "issue_comment_url": "https://api.github.com/repos/cybermonklabs/legion/issues/comments{/number}",
+    "contents_url": "https://api.github.com/repos/cybermonklabs/legion/contents/{+path}",
+    "compare_url": "https://api.github.com/repos/cybermonklabs/legion/compare/{base}...{head}",
+    "merges_url": "https://api.github.com/repos/cybermonklabs/legion/merges",
+    "archive_url": "https://api.github.com/repos/cybermonklabs/legion/{archive_format}{/ref}",
+    "downloads_url": "https://api.github.com/repos/cybermonklabs/legion/downloads",
+    "issues_url": "https://api.github.com/repos/cybermonklabs/legion/issues{/number}",
+    "pulls_url": "https://api.github.com/repos/cybermonklabs/legion/pulls{/number}",
+    "milestones_url": "https://api.github.com/repos/cybermonklabs/legion/milestones{/number}",
+    "notifications_url": "https://api.github.com/repos/cybermonklabs/legion/notifications{?since,all,participating}",
+    "labels_url": "https://api.github.com/repos/cybermonklabs/legion/labels{/name}",
+    "releases_url": "https://api.github.com/repos/cybermonklabs/legion/releases{/id}",
+    "deployments_url": "https://api.github.com/repos/cybermonklabs/legion/deployments"
+  },
+  "head_repository": {
+    "id": 1146927990,
+    "node_id": "R_kgDORFy7dg",
+    "name": "legion",
+    "full_name": "cybermonklabs/legion",
+    "private": false,
+    "owner": {
+      "login": "cybermonklabs",
+      "id": 351170127,
+      "node_id": "O_kgDOFO5uTw",
+      "avatar_url": "https://avatars.githubusercontent.com/u/351170127?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/cybermonklabs",
+      "html_url": "https://github.com/cybermonklabs",
+      "followers_url": "https://api.github.com/users/cybermonklabs/followers",
+      "following_url": "https://api.github.com/users/cybermonklabs/following{/other_user}",
+      "gists_url": "https://api.github.com/users/cybermonklabs/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/cybermonklabs/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/cybermonklabs/subscriptions",
+      "organizations_url": "https://api.github.com/users/cybermonklabs/orgs",
+      "repos_url": "https://api.github.com/users/cybermonklabs/repos",
+      "events_url": "https://api.github.com/users/cybermonklabs/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/cybermonklabs/received_events",
+      "type": "Organization",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "html_url": "https://github.com/cybermonklabs/legion",
+    "description": null,
+    "fork": false,
+    "url": "https://api.github.com/repos/cybermonklabs/legion",
+    "forks_url": "https://api.github.com/repos/cybermonklabs/legion/forks",
+    "keys_url": "https://api.github.com/repos/cybermonklabs/legion/keys{/key_id}",
+    "collaborators_url": "https://api.github.com/repos/cybermonklabs/legion/collaborators{/collaborator}",
+    "teams_url": "https://api.github.com/repos/cybermonklabs/legion/teams",
+    "hooks_url": "https://api.github.com/repos/cybermonklabs/legion/hooks",
+    "issue_events_url": "https://api.github.com/repos/cybermonklabs/legion/issues/events{/number}",
+    "events_url": "https://api.github.com/repos/cybermonklabs/legion/events",
+    "assignees_url": "https://api.github.com/repos/cybermonklabs/legion/assignees{/user}",
+    "branches_url": "https://api.github.com/repos/cybermonklabs/legion/branches{/branch}",
+    "tags_url": "https://api.github.com/repos/cybermonklabs/legion/tags",
+    "blobs_url": "https://api.github.com/repos/cybermonklabs/legion/git/blobs{/sha}",
+    "git_tags_url": "https://api.github.com/repos/cybermonklabs/legion/git/tags{/sha}",
+    "git_refs_url": "https://api.github.com/repos/cybermonklabs/legion/git/refs{/sha}",
+    "trees_url": "https://api.github.com/repos/cybermonklabs/legion/git/trees{/sha}",
+    "statuses_url": "https://api.github.com/repos/cybermonklabs/legion/statuses/{sha}",
+    "languages_url": "https://api.github.com/repos/cybermonklabs/legion/languages",
+    "stargazers_url": "https://api.github.com/repos/cybermonklabs/legion/stargazers",
+    "contributors_url": "https://api.github.com/repos/cybermonklabs/legion/contributors",
+    "subscribers_url": "https://api.github.com/repos/cybermonklabs/legion/subscribers",
+    "subscription_url": "https://api.github.com/repos/cybermonklabs/legion/subscription",
+    "commits_url": "https://api.github.com/repos/cybermonklabs/legion/commits{/sha}",
+    "git_commits_url": "https://api.github.com/repos/cybermonklabs/legion/git/commits{/sha}",
+    "comments_url": "https://api.github.com/repos/cybermonklabs/legion/comments{/number}",
+    "issue_comment_url": "https://api.github.com/repos/cybermonklabs/legion/issues/comments{/number}",
+    "contents_url": "https://api.github.com/repos/cybermonklabs/legion/contents/{+path}",
+    "compare_url": "https://api.github.com/repos/cybermonklabs/legion/compare/{base}...{head}",
+    "merges_url": "https://api.github.com/repos/cybermonklabs/legion/merges",
+    "archive_url": "https://api.github.com/repos/cybermonklabs/legion/{archive_format}{/ref}",
+    "downloads_url": "https://api.github.com/repos/cybermonklabs/legion/downloads",
+    "issues_url": "https://api.github.com/repos/cybermonklabs/legion/issues{/number}",
+    "pulls_url": "https://api.github.com/repos/cybermonklabs/legion/pulls{/number}",
+    "milestones_url": "https://api.github.com/repos/cybermonklabs/legion/milestones{/number}",
+    "notifications_url": "https://api.github.com/repos/cybermonklabs/legion/notifications{?since,all,participating}",
+    "labels_url": "https://api.github.com/repos/cybermonklabs/legion/labels{/name}",
+    "releases_url": "https://api.github.com/repos/cybermonklabs/legion/releases{/id}",
+    "deployments_url": "https://api.github.com/repos/cybermonklabs/legion/deployments"
+  }
+}

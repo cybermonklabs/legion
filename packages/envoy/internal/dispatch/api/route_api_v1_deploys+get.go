@@ -10,7 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Read each program's current deploy in ?repo=owner/repo, ordered by program, with its source, writer and known or unknown workflow run attempt.",
 	Handler:     (*server).listDeploys,
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: deploysResponse{}, Params: deploysQuery{},
 	},

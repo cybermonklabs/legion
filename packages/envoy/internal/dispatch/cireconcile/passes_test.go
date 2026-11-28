@@ -387,6 +387,39 @@ func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
 	}
 }
 
+// A pass whose caller is already cancelled when it begins still records a row, and that row says
+// the caller cancelled it. Cancelling first is a shorter road to the same insert than a shutdown
+// landing while the insert is in flight. Were the insert on the pass's context, pgxpool would
+// refuse at the acquire on this road, before any insert was sent. On the in-flight road, the read
+// of the id would fail after Postgres had committed the row. On both roads, the pass would hold
+// no row's id and record nothing of how it ended. beginPass says why the insert runs on a context
+// of its own.
+func TestAPassWhoseCallerIsAlreadyCancelledStillRecordsTheCancellation(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, reviewerAppID)
+	instance := registerProcess(t, h.pool, 0)
+	h.reconciler.Instance = func() string { return instance }
+
+	shutting, shutdown := context.WithCancel(h.ctx)
+	shutdown()
+	h.reconciler.Pass(shutting)
+
+	passes := recent(t, h.pool)
+	if len(passes) != 1 {
+		t.Fatalf("the pass left %d rows, want the one row a pass writes: a pass that holds no row's id records nothing of how it ended", len(passes))
+	}
+	pass := passes[0]
+	if pass.State != outcomeCancelled {
+		t.Errorf("the pass reads %q, want %q: its caller had cancelled it before it began: %+v", pass.State, outcomeCancelled, pass)
+	}
+	if pass.EndedAt == nil {
+		t.Error("the pass has no end time, so nothing tells it from a pass whose process died in the middle of it")
+	}
+	if pass.Instance != instance {
+		t.Errorf("the row names instance %q, want this process's %q", pass.Instance, instance)
+	}
+}
+
 // The record outlives the process that wrote it. A restart deletes the process's registry row
 // (Deregister) and the next process registers under an id of its own, and the day of passes the
 // route answers still holds both -- which is the whole reason the counts are in Postgres rather

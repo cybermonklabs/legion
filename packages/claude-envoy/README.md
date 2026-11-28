@@ -307,6 +307,15 @@ from the installed plugin, or from npm:
 npx --package @sjawhar/codex-envoy dispatch login --device --person <address>
 ```
 
+Where the deployment serves Dispatch sign-ins, the same command with `--scope person` (or
+`--scope none`) signs a session or tool in to Dispatch alone instead: the person approves the code
+on Dispatch's machine-login page, ticking the scopes it may hold, and the login enrolls no session
+and reads no secret:
+
+```bash
+npx --package @sjawhar/codex-envoy dispatch login --device --person <address> --scope person
+```
+
 It runs `dist/dispatch.js` with `bun`, as the plugin's server does, and follows the link npm
 makes for a package `bin` to find it.
 
