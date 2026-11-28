@@ -72,7 +72,9 @@ body: |-
   turn goes on, and each `result` sends every pending request no call put back at once. A request a
   call put back, every request of a call that failed (a 408 or a 429 among them, whoever answered
   it, and a call the bridge could not build) and each one the daemon's answer did not keep, goes
-  again under its id no sooner than 15 seconds after that call ended, one report at a time; any
+  again under its id, one report at a time: it falls due 15 seconds after that call ended, and
+  before then it may ride in the one report of put-back requests of a send that something else
+  started, such as another request falling due or a `result`; any
   other 4xx drops its report with a line. A request the daemon would refuse, such as one with a
   blank model, is dropped where the bridge reads it, with a line, and the others still go. The
   bridge sends nothing at its exit, so what it holds then is lost. A block of a request that comes

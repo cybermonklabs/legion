@@ -248,9 +248,9 @@ type TurnOutcomeResponse struct {
 	Failed     bool `json:"failed"`
 }
 
-// MaxModelRequests is the most requests one report of model requests carries: a host sends a
-// report within 15 seconds of a request's end, so a batch holds the requests of a few seconds of
-// its sessions, and one beyond the bound is refused rather than read.
+// MaxModelRequests is the most requests one report of model requests carries, and one beyond it
+// is refused rather than read. When a host sends its requests is in its reporter's header:
+// claudebridge's modelRequests and packages/pi-legion/src/model-requests.ts.
 const MaxModelRequests = 200
 
 // ModelRequestsRequest is a host's report of the model requests of the sessions it runs for one
@@ -297,10 +297,10 @@ type ModelRequest struct {
 // ModelRequestProblem is why the daemon cannot read request, "" where it can: it needs an id, a
 // session and a model, none of them empty once strings.TrimSpace has trimmed them, the moment it
 // ended, and its uncached input tokens absent or at least 0. The daemon refuses a report that holds
-// one such request whole (api's modelRequests), so a host drops such a request where it reads it,
-// and its owner's other requests still leave: the Claude Code bridge by this check (claudebridge's
-// assistant), the Oh My Pi plugin by the contract's (LegionModelRequest in
-// packages/contracts/src/legion-api.ts).
+// one such request whole (api's modelRequests). The Claude Code bridge checks each request by this
+// (claudebridge's assistant), and the Oh My Pi plugin by the contract's (LegionModelRequest in
+// packages/contracts/src/legion-api.ts); what a host does with a request refused is in its
+// reporter's header (claudebridge's modelRequests, packages/pi-legion/src/model-requests.ts).
 func ModelRequestProblem(request ModelRequest) string {
 	for _, field := range []struct{ name, value string }{{"id", request.ID}, {"session", request.Session}, {"model", request.Model}} {
 		if strings.TrimSpace(field.value) == "" {
@@ -323,8 +323,8 @@ func ModelRequestProblem(request ModelRequest) string {
 const ModelRequestsSpan = time.Hour
 
 // ModelRequestsResponse is the daemon's answer to a report: every id of the batch the daemon now
-// holds, new or held already, so the host forgets those and sends the rest again under the same
-// ids.
+// holds, new or held already. What a host does with these and the rest is in its reporter's
+// header (claudebridge's modelRequests, packages/pi-legion/src/model-requests.ts).
 type ModelRequestsResponse struct {
 	Kept []string `json:"kept"`
 }
