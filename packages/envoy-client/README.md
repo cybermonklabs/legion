@@ -2082,7 +2082,7 @@ would leave the human's Inbox unanswered and the approval refusal would find no 
 
 `dispatch request-approval` prints a refusal for the form of The Spec as Dispatch writes it, after its code (`SPEC_FORM: <error>`), and exits 1.
 A request that Dispatch records ends with one line on the form when a root of The Spec covers the document (the answer's `spec_form`): the count of each kind of text it read, or that it found no text of The Spec.
-Dispatch reads no list of terms yet, so the line names no terms.
+The line names no terms: `dispatch spec-form --terms` prints the list of terms of the root.
 
 `dispatch spec-form --issue <KEY> [--artifact <document>] [--version <N>]` prints the form of The Spec in one version of a document, as an approval request would judge it, and writes nothing (`specFormCommand`, `src/dispatch-commands/spec-form.ts`, over `GET /api/v1/artifacts/{id}/spec-form`).
 The version is the latest settled one by default.
