@@ -29,8 +29,9 @@ var _ = declareRow(func(s *server) routeRow {
 			"scopes is the " +
 			"OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard " +
 			"reaches, approve settles what a person settles, and p0 makes an issue's own priority 0 (a person at a " +
-			"browser holds all three, a personal token holds p0 only where its maker gave it, and no broker-issued " +
-			"token, shared token or service-account token holds it). Read-only credentials list read after those scopes. " +
+			"browser holds all three, a personal token holds p0 only where its maker gave it, a Dispatch sign-in's " +
+			"broker-issued token holds it only where its person ticked it, and no other broker-issued token, shared " +
+			"token or service-account token holds it). Read-only credentials list read after those scopes. " +
 			"cut is their past read time in UTC, or null when there is no cut; this route reports the cut rather than " +
 			"reading Dispatch at that time. A Legion daemon's own broker token answers [\"legion-status\"]: with " +
 			"DISPATCH_LEGION_STATUS_SCOPE on, legion-status or person lets a credential make the three writes of a " +

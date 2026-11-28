@@ -57,6 +57,10 @@
       "types": "./test/device-logins.ts",
       "bun": "./test/device-logins.ts"
     },
+    "./test/refusal-corpus": {
+      "types": "./test/refusal-corpus.ts",
+      "bun": "./test/refusal-corpus.ts"
+    },
     "./test/sign-ins": {
       "types": "./test/sign-ins.ts",
       "bun": "./test/sign-ins.ts"

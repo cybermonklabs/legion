@@ -36,7 +36,8 @@ var _ = declareRow(func(s *server) routeRow {
 			"judge. A priority of 0 needs the p0 scope: a create that names priority 0 makes the new issue's own "+
 			"priority P0, and from a credential that does not hold p0 it is 403 OAUTH_SCOPE_REQUIRED naming p0, under "+
 			"a WWW-Authenticate challenge for p0, and writes nothing. A person at a browser holds p0, a personal token "+
-			"holds it only where its maker gave it, and a create that names a priority of 1 to 3, or none, needs no "+
+			"holds it only where its maker gave it, a Dispatch sign-in's token only where its person ticked it, and a "+
+			"create that names a priority of 1 to 3, or none, needs no "+
 			"scope; a priority that an issue above the new issue has is none of its own. A create from a ref that "+
 			"Dispatch already imported answers that issue and sets no priority.", contracts.IssueTitleMax),
 		// A new child is checked against its parent's status under the same lock as /api/v1.

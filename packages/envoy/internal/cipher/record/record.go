@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
@@ -575,6 +576,11 @@ func validateDetails(details []AuthorizationDetail) error {
 	if len(d.Locations) > 0 {
 		return errors.New("a launcher_credential detail carries no locations")
 	}
+	for i, action := range d.Actions {
+		if action == "" || i > 0 && action <= d.Actions[i-1] {
+			return errors.New("launcher_credential actions are sorted, unique, non-empty words")
+		}
+	}
 	return nil
 }
 
@@ -584,8 +590,10 @@ func validateDetails(details []AuthorizationDetail) error {
 // records with nobody to refuse it to is held to the same rules by Sanitize, which drops those
 // runes and cuts the rest: what a model judge wrote (judge/model.go, judge/judge.go) and the
 // reason a session's call gave a release (requests.callReasonOf). One definition here keeps a
-// reason a person reads in the grant log and a reason a requester signed to one rule.
-const MaxReasonRunes = 400
+// reason a person reads in the grant log and a reason a requester signed to one rule. It is
+// contracts.BrokerRequestReasonMax, generated from BROKER_REQUEST_REASON_MAX in
+// packages/contracts, so each client's check before it asks holds the bound this refusal does.
+const MaxReasonRunes = contracts.BrokerRequestReasonMax
 
 // ReasonRefuses reports whether r is a rune no reason may carry.
 func ReasonRefuses(r rune) bool {

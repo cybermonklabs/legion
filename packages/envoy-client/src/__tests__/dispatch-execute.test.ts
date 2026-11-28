@@ -5027,6 +5027,7 @@ describe("executeDispatchTool", () => {
       service: null,
       project: null,
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("alice");
     expect(result.text).not.toContain("which is not this host session");
@@ -5054,6 +5055,7 @@ describe("executeDispatchTool", () => {
       service: null,
       project: null,
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("shared token");
   });
@@ -5086,6 +5088,7 @@ describe("executeDispatchTool", () => {
       service: "system:serviceaccount:legion:legion-worker",
       project: null,
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("runs as service legion/legion-worker");
     expect(result.text).not.toContain("shared token");
@@ -5282,6 +5285,7 @@ describe("executeDispatchTool", () => {
       service: null,
       project: "INFRA",
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("Session session-1 acts for alice");
     expect(result.text).toContain("Its token names project INFRA.");
@@ -5316,6 +5320,7 @@ describe("executeDispatchTool", () => {
       service: null,
       project: null,
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("Session ses_from_the_broker acts for alice");
     expect(result.text).toContain(
@@ -5346,6 +5351,7 @@ describe("executeDispatchTool", () => {
       service: null,
       project: null,
       project_scope: null,
+      scopes: null,
     });
     expect(result.text).toContain("Session session-1 acts for alice");
     expect(result.text).not.toContain("which is not this host session");
@@ -5413,7 +5419,7 @@ describe("executeDispatchTool", () => {
       cut,
     });
     expect(person).toBe(
-      `Session session-1 acts for alice with a read-only credential: it may read, and Dispatch refuses every write it makes. Its cut is ${cut}, the past time it reads Dispatch at.`
+      `Session session-1 acts for alice with a read-only credential: it may read, and Dispatch refuses every write it makes. Its cut is ${cut}, the past time it reads Dispatch at. Its credential holds the scopes person, read.`
     );
 
     // A service's read-only token with no cut: no sign-in to name, and no cut either.
@@ -5427,7 +5433,7 @@ describe("executeDispatchTool", () => {
       cut: null,
     });
     expect(service).toBe(
-      "Session session-1 runs as service example-fleet with a read-only credential: it may read, and Dispatch refuses every write it makes."
+      "Session session-1 runs as service example-fleet with a read-only credential: it may read, and Dispatch refuses every write it makes. Its credential holds the scope read."
     );
 
     // An exchange entry's account token narrowed to reading: Dispatch answers it
@@ -5443,7 +5449,7 @@ describe("executeDispatchTool", () => {
       sign_in_required: false,
     });
     expect(account).toBe(
-      "Session session-1 runs as service example-ns/example-public with a read-only credential: it may read, and Dispatch refuses every write it makes."
+      "Session session-1 runs as service example-ns/example-public with a read-only credential: it may read, and Dispatch refuses every write it makes. Its credential holds the scope read."
     );
 
     // A credential that writes is told what a writing credential is told, and nothing of reading.
@@ -5458,6 +5464,52 @@ describe("executeDispatchTool", () => {
     });
     expect(writer).toContain("issues you create without an assignee are assigned to alice");
     expect(writer).not.toContain("read-only");
+  });
+
+  // A Dispatch sign-in's token holds the scopes its person approved, which may be none: whoami
+  // names them in its text, with a word for none, and carries them in its details.
+  test.each([
+    ["a person sign-in", ["person"], "Its credential holds the scope person."],
+    [
+      "a token of two scopes",
+      ["person", "approve"],
+      "Its credential holds the scopes person, approve.",
+    ],
+    ["an empty sign-in", [], "Its credential holds no scope."],
+  ] as const)("dispatch_whoami names the scopes of %s", async (_, scopes, says) => {
+    const result = await executeDispatchTool({
+      tool: "dispatch_whoami",
+      args: {},
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: (async () =>
+        response({
+          kind: "agent",
+          owner: "ada@example.com",
+          service: null,
+          session: "session-1",
+          project: null,
+          project_scope: "consented",
+          scopes,
+          cut: null,
+          sign_in_required: false,
+        })) as unknown as typeof fetch,
+    });
+
+    expect(result.details).toEqual({
+      session: "session-1",
+      owner: "ada@example.com",
+      service: null,
+      project: null,
+      project_scope: "consented",
+      scopes: [...scopes],
+    });
+    expect(result.text).toContain("Session session-1 acts for ada@example.com");
+    expect(result.text).toContain(says);
   });
 
   // A job's token, which the secrets broker mints from a job entry, names a service and no person
@@ -5541,7 +5593,7 @@ describe("executeDispatchTool", () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
 
-    expect(result.details).toEqual({ session: "session-1", owner: null, ...answer });
+    expect(result.details).toEqual({ session: "session-1", owner: null, scopes: [], ...answer });
     for (const sentence of says) expect(result.text).toContain(sentence);
     for (const words of never) expect(result.text).not.toContain(words);
   });

@@ -390,15 +390,16 @@ func TestRevokeSignInSendsBearerPathAndThePerson(t *testing.T) {
 	}
 }
 
-// ServesDeviceGrant is read on every page load, so what it costs the broker and what it answers
-// when the broker says nothing are as much its contract as the fact it carries.
-func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
-	const withDevice = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:device_code"]}`
+// Capabilities is read on every page load, so what it costs the broker and what it answers when
+// the broker says nothing are as much its contract as the facts it carries.
+func TestCapabilitiesReadTheMetadataOnceAndKeepWhatItRead(t *testing.T) {
+	const withSignIn = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:device_code"],"scopes_supported":["machine","dispatch"]}`
+	const withDevice = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:device_code"],"scopes_supported":["machine"]}`
 	const withoutDevice = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:token-exchange"]}`
 
 	t.Run("the document decides, and one read answers every ask until it lapses", func(t *testing.T) {
 		reads := 0
-		body := withDevice
+		body := withSignIn
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/.well-known/oauth-authorization-server" {
 				t.Errorf("the client read %s, want the RFC 8414 document", r.URL.Path)
@@ -410,21 +411,27 @@ func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
 		defer server.Close()
 		client := New(server.URL, tokenFile(t, "account-token"))
 
-		if !client.ServesDeviceGrant(context.Background()) {
-			t.Fatalf("the first ask answered false, want true: the document names the device code")
+		if got := client.Capabilities(context.Background()); got != (Capabilities{DeviceGrant: true, DispatchSignIn: true}) {
+			t.Fatalf("the first ask answered %+v, want both: the document names the device code and the scope dispatch", got)
 		}
-		if !client.ServesDeviceGrant(context.Background()) || reads != 1 {
+		if got := client.Capabilities(context.Background()); !got.DeviceGrant || reads != 1 {
 			t.Fatalf("the broker was read %d times for two asks, want 1", reads)
 		}
 
-		// The window run out, as it does seconds later in a live process.
-		body = withoutDevice
-		client.deviceGrant.until = time.Now().Add(-time.Second)
-		if client.ServesDeviceGrant(context.Background()) {
-			t.Fatalf("a lapsed answer was kept, want the document read again")
+		// The window run out, as it does seconds later in a live process, and the broker
+		// redeployed with BROKER_DISPATCH_SIGNIN unset.
+		body = withDevice
+		client.metadata.until = time.Now().Add(-time.Second)
+		if got := client.Capabilities(context.Background()); got != (Capabilities{DeviceGrant: true}) {
+			t.Fatalf("a lapsed answer = %+v, want the document read again: a device grant and no Dispatch sign-in", got)
 		}
-		if reads != 2 {
-			t.Fatalf("the broker was read %d times, want 2", reads)
+		body = withoutDevice
+		client.metadata.until = time.Now().Add(-time.Second)
+		if got := client.Capabilities(context.Background()); got != (Capabilities{}) {
+			t.Fatalf("a lapsed answer = %+v, want the document read again: neither", got)
+		}
+		if reads != 3 {
+			t.Fatalf("the broker was read %d times, want 3", reads)
 		}
 	})
 
@@ -436,24 +443,24 @@ func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(withoutDevice))
+			_, _ = w.Write([]byte(withSignIn))
 		}))
 		defer server.Close()
 		client := New(server.URL, tokenFile(t, "account-token"))
 
-		if client.ServesDeviceGrant(context.Background()) {
-			t.Fatalf("the first ask answered true, want false: the document names no device code")
+		if got := client.Capabilities(context.Background()); !got.DispatchSignIn {
+			t.Fatalf("the first ask answered %+v, want a Dispatch sign-in: the document names dispatch", got)
 		}
 		fail = true
-		client.deviceGrant.until = time.Now().Add(-time.Second)
-		if client.ServesDeviceGrant(context.Background()) {
-			t.Fatalf("a failed read replaced the answer the broker gave, want it kept")
+		client.metadata.until = time.Now().Add(-time.Second)
+		if got := client.Capabilities(context.Background()); got != (Capabilities{DeviceGrant: true, DispatchSignIn: true}) {
+			t.Fatalf("a failed read answered %+v, want the answer the broker gave kept", got)
 		}
 	})
 
-	t.Run("a broker never read at all keeps the page", func(t *testing.T) {
-		if !New("http://"+testport.Refused(t), tokenFile(t, "account-token")).ServesDeviceGrant(context.Background()) {
-			t.Fatalf("an unreadable broker answered false; a page that vanishes on one failed read is worse than one that lingers")
+	t.Run("a broker never read at all keeps the page and offers no sign-in", func(t *testing.T) {
+		if got := New("http://"+testport.Refused(t), tokenFile(t, "account-token")).Capabilities(context.Background()); got != (Capabilities{DeviceGrant: true}) {
+			t.Fatalf("an unreadable broker answered %+v; a page that vanishes on one failed read is worse than one that lingers, and guidance toward a sign-in the broker may refuse is worse than none", got)
 		}
 	})
 
@@ -462,10 +469,10 @@ func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
 		defer server.Close()
 		client := New(server.URL, tokenFile(t, "account-token"))
 
-		if !client.ServesDeviceGrant(context.Background()) {
-			t.Fatalf("an unreadable document answered false, want the never-read answer")
+		if got := client.Capabilities(context.Background()); got != unreadCapabilities {
+			t.Fatalf("an unreadable document answered %+v, want the never-read answer", got)
 		}
-		if client.deviceGrant.read {
+		if client.metadata.read {
 			t.Fatalf("an unreadable document was remembered as an answer")
 		}
 	})

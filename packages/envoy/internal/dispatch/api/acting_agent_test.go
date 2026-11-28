@@ -515,14 +515,7 @@ func TestACommentUnderAPersonalTokenIsStillTheSessionsOwnWrite(t *testing.T) {
 		ID string `json:"id"`
 	}](t, commented).ID
 
-	var raw []byte
-	if err := database.Pool.QueryRow(context.Background(), `select author from comments where id = $1`, commentID).Scan(&raw); err != nil {
-		t.Fatalf("read the comment's author: %v", err)
-	}
-	var author model.Actor
-	if err := json.Unmarshal(raw, &author); err != nil {
-		t.Fatalf("decode the comment's author %s: %v", raw, err)
-	}
+	author := storedAuthor(t, database, commentID)
 	if author.Kind != "session" || author.ID != actingSession {
 		t.Fatalf("the comment's author = %s:%s, want the session it named", author.Kind, author.ID)
 	}

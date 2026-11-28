@@ -4,7 +4,12 @@ import type {
   SessionAnswersResponse,
   WhoamiResponse,
 } from "@legion/contracts";
-import { awaitsDecision, inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
+import {
+  awaitsDecision,
+  inboxThreadRow,
+  serviceSubjectLabel,
+  signInScopes,
+} from "@legion/contracts";
 import { actorText, deletedMark, editedMark } from "../actor-text";
 import { textHead } from "../ask-answer";
 import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
@@ -51,6 +56,10 @@ function whoamiPerson(identity: WhoamiResponse): string | null {
  * so it runs on the session's context alone. A read-only credential, which Dispatch names by
  * `read` among its scopes, is told it may only read, with its cut where it has one, in place of
  * the sentences about the issues it would create.
+ *
+ * It names the OAuth scopes the credential holds, with a word for none, as a Dispatch sign-in's
+ * person chose them, and carries them in its details; a Dispatch older than the field names none,
+ * and then neither does it.
  */
 export async function whoamiCommand(context: SessionContext): Promise<DispatchToolResult> {
   const { hostSession: sessionId, newClient: dispatchClient } = context;
@@ -71,6 +80,7 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // credential to name.
   const readOnly = identity.scopes?.includes("read") === true;
   const cut = identity.kind === "agent" ? (identity.cut ?? null) : null;
+  const scopes = identity.scopes ?? null;
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
@@ -139,9 +149,15 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
       : writesAsService
         ? " It names no one project, so it may write wherever a token that names no project may."
         : "";
+  const holds =
+    scopes === null
+      ? ""
+      : scopes.length === 0
+        ? " Its credential holds no scope."
+        : ` Its credential holds the ${scopes.length === 1 ? "scope" : "scopes"} ${scopes.join(", ")}.`;
   return {
-    text: acting + elsewhere + projectSentence,
-    details: { session, owner, service, project, project_scope: projectScope },
+    text: acting + elsewhere + projectSentence + holds,
+    details: { session, owner, service, project, project_scope: projectScope, scopes },
   };
 }
 
@@ -276,20 +292,38 @@ function inboxThreadLine(row: MyReplyRow, now: number): string {
  *  the broker refuses every decision of it, so, as the Inbox page links that row nowhere, the
  *  line prints no `approve_url` the broker still sends. A row that names no session leaves that
  *  field out rather than printing two dashes, and a machine login, which is decided with
- *  `dispatch` rather than on a broker page, carries no url to print. */
+ *  `dispatch` rather than on a broker page, carries no url to print.
+ *
+ *  A row whose `dispatch_scopes` is a list is a Dispatch sign-in (`signInScopes`, the rule the
+ *  Inbox page reads too): its line names it as one, the scopes it asks for after what it names
+ *  ("no scope" for none), and, in place of the session a sign-in never names, the reason its
+ *  request gave, or that it gives none. Anybody who reaches the broker's device route writes
+ *  that reason, and the named person's agents read this line, so it is marked as the requester's
+ *  own words, unchecked, and quoted as JSON, which keeps a reason holding a line break or a
+ *  control character on its one line. A row with no `dispatch_scopes`, a machine login's, a
+ *  secret request's or one from a broker older than sign-ins, prints as it did before them. */
 function credentialRequestLine(request: CredentialPendingRow): string {
   const session = request.session ?? null;
   const pending = awaitsDecision(request);
+  const asked = signInScopes(request);
+  const reason = request.reason ?? "";
   return [
-    `- ${request.kind}`,
+    asked === null ? `- ${request.kind}` : "- Dispatch sign-in",
     (request.identifiers ?? []).join(", "),
+    ...(asked === null ? [] : [`asks for ${asked.join(", ") || "no scope"}`]),
     request.requested_at,
     ...(pending
       ? []
       : [request.expires_at === undefined ? "expired" : `expired ${request.expires_at}`]),
-    ...(session === null
-      ? []
-      : [`session request=${session.request ?? "-"}, enrollment=${session.enrollment ?? "-"}`]),
+    ...(asked !== null
+      ? [
+          reason === ""
+            ? "gives no reason"
+            : `requester's words (unchecked): ${JSON.stringify(reason)}`,
+        ]
+      : session === null
+        ? []
+        : [`session request=${session.request ?? "-"}, enrollment=${session.enrollment ?? "-"}`]),
     ...(!pending || request.approve_url === undefined ? [] : [request.approve_url]),
   ].join(" · ");
 }
