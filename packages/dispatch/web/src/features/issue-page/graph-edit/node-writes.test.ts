@@ -1717,6 +1717,45 @@ test("a taken move whose answer names a gone sibling under a parent the held pag
   ).toEqual([]);
 });
 
+// R4 on a read of two pages, both held: the first page ends with the read's context nodes, and
+// the issue's own blocks stand on the second. Move down on the paragraph is taken after the
+// heading; until R7's re-read lands, the held read is the one the answer was written into, so a
+// second Move down goes from where the first left it, after the bullet list, and not after the
+// heading again.
+test("a second Move down on a read of two pages goes from where the first left the block", async () => {
+  const held: TreeAnswer = {
+    ...secondPage,
+    nodes: [...(firstPage.nodes ?? []), ...(secondPage.nodes ?? [])],
+  };
+  // R7's re-read is held out, so the case reads the held read the answers were written into.
+  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  const parent = `issue/${KEY}`;
+  const patches = answerPatches(
+    {
+      body: { after: "<tree/heading>", parent, placement_seq: "<seq:tree/paragraph>@2" },
+      status: 200,
+    },
+    {
+      body: { after: "<tree/bullet_list>", parent, placement_seq: "<seq:tree/paragraph>@3" },
+      status: 200,
+    }
+  );
+  const { writes } = mount(held);
+  await act(async () => {
+    await writes().move(PAGED, "move_down");
+  });
+  await act(async () => {
+    await writes().move(PAGED, "move_down");
+  });
+  expect(
+    patches.calls.map((call) => call.body),
+    "the second Move down goes from where the first left the block"
+  ).toEqual([
+    { after: "<tree/heading>", parent },
+    { after: "<tree/bullet_list>", parent },
+  ]);
+});
+
 // A refused next page ends the reads, and R7's re-read still goes, of the first page alone since
 // the page loaded no other: its answer decides what is drawn, so the paragraph, which that page
 // lacks, leaves the held read. The chain ends with no line on the row, and the refused page is
