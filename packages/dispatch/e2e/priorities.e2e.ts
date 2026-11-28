@@ -4500,7 +4500,9 @@ const tableCells: {
       await typeAndLeave(cell, " six-b");
       await second.stop();
       expect(
-        cell.writes.some((write) => write.expected.length > 1 && (write.text ?? "").includes(" six-b")),
+        cell.writes.some(
+          (write) => write.expected.length > 1 && (write.text ?? "").includes(" six-b")
+        ),
         "her second write named a list"
       ).toBe(true);
       await retryEach(cell, 4);
