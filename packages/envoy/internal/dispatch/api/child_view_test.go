@@ -123,17 +123,21 @@ func countedAsItsOwn(coverage model.IssueCoverage, block string) bool {
 // TestAChildWhoseSpecIsItsOwnNeverBecomesAView is c-child-view's second Go test. A parent whose
 // spec holds no requirement takes a child, born converted, whose spec holds one: the create is
 // taken, since no ancestor of the child holds a requirement, and it marks the child's spec its own
-// in its own transaction. The parent then takes a requirement through the edit route. The child
+// in its own transaction, as the pass of the block index that indexes the requirement does again:
+// own_spec_at holds the create's transaction's time, and two marks ran in it. The parent then
+// takes a requirement through the edit route. The child
 // is no view: its tree read answers view_of null, its coverage lists its requirement as its own,
 // counted as every requirement is, with no line reading it as a requirement on a view, and a
 // second requirement written on it through the same route is taken. Its row of issue_views says
 // it was born converted.
 func TestAChildWhoseSpecIsItsOwnNeverBecomesAView(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
+	installOwnSpecMarkLog(t, database)
 	createReferenceAPIProject(t, handler, "OWN")
 	parent := createDigestIssue(t, handler, database, "OWN", "The parent", "The parent's words.\n", false)
 	const block = "cr1"
 	child := createDigestChild(t, handler, database, "OWN", "The child", requirementMarkdown(block, "The child's own work."), parent.Key, false)
+	requireMarkedByItsCreate(t, database, child.Key, "the pass of the block index that indexes its requirement")
 	giveRequirement(t, handler, database, parent, "r1")
 
 	if read := treeRead(t, handler, child.Key, "", "alice", false); read.ViewOf != nil {
@@ -163,11 +167,13 @@ func TestAChildWhoseSpecIsItsOwnNeverBecomesAView(t *testing.T) {
 // paragraph, so no write through the API marks the child's spec its own. A client writes a
 // requirement block into the child's spec through its room and the room's settlement versions it,
 // whose block index states the requirement while no ancestor of the child holds one: the index
-// pass finds the child no view and marks its spec its own. The parent then takes a requirement,
+// pass finds the child no view and marks its spec its own, in a transaction that is not the
+// create's. The parent then takes a requirement,
 // and the child is still no view: its tree read answers view_of null and its coverage lists the
 // requirement as its own, with no line reading it as a requirement on a view.
 func TestAChildsRequirementWrittenThroughTheRoomMakesItsSpecItsOwn(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
+	installOwnSpecMarkLog(t, database)
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "ROOM")
 	parent := createDigestIssue(t, handler, database, "ROOM", "The parent", "The parent's words.\n", false)
@@ -177,6 +183,7 @@ func TestAChildsRequirementWrittenThroughTheRoomMakesItsSpecItsOwn(t *testing.T)
 	if !requirementIndexed(t, database, child.Key, block) {
 		t.Fatalf("the block index did not state the requirement %s of %s after its settlement", block, child.Key)
 	}
+	requireMarkedByItsSettlement(t, database, child.Key, block)
 	giveRequirement(t, handler, database, parent, "r1")
 
 	if read := treeRead(t, handler, child.Key, "", "alice", false); read.ViewOf != nil {
@@ -198,13 +205,16 @@ func TestAChildsRequirementWrittenThroughTheRoomMakesItsSpecItsOwn(t *testing.T)
 // spec holds a list of more items than a write indexes in its own request and one requirement, so
 // the create leaves the room's blocks to the reconciliation (R15), the spec owed its block index,
 // and the create's own mark and the pass that writes its requirement in the create's own
-// transaction (docs' planTypedPasses) hold the child's spec its own. The parent then takes a
+// transaction (docs' planTypedPasses) hold the child's spec its own: the create writes the
+// requirement's node at once (R8), own_spec_at holds the create's transaction's time, and two
+// marks ran in it. The parent then takes a
 // requirement while the child's index is still deferred, and the child answers view_of null; one
 // tick of the reconciliation indexes the child's spec, after which it answers view_of null again
 // and its coverage lists the requirement as its own, counted as every requirement is, with no line
 // reading it as a requirement on a view.
 func TestAChildWhoseCreateDeferredItsIndexKeepsItsSpecItsOwn(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	installOwnSpecMarkLog(t, database)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "DEFER")
 	parent := createDigestIssue(t, handler, database, "DEFER", "The parent", "The parent's words.\n", false)
@@ -214,6 +224,10 @@ func TestAChildWhoseCreateDeferredItsIndexKeepsItsSpecItsOwn(t *testing.T) {
 	if indexed := blockIndexVersion(t, database, child.PrimaryArtifactID); indexed != nil {
 		t.Fatalf("the create of %s indexed its blocks in its own request at version %d, so no index was deferred", child.Key, *indexed)
 	}
+	if nodes := blockNodesNamed(t, database, block); nodes != 1 {
+		t.Errorf("the create of %s, whose index it deferred, wrote %d node(s) of its requirement %s at once, want one (R8)", child.Key, nodes, block)
+	}
+	requireMarkedByItsCreate(t, database, child.Key, "the typed pass of its own write, which writes its requirement's node while its index is deferred (planTypedPasses)")
 	giveRequirement(t, handler, database, parent, "r1")
 
 	if read := treeRead(t, handler, child.Key, "", "alice", false); read.ViewOf != nil {

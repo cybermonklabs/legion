@@ -240,7 +240,10 @@ func requirementsSpec(ids []string) string {
 // read over the tuples: placement and coverage are two relations. One check serves three
 // requirements and keeps one place: one node, one id, one part_of to the first requirement of the
 // pointer's written order that is a node of its own issue, one rank, and three serves tuples. The
-// two change apart. A move through PATCH appends one part_of
+// coverage answer lists it under each of the three with one id in all three entries, not three,
+// and one result recorded on the check of the Verification document reads under each of its three
+// entries and is counted once in the store, where a copy per requirement would answer three ids
+// and three results. The two change apart. A move through PATCH appends one part_of
 // tuple and one retraction and writes no serves tuple: the node is stored under the requirement it
 // moved to, still serves its three, and the coverage read still lists it under each of them. A
 // retarget appends one serves tuple and one retraction and writes no part_of, whichever target it
@@ -251,7 +254,9 @@ func requirementsSpec(ids []string) string {
 // with no read moving it back; each retarget's text names that parent, as a document reads once a
 // move put it there, and the coverage read lists the node under what it serves alone. A plan node,
 // which carries the same pointer, does the same. A check and a plan node of a child issue that
-// serve the parent's requirement alone hang from the child issue, never under that requirement. A
+// serve the parent's requirement alone hang from the child issue, never under that requirement:
+// the parent's coverage answer lists each under it through serves, the check's entry marked with
+// the child, and the parent's verification record holds no node of the child. A
 // requirement moved from one criterion to another through PATCH changes its place alone, and the
 // store census reads zero after it. And this issue's own Verification document, indexed into a
 // child of a done parent, places c-tree-census under r-one-tree, the first of its six serves
@@ -272,16 +277,19 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 			refs.BlockNodeKind, spec(requirement.criterion), requirement.criterion, refs.PlacementAuthored)
 	}
 
-	// The plan is a role document, a fragment of the spec's room, whose tree keys its blocks' nodes
-	// and rows, so its row projects its parent requirement by its block id; checks.md plays no role,
-	// so it is a room of its own, whose ref_key keys its blocks' nodes, and its row names no block id
-	// of its parent (R5 of the issue-tree spec).
+	// The plan and the Verification document are role documents, fragments of the spec's room, whose
+	// tree keys their blocks' nodes and rows, so each row projects its parent requirement by its
+	// block id; checks.md plays no role, so it is a room of its own, whose ref_key keys its blocks'
+	// nodes, and its row names no block id of its parent (R5 of the issue-tree spec). A result is
+	// recorded on a check of the Verification document alone (resolveCheck).
 	for _, node := range []struct{ what, upload, typ, id, address, parent, movedParent string }{
 		{"the check", "checks.md", "check", "c1", "CORE-1/checks-md#c1", "", ""},
+		{"the Verification check", "verification.md", "check", "v1", core.address("v1"), "r1", "r3"},
 		{"the plan node", "plan.md", "plan_task", "t1", core.address("t1"), "r1", "r3"},
 	} {
 		address := node.address
 		base := requirementsServed(t, handler, node.typ)
+		entries := placementProofIDs(t, handler, "CORE-1")
 		uploadDocument(t, handler, "/api/v1/issues/CORE-1", node.upload, servingNode(node.typ, node.id, ref("r1"), ref("r2"), ref("r3")))
 		if nodes := blockNodesNamed(t, database, node.id); nodes != 1 {
 			t.Errorf("%s serving three requirements is %d node(s), want one with one id", node.what, nodes)
@@ -292,6 +300,21 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 		}
 		requireServes(t, database, node.what, address, spec("r1"), spec("r2"), spec("r3"))
 		requireServed(t, handler, node.what, node.typ, base, "r1", "r2", "r3")
+		// The broken state this case fails on is a copy: the coverage answer finds the same check
+		// under each of the three requirements, one entry under each carrying one node id in all
+		// three places, not three ids. One result recorded on the check of the Verification document,
+		// which alone takes a result, reads under each of the three entries, and the store counts it
+		// once: a build that copies the check per requirement answers three ids and three results.
+		if node.typ == "check" {
+			requireOneCheckEntry(t, handler, node.what, address, "", entries, "r1", "r2", "r3")
+		}
+		if node.upload == "verification.md" {
+			recordOnePlacementPass(t, handler, node.what, node.id)
+			requireOneCheckEntry(t, handler, node.what+" after one pass", address, provesPass, entries, "r1", "r2", "r3")
+			if stored := placementResultsStored(t, database, "CORE-1", node.id); stored != 1 {
+				t.Errorf("%s: the store holds %d results of the check after one pass, want one, counted once whatever it serves", node.what, stored)
+			}
+		}
 
 		// The move: PATCH puts the node under r3, a requirement it serves, which is not the first
 		// target of its pointer once the pointer is retargeted below. One part_of is appended and
@@ -370,11 +393,15 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 	requireStoreCensusZero(t, database, "after the move of the requirement r4 from the criterion k2 to k1")
 
 	// A child's check and plan node serving the parent's first requirement alone serve no
-	// requirement of their own issue, so each hangs from the child issue.
+	// requirement of their own issue, so each hangs from the child issue. The parent's coverage
+	// answer lists each under that requirement through serves, the check's entry marked with the
+	// child, and the parent's verification record holds no node of the child.
 	child := createChildIssue(t, handler, "CORE", "CORE-1", "The child's spec.\n")
 	childRoom := readDecisionDocument(t, database, child.Key, "spec")
+	parentCoverage := readCoverage(t, handler, "CORE-1")
+	childCheck := child.Key + "/checks-md#cc1"
 	for _, node := range []struct{ what, upload, typ, id, address string }{
-		{"the child's check", "checks.md", "check", "cc1", child.Key + "/checks-md#cc1"},
+		{"the child's check", "checks.md", "check", "cc1", childCheck},
 		{"the child's plan node", "plan.md", "plan_task", "ct1", childRoom.address("ct1")},
 	} {
 		address := node.address
@@ -391,6 +418,8 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 			}
 		}
 	}
+	requireParentListsChildEntry(t, handler, "CORE-1", child.Key, "r1", childCheck, parentCoverage)
+	requireParentRecordHoldsNoChildNode(t, database, "CORE-1", child.Key, core.address("v1"), childCheck, childRoom.address("ct1"))
 
 	// This document itself, its references to the graph-model root spec and to the issue-tree spec
 	// rewritten to TREE-1 and TREE-2, indexed into a child of a parent closed as done, each holding

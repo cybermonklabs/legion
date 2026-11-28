@@ -158,8 +158,9 @@ func TestTheCoverageAndResultsReadsAnswerFromTheTuples(t *testing.T) {
 // child is a view of the parent. A client that skips the editor's creation gate writes a
 // requirement block into the child's spec fragment through the issue room, where no route's check
 // runs; the room's settlement versions it and its block index states it. The child's tree read
-// answers the block as a requirement node of the child, as its text and type say. The coverage
-// read names it in the one line `<block id> is a requirement on a view` of its gaps and lists no
+// answers the block as a requirement node under the child, as its text and type say. The coverage
+// read names it in the one line `<block id> is a requirement on a view` of its gaps, the coverage
+// read over the tuples, read on its own, names the same line, and the coverage read lists no
 // requirement but the parent's that the child's check serves. The child is still a view of the
 // parent, and a requirement written on it through
 // POST /api/v1/artifacts/{id}/edits after the paste is still refused, since the pasted requirement
@@ -177,14 +178,23 @@ func TestARequirementPastedIntoAViewIsAGapOfItsOwnKind(t *testing.T) {
 
 	const block = "pr1"
 	pasteRequirement(t, handler, documents, child, block, "The pasted work.")
+	if !requirementIndexed(t, database, child.Key, block) {
+		t.Fatalf("the block index did not state the pasted requirement %s of %s after its settlement", block, child.Key)
+	}
 
 	read := treeRead(t, handler, child.Key, "", "alice", false)
-	if node, held := blockNodeOf(read, block); !held || node.Supertag != requirementBlockType || node.Issue != "" {
+	if node, held := blockNodeOf(read, block); !held || node.Supertag != requirementBlockType || node.Issue != "" ||
+		node.Parent == nil || node.Parent.Kind != graphstore.KindIssue || node.Parent.ID != child.Key {
 		typ := "no node"
 		if held {
 			typ = node.Supertag
 			if node.Issue != "" {
 				typ += " of " + node.Issue
+			}
+			if node.Parent == nil {
+				typ += " under no node"
+			} else {
+				typ += " under " + node.Parent.Kind + ":" + node.Parent.ID
 			}
 		}
 		t.Errorf("the tree read of %s answers the pasted block %s as %s, want requirement", child.Key, block, typ)
@@ -194,6 +204,7 @@ func TestARequirementPastedIntoAViewIsAGapOfItsOwnKind(t *testing.T) {
 	if !slices.Contains(coverage.Gaps, line) {
 		t.Errorf("the coverage of %s holds no gap for the pasted requirement %s: %q", child.Key, block, coverage.Gaps)
 	}
+	requireTwinNamesGap(t, deps, database, child.Key, line)
 	var listed []string
 	for _, requirement := range coverage.Requirements {
 		listed = append(listed, requirement.BlockID)

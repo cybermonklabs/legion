@@ -90,7 +90,8 @@ var searchKeyEmbeddingKinds = []string{
 // `<owner key>#<first block>`, and the owner key of a document's blocks becomes the issue's tree
 // node once the conversion moves them there: the windows are then written under the tree, the old
 // owner's rows stay for one release, which a rollback's search by meaning reads, and this build's
-// search reads only the windows of the current owner, so the moved block answers once. The
+// search reads only the windows of the current owner, so the moved block answers once, and a search
+// by meaning that the old owner's windows alone match answers nothing of the document. The
 // lexical search reads node_search, one row per node that holds text, and answers the node that
 // matched, while the artifact_versions_document_search trigger, its function and document_search
 // stay for a process of the release before, which reads that table alone. The conversion carries
@@ -107,7 +108,7 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	const moved = "The theodolite needs recalibration before the survey."
 	const word = "zorptangle"
 	ctx := context.Background()
-	embedder := &fakeEmbedder{vectors: map[string][]float32{query: queryVector()}}
+	embedder := &fakeEmbedder{vectors: map[string][]float32{query: queryVector(), searchKeyOldOwnerQuery: searchKeyOldOwnerVector()}}
 	handler, database, deps := newTestServer(t, testServerOptions{
 		embedder: embedder, duplicateBound: nearCopyVerdictBound(t), relatedBound: meaningVerdictBound(t),
 	})
@@ -130,7 +131,8 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	}
 
 	// The conversion's transaction rolled back (--dry-run) leaves the old owner's windows and
-	// writes none under the issue's tree node.
+	// writes none under the issue's tree node: the store holds no document window under any owner
+	// key but the old owner's, the tree node's among them.
 	openTheConversionFleet(t, database)
 	convertIssues(t, database, project, true)
 	if after := searchKeyWindows(t, database, issue.PrimaryArtifactID); !slices.Equal(after, oldWindows) {
@@ -142,6 +144,9 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 		if under := searchKeyWindows(t, database, tree); len(under) != 0 {
 			t.Errorf("the conversion rolled back left the windows %v under the issue's tree node %s, want none", under, tree)
 		}
+	}
+	if owners := searchKeyWindowOwners(t, database); !slices.Equal(owners, []string{issue.PrimaryArtifactID}) {
+		t.Errorf("the conversion rolled back left document windows under the owner keys %v, want the old owner %s's alone and none under the issue's tree node", owners, issue.PrimaryArtifactID)
 	}
 
 	// The conversion committed moves the blocks into the issue's tree.
@@ -171,12 +176,13 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 		t.Errorf("after the move the old owner %s holds the windows %v, want %v still stored for the release before", issue.PrimaryArtifactID, after, oldWindows)
 	}
 
-	// The census counts the old owner's windows once, as the class the root's pull request deletes.
+	// The census counts the old owner's windows once, as the class the root's pull request deletes:
+	// one line, moved_owner_windows, counts them all.
 	report := storeCensus(t, database)
 	var census bytes.Buffer
 	report.Write(&census)
 	t.Logf("the store census after the move:\n%s", census.String())
-	counted := regexp.MustCompile(`(?i)^census: store .*window.*=` + strconv.Itoa(len(oldWindows)) + `\b`)
+	counted := regexp.MustCompile(`^census: store moved_owner_windows=` + strconv.Itoa(len(oldWindows)) + ` \(`)
 	countedOnce := 0
 	for _, line := range strings.Split(census.String(), "\n") {
 		if counted.MatchString(line) {
@@ -184,7 +190,7 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 		}
 	}
 	if countedOnce != 1 {
-		t.Errorf("the store census names the %d windows the old owner keeps on %d lines, want one line counting them as the class the root deletes", len(oldWindows), countedOnce)
+		t.Errorf("the store census names the %d windows the old owner keeps on %d moved_owner_windows lines, want one line counting them as the class the root deletes", len(oldWindows), countedOnce)
 	}
 
 	// The conversion carried each block's authors to its node in the room: alice's, and never the
@@ -220,6 +226,10 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	if answered != 1 {
 		t.Errorf("a search by meaning for the moved block's words answers the block %s %d times, want once: %+v", movedBlock, answered, meaning.Results)
 	}
+	// The route keeps one row per document, so the read above answers the block once whatever
+	// windows the search read. The windows of the old owner alone matching a search by meaning,
+	// that search answers nothing of the spec: this build reads none of them.
+	requireOldOwnerWindowsUnread(t, handler, database, issue.PrimaryArtifactID, tree, issue.PrimaryArtifactID, movedBlock, len(oldWindows))
 
 	// No migration of this issue touches embeddings, so its kind constraint stands as it is.
 	var constraint string
