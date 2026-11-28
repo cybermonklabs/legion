@@ -21,6 +21,8 @@ const (
 	FreeLease      = freeLease
 	// LeaseCallTimeout is the bound every statement on a lease's own connection gets.
 	LeaseCallTimeout = leaseCallTimeout
+	// RenewHold identifies a hold's renewal statement in a database lock wait.
+	RenewHold = renewHold
 )
 
 // ErrLockNotHeld is what FreeSessionLock answers when the unlock reports the session never held
