@@ -2122,7 +2122,8 @@ export class DispatchApiClient {
   /** Approve a machine login as the signed-in viewer with the code the viewer typed: Dispatch
    *  names the viewer's own login as the approver, and the broker decides whether that login may.
    *  A secret request is decided only on the secrets broker's own page, so the broker refuses it
-   *  here with 403 `DECIDE_ON_BROKER_PAGE`. */
+   *  here with 403 `DECIDE_ON_BROKER_PAGE`. A Dispatch sign-in's body carries the scopes the viewer
+   *  ticked, the empty list included; a machine login's body carries none. */
   approveCredentialRecord(
     recordId: string,
     body: Body<"/api/v1/credential-requests/{id}/approve", "post">,
@@ -2131,7 +2132,8 @@ export class DispatchApiClient {
     return this.post("/api/v1/credential-requests/{id}/approve", { id: recordId }, body, bounds);
   }
 
-  /** Deny a machine login as the signed-in viewer with the code the viewer typed. */
+  /** Deny a machine login or a Dispatch sign-in as the signed-in viewer with the code the viewer
+   *  typed: a denial carries no scopes. */
   denyCredentialRecord(
     recordId: string,
     body: Body<"/api/v1/credential-requests/{id}/deny", "post">,

@@ -87,8 +87,9 @@ func errNoBrokerConfigured() *apiError {
 var brokerPersonScopes = []string{model.ScopePerson}
 
 // brokerApproveOnlyScopes is what an approve-only token holds (brokerTokenActor): the person and
-// approve scopes, never p0, which no broker-issued token holds. It is a slice of its own, as
-// brokerPersonScopes is, so no request allocates one; nothing writes it.
+// approve scopes, never p0, which of the broker-issued tokens only a Dispatch sign-in's holds,
+// where its person ticked it. It is a slice of its own, as brokerPersonScopes is, so no request
+// allocates one; nothing writes it.
 var brokerApproveOnlyScopes = []string{model.ScopePerson, model.ScopeApprove}
 
 // legionStatusScopes is the scopes of a Legion daemon's own broker token: model.ScopeLegionStatus
@@ -234,6 +235,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// none either, whatever scope the broker answered: there is no person for it to act as, and a
 	// scope that said otherwise would let it act as the session's own id on the routes that read
 	// what belongs to a person. A job's token, named or public, is one of those.
+	// A Dispatch sign-in carries its consentable, possibly empty, scope set instead of
+	// brokerPersonScopes: person and p0 each where its person ticked it, so it is the one
+	// broker-issued token that may hold p0, and never approve.
 	//
 	// A read-only token is read by its base word (ciphertoken.Caller.ProjectScope) as the same
 	// token without read would be: one narrowed from a token that acts as its person still acts
@@ -258,6 +262,11 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	switch {
 	case caller.ApproveOnly:
 		scopes = brokerApproveOnlyScopes
+	case caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson && caller.Consented != nil:
+		// The consented token's scope set as callerOf copied it for this request: each word
+		// consentable (ciphertoken's shapeOf), and non-nil and empty for an approval of none,
+		// which holds no scope. It is the caller's own copy, so the actor holds it as it is.
+		scopes = caller.Consented
 	case caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson:
 		scopes = brokerPersonScopes
 	case caller.LegionStatus && oneProject:
