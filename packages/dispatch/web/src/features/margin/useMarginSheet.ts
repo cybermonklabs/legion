@@ -75,6 +75,7 @@ function focusedItemFor(
 export function useMarginSheet(): MarginSheetModel {
   const {
     blockFilterId,
+    blockFilterGroup,
     blockPlacements,
     cancelCompose,
     clearBlockFilter,
@@ -251,6 +252,7 @@ export function useMarginSheet(): MarginSheetModel {
     retryItem,
     threads,
   } = useMarginItems(owner, tab, visibleArtifact, markPlacements, blockPlacements, blockFilterId, {
+    blockFilterIds: blockFilterGroup?.ids,
     documentShown: placementsPublished,
     documentUp: documentBridge !== undefined,
     held: heldReplyKeys,
@@ -522,6 +524,11 @@ export function useMarginSheet(): MarginSheetModel {
     setTab("comments");
     openCompactSheet();
   }, [blockFilterId, openCompactSheet]);
+  useEffect(() => {
+    if (blockFilterGroup === undefined) return;
+    setTab("comments");
+    openCompactSheet();
+  }, [blockFilterGroup, openCompactSheet]);
 
   const handledFocusSequence = useRef<number | undefined>(undefined);
   useEffect(() => {
@@ -726,6 +733,7 @@ export function useMarginSheet(): MarginSheetModel {
     filter: {
       blockId: blockFilterId,
       clear: clearBlockFilter,
+      ...(blockFilterGroup === undefined ? {} : { blockId: blockFilterGroup.id }),
     },
     placement: {
       blockPlacements,

@@ -1,9 +1,22 @@
-import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import {
+  type DefaultError,
+  type FetchQueryOptions,
+  type QueryClient,
+  type QueryKey,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
-import { issueQuery } from "../../api/queries";
+import {
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  issueQuery,
+  issueResultsQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { DOCUMENT_SCROLL_ATTRIBUTE } from "../../hooks/useFootInset";
 import {
@@ -13,11 +26,17 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { issueDecisionsQuery } from "../doc/spec-marks";
+import { HeldIssueTitles } from "../refs/held-issue-titles";
+import { HeldReferenceNames } from "../refs/reference-names";
 import { type IssueRoute, parseIssuePath } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { IssueBlockRoom } from "./block-room";
 import { IssueContentsPane, PAGE_INSET } from "./contents-frame";
 import { useDrawerPage } from "./drawer-page";
+import { presetOf } from "./issue-address";
+import { IssueTreeOwnerProvider } from "./issue-tree-owner";
 import type { SlotProps } from "./slot-props";
 import { DetailsSlot } from "./slots/details";
 import { FootSlot } from "./slots/foot";
@@ -25,6 +44,9 @@ import { HeaderSlot } from "./slots/header";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
 import { ViewRowSlot } from "./slots/view-row";
+import { outlineOf, outlineQuery } from "./tree-read/tree-read";
+import { issueMessagesQuery } from "./useIssueTree";
+import { ViewPressProvider } from "./view-press";
 
 /** The new issue page's root, drawn at an issue's address for a reader who chose it. Everything
  *  it draws, a refused address included, is inside the element that carries `data-issue-page`,
@@ -56,9 +78,36 @@ export function IssueOutlinePage(): ReactNode {
  */
 function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   const issue = useQuery(issueQuery(route.key));
+  // The reads the outline's rows and the page's first focus are built from go out as the page
+  // mounts, beside the issue read, rather than as the slots mount once it has answered
+  // (`startReadsAtOpen`). They are the reads of the address the page opened at: the page mounts
+  // again for another issue (`key`), and a view the reader moves to reads what it needs as its
+  // slots draw it.
+  const queryClient = useQueryClient();
+  const [opened] = useState(route);
+  useEffect(() => startReadsAtOpen(queryClient, opened), [opened, queryClient]);
   // While the page is mounted, the shell's Details drawer draws its head in the page's words and
   // lands an address on its cards by the page's rule.
   useDrawerPage(issue.data);
+  // The titles of the issue and its children, which a reference to one of them draws from the
+  // first drawing rather than once its summary or the page's batched read of names answers
+  // (`HeldIssueTitles`, `HeldReferenceNames`), so a row that names a child does not grow a line
+  // as that read answers (R3).
+  const children = issue.data?.children;
+  const key = issue.data?.key;
+  const title = issue.data?.title;
+  const titles = useMemo(
+    () =>
+      new Map([
+        ...(key === undefined || title === undefined ? [] : [[key, title] as const]),
+        ...(children ?? []).map((child) => [child.key, child.title] as const),
+      ]),
+    [children, key, title]
+  );
+  const heldNames = useMemo(
+    () => new Map([...titles].map(([issueKey, name]) => [`dispatch://${issueKey}`, name])),
+    [titles]
+  );
 
   useDocumentTitle(
     issue.data === undefined ? "Dispatch" : `${issue.data.key} · ${issue.data.title} · Dispatch`
@@ -105,23 +154,82 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   // pane 1068 px.
   // The column carries `data-document-scroll`, so the foot's end room for the floats goes here
   // (`FOOT_LAYERS` in `hooks/useFootInset.ts` says why).
+  // The tree's owner stands around the slots, inside the page's providers, so the issue's tree is
+  // built once for the page and every slot that draws from it reads that one
+  // (`issue-tree-owner.tsx`); a press on a view mounts no reader that builds it again. A press on
+  // the view row waits on the view's reads before it draws the view (`view-press.tsx`).
   const props: SlotProps = { issue: issue.data, route };
   return (
-    <ProvidersSlot {...props}>
-      <HeaderSlot {...props} />
-      <ViewRowSlot {...props} />
-      <div className="flex min-w-0 items-start">
-        <IssueContentsPane {...props} />
-        <div
-          className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
-          data-testid="issue-column"
-          {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
-        >
-          <StageSlot {...props} />
-          <FootSlot {...props} />
-        </div>
-      </div>
-      <DetailsSlot {...props} />
-    </ProvidersSlot>
+    <HeldIssueTitles.Provider value={titles}>
+      <HeldReferenceNames held={heldNames}>
+        <ProvidersSlot {...props}>
+          <IssueTreeOwnerProvider issue={issue.data}>
+            <IssueBlockRoom issue={issue.data}>
+              <ViewPressProvider>
+                <HeaderSlot {...props} />
+                <ViewRowSlot {...props} />
+                <div className="flex min-w-0 items-start">
+                  <IssueContentsPane {...props} />
+                  <div
+                    className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
+                    data-testid="issue-column"
+                    {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
+                  >
+                    <StageSlot {...props} />
+                    <FootSlot {...props} />
+                  </div>
+                </div>
+                <DetailsSlot {...props} />
+              </ViewPressProvider>
+            </IssueBlockRoom>
+          </IssueTreeOwnerProvider>
+        </ProvidersSlot>
+      </HeldReferenceNames>
+    </HeldIssueTitles.Provider>
   );
+}
+
+/**
+ * Sends, as the page mounts, the reads the outline's rows and the page's first focus are built
+ * from, so none of them waits for the issue read: the page mounts no slot until that read
+ * answers, and each slot's hooks sent these reads only as the slot mounted, so on a cold load
+ * each went out after the issue read had come back. They are the tree read of the view `route`
+ * opens, which answers the comments too, the five reads `useIssueTree` builds the tree from beside
+ * it - the coverage, the decisions, the results, the asks and the messages - and the reader's
+ * login. Each is sent under the key and with the function its hook reads it by, so the hook, once
+ * mounted, finds it out or answered and sends nothing of its own: a load sends each of them once,
+ * as before, only sooner.
+ *
+ * A read the cache holds already - answered, refused or out - is left to its hook, which reads it
+ * as it read it before (a refused tree read, for one, is not read again by a new observer,
+ * `TREE_FRESH`), so nothing is sent here that the page would not send. The tree read is the
+ * outline read the address's view sends with the load (`tree-read.ts`' `OutlineChoice.sends`):
+ * Graph's in Graph, Conversation's in Conversation and in each filter but Spec, whose own view
+ * read holds what it draws, and none in a view that holds no outline. A filter's own view read is
+ * the stage's to send (`ViewReadProvider`), which first drops the views a past load of the issue
+ * held: one sent here would be dropped and read a second time.
+ */
+function startReadsAtOpen(queryClient: QueryClient, route: IssueRoute): void {
+  const { key } = route;
+  const preset = presetOf(route);
+  const outline = outlineOf(preset);
+  if (outline !== undefined && preset !== "spec") {
+    startRead(queryClient, outlineQuery(key, outline));
+  }
+  startRead(queryClient, issueCoverageQuery(key));
+  startRead(queryClient, issueDecisionsQuery(key, true));
+  startRead(queryClient, issueResultsQuery(key));
+  startRead(queryClient, issueAskThreadsQuery(key));
+  startRead(queryClient, issueMessagesQuery(key));
+  startRead(queryClient, whoAmIQuery());
+}
+
+/** Sends `read` where the cache holds no query under its key (`startReadsAtOpen`). */
+function startRead<TData, TKey extends QueryKey>(
+  queryClient: QueryClient,
+  read: FetchQueryOptions<TData, DefaultError, TData, TKey>
+): void {
+  if (queryClient.getQueryState(read.queryKey) === undefined) {
+    void queryClient.prefetchQuery(read);
+  }
 }

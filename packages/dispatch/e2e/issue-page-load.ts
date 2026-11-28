@@ -1,0 +1,1146 @@
+import { existsSync, readFileSync } from "node:fs";
+import type { Browser, BrowserContext, Page, TestInfo } from "@playwright/test";
+import type { IssueAskRow } from "../web/src/api/types";
+import { presetPath } from "../web/src/features/issue-page/issue-address";
+import { outlineRowPath } from "../web/src/features/issue-page/lenses/store-link";
+import {
+  CONTROL_LABELS,
+  PRESET_NAMES,
+  PRESET_ORDER,
+  type Preset,
+} from "../web/src/features/issue-page/page-words";
+import { buildIssuePath } from "../web/src/features/refs/routes";
+import { getIssue } from "./api";
+import { withIssuePage } from "./issue-page-option";
+import { editNoticesSent } from "./issue-page-t-rows";
+import {
+  LARGEST_SHAPE,
+  type LargestShapeSeed,
+  seedLargestShape,
+  seedLargestShapeWaiting,
+} from "./issue-page-t-scale";
+import { type Gate, OWED_BY, seedEventsLanded } from "./issue-page-t-tree";
+import {
+  type ActReading,
+  type ActStep,
+  type ActTarget,
+  type ArmWhen,
+  actBounds,
+  armStep,
+  type BoundReading,
+  boundHolds,
+  type ControlTarget,
+  type InstrumentConfig,
+  installInstruments,
+  type LoadRecord,
+  type LoadRequests,
+  longestEvent,
+  longestTaskAfterViewRow,
+  makeInput,
+  PAGE_ACT,
+  readingLine,
+  resultShown,
+  revealStep,
+  UNFOLD_ACT,
+  viewActName,
+  watchLoadRequests,
+} from "./load-instruments";
+import { resetDatabase } from "./seed";
+import { test as base, expect } from "./test";
+import { watchApiRequests } from "./traffic";
+import { asUser } from "./users";
+
+/**
+ * What the load rows of `e2e/issue-page-load.e2e.ts` share: the views they load and the acts they
+ * make at each width, the rows they read, the seed one worker's rows read, the processor's
+ * slowing, and the five loads of a bound, each in a new browser context so its cache is empty.
+ * The instruments that read each bound are `e2e/load-instruments.ts`'s.
+ */
+
+// ---------------------------------------------------------------------------------------------
+// What the rows read on the page.
+// ---------------------------------------------------------------------------------------------
+
+/** A row of a view: the outline's rows (`NodeRow.tsx`), Spec's statements and other rows,
+ *  Verification's cards, checks and issues, Plan's steps and cycles, and the Decisions view's
+ *  rows (`decisions-filter/DecisionsRow.tsx`, a `[data-node-row]` under the view's body). */
+export const VIEW_ROW_SELECTOR = [
+  "[data-node-row]",
+  "[data-spec-statement]",
+  "[data-spec-other]",
+  "[data-verification-card]",
+  "[data-verification-check]",
+  "[data-verification-issue]",
+  "[data-plan-bar-row]",
+  "[data-plan-cycle-row]",
+  "[data-decisions-body] [data-node-row]",
+].join(", ");
+
+/** A row of the children's section (`children-section.tsx`). */
+export const CHILD_ROW_SELECTOR = "[data-child-entry]";
+
+/** Every row the load rows read: a view's and the children's section's. The element of each that
+ *  owns the text of its first line carries `elementtiming="issue-page-row"`, and the init script
+ *  ties each Element Timing entry to the row that holds its element by this selector. */
+export const LOAD_ROW_SELECTOR = `${VIEW_ROW_SELECTOR}, ${CHILD_ROW_SELECTOR}`;
+
+/** What a row stands under at the viewport's top: the header's band, and the view row, which
+ *  stays below 1280 px where the header scrolls away. */
+export const HEADER_SELECTORS = ["[data-identity-block]", "[data-filter-row]"] as const;
+
+/** The mark of a view's place while its read is out: the view's tree reads busy, as Plan's empty
+ *  tree does while a read of it is out (`plan-filter/PlanFilterBody.tsx`). */
+export const VIEW_LOADS_SELECTOR = '[data-issue-page] [aria-busy="true"]';
+
+/** The reader every load is signed in as. */
+export const READER = "alice";
+
+// ---------------------------------------------------------------------------------------------
+// The views (R1).
+// ---------------------------------------------------------------------------------------------
+
+/** A view a load row reads, and the gate it is owed on until the view row's list holds it. */
+export interface LoadView {
+  readonly gate: Gate;
+  /** Its word, in the row's title. */
+  readonly name: string;
+  /** Its token in the view row's list. */
+  readonly view: string;
+}
+
+/** Root R2's views in its order: Dashboard first, Threads and Documents after Decisions, Graph
+ *  last. The view row's list (`PRESET_ORDER`) holds those of the parts under the head. */
+const ROOT_VIEWS = [
+  "dashboard",
+  "conversation",
+  "spec",
+  "verification",
+  "plan",
+  "decisions",
+  "threads",
+  "documents",
+  "graph",
+] as const;
+
+/** The three views a later part adds to the view row's list, each with its word and its part. */
+const LATER_VIEWS: Readonly<Record<string, { readonly name: string; readonly part: string }>> = {
+  dashboard: { name: "Dashboard", part: "INFRA-5702, Dashboard's part," },
+  documents: { name: "Documents", part: "INFRA-3940, part N, which adds Documents to the row," },
+  threads: { name: "Threads", part: "INFRA-5704, the Threads part," },
+};
+
+/** Every view a load row reads: each the view row's list holds at this head, and Dashboard,
+ *  Threads and Documents, each owed while the list does not hold it, as `dashboardPartGate` of
+ *  `e2e/issue-page-t-tree.ts` is. A view the list holds that root R2 does not name comes last,
+ *  so no view the row draws goes unread. */
+export const LOAD_VIEWS: readonly LoadView[] = [
+  ...ROOT_VIEWS,
+  ...PRESET_ORDER.filter((view) => !(ROOT_VIEWS as readonly string[]).includes(view)),
+].flatMap((view) => {
+  const drawn = (PRESET_ORDER as readonly string[]).includes(view);
+  const later = LATER_VIEWS[view];
+  if (!drawn && later === undefined) return [];
+  const name = (PRESET_NAMES as Readonly<Record<string, string>>)[view] ?? later?.name ?? view;
+  return [
+    {
+      gate: {
+        met: drawn,
+        owed:
+          `owed until ${later?.part ?? "its part"} is on this branch's base: the view row's ` +
+          `list holds no ${name} here; ${OWED_BY}`,
+      },
+      name,
+      view,
+    },
+  ];
+});
+
+// ---------------------------------------------------------------------------------------------
+// The acts (R2), at each width.
+// ---------------------------------------------------------------------------------------------
+
+/** A width the load rows read the page at: `chromium-load`'s and `iphone-load`'s. */
+export type LoadWidth = 1440 | 390;
+
+/** What kind of act an act is. */
+export type LoadActKind =
+  | "details"
+  | "edit"
+  | "fold"
+  | "indent"
+  | "keys"
+  | "menu"
+  | "next"
+  | "previous"
+  | "unfold"
+  | "view";
+
+/** One act of R2: its steps, the last of which is the act measured and the others what it needs
+ *  done first, and the steps that put the page back after it, so the act after it starts from
+ *  where this one did. */
+export interface LoadAct {
+  readonly after: readonly ActStep[];
+  readonly kind: LoadActKind;
+  /** Its words, in the row's title. */
+  readonly name: string;
+  readonly steps: readonly ActStep[];
+  /** The view a press on a view turns on. */
+  readonly view?: Preset;
+  /** The view an act after the load is made in, where it is not Conversation: it follows the
+   *  press on that view (`afterLoadOrder`), or, for the Indent, its row loads that view's address
+   *  (`AFTER_LOAD_INDENT`). */
+  readonly on?: Preset;
+  /** The paging control an act after the load presses first. It draws another page of rows from
+   *  the tree the view already holds. Row 5 fails with this selector if the control is absent. */
+  readonly paging?: string;
+  /** The first moment the act can be made during the load: a press on a control at the first
+   *  drawing of the view row, and a fold, an unfold, `j`, `k` and `Enter` at the first drawing of
+   *  the rows. */
+  readonly when: "rows" | "view row";
+}
+
+const PRESETS = '[data-testid="issue-presets"]';
+const MENU = `${PRESETS} [role="menu"]`;
+const ONE_CONTROL: ControlTarget = {
+  kind: "control",
+  selector: `${PRESETS} button[aria-haspopup="menu"]`,
+};
+/** The list Keys opens (`shell/ShortcutHelp.tsx`). */
+const KEYS_LIST = '[role="dialog"][aria-label="Keyboard shortcuts"]';
+/** Details, open: the drawer the header's Details control opens (`margin/Margin.tsx`), an
+ *  `aside`, where today's margin, which carries the same test id, is a `div`. */
+const DETAILS_OPEN = 'aside[data-testid="desktop-margin-shell"]:not([hidden])';
+/** The fold control of a row that holds children (`NodeRow.tsx`), and an open such row. */
+const FOLD_CONTROL = "button[data-node-bullet]";
+const OPEN_ROW = '[data-node-row][aria-expanded="true"]';
+/** The box a row's editor is drawn in while the row holds the caret (`node-caret.ts`'s
+ *  `EDITOR_BOX_ATTRIBUTE`, `StagedDocument.tsx`). */
+export const EDITOR_BOX_SELECTOR = "[data-editor-box]";
+/** The element of a row that owns the words of its first line (`LOAD_ROW_SELECTOR`). */
+const ROW_WORDS = '[elementtiming="issue-page-row"]';
+/** A row of the outline whose node is a block of one of the issue's documents, whose id ends in
+ *  its block's fragment (`tree-drafts.ts`'s `blockNodeId`): a row whose text `Enter` puts the
+ *  caret in, where a row of a child issue, a comment or a message has none. */
+export const DOCUMENT_ROW_SELECTOR = '[data-issue-body] [data-node-row][data-node-id*="#b-"]';
+/** The root's paging control in either outline (Conversation or Graph). It draws the next
+ *  top-level rows from the read the view already holds (`TreeRows.tsx`, `PageControl` kind
+ *  `page` at level 1), not another server page. */
+export const ROWS_PAGE_CONTROL = '[data-issue-body] [data-tree-page][aria-level="1"] button';
+
+/** A step made with the mouse at `target`'s box. */
+function press(name: string, target: ActTarget, result: ActStep["result"], measured: boolean) {
+  return { input: { kind: "press", target }, measured, name, result } as const satisfies ActStep;
+}
+
+/** A step made with the key `key`. */
+function stroke(name: string, key: string, result: ActStep["result"], measured: boolean) {
+  return { input: { key, kind: "key" }, measured, name, result } as const satisfies ActStep;
+}
+
+/** A press on `view`: from 1280 px up its own control, which then reads as pressed; below that a
+ *  choice in the one control's menu, opened first, after which the one control names the view. */
+function viewPress(view: Preset, width: LoadWidth): LoadAct {
+  const word = PRESET_NAMES[view];
+  const name = viewActName(view);
+  const naming = (selector: string): ControlTarget => ({
+    kind: "control",
+    label: { text: word, within: "[data-preset-name]" },
+    selector,
+  });
+  const steps =
+    width === 1440
+      ? [
+          press(
+            name,
+            naming(`${PRESETS} button[aria-pressed]`),
+            {
+              busy: VIEW_LOADS_SELECTOR,
+              current: naming(`${PRESETS} button[aria-pressed="true"]`),
+              kind: "view",
+            },
+            true
+          ),
+        ]
+      : [
+          press(
+            "a press on the one control",
+            ONE_CONTROL,
+            { kind: "present", selector: MENU },
+            false
+          ),
+          press(
+            name,
+            {
+              kind: "control",
+              label: { text: word, within: "span[id]" },
+              selector: `${MENU} [role="menuitemradio"]`,
+            },
+            { busy: VIEW_LOADS_SELECTOR, current: naming(ONE_CONTROL.selector), kind: "view" },
+            true
+          ),
+        ];
+  return { after: [], kind: "view", name, steps, view, when: "view row" };
+}
+
+const UNFOLD = press(
+  UNFOLD_ACT,
+  { control: FOLD_CONTROL, kind: "folded" },
+  { kind: "expanded", value: "true" },
+  true
+);
+const NEXT = stroke("j", "j", { kind: "ring", step: 1 }, true);
+/** The outline's tab-stop row: the row a reader reading the outline is on. */
+const TAB_STOP_OUTLINE_ROW = '[data-issue-body] [data-node-row][tabindex="0"]';
+/** A press on the outline's tab-stop row outside its words, which puts the focus on the row as a
+ *  reader reading is on it, so `j` steps from a row wherever an act before it left the focus - the
+ *  one control, after its menu's Escape, at 390 px. Unmeasured, as Row 5's press on a row before
+ *  its `Enter` is. */
+const ON_THE_ROW = press(
+  "a press on the outline's tab-stop row",
+  {
+    drawn: "any",
+    kind: "row",
+    outsideWords: "[data-node-words]",
+    row: TAB_STOP_OUTLINE_ROW,
+    words: ROW_WORDS,
+  },
+  { kind: "focus" },
+  false
+);
+/** `Enter` on the focused row, which puts the caret in the row's text (`useTreeKeymap.ts`'s
+ *  `tree-edit`). */
+const ENTER = stroke("Enter", "Enter", { box: EDITOR_BOX_SELECTOR, kind: "caret" }, true);
+/** Escape from the row's text, which gives the focus back to the row (`tree-leave-caret`). */
+const LEAVE_TEXT = stroke("Escape", "Escape", { kind: "focus" }, false);
+
+/**
+ * The unmeasured press that puts the focus on a row of a document's block (`DOCUMENT_ROW_SELECTOR`)
+ * outside its words, without opening the editor, before `Enter` on it: the first such row the view
+ * draws (`drawn: "any"`), or the first of those a paging control drew (`drawn: "since"`).
+ */
+function onRowWithText(drawn: "any" | "since") {
+  return press(
+    "a press on the row",
+    {
+      drawn,
+      kind: "row",
+      outsideWords: "[data-node-words]",
+      row: DOCUMENT_ROW_SELECTOR,
+      words: ROW_WORDS,
+    },
+    { kind: "focus" },
+    false
+  );
+}
+
+/**
+ * `Enter` once the load has ended, named `name` and made in `on`, on a row of a document's block:
+ * the first the view draws, or where `paging` names a paging control, the first of the rows that
+ * control draws once it is pressed. The row is pressed outside its words first, which puts the
+ * focus on it without opening the editor. Escape leaves its text after.
+ */
+function enterOn(name: string, on: Preset, paging: string | null): LoadAct {
+  const pager = (selector: string) =>
+    press(PAGE_ACT, { kind: "control", selector }, { kind: "more" }, false);
+  const row = onRowWithText(paging === null ? "any" : "since");
+  return {
+    after: [LEAVE_TEXT],
+    kind: "edit",
+    name,
+    on,
+    ...(paging === null ? {} : { paging }),
+    steps: [...(paging === null ? [] : [pager(paging)]), row, { ...ENTER, name }],
+    when: "rows",
+  };
+}
+
+/**
+ * Row 5's `Enter`s, four in each load (Verification v9, `c-load-1440` Row 5). In both Conversation
+ * and Graph, the first is on a row already drawn when the load ends; the next is on a row that
+ * view's root paging control draws when pressed. Graph uses the same outline (`ViewGraphSlot`'s
+ * `BodySlot`) and the same paging control as Conversation.
+ */
+export const AFTER_LOAD_ENTERS: readonly LoadAct[] = [
+  enterOn("Enter in Conversation on a row of the first page", "conversation", null),
+  enterOn("Enter in Conversation on a row of a later page", "conversation", ROWS_PAGE_CONTROL),
+  enterOn("Enter in Graph on a node of the first page", "graph", null),
+  enterOn("Enter in Graph on a row of a later page", "graph", ROWS_PAGE_CONTROL),
+];
+
+/** The rows of the outline, Conversation's or Graph's (`NodeRow.tsx`), each at its `aria-level`,
+ *  in the order drawn: a node's children follow its row, one level deeper, before the row of its
+ *  next sibling. */
+const OUTLINE_ROW_SELECTOR = "[data-issue-body] [data-node-row]";
+
+/** The node kinds Graph indents, as the root's editing rule says, by the `data-node-type` each
+ *  row carries (`NodeRow.tsx`): a criterion, a statement (`requirement`), a check, a plan task and
+ *  a prose node. */
+const INDENTED_TYPES = ["criterion", "requirement", "check", "plan_task", "prose"] as const;
+
+/** The name of Row 5's Indent, in its row's title. */
+const INDENT_ACT = "an Indent in Graph";
+
+/** The title of the Indent's row: a test of its own beside Row 5's (`AFTER_LOAD_TITLE`), since
+ *  `owedUnless` skips the whole test it is called in. */
+export const INDENT_TITLE = `${INDENT_ACT} shows its result within 200 ms after the load`;
+
+/**
+ * Row 5's Indent in Graph (spec v23's R2, Verification v35's Row 5, decision 597 amended), made
+ * once in each load of its own row, once the load of Graph's address has ended. A press outside
+ * its words puts the focus on the first row the page draws whose node Graph indents and which has
+ * a sibling above it (the nearest row before it at its level, under the same parent), and `Enter`
+ * puts the caret in its text, both untimed; `Tab`, the act measured, draws the node as a child of
+ * that sibling before the server answers (decision 595). After the reading `Shift+Tab` puts the
+ * node back and `Escape` leaves its text, so each load starts from the seed's tree. It is in
+ * neither `LOAD_ACTS` nor `afterLoadOrder`'s list, so Row 4, the production script and
+ * `issue-page-load-longest.e2e.ts` make no Indent: the production check sends no write.
+ */
+export const AFTER_LOAD_INDENT: LoadAct = {
+  after: [
+    stroke(
+      "Shift+Tab",
+      "Shift+Tab",
+      { kind: "indent", rows: OUTLINE_ROW_SELECTOR, step: -1 },
+      false
+    ),
+    LEAVE_TEXT,
+  ],
+  kind: "indent",
+  name: INDENT_ACT,
+  on: "graph",
+  steps: [
+    press(
+      "a press on the row",
+      {
+        drawn: "any",
+        kind: "row",
+        outsideWords: "[data-node-words]",
+        row: INDENTED_TYPES.map((type) => `${OUTLINE_ROW_SELECTOR}[data-node-type="${type}"]`).join(
+          ", "
+        ),
+        sibling: OUTLINE_ROW_SELECTOR,
+        words: ROW_WORDS,
+      },
+      { kind: "focus" },
+      false
+    ),
+    { ...ENTER, measured: false },
+    stroke(INDENT_ACT, "Tab", { kind: "indent", rows: OUTLINE_ROW_SELECTOR, step: 1 }, true),
+  ],
+  when: "rows",
+};
+
+/** The store of each change of Graph from its press to its answer, which the fast-changes part
+ *  brings, by its path in this package: the module INFRA-1196's architect fixed for it
+ *  (dispatch://INFRA-6327/comment/f221c026-f3ca-4252-a4dd-24c486864e04). */
+const PENDING_CHANGES_MODULE = "web/src/features/issue-page/graph-edit/pending-changes.ts";
+
+/** Whether a file of the page, by its path under `packages/dispatch`, holds `pattern`: a copy of
+ *  the two lines of `pageSourceHolds` of `e2e/issue-page-t-tree.ts`, which part T's file does not
+ *  export. */
+function pageSourceHolds(path: string, pattern: RegExp): boolean {
+  const file = new URL(`../${path}`, import.meta.url);
+  return existsSync(file) && pattern.test(readFileSync(file, "utf8"));
+}
+
+/**
+ * The fast-changes part (dispatch://INFRA-6327), which draws an Indent in Graph before the server
+ * answers, under this branch's head: the tree under test holds `PENDING_CHANGES_MODULE`, and it
+ * exports something. It reads the files the build is made from, as `partUGate` of
+ * `e2e/issue-page-t-tree.ts` reads its module, so the Indent's row turns on by itself at the head
+ * that holds that part. Where that part renames the module, it says so in its thread first, and
+ * this gate reads the new name.
+ */
+export const fastChangesGate: Gate = {
+  met: pageSourceHolds(PENDING_CHANGES_MODULE, /^export /m),
+  owed:
+    "owed until dispatch://INFRA-6327, the fast-changes part that draws an Indent in Graph " +
+    `before the server answers, is under this branch's head: ${PENDING_CHANGES_MODULE} is not ` +
+    `in this tree or exports nothing here; ${OWED_BY}`,
+};
+
+/**
+ * The acts every width makes on Conversation's rows: a fold and an unfold of the first row that
+ * holds children, `j`, `k` and `Enter`. An unfold first folds that row, `j` first puts the focus
+ * on the outline's tab-stop row with a press on it, `k` first steps forward with `j`, and `Enter`
+ * first puts the focus on the first row of a document's block the outline draws, whose text it
+ * puts the caret in, with a press on that row outside its words, as Row 5's `Enter`s do
+ * (`onRowWithText`): the row after the page's first focus may be an ask's, which has no text. So
+ * each has a row to act on at its first moment.
+ *
+ * At 1440 px the row folded is the first in the viewport under the header that holds children,
+ * which the first drawing of the rows holds. At 390 px the first screen is the children's section,
+ * and no row of the outline that holds children stands in it, so the row folded is the first in
+ * the document that holds children (`within: "document"`), which is scrolled into view first
+ * (`revealStep`), and the fold is made at the first moment after that.
+ */
+function outlineActs(within: "document" | "viewport"): readonly LoadAct[] {
+  const fold = press(
+    "a fold",
+    { control: FOLD_CONTROL, kind: "fold", row: OPEN_ROW, within },
+    { kind: "expanded", value: "false" },
+    true
+  );
+  return [
+    {
+      after: [{ ...UNFOLD, measured: false }],
+      kind: "fold",
+      name: "a fold",
+      steps: [fold],
+      when: "rows",
+    },
+    {
+      after: [],
+      kind: "unfold",
+      name: "an unfold",
+      steps: [{ ...fold, measured: false }, UNFOLD],
+      when: "rows",
+    },
+    { after: [], kind: "next", name: "j", steps: [ON_THE_ROW, NEXT], when: "rows" },
+    {
+      after: [],
+      kind: "previous",
+      name: "k",
+      steps: [{ ...NEXT, measured: false }, stroke("k", "k", { kind: "ring", step: -1 }, true)],
+      when: "rows",
+    },
+    {
+      after: [LEAVE_TEXT],
+      kind: "edit",
+      name: "Enter",
+      steps: [onRowWithText("any"), ENTER],
+      when: "rows",
+    },
+  ];
+}
+
+/** A press on Keys, which opens the list of keys, closed after with Escape. */
+const KEYS_ACT: LoadAct = {
+  after: [stroke("Escape", "Escape", { kind: "absent", selector: KEYS_LIST }, false)],
+  kind: "keys",
+  name: "a press on Keys",
+  steps: [
+    press(
+      "a press on Keys",
+      {
+        kind: "control",
+        label: { text: CONTROL_LABELS.keys, within: null },
+        selector: "[data-filter-row] button",
+      },
+      { kind: "present", selector: KEYS_LIST },
+      true
+    ),
+  ],
+  when: "view row",
+};
+
+/** A press on Details, which opens the drawer, closed after with its own Close. */
+const DETAILS_ACT: LoadAct = {
+  after: [
+    press(
+      "Close",
+      { kind: "control", selector: `${DETAILS_OPEN} [data-testid="details-close"]` },
+      { kind: "absent", selector: DETAILS_OPEN },
+      false
+    ),
+  ],
+  kind: "details",
+  name: "a press on Details",
+  steps: [
+    press(
+      "a press on Details",
+      { kind: "control", selector: '[data-testid="issue-details-control"]' },
+      { kind: "present", selector: DETAILS_OPEN },
+      true
+    ),
+  ],
+  when: "view row",
+};
+
+/** A press on the one control below 1280 px, which opens its menu, closed after with Escape. */
+const ONE_CONTROL_ACT: LoadAct = {
+  after: [stroke("Escape", "Escape", { kind: "absent", selector: MENU }, false)],
+  kind: "menu",
+  name: "a press on the one control",
+  steps: [
+    press("a press on the one control", ONE_CONTROL, { kind: "present", selector: MENU }, true),
+  ],
+  when: "view row",
+};
+
+/** The acts at each width (Verification v8, "The acts at each width" and `c-load-1440` Row 4): at
+ *  1440 px a press on each view control, a fold, an unfold, `j`, `k`, `Enter`, Keys and Details;
+ *  at 390 px a press on the one control, a press on each view in its menu, a fold, an unfold,
+ *  `j`, `k`, `Enter` and Details. The page draws no Keys at 760 px and below, so 390 px has no
+ *  such act. */
+export const LOAD_ACTS: Readonly<Record<LoadWidth, readonly LoadAct[]>> = {
+  390: [
+    ONE_CONTROL_ACT,
+    ...PRESET_ORDER.map((view) => viewPress(view, 390)),
+    ...outlineActs("document"),
+    DETAILS_ACT,
+  ],
+  1440: [
+    ...PRESET_ORDER.map((view) => viewPress(view, 1440)),
+    ...outlineActs("viewport"),
+    KEYS_ACT,
+    DETAILS_ACT,
+  ],
+};
+
+/** The title of an act's row during the load (Verification v4, `c-load-1440` Row 4). */
+export function actRowTitle(act: string): string {
+  return `${act} shows its result within 200 ms during the load`;
+}
+
+/** The title of the row of every act after the load (Row 5). */
+export const AFTER_LOAD_TITLE = "each act shows its result within 200 ms after the load";
+
+/** The address an act is made on during the load: a press on Conversation on Spec's address,
+ *  since Conversation pressed on its own address changes nothing, and every other act on
+ *  Conversation's. */
+export function actAddress(key: string, act: LoadAct): string {
+  return presetPath(
+    key,
+    act.kind === "view" && act.view === "conversation" ? "spec" : "conversation"
+  );
+}
+
+/** The acts of `acts` in the order one load after its end makes them, from Conversation's
+ *  address: every act that is no press on a view and no `Enter`, then, where `acts` holds
+ *  `Enter`, Row 5's `Enter`s in Conversation (`AFTER_LOAD_ENTERS`), then each press on a view
+ *  from the view before it, each followed by the `Enter`s made in that view, Conversation's
+ *  press last, so a press on Conversation is made from another view too. */
+export function afterLoadOrder(acts: readonly LoadAct[]): LoadAct[] {
+  const views = acts.filter((act) => act.kind === "view");
+  const enters = acts.some((act) => act.kind === "edit") ? AFTER_LOAD_ENTERS : [];
+  const madeIn = (view: Preset | undefined) =>
+    enters.filter((act) => (act.on ?? "conversation") === view);
+  return [
+    ...acts.filter((act) => act.kind !== "view" && act.kind !== "edit"),
+    ...madeIn("conversation"),
+    ...views
+      .filter((act) => act.view !== "conversation")
+      .flatMap((act) => [act, ...madeIn(act.view)]),
+    ...views.filter((act) => act.view === "conversation"),
+  ];
+}
+
+/** The width a row reads the page at: its project's viewport. */
+export function loadWidth(testInfo: TestInfo): LoadWidth {
+  const width = testInfo.project.use.viewport?.width;
+  if (width === 1440 || width === 390) return width;
+  throw new Error(
+    `the load rows read the page at 1440 px (chromium-load) and 390 px (iphone-load), and ` +
+      `${testInfo.project.name} opens it at ${width ?? "no fixed width"}`
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The processor and the bounds.
+// ---------------------------------------------------------------------------------------------
+
+/** How much each load project slows the processor (`Emulation.setCPUThrottlingRate`). */
+export const LOAD_CPU_RATES: Readonly<Record<string, number>> = {
+  "chromium-load": 2,
+  "iphone-load": 4,
+};
+
+/** The rate the loads of `project` run at: `ISSUE_PAGE_LOAD_CPU_RATE` where it is set, which
+ *  `c-factor` alone sets, else the project's own. */
+export function loadCpuRate(project: string, set = process.env.ISSUE_PAGE_LOAD_CPU_RATE): number {
+  if (set !== undefined && set !== "") {
+    const rate = Number(set);
+    if (!Number.isFinite(rate) || rate < 1) {
+      throw new Error(
+        `ISSUE_PAGE_LOAD_CPU_RATE is ${JSON.stringify(set)}, and a rate is 1 or more`
+      );
+    }
+    return rate;
+  }
+  const rate = LOAD_CPU_RATES[project];
+  if (rate === undefined) {
+    throw new Error(
+      `${project} is no load project, which are ${Object.keys(LOAD_CPU_RATES).join(" and ")}`
+    );
+  }
+  return rate;
+}
+
+/** R1's limit on the first screen's paint and on the largest contentful paint. */
+export const FIRST_SCREEN_MS = 2_500;
+
+/** R2's limit on an act's result, on each part of an act that needs a read, on the longest Event
+ *  Timing entry and on the longest task after the first drawing of the view row. */
+export const ACT_MS = 200;
+
+/** R3's limit on the cumulative layout shift. */
+export const LAYOUT_SHIFT = 0.1;
+
+/** How long an act's result may take to show before its load reads none. */
+export const ACT_RESULT_MS = 10_000;
+
+/** A bound name's word for an act: its words, lowercased, joined by `-`. */
+export function boundWord(words: string): string {
+  return words
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+/** Prints `reading`'s line and records it on the row, and fails the row, softly so every bound
+ *  it reads is printed, where the fourth smallest of the five readings is over the limit. */
+export function holdBound(reading: BoundReading): void {
+  const line = readingLine(reading);
+  console.log(line);
+  base.info().annotations.push({ description: line, type: "reading" });
+  expect
+    .soft(
+      boundHolds(reading),
+      `${reading.bound}: the fourth smallest of the five readings is over ${reading.limit}: ${line}`
+    )
+    .toBe(true);
+}
+
+/** Prints a line of what a row read beside its bounds, and records it on the row. */
+export function printReading(line: string): void {
+  console.log(line);
+  base.info().annotations.push({ description: line, type: "reading" });
+}
+
+/** Prints, for each load whose act under `index` showed no result, what its event landed on, so a
+ *  press that reached another control than the one it was made at is named in the row's output:
+ *  `<prefix>.unshown load <n> of 5: the <event> landed on <element>`. */
+export function printUnshown(
+  prefix: string,
+  loads: readonly { readonly index: number; readonly record: LoadRecord }[]
+): void {
+  for (const [at, load] of loads.entries()) {
+    const act = load.record.acts[load.index];
+    if (act === undefined || act.result !== null) continue;
+    const event =
+      act.event === null
+        ? "no event came"
+        : `the ${act.event.type} landed on ${act.event.target ?? "an element not named"}`;
+    printReading(`${prefix}.unshown load ${at + 1} of ${LOADS}: ${event}, and no result showed`);
+  }
+}
+
+/** Holds an act's five readings to R2 under `prefix`, as `actBounds` reads them: the time to its
+ *  result, and the two parts of a result that needed a read, each `n/a` for a load whose result
+ *  needed none. */
+export function holdAct(prefix: string, rate: number, readings: readonly ActReading[]): void {
+  for (const bound of actBounds(prefix, rate, ACT_MS, readings)) holdBound(bound);
+}
+
+/** Holds the five loads' longest Event Timing entry and longest task after the first drawing of
+ *  the view row to R2 under `prefix`. */
+export function holdTasks(prefix: string, rate: number, records: readonly LoadRecord[]): void {
+  holdBound({
+    bound: `${prefix}.longest-event-ms`,
+    limit: ACT_MS,
+    rate,
+    readings: records.map((record) => longestEvent(record.event)),
+  });
+  holdBound({
+    bound: `${prefix}.longest-task-ms`,
+    limit: ACT_MS,
+    rate,
+    readings: records.map(longestTaskAfterViewRow),
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// The seed of one worker.
+// ---------------------------------------------------------------------------------------------
+
+/** The seeds the load rows read, one at a time in the worker's database. */
+export interface LoadSeeds {
+  /** The issue at the largest issue's shape (`seedLargestShape`), which every row but the first
+   *  focus's reads; seeded again, in a phase of its own, where that row's seed replaced it. */
+  shape(): Promise<LargestShapeSeed>;
+  /** The same issue with one ask that waits on the reader (`seedLargestShapeWaiting`), in a phase
+   *  of its own. */
+  waiting(): Promise<LargestShapeSeed & { readonly waiting: string }>;
+}
+
+/** How long one seed and its waits may take: about 14 s of seed, up to 30 s for its events and
+ *  60 s for its edit notices. */
+const SEED_MS = 240_000;
+
+/** Seeds with `seed` and waits until nothing the seed set off can reach a load: its events have
+ *  landed (`seedEventsLanded`) and the server has sent the edit notice each document a person
+ *  wrote is owed (`editNoticesSent`), which reads the issue again. Both wait on a signed-in page
+ *  and its request log, so the seed opens a context of its own, and closes it before any load, so
+ *  no page of it draws or reads beside one. */
+async function settledSeed<T extends { readonly key: string }>(
+  browser: Browser,
+  seed: () => Promise<T>
+): Promise<T> {
+  const seeded = await seed();
+  const context = await asUser(browser, READER);
+  try {
+    const page = await context.newPage();
+    const traffic = watchApiRequests(page);
+    await seedEventsLanded(page);
+    await editNoticesSent(seeded.key, traffic);
+  } finally {
+    await context.close();
+  }
+  return seeded;
+}
+
+/** Whether this worker has emptied its database yet. */
+let emptied = false;
+
+/**
+ * The `test` of the load rows: `e2e/test.ts`'s, with one seed for the worker's rows.
+ *
+ * Each seed costs about 14 s and its notices 60 s, and no act of these rows writes, so the rows
+ * of one worker share one seed: the automatic `freshDatabase`, which empties the database before
+ * every row of the suite, is overridden here with one that empties it on its first run in the
+ * worker and does nothing after (an override keeps the fixture's scope and its `auto`), and the
+ * worker-scoped `loadSeeds` seeds the shape once, after that first emptying, since Playwright sets
+ * a row's automatic fixtures up before the ones it asks for. A load that writes a read mark leaves
+ * the next load the state a returning reader has.
+ */
+export const test = base.extend<Record<never, never>, { readonly loadSeeds: LoadSeeds }>({
+  // A bare function, which takes the overridden fixture's options: a tuple naming `auto` is the
+  // declaration of a new fixture's options, which Playwright's types refuse on an override.
+  // Playwright refuses a first argument that is not a destructuring pattern.
+  // biome-ignore lint/correctness/noEmptyPattern: the reset takes no other fixture.
+  freshDatabase: async ({}, use) => {
+    if (!emptied) {
+      emptied = true;
+      await resetDatabase();
+    }
+    await use(undefined);
+  },
+  loadSeeds: [
+    async ({ browser }, use) => {
+      let held:
+        | { readonly kind: "shape"; readonly seeded: LargestShapeSeed }
+        | {
+            readonly kind: "waiting";
+            readonly seeded: LargestShapeSeed & { readonly waiting: string };
+          }
+        | undefined;
+      const seeds: LoadSeeds = {
+        shape: async () => {
+          if (held?.kind === "shape") return held.seeded;
+          if (held !== undefined) await resetDatabase();
+          const seeded = await settledSeed(browser, seedLargestShape);
+          held = { kind: "shape", seeded };
+          return seeded;
+        },
+        waiting: async () => {
+          if (held?.kind === "waiting") return held.seeded;
+          if (held !== undefined) await resetDatabase();
+          const seeded = await settledSeed(browser, seedLargestShapeWaiting);
+          held = { kind: "waiting", seeded };
+          return seeded;
+        },
+      };
+      await seeds.shape();
+      await use(seeds);
+    },
+    { scope: "worker", timeout: SEED_MS },
+  ],
+});
+
+/** Whether the database still holds `seeded`: its issue is there and its spec is the seed's own
+ *  artifact. The artifact's id is a UUID, so an issue that another row's seed gave the same key
+ *  after a reset does not pass. It reads with the agents' shared token, which no reset and no
+ *  sign-out of a person's session changes. */
+async function holdsSeed(seeded: LargestShapeSeed): Promise<boolean> {
+  try {
+    const issue = await getIssue(seeded.key, { as: "agent" });
+    return issue.primary_artifact_id === seeded.specArtifactId;
+  } catch (error) {
+    // `e2e/api.ts`'s request names the status after "failed:"; only a missing issue is an answer.
+    if (error instanceof Error && / failed: 404 /.test(error.message)) return false;
+    throw error;
+  }
+}
+
+/** One seed kept for rows that run one after another in a worker and write nothing another of
+ *  them reads (`keptSeed`). */
+export interface KeptSeed<T extends LargestShapeSeed> {
+  /** The override of the automatic `freshDatabase` for those rows: it empties the database, as
+   *  `e2e/test.ts`'s does, unless the database still holds the kept seed (`holdsSeed`, one read);
+   *  a row of another file that ran between two of them emptied it, and so did a failed row's
+   *  worker, which starts again with nothing kept. */
+  freshDatabase(
+    fixtures: Record<never, never>,
+    use: (value: undefined) => Promise<void>
+  ): Promise<void>;
+  /** The kept seed, made by `seed` where none is kept. */
+  shape(seed: () => Promise<T>): Promise<T>;
+}
+
+/**
+ * A seed for rows that share one, kept in this worker process's memory between them, where the
+ * load rows' `loadSeeds` above is a worker fixture.
+ *
+ * A worker fixture gives its `test` a worker hash of its own, and Playwright 1.64.1 queues every
+ * group of another hash after all the groups of its project's other hash (`createTestGroups`,
+ * node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2385), so a
+ * file of the parallel projects that took one ran last in its leg: in shard 2 of run 46129937068,
+ * `issue-page-load-same.e2e.ts`'s chromium rows started 11.5 minutes into the leg, one after
+ * another, and the leg's 18-minute guard stopped their last row. A seed kept here leaves the
+ * rows' `test` the hash of every other file, so their group is queued in file order. The rows
+ * that share it run in one group (`mode: "default"`), so no other row runs between two of them.
+ */
+export function keptSeed<T extends LargestShapeSeed>(): KeptSeed<T> {
+  let kept: T | undefined;
+  return {
+    // Playwright refuses a first argument that is not a destructuring pattern.
+    // biome-ignore lint/correctness/noEmptyPattern: the reset takes no other fixture.
+    freshDatabase: async ({}, use) => {
+      if (kept !== undefined && !(await holdsSeed(kept))) kept = undefined;
+      if (kept === undefined) await resetDatabase();
+      await use(undefined);
+    },
+    shape: async (seed) => {
+      kept ??= await seed();
+      return kept;
+    },
+  };
+}
+
+const keptShape = keptSeed<LargestShapeSeed>();
+
+/**
+ * The `test` of the same-page rows (`e2e/issue-page-load-same.e2e.ts`): `e2e/test.ts`'s, with the
+ * shape the load rows read (`seedLargestShape`, settled as `loadSeeds` settles it) kept for the
+ * worker's rows (`keptSeed`) rather than held by a worker fixture. Its `loadSeeds` is the load
+ * rows' `shape()` alone, and a row seeds through it under its own limit.
+ */
+export const sameSeedTest = base.extend<{ readonly loadSeeds: Pick<LoadSeeds, "shape"> }>({
+  freshDatabase: keptShape.freshDatabase,
+  loadSeeds: async ({ browser }, use) => {
+    await use({
+      shape: () => keptShape.shape(() => settledSeed(browser, seedLargestShape)),
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------------------------
+// Loads.
+// ---------------------------------------------------------------------------------------------
+
+/** What one load opens with. */
+export interface LoadOptions {
+  readonly address: string;
+  /** The boxes the frame recorder keeps (`InstrumentConfig`). */
+  readonly boxes: InstrumentConfig["boxes"];
+  /** The row the load names, where it names one, and its answer, where it names an answered
+   *  question. */
+  readonly named?: InstrumentConfig["named"];
+  readonly answer?: InstrumentConfig["answer"];
+  /** What is set up on the load's context before its page opens: a route that holds a file
+   *  back. */
+  readonly prepare?: (context: BrowserContext) => Promise<void>;
+}
+
+/** One load's page, open on its address, and its requests. */
+export interface OpenedLoad {
+  readonly page: Page;
+  readonly requests: LoadRequests;
+}
+
+/** How many loads a bound is read over. */
+export const LOADS = 5;
+
+/**
+ * One load of `options.address` in a new browser context, so its cache is empty: signed in as the
+ * reader, with the new page turned on, the instruments installed and the processor slowed by
+ * `rate` through a CDP session on the page before the navigation. `read` reads the load from its
+ * navigation's commit, and the context closes once it has.
+ */
+export async function oneLoad<T>(
+  browser: Browser,
+  rate: number,
+  options: LoadOptions,
+  read: (load: OpenedLoad) => Promise<T>
+): Promise<T> {
+  const context = await asUser(browser, READER);
+  try {
+    await withIssuePage(context, READER);
+    await options.prepare?.(context);
+    const page = await context.newPage();
+    await installInstruments(page, {
+      answer: options.answer ?? null,
+      boxes: options.boxes,
+      header: HEADER_SELECTORS,
+      named: options.named ?? null,
+      rows: LOAD_ROW_SELECTOR,
+      viewRows: VIEW_ROW_SELECTOR,
+    });
+    // The session stays open with the page: the slowing is the session's, and ends with it.
+    const cpu = await context.newCDPSession(page);
+    await cpu.send("Emulation.setCPUThrottlingRate", { rate });
+    const requests = watchLoadRequests(page);
+    await page.goto(options.address, { waitUntil: "commit" });
+    return await read({ page, requests });
+  } finally {
+    await context.close();
+  }
+}
+
+/** `LOADS` loads, one after another, each as `oneLoad` makes it. */
+export async function fiveLoads<T>(
+  browser: Browser,
+  rate: number,
+  options: LoadOptions,
+  read: (load: OpenedLoad) => Promise<T>
+): Promise<T[]> {
+  const loads: T[] = [];
+  for (let made = 0; made < LOADS; made += 1) {
+    loads.push(await oneLoad(browser, rate, options, read));
+  }
+  return loads;
+}
+
+/**
+ * Makes `steps` on the load's page, the first under the index `first` and each after it under the
+ * next: each armed once it can be made (the first at `when`, every other at once), made, and
+ * waited on until its result shows. A step armed at once is first brought where a press reaches
+ * its control (`revealStep`), which an earlier act may have scrolled away. The 390 px fold and
+ * the unmeasured press that puts `j` on a row also reveal their targets first. All presses
+ * read the target's current point just before sending the input. `settle` runs before each
+ * measured step: a row of acts after the load waits for the load to end again there. If the
+ * result does not show, the next step has nothing to act on. Returns the measured step's index
+ * and the index where the next act starts.
+ */
+export async function makeSteps(
+  page: Page,
+  first: number,
+  steps: readonly ActStep[],
+  when: ArmWhen,
+  settle?: () => Promise<unknown>
+): Promise<{ readonly last: number; readonly next: number }> {
+  for (const [at, step] of steps.entries()) {
+    const armedAt = at === 0 ? when : "now";
+    const scrolledTo =
+      step.input.kind === "press" &&
+      ((step.input.target.kind === "fold" && step.input.target.within === "document") ||
+        (step.input.target.kind === "row" && !step.measured));
+    if (armedAt === "now" || scrolledTo) await revealStep(page, step);
+    if (step.measured) await settle?.();
+    await armStep(page, first + at, step, armedAt);
+    await makeInput(page, step);
+    if (!(await resultShown(page, first + at, ACT_RESULT_MS))) break;
+  }
+  return { last: first + steps.length - 1, next: first + steps.length };
+}
+
+/** A row of Conversation's outline, by the id it is drawn by and its kind. */
+export interface OutlineRow {
+  readonly id: string;
+  readonly type: string;
+}
+
+/** The rows of Conversation's outline as the load ends, in the order they are drawn, before any
+ *  control of the paging rule is pressed. */
+export async function outlineRows(page: Page): Promise<OutlineRow[]> {
+  // Read once the load has ended (`waitForLoadEnd`), the moment Row 2's named row is defined at:
+  // that instant's rows are the rows the reading means, and no wait would read others.
+  const rows = await page.evaluate(() =>
+    [...document.querySelectorAll("[data-issue-body] [data-node-row]")].map((row) => ({
+      id: row.getAttribute("data-node-id") ?? "",
+      type: row.getAttribute("data-node-type") ?? "",
+    }))
+  );
+  if (rows.length === 0) throw new Error("Conversation drew no row");
+  return rows;
+}
+
+/**
+ * The address that names a row of issue `key`'s outline, which the page lands on: a block's `#b-`
+ * fragment on the issue's address, which the first node carrying the block answers, for a row
+ * drawn by a block of one of the issue's documents (an ask indexed from a block among them); an
+ * ask's, a comment's or a message's own address (`/asks/<id>`, `/comments/<id>`, `/messages/<id>`)
+ * for one drawn by its own id; and for a child issue, the issue's address at `?node=` of the
+ * child's key, which is both the id the tree read gives the child's node and the id its row is
+ * drawn by (`tree-read/tree-nodes.ts`' `treeIdOfNode`), and which the outline lands on
+ * (`issue-address.ts`' `pathToTarget`). Undefined for any other row, whose drawn id need not be
+ * its id in the tree read, so no address is sure to name it.
+ */
+export function rowAddress(key: string, row: OutlineRow): string | undefined {
+  const block = row.id.indexOf("#b-");
+  if (block !== -1) return `${presetPath(key, "conversation")}${row.id.slice(block)}`;
+  if (row.type === "ask" || row.type === "comment" || row.type === "message") {
+    return buildIssuePath({ id: row.id, key, kind: row.type });
+  }
+  if (row.type === "child_issue") return outlineRowPath(key, row.id);
+  return undefined;
+}
+
+/** The row Row 2 names by its own address: the last of `rows` an address names (`rowAddress`),
+ *  with whether it is the last row drawn, which the row's bound is named by. */
+export function namedRow(
+  key: string,
+  rows: readonly OutlineRow[]
+): { readonly address: string; readonly last: boolean; readonly row: OutlineRow } {
+  for (let at = rows.length - 1; at >= 0; at -= 1) {
+    const row = rows[at];
+    const address = row === undefined ? undefined : rowAddress(key, row);
+    if (row !== undefined && address !== undefined) {
+      return { address, last: at === rows.length - 1, row };
+    }
+  }
+  throw new Error(`no address names any of the ${rows.length} rows Conversation drew`);
+}
+
+/** An answered question of the issue's spec as Row 2's third load names it: the question's own
+ *  address, which the load opens, the selector of its row in the outline, a row drawn by the
+ *  block it is written in, and the selector of the element in that row that draws its answer,
+ *  which is the person's decision (root R4, decision 534). */
+export interface AnsweredQuestion {
+  readonly address: string;
+  readonly answer: string;
+  /** The question in words, for the row's output. */
+  readonly named: string;
+  readonly question: string;
+}
+
+/** The outline's row of the ask drawn by block `block` of one of the issue's documents, whatever
+ *  its slug: its id ends in that block's fragment (`blockNodeId`). */
+function askRowSelector(block: string): string {
+  return `[data-issue-body] [data-node-row][data-node-type="ask"][data-node-id$="#b-${block.replace(/["\\]/g, "\\$&")}"]`;
+}
+
+/** The block ids of the seed's questions in its spec: the 11 `:::ask` blocks `seedLargestShape`
+ *  writes (`questionsOps` of `e2e/issue-page-t-scale.ts`, whose `questionBlockId(n)` names block
+ *  `q<n>`), each of which it answers once it is an ask (`awaitQuestions`, `answerAsk`). */
+const QUESTION_BLOCKS: ReadonlySet<string> = new Set(
+  Array.from({ length: LARGEST_SHAPE.questions }, (_, at) => `q${at + 1}`)
+);
+
+/** The first answered question of the seed's spec in the asks read's order: an ask whose block
+ *  is one of the spec's questions (`QUESTION_BLOCKS`) and which is answered. Null where the issue
+ *  holds none. */
+export function answeredQuestion(
+  key: string,
+  asks: readonly Pick<IssueAskRow, "block_id" | "id" | "state">[]
+): AnsweredQuestion | null {
+  for (const ask of asks) {
+    if (ask.block_id === null || !QUESTION_BLOCKS.has(ask.block_id)) continue;
+    if (ask.state !== "answered") continue;
+    const question = askRowSelector(ask.block_id);
+    return {
+      address: buildIssuePath({ id: ask.id, key, kind: "ask" }),
+      // The answer is part of the question's row (`NodeRow.tsx`'s `AskAnswer`).
+      answer: `${question} [data-node-answer]`,
+      named: `question ${ask.id} (block ${ask.block_id})`,
+      question,
+    };
+  }
+  return null;
+}
+
+/** The selector of the outline's row of node `id`. */
+export function outlineRowSelector(id: string): string {
+  return `[data-issue-body] [data-node-row][data-node-id="${id.replace(/["\\]/g, "\\$&")}"]`;
+}

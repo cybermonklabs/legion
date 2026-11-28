@@ -1,3 +1,4 @@
+import type { Query } from "@tanstack/react-query";
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
@@ -16,6 +17,7 @@ import {
   pageQuietText,
 } from "../../theme/classes";
 import { dialogOpen, useMediaQuery } from "../shell/useDialog";
+import { afterPaint } from "./drawn-in-slices";
 import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";
 import { authorText, pageChrome } from "./page-structure";
@@ -28,6 +30,7 @@ import {
 } from "./page-words";
 import { type Filter, isFilter, type PresetSignal } from "./presets";
 import { useShortcutHelpOpener } from "./shortcut-help-opener";
+import { usePendingView, useViewPress } from "./view-press";
 
 /**
  * The view row (R2, R11, R20, root R2's one declared list, and the prototype's view tabs): the
@@ -68,11 +71,18 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
 export function IssuePresets({
   active,
   issueKey,
+  onPress,
   outline,
   signals,
 }: {
   active: Preset;
   issueKey: string;
+  /** Called from the handler of a press that moves the row to another view, with the view it
+   *  turns on, before the press moves the address: the row's slot sends that view's read here
+   *  (`tree-read.ts`' `startPressedViewRead`), so the read is out before the commit that turns
+   *  the view on, rather than sent by the view's readers after it, and answers the reads it sent,
+   *  which the press waits on (`ViewPress`). */
+  onPress?: (preset: Preset) => readonly Query[];
   /** The Outline control, beside the one control below 1024 px where the Contents pane is not
    *  drawn (R14), and undefined wherever no Outline control is drawn. */
   outline?: ReactNode;
@@ -86,6 +96,10 @@ export function IssuePresets({
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const openKeys = useShortcutHelpOpener();
+  // The press on the view row (`view-press.tsx`): the view a press turned on reads as current from
+  // the press's own commit, while the page waits on the reads it is drawn from.
+  const viewPress = useViewPress();
+  const shown = usePendingView() ?? active;
   // The row of five is drawn exactly where the one control is not.
   const row = !useMediaQuery(ONE_CONTROL_QUERY);
   // Where the header scrolls away, the row holds the one control and Outline alone.
@@ -101,6 +115,8 @@ export function IssuePresets({
   const chooser = useRef<HTMLButtonElement>(null);
   const wasOpen = useRef<OpenMenu>(undefined);
   const leftByTab = useRef(false);
+  // Whether the menu closed with a view chosen in it, whose drawing the closing commit holds.
+  const choseView = useRef(false);
   // The ids a control's name and signal are read by; one prefix per drawn row, since two issue
   // pages in one document would otherwise write the same ids.
   const ids = useId();
@@ -115,7 +131,7 @@ export function IssuePresets({
     if (opened) {
       wrapper.current
         ?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]')
-        ?.focus();
+        ?.focus({ preventScroll: true });
       return;
     }
     if (!closed) return;
@@ -123,11 +139,17 @@ export function IssuePresets({
       leftByTab.current = false;
       return;
     }
-    const focus = document.activeElement;
-    if (focus === null || focus === document.body || wrapper.current?.contains(focus) === true) {
-      chooser.current?.focus();
+    // On the page (`ViewPress`), the commit that closes the menu on a view chosen draws that view:
+    // a focus given there lays the whole view out inside the press's task, so the control takes
+    // the focus back, where the drawing took it away, once the frame is painted, as the frame
+    // lays the view out anyway.
+    const chose = choseView.current;
+    choseView.current = false;
+    if (chose && viewPress !== undefined) {
+      return afterPaint(() => returnMenuFocus(wrapper.current, chooser.current));
     }
-  }, [open]);
+    returnMenuFocus(wrapper.current, chooser.current);
+  }, [open, viewPress]);
 
   useEffect(() => {
     if (open === undefined) return;
@@ -165,12 +187,22 @@ export function IssuePresets({
   // A press on a view turns it on, or off where it is the one on; Conversation turns every view
   // off, and is a press that changes nothing only on the issue's own address, which is
   // Conversation's: from any other address of the issue - `/collaborators` among them - it goes
-  // to the issue's own.
+  // to the issue's own. The press's handler sends the view's read; the address moves at once where
+  // the view's reads hold what it draws, and else its own commit has the control read as current
+  // and the view's place busy, and the address moves once those reads answer (`ViewPress`).
   const press = (preset: Preset) => {
-    if (preset === "conversation" && pathname === presetPath(issueKey, "conversation")) return;
-    navigate(
-      presetPath(issueKey, preset === active && preset !== "conversation" ? "conversation" : preset)
-    );
+    if (
+      preset === "conversation" &&
+      shown === "conversation" &&
+      pathname === presetPath(issueKey, "conversation")
+    ) {
+      return;
+    }
+    const to = preset === shown && preset !== "conversation" ? "conversation" : preset;
+    const sent = onPress?.(to) ?? [];
+    const move = () => navigate(presetPath(issueKey, to));
+    if (viewPress === undefined) move();
+    else viewPress.press(to, move, sent);
   };
   const walk = (event: KeyboardEvent<HTMLElement>, from: Preset) => {
     const at = PRESET_ORDER.indexOf(from);
@@ -252,9 +284,9 @@ export function IssuePresets({
           >
             <span className="flex min-w-0 items-baseline gap-1.5">
               <span data-preset-name="" {...pageChrome}>
-                {PRESET_NAMES[active]}
+                {PRESET_NAMES[shown]}
               </span>
-              {isFilter(active) ? <Signal preset={active} signal={signals?.[active]} /> : null}
+              {isFilter(shown) ? <Signal preset={shown} signal={signals?.[shown]} /> : null}
             </span>
             <MenuMark />
           </button>
@@ -265,7 +297,7 @@ export function IssuePresets({
                 return (
                   // Named by its name and any signal it draws; checked where it is the one on.
                   <button
-                    aria-checked={preset === active}
+                    aria-checked={preset === shown}
                     aria-labelledby={
                       signal === undefined
                         ? nameId(preset)
@@ -274,15 +306,21 @@ export function IssuePresets({
                     className={`${pageMenuItem} flex items-baseline gap-1.5`}
                     key={preset}
                     onClick={() => {
+                      // Give the focus back before removing the menu or redrawing the stage.
+                      // Focusing after either change forces layout of the whole issue again.
+                      returnMenuFocus(wrapper.current, chooser.current);
                       setOpen(undefined);
-                      if (preset !== active || preset === "conversation") press(preset);
+                      if (preset !== shown || preset === "conversation") {
+                        choseView.current = true;
+                        press(preset);
+                      }
                     }}
                     role="menuitemradio"
                     tabIndex={-1}
                     type="button"
                   >
                     <span aria-hidden="true" className={`w-3 shrink-0 ${pageInkText}`}>
-                      {preset === active ? "●" : ""}
+                      {preset === shown ? "●" : ""}
                     </span>
                     <span id={nameId(preset)} {...pageChrome}>
                       {PRESET_NAMES[preset]}
@@ -317,7 +355,7 @@ export function IssuePresets({
         role="toolbar"
       >
         {PRESET_ORDER.map((preset) => {
-          const on = preset === active;
+          const on = preset === shown;
           const signal = isFilter(preset) ? signals?.[preset] : undefined;
           return (
             // The prototype's `.tab`: the name and any signal on one baseline, the rule under
@@ -382,6 +420,14 @@ export function IssuePresets({
       <div className="mb-[7px]">{atTheEnd}</div>
     </div>
   );
+}
+
+function returnMenuFocus(wrapper: HTMLElement | null, chooser: HTMLButtonElement | null): void {
+  const active = document.activeElement;
+  if (chooser === null || active === chooser) return;
+  if (active === null || active === document.body || wrapper?.contains(active) === true) {
+    chooser.focus({ preventScroll: true });
+  }
 }
 
 /** The one control's ▾, drawn one em square so it takes the size of the control's text, in its

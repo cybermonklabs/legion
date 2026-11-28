@@ -154,12 +154,27 @@ export function IssueAddMenu({
   // `features/shell`) and the margin (`features/margin`), `hidden` is set on that `aside`, on
   // elements inside it and on the margin's column, which is drawn only where Details is not, and
   // `inert` on nothing.
+  const pendingRead = useRef<number | undefined>(undefined);
+  const scheduleRead = useCallback(() => {
+    if (pendingRead.current !== undefined) return;
+    pendingRead.current = window.requestAnimationFrame(() => {
+      pendingRead.current = undefined;
+      read();
+    });
+  }, [read]);
   useLayoutEffect(() => {
     committed.current = fields;
-    read();
+    if (drawerBox === null) read();
+    else if (!drawerBox.hidden) scheduleRead();
   });
   useEffect(() => {
-    const watching = new MutationObserver(read);
+    const onMutate =
+      drawerBox === null
+        ? read
+        : () => {
+            if (!drawerBox.hidden) scheduleRead();
+          };
+    const watching = new MutationObserver(onMutate);
     let header: Element | null = null;
     const watch = () => {
       header = document.querySelector(ISSUE_HEADER);
@@ -172,7 +187,8 @@ export function IssueAddMenu({
     // starts again for each `drawerBox`, and the page is read once it is on, so a change made
     // before it started is not missed.
     watch();
-    read();
+    if (drawerBox === null) read();
+    else if (!drawerBox.hidden) scheduleRead();
     // The header can be drawn after Details, or drawn again as another element, and only an
     // element drawn can be watched: so the body is watched for drawn and removed elements alone,
     // and the header is watched again, and the page read, whenever the one found has changed.
@@ -180,14 +196,18 @@ export function IssueAddMenu({
     const arriving = new MutationObserver(() => {
       if (document.querySelector(ISSUE_HEADER) === header) return;
       watch();
-      read();
+      scheduleRead();
     });
     arriving.observe(document.body, { childList: true, subtree: true });
     return () => {
       watching.disconnect();
       arriving.disconnect();
+      if (pendingRead.current !== undefined) {
+        window.cancelAnimationFrame(pendingRead.current);
+        pendingRead.current = undefined;
+      }
     };
-  }, [drawerBox, panel, read]);
+  }, [drawerBox, panel, read, scheduleRead]);
   // The entries of this render's fields the page was last read to reach. A field that got a
   // value in this render is gone from them at once; one that lost it joins once the commit is read.
   const entries = fields.filter((field) => reachable.includes(field.label));
@@ -277,8 +297,10 @@ export function IssueAddMenu({
     // since a script's click opens no select's list and puts no focus in a text box.
     const atControl = (...names: readonly string[]) => {
       const reached = () => {
+        // The two roots Add watches, the only places such a control is drawn.
+        const roots = [drawerBox ?? panel.current, document.querySelector(ISSUE_HEADER)];
         for (const name of names) {
-          const control = controlNamed(name);
+          const control = controlNamed(name, roots);
           if (control !== null) return control;
         }
         return null;
@@ -413,12 +435,30 @@ const WATCHED: MutationObserverInit = {
   subtree: true,
 };
 
-/** The control named `name`, anywhere on the page, while it takes a press (`usableControl`),
- *  else `null`: the one lookup both an entry's listing and its press read, so Add lists an entry
- *  exactly while a press on it opens its control. A control in the closed drawer still takes a
- *  press, and the press opens Details first. The fields the panel draws are edited by their own
- *  controls; this is how the add menu reaches one instead of drawing it twice. */
-function controlNamed(name: string): HTMLElement | null {
-  const control = document.querySelector<HTMLElement>(`[aria-label="${CSS.escape(name)}"]`);
+/** The control named `name` under `roots`, while it takes a press (`usableControl`), else `null`:
+ *  the one lookup both an entry's listing and its press read, so Add lists an entry exactly while
+ *  a press on it opens its control. A control in the closed drawer still takes a press, and the
+ *  press opens Details first. The fields the panel draws are edited by their own controls; this is
+ *  how the add menu reaches one instead of drawing it twice.
+ *
+ *  `roots` are the two Add watches, Details (its `aside`, or the panel where no `aside` holds it)
+ *  and the page's header. Every control an entry reaches is drawn under one of them, none in a
+ *  portal, so a search of the two finds what a search of the whole page finds, without walking
+ *  every row of the outline for each name, as that search did in the frame after a press on
+ *  Details. Where both roots hold a control of the name, the first in the page's order is the
+ *  one read, as the whole page's search read it. */
+function controlNamed(name: string, roots: readonly (Element | null)[]): HTMLElement | null {
+  const selector = `[aria-label="${CSS.escape(name)}"]`;
+  let control: HTMLElement | null = null;
+  for (const root of roots) {
+    const found = root?.querySelector<HTMLElement>(selector) ?? null;
+    if (
+      found !== null &&
+      (control === null ||
+        (control.compareDocumentPosition(found) & Node.DOCUMENT_POSITION_PRECEDING) !== 0)
+    ) {
+      control = found;
+    }
+  }
   return usableControl(control) ? control : null;
 }

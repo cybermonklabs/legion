@@ -1,9 +1,12 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useLocation } from "react-router-dom";
 
+import { whoAmIQuery } from "../../api/queries";
 import type { IssueChild } from "../../api/types";
 import { pageInkText, pageQuietText, pageWordsText } from "../../theme/classes";
+import { EVENT_FRESH } from "../refs/reference-target";
 import type { IssueRoute } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
@@ -13,6 +16,7 @@ import { bringOnScreen } from "./identity-block";
 import { issueAddress, presetOf } from "./issue-address";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
+import { rowTiming } from "./RowText";
 import type { SlotProps } from "./slot-props";
 import { useFollowing } from "./slots/following";
 import { outlineOf } from "./tree-read/tree-read";
@@ -78,7 +82,13 @@ export function openChildEntry(key: string): void {
 export function ChildrenSection({ issue, route }: SlotProps): ReactNode {
   const childIssues = issue.children ?? [];
   const preset = presetOf(route);
-  if (childIssues.length === 0 || outlineOf(preset) === undefined) return null;
+  // The reader's saved fold of the section is theirs, kept under their login
+  // (`useUserPreference`), so the section is drawn once the login has settled, open or folded as
+  // they saved it: drawn before, it was drawn open and then folded under the rows' feet as the
+  // login answered (R3, "The places held" row 4). The login is the shell's one read, kept fresh as
+  // the tree keeps it (`EVENT_FRESH`), so this costs no request.
+  const loginOut = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).isPending;
+  if (childIssues.length === 0 || outlineOf(preset) === undefined || loginOut) return null;
   // Keyed on the issue, so the pages the reader opened and a child's opening are the issue's own.
   return <ChildrenList childIssues={childIssues} key={issue.key} route={route} />;
 }
@@ -186,10 +196,13 @@ function ChildrenList({
       </div>
       <ul className="mt-1 flex min-w-0 flex-col" hidden={!open} id={listId} ref={list}>
         {shown.map((child) => (
+          // The entry paints its first line's text itself: its key and its title flow inline in
+          // it, so it carries the row's identifier (`RowText.tsx`'s `ROW_TIMING`).
           <li
             className={`min-w-0 text-[15px] leading-6 break-words ${pageWordsText}`}
             data-child-entry={child.key}
             key={child.key}
+            {...rowTiming}
           >
             <ChildIssueTag child={child} tabStops /> <span {...authorText}>{child.title}</span>
             <ChildIssueFacts child={child} tabStops />

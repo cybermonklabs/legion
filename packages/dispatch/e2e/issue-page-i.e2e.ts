@@ -1811,12 +1811,24 @@ test("a row's editor on a phone does not scroll sideways, and its words wrap @ph
       spec: [
         "# A plain statement under a cited issue and a path",
         "",
+        // The spec's first callout is its summary, which the outline draws as no row of its own
+        // (`spec-summary.ts`), so each note the row edits stands after it.
+        ':::callout{#summary kind="note"}',
+        "What the issue is about, in a sentence.",
+        ":::",
+        "",
         "## Problem",
         "",
+        ':::callout{#n-cited kind="note"}',
+        // Enter puts the caret at the note's start, and a reference the caret touches is drawn
+        // as it is written, so the editor can edit it: the bullet stands after the note's words.
+        "The note cites an issue.",
+        "",
         `- dispatch://${cited}`,
+        ":::",
         "",
         `:::callout{#n-path kind="note" title="${UNBROKEN_PATH}"}`,
-        "The note's own words.",
+        UNBROKEN_PATH,
         ":::",
         "",
         "## Requirements",
@@ -1828,35 +1840,89 @@ test("a row's editor on a phone does not scroll sideways, and its words wrap @ph
       ].join("\n"),
       title: "An issue whose plain statement stands under wide words",
     });
-    const statement = blockNodeId(await primarySlug(spec.key), "r-plain");
-    await enterNode(page, spec.key, statement, "the statement", { enter: true });
-    const box = nodeRow(page, statement).first().locator("[data-editor-box]");
+    const slug = await primarySlug(spec.key);
+    await gotoIssue(page, presetPath(spec.key, "graph"));
+    await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
+    /** Enter on the row of block `blockId`, named `what` in a failure, and its editor's box. */
+    const editorBox = async (blockId: string, what: string): Promise<Locator> => {
+      const node = blockNodeId(slug, blockId);
+      await focusRow(page, node);
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => caretInNode(page), { message: `Enter did not put the caret in ${what}` })
+        .toBe(true);
+      return nodeRow(page, node).first().locator("[data-editor-box]");
+    };
+    /** How wide `box` and its row are drawn and how wide what each holds runs, once its frames
+     *  have settled. */
+    const widths = async (box: Locator) => {
+      await nextFrames(page);
+      return box.evaluate((element) => {
+        const row = element.closest("[data-node-row]");
+        return {
+          box: { clientWidth: element.clientWidth, scrollWidth: element.scrollWidth },
+          row: { clientWidth: row?.clientWidth ?? 0, scrollWidth: row?.scrollWidth ?? 0 },
+        };
+      });
+    };
+
+    const citing = await editorBox("n-cited", "the note that cites an issue");
     await expect(
-      box.locator("a.dispatch-reference"),
+      citing.locator("a.dispatch-reference"),
       "the row's editor draws no name for the cited issue"
     ).toBeVisible();
+    const cites = await widths(citing);
+    expect(
+      cites.box.scrollWidth,
+      "the editor's box of a note that cites an issue in a bullet scrolls sideways at 390x664"
+    ).toBeLessThanOrEqual(cites.box.clientWidth);
+    expect(
+      cites.row.scrollWidth,
+      "the row of a note that cites an issue in a bullet scrolls sideways at 390x664"
+    ).toBeLessThanOrEqual(cites.row.clientWidth);
+    await page.keyboard.press("Escape");
+
+    const path = await editorBox("n-path", "the note titled by a path");
     await nextFrames(page);
-    const drawn = await box.evaluate((element) => {
-      const title = element.querySelector("[data-proof-block-title]");
+    const titled = await path.evaluate((box) => {
+      const words = box.querySelector('[contenteditable="true"] p');
+      const row = box.closest("[data-node-row]");
       return {
-        clientWidth: element.clientWidth,
-        scrollWidth: element.scrollWidth,
-        // How many lines the note's title is drawn on: its height over its own line's.
-        titleLines:
-          title === null
+        box: { clientWidth: box.clientWidth, scrollWidth: box.scrollWidth },
+        row: { clientWidth: row?.clientWidth ?? 0, scrollWidth: row?.scrollWidth ?? 0 },
+        // How many lines the note's words, the same path, are drawn on in the row's editor: their
+        // height over their own line's.
+        wordsLines:
+          words === null
             ? 0
-            : title.getBoundingClientRect().height /
-              Number.parseFloat(getComputedStyle(title).lineHeight),
+            : words.getBoundingClientRect().height /
+              Number.parseFloat(getComputedStyle(words).lineHeight),
       };
     });
     expect(
-      drawn.scrollWidth,
-      "the editor's box of a plain statement scrolls sideways at 390x664"
-    ).toBeLessThanOrEqual(drawn.clientWidth);
+      titled.box.scrollWidth,
+      "the editor's box of a note titled by a path scrolls sideways at 390x664"
+    ).toBeLessThanOrEqual(titled.box.clientWidth);
     expect(
-      drawn.titleLines,
-      "the note's title, a path with no space in it, is not wrapped at 390x664"
+      titled.row.scrollWidth,
+      "the row of a note titled by a path scrolls sideways at 390x664"
+    ).toBeLessThanOrEqual(titled.row.clientWidth);
+    expect(
+      titled.wordsLines,
+      "the note's words, a path with no space in it, are not wrapped in the row's editor at 390x664"
     ).toBeGreaterThan(1.5);
+    await page.keyboard.press("Escape");
+
+    const drawn = await widths(await editorBox("r-plain", "the statement"));
+    expect(
+      drawn.box.scrollWidth,
+      "the editor's box of a plain statement scrolls sideways at 390x664"
+    ).toBeLessThanOrEqual(drawn.box.clientWidth);
+    expect(
+      drawn.row.scrollWidth,
+      "the row of a plain statement scrolls sideways at 390x664"
+    ).toBeLessThanOrEqual(drawn.row.clientWidth);
   });
 });
 
@@ -2278,7 +2344,9 @@ test("the words the caret Enter puts in a statement stand still while the editor
           if (start === undefined) {
             const editable =
               document.activeElement?.closest('[data-node-row] [contenteditable="true"]') ?? null;
-            const drawn = editable?.querySelector(`[data-block-id="${block}"]`) ?? null;
+            const drawn = editable?.matches(`[data-block-id="${block}"]`)
+              ? editable
+              : (editable?.querySelector(`[data-block-id="${block}"]`) ?? null);
             if (editable === null || anchor === null || drawn?.contains(anchor) !== true) {
               requestAnimationFrame(frame);
               return;
@@ -4478,7 +4546,7 @@ test("an editable row shows it takes typing under the pointer and at focus, and 
     // focus, which is no rule of the cue's.
     await focusRow(page, statement);
     await page.keyboard.press("Enter");
-    const article = statementRow.locator("[data-editor-box] .dispatch-doc");
+    const article = statementRow.locator('[data-editor-box] [data-read-only="true"]');
     await expect(
       article,
       "Enter drew no read-only document in the closed issue's statement row"
@@ -4533,7 +4601,7 @@ test("a statement of a document the server admits read-only shows no cue that it
     await focusRow(page, statement);
     await page.keyboard.press("Enter");
     await expect(
-      statementRow.locator("[data-editor-box] .dispatch-doc"),
+      statementRow.locator('[data-editor-box] [data-read-only="true"]'),
       "Enter drew no read-only document in the statement's row"
     ).toHaveAttribute("data-read-only", "true");
     await otherRow.hover();
@@ -4876,7 +4944,7 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
 // (`standInControlBelow`).
 // SLOW(>=2s): the whole issue seeded and loaded, then the row's editor opened twice, each waited
 // on until it takes the caret and the ask's card is drawn in it, and until it closes again.
-test("Tab from a row's editor passes over the controls of an ask another block draws, Shift+Tab goes to the row, and each ends the editing", async ({
+test("Tab from a row's editor finds no control of another block in the editor, Shift+Tab goes to the row, and each ends the editing", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -4911,8 +4979,8 @@ test("Tab from a row's editor passes over the controls of an ask another block d
           name: `${active.tagName.toLowerCase()} "${words}"${where}`,
         };
       }, OPEN_QUESTION_BLOCK_ID);
-    /** Enter on the statement's row, the caret in its block and the ask's card drawn in the
-     *  editor. */
+    /** Enter on the statement's row, the caret in its block and no control of the ask's drawn in
+     *  the editor. */
     const enter = async () => {
       await focusRow(page, statement);
       await page.keyboard.press("Enter");
@@ -4921,11 +4989,10 @@ test("Tab from a row's editor passes over the controls of an ask another block d
           message: "Enter put no caret in the statement",
         })
         .toBe(true);
-      await expect
-        .poll(() => askControls.count(), {
-          message: "the ask's block draws no control in the row's editor",
-        })
-        .toBeGreaterThan(0);
+      await expect(
+        askControls,
+        "the row's editor draws a control of the ask, another block"
+      ).toHaveCount(0);
     };
 
     await enter();
@@ -4972,7 +5039,7 @@ test("Tab from a row's editor passes over the controls of an ask another block d
 // one Tab reaches is read by the statement whose block holds the block it names.
 // SLOW(>=2s): the whole issue seeded with two more anchored comments and loaded, then the row's
 // editor opened and waited on until it takes the caret and draws the references buttons.
-test("Tab from a row's editor stops at the references button of the node's own block, and at no other block's", async ({
+test("Tab from a row's editor stops at the one references button, its own block's", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -5011,24 +5078,27 @@ test("Tab from a row's editor stops at the references button of the node's own b
         .toBe(true);
       await expect
         .poll(() => references.count(), {
-          message: "the row's editor draws no references button for each statement commented on",
+          message: "the row's editor draws other than the one references button of its own block",
         })
-        .toBeGreaterThanOrEqual(3);
+        .toBe(1);
       await page.keyboard.press("Tab");
-      const reached = await page.evaluate((block) => {
-        const active = document.activeElement;
-        const named = active?.getAttribute("data-block-references") ?? null;
-        const editable = active
-          ?.closest("[data-editor-box]")
-          ?.querySelector('[contenteditable="true"]');
-        const drawn =
-          named === null ? null : editable?.querySelector(`[data-block-id="${CSS.escape(named)}"]`);
-        return {
-          inStatement: (drawn?.closest(`[data-block-id="${block}"]`) ?? null) !== null,
-          name: active?.getAttribute("aria-label") ?? active?.textContent?.slice(0, 40) ?? "",
-          named,
-        };
-      }, statementBlock);
+      const reached = await page.evaluate(
+        ({ block, node }) => {
+          const active = document.activeElement;
+          const named = active?.getAttribute("data-block-references") ?? null;
+          // The button names the statement's own block, and stands in the editor's box of the
+          // statement's row: the editor draws the bound block as its root, with no wrapper of
+          // its id below the editable.
+          const box = active?.closest("[data-editor-box]") ?? null;
+          const row = box?.closest("[data-node-row]")?.getAttribute("data-node-id") ?? null;
+          return {
+            inStatement: named === block && row === node,
+            name: active?.getAttribute("aria-label") ?? active?.textContent?.slice(0, 40) ?? "",
+            named,
+          };
+        },
+        { block: statementBlock, node: statement }
+      );
       expect(
         reached.inStatement,
         `Tab from the row's editor went to "${reached.name}", naming block ${reached.named}, not the statement's references button`

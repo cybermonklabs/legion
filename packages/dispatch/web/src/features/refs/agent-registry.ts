@@ -3,6 +3,7 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 
 import { api, isAgentListRefilling } from "../../api/client";
 import type { Agent } from "../../api/types";
+import { useAgentTitleSelector } from "./agent-title-scope";
 
 /**
  * The agent registry (`GET /api/v1/agents`: the sessions the Envoy listener lists, as of
@@ -73,6 +74,34 @@ function registryLookup(agents: readonly Agent[]): RegistryLookup {
     lookups.set(agents, lookup);
   }
   return lookup;
+}
+
+/** Keeps a passive name reader's answer while the registry still names the same sessions with
+ * the same titles. Share the selector among the issue's rows, and leave the query cache's full
+ * snapshot untouched for readers of running state and heartbeat age. */
+export function createAgentTitleSelector(): (agents: Agent[]) => Agent[] {
+  let previous: Agent[] | undefined;
+  let selected: Agent[] | undefined;
+  return (agents) => {
+    if (agents === previous) return selected ?? agents;
+    previous = agents;
+    if (selected !== undefined) {
+      const held = registryLookup(selected).titles;
+      const next = registryLookup(agents).titles;
+      if (next.size === held.size) {
+        let unchanged = true;
+        for (const [id, title] of next) {
+          if (held.get(id) !== title) {
+            unchanged = false;
+            break;
+          }
+        }
+        if (unchanged) return selected;
+      }
+    }
+    selected = agents;
+    return selected;
+  };
 }
 
 /** The agent the registry response `agents` lists under `sessionId`, through the lookup every
@@ -172,11 +201,15 @@ export interface AgentRegistry {
  */
 export function useAgentRegistry(enabled: boolean): AgentRegistry {
   useRegistryPolling(enabled);
+  const selectTitles = useAgentTitleSelector();
   const { data, error, isError, isPending } = useQuery({
     ...agentsQuery(),
     enabled,
     refetchOnMount: false,
     retryOnMount: false,
+    // The issue tree opts its passive name readers into a title snapshot. An enabled
+    // reader can show state and heartbeat age, so it always observes the full answer.
+    ...(enabled || selectTitles === undefined ? {} : { select: selectTitles }),
   });
   const agents = data ?? EMPTY_AGENTS;
   const lookup = registryLookup(agents);

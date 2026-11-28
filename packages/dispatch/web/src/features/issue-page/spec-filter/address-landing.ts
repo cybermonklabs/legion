@@ -6,9 +6,10 @@ import { useFollowing } from "../slots/following";
 /**
  * Puts the focus on the item of `tree` that draws node `id`, the node the address names, once
  * per following of the address (R19), as the outline lands on one (`IssueTree.tsx`'s
- * `landOnRow`): the focus comes in the next frame and brings the item on screen, and the hold
- * keeps it there, until the reader acts, while the page grows around it. It is the landing of the
- * Spec view and of the Verification view.
+ * `landOnRow`): the item is brought on screen in the layout effect of the commit that draws it,
+ * before that commit is painted, the focus comes in the next frame, and the hold keeps the item
+ * there, until the reader acts, while the page grows around it. It is the landing of the Spec
+ * view and of the Verification view.
  *
  * A view gives `id` only once every read the page's tree is built from has settled
  * (`readsSettled`), for one reason the hold and the reader's acts do not cover: until then the
@@ -56,7 +57,7 @@ export function useAddressLanding({
   useEffect(() => () => held.current?.abort(), []);
   const following = useFollowing();
   const taken = useRef<string | undefined>(undefined);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (id === undefined || drawn === "") return;
     const landingKey = `${following}:${id}`;
     if (taken.current === landingKey) return;

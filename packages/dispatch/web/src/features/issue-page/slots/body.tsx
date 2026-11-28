@@ -76,8 +76,26 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // held. With no filter on the line reads no words, and does not wait on the names. What the
   // page publishes of its batched names read the tree hands its rows and crumbs in the render
   // that draws them (`published`), so none of them reads a reference the page asks for.
-  const { coverageOut, failed, namesHeld, published, reads, readsHeld, readsSettled, root } =
-    useOutlineReads(issue);
+  //
+  // The outline draws its first rows once every read that can place a row, or the row the page's
+  // first focus goes to, has answered, with its data or its failure (`placesSettled`), so no row
+  // is drawn where a later read would push it down: the first commit of rows draws them where
+  // they stay. The reads that only mark rows those reads placed - the coverage, the results, the
+  // messages - are not waited on, and a statement's row holds the place of the coverage's counts
+  // until they answer (`coverageOut`). The page's first focus waits for every read the rows come
+  // from (`readsSettled`), and for a row to land on.
+  const {
+    coverageOut,
+    failed,
+    namesHeld,
+    placesSettled,
+    published,
+    reads,
+    readsHeld,
+    readsSettled,
+    root,
+    treePending,
+  } = useOutlineReads(issue);
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it. An item
@@ -96,6 +114,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // outline's last row reads it again - the landing waits on it still, so the address keeps its
   // node and its zoom, while the outline takes its first focus as the reads settle.
   const unloaded =
+    !treePending &&
     address.document === undefined &&
     ((address.target !== undefined && addressed.reveal === undefined) ||
       (address.zoom !== undefined && zoomed === undefined));
@@ -299,6 +318,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             more={more}
             older={older}
             onEditing={onEditing}
+            placesSettled={placesSettled}
             published={published}
             readsHeld={readsHeld}
             readsSettled={
@@ -315,7 +335,13 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
               ancestor ?? (address.target?.kind === "children" ? undefined : addressed.reveal)
             }
             root={view.root}
-            rootRow={view.rootRow && opens}
+            // Graph's first focus is the stage's, on its tree's tab-stop row, as every view's is
+            // (`slots/stage.tsx`'s `ViewStage`), and the stage takes it before the opening's
+            // frame: the outline drawn for Graph opens on no question that waits on the reader,
+            // and so draws its first screen around its first row (`IssueTree`'s anchor), where
+            // the stage puts the focus. An address the outline does not open (`opens`) opens on
+            // no row either.
+            rootRow={view.rootRow && opens && outline === "conversation"}
             {...(address.zoom === undefined ? {} : { zoomAt: address.zoom })}
           />
         )}

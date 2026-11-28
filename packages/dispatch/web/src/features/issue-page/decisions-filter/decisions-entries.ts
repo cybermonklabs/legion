@@ -167,6 +167,7 @@ export function useDecisionsEntries({
   issue,
   reader,
   root,
+  treePending = false,
   view,
 }: {
   issue: IssueDetails;
@@ -174,6 +175,8 @@ export function useDecisionsEntries({
   reader: string | undefined;
   /** The whole tree, which holds each ask and each decision and each statement a tie names. */
   root: TreeNode;
+  /** Whether the tree is still being built from the latest reads (`OutlineReads.treePending`). */
+  treePending?: boolean;
   /** The tree as the Decisions view leaves it. */
   view: TreeNode;
 }): DecisionsEntries {
@@ -344,10 +347,13 @@ export function useDecisionsEntries({
     root,
     view,
   ]);
-  // Until the asks read and the decisions read have answered, or stand refused, the tree may not
-  // yet place a reading under the answered ask it reads, so no write-up is told yet.
+  // Until the asks read and the decisions read have answered, or stand refused, and the tree
+  // holds the model built from them (`treePending`), the tree may not yet place a reading under
+  // the answered ask it reads, so no write-up is told yet.
   const writeUps =
-    (asks === undefined && !asksRefused) || (decisions === undefined && !decisionsRefused)
+    treePending ||
+    (asks === undefined && !asksRefused) ||
+    (decisions === undefined && !decisionsRefused)
       ? undefined
       : restating;
   return { entriesHeld, failures, parts, readsHeld, retry, retrying, unreadable, writeUps };

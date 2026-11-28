@@ -1,0 +1,1632 @@
+/** `bun e2e/tools/issue-page-load-record.ts --recorded-on <commit> [--part <commit> ...] [<log> ...]`:
+ *  writes `e2e/fixtures/issue-page-load-rows/<view>.json`, one file for each view, the record of
+ *  the rows the base draws, which the rows of `c-same-page` in `e2e/issue-page-load-same.e2e.ts`
+ *  compare the new issue page with once its load has ended. One file for each view keeps each
+ *  under Biome's `files.maxSize` (`biome.json`), which the whole record passes: Biome reads no
+ *  file over it, and CI's lint refuses such a file.
+ *
+ *  What it records. For each view of `LOAD_VIEWS` (`e2e/issue-page-load.ts`) that the base's view
+ *  row holds, at 1440 by 900 (the `chromium` project) and at 390 by 844 (the `iphone` project,
+ *  with the phone's emulation), on the load rows' worker seed (`seedLargestShape`), in one load of
+ *  the view's own address read once the load has ended (`waitForLoadEnd`):
+ *
+ *  - every row, in drawing order (`LOAD_ROW_SELECTOR`: a view's rows and the children's
+ *    section's), each with its key (`data-row-key`; for a filter's row, which draws none, its
+ *    block's node id; for a child's entry, the child's key), the key of the row it stands under
+ *    (the nearest row before it one `aria-level` up), its level, its address (`rowAddress` of
+ *    `e2e/issue-page-load.ts`, for an ask, a comment, a message or a block), its words (the text
+ *    of the row that no row inside it holds, each of which is read as a row of its own), its
+ *    links by `href` in order, its tab stops (each element inside it whose `tabIndex` is 0 or
+ *    more, in order, by its tag, its `role` and its accessible name), whether the row itself is
+ *    a tab stop (`tabStop`: a tree is one tab stop, which rests on one of its rows), its
+ *    accessible tree (`locator.ariaSnapshot()`, each row inside it standing as one `- treeitem`
+ *    line, since it is read as a row of its own: `withoutNestedRows`), the words of it no reader
+ *    sees (`hidden`: the text of an element that fails
+ *    `checkVisibility({ opacityProperty: true, visibilityProperty: true })`, or that an element
+ *    from it up to its row clips, an element whose `overflow` is not `visible` and whose
+ *    `scrollHeight` is larger than its `clientHeight`), and the writes of the server its place
+ *    depends on (`anchors`, below);
+ *  - each control that holds a parent's rows past its first page back (`[data-tree-more]`,
+ *    `[data-older-comments]`, `[data-tree-page]` and the children's section's
+ *    `[data-children-more]`), by the parent it pages and its words;
+ *  - the focused row;
+ *  - at 1440 px, the entries of the Keys list, each by its part, its words, its keys and whether
+ *    it is on.
+ *
+ *  How a row is named. The seed's own writes are named by what it returned (`seedKeys` of
+ *  `e2e/issue-page-t.ts`): `{key}` for the issue, `{children[3]}`, `{posts[12]}`,
+ *  `{messages[2]}`, and each document's block by its node id, `spec#b-r3`, the block id the seed
+ *  wrote. Three things the seed returns no stable name for are named otherwise: an ask, whose id
+ *  it does not return, by the question it wrote (`{ask "Should …?"}`, from the issue's asks
+ *  read); a reply, since the seed fills `replies` from posts it writes six at a time, so the list
+ *  holds them in the order the server answered, by its post and its place among that post's
+ *  replies (`{posts[3]/comment@0}`), which the seed writes one after another; and a day the page
+ *  draws (`shortDay`), which is when the server took the write, as `{day}`. Each UUID and each
+ *  issue's key a row holds is written by its name wherever it stands: in the row's key, its
+ *  address, its words, its links, its tab stops' names and its accessible tree, a key that the
+ *  words after it follow with no space between (`LAY-2Child 4`) included.
+ *
+ *  What it refuses. A record that still holds anything one run minted, which the next would write
+ *  otherwise: a UUID, an instant or a time of day, or an issue's key the seed did not return. And
+ *  two rows with one key under one parent, which a comparison by key could not tell apart.
+ *
+ *  What two seeds may differ in (`viewDifferences`). The record is made on one seed and the page
+ *  read on another, and `seedLargestShape` writes the children, its own asks and the posts six at
+ *  a time (`inBursts`), and answers the spec's questions six at a time: the server gives those
+ *  writes their times and the children their keys in the order it took them, which another run
+ *  does not repeat. The page orders rows by those times and keys: the asks and the posts by when
+ *  they were made, the Decisions view's asks and the spec's questions by when they closed
+ *  (`decisions-parts.ts`'s `newestFirst`), the children's section by the child's key as text (the
+ *  issue read's `order by i.key`), a statement by the ask or post it came from, and a check or a
+ *  plan task by the statements it serves. So each row carries its anchors: the writes of the
+ *  server its place depends on, each by its name and its rank among all the issue's writes by
+ *  each measure the server orders it by (`made`, `closed`, `key`) — its own write where it is
+ *  one, the ask or post a statement came from (`seeded.origins`), the ask the server indexed a
+ *  question of the spec into (the spec's questions read, and the ask's own `block_id`), the
+ *  anchors of each statement a check or a plan task serves (the `serves` of its block in the
+ *  Verification document and the plan), and the anchors of each row a row of the same node
+ *  stands under. Two seeds are not the same data in exactly those places, and the comparison
+ *  lets exactly three things differ there:
+ *
+ *  1. the order of two rows under one parent, where one anchor of the first and another of the
+ *     second stand in another order by some measure on the two seeds, or at one rank on either:
+ *     two rows whose anchors keep their order by every measure on both seeds, or that share their
+ *     anchors, or that have none, must stand in the base's order;
+ *  2. under a parent whose rows past its first page are held back (`CHILD_PAGE` of
+ *     `tree-fold.ts`, `CHILDREN_PAGE` of `children-section.tsx`), which of its anchored rows
+ *     stand at the page's edge, and the rows under them: the number of rows drawn under that
+ *     parent before its control and the control's words must be the base's, so a row more, or a
+ *     row less, is still a difference;
+ *  3. which statement each chip of a row names, where two of the row's own anchors stand in
+ *     another order, or at one rank, on the two seeds (`chipsMovedByServer`): the row's links
+ *     may differ only where each side links a block, one for one, and its words and accessible
+ *     tree, which name those chips, may then differ too. The base names a plan task's statement
+ *     chips from its parent line and the other parents of the one of its rows the view takes
+ *     (`PlanFilterBody.tsx`'s `serves`), and a task that serves two statements is a row under
+ *     each. On the two seeds the record was made on, `t16` (serving r10, from ask 5, and r11,
+ *     from ask 3) named r10 and r11 where Spec drew r10 before r11, and r10 twice where it drew
+ *     r11 first; `t7` and `t20` (serving r22 and r23, from posts 10 and 12) named r22 and r23 on
+ *     those seeds and r22 twice on another. Each pair is two statements whose asks or posts the
+ *     seed wrote in one burst.
+ *
+ *  Two focused rows that stand at one place in the view, under one parent, each with anchors, are
+ *  the same focus, and two such rows that each hold their tree's one tab stop hold the same one:
+ *  the tree's tab stop rests on the row the reader last stood on, else its first row
+ *  (`IssueTree.tsx`'s `tabStop`), and as the load ends both are the row the page opens on, the
+ *  view's first row where no address and no waiting question names one; which row that is
+ *  follows where the server put the asks the seed wrote in one burst. So the rows that hold a
+ *  tree's tab stop are compared as the focus is, one for one, and every other row holds none on
+ *  both sides. Everything else is compared exactly: every row the seed places, each paired row's
+ *  address, the tab stops inside it and its visible words, each row's words, links and
+ *  accessible tree but for the third exception, and the Keys list.
+ *
+ *  How to make it, at the base, with this branch's test files carried by `--patch`, in a builds
+ *  Job: run the row `record the rows the base draws @phone` of `e2e/issue-page-load-same.e2e.ts`
+ *  with `ISSUE_PAGE_LOAD_RECORD=1` in both projects,
+ *
+ *    ISSUE_PAGE_LOAD_RECORD=1 bun run e2e -- e2e/issue-page-load-same.e2e.ts \
+ *      --project=chromium --project=iphone -g 'record the rows the base draws'
+ *
+ *  which prints one `LOAD-RECORD <json>` line for each width, then, from `packages/dispatch`,
+ *
+ *    bun e2e/tools/issue-page-load-record.ts --recorded-on <base> --part <commit> ... <the log>
+ *
+ *  with the run's log as a file, or on the standard input where no file is named. `--recorded-on`
+ *  names the base the run was made at, and each `--part` the commit the base holds of one part of
+ *  the page `main` does not hold; each file lists them sorted. The command checks both widths'
+ *  lines and the refusals again, refuses a line an older recorder printed (`RECORD_FORMAT`),
+ *  writes each view's file with every object's fields sorted, as Biome formats it, so two runs on
+ *  one base write the same bytes where their seeds agree, and removes the file of a view the base
+ *  no longer draws.
+ *
+ *  When to make it again: when this branch takes a new head of part T, or `main` once T is on it,
+ *  whenever a change under the base changes what the page draws on the seed, and whenever this
+ *  recorder's `RECORD_FORMAT` changes. A record is never edited by hand.
+ */
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
+import { expect, type Page } from "@playwright/test";
+
+import { CONTROL_LABELS } from "../../web/src/features/issue-page/page-words";
+import { compareTimestamps } from "../../web/src/lib/timestamps";
+import {
+  getArtifactText,
+  getDocumentQuestions,
+  getIssue,
+  listComments,
+  listIssueAsks,
+  listIssueMessages,
+} from "../api";
+import { LOAD_ROW_SELECTOR, rowAddress } from "../issue-page-load";
+import { seedKeys, sortedFields } from "../issue-page-t";
+import type { LargestShapeSeed } from "../issue-page-t-scale";
+
+// ---------------------------------------------------------------------------------------------
+// The record's shape.
+// ---------------------------------------------------------------------------------------------
+
+/** A width a record is made and read at: the `chromium` project's and the `iphone` project's. */
+export type RecordWidth = 1440 | 390;
+
+/** The widths, in the order the record holds them. */
+export const RECORD_WIDTHS: readonly RecordWidth[] = [1440, 390];
+
+/** The directory of the record: one file for each view, `<view>.json`. */
+export const RECORD_DIRECTORY = new URL("../fixtures/issue-page-load-rows/", import.meta.url);
+
+/** The shape of what the record row prints and the record holds. A line or a file of another
+ *  shape was made by another recorder, and the record is made again. */
+export const RECORD_FORMAT = 4;
+
+/** What begins the line the record row prints for its width. */
+export const RECORD_LINE = "LOAD-RECORD";
+
+/** The variable under which the record row runs; elsewhere it skips. */
+export const RECORD_VARIABLE = "ISSUE_PAGE_LOAD_RECORD";
+
+/** Every row the record reads, inside the new page: a view's and the children's section's. */
+export const PAGE_ROWS = LOAD_ROW_SELECTOR.split(", ")
+  .map((row) => `[data-issue-page] ${row}`)
+  .join(", ");
+
+/** One tab stop of a row: an element whose `tabIndex` is 0 or more. */
+export interface TabStop {
+  /** Its accessible name: what `aria-labelledby` names, else `aria-label`, else its text, else
+   *  its `title`. */
+  readonly name: string;
+  /** Its `role` attribute, null where it sets none and its tag says it. */
+  readonly role: string | null;
+  readonly tag: string;
+}
+
+/** One row as the browser reads it, before it is named (`readView`). */
+export interface PageRow {
+  /** `locator.ariaSnapshot()` of the row, each row inside it one line (`withoutNestedRows`). */
+  readonly aria: string;
+  /** `data-child-entry`, a child's key, on a row of the children's section. */
+  readonly child: string | null;
+  /** The words of the row that no reader sees, in order. */
+  readonly hidden: readonly string[];
+  /** `data-node-id`. */
+  readonly id: string | null;
+  /** `aria-level`, null on a row that draws none. */
+  readonly level: number | null;
+  /** The `href` of each link of the row, in order. */
+  readonly links: readonly string[];
+  /** `data-row-key`, which a filter's row and a child's entry draw none of. */
+  readonly rowKey: string | null;
+  /** Whether the row itself is a tab stop (its `tabIndex` is 0 or more). */
+  readonly tabStop: boolean;
+  /** The tab stops inside the row. */
+  readonly tabStops: readonly TabStop[];
+  /** `data-node-type`. */
+  readonly type: string | null;
+  /** The row's text that no row inside it holds, its white space made single spaces. */
+  readonly words: string;
+}
+
+/** A control that holds a parent's rows past its first page back, as the browser reads it. */
+export interface PagingReading {
+  /** The index of the last row before it, null where none is. */
+  readonly after: number | null;
+  /** Which control it is (`PAGING_CONTROLS`): the row after a node's first page of children
+   *  (`more`), the control that reads older comments (`older`), the one that reads the read's
+   *  next page (`page`), or the children's section's (`children`). */
+  readonly kind: string;
+  /** `aria-level`: the level of the rows it holds back, null for the children's section's. */
+  readonly level: number | null;
+  readonly words: string;
+}
+
+/** One entry of the Keys list. */
+export interface KeysEntry {
+  readonly enabled: boolean;
+  /** The keys it names, as each `kbd` draws them. */
+  readonly keys: readonly string[];
+  readonly label: string;
+  /** The part of the list it stands in. */
+  readonly scope: string;
+}
+
+/** What the browser reads of one view once its load has ended (`readView`). */
+export interface PageView {
+  /** The index of the focused row, null where the focus is in none. */
+  readonly focus: number | null;
+  /** The Keys list's entries at 1440 px, null at 390 px, which draws no Keys. */
+  readonly keys: readonly KeysEntry[] | null;
+  readonly paging: readonly PagingReading[];
+  readonly rows: readonly PageRow[];
+}
+
+/** The measures the server orders its writes by: when it made one, when an ask closed (its
+ *  answer's or its resolution's time), and an issue's key as text. */
+export const MEASURES = ["closed", "key", "made"] as const;
+
+export type Measure = (typeof MEASURES)[number];
+
+/** One write of the server's by each measure it has (`MEASURES`). */
+export type ServerTimes = Readonly<Partial<Record<Measure, string>>>;
+
+/** What a row is named by (`seedNaming`): the issue's key, the name of each id the seed returned,
+ *  each write of the server's by its measures, and, for a node that is no such write, the writes
+ *  it stands by: a statement by the ask or post it came from, a question of the spec by the ask
+ *  the server indexed it into. */
+export interface Naming {
+  readonly anchors: ReadonlyMap<string, readonly string[]>;
+  readonly issue: string;
+  readonly names: ReadonlyMap<string, string>;
+  readonly times: ReadonlyMap<string, ServerTimes>;
+}
+
+/** A write of the server's that a row's place depends on: its name, and its rank among all the
+ *  issue's writes by each measure it has, where writes of one instant share a rank. */
+export interface Anchor {
+  readonly name: string;
+  readonly ranks: Readonly<Partial<Record<Measure, number>>>;
+}
+
+/** One row as the record holds it, named. */
+export interface RecordedRow {
+  readonly address: string | null;
+  /** The writes of the server its place depends on, by name; none for a row the seed places. */
+  readonly anchors: readonly Anchor[];
+  readonly aria: string;
+  readonly hidden: readonly string[];
+  readonly key: string;
+  /** `data-node-type`, `child` for a child's entry. */
+  readonly kind: string;
+  readonly level: number | null;
+  readonly links: readonly string[];
+  /** The key of the row it stands under, null at the top. */
+  readonly parentKey: string | null;
+  /** Whether the row itself is a tab stop: its tree's one, which rests on one of its rows. */
+  readonly tabStop: boolean;
+  /** The tab stops inside the row. */
+  readonly tabStops: readonly TabStop[];
+  readonly words: string;
+}
+
+/** A control that holds a parent's rows past its first page back, as the record holds it. */
+export interface PagingControl {
+  readonly kind: string;
+  readonly level: number | null;
+  /** The key of the row whose rows it pages, null at the top. */
+  readonly parentKey: string | null;
+  readonly words: string;
+}
+
+/** A row by its key and its parent's. */
+export interface RowName {
+  readonly key: string;
+  readonly parentKey: string | null;
+}
+
+/** One view at one width, as the record holds it. */
+export interface ViewRecord {
+  readonly focus: RowName | null;
+  readonly keys: readonly KeysEntry[] | null;
+  readonly paging: readonly PagingControl[];
+  readonly rows: readonly RecordedRow[];
+}
+
+/** What the record row prints for its width: each view the base draws. */
+export interface WidthRecord {
+  readonly format: number;
+  readonly views: Readonly<Record<string, ViewRecord>>;
+  readonly width: RecordWidth;
+}
+
+/** One view's file of the record, as this command writes it. */
+export interface ViewFile {
+  /** The base it was made at. */
+  readonly commit: string;
+  readonly format: number;
+  /** The commit the base holds of each part of the page `main` does not hold, sorted. */
+  readonly parts: readonly string[];
+  /** The view's token in the view row's list, which names the file. */
+  readonly view: string;
+  /** The view at each width. */
+  readonly widths: Readonly<Record<`${RecordWidth}`, ViewRecord>>;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Naming the rows, and the refusals.
+// ---------------------------------------------------------------------------------------------
+
+/** The page's short form of a day (`node-time.ts`'s `shortDay`), which is when the server took a
+ *  write, so it is written as its name. A row's words join its elements' texts with no space, so
+ *  the word after a day can follow it with none ("27 NovAnswered", "27 Nov3 checks"): the day ends
+ *  where no lower-case letter follows the month's name, and starts where no digit stands before
+ *  it, rather than at a word's edge. */
+const DAY =
+  /(?<!\d)\d{1,2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?![a-z])(?: \d{4}(?!\d))?/g;
+
+/** What a day is written as. */
+const DAY_NAME = "{day}";
+
+/** An issue's key, `[A-Z][A-Z0-9]{1,9}-<digits>` (`routes.ts`'s `buildIssuePath`), which the
+ *  server numbers in the order it takes the writes: whole where no letter, digit or `-` of a
+ *  longer key stands before it and no digit after it, so a key the row's words follow with no
+ *  space (`LAY-2Child 4`, a tag and a title read as one text) is still a key. */
+const ISSUE_KEY = "(?<![A-Z0-9-])[A-Z][A-Z0-9]{1,9}-\\d+(?!\\d)";
+
+/** A UUID, which the server mints for each write. */
+const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+
+/** What the record refuses to hold: what one run minted, which the next would write otherwise. */
+const MINTED: readonly { readonly pattern: RegExp; readonly what: string }[] = [
+  { pattern: new RegExp(UUID, "i"), what: "a UUID" },
+  { pattern: /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/, what: "an instant" },
+  { pattern: /(?<![\w:])\d{1,2}:\d{2}(?![\w:])/, what: "a time of day" },
+  { pattern: new RegExp(ISSUE_KEY), what: "an issue's key" },
+];
+
+/** What in a text can be an id the server minted: a UUID, or an issue's key. Each is looked up
+ *  among the names, so a text is read once however many ids the seed returned. */
+const ID_TOKEN = new RegExp(`${UUID}|${ISSUE_KEY}`, "g");
+
+/** The kinds of row an item's own address names (`rowAddress`). */
+const ITEM_TYPES: Readonly<Record<string, true>> = { ask: true, comment: true, message: true };
+
+/** Where a row stands, in words: under its parent's key, or at the top. */
+function placeWords(parentKey: string | null): string {
+  return parentKey === null ? "at the top" : `under ${parentKey}`;
+}
+
+/** A row's kind: its node's type, `child` for a child's entry. */
+function kindOf(row: PageRow): string {
+  return row.child === null ? (row.type ?? "row") : "child";
+}
+
+/** The row `index` stands under: the nearest row before it one level up. */
+function parentOf(levels: readonly (number | null)[], index: number): number | undefined {
+  const level = levels[index] ?? null;
+  if (level === null) return undefined;
+  for (let before = index - 1; before >= 0; before -= 1) {
+    if (levels[before] === level - 1) return before;
+  }
+  return undefined;
+}
+
+/** Which of two values of `measure` the server orders first: a time by its instant, a key as the
+ *  server's `order by` sorts text. */
+function compareBy(measure: Measure, one: string, other: string): number {
+  if (measure === "key") return one < other ? -1 : one > other ? 1 : 0;
+  return compareTimestamps(one, other);
+}
+
+/** Each write's rank among all of `times` by each measure it has: the number of writes before it
+ *  by that measure, so writes of one instant share a rank. */
+function ranksOf(
+  times: ReadonlyMap<string, ServerTimes>
+): Map<string, Partial<Record<Measure, number>>> {
+  const ranks = new Map<string, Partial<Record<Measure, number>>>();
+  for (const measure of MEASURES) {
+    const held: { readonly id: string; readonly value: string }[] = [];
+    for (const [id, measured] of times) {
+      const value = measured[measure];
+      if (value !== undefined) held.push({ id, value });
+    }
+    held.sort((one, other) => compareBy(measure, one.value, other.value));
+    let rank = 0;
+    for (const [at, write] of held.entries()) {
+      const before = held[at - 1];
+      if (before !== undefined && compareBy(measure, before.value, write.value) !== 0) rank = at;
+      ranks.set(write.id, { ...ranks.get(write.id), [measure]: rank });
+    }
+  }
+  return ranks;
+}
+
+/** Writes each id of `names` in a text as `{<its name>}`, and each day as `{day}`. */
+function namer(names: ReadonlyMap<string, string>): (text: string) => string {
+  return (text) =>
+    text
+      .replace(ID_TOKEN, (id) => {
+        const named = names.get(id);
+        return named === undefined ? id : `{${named}}`;
+      })
+      .replace(DAY, DAY_NAME);
+}
+
+/** The address that names a row's node, for an ask, a comment, a message and a block. */
+function addressOf(issue: string, row: PageRow): string | null {
+  if (row.id === null || row.type === null) return null;
+  if (ITEM_TYPES[row.type] !== true && !row.id.includes("#b-")) return null;
+  return rowAddress(issue, { id: row.id, type: row.type }) ?? null;
+}
+
+/** Each row's accessible tree with each row inside it cut to one line, `- treeitem` at its own
+ *  depth: a row inside a row (a check inside a Verification card) is read as a row of its own,
+ *  paired with the base's by its own key, so its words and its place among its siblings are no
+ *  part of the row around it. A line that starts a `treeitem` below the first line begins such a
+ *  row, which runs to the next line no deeper than it. */
+export function withoutNestedRows(aria: string): string {
+  const lines = aria.split("\n");
+  const kept: string[] = [];
+  let inside: number | null = null;
+  for (const [at, line] of lines.entries()) {
+    const depth = line.length - line.trimStart().length;
+    if (inside !== null && depth > inside) continue;
+    inside = null;
+    const nested = at > 0 && depth > 0 && /^- (?:['"])?treeitem\b/.test(line.trimStart());
+    if (nested) {
+      inside = depth;
+      kept.push(`${" ".repeat(depth)}- treeitem`);
+    } else {
+      kept.push(line);
+    }
+  }
+  return kept.join("\n");
+}
+
+/** The rows, named (the head comment's "How a row is named"), each with its anchors, and the
+ *  namer that named them. */
+function namedRows(
+  rows: readonly PageRow[],
+  naming: Naming
+): { readonly name: (text: string) => string; readonly rows: RecordedRow[] } {
+  const levels = rows.map((row) => row.level);
+  const parents = rows.map((_, index) => parentOf(levels, index));
+  const drawnIds = rows.map((row) => row.child ?? row.id);
+  // A write of the server's that the seed returned no name of (a reply) is named by its parent's
+  // node and its place among the parent's other such writes by when the server made them.
+  const names = new Map(naming.names);
+  const unnamed = new Map<number, { readonly index: number; readonly made: string }[]>();
+  for (const [index, id] of drawnIds.entries()) {
+    const made = id === null ? undefined : naming.times.get(id)?.made;
+    if (id === null || made === undefined || names.has(id)) continue;
+    const parent = parents[index] ?? -1;
+    const siblings = unnamed.get(parent) ?? [];
+    siblings.push({ index, made });
+    unnamed.set(parent, siblings);
+  }
+  // Parents come before the rows under them, so a parent's name is known before its rows'.
+  for (const [parent, siblings] of unnamed) {
+    const above = parent === -1 ? null : (drawnIds[parent] ?? null);
+    const prefix = above === null ? "" : (names.get(above) ?? above);
+    const sorted = [...siblings].sort((one, other) => compareTimestamps(one.made, other.made));
+    for (const sibling of sorted) {
+      const id = drawnIds[sibling.index];
+      const row = rows[sibling.index];
+      if (id === null || id === undefined || row === undefined || names.has(id)) continue;
+      // Writes of one instant share their place, as `ranksOf` gives them one rank.
+      const rank = sorted.findIndex((one) => one.made === sibling.made);
+      names.set(id, `${prefix}/${kindOf(row)}@${rank}`);
+    }
+  }
+
+  // Each row's anchors: its own node's, and those of the node of each row a row of its node
+  // stands under.
+  const ranks = ranksOf(naming.times);
+  const anchorIdsOf = (id: string | null): readonly string[] =>
+    id === null ? [] : [...(naming.times.has(id) ? [id] : []), ...(naming.anchors.get(id) ?? [])];
+  const above = new Map<string, Set<string>>();
+  for (const [index, id] of drawnIds.entries()) {
+    if (id === null) continue;
+    const held = above.get(id) ?? new Set<string>(anchorIdsOf(id));
+    const parent = parents[index];
+    if (parent !== undefined)
+      for (const anchor of anchorIdsOf(drawnIds[parent] ?? null)) held.add(anchor);
+    above.set(id, held);
+  }
+
+  const name = namer(names);
+  const keys: string[] = [];
+  const ordinals = new Map<string, number>();
+  // A row with no key, no node and no child is named by its place: the `n`th of its kind under
+  // its parent.
+  const placeKey = (parent: number | undefined, parentKey: string | null, kind: string) => {
+    const siblings = `${parent ?? -1} ${kind}`;
+    const ordinal = ordinals.get(siblings) ?? 0;
+    ordinals.set(siblings, ordinal + 1);
+    return `${parentKey ?? ""}/${kind}#${ordinal}`;
+  };
+  const named = rows.map((row, index): RecordedRow => {
+    const parent = parents[index];
+    const parentKey = parent === undefined ? null : (keys[parent] ?? null);
+    const kind = kindOf(row);
+    const own = row.rowKey ?? row.id ?? row.child;
+    const key = own === null ? placeKey(parent, parentKey, kind) : name(own);
+    keys.push(key);
+    const address = addressOf(naming.issue, row);
+    const id = drawnIds[index] ?? null;
+    const anchors = [...(id === null ? [] : (above.get(id) ?? []))]
+      .map((anchor) => ({ name: names.get(anchor) ?? anchor, ranks: ranks.get(anchor) ?? {} }))
+      .sort((one, other) => (one.name < other.name ? -1 : one.name > other.name ? 1 : 0));
+    return {
+      address: address === null ? null : name(address),
+      anchors,
+      aria: name(row.aria),
+      hidden: row.hidden.map(name),
+      key,
+      kind,
+      level: row.level,
+      links: row.links.map(name),
+      parentKey,
+      tabStop: row.tabStop,
+      tabStops: row.tabStops.map((stop) => ({
+        name: name(stop.name),
+        role: stop.role,
+        tag: stop.tag,
+      })),
+      words: name(row.words),
+    };
+  });
+  return { name, rows: named };
+}
+
+/** The row a paging control pages: the nearest row at or before the one it follows, one level
+ *  above the rows it holds back. */
+function pagedParent(rows: readonly PageRow[], control: PagingReading): number | undefined {
+  if (control.level === null || control.after === null) return undefined;
+  for (let at = control.after; at >= 0; at -= 1) {
+    if (rows[at]?.level === control.level - 1) return at;
+  }
+  return undefined;
+}
+
+/** Fails where two rows have the same key under the same parent key: a comparison by key could
+ *  not tell them apart. */
+export function expectRowsNamedApart(rows: readonly RowName[], where: string): void {
+  const named = new Set<string>();
+  for (const row of rows) {
+    const name = JSON.stringify([row.parentKey, row.key]);
+    if (named.has(name)) {
+      throw new Error(
+        `${where}, two rows are named ${row.key} ${placeWords(row.parentKey)}, so a comparison ` +
+          "by key and parent key could not tell them apart"
+      );
+    }
+    named.add(name);
+  }
+}
+
+/** One view as the record holds it: its rows named, its focus and its paging controls by the
+ *  rows' names. Fails where two rows have one key under one parent. */
+export function viewRecord(drawn: PageView, naming: Naming, where: string): ViewRecord {
+  const { name, rows } = namedRows(drawn.rows, naming);
+  expectRowsNamedApart(rows, where);
+  const rowAt = (index: number | null | undefined) =>
+    index === null || index === undefined ? undefined : rows[index];
+  const focused = rowAt(drawn.focus);
+  return {
+    focus: focused === undefined ? null : { key: focused.key, parentKey: focused.parentKey },
+    keys: drawn.keys,
+    paging: drawn.paging.map((control) => ({
+      kind: control.kind,
+      level: control.level,
+      parentKey: rowAt(pagedParent(drawn.rows, control))?.key ?? null,
+      words: name(control.words),
+    })),
+    rows,
+  };
+}
+
+/** Fails at the first string of `value`, a field's name included, that holds what one run
+ *  minted (`MINTED`), naming where it stands. */
+export function expectNothingMinted(value: unknown, path: string): void {
+  if (typeof value === "string") {
+    for (const { pattern, what } of MINTED) {
+      const found = pattern.exec(value);
+      if (found !== null) {
+        throw new Error(
+          `${path} holds ${what}, ${found[0]}, which belongs to this run alone: the next run ` +
+            "would write another, so the record cannot hold it"
+        );
+      }
+    }
+  } else if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) expectNothingMinted(item, `${path}[${index}]`);
+  } else if (typeof value === "object" && value !== null) {
+    for (const [field, item] of Object.entries(value)) {
+      expectNothingMinted(field, `the name of a field of ${path}`);
+      expectNothingMinted(item, `${path}.${field}`);
+    }
+  }
+}
+
+/** What the record row prints for `width`, its fields sorted. Fails where it holds what one run
+ *  minted. */
+export function widthRecord(
+  width: RecordWidth,
+  views: Readonly<Record<string, ViewRecord>>
+): WidthRecord {
+  const record = sortedFields({ format: RECORD_FORMAT, views, width }) as WidthRecord;
+  expectNothingMinted(record, "the record");
+  return record;
+}
+
+/** The line the record row prints. */
+export function recordLine(record: WidthRecord): string {
+  return `${RECORD_LINE} ${JSON.stringify(record)}`;
+}
+
+/** What makes the record again, which a refusal names. */
+const MAKE_AGAIN =
+  "make it again at this branch's base, as the head of e2e/tools/issue-page-load-record.ts says";
+
+/** The record of one width that `value`, read off line `line` of a log, holds. */
+function widthRecordOf(value: unknown, line: number): WidthRecord {
+  const held = (typeof value === "object" && value !== null ? value : {}) as {
+    readonly format?: unknown;
+    readonly views?: unknown;
+    readonly width?: unknown;
+  };
+  if (held.format !== RECORD_FORMAT) {
+    throw new Error(
+      `the ${RECORD_LINE} of line ${line} is of format ${JSON.stringify(held.format ?? null)}, ` +
+        `which another recorder printed, and this one reads format ${RECORD_FORMAT}: run the ` +
+        "record row again with this recorder"
+    );
+  }
+  if (held.width !== 1440 && held.width !== 390) {
+    throw new Error(
+      `the ${RECORD_LINE} of line ${line} records ${JSON.stringify(held.width)} px, and a ` +
+        "record is made at 1440 and at 390 px"
+    );
+  }
+  if (typeof held.views !== "object" || held.views === null) {
+    throw new Error(`the ${RECORD_LINE} of line ${line} holds no views`);
+  }
+  return value as WidthRecord;
+}
+
+/** Every record a log holds: each line that holds `LOAD-RECORD `, read after it. */
+export function recordsIn(text: string): WidthRecord[] {
+  return text.split("\n").flatMap((line, index) => {
+    const at = line.indexOf(`${RECORD_LINE} `);
+    if (at === -1) return [];
+    const json = line.slice(at + RECORD_LINE.length + 1);
+    return [widthRecordOf(JSON.parse(json), index + 1)];
+  });
+}
+
+/** The base a record was made at, and the commit it holds of each part `main` does not. */
+export interface RecordingBase {
+  readonly parts: readonly string[];
+  readonly recordedOn: string;
+}
+
+/** A view's token, which names its file: a word of the view row's list. */
+const VIEW_TOKEN = /^[a-z][a-z0-9-]*$/;
+
+/** The record, from one line of each width: one file for each view, in the views' order, each
+ *  naming the base and its parts and holding the view at both widths, its fields sorted. Fails
+ *  where a width has no line or two, where the two widths hold other views, where a view's token
+ *  names no file, and where a line holds what one run minted or two rows with one key under one
+ *  parent. */
+export function rowsRecord(base: RecordingBase, records: readonly WidthRecord[]): ViewFile[] {
+  const byWidth = new Map<RecordWidth, WidthRecord>();
+  for (const record of records) {
+    if (byWidth.has(record.width)) {
+      throw new Error(
+        `two ${RECORD_LINE} lines record ${record.width} px: give the log of one run of the row`
+      );
+    }
+    byWidth.set(record.width, record);
+  }
+  const views = new Map<string, Partial<Record<`${RecordWidth}`, ViewRecord>>>();
+  const viewsOf: string[][] = [];
+  for (const width of RECORD_WIDTHS) {
+    const record = byWidth.get(width);
+    if (record === undefined) {
+      throw new Error(
+        `no ${RECORD_LINE} line records ${width} px: the row runs in the chromium project at ` +
+          "1440 px and in the iphone project at 390 px, and the record holds both"
+      );
+    }
+    expectNothingMinted(record, `the line of ${width} px`);
+    for (const [view, recorded] of Object.entries(record.views)) {
+      if (!VIEW_TOKEN.test(view)) {
+        throw new Error(
+          `the line of ${width} px records a view ${JSON.stringify(view)}, which names no file`
+        );
+      }
+      expectRowsNamedApart(recorded.rows, `${view} at ${width} px`);
+      views.set(view, { ...views.get(view), [`${width}`]: recorded });
+    }
+    viewsOf.push(Object.keys(record.views).sort());
+  }
+  const [wide, narrow] = viewsOf;
+  if (JSON.stringify(wide) !== JSON.stringify(narrow)) {
+    throw new Error(
+      `the line of 1440 px records ${wide?.join(", ")} and the line of 390 px ` +
+        `${narrow?.join(", ")}: one base draws the same views at both widths`
+    );
+  }
+  return [...views.entries()]
+    .sort(([one], [other]) => (one < other ? -1 : one > other ? 1 : 0))
+    .map(
+      ([view, widths]) =>
+        sortedFields({
+          commit: base.recordedOn,
+          format: RECORD_FORMAT,
+          parts: base.parts,
+          view,
+          widths,
+        }) as ViewFile
+    );
+}
+
+/** The file of `view`'s record. */
+export function recordFile(view: string): URL {
+  return new URL(`${view}.json`, RECORD_DIRECTORY);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The comparison.
+// ---------------------------------------------------------------------------------------------
+
+/** What the rows compare, each a clause of `c-same-page`, in the order they are reported. */
+export const CLAUSES = [
+  "rows",
+  "paging",
+  "order",
+  "address",
+  "words",
+  "links",
+  "tab stops",
+  "accessible tree",
+  "visibility",
+  "focus",
+  "keys",
+] as const;
+
+export type Clause = (typeof CLAUSES)[number];
+
+/** Each clause in words, for a row's failure. */
+export const CLAUSE_WORDS: Readonly<Record<Clause, string>> = {
+  "accessible tree": "each row's accessible tree is the base's",
+  address: "each row's address is the base's",
+  focus: "the focus is on the row the base puts it on",
+  keys: "the Keys list holds the keys the base's holds",
+  links: "each row's links are the base's, by href in order",
+  order: "the rows stand in the base's order",
+  paging: "no row past a page of the paging rule is in the document until its control is pressed",
+  rows: "each row the record holds as drawn is in the document, and no other",
+  "tab stops": "each row's tab stops are the base's, in order",
+  visibility: "nothing hides a row's words but content-visibility",
+  words: "each row's words are the base's",
+};
+
+/** One way the page differs from the record, under one clause. */
+export interface Difference {
+  readonly clause: Clause;
+  readonly line: string;
+}
+
+/** A row by its parent's key and its own, which pairs a recorded row with a drawn one. */
+function pairOf(row: RowName): string {
+  return JSON.stringify([row.parentKey, row.key]);
+}
+
+/** The rows a paging control holds back: those of its level under its parent. */
+function groupOf(parentKey: string | null, level: number | null): string {
+  return JSON.stringify([parentKey, level]);
+}
+
+/** `value` as JSON with every object's fields sorted. */
+function canonical(value: unknown): string {
+  return JSON.stringify(sortedFields(value)) ?? "undefined";
+}
+
+/** The index of the row the row `index` stands under: the nearest row before it with its
+ *  parent's key. */
+function parentIndexOf(rows: readonly RecordedRow[], index: number): number | undefined {
+  const parentKey = rows[index]?.parentKey ?? null;
+  if (parentKey === null) return undefined;
+  for (let before = index - 1; before >= 0; before -= 1) {
+    if (rows[before]?.key === parentKey) return before;
+  }
+  return undefined;
+}
+
+/** How two anchors stand by `measure`, undefined where one has no rank by it. */
+function rankSign(one: Anchor, other: Anchor, measure: Measure): number | undefined {
+  const first = one.ranks[measure];
+  const second = other.ranks[measure];
+  return first === undefined || second === undefined ? undefined : Math.sign(first - second);
+}
+
+/** Whether the two seeds' servers ordered the pair's anchors otherwise, or at one rank: then the
+ *  seed fixes no order of the two rows, and none is compared (the head comment's first
+ *  exception). */
+function orderedApart(
+  base: readonly [RecordedRow, RecordedRow],
+  page: readonly [RecordedRow, RecordedRow]
+): boolean {
+  for (const one of base[0].anchors) {
+    const oneNow = page[0].anchors.find((anchor) => anchor.name === one.name);
+    if (oneNow === undefined) continue;
+    for (const other of base[1].anchors) {
+      if (other.name === one.name) continue;
+      const otherNow = page[1].anchors.find((anchor) => anchor.name === other.name);
+      if (otherNow === undefined) continue;
+      for (const measure of MEASURES) {
+        const before = rankSign(one, other, measure);
+        const now = rankSign(oneNow, otherNow, measure);
+        if (before === undefined || now === undefined) continue;
+        if (before === 0 || now === 0 || before !== now) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** A link to a block of one of the issue's documents: what a chip naming a statement links to. */
+const BLOCK_LINK = /#b-[\w-]+$/;
+
+/** Whether a row names its statements otherwise on the two seeds, and no more than that (the
+ *  head comment's third exception): its links differ, but only where each side links a block,
+ *  one link for one, and the writes it stands by (its anchors) stand in another order on the two
+ *  seeds, or at one rank on either. */
+function chipsMovedByServer(base: RecordedRow, page: RecordedRow): boolean {
+  if (base.links.length !== page.links.length) return false;
+  let differ = false;
+  for (const [at, link] of base.links.entries()) {
+    const now = page.links[at] ?? "";
+    if (link === now) continue;
+    if (!BLOCK_LINK.test(link) || !BLOCK_LINK.test(now)) return false;
+    differ = true;
+  }
+  return differ && orderedApart([base, base], [page, page]);
+}
+
+/** The first line on which two accessible trees differ. */
+function firstChange(base: string, page: string): string {
+  const before = base.split("\n");
+  const now = page.split("\n");
+  const quoted = (line: string | undefined) =>
+    line === undefined ? "no line" : JSON.stringify(line);
+  for (let line = 0; line < Math.max(before.length, now.length); line += 1) {
+    if (before[line] !== now[line]) {
+      return `line ${line + 1} is ${quoted(before[line])} in the base and ${quoted(now[line])} on the page`;
+    }
+  }
+  return "they differ in nothing but their line breaks";
+}
+
+/** The words `page` hides that `base` does not, each once for each time more. */
+function newlyHidden(base: readonly string[], page: readonly string[]): string[] {
+  const left = new Map<string, number>();
+  for (const word of base) left.set(word, (left.get(word) ?? 0) + 1);
+  return page.filter((word) => {
+    const held = left.get(word) ?? 0;
+    left.set(word, held - 1);
+    return held <= 0;
+  });
+}
+
+/** Whether two rows, one of each view, are one row as far as the seed fixes it: the same row, or
+ *  rows at one place in the view under one parent, each with anchors, which two seeds fill with
+ *  different writes. The focused row and the row that holds a tree's tab stop are each compared
+ *  by it. */
+function samePlace(
+  base: ViewRecord,
+  page: ViewRecord,
+  before: RowName | null,
+  now: RowName | null
+): boolean {
+  if (before === null || now === null) return before === now;
+  const baseRow = pairOf(before);
+  const pageRow = pairOf(now);
+  if (baseRow === pageRow) return true;
+  const at = base.rows.findIndex((row) => pairOf(row) === baseRow);
+  const there = base.rows[at];
+  const here = page.rows[at];
+  return (
+    there !== undefined &&
+    here !== undefined &&
+    pairOf(here) === pageRow &&
+    there.parentKey === here.parentKey &&
+    there.anchors.length > 0 &&
+    here.anchors.length > 0
+  );
+}
+
+/** A row by its key and its parent's, in words. */
+function rowWords(row: RowName | null): string {
+  return row === null ? "no row" : `${row.key} ${placeWords(row.parentKey)}`;
+}
+
+/** An entry of the Keys list, in words. */
+function keysLine(entry: KeysEntry): string {
+  return `${entry.scope}: ${entry.label} (${entry.keys.join(" ")})${entry.enabled ? "" : ", off"}`;
+}
+
+/**
+ * How the page's view, named as the record names it (`viewRecord`), differs from the record's, by
+ * clause in `CLAUSES` order: rows the record holds and the page does not, or the other way round;
+ * the rows each paging control holds back and its words; every pair of siblings that stand in
+ * another order; each paired row's address, words, links, tab stops, accessible tree and the
+ * words it hides; the focus; and the Keys list. Where two seeds differ, as the head comment says,
+ * nothing is a difference.
+ */
+export function viewDifferences(recorded: ViewRecord, drawn: ViewRecord): Difference[] {
+  const found = new Map<Clause, string[]>();
+  for (const clause of CLAUSES) found.set(clause, []);
+  const say = (clause: Clause, line: string) => {
+    found.get(clause)?.push(line);
+  };
+  const recordedAt = new Map(recorded.rows.map((row, index) => [pairOf(row), index] as const));
+  const drawnAt = new Map(drawn.rows.map((row, index) => [pairOf(row), index] as const));
+
+  // The parents whose rows past a page are held back, on either side.
+  const paged = new Map<string, string | null>();
+  for (const control of [...recorded.paging, ...drawn.paging]) {
+    paged.set(groupOf(control.parentKey, control.level), control.parentKey);
+  }
+  // The row at a page's edge a row stands at or under: an anchored row of a paged parent, which
+  // another seed may hold past the page (the head comment's second exception).
+  const edgeOf = (rows: readonly RecordedRow[], index: number): string | null => {
+    for (let at: number | undefined = index; at !== undefined; at = parentIndexOf(rows, at)) {
+      const row = rows[at];
+      if (row === undefined) return null;
+      if (row.anchors.length > 0 && paged.has(groupOf(row.parentKey, row.level))) {
+        return pairOf(row);
+      }
+    }
+    return null;
+  };
+
+  for (const [index, row] of recorded.rows.entries()) {
+    if (drawnAt.has(pairOf(row))) continue;
+    const edge = edgeOf(recorded.rows, index);
+    if (edge !== null && !drawnAt.has(edge)) continue;
+    say("rows", `the base draws ${row.key} ${placeWords(row.parentKey)}, and the page does not`);
+  }
+  for (const [index, row] of drawn.rows.entries()) {
+    if (recordedAt.has(pairOf(row))) continue;
+    const edge = edgeOf(drawn.rows, index);
+    if (edge !== null && !recordedAt.has(edge)) continue;
+    if (paged.has(groupOf(row.parentKey, row.level))) {
+      say(
+        "paging",
+        `the page draws ${row.key} ${placeWords(row.parentKey)} before the control that pages ` +
+          "it is pressed"
+      );
+    } else {
+      say(
+        "rows",
+        `the page draws ${row.key} ${placeWords(row.parentKey)}, which the base does not`
+      );
+    }
+  }
+
+  for (const [group, parentKey] of paged) {
+    const count = (rows: readonly RecordedRow[]) =>
+      rows.filter((row) => groupOf(row.parentKey, row.level) === group).length;
+    const before = count(recorded.rows);
+    const now = count(drawn.rows);
+    if (before !== now) {
+      say(
+        "paging",
+        `${placeWords(parentKey)} the base draws ${before} rows before the control that pages ` +
+          `them, and the page ${now}`
+      );
+    }
+  }
+  const controlOf = (control: PagingControl) =>
+    `${groupOf(control.parentKey, control.level)} ${control.kind}`;
+  for (const control of recorded.paging) {
+    const now = drawn.paging.find((other) => controlOf(other) === controlOf(control));
+    if (now === undefined) {
+      say(
+        "paging",
+        `${placeWords(control.parentKey)} the base holds the rows past its page behind ` +
+          `${JSON.stringify(control.words)}, and the page draws no such control`
+      );
+    } else if (now.words !== control.words) {
+      say(
+        "paging",
+        `${placeWords(control.parentKey)} the base holds the rows past its page behind ` +
+          `${JSON.stringify(control.words)}, and the page behind ${JSON.stringify(now.words)}`
+      );
+    }
+  }
+  for (const control of drawn.paging) {
+    if (recorded.paging.some((other) => controlOf(other) === controlOf(control))) continue;
+    say(
+      "paging",
+      `${placeWords(control.parentKey)} the page holds rows back behind ` +
+        `${JSON.stringify(control.words)}, where the base draws them all`
+    );
+  }
+
+  const siblings = new Map<string, RecordedRow[]>();
+  for (const row of recorded.rows) {
+    if (!drawnAt.has(pairOf(row))) continue;
+    const parent = JSON.stringify(row.parentKey);
+    const group = siblings.get(parent) ?? [];
+    group.push(row);
+    siblings.set(parent, group);
+  }
+  for (const rows of siblings.values()) {
+    for (const [at, first] of rows.entries()) {
+      for (const second of rows.slice(at + 1)) {
+        const firstAt = drawnAt.get(pairOf(first)) ?? -1;
+        const secondAt = drawnAt.get(pairOf(second)) ?? -1;
+        const drawnFirst = drawn.rows[firstAt];
+        const drawnSecond = drawn.rows[secondAt];
+        if (drawnFirst === undefined || drawnSecond === undefined) continue;
+        if (orderedApart([first, second], [drawnFirst, drawnSecond])) continue;
+        if (firstAt > secondAt) {
+          say(
+            "order",
+            `${placeWords(first.parentKey)}, the base draws ${first.key} before ${second.key}, ` +
+              `and the page draws ${first.key} after it`
+          );
+        }
+      }
+    }
+  }
+
+  for (const row of recorded.rows) {
+    const page = drawn.rows[drawnAt.get(pairOf(row)) ?? -1];
+    if (page === undefined) continue;
+    // The head comment's third exception: the row's words, links and accessible tree follow its
+    // chips, which name its statements otherwise on the two seeds.
+    const chipsMoved = chipsMovedByServer(row, page);
+    if (row.address !== page.address) {
+      say(
+        "address",
+        `${row.key}: the base's ${JSON.stringify(row.address)}, the page's ${JSON.stringify(page.address)}`
+      );
+    }
+    if (!chipsMoved && row.words !== page.words) {
+      say(
+        "words",
+        `${row.key}: the base's ${JSON.stringify(row.words)}, the page's ${JSON.stringify(page.words)}`
+      );
+    }
+    if (!chipsMoved && canonical(row.links) !== canonical(page.links)) {
+      say(
+        "links",
+        `${row.key}: the base links ${canonical(row.links)}, the page ${canonical(page.links)}`
+      );
+    }
+    if (canonical(row.tabStops) !== canonical(page.tabStops)) {
+      say(
+        "tab stops",
+        `${row.key}: the base stops at ${canonical(row.tabStops)}, the page at ${canonical(page.tabStops)}`
+      );
+    }
+    if (!chipsMoved && row.aria !== page.aria)
+      say("accessible tree", `${row.key}: ${firstChange(row.aria, page.aria)}`);
+    for (const word of newlyHidden(row.hidden, page.hidden)) {
+      say("visibility", `${row.key}: the page hides ${JSON.stringify(word)}, which the base shows`);
+    }
+  }
+
+  // The rows that hold their tree's tab stop, one for one and each by the place rule, and no
+  // other row holds one (the head comment).
+  const holders = (view: ViewRecord) => view.rows.filter((row) => row.tabStop);
+  const heldAtBase = holders(recorded);
+  const heldOnPage = holders(drawn);
+  if (heldAtBase.length !== heldOnPage.length) {
+    say(
+      "tab stops",
+      `the base's trees rest their tab stops on ${heldAtBase.length} rows ` +
+        `(${heldAtBase.map(rowWords).join(", ")}), and the page's on ${heldOnPage.length} ` +
+        `(${heldOnPage.map(rowWords).join(", ")})`
+    );
+  } else {
+    for (const [at, held] of heldAtBase.entries()) {
+      const here = heldOnPage[at] ?? null;
+      if (samePlace(recorded, drawn, held, here)) continue;
+      say(
+        "tab stops",
+        `the base's tree rests its tab stop on ${rowWords(held)}, and the page's on ${rowWords(here)}`
+      );
+    }
+  }
+
+  if (!samePlace(recorded, drawn, recorded.focus, drawn.focus)) {
+    say(
+      "focus",
+      `the base puts the focus on ${rowWords(recorded.focus)}, and the page on ${rowWords(drawn.focus)}`
+    );
+  }
+
+  if (recorded.keys === null || drawn.keys === null) {
+    if (recorded.keys !== drawn.keys) {
+      say(
+        "keys",
+        recorded.keys === null
+          ? "the page draws a Keys list where the base draws none"
+          : "the base draws a Keys list where the page draws none"
+      );
+    }
+  } else {
+    const before = recorded.keys.map(keysLine);
+    const now = drawn.keys.map(keysLine);
+    for (const line of before.filter((entry) => !now.includes(entry))) {
+      say("keys", `the base's Keys list holds ${line}, and the page's does not`);
+    }
+    for (const line of now.filter((entry) => !before.includes(entry))) {
+      say("keys", `the page's Keys list holds ${line}, which the base's does not`);
+    }
+    if (found.get("keys")?.length === 0 && JSON.stringify(before) !== JSON.stringify(now)) {
+      say("keys", "the page's Keys list holds the base's entries in another order");
+    }
+  }
+
+  return CLAUSES.flatMap((clause) => (found.get(clause) ?? []).map((line) => ({ clause, line })));
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the rows read: the record, the seed's names, and the page.
+// ---------------------------------------------------------------------------------------------
+
+/** Each view's file as the rows read it, once. */
+const viewFilesRead = new Map<string, ViewFile>();
+
+/** The record of `view` at `width`, from the view's own file. It is read, never imported, since
+ *  Playwright loads a spec under Node, which refuses a JSON import that names no `type: json`.
+ *  Fails, saying how to make it, where the file is missing, is another recorder's, or holds no
+ *  such width. */
+export function recordedView(view: string, width: RecordWidth): ViewRecord {
+  const url = recordFile(view);
+  const file = relative(packageRoot, fileURLToPath(url));
+  if (!existsSync(url)) {
+    throw new Error(
+      `${file} is missing, so there is no record of the rows the base draws of ${view} to ` +
+        "compare the page with. Make it at this branch's base, as the head of " +
+        "e2e/tools/issue-page-load-record.ts says: run the row " +
+        `"record the rows the base draws @phone" with ${RECORD_VARIABLE}=1 in the chromium and ` +
+        "iphone projects, then bun e2e/tools/issue-page-load-record.ts --recorded-on <base> " +
+        "[--part <commit> ...] <its log>"
+    );
+  }
+  const read = viewFilesRead.get(view) ?? (JSON.parse(readFileSync(url, "utf8")) as ViewFile);
+  viewFilesRead.set(view, read);
+  if (read.format !== RECORD_FORMAT) {
+    throw new Error(
+      `${file}, made at ${read.commit}, is of format ${JSON.stringify(read.format ?? null)}, ` +
+        `and the rows read format ${RECORD_FORMAT}: ${MAKE_AGAIN}`
+    );
+  }
+  const recorded = read.widths[`${width}`];
+  if (recorded === undefined) {
+    throw new Error(`${file}, made at ${read.commit}, holds no ${width} px: ${MAKE_AGAIN}`);
+  }
+  return recorded;
+}
+
+/** The width of a row's viewport, which is one its record is made at. */
+export function recordWidth(viewport: { readonly width: number } | null): RecordWidth {
+  const width = viewport?.width;
+  if (width === 1440 || width === 390) return width;
+  throw new Error(
+    "a record is made and read at 1440 px (the chromium project) and at 390 px (the iphone " +
+      `project), and this row's page is ${width === undefined ? "no fixed width" : `${width} px`} wide`
+  );
+}
+
+/** A block of a document that serves statements: a check of the Verification document or a task
+ *  of the plan, with its block id and the references its `serves` names. */
+const SERVING_BLOCK = /:::(?:check|plan_task)\{#([^\s}]+)([^}]*)\}/g;
+
+/** The `serves` attribute of a block's attributes. */
+const SERVES = /\bserves="([^"]*)"/;
+
+/** The names, the server's measures and the anchors the rows are named by (the head comment's
+ *  "How a row is named" and "What two seeds may differ in"), read from what the seed returned and
+ *  from the issue's reads. */
+export async function seedNaming(seeded: LargestShapeSeed): Promise<Naming> {
+  const [issue, asks, comments, messages, plan, verification, questions] = await Promise.all([
+    getIssue(seeded.key),
+    listIssueAsks(seeded.key),
+    listComments(seeded.key),
+    listIssueMessages(seeded.key),
+    getArtifactText(seeded.planArtifactId),
+    getArtifactText(seeded.verificationArtifactId),
+    getDocumentQuestions(seeded.specArtifactId),
+  ]);
+  // The seed fills `replies` as the server answers posts it writes six at a time, so the list's
+  // order is another in each run: a reply is named by its post and its place in its thread.
+  const { replies: _inTheServersOrder, ...returned } = seeded;
+  const artifacts = issue.artifacts ?? [];
+  const slugs = artifacts.map((artifact) => artifact.slug);
+  const slugOf = (id: string | null) => artifacts.find((artifact) => artifact.id === id)?.slug;
+  const names = new Map(seedKeys(returned, slugs));
+  for (const ask of asks) {
+    if (!names.has(ask.id)) names.set(ask.id, `ask ${JSON.stringify(ask.question)}`);
+  }
+  const times = new Map<string, ServerTimes>();
+  const anchors = new Map<string, string[]>();
+  for (const ask of asks) {
+    const closed = ask.answer?.at ?? ask.resolution?.at;
+    times.set(ask.id, { made: ask.created_at, ...(closed === undefined ? {} : { closed }) });
+    // A question of a document is the node of its block, which the server indexed into this ask.
+    const slug = ask.block_artifact?.slug ?? slugOf(ask.artifact_id ?? null);
+    if (typeof ask.block_id === "string" && slug !== undefined) {
+      anchors.set(`${slug}#b-${ask.block_id}`, [ask.id]);
+    }
+  }
+  // The spec's own account of each question block and the ask the server settled for it, which
+  // names the ask where the asks read names no document of its block. `ask` is the ask's id, or
+  // an address whose last part is.
+  const spec = slugOf(seeded.specArtifactId);
+  for (const question of questions.questions ?? []) {
+    const ask = question.ask.split("/").at(-1) ?? "";
+    if (spec !== undefined && times.has(ask)) {
+      anchors.set(`${spec}#b-${question.block_id}`, [ask]);
+    }
+  }
+  for (const comment of comments) times.set(comment.id, { made: comment.created_at });
+  for (const thread of messages) {
+    for (const message of [thread.message, ...(thread.replies ?? [])]) {
+      times.set(message.id, { made: message.created_at });
+    }
+  }
+  for (const child of seeded.children) times.set(child, { key: child });
+  // A statement stands under the ask or the post its `From:` line cites: its address's last part
+  // is that item's id.
+  for (const [block, address] of Object.entries(seeded.origins)) {
+    const item = address.split("/").at(-1);
+    if (spec !== undefined && item !== undefined) anchors.set(`${spec}#b-${block}`, [item]);
+  }
+  // A check or a task stands by the statements it serves: which of its rows the page takes, and
+  // which statement each of its chips names, follow where those statements stand, which is where
+  // the asks and posts they came from stand.
+  for (const [id, text] of [
+    [seeded.planArtifactId, plan.markdown],
+    [seeded.verificationArtifactId, verification.markdown],
+  ] as const) {
+    const slug = slugOf(id);
+    if (slug === undefined || spec === undefined) continue;
+    for (const [, block = "", attributes = ""] of text.matchAll(SERVING_BLOCK)) {
+      const served = (SERVES.exec(attributes)?.[1] ?? "").split(/\s+/).flatMap((reference) => {
+        const at = reference.indexOf("#b-");
+        return at === -1 ? [] : (anchors.get(`${spec}${reference.slice(at)}`) ?? []);
+      });
+      if (served.length > 0) anchors.set(`${slug}#b-${block}`, [...new Set(served)]);
+    }
+  }
+  return { anchors, issue: seeded.key, names, times };
+}
+
+/** The controls that hold a parent's rows past its first page back, by the attribute each
+ *  carries (`TreeRows.tsx`'s `PAGE_CONTROL_MARKS`, and `children-section.tsx`'s). */
+const PAGING_CONTROLS: Readonly<Record<string, string>> = {
+  children: "data-children-more",
+  more: "data-tree-more",
+  older: "data-older-comments",
+  page: "data-tree-page",
+};
+
+/** The list Keys opens (`shell/ShortcutHelp.tsx`). */
+const KEYS_LIST = '[role="dialog"][aria-label="Keyboard shortcuts"]';
+
+/** What `readRows` is handed. */
+interface RowsQuery {
+  readonly paging: Readonly<Record<string, string>>;
+  readonly rows: string;
+}
+
+/** What `readRows` answers. */
+interface RowsRead {
+  readonly focus: number | null;
+  readonly paging: readonly PagingReading[];
+  readonly rows: readonly Omit<PageRow, "aria">[];
+}
+
+/**
+ * Reads the rows in the browser, as `PageRow` says, but their accessible trees, which Playwright
+ * reads. It runs inside the page, so it names nothing outside itself.
+ */
+function readRows({ paging, rows: selector }: RowsQuery): RowsRead {
+  const words = (text: string | null | undefined) => (text ?? "").replace(/\s+/g, " ").trim();
+  const rows = [...document.querySelectorAll(selector)];
+  const isRow = new Set<Element>(rows);
+  const rowOf = (element: Element | null): Element | null => {
+    for (let at = element; at !== null; at = at.parentElement) {
+      if (isRow.has(at)) return at;
+    }
+    return null;
+  };
+  const nameOf = (element: Element): string => {
+    // A read of the DOM inside one evaluation, once the load has ended and the page is still:
+    // the element's own attribute, which names its label where it has one.
+    const labelledBy = (element.getAttribute("aria-labelledby") ?? "").trim();
+    if (labelledBy !== "") {
+      return words(
+        labelledBy
+          .split(/\s+/)
+          .map((id) => document.getElementById(id)?.textContent ?? "")
+          .join(" ")
+      );
+    }
+    // The same still page's attribute, read in the order the accessible name takes its sources.
+    const label = element.getAttribute("aria-label");
+    if (label !== null) return words(label);
+    return words(element.textContent) || words(element.getAttribute("title"));
+  };
+  const clipping = new Map<Element, boolean>();
+  const clips = (at: Element): boolean => {
+    const known = clipping.get(at);
+    if (known !== undefined) return known;
+    const clipped =
+      getComputedStyle(at).overflow !== "visible" && at.scrollHeight > at.clientHeight;
+    clipping.set(at, clipped);
+    return clipped;
+  };
+  const seen = (holder: Element, row: Element): boolean => {
+    if (!holder.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return false;
+    for (let at: Element | null = holder; at !== null; at = at.parentElement) {
+      if (clips(at)) return false;
+      if (at === row) break;
+    }
+    return true;
+  };
+  const read = rows.map((row) => {
+    const own = (element: Element) => rowOf(element) === row;
+    // The row's own text, in document order: each text node whose nearest row is this one, so the
+    // text of a row inside it is read with that row and not with this one.
+    let text = "";
+    const hidden: string[] = [];
+    const texts = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    for (let node = texts.nextNode(); node !== null; node = texts.nextNode()) {
+      const holder = node.parentElement;
+      if (holder === null || !own(holder)) continue;
+      text += node.textContent ?? "";
+      const said = words(node.textContent);
+      if (said !== "" && !seen(holder, row)) hidden.push(said);
+    }
+    // The row's own level on the still page, read in the evaluation that reads the row.
+    const level = row.getAttribute("aria-level");
+    return {
+      child: row.getAttribute("data-child-entry"),
+      hidden,
+      id: row.getAttribute("data-node-id"),
+      level: level === null ? null : Number(level),
+      links: [...row.querySelectorAll("a[href]")]
+        .filter(own)
+        .map((link) => link.getAttribute("href") ?? ""),
+      rowKey: row.getAttribute("data-row-key"),
+      tabStop: row instanceof HTMLElement && row.tabIndex >= 0,
+      tabStops: [...row.querySelectorAll("*")]
+        .filter(
+          (element) =>
+            (element instanceof HTMLElement || element instanceof SVGElement) &&
+            element.tabIndex >= 0 &&
+            own(element)
+        )
+        .map((element) => ({
+          name: nameOf(element),
+          role: element.getAttribute("role"),
+          tag: element.localName,
+        })),
+      type: row.getAttribute("data-node-type"),
+      words: words(text),
+    };
+  });
+  const controls = Object.entries(paging).flatMap(([kind, attribute]) =>
+    [...document.querySelectorAll(`[data-issue-page] [${attribute}]`)].map((control) => ({
+      control,
+      kind,
+    }))
+  );
+  controls.sort((one, other) =>
+    one.control.compareDocumentPosition(other.control) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+  );
+  const focused = rowOf(document.activeElement);
+  return {
+    focus: focused === null ? null : rows.indexOf(focused),
+    paging: controls.map(({ control, kind }) => {
+      let after: number | null = null;
+      for (const [index, row] of rows.entries()) {
+        if (!(row.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
+        after = index;
+      }
+      // The control's own level on the still page, read in the evaluation that reads the rows.
+      const level = control.getAttribute("aria-level");
+      return {
+        after,
+        kind,
+        level: level === null ? null : Number(level),
+        words: words(control.textContent),
+      };
+    }),
+    rows: read,
+  };
+}
+
+/** The entries of the Keys list: a press on Keys opens it, and Escape closes it again. */
+async function keysList(page: Page): Promise<KeysEntry[]> {
+  await page
+    .locator("[data-filter-row]")
+    .getByRole("button", { exact: true, name: CONTROL_LABELS.keys })
+    .click();
+  const list = page.locator(KEYS_LIST);
+  await expect(list, "a press on Keys opened no list of keys").toBeVisible();
+  const entries = await list.evaluate((dialog) =>
+    [...dialog.querySelectorAll("section")].flatMap((section) =>
+      [...section.querySelectorAll("li")].map((item) => ({
+        enabled: item.getAttribute("data-enabled") === "true",
+        keys: [...item.querySelectorAll("kbd")].map((key) => (key.textContent ?? "").trim()),
+        label: (item.querySelector(":scope > span")?.textContent ?? "").trim(),
+        scope: section.getAttribute("aria-label") ?? "",
+      }))
+    )
+  );
+  await page.keyboard.press("Escape");
+  await expect(list, "Escape left the list of keys open").toHaveCount(0);
+  return entries;
+}
+
+/**
+ * What the page draws of the view it holds, once its load has ended: every row, each with its
+ * accessible tree, the focused row, the paging controls, and at 1440 px the Keys list, read last
+ * since opening it moves the focus. Fails where the rows change while they are read.
+ */
+export async function readView(page: Page, width: RecordWidth): Promise<PageView> {
+  const query: RowsQuery = { paging: PAGING_CONTROLS, rows: PAGE_ROWS };
+  // Read once the load has ended, and read again below: a page that changed between the two
+  // readings fails here rather than being recorded half drawn.
+  const before = await page.evaluate(readRows, query);
+  const rows = page.locator(PAGE_ROWS);
+  const trees: string[] = [];
+  for (let index = 0; index < before.rows.length; index += 1) {
+    trees.push(withoutNestedRows(await rows.nth(index).ariaSnapshot()));
+  }
+  // The second reading, which must equal the first for the page to be still enough to record.
+  const after = await page.evaluate(readRows, query);
+  if (JSON.stringify(after) !== JSON.stringify(before)) {
+    throw new Error(
+      "the page changed while its rows were read, after its load had ended: no record of it " +
+        "would hold still"
+    );
+  }
+  return {
+    focus: before.focus,
+    keys: width === 1440 ? await keysList(page) : null,
+    paging: before.paging,
+    rows: before.rows.map((row, index) => ({ ...row, aria: trees[index] ?? "" })),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The command: its arguments, and the files it writes.
+// ---------------------------------------------------------------------------------------------
+
+const usage =
+  "usage: bun e2e/tools/issue-page-load-record.ts --recorded-on <commit> [--part <commit> ...] " +
+  "[<log> ...]\n" +
+  "  --recorded-on  the base the record row ran at\n" +
+  "  --part         the commit the base holds of one part of the page main does not hold; once\n" +
+  "                 for each such part\n" +
+  "  <log>          the log of that run, which holds its two LOAD-RECORD lines; the standard\n" +
+  "                 input where none is named";
+
+/** A commit: the short or the full hash. */
+const COMMIT = /^[0-9a-f]{7,64}$/;
+
+const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
+const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+
+function refuse(message: string): never {
+  console.error(`${message}\n\n${usage}`);
+  process.exit(2);
+}
+
+function givenArguments() {
+  try {
+    return parseArgs({
+      allowPositionals: true,
+      args: process.argv.slice(2),
+      options: { part: { multiple: true, type: "string" }, "recorded-on": { type: "string" } },
+      strict: true,
+    });
+  } catch (error) {
+    return refuse(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** The base and its parts, from the flags. */
+function recordingBase(given: {
+  readonly part?: readonly string[];
+  readonly "recorded-on"?: string;
+}): RecordingBase {
+  const recordedOn = given["recorded-on"] ?? "";
+  if (recordedOn === "") refuse("Name the base the record row ran at: --recorded-on <commit>.");
+  if (!COMMIT.test(recordedOn)) {
+    refuse(`The base ${JSON.stringify(recordedOn)} is not a commit's hash.`);
+  }
+  const parts = new Set<string>();
+  for (const commit of given.part ?? []) {
+    if (!COMMIT.test(commit)) refuse(`The part ${JSON.stringify(commit)} is not a commit's hash.`);
+    if (parts.has(commit)) refuse(`The part ${commit} is named twice.`);
+    parts.add(commit);
+  }
+  return { parts: [...parts].sort(), recordedOn };
+}
+
+/** The largest file Biome reads, `files.maxSize` of the repository's `biome.json`: a record file
+ *  over it is one Biome passes over, and CI's lint refuses. */
+function biomeMaxSize(): number {
+  const config = JSON.parse(readFileSync(join(repoRoot, "biome.json"), "utf8")) as {
+    readonly files?: { readonly maxSize?: number };
+  };
+  // Biome's own default where the configuration names none.
+  return config.files?.maxSize ?? 1_048_576;
+}
+
+/** `json` as Biome formats it, which is what `bunx biome check .` holds a committed file to. */
+function biomeFormatted(json: string, file: string): string {
+  const biome = Bun.which("biome", {
+    PATH: [join(repoRoot, "node_modules/.bin"), process.env.PATH ?? ""].join(":"),
+  });
+  if (biome === null) {
+    throw new Error("The command writes the record through Biome: run `bun install` first.");
+  }
+  const formatted = Bun.spawnSync({
+    cmd: [biome, "format", `--stdin-file-path=${relative(repoRoot, file)}`],
+    cwd: repoRoot,
+    stderr: "inherit",
+    stdin: new TextEncoder().encode(json),
+  });
+  const source = formatted.stdout.toString();
+  if (formatted.exitCode !== 0 || source === "") {
+    throw new Error(`biome format refused ${relative(repoRoot, file)}`);
+  }
+  return source;
+}
+
+/** The command: reads the record's lines, checks them, writes one file for each view, and
+ *  removes the file of a view the record no longer holds. */
+async function main(): Promise<number> {
+  const { positionals, values } = givenArguments();
+  const base = recordingBase(values);
+  const text =
+    positionals.length === 0
+      ? await Bun.stdin.text()
+      : positionals.map((log) => readFileSync(log, "utf8")).join("\n");
+  const records = recordsIn(text);
+  if (records.length === 0) {
+    refuse(
+      `${positionals.length === 0 ? "The standard input" : positionals.join(", ")} holds no ` +
+        `${RECORD_LINE} line.`
+    );
+  }
+  const files = rowsRecord(base, records);
+  const limit = biomeMaxSize();
+  const directory = fileURLToPath(RECORD_DIRECTORY);
+  mkdirSync(directory, { recursive: true });
+  const written = new Set<string>();
+  for (const viewFile of files) {
+    const file = fileURLToPath(recordFile(viewFile.view));
+    const json = `${JSON.stringify(viewFile, null, 2)}\n`;
+    const bytes = new TextEncoder().encode(json).length;
+    if (bytes > limit) {
+      throw new Error(
+        `the record of ${viewFile.view} is ${bytes} bytes, over Biome's files.maxSize of ` +
+          `${limit}, which Biome reads none of`
+      );
+    }
+    writeFileSync(file, biomeFormatted(json, file));
+    written.add(`${viewFile.view}.json`);
+  }
+  for (const entry of readdirSync(directory)) {
+    if (entry.endsWith(".json") && !written.has(entry)) rmSync(join(directory, entry));
+  }
+  console.error(
+    `wrote ${relative(process.cwd(), directory)}, made at ${base.recordedOn}: ` +
+      `${files.map((viewFile) => viewFile.view).join(", ")} at ${RECORD_WIDTHS.join(" and ")} px`
+  );
+  return 0;
+}
+
+if (import.meta.main) {
+  main().then(
+    (status) => process.exit(status),
+    (error: unknown) => {
+      console.error(error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  );
+}

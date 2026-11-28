@@ -200,6 +200,19 @@ export function anchoredThreadComments(
   return comments.filter((comment) => rootOf(byId, comment).anchor?.artifact_id === artifactId);
 }
 
+/** Selects matching comment threads without dropping their replies. The query cache keeps
+ *  the full comment list, as it does when today's margin filters a single block. */
+function commentsOnBlocks<Row extends CommentWithTrees>(
+  comments: readonly Row[],
+  blockIds: ReadonlySet<string>
+): Row[] {
+  const byId = new Map(comments.map((comment) => [comment.id, comment]));
+  return comments.filter((comment) => {
+    const anchor = rootOf(byId, comment).anchor;
+    return anchor?.block_id != null && !anchor.orphaned && blockIds.has(anchor.block_id);
+  });
+}
+
 function commentThreads(comments: Comment[]): Thread[] {
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
   const threads = new Map<string, { replies: Comment[]; root: Comment }>();
@@ -333,11 +346,14 @@ export function useMarginItems(
   blockPlacements: ReadonlyMap<string, MarkPlacement>,
   blockFilterId: string | undefined,
   {
+    blockFilterIds,
     documentShown = false,
     documentUp = false,
     held = NO_THREADS,
     issue,
   }: {
+    /** The set selected by a kept-editor references button, never a whole editor. */
+    readonly blockFilterIds?: ReadonlySet<string>;
     /** Whether the document whose margin this is has reported its layout: the issue page keeps
      *  its Spec editor mounted while the Conversation covers it, so without this the decisions
      *  of every issue page would be read where nothing shows them. */
@@ -382,6 +398,11 @@ export function useMarginItems(
   // Every page but the new issue page reads the comments as it always has: only that page's
   // shell hands the margin its Details drawer, which `freshness` is read from too.
   const commentsShown = freshness === undefined || documentUp;
+  const selectComments = useCallback(
+    (records: CommentWithTrees[]): CommentWithTrees[] =>
+      blockFilterIds === undefined ? records : commentsOnBlocks(records, blockFilterIds),
+    [blockFilterIds]
+  );
   const comments = useQuery({
     enabled: owner !== undefined && commentsShown,
     queryKey: commentsShown ? commentsQueryKey : ["comments", undefined],
@@ -393,6 +414,7 @@ export function useMarginItems(
         ? api.listArtifactComments(owner.artifactId)
         : api.listComments(owner.key);
     },
+    ...(blockFilterIds === undefined ? {} : { select: selectComments }),
     ...freshness,
   });
   const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
@@ -573,6 +595,13 @@ export function useMarginItems(
           blocks.add(blockId);
         }
       }
+      // Under the set a kept editor's references button selects (`blockFilterIds`), the decision
+      // shows only beside the blocks of the set it shaped, as one block's filter keeps it above.
+      if (blockFilterIds !== undefined) {
+        for (const blockId of blocks) {
+          if (!blockFilterIds.has(blockId)) blocks.delete(blockId);
+        }
+      }
       if (blocks.size === 0) return [];
       // A decision the view names no document for - one of a document that plays no role - is
       // found by its own address among the issue read's documents, as the Decisions tab finds it.
@@ -596,6 +625,7 @@ export function useMarginItems(
     );
   }, [
     blockFilterId,
+    blockFilterIds,
     blockPlacements,
     decisionsView.data,
     documentsKey,
@@ -679,6 +709,23 @@ export function useMarginItems(
   const answeredAskError = answeredAsks.error;
   const retryAnsweredAsk =
     answeredAskError === undefined ? undefined : () => void answeredAskError.refetch();
+  // Under the set a kept editor's references button selects (`blockFilterIds`), the asks drawn are
+  // those anchored to its blocks, as its comments are (`selectComments`) and as one block's
+  // filter keeps them (`isInBlock`): the open ones with their count, and each list that holds an
+  // ask's card, so the cards drawn are the ones the button counted.
+  const onBlocks = useMemo(() => {
+    if (blockFilterIds === undefined) return undefined;
+    const anchored = (ask: Ask): boolean =>
+      typeof ask.anchor?.block_id === "string" && blockFilterIds.has(ask.anchor.block_id);
+    const keeps = (item: MarginItem): boolean => item.kind !== "ask" || anchored(item.ask);
+    const open = needsYou.filter(anchored);
+    return {
+      items: items.filter(keeps),
+      marginItems: marginItems.filter(keeps),
+      needsYou: open,
+      openAskCount: open.length,
+    };
+  }, [blockFilterIds, items, marginItems, needsYou]);
 
   return {
     actionFailure,
@@ -717,5 +764,6 @@ export function useMarginItems(
     retryComments: () => void comments.refetch(),
     retryItem,
     threads,
+    ...onBlocks,
   };
 }

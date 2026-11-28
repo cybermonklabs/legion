@@ -91,10 +91,19 @@ export function IssuePropertiesRow({
   // decision's node is held the count reads the Changes asked of it by their quotes, as
   // `decision-review.ts` does with no blocks read; a Change in a document the outline does not
   // read is read by its quote alone, as the tree places it.
-  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const viewerRead = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
+  const viewer = viewerRead.data?.login;
   const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
-  const tree = useTreeRead(issue).answer;
+  const treeRead = useTreeRead(issue);
+  const tree = treeRead.answer;
+  // Whether the reads the count is counted from have settled, with their answer or their
+  // failure: until then the count may come at all, so the line holds its place (`WaitingSlot`)
+  // rather than draw none and then push every control after it along the line as the count
+  // arrives (R3: on a load of a large issue the approval control slid 160 px right when the tree
+  // read answered). The tree read is not waited on here: while it is out, the count is drawn
+  // with its "+" (`waiting.mayWait`, decision 583 (1)), in the place the slot held.
+  const counted = !viewerRead.isPending && !decisions.isPending && !coverage.isPending;
   const nodeIdOf = useMemo(() => issueNodeIdOf(issue), [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
@@ -117,6 +126,11 @@ export function IssuePropertiesRow({
   // Change is held or no such page is left (decisions 563 (4) and 574 (B)), so the count is right
   // on every view that holds an outline read.
   useReadUnloadedPages(issue, () => waiting.unread > 0);
+  // The count holds the width of "(00+)" whether it draws a "+" or not, as the place held before
+  // its reads answer does, so the count's box, and every control after it in the line, keeps its
+  // place as those reads and the tree read answer (decision 583 (1), amended;
+  // dispatch://INFRA-5939/comment/4dd365f7-6a58-4cca-ac93-b64298f71d02).
+  const heldGlyphs = countHeldGlyphs(waiting.total, waiting.mayWait > 0);
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
@@ -211,10 +225,12 @@ export function IssuePropertiesRow({
         variant="header"
       />
       <ChildrenProgress childIssues={issue.children ?? []} />
-      {waiting.total + waiting.mayWait > 0 ? (
+      {!counted ? (
+        <WaitingSlot />
+      ) : waiting.total + waiting.mayWait > 0 ? (
         // The prototype's `.waitchip`: a control, because the reader acts on what it counts.
         <button
-          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs leading-[22px] font-semibold ${pageWaitingChip} ${focusVisibleRing}`}
+          className={`${WAITING_CHIP_BOX} ${pageWaitingChip} ${focusVisibleRing}`}
           data-testid="issue-whose-turn"
           onClick={goToWaiting}
           type="button"
@@ -233,6 +249,16 @@ export function IssuePropertiesRow({
               {waiting.mayWait > 0 ? "+" : ""}
             </span>
             )
+            {heldGlyphs === "" ? null : (
+              // What the count may still take, held after the brackets so nothing but the
+              // number stands between them (`countHeldGlyphs`): glyphs of their own width that
+              // are not seen or heard, and that no text of the count holds.
+              <span
+                aria-hidden="true"
+                className="after:invisible after:content-[attr(data-plus-held)]"
+                data-plus-held={heldGlyphs}
+              />
+            )}
           </span>
         </button>
       ) : agentsTurn > 0 && knowsWhoseTurn ? (
@@ -273,7 +299,17 @@ export function IssuePropertiesRow({
           variant="header"
         />
       )}
-      {entries.length === 0 ? null : (
+      {/* A root's steps are drawn once the projects read answers; until then the line holds a
+          place of a step's height where they will stand, so the line keeps its height and its
+          items keep their places when they come (R3). It takes no width, and its margin takes
+          back the gap after it, so a gate with no step leaves the line as it was. */}
+      {isProjectRoot(issue) && projects.isPending ? (
+        <span
+          aria-hidden="true"
+          className="inline-flex min-h-6 w-0 -mr-2.5 min-[761px]:-mr-3"
+          data-approval-steps-slot=""
+        />
+      ) : entries.length === 0 ? null : (
         <ApprovalSteps
           actionsOn={waiting.approvals}
           entries={entries}
@@ -291,6 +327,54 @@ export function IssuePropertiesRow({
       <HeaderLabels labels={issue.labels ?? []} onOpenAll={onOpenLabels} />
     </div>
   );
+}
+
+/** The box of the count of what waits on the reader, which its held place draws too
+ *  (`WaitingSlot`): the prototype's `.waitchip`. Its digits are tabular, so a count of two digits
+ *  is as wide as the place held for it. */
+const WAITING_CHIP_BOX =
+  "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs leading-[22px] font-semibold tabular-nums";
+
+/**
+ * The place the properties line holds for the count of what waits on the reader while the reads
+ * it is counted from are out (R3, "The places held" row 2): the count's own box, its dot and its
+ * words with a count of two digits and its "+", "(00)+", drawn invisible and hidden from assistive
+ * technology, so the count drawn in its place once the reads answer, which holds that same width
+ * (`countHeldGlyphs`), takes the box it held and moves nothing after it. A count of three digits
+ * or more, the agents' turn in its place, or no count at all once the reads answer, changes the
+ * line by that difference alone.
+ */
+function WaitingSlot(): ReactNode {
+  return (
+    <span
+      aria-hidden="true"
+      className={`${WAITING_CHIP_BOX} invisible`}
+      data-whose-turn-slot=""
+      {...pageChrome}
+    >
+      <span className="size-2 shrink-0 rounded-full" />
+      <span>{PROPERTY_LABELS.waiting_on_you} (00)+</span>
+    </span>
+  );
+}
+
+/** How many digits the count of what waits on the reader holds a place for, as the place the
+ *  line holds for it before its reads answer does (`WaitingSlot`'s "(00)+"). */
+const HELD_COUNT_DIGITS = 2;
+
+/**
+ * The glyphs the count of what waits on the reader holds past its own, so its box keeps its
+ * width while the count may still change (decision 583 (1), amended;
+ * dispatch://INFRA-5939/comment/4dd365f7-6a58-4cca-ac93-b64298f71d02): a "0" for each digit the
+ * number lacks of two, and a "+" where the count draws none. So the place held while the reads
+ * are out ("(00)+", `WaitingSlot`), a count drawn as "(9+)" while the tree read is out, which
+ * holds "0", and the "(20)" its answer brings, which holds "+", are each as wide as "(00+)", in
+ * whatever order the reads answer, and nothing after the count moves. A count of three digits or
+ * more changes the line by that difference alone, as the place held before its reads answer does.
+ */
+export function countHeldGlyphs(total: number, plus: boolean): string {
+  const digits = Math.max(0, HELD_COUNT_DIGITS - String(total).length);
+  return `${"0".repeat(digits)}${plus ? "" : "+"}`;
 }
 
 /** How many segments the bar draws one child each before it is one bar instead: past this the
@@ -472,7 +556,9 @@ function HeaderLabels({
       countTop !== undefined &&
       countTop >= element.getBoundingClientRect().bottom
     ) {
-      element.style.minWidth = `min(${Math.ceil(first.getBoundingClientRect().width)}px, 100%)`;
+      // The first chip stands after the line's gap the box took back, so the box takes that too.
+      const lead = -Number.parseFloat(getComputedStyle(element).marginLeft) || 0;
+      element.style.minWidth = `min(${Math.ceil(first.getBoundingClientRect().width + lead)}px, calc(100% + ${lead}px))`;
       fits = labelsThatFit(element);
     }
     // The count drawn next names fewer labels and can be narrower: at its own width it would
@@ -522,13 +608,17 @@ function HeaderLabels({
           high - 20 px, the chip's 18 px line and its two borders, at any root size - wrapping
           and clipped: a chip that does not fit goes onto a line that is not drawn. A line always
           holds its first item, so that item is an empty one the height of a chip, which takes no
-          width and, by its margin, no gap: the first chip wraps too when it does not fit. */}
+          width: the first chip wraps too when it does not fit. The box takes back the line's gap
+          before it (`-ml-2.5`, `-ml-3`, the line's `gap-x-2.5` and `gap-x-3`), and that first item
+          gives it to the first chip by its margin and the box's own gap (4 or 6 px and 6 px), so
+          a chip stands where it would after the line's gap, and a box that draws no chip costs the
+          line no gap: the count after it fits where it and its own gap do. */}
       <div
-        className="relative flex h-[20px] min-w-0 flex-[1_1_0] flex-wrap gap-1.5 overflow-hidden"
+        className="relative -ml-2.5 flex h-[20px] min-w-0 flex-[1_1_0] flex-wrap gap-1.5 overflow-hidden min-[761px]:-ml-3"
         data-testid="issue-header-labels"
         ref={box}
       >
-        <span aria-hidden="true" className="-mr-1.5 h-[20px] w-0 shrink-0" />
+        <span aria-hidden="true" className="mr-1 h-[20px] w-0 shrink-0 min-[761px]:mr-1.5" />
         {labels.slice(0, shown ?? labels.length).map((label) => (
           <span
             className={`inline-flex shrink-0 items-center rounded-md border px-[7px] text-xs leading-[18px] font-medium whitespace-nowrap ${pageLabelChip}`}

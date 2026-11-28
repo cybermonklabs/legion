@@ -1,0 +1,2835 @@
+{
+  "end": 5113.200000000012,
+  "firstScreen": [
+    { "id": 21, "label": "child LAY-10", "paint": 1864 },
+    { "id": 22, "label": "child LAY-11", "paint": 1864 },
+    { "id": 23, "label": "child LAY-12", "paint": 1864 },
+    { "id": 24, "label": "child LAY-13", "paint": 1864 },
+    { "id": 25, "label": "child LAY-14", "paint": 1864 },
+    { "id": 26, "label": "child LAY-15", "paint": 1864 },
+    { "id": 27, "label": "child LAY-16", "paint": 1864 },
+    { "id": 28, "label": "child LAY-17", "paint": 1864 },
+    { "id": 29, "label": "child LAY-18", "paint": 1864 },
+    { "id": 30, "label": "child LAY-19", "paint": 1864 },
+    { "id": 31, "label": "child LAY-2", "paint": 1864 },
+    { "id": 32, "label": "child LAY-20", "paint": 1864 },
+    { "id": 33, "label": "child LAY-21", "paint": 1864 },
+    { "id": 34, "label": "child LAY-22", "paint": 1864 },
+    { "id": 35, "label": "child LAY-23", "paint": 1864 },
+    { "id": 36, "label": "child LAY-24", "paint": 1864 },
+    { "id": 37, "label": "child LAY-25", "paint": 1864 },
+    { "id": 38, "label": "child LAY-26", "paint": 1864 },
+    { "id": 39, "label": "child LAY-27", "paint": 1864 },
+    { "id": 40, "label": "child LAY-28", "paint": 1864 },
+    { "id": 42, "label": "requirement LAY-1>spec#b-r3", "paint": 3488 },
+    { "id": 43, "label": "check LAY-1>spec#b-r3>verification-md#b-c29", "paint": 3488 }
+  ],
+  "rate": 2,
+  "record": {
+    "acts": [],
+    "boxes": [
+      {
+        "box": { "height": 33, "width": 104, "x": 84, "y": 97 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 1,
+        "label": "Conversation"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 188, "y": 106 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 2,
+        "label": "label"
+      },
+      {
+        "box": { "height": 33, "width": 46, "x": 208, "y": 97 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 3,
+        "label": "Spec"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 254, "y": 106 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 4,
+        "label": "label"
+      },
+      {
+        "box": { "height": 33, "width": 83, "x": 274, "y": 97 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 5,
+        "label": "Verification"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 357, "y": 106 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 6,
+        "label": "label"
+      },
+      {
+        "box": { "height": 33, "width": 41, "x": 377, "y": 97 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 7,
+        "label": "Plan"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 418, "y": 106 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 8,
+        "label": "label"
+      },
+      {
+        "box": { "height": 33, "width": 77, "x": 438, "y": 97 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 9,
+        "label": "Decisions"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 515, "y": 106 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 10,
+        "label": "label"
+      },
+      {
+        "box": { "height": 33, "width": 53, "x": 535, "y": 97 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 11,
+        "label": "Graph"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 588, "y": 106 },
+        "frame": 34,
+        "group": "view row's controls",
+        "id": 12,
+        "label": "label"
+      },
+      {
+        "box": { "height": 24, "width": 24, "x": 163, "y": 7 },
+        "frame": 34,
+        "group": "header's controls",
+        "id": 13,
+        "label": "Copy issue key LAY-1 · Ctrl-click copies the reference"
+      },
+      {
+        "box": { "height": 24, "width": 34, "x": 197, "y": 7 },
+        "frame": 34,
+        "group": "header's controls",
+        "id": 14,
+        "label": "Issue actions"
+      },
+      {
+        "box": { "height": 24, "width": 62, "x": 1350, "y": 7 },
+        "frame": 34,
+        "group": "header's controls",
+        "id": 15,
+        "label": "Details"
+      },
+      {
+        "box": { "height": 24, "width": 97, "x": 84, "y": 65 },
+        "frame": 34,
+        "group": "header's controls",
+        "id": 16,
+        "label": "TriageIceboxBacklogTodoIn progressTestingNeeds r"
+      },
+      {
+        "box": { "height": 24, "width": 68, "x": 193, "y": 65 },
+        "frame": 34,
+        "group": "header's controls",
+        "id": 17,
+        "label": "PriorityUnsetP0P1P2P3"
+      },
+      {
+        "box": { "height": 24, "width": 56, "x": 273, "y": 65 },
+        "frame": 34,
+        "group": "header's controls",
+        "id": 18,
+        "label": "aliceUnassignedalice"
+      },
+      {
+        "box": { "height": 24, "width": 99, "x": 702, "y": 65 },
+        "frame": 34,
+        "group": "header's controls",
+        "id": 19,
+        "label": "Not requested"
+      },
+      {
+        "box": { "height": 63, "width": 1384, "x": 56, "y": 0 },
+        "frame": 34,
+        "group": "header's band",
+        "id": 20,
+        "label": "LAY›LAY-1Pin issueClose issueSet parent issueDet"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 170 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 21,
+        "label": "child LAY-10"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 195 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 22,
+        "label": "child LAY-11"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 220 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 23,
+        "label": "child LAY-12"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 245 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 24,
+        "label": "child LAY-13"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 270 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 25,
+        "label": "child LAY-14"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 295 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 26,
+        "label": "child LAY-15"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 320 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 27,
+        "label": "child LAY-16"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 345 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 28,
+        "label": "child LAY-17"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 370 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 29,
+        "label": "child LAY-18"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 395 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 30,
+        "label": "child LAY-19"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 420 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 31,
+        "label": "child LAY-2"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 445 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 32,
+        "label": "child LAY-20"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 470 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 33,
+        "label": "child LAY-21"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 495 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 34,
+        "label": "child LAY-22"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 520 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 35,
+        "label": "child LAY-23"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 545 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 36,
+        "label": "child LAY-24"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 570 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 37,
+        "label": "child LAY-25"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 595 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 38,
+        "label": "child LAY-26"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 620 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 39,
+        "label": "child LAY-27"
+      },
+      {
+        "box": { "height": 25, "width": 1000, "x": 378, "y": 645 },
+        "frame": 34,
+        "group": "rows in the viewport",
+        "id": 40,
+        "label": "child LAY-28"
+      },
+      {
+        "box": { "height": 33, "width": 108, "x": 84, "y": 97 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 1,
+        "label": "Conversation"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 192, "y": 106 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 2,
+        "label": "label"
+      },
+      {
+        "box": { "height": 33, "width": 47, "x": 212, "y": 97 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 3,
+        "label": "Spec"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 259, "y": 106 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 4,
+        "label": "label"
+      },
+      {
+        "box": { "height": 33, "width": 93, "x": 279, "y": 97 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 5,
+        "label": "Verification"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 372, "y": 106 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 6,
+        "label": "label"
+      },
+      {
+        "box": { "height": 33, "width": 43, "x": 392, "y": 97 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 7,
+        "label": "Plan"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 435, "y": 106 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 8,
+        "label": "label"
+      },
+      {
+        "box": { "height": 33, "width": 81, "x": 455, "y": 97 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 9,
+        "label": "Decisions"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 536, "y": 106 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 10,
+        "label": "label"
+      },
+      {
+        "box": { "height": 33, "width": 55, "x": 556, "y": 97 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 11,
+        "label": "Graph"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 611, "y": 106 },
+        "frame": 36,
+        "group": "view row's controls",
+        "id": 12,
+        "label": "label"
+      },
+      {
+        "box": { "height": 24, "width": 24, "x": 165, "y": 7 },
+        "frame": 36,
+        "group": "header's controls",
+        "id": 13,
+        "label": "Copy issue key LAY-1 · Ctrl-click copies the reference"
+      },
+      {
+        "box": { "height": 24, "width": 34, "x": 199, "y": 7 },
+        "frame": 36,
+        "group": "header's controls",
+        "id": 14,
+        "label": "Issue actions"
+      },
+      {
+        "box": { "height": 24, "width": 63, "x": 1349, "y": 7 },
+        "frame": 36,
+        "group": "header's controls",
+        "id": 15,
+        "label": "Details"
+      },
+      {
+        "box": { "height": 24, "width": 101, "x": 84, "y": 65 },
+        "frame": 36,
+        "group": "header's controls",
+        "id": 16,
+        "label": "TriageIceboxBacklogTodoIn progressTestingNeeds r"
+      },
+      {
+        "box": { "height": 24, "width": 70, "x": 197, "y": 65 },
+        "frame": 36,
+        "group": "header's controls",
+        "id": 17,
+        "label": "PriorityUnsetP0P1P2P3"
+      },
+      {
+        "box": { "height": 24, "width": 57, "x": 279, "y": 65 },
+        "frame": 36,
+        "group": "header's controls",
+        "id": 18,
+        "label": "aliceUnassignedalice"
+      },
+      {
+        "box": { "height": 24, "width": 150, "x": 717, "y": 65 },
+        "frame": 36,
+        "group": "header's controls",
+        "id": 41,
+        "label": "Waiting on you (20)"
+      },
+      {
+        "box": { "height": 24, "width": 105, "x": 879, "y": 65 },
+        "frame": 36,
+        "group": "header's controls",
+        "id": 19,
+        "label": "Not requested"
+      },
+      {
+        "box": { "height": 33, "width": 34, "x": 192, "y": 97 },
+        "frame": 51,
+        "group": "view row's controls",
+        "id": 2,
+        "label": "47"
+      },
+      {
+        "box": { "height": 33, "width": 47, "x": 228, "y": 97 },
+        "frame": 51,
+        "group": "view row's controls",
+        "id": 3,
+        "label": "Spec"
+      },
+      {
+        "box": { "height": 33, "width": 34, "x": 275, "y": 97 },
+        "frame": 51,
+        "group": "view row's controls",
+        "id": 4,
+        "label": "42"
+      },
+      {
+        "box": { "height": 33, "width": 93, "x": 311, "y": 97 },
+        "frame": 51,
+        "group": "view row's controls",
+        "id": 5,
+        "label": "Verification"
+      },
+      {
+        "box": { "height": 33, "width": 34, "x": 404, "y": 97 },
+        "frame": 51,
+        "group": "view row's controls",
+        "id": 6,
+        "label": "49"
+      },
+      {
+        "box": { "height": 33, "width": 43, "x": 440, "y": 97 },
+        "frame": 51,
+        "group": "view row's controls",
+        "id": 7,
+        "label": "Plan"
+      },
+      {
+        "box": { "height": 33, "width": 71, "x": 483, "y": 97 },
+        "frame": 51,
+        "group": "view row's controls",
+        "id": 8,
+        "label": "26 steps"
+      },
+      {
+        "box": { "height": 33, "width": 81, "x": 556, "y": 97 },
+        "frame": 51,
+        "group": "view row's controls",
+        "id": 9,
+        "label": "Decisions"
+      },
+      {
+        "box": { "height": 33, "width": 118, "x": 637, "y": 97 },
+        "frame": 51,
+        "group": "view row's controls",
+        "id": 10,
+        "label": "64 · 20 to review"
+      },
+      {
+        "box": { "height": 33, "width": 55, "x": 757, "y": 97 },
+        "frame": 51,
+        "group": "view row's controls",
+        "id": 11,
+        "label": "Graph"
+      },
+      {
+        "box": { "height": 13, "width": 18, "x": 812, "y": 106 },
+        "frame": 51,
+        "group": "view row's controls",
+        "id": 12,
+        "label": "label"
+      },
+      {
+        "box": { "height": 96, "width": 1000, "x": 378, "y": 714 },
+        "frame": 51,
+        "group": "rows in the viewport",
+        "id": 42,
+        "label": "requirement LAY-1>spec#b-r3"
+      },
+      {
+        "box": { "height": 150, "width": 1000, "x": 378, "y": 810 },
+        "frame": 51,
+        "group": "rows in the viewport",
+        "id": 43,
+        "label": "check LAY-1>spec#b-r3>verification-md#b-c29"
+      },
+      {
+        "box": { "height": 175, "width": 1000, "x": 378, "y": 810 },
+        "frame": 55,
+        "group": "rows in the viewport",
+        "id": 43,
+        "label": "check LAY-1>spec#b-r3>verification-md#b-c29"
+      }
+    ],
+    "cls": [
+      { "delta": 0, "shifts": [], "value": 0 },
+      {
+        "delta": 0.037502481995884775,
+        "shifts": [
+          {
+            "hadRecentInput": false,
+            "startTime": 1918.9000000000233,
+            "value": 0.037502481995884775
+          }
+        ],
+        "value": 0.037502481995884775
+      }
+    ],
+    "element": [
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-10",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 21,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-11",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 22,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-12",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 23,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-13",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 24,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-14",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 25,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-15",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 26,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-16",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 27,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-17",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 28,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-18",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 29,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-19",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 30,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-2",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 31,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-20",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 32,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-21",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 33,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-22",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 34,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-23",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 35,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-24",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 36,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-25",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 37,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-26",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 38,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-27",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 39,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "child LAY-28",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 1864,
+        "row": 40,
+        "startTime": 1864
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "requirement LAY-1>spec#b-r3",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 42,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r3>verification-md#b-c29",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 43,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r3>verification-md#b-c1",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 44,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "requirement LAY-1>spec#b-r4",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 45,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r4>verification-md#b-c29",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 46,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r4>verification-md#b-c1",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 47,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "requirement LAY-1>spec#b-r7",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 48,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r7>verification-md#b-c16",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 49,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r7>verification-md#b-c24",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 50,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r7>verification-md#b-c8",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 51,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r7>verification-md#b-c1",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 52,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "requirement LAY-1>spec#b-r14",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 53,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r14>verification-md#b-c10",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 54,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r14>verification-md#b-c17",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 55,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "requirement LAY-1>spec#b-r15",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 56,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r15>verification-md#b-c10",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 57,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r15>verification-md#b-c17",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 58,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r15>verification-md#b-c18",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 59,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r15>verification-md#b-c25",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 60,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "requirement LAY-1>spec#b-r18",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 61,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r18>verification-md#b-c32",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 62,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r18>verification-md#b-c44",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 63,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "requirement LAY-1>spec#b-r19",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 64,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r19>verification-md#b-c32",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 65,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r19>verification-md#b-c44",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 66,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "requirement LAY-1>spec#b-r20",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 67,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r20>verification-md#b-c47",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 68,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r20>verification-md#b-c44",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 69,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "requirement LAY-1>spec#b-r21",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 70,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r21>verification-md#b-c47",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 71,
+        "startTime": 3488
+      },
+      {
+        "identifier": "issue-page-row",
+        "label": "check LAY-1>spec#b-r21>verification-md#b-c4",
+        "loadTime": 0,
+        "name": "text-paint",
+        "renderTime": 3488,
+        "row": 72,
+        "startTime": 3488
+      }
+    ],
+    "event": [
+      {
+        "duration": 24,
+        "interactionId": 0,
+        "name": "pointerover",
+        "processingEnd": 840.2000000000116,
+        "processingStart": 839.7000000000116,
+        "startTime": 837.9000000000233
+      },
+      {
+        "duration": 24,
+        "interactionId": 0,
+        "name": "pointerenter",
+        "processingEnd": 840.2000000000116,
+        "processingStart": 840.2000000000116,
+        "startTime": 837.9000000000233
+      },
+      {
+        "duration": 24,
+        "interactionId": 0,
+        "name": "pointerenter",
+        "processingEnd": 840.2000000000116,
+        "processingStart": 840.2000000000116,
+        "startTime": 837.9000000000233
+      },
+      {
+        "duration": 24,
+        "interactionId": 0,
+        "name": "mouseover",
+        "processingEnd": 840.2999999999884,
+        "processingStart": 840.2000000000116,
+        "startTime": 837.9000000000233
+      }
+    ],
+    "fontsDone": [2025.7000000000116],
+    "frames": [
+      {
+        "at": 143.79999999998836,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 165.90000000002328,
+        "time": 125.7,
+        "viewRow": false
+      },
+      {
+        "at": 166.09999999997672,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 166.40000000002328,
+        "time": 159.1,
+        "viewRow": false
+      },
+      {
+        "at": 177.40000000002328,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 178.59999999997672,
+        "time": 175.8,
+        "viewRow": false
+      },
+      {
+        "at": 194.20000000001164,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 196.90000000002328,
+        "time": 192.4,
+        "viewRow": false
+      },
+      {
+        "at": 210.59999999997672,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 211.5,
+        "time": 209.1,
+        "viewRow": false
+      },
+      {
+        "at": 226.5,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 227.29999999998836,
+        "time": 225.7,
+        "viewRow": false
+      },
+      {
+        "at": 605.2000000000116,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 619.5999999999767,
+        "time": 242.4,
+        "viewRow": false
+      },
+      {
+        "at": 619.7000000000116,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 652.2999999999884,
+        "time": 592.4,
+        "viewRow": false
+      },
+      {
+        "at": 660.0999999999767,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 682.4000000000233,
+        "time": 625.7,
+        "viewRow": false
+      },
+      {
+        "at": 684.7999999999884,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 691.4000000000233,
+        "time": 659.1,
+        "viewRow": false
+      },
+      {
+        "at": 699.5999999999767,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 711.0999999999767,
+        "time": 675.7,
+        "viewRow": false
+      },
+      {
+        "at": 711.0999999999767,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 732.2999999999884,
+        "time": 692.4,
+        "viewRow": false
+      },
+      {
+        "at": 733,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 880.9000000000233,
+        "time": 709,
+        "viewRow": false
+      },
+      {
+        "at": 840.4000000000233,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 916.2000000000116,
+        "time": 725.8,
+        "viewRow": false
+      },
+      {
+        "at": 915.5,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 918.4000000000233,
+        "time": 825.7,
+        "viewRow": false
+      },
+      {
+        "at": 986.9000000000233,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1004.5,
+        "time": 909,
+        "viewRow": false
+      },
+      {
+        "at": 1008.0999999999767,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1038.5999999999767,
+        "time": 992.4,
+        "viewRow": false
+      },
+      {
+        "at": 1081.2999999999884,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1110,
+        "time": 1009,
+        "viewRow": false
+      },
+      {
+        "at": 1111.5,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1131,
+        "time": 1075.8,
+        "viewRow": false
+      },
+      {
+        "at": 1139,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1163.0999999999767,
+        "time": 1109.1,
+        "viewRow": false
+      },
+      {
+        "at": 1180.2999999999884,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1188.5999999999767,
+        "time": 1125.7,
+        "viewRow": false
+      },
+      {
+        "at": 1226.2000000000116,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1240.7999999999884,
+        "time": 1175.7,
+        "viewRow": false
+      },
+      {
+        "at": 1241.7000000000116,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1261.9000000000233,
+        "time": 1225.7,
+        "viewRow": false
+      },
+      {
+        "at": 1262.5999999999767,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1269,
+        "time": 1242.4,
+        "viewRow": false
+      },
+      {
+        "at": 1269.2000000000116,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1283,
+        "time": 1259.1,
+        "viewRow": false
+      },
+      {
+        "at": 1283.7000000000116,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1290.2999999999884,
+        "time": 1275.7,
+        "viewRow": false
+      },
+      {
+        "at": 1296,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1324.2000000000116,
+        "time": 1292.4,
+        "viewRow": false
+      },
+      {
+        "at": 1339,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1346.7000000000116,
+        "time": 1325.7,
+        "viewRow": false
+      },
+      {
+        "at": 1346.7999999999884,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1352.7000000000116,
+        "time": 1342.3,
+        "viewRow": false
+      },
+      {
+        "at": 1365.5999999999767,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1372.2999999999884,
+        "time": 1359,
+        "viewRow": false
+      },
+      {
+        "at": 1383.7000000000116,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1394.0999999999767,
+        "time": 1375.6,
+        "viewRow": false
+      },
+      {
+        "at": 1395.9000000000233,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1409.2000000000116,
+        "time": 1392.3,
+        "viewRow": false
+      },
+      {
+        "at": 1416.2999999999884,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1425,
+        "time": 1409,
+        "viewRow": false
+      },
+      {
+        "at": 1430.5999999999767,
+        "foot": 0,
+        "height": 900,
+        "rows": false,
+        "shown": 1438.5999999999767,
+        "time": 1425.6,
+        "viewRow": false
+      },
+      {
+        "at": 1741,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 1773.2000000000116,
+        "time": 1442.4,
+        "viewRow": true
+      },
+      {
+        "at": 1784.7000000000116,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 1794.7999999999884,
+        "time": 1725.7,
+        "viewRow": true
+      },
+      {
+        "at": 1886.2000000000116,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2020.2999999999884,
+        "time": 1842.3,
+        "viewRow": true
+      },
+      {
+        "at": 2020.7999999999884,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2026.2999999999884,
+        "time": 1925.6,
+        "viewRow": true
+      },
+      {
+        "at": 2026.2999999999884,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2029.5999999999767,
+        "time": 2009,
+        "viewRow": true
+      },
+      {
+        "at": 2033.5,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2034.7999999999884,
+        "time": 2025.6,
+        "viewRow": true
+      },
+      {
+        "at": 2046.4000000000233,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2058.0999999999767,
+        "time": 2042.3,
+        "viewRow": true
+      },
+      {
+        "at": 2060.5999999999767,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2065.7999999999884,
+        "time": 2059,
+        "viewRow": true
+      },
+      {
+        "at": 2076.0999999999767,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2084.2999999999884,
+        "time": 2075.7,
+        "viewRow": true
+      },
+      {
+        "at": 2093,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2094,
+        "time": 2092.4,
+        "viewRow": true
+      },
+      {
+        "at": 2110.0999999999767,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2116.5,
+        "time": 2109,
+        "viewRow": true
+      },
+      {
+        "at": 2128.5999999999767,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2131.7000000000116,
+        "time": 2125.6,
+        "viewRow": true
+      },
+      {
+        "at": 2154.4000000000233,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2162.7000000000116,
+        "time": 2142.3,
+        "viewRow": true
+      },
+      {
+        "at": 2166.9000000000233,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2169,
+        "time": 2159,
+        "viewRow": true
+      },
+      {
+        "at": 2177.4000000000233,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2179.2000000000116,
+        "time": 2175.7,
+        "viewRow": true
+      },
+      {
+        "at": 2261,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 2263.5999999999767,
+        "time": 2192.3,
+        "viewRow": true
+      },
+      {
+        "at": 2263.5999999999767,
+        "foot": 131,
+        "height": 900,
+        "rows": false,
+        "shown": 3474.5999999999767,
+        "time": 2259,
+        "viewRow": true
+      },
+      {
+        "at": 3195.2999999999884,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 3636.9000000000233,
+        "time": 2275.6,
+        "viewRow": true
+      },
+      {
+        "at": 3599.2000000000116,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 3662.7000000000116,
+        "time": 3458.9,
+        "viewRow": true
+      },
+      {
+        "at": 3647.0999999999767,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 3669.7000000000116,
+        "time": 3592.2,
+        "viewRow": true
+      },
+      {
+        "at": 3663.4000000000233,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4114.400000000023,
+        "time": 3642.3,
+        "viewRow": true
+      },
+      {
+        "at": 4047.7000000000116,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4146.5,
+        "time": 3659,
+        "viewRow": true
+      },
+      {
+        "at": 4132.599999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4160.400000000023,
+        "time": 4108.9,
+        "viewRow": true
+      },
+      {
+        "at": 4147.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4167.299999999988,
+        "time": 4142.2,
+        "viewRow": true
+      },
+      {
+        "at": 4160.5,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4167.400000000023,
+        "time": 4158.9,
+        "viewRow": true
+      },
+      {
+        "at": 4195.299999999988,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4214,
+        "time": 4192.3,
+        "viewRow": true
+      },
+      {
+        "at": 4249.599999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4254,
+        "time": 4208.9,
+        "viewRow": true
+      },
+      {
+        "at": 4262.299999999988,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4272,
+        "time": 4242.3,
+        "viewRow": true
+      },
+      {
+        "at": 4272,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4276.599999999977,
+        "time": 4258.9,
+        "viewRow": true
+      },
+      {
+        "at": 4276.599999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4280.5,
+        "time": 4275.6,
+        "viewRow": true
+      },
+      {
+        "at": 4294.700000000012,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4310.900000000023,
+        "time": 4292.3,
+        "viewRow": true
+      },
+      {
+        "at": 4311,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4323.299999999988,
+        "time": 4308.9,
+        "viewRow": true
+      },
+      {
+        "at": 4326.299999999988,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4334.400000000023,
+        "time": 4325.6,
+        "viewRow": true
+      },
+      {
+        "at": 4344,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4358.599999999977,
+        "time": 4342.3,
+        "viewRow": true
+      },
+      {
+        "at": 4359.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4368.5,
+        "time": 4358.9,
+        "viewRow": true
+      },
+      {
+        "at": 4376.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4380.400000000023,
+        "time": 4375.6,
+        "viewRow": true
+      },
+      {
+        "at": 4393.5,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4403.700000000012,
+        "time": 4392.3,
+        "viewRow": true
+      },
+      {
+        "at": 4409.700000000012,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4414.200000000012,
+        "time": 4408.9,
+        "viewRow": true
+      },
+      {
+        "at": 4426.799999999988,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4439.900000000023,
+        "time": 4425.6,
+        "viewRow": true
+      },
+      {
+        "at": 4442.5,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4451.400000000023,
+        "time": 4442.2,
+        "viewRow": true
+      },
+      {
+        "at": 4461.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4468.799999999988,
+        "time": 4458.9,
+        "viewRow": true
+      },
+      {
+        "at": 4475.900000000023,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4482.200000000012,
+        "time": 4475.6,
+        "viewRow": true
+      },
+      {
+        "at": 4493,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4501.599999999977,
+        "time": 4492.2,
+        "viewRow": true
+      },
+      {
+        "at": 4509.900000000023,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4522,
+        "time": 4508.9,
+        "viewRow": true
+      },
+      {
+        "at": 4527.200000000012,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4536.5,
+        "time": 4525.6,
+        "viewRow": true
+      },
+      {
+        "at": 4542.5,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4546.200000000012,
+        "time": 4542.2,
+        "viewRow": true
+      },
+      {
+        "at": 4561.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4570.099999999977,
+        "time": 4558.9,
+        "viewRow": true
+      },
+      {
+        "at": 4577,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4580.299999999988,
+        "time": 4575.6,
+        "viewRow": true
+      },
+      {
+        "at": 4593.200000000012,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4605.900000000023,
+        "time": 4592.2,
+        "viewRow": true
+      },
+      {
+        "at": 4611.299999999988,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4630.400000000023,
+        "time": 4608.9,
+        "viewRow": true
+      },
+      {
+        "at": 4631.299999999988,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4643.299999999988,
+        "time": 4625.6,
+        "viewRow": true
+      },
+      {
+        "at": 4643.700000000012,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4653.5,
+        "time": 4642.3,
+        "viewRow": true
+      },
+      {
+        "at": 4660.5,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4671.299999999988,
+        "time": 4658.9,
+        "viewRow": true
+      },
+      {
+        "at": 4676.400000000023,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4681.599999999977,
+        "time": 4675.5,
+        "viewRow": true
+      },
+      {
+        "at": 4692.599999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4703.700000000012,
+        "time": 4692.2,
+        "viewRow": true
+      },
+      {
+        "at": 4710.700000000012,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4724,
+        "time": 4708.9,
+        "viewRow": true
+      },
+      {
+        "at": 4729.900000000023,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4741.5,
+        "time": 4725.5,
+        "viewRow": true
+      },
+      {
+        "at": 4743.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4753.5,
+        "time": 4742.2,
+        "viewRow": true
+      },
+      {
+        "at": 4759.400000000023,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4772.400000000023,
+        "time": 4758.9,
+        "viewRow": true
+      },
+      {
+        "at": 4776.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4782.299999999988,
+        "time": 4775.6,
+        "viewRow": true
+      },
+      {
+        "at": 4794,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4806,
+        "time": 4792.3,
+        "viewRow": true
+      },
+      {
+        "at": 4810.5,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4815.400000000023,
+        "time": 4808.9,
+        "viewRow": true
+      },
+      {
+        "at": 4829.299999999988,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4837.700000000012,
+        "time": 4825.6,
+        "viewRow": true
+      },
+      {
+        "at": 4845.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4859.200000000012,
+        "time": 4842.2,
+        "viewRow": true
+      },
+      {
+        "at": 4859.700000000012,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4872.299999999988,
+        "time": 4858.8,
+        "viewRow": true
+      },
+      {
+        "at": 4876.700000000012,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4884.299999999988,
+        "time": 4875.5,
+        "viewRow": true
+      },
+      {
+        "at": 4892.799999999988,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4900.5,
+        "time": 4892.2,
+        "viewRow": true
+      },
+      {
+        "at": 4911.900000000023,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4923.900000000023,
+        "time": 4908.9,
+        "viewRow": true
+      },
+      {
+        "at": 4926.599999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4938.599999999977,
+        "time": 4925.6,
+        "viewRow": true
+      },
+      {
+        "at": 4943.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4955.400000000023,
+        "time": 4942.3,
+        "viewRow": true
+      },
+      {
+        "at": 4960.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4973.599999999977,
+        "time": 4958.9,
+        "viewRow": true
+      },
+      {
+        "at": 4976.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 4983.599999999977,
+        "time": 4975.5,
+        "viewRow": true
+      },
+      {
+        "at": 4995,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 5003.599999999977,
+        "time": 4992.2,
+        "viewRow": true
+      },
+      {
+        "at": 5010.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 5018.900000000023,
+        "time": 5008.9,
+        "viewRow": true
+      },
+      {
+        "at": 5026.5,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 5036.799999999988,
+        "time": 5025.6,
+        "viewRow": true
+      },
+      {
+        "at": 5043,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 5055.599999999977,
+        "time": 5042.2,
+        "viewRow": true
+      },
+      {
+        "at": 5059.200000000012,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 5067.700000000012,
+        "time": 5058.9,
+        "viewRow": true
+      },
+      {
+        "at": 5076.599999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 5082,
+        "time": 5075.5,
+        "viewRow": true
+      },
+      {
+        "at": 5093.5,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 5106,
+        "time": 5092.2,
+        "viewRow": true
+      },
+      {
+        "at": 5111.099999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 5121,
+        "time": 5108.9,
+        "viewRow": true
+      },
+      {
+        "at": 5127.400000000023,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 5139.799999999988,
+        "time": 5125.6,
+        "viewRow": true
+      },
+      {
+        "at": 5143.599999999977,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 5158.5,
+        "time": 5142.2,
+        "viewRow": true
+      },
+      {
+        "at": 5159.700000000012,
+        "foot": 131,
+        "height": 900,
+        "rows": true,
+        "shown": 5171.5,
+        "time": 5158.9,
+        "viewRow": true
+      }
+    ],
+    "lcp": [
+      {
+        "element": "aside",
+        "loadTime": 0,
+        "renderTime": 652,
+        "size": 1869,
+        "startTime": 652,
+        "url": ""
+      },
+      {
+        "element": "li",
+        "loadTime": 0,
+        "renderTime": 1864,
+        "size": 18560,
+        "startTime": 1864,
+        "url": ""
+      }
+    ],
+    "longtask": [
+      { "duration": 371, "name": "self", "startTime": 233.5 },
+      { "duration": 91, "name": "self", "startTime": 745.5 },
+      { "duration": 293, "name": "self", "startTime": 1443.7999999999884 },
+      { "duration": 76, "name": "self", "startTime": 1794.7999999999884 },
+      { "duration": 89, "name": "self", "startTime": 1929.5999999999767 },
+      { "duration": 929, "name": "self", "startTime": 2264.9000000000233 },
+      { "duration": 280, "name": "self", "startTime": 3194.5999999999767 },
+      { "duration": 115, "name": "self", "startTime": 3483.2000000000116 },
+      { "duration": 377, "name": "self", "startTime": 3669.7000000000116 },
+      { "duration": 66, "name": "self", "startTime": 4047.2000000000116 }
+    ],
+    "resource": [
+      {
+        "duration": 29.900000000023283,
+        "initiatorType": "link",
+        "name": "http://127.0.0.1:38827/assets/index-C8-uKI_F.css",
+        "requestStart": 69.09999999997672,
+        "responseEnd": 72.90000000002328,
+        "responseStart": 71.90000000002328,
+        "startTime": 43
+      },
+      {
+        "duration": 44.70000000001164,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/index-VyNMIPGM.js",
+        "requestStart": 66.29999999998836,
+        "responseEnd": 87.40000000002328,
+        "responseStart": 71.5,
+        "startTime": 42.70000000001164
+      },
+      {
+        "duration": 5.2999999999883585,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/auth/whoami",
+        "requestStart": 651,
+        "responseEnd": 654.7000000000116,
+        "responseStart": 654.2000000000116,
+        "startTime": 649.4000000000233
+      },
+      {
+        "duration": 4.600000000034925,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/lib-headless-AaxvoCPd.js",
+        "requestStart": 664.2000000000116,
+        "responseEnd": 667.4000000000233,
+        "responseStart": 666.2000000000116,
+        "startTime": 662.7999999999884
+      },
+      {
+        "duration": 19.900000000023283,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/index-DgLefhGk.js",
+        "requestStart": 676.0999999999767,
+        "responseEnd": 683.5,
+        "responseStart": 682.2000000000116,
+        "startTime": 663.5999999999767
+      },
+      {
+        "duration": 19.300000000046566,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/state-C2Dtlicp.js",
+        "requestStart": 676.2999999999884,
+        "responseEnd": 683.4000000000233,
+        "responseStart": 681.9000000000233,
+        "startTime": 664.0999999999767
+      },
+      {
+        "duration": 18.099999999976717,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/keys-DbBzfgf6.js",
+        "requestStart": 677.4000000000233,
+        "responseEnd": 682.5,
+        "responseStart": 681,
+        "startTime": 664.4000000000233
+      },
+      {
+        "duration": 13.100000000034925,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/markdown-serializer-DfPboZ_b.js",
+        "requestStart": 677.5999999999767,
+        "responseEnd": 685.2000000000116,
+        "responseStart": 684.7000000000116,
+        "startTime": 672.0999999999767
+      },
+      {
+        "duration": 10.5,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/ask-content-BxzkyOlM.js",
+        "requestStart": 664.7000000000116,
+        "responseEnd": 673.7000000000116,
+        "responseStart": 666.9000000000233,
+        "startTime": 663.2000000000116
+      },
+      {
+        "duration": 21.100000000034925,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/index-DpJ5n-Kj.js",
+        "requestStart": 677.2000000000116,
+        "responseEnd": 685.4000000000233,
+        "responseStart": 684.4000000000233,
+        "startTime": 664.2999999999884
+      },
+      {
+        "duration": 4.900000000023283,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/IssuePage-BQZFHDiP.js",
+        "requestStart": 783.7000000000116,
+        "responseEnd": 788,
+        "responseStart": 786.7999999999884,
+        "startTime": 783.0999999999767
+      },
+      {
+        "duration": 13,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/Tabs-LZ9seznk.js",
+        "requestStart": 787.0999999999767,
+        "responseEnd": 796.5,
+        "responseStart": 793.9000000000233,
+        "startTime": 783.5
+      },
+      {
+        "duration": 13.400000000023283,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/event-description-Bs3X_HUN.js",
+        "requestStart": 787.2999999999884,
+        "responseEnd": 797,
+        "responseStart": 793.0999999999767,
+        "startTime": 783.5999999999767
+      },
+      {
+        "duration": 13.700000000011642,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/activity-model-BaOuJoDj.js",
+        "requestStart": 787.4000000000233,
+        "responseEnd": 797.4000000000233,
+        "responseStart": 793.5999999999767,
+        "startTime": 783.7000000000116
+      },
+      {
+        "duration": 13.899999999965075,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/SubscribedAgents-B-HnTN24.js",
+        "requestStart": 787.5999999999767,
+        "responseEnd": 797.5999999999767,
+        "responseStart": 794.4000000000233,
+        "startTime": 783.7000000000116
+      },
+      {
+        "duration": 13.400000000023283,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/ArtifactDetails-DqmKvG6a.js",
+        "requestStart": 788.4000000000233,
+        "responseEnd": 797.2000000000116,
+        "responseStart": 793.4000000000233,
+        "startTime": 783.7999999999884
+      },
+      {
+        "duration": 22.099999999976717,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/ParentStatusDialog-Db3e0_X9.js",
+        "requestStart": 796.9000000000233,
+        "responseEnd": 806.5,
+        "responseStart": 805.2000000000116,
+        "startTime": 784.4000000000233
+      },
+      {
+        "duration": 16.900000000023283,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/TargetedMessageCard-BlsSTiXS.js",
+        "requestStart": 797.7000000000116,
+        "responseEnd": 801.5,
+        "responseStart": 801,
+        "startTime": 784.5999999999767
+      },
+      {
+        "duration": 21,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/ReplyTurn-B6vOi6fU.js",
+        "requestStart": 797.9000000000233,
+        "responseEnd": 805.7000000000116,
+        "responseStart": 804.5999999999767,
+        "startTime": 784.7000000000116
+      },
+      {
+        "duration": 17.099999999976717,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/useParentStatusMove-BdQW6rW9.js",
+        "requestStart": 798,
+        "responseEnd": 801.7999999999884,
+        "responseStart": 801.2000000000116,
+        "startTime": 784.7000000000116
+      },
+      {
+        "duration": 21.599999999976717,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/ThreadCard-CiNZcNIX.js",
+        "requestStart": 797.9000000000233,
+        "responseEnd": 806.2999999999884,
+        "responseStart": 804.7999999999884,
+        "startTime": 784.7000000000116
+      },
+      {
+        "duration": 14.699999999953434,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/classes-DJGBipHs.js",
+        "requestStart": 798.0999999999767,
+        "responseEnd": 800.5999999999767,
+        "responseStart": 800.2999999999884,
+        "startTime": 785.9000000000233
+      },
+      {
+        "duration": 9.900000000023283,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/Margin-CGT4Ptn1.js",
+        "requestStart": 800.9000000000233,
+        "responseEnd": 806,
+        "responseStart": 804.0999999999767,
+        "startTime": 796.0999999999767
+      },
+      {
+        "duration": 14.200000000011642,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/EventBody-ChQrgZOC.js",
+        "requestStart": 804,
+        "responseEnd": 810.5,
+        "responseStart": 809.2000000000116,
+        "startTime": 796.2999999999884
+      },
+      {
+        "duration": 54.70000000001164,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/me/agents/state",
+        "requestStart": 904.2999999999884,
+        "responseEnd": 954.7999999999884,
+        "responseStart": 954.2999999999884,
+        "startTime": 900.0999999999767
+      },
+      {
+        "duration": 82.80000000004657,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/inbox",
+        "requestStart": 904.7999999999884,
+        "responseEnd": 983.9000000000233,
+        "responseStart": 983.5,
+        "startTime": 901.0999999999767
+      },
+      {
+        "duration": 29.599999999976717,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/credential-requests?approver=me",
+        "requestStart": 904.9000000000233,
+        "responseEnd": 931.2999999999884,
+        "responseStart": 921,
+        "startTime": 901.7000000000116
+      },
+      {
+        "duration": 76.59999999997672,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/me/replies?kind=reply%2Cagent&limit=1",
+        "requestStart": 907.4000000000233,
+        "responseEnd": 981.5999999999767,
+        "responseStart": 980.9000000000233,
+        "startTime": 905
+      },
+      {
+        "duration": 108.5,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/issues/LAY-1",
+        "requestStart": 904,
+        "responseEnd": 1005.9000000000233,
+        "responseStart": 1005.2999999999884,
+        "startTime": 897.4000000000233
+      },
+      {
+        "duration": 24.79999999998836,
+        "initiatorType": "script",
+        "name": "http://127.0.0.1:38827/assets/IssueOutlinePage-aWJyQOYD.js",
+        "requestStart": 1058,
+        "responseEnd": 1067.0999999999767,
+        "responseStart": 1060.0999999999767,
+        "startTime": 1042.2999999999884
+      },
+      {
+        "duration": 11.300000000046566,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/me/state",
+        "requestStart": 1075.9000000000233,
+        "responseEnd": 1084.4000000000233,
+        "responseStart": 1081.7000000000116,
+        "startTime": 1073.0999999999767
+      },
+      {
+        "duration": 39,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/issues/LAY-1/comments",
+        "requestStart": 1070.9000000000233,
+        "responseEnd": 1100.9000000000233,
+        "responseStart": 1099.5,
+        "startTime": 1061.9000000000233
+      },
+      {
+        "duration": 93.70000000001164,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/issues/LAY-1/asks?state=all&thread=1",
+        "requestStart": 1076.0999999999767,
+        "responseEnd": 1167.7999999999884,
+        "responseStart": 1167.0999999999767,
+        "startTime": 1074.0999999999767
+      },
+      {
+        "duration": 180.79999999998836,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/issues/LAY-1/decisions",
+        "requestStart": 1536.4000000000233,
+        "responseEnd": 1715.2999999999884,
+        "responseStart": 1704.0999999999767,
+        "startTime": 1534.5
+      },
+      {
+        "duration": 100.10000000003492,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/issues/LAY-1/coverage",
+        "requestStart": 1548.2999999999884,
+        "responseEnd": 1645.7000000000116,
+        "responseStart": 1645.2000000000116,
+        "startTime": 1545.5999999999767
+      },
+      {
+        "duration": 22.400000000023283,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/projects",
+        "requestStart": 1562.4000000000233,
+        "responseEnd": 1582.2000000000116,
+        "responseStart": 1581.7999999999884,
+        "startTime": 1559.7999999999884
+      },
+      {
+        "duration": 103.30000000004657,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/issues/LAY-1/results",
+        "requestStart": 1571.7999999999884,
+        "responseEnd": 1674.4000000000233,
+        "responseStart": 1673.7000000000116,
+        "startTime": 1571.0999999999767
+      },
+      {
+        "duration": 58.79999999998836,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/issues/LAY-1/messages",
+        "requestStart": 1573.7999999999884,
+        "responseEnd": 1631.7999999999884,
+        "responseStart": 1631.2999999999884,
+        "startTime": 1573
+      },
+      {
+        "duration": 54.59999999997672,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/agents",
+        "requestStart": 1606.5999999999767,
+        "responseEnd": 1657.2999999999884,
+        "responseStart": 1656.7999999999884,
+        "startTime": 1602.7000000000116
+      },
+      {
+        "duration": 51.399999999965075,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/projects/LAY/architecture-sources",
+        "requestStart": 1632.0999999999767,
+        "responseEnd": 1659.7999999999884,
+        "responseStart": 1659.4000000000233,
+        "startTime": 1608.4000000000233
+      },
+      {
+        "duration": 328.4000000000233,
+        "initiatorType": "css",
+        "name": "http://127.0.0.1:38827/assets/InterVariable-subset-B97wJtk1.woff2",
+        "requestStart": 1777,
+        "responseEnd": 1779.2000000000116,
+        "responseStart": 1778.5,
+        "startTime": 1450.7999999999884
+      },
+      {
+        "duration": 397.20000000001164,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/issues/LAY-1/tree?view=plan",
+        "requestStart": 1733,
+        "responseEnd": 2118,
+        "responseStart": 2117.0999999999767,
+        "startTime": 1720.7999999999884
+      },
+      {
+        "duration": 627.2999999999884,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/issues/LAY-1/tree?kind=ask&kind=comment&kind=reading&kind=lens&kind=finding&kind=risk&kind=criterion&kind=requirement&kind=check&kind=decision&kind=issue&kind=prose&kind=callout",
+        "requestStart": 1562.2999999999884,
+        "responseEnd": 2185.7000000000116,
+        "responseStart": 2179.7999999999884,
+        "startTime": 1558.4000000000233
+      },
+      {
+        "duration": 39.29999999998836,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/reference-targets?ref=dispatch%3A%2F%2FLAY-1&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r1&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r10&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r11&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r12&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r13&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r14&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r15&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r16&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r17&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r18&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r19&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r2&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r20&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r21&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r22&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r23&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r24&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r25&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r26&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r27&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r28&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r29&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r3&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r30&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r31&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r32&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r33&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r34&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r35&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r36&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r37&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r38&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r4&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r40&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r42&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r5&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r6&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r7&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r8&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r9&ref=dispatch%3A%2F%2FLAY-10&ref=dispatch%3A%2F%2FLAY-11&ref=dispatch%3A%2F%2FLAY-12&ref=dispatch%3A%2F%2FLAY-13&ref=dispatch%3A%2F%2FLAY-14&ref=dispatch%3A%2F%2FLAY-15&ref=dispatch%3A%2F%2FLAY-16&ref=dispatch%3A%2F%2FLAY-17&ref=dispatch%3A%2F%2FLAY-18&ref=dispatch%3A%2F%2FLAY-19&ref=dispatch%3A%2F%2FLAY-2&ref=dispatch%3A%2F%2FLAY-20&ref=dispatch%3A%2F%2FLAY-21&ref=dispatch%3A%2F%2FLAY-22&ref=dispatch%3A%2F%2FLAY-23&ref=dispatch%3A%2F%2FLAY-24&ref=dispatch%3A%2F%2FLAY-25&ref=dispatch%3A%2F%2FLAY-26&ref=dispatch%3A%2F%2FLAY-27&ref=dispatch%3A%2F%2FLAY-28&ref=dispatch%3A%2F%2FLAY-29&ref=dispatch%3A%2F%2FLAY-3&ref=dispatch%3A%2F%2FLAY-30&ref=dispatch%3A%2F%2FLAY-31&ref=dispatch%3A%2F%2FLAY-32&ref=dispatch%3A%2F%2FLAY-33&ref=dispatch%3A%2F%2FLAY-34&ref=dispatch%3A%2F%2FLAY-35&ref=dispatch%3A%2F%2FLAY-36&ref=dispatch%3A%2F%2FLAY-37&ref=dispatch%3A%2F%2FLAY-38&ref=dispatch%3A%2F%2FLAY-4&ref=dispatch%3A%2F%2FLAY-5&ref=dispatch%3A%2F%2FLAY-6&ref=dispatch%3A%2F%2FLAY-7&ref=dispatch%3A%2F%2FLAY-8&ref=dispatch%3A%2F%2FLAY-9",
+        "requestStart": 2976.2000000000116,
+        "responseEnd": 3014.0999999999767,
+        "responseStart": 3013.5,
+        "startTime": 2974.7999999999884
+      },
+      {
+        "duration": 183.89999999996508,
+        "initiatorType": "fetch",
+        "name": "http://127.0.0.1:38827/api/v1/issues/LAY-1/tree?view=verification",
+        "requestStart": 2978.2999999999884,
+        "responseEnd": 3161.5999999999767,
+        "responseStart": 3158.2999999999884,
+        "startTime": 2977.7000000000116
+      }
+    ],
+    "timeOrigin": 1795699425116.5,
+    "unobserved": [],
+    "vitals": true
+  },
+  "requests": [
+    {
+      "end": 7.4970703125,
+      "kind": "request",
+      "start": 1.864990234375,
+      "url": "http://127.0.0.1:38827/issues/LAY-1"
+    },
+    {
+      "end": 94.752197265625,
+      "kind": "request",
+      "start": 64.80810546875,
+      "url": "http://127.0.0.1:38827/assets/index-C8-uKI_F.css"
+    },
+    {
+      "end": 109.132080078125,
+      "kind": "request",
+      "start": 64.328125,
+      "url": "http://127.0.0.1:38827/assets/index-VyNMIPGM.js"
+    },
+    {
+      "end": 669.826904296875,
+      "kind": "request",
+      "start": 664.017822265625,
+      "url": "http://127.0.0.1:38827/assets/lib-headless-AaxvoCPd.js"
+    },
+    {
+      "end": 662.625,
+      "kind": "request",
+      "start": 653.76806640625,
+      "url": "http://127.0.0.1:38827/auth/whoami"
+    },
+    {
+      "end": 693.6650390625,
+      "kind": "request",
+      "start": 675.549072265625,
+      "url": "http://127.0.0.1:38827/assets/keys-DbBzfgf6.js"
+    },
+    {
+      "end": 694.10595703125,
+      "kind": "request",
+      "start": 674.7890625,
+      "url": "http://127.0.0.1:38827/assets/state-C2Dtlicp.js"
+    },
+    {
+      "end": 694.533203125,
+      "kind": "request",
+      "start": 674.548095703125,
+      "url": "http://127.0.0.1:38827/assets/index-DgLefhGk.js"
+    },
+    {
+      "end": 689.046875,
+      "kind": "request",
+      "start": 675.89599609375,
+      "url": "http://127.0.0.1:38827/assets/markdown-serializer-DfPboZ_b.js"
+    },
+    {
+      "end": 675.18603515625,
+      "kind": "request",
+      "start": 664.614990234375,
+      "url": "http://127.0.0.1:38827/assets/ask-content-BxzkyOlM.js"
+    },
+    {
+      "end": 696.2529296875,
+      "kind": "request",
+      "start": 675.044921875,
+      "url": "http://127.0.0.1:38827/assets/index-DpJ5n-Kj.js"
+    },
+    {
+      "end": 790.213134765625,
+      "kind": "request",
+      "start": 783.549072265625,
+      "url": "http://127.0.0.1:38827/assets/IssuePage-BQZFHDiP.js"
+    },
+    {
+      "end": 799.97998046875,
+      "kind": "request",
+      "start": 786.56103515625,
+      "url": "http://127.0.0.1:38827/assets/ArtifactDetails-DqmKvG6a.js"
+    },
+    {
+      "end": 799.763916015625,
+      "kind": "request",
+      "start": 786.009033203125,
+      "url": "http://127.0.0.1:38827/assets/activity-model-BaOuJoDj.js"
+    },
+    {
+      "end": 798.41015625,
+      "kind": "request",
+      "start": 785.358154296875,
+      "url": "http://127.0.0.1:38827/assets/Tabs-LZ9seznk.js"
+    },
+    {
+      "end": 799.10400390625,
+      "kind": "request",
+      "start": 785.59912109375,
+      "url": "http://127.0.0.1:38827/assets/event-description-Bs3X_HUN.js"
+    },
+    {
+      "end": 800.207763671875,
+      "kind": "request",
+      "start": 786.33984375,
+      "url": "http://127.0.0.1:38827/assets/SubscribedAgents-B-HnTN24.js"
+    },
+    {
+      "end": 808.274169921875,
+      "kind": "request",
+      "start": 793.1220703125,
+      "url": "http://127.0.0.1:38827/assets/classes-DJGBipHs.js"
+    },
+    {
+      "end": 805.826171875,
+      "kind": "request",
+      "start": 788.80712890625,
+      "url": "http://127.0.0.1:38827/assets/TargetedMessageCard-BlsSTiXS.js"
+    },
+    {
+      "end": 813.056884765625,
+      "kind": "request",
+      "start": 792.075927734375,
+      "url": "http://127.0.0.1:38827/assets/ReplyTurn-B6vOi6fU.js"
+    },
+    {
+      "end": 809.397216796875,
+      "kind": "request",
+      "start": 792.369140625,
+      "url": "http://127.0.0.1:38827/assets/useParentStatusMove-BdQW6rW9.js"
+    },
+    {
+      "end": 811.854736328125,
+      "kind": "request",
+      "start": 800.6728515625,
+      "url": "http://127.0.0.1:38827/assets/Margin-CGT4Ptn1.js"
+    },
+    {
+      "end": 810.763916015625,
+      "kind": "request",
+      "start": 789.0830078125,
+      "url": "http://127.0.0.1:38827/assets/ThreadCard-CiNZcNIX.js"
+    },
+    {
+      "end": 816.51806640625,
+      "kind": "request",
+      "start": 802.31005859375,
+      "url": "http://127.0.0.1:38827/assets/EventBody-ChQrgZOC.js"
+    },
+    {
+      "end": 811.813232421875,
+      "kind": "request",
+      "start": 789.2021484375,
+      "url": "http://127.0.0.1:38827/assets/ParentStatusDialog-Db3e0_X9.js"
+    },
+    {
+      "end": 934.42919921875,
+      "kind": "request",
+      "start": 904.744140625,
+      "url": "http://127.0.0.1:38827/api/v1/credential-requests?approver=me"
+    },
+    {
+      "end": 958.0068359375,
+      "kind": "request",
+      "start": 902.962890625,
+      "url": "http://127.0.0.1:38827/api/v1/me/agents/state"
+    },
+    {
+      "end": 984.096923828125,
+      "kind": "request",
+      "start": 907.413818359375,
+      "url": "http://127.0.0.1:38827/api/v1/me/replies?kind=reply%2Cagent&limit=1"
+    },
+    {
+      "end": 987.5888671875,
+      "kind": "request",
+      "start": 904.552978515625,
+      "url": "http://127.0.0.1:38827/api/v1/inbox"
+    },
+    {
+      "end": 1011.115966796875,
+      "kind": "request",
+      "start": 902.366943359375,
+      "url": "http://127.0.0.1:38827/api/v1/issues/LAY-1"
+    },
+    {
+      "end": 1082.863037109375,
+      "kind": "request",
+      "start": 1057.798095703125,
+      "url": "http://127.0.0.1:38827/assets/IssueOutlinePage-aWJyQOYD.js"
+    },
+    {
+      "end": 1092.0048828125,
+      "kind": "request",
+      "start": 1074.948974609375,
+      "url": "http://127.0.0.1:38827/api/v1/me/state"
+    },
+    {
+      "end": 1118.449951171875,
+      "kind": "request",
+      "start": 1073.634033203125,
+      "url": "http://127.0.0.1:38827/api/v1/issues/LAY-1/comments"
+    },
+    {
+      "end": 1169.32373046875,
+      "kind": "request",
+      "start": 1075.227783203125,
+      "url": "http://127.0.0.1:38827/api/v1/issues/LAY-1/asks?state=all&thread=1"
+    },
+    {
+      "end": 1585.225830078125,
+      "kind": "request",
+      "start": 1562.408935546875,
+      "url": "http://127.0.0.1:38827/api/v1/projects"
+    },
+    {
+      "end": 1633.7978515625,
+      "kind": "request",
+      "start": 1574.291748046875,
+      "url": "http://127.0.0.1:38827/api/v1/issues/LAY-1/messages"
+    },
+    {
+      "end": 1650.961181640625,
+      "kind": "request",
+      "start": 1546.51611328125,
+      "url": "http://127.0.0.1:38827/api/v1/issues/LAY-1/coverage"
+    },
+    {
+      "end": 1667.412109375,
+      "kind": "request",
+      "start": 1607.7890625,
+      "url": "http://127.0.0.1:38827/api/v1/agents"
+    },
+    {
+      "end": 1687.623046875,
+      "kind": "request",
+      "start": 1631.43505859375,
+      "url": "http://127.0.0.1:38827/api/v1/projects/LAY/architecture-sources"
+    },
+    {
+      "end": 1676.9609375,
+      "kind": "request",
+      "start": 1572.574951171875,
+      "url": "http://127.0.0.1:38827/api/v1/issues/LAY-1/results"
+    },
+    {
+      "end": 1720.6240234375,
+      "kind": "request",
+      "start": 1537.8369140625,
+      "url": "http://127.0.0.1:38827/api/v1/issues/LAY-1/decisions"
+    },
+    {
+      "end": 2102.846923828125,
+      "kind": "request",
+      "start": 1773.8349609375,
+      "url": "http://127.0.0.1:38827/assets/InterVariable-subset-B97wJtk1.woff2"
+    },
+    {
+      "end": 2130.969970703125,
+      "kind": "request",
+      "start": 1733.2080078125,
+      "url": "http://127.0.0.1:38827/api/v1/issues/LAY-1/tree?view=plan"
+    },
+    {
+      "end": 2189.98291015625,
+      "kind": "request",
+      "start": 1562.1240234375,
+      "url": "http://127.0.0.1:38827/api/v1/issues/LAY-1/tree?kind=ask&kind=comment&kind=reading&kind=lens&kind=finding&kind=risk&kind=criterion&kind=requirement&kind=check&kind=decision&kind=issue&kind=prose&kind=callout"
+    },
+    {
+      "end": 3016.89501953125,
+      "kind": "request",
+      "start": 2976.26904296875,
+      "url": "http://127.0.0.1:38827/api/v1/reference-targets?ref=dispatch%3A%2F%2FLAY-1&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r1&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r10&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r11&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r12&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r13&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r14&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r15&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r16&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r17&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r18&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r19&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r2&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r20&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r21&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r22&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r23&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r24&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r25&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r26&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r27&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r28&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r29&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r3&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r30&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r31&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r32&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r33&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r34&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r35&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r36&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r37&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r38&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r4&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r40&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r42&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r5&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r6&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r7&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r8&ref=dispatch%3A%2F%2FLAY-1%2Fspec%23b-r9&ref=dispatch%3A%2F%2FLAY-10&ref=dispatch%3A%2F%2FLAY-11&ref=dispatch%3A%2F%2FLAY-12&ref=dispatch%3A%2F%2FLAY-13&ref=dispatch%3A%2F%2FLAY-14&ref=dispatch%3A%2F%2FLAY-15&ref=dispatch%3A%2F%2FLAY-16&ref=dispatch%3A%2F%2FLAY-17&ref=dispatch%3A%2F%2FLAY-18&ref=dispatch%3A%2F%2FLAY-19&ref=dispatch%3A%2F%2FLAY-2&ref=dispatch%3A%2F%2FLAY-20&ref=dispatch%3A%2F%2FLAY-21&ref=dispatch%3A%2F%2FLAY-22&ref=dispatch%3A%2F%2FLAY-23&ref=dispatch%3A%2F%2FLAY-24&ref=dispatch%3A%2F%2FLAY-25&ref=dispatch%3A%2F%2FLAY-26&ref=dispatch%3A%2F%2FLAY-27&ref=dispatch%3A%2F%2FLAY-28&ref=dispatch%3A%2F%2FLAY-29&ref=dispatch%3A%2F%2FLAY-3&ref=dispatch%3A%2F%2FLAY-30&ref=dispatch%3A%2F%2FLAY-31&ref=dispatch%3A%2F%2FLAY-32&ref=dispatch%3A%2F%2FLAY-33&ref=dispatch%3A%2F%2FLAY-34&ref=dispatch%3A%2F%2FLAY-35&ref=dispatch%3A%2F%2FLAY-36&ref=dispatch%3A%2F%2FLAY-37&ref=dispatch%3A%2F%2FLAY-38&ref=dispatch%3A%2F%2FLAY-4&ref=dispatch%3A%2F%2FLAY-5&ref=dispatch%3A%2F%2FLAY-6&ref=dispatch%3A%2F%2FLAY-7&ref=dispatch%3A%2F%2FLAY-8&ref=dispatch%3A%2F%2FLAY-9"
+    },
+    {
+      "end": 3163.06201171875,
+      "kind": "request",
+      "start": 2978.423095703125,
+      "url": "http://127.0.0.1:38827/api/v1/issues/LAY-1/tree?view=verification"
+    },
+    { "end": null, "kind": "websocket", "start": 968.5, "url": "ws://127.0.0.1:38827/ws/live" }
+  ]
+}

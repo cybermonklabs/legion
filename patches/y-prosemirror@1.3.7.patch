@@ -1,0 +1,265 @@
+diff --git a/dist/y-prosemirror.cjs b/dist/y-prosemirror.cjs
+index de4d1e6..4660328 100644
+--- a/dist/y-prosemirror.cjs
++++ b/dist/y-prosemirror.cjs
+@@ -486,13 +486,11 @@ class ProsemirrorBinding {
+   unrenderSnapshot () {
+     this.mapping.clear();
+     this.mux(() => {
+-      const fragmentContent = this.type.toArray().map((t) =>
+-        createNodeFromYElement(
+-          /** @type {Y.XmlElement} */ (t),
+-          this.prosemirrorView.state.schema,
+-          this
+-        )
+-      ).filter((n) => n !== null);
++      const fragmentContent = [];
++      const schema = this.prosemirrorView.state.schema;
++      for (const child of this.type.toArray()) {
++        appendRootChild(fragmentContent, child, schema, this, createNodeFromYElement);
++      }
+       // @ts-ignore
+       const tr = this._tr.replace(
+         0,
+@@ -511,13 +509,11 @@ class ProsemirrorBinding {
+       // transaction. Then the "before selection" doesn't exist. In this case, we need to create a
+       // relative position before replacing content. Fixes #126
+       const sel = this.beforeTransactionSelection !== null ? null : this.prosemirrorView.state.selection;
+-      const fragmentContent = this.type.toArray().map((t) =>
+-        createNodeFromYElement(
+-          /** @type {Y.XmlElement} */ (t),
+-          this.prosemirrorView.state.schema,
+-          this
+-        )
+-      ).filter((n) => n !== null);
++      const fragmentContent = [];
++      const schema = this.prosemirrorView.state.schema;
++      for (const child of this.type.toArray()) {
++        appendRootChild(fragmentContent, child, schema, this, createNodeFromYElement);
++      }
+       // @ts-ignore
+       const tr = this._tr.replace(
+         0,
+@@ -624,28 +620,28 @@ class ProsemirrorBinding {
+           }
+         };
+         // Create document fragment and render
+-        const fragmentContent = Y__namespace.typeListToArraySnapshot(
++        const fragmentContent = [];
++        const schema = this.prosemirrorView.state.schema;
++        for (const t of Y__namespace.typeListToArraySnapshot(
+           historyType,
+           new Y__namespace.Snapshot(prevSnapshot.ds, snapshot.sv)
+-        ).map((t) => {
++        )) {
+           if (
+             !t._item.deleted || isVisible(t._item, snapshot) ||
+             isVisible(t._item, prevSnapshot)
+           ) {
+-            return createNodeFromYElement(
++            appendRootChild(
++              fragmentContent,
+               t,
+-              this.prosemirrorView.state.schema,
++              schema,
+               { mapping: new Map(), isOMark: new Map() },
++              createNodeFromYElement,
+               snapshot,
+               prevSnapshot,
+               computeYChange
+-            )
+-          } else {
+-            // No need to render elements that are not visible by either snapshot.
+-            // If a client adds and deletes content in the same snapshot the element is not visible by either snapshot.
+-            return null
++            );
+           }
+-        }).filter((n) => n !== null);
++        }
+         // @ts-ignore
+         const tr = this._tr.replace(
+           0,
+@@ -692,13 +688,11 @@ class ProsemirrorBinding {
+       );
+       transaction.changed.forEach(delType);
+       transaction.changedParentTypes.forEach(delType);
+-      const fragmentContent = this.type.toArray().map((t) =>
+-        createNodeIfNotExists(
+-          /** @type {Y.XmlElement | Y.XmlHook} */ (t),
+-          this.prosemirrorView.state.schema,
+-          this
+-        )
+-      ).filter((n) => n !== null);
++      const fragmentContent = [];
++      const schema = this.prosemirrorView.state.schema;
++      for (const child of this.type.toArray()) {
++        appendRootChild(fragmentContent, child, schema, this, createNodeIfNotExists);
++      }
+       // @ts-ignore
+       let tr = this._tr.replace(
+         0,
+@@ -921,6 +915,32 @@ const createTextNodesFromYText = (
+   return nodes
+ };
+ 
++/**
++ * An inline-content element can itself be the bound root. Convert its Y.XmlText
++ * children to inline ProseMirror nodes without inserting a wrapper.
++ *
++ * @param {Array<PModel.Node>} content
++ * @param {Y.XmlElement|Y.XmlText|Y.XmlHook} child
++ * @param {import('prosemirror-model').Schema} schema
++ * @param {BindingMetadata} meta
++ * @param {typeof createNodeFromYElement|typeof createNodeIfNotExists} createElement
++ * @param {Y.Snapshot} [snapshot]
++ * @param {Y.Snapshot} [prevSnapshot]
++ * @param {function('removed'|'added', Y.ID):any} [computeYChange]
++ */
++const appendRootChild = (content, child, schema, meta, createElement, snapshot, prevSnapshot, computeYChange) => {
++  if (child instanceof Y__namespace.XmlText) {
++    const nodes = createTextNodesFromYText(child, schema, meta, snapshot, prevSnapshot, computeYChange);
++    if (nodes !== null) {
++      meta.mapping.set(child, nodes);
++      for (const node of nodes) content.push(node);
++    }
++  } else {
++    const node = createElement(/** @type {Y.XmlElement} */ (child), schema, meta, snapshot, prevSnapshot, computeYChange);
++    if (node !== null) content.push(node);
++  }
++};
++
+ /**
+  * @private
+  * @param {Array<any>} nodes prosemirror node
+diff --git a/src/plugins/sync-plugin.js b/src/plugins/sync-plugin.js
+index dccfb76..12b6bd7 100644
+--- a/src/plugins/sync-plugin.js
++++ b/src/plugins/sync-plugin.js
+@@ -412,13 +412,11 @@ export class ProsemirrorBinding {
+   unrenderSnapshot () {
+     this.mapping.clear()
+     this.mux(() => {
+-      const fragmentContent = this.type.toArray().map((t) =>
+-        createNodeFromYElement(
+-          /** @type {Y.XmlElement} */ (t),
+-          this.prosemirrorView.state.schema,
+-          this
+-        )
+-      ).filter((n) => n !== null)
++      const fragmentContent = []
++      const schema = this.prosemirrorView.state.schema
++      for (const child of this.type.toArray()) {
++        appendRootChild(fragmentContent, child, schema, this, createNodeFromYElement)
++      }
+       // @ts-ignore
+       const tr = this._tr.replace(
+         0,
+@@ -437,13 +435,11 @@ export class ProsemirrorBinding {
+       // transaction. Then the "before selection" doesn't exist. In this case, we need to create a
+       // relative position before replacing content. Fixes #126
+       const sel = this.beforeTransactionSelection !== null ? null : this.prosemirrorView.state.selection
+-      const fragmentContent = this.type.toArray().map((t) =>
+-        createNodeFromYElement(
+-          /** @type {Y.XmlElement} */ (t),
+-          this.prosemirrorView.state.schema,
+-          this
+-        )
+-      ).filter((n) => n !== null)
++      const fragmentContent = []
++      const schema = this.prosemirrorView.state.schema
++      for (const child of this.type.toArray()) {
++        appendRootChild(fragmentContent, child, schema, this, createNodeFromYElement)
++      }
+       // @ts-ignore
+       const tr = this._tr.replace(
+         0,
+@@ -550,28 +546,28 @@ export class ProsemirrorBinding {
+           }
+         }
+         // Create document fragment and render
+-        const fragmentContent = Y.typeListToArraySnapshot(
++        const fragmentContent = []
++        const schema = this.prosemirrorView.state.schema
++        for (const t of Y.typeListToArraySnapshot(
+           historyType,
+           new Y.Snapshot(prevSnapshot.ds, snapshot.sv)
+-        ).map((t) => {
++        )) {
+           if (
+             !t._item.deleted || isVisible(t._item, snapshot) ||
+             isVisible(t._item, prevSnapshot)
+           ) {
+-            return createNodeFromYElement(
++            appendRootChild(
++              fragmentContent,
+               t,
+-              this.prosemirrorView.state.schema,
++              schema,
+               { mapping: new Map(), isOMark: new Map() },
++              createNodeFromYElement,
+               snapshot,
+               prevSnapshot,
+               computeYChange
+             )
+-          } else {
+-            // No need to render elements that are not visible by either snapshot.
+-            // If a client adds and deletes content in the same snapshot the element is not visible by either snapshot.
+-            return null
+           }
+-        }).filter((n) => n !== null)
++        }
+         // @ts-ignore
+         const tr = this._tr.replace(
+           0,
+@@ -618,13 +614,11 @@ export class ProsemirrorBinding {
+       )
+       transaction.changed.forEach(delType)
+       transaction.changedParentTypes.forEach(delType)
+-      const fragmentContent = this.type.toArray().map((t) =>
+-        createNodeIfNotExists(
+-          /** @type {Y.XmlElement | Y.XmlHook} */ (t),
+-          this.prosemirrorView.state.schema,
+-          this
+-        )
+-      ).filter((n) => n !== null)
++      const fragmentContent = []
++      const schema = this.prosemirrorView.state.schema
++      for (const child of this.type.toArray()) {
++        appendRootChild(fragmentContent, child, schema, this, createNodeIfNotExists)
++      }
+       // @ts-ignore
+       let tr = this._tr.replace(
+         0,
+@@ -847,6 +841,32 @@ const createTextNodesFromYText = (
+   return nodes
+ }
+ 
++/**
++ * An inline-content element can itself be the bound root. Convert its Y.XmlText
++ * children to inline ProseMirror nodes without inserting a wrapper.
++ *
++ * @param {Array<PModel.Node>} content
++ * @param {Y.XmlElement|Y.XmlText|Y.XmlHook} child
++ * @param {import('prosemirror-model').Schema} schema
++ * @param {BindingMetadata} meta
++ * @param {typeof createNodeFromYElement|typeof createNodeIfNotExists} createElement
++ * @param {Y.Snapshot} [snapshot]
++ * @param {Y.Snapshot} [prevSnapshot]
++ * @param {function('removed'|'added', Y.ID):any} [computeYChange]
++ */
++const appendRootChild = (content, child, schema, meta, createElement, snapshot, prevSnapshot, computeYChange) => {
++  if (child instanceof Y.XmlText) {
++    const nodes = createTextNodesFromYText(child, schema, meta, snapshot, prevSnapshot, computeYChange)
++    if (nodes !== null) {
++      meta.mapping.set(child, nodes)
++      for (const node of nodes) content.push(node)
++    }
++  } else {
++    const node = createElement(/** @type {Y.XmlElement} */ (child), schema, meta, snapshot, prevSnapshot, computeYChange)
++    if (node !== null) content.push(node)
++  }
++}
++
+ /**
+  * @private
+  * @param {Array<any>} nodes prosemirror node

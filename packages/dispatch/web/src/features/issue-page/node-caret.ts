@@ -555,6 +555,35 @@ function keepsToBlock(
   );
 }
 
+/**
+ * Whether `transaction`, one of the kept block editor's own in `state` (`block-editor.tsx`),
+ * keeps the block that editor is bound to. That editor's root is the block itself, so no edit
+ * reaches past it, and its selection is always inside it; but the blocks inside it are its
+ * structure, which the rule `holdEditsToBlock` holds the whole document's editor to keeps here
+ * too: the root keeps its type and attributes, its headings take no more line breaks, and each
+ * block inside it the transaction leaves standing is of the type and the attributes it was
+ * (`innerBlocksKept`). So Backspace at a decision's heading takes it no level down, and two lines
+ * pasted at its start make it no heading of two lines.
+ *
+ * And it changes something a reader reads: a transaction that changes nothing but the `id` of
+ * headings (`attributesAsRead`) is Milkdown's own (`syncHeadingIdPlugin`), which writes every
+ * heading's id it derives from the words of the one document it holds, at each change of that
+ * document, a bind included. The kept editor holds one block, so the ids it would derive are the
+ * block's alone, not the document's, which numbers a repeated heading's id; and a bind is no edit.
+ * So the kept editor writes nothing to the room but what the reader edits.
+ */
+export function keepsBoundBlock(transaction: Transaction, state: EditorState): boolean {
+  const root = state.doc;
+  const kept = transaction.doc;
+  return (
+    kept.hasMarkup(root.type, attributesAsRead(root, kept), root.marks) &&
+    !sameReading(root.content, kept.content) &&
+    headingBreaks(kept) <= headingBreaks(root) &&
+    // The root's content starts at 0, one past where a block's own start would stand.
+    innerBlocksKept(transaction, root, -1)
+  );
+}
+
 /** Whether every block inside `block`, which starts at `from` in the document before
  *  `transaction`, that the transaction leaves standing is still a block of the type and the
  *  attributes it was (`ownAttributes`): the block that holds the place where its content started,
@@ -775,6 +804,32 @@ export function holdEditorAtBlock(host: HTMLElement, blockId: string | undefined
   return refocusWhenSettled(place, editable ?? undefined);
 }
 
+/** Reads the height cap for the editor while the row still draws its words. The cap includes
+ *  the header and foot, so binding can apply it without reading style after changing the row. */
+export function measureBlockEditorRow(row: HTMLElement, words: HTMLElement): number {
+  return editorCap(row, words, LEAST_BOX_LINES * lineHeightOf(words)).height;
+}
+
+/**
+ * Holds the page's kept block editor (`block-editor.tsx`) to the room the row leaves it, without
+ * scrolling the page. Only a box shorter than its block scrolls, since a scrolling box is pushed
+ * aside by a float next to the words (`styles.css`'s `[data-block-editor]`).
+ */
+export function holdBlockEditorBox(row: HTMLElement, measured?: number): void {
+  const box = row.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  if (box === null) return;
+  if (measured !== undefined) {
+    box.style.maxHeight = `${measured}px`;
+    window.requestAnimationFrame(() => {
+      if (box.isConnected && box.scrollHeight > box.clientHeight) box.style.overflowY = "auto";
+    });
+    return;
+  }
+  const editable = box.querySelector<HTMLElement>('[contenteditable="true"]');
+  holdBoxInRow(row, box, LEAST_BOX_LINES * lineHeightOf(editable ?? box), false);
+  if (box.scrollHeight > box.clientHeight) box.style.overflowY = "auto";
+}
+
 /** The fewest of the editor's lines a row's box is held to, however tall the body under it
  *  (`holdEditorAtBlock`): the line the caret is on and one on either side of it, the least that
  *  still shows the words around the caret rather than a slit a line tall. */
@@ -794,6 +849,13 @@ const NORMAL_LINE_HEIGHT = 1.2;
  * `NODE_ROW_LAYOUT`).
  */
 function holdBoxInRow(row: HTMLElement, box: HTMLElement, least: number, bring = true): void {
+  const { boxOnly, height } = editorCap(row, box, least);
+  box.style.maxHeight = `${height}px`;
+  if (bring) bringOnScreen(boxOnly ? box : row);
+}
+
+/** Where the header, foot, row and words leave room for an editor. */
+function editorCap(row: HTMLElement, box: HTMLElement, least: number) {
   const published = getComputedStyle(document.documentElement);
   const height = (property: string) => {
     const value = Number.parseFloat(published.getPropertyValue(property));
@@ -810,8 +872,7 @@ function holdBoxInRow(row: HTMLElement, box: HTMLElement, least: number, bring =
   const cap = Math.max(least, Math.min(fits, Math.max(under, fits / 2)));
   // Whole pixels down, so a row that ends on the line the foot's box starts at is not read as
   // reaching under it by a fraction and scrolled for it.
-  box.style.maxHeight = `${Math.floor(cap)}px`;
-  if (bring) bringOnScreen(cap > fits ? box : row);
+  return { boxOnly: cap > fits, height: Math.floor(cap) };
 }
 
 /** One line of `element`'s text, in px, from its computed style. */
@@ -823,6 +884,8 @@ function lineHeightOf(element: Element): number {
 
 /** `blockId`'s block of the editor in `root`, or null where it draws none. */
 function blockIn(root: HTMLElement, blockId: string | undefined): HTMLElement | null {
+  // A kept single-block editor's editable is the block, not an ancestor of it.
+  if (blockId !== undefined && root.getAttribute(BLOCK_ID_ATTRIBUTE) === blockId) return root;
   return blockId === undefined
     ? null
     : root.querySelector<HTMLElement>(`[${BLOCK_ID_ATTRIBUTE}="${CSS.escape(blockId)}"]`);
@@ -880,18 +943,24 @@ function placeAt(block: HTMLElement, at: CaretAt): Point {
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
     if (node instanceof Text && node.parentElement?.isContentEditable === true) texts.push(node);
   }
-  const [before, word, after, into] = at.word ?? ["", "", "", 0];
   const text = texts.map((node) => node.data).join("");
-  const start = at.offset - into - before.length;
-  const later = text.indexOf(before + word + after, start);
-  const earlier = text.lastIndexOf(before + word + after, start);
-  const found = later < 0 || (earlier >= 0 && start - earlier < later - start) ? earlier : later;
-  let remaining = Math.max(0, found < 0 ? at.offset : found + before.length + into);
+  let remaining = textOffsetAt(text, at);
   for (const node of texts) {
     if (remaining < node.data.length + (at.next ? 0 : 1)) return [node, remaining];
     remaining -= node.data.length;
   }
   return (at.next && afterEndingAtom(block)) ?? lastPlace(block);
+}
+
+/** The editor's character offset for a drawn offset, adjusted by the nearest matching word
+ *  and neighbours when the drawing and the editor's reading differ. */
+export function textOffsetAt(text: string, at: Pick<CaretAt, "offset" | "word">): number {
+  const [before, word, after, into] = at.word ?? ["", "", "", 0];
+  const start = at.offset - into - before.length;
+  const later = text.indexOf(before + word + after, start);
+  const earlier = text.lastIndexOf(before + word + after, start);
+  const found = later < 0 || (earlier >= 0 && start - earlier < later - start) ? earlier : later;
+  return Math.max(0, found < 0 ? at.offset : found + before.length + into);
 }
 
 /** The place after the atom that ends `block` - an element the caret cannot enter, with no text it

@@ -274,7 +274,9 @@ const TAILWIND_JS_DIRECTIVE = /@(?:plugin|config)\s+["']([^"']+)["']/g;
  * files a plugin read that are no module at all (the stylesheets a CSS `@import` pulls in), the
  * packages a stylesheet names to Tailwind as plugins, and the package `generated` names for each
  * module or asset that has no source file. A module id or asset of that kind which `generated`
- * does not match fails the build, naming it. A `?query` suffix names the file before it, and a
+ * does not match fails the build, naming it. The source map of a chunk of the bundle
+ * (`<chunk>.map`, which a `--sourcemap` build emits as an asset that names no source file) is made
+ * from that chunk, whose modules are its inputs. A `?query` suffix names the file before it, and a
  * relative id is relative to `root`, Vite's root.
  */
 export async function viteBundleInputs(
@@ -298,7 +300,10 @@ export async function viteBundleInputs(
         else generatedBy(id);
       }
     } else if (output.originalFileNames.length === 0) {
-      generatedBy(output.fileName);
+      const mapOf = output.fileName.endsWith(".map")
+        ? bundle[output.fileName.slice(0, -4)]
+        : undefined;
+      if (mapOf?.type !== "chunk") generatedBy(output.fileName);
     } else {
       for (const id of output.originalFileNames) inputs.add(file(id));
     }

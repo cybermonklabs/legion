@@ -42,7 +42,8 @@ export function ViewVerificationSlot({
   // (`published`), so none of them reads a reference the page asks for; and the outline's names
   // line while those reads stand failed (`names`), which the body draws over its tree, since
   // every reference its rows draw waits on those names.
-  const { blocksOf, names, published, readsSettled, refused, root } = useOutlineReads(issue);
+  const { blocksOf, names, openingViewPending, published, readsSettled, refused, root } =
+    useOutlineReads(issue);
   // Whether the read that holds the Verification document's blocks runs, from an observer of its
   // own (`useBlocksRunning`): under this filter its own view read.
   const running = useBlocksRunning(issue.key, "verification");
@@ -105,7 +106,7 @@ export function ViewVerificationSlot({
           coverage={coverage}
           namesLine={names}
           published={published}
-          reads={reads}
+          reads={openingViewPending && reads.state === "answered" ? { state: "waiting" } : reads}
           readsSettled={readsSettled}
           {...(revealed === undefined ? {} : { reveal: revealed })}
           view={view.root}

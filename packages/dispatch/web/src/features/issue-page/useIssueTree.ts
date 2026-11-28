@@ -1,5 +1,15 @@
-import { hashKey, queryOptions, useQueries, useQuery } from "@tanstack/react-query";
-import { useMemo, useRef } from "react";
+import {
+  hashKey,
+  type QueryClient,
+  type QueryKey,
+  queryOptions,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import { useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import {
@@ -16,9 +26,11 @@ import { issueDecisionsQuery } from "../doc/spec-marks";
 import { type PublishedReferences, usePublishReferenceNames } from "../refs/reference-names";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
+import { askForTask } from "./drawn-in-slices";
 import {
   buildIssueTree,
   type IssueTreeReads,
+  issueRoot,
   nodeWords,
   type TreeAsk,
   type TreeNode,
@@ -35,6 +47,10 @@ import { useLineRefusals } from "./useLineRefusals";
  *  built from what that read holds, and keeps standing on it through a refetch that fails. */
 export interface IssueTreeView
   extends Pick<TreeRead, "blocksHeld" | "blocksOf" | "blocksRead" | "failed" | "pending"> {
+  /** The outline still needs a build from its latest non-name inputs. */
+  readonly building: boolean;
+  /** The answer for the view opened by the address is held, but its rows are not built yet. */
+  readonly openingViewPending: boolean;
   /** The names line's state while the names stand failed (`useLineRefusals`), and none while
    *  they do not: what a view reads to draw the page's line that the names failed. The names
    *  are the batched names read's (`useIssueTree`); they stand failed from a failure of that read
@@ -64,6 +80,10 @@ export interface IssueTreeView
    *  (`PublishedReferenceNames`), so no row reads a reference the page is asking for. */
   readonly published: PublishedReferences;
   readonly root: TreeNode;
+  /** Whether this caller is a standalone slot that builds its tree in the commit that receives a
+   *  read (`useBuiltTree`'s `layoutBuilds`): from its mount on an already-cached tree answer, or
+   *  from the commit that draws the first tree a task built for it. */
+  readonly warm: boolean;
 }
 
 /** The names line's state while the tree's names stand failed (`IssueTreeView.namesFailure`). */
@@ -208,14 +228,98 @@ const TREE_INPUTS: Readonly<Record<Exclude<keyof IssueTreeReads, "tree">, true>>
 const TREE_INPUT_NAMES = Object.keys(TREE_INPUTS) as (keyof typeof TREE_INPUTS)[];
 
 /** How many trees are kept for one answer of the tree read: the tree before the names answer,
- *  the tree with them, and one more. */
-const TREES_PER_ANSWER = 3;
+ *  the tree with them, and two more for intermediate reads. */
+const TREES_PER_ANSWER = 4;
 
 /** The trees built for each answer of the tree read, newest last, each with its reads. */
 const builtTrees = new WeakMap<
   TreeAnswer,
   readonly { readonly reads: IssueTreeReads; readonly root: TreeNode }[]
 >();
+
+// Target names change how links draw, not which addresses the tree cites.
+const outlineReferences = new WeakMap<TreeNode, readonly string[]>();
+
+function cachedOutlineReferences(reads: IssueTreeReads): readonly string[] | undefined {
+  if (reads.tree === undefined) return undefined;
+  for (const one of builtTrees.get(reads.tree) ?? []) {
+    if (TREE_INPUT_NAMES.every((key) => key === "targets" || one.reads[key] === reads[key])) {
+      const refs = outlineReferences.get(one.root);
+      if (refs !== undefined) return refs;
+    }
+  }
+  return undefined;
+}
+
+/** Builds the tree of `reads` (`builtTree`) and notes the addresses it cites where a tree built
+ *  from the same reads but the names has noted them already. Answers whether they are noted: where
+ *  they are not, the name walk is still to run (`noteOutlineReferences`). */
+function buildOutline(reads: IssueTreeReads): boolean {
+  const known = cachedOutlineReferences(reads);
+  const root = builtTree(reads);
+  if (known !== undefined) outlineReferences.set(root, known);
+  return known !== undefined;
+}
+
+/** Notes the addresses the tree of `reads` cites (`treeReferences`), which the batched names read
+ *  is given: the name walk, which the page runs in a task of its own after the tree's build. */
+function noteOutlineReferences(reads: IssueTreeReads): void {
+  const root = builtTree(reads);
+  if (!outlineReferences.has(root)) outlineReferences.set(root, treeReferences(root, reads.asks));
+}
+
+/** The tree of `reads` and the addresses it cites, at once (`buildOutline`). */
+function prepareOutline(reads: IssueTreeReads): void {
+  if (!buildOutline(reads)) noteOutlineReferences(reads);
+}
+
+/** Construction listens to the same cache keys as the hook's observers. */
+function treeInputKeys(key: string, outline: QueryKey) {
+  return {
+    asks: issueAskThreadsQuery(key).queryKey,
+    coverage: issueCoverageQuery(key).queryKey,
+    decisions: issueDecisionsQuery(key, true).queryKey,
+    messages: issueMessagesQuery(key).queryKey,
+    plan: viewQuery(key, "plan").queryKey,
+    results: issueResultsQuery(key).queryKey,
+    tree: outline,
+    who: whoAmIQuery().queryKey,
+  };
+}
+/** The empty tree of an issue while its tree read holds no answer, built once per issue object so
+ *  renders before that answer build nothing anew. */
+const emptyTrees = new WeakMap<IssueDetails, TreeNode>();
+
+/** The empty tree of `issue`, built once per issue object (`emptyTrees`). */
+function emptyTree(issue: IssueDetails): TreeNode {
+  let root = emptyTrees.get(issue);
+  if (root === undefined) {
+    root = issueRoot(issue, []);
+    emptyTrees.set(issue, root);
+  }
+  return root;
+}
+
+/** The tree already built for `reads`, or undefined where no task has built it yet. Never calls
+ *  `buildIssueTree`. */
+function cachedBuiltTree(reads: IssueTreeReads): TreeNode | undefined {
+  const answer = reads.tree;
+  if (answer === undefined) return emptyTree(reads.issue);
+  const held = builtTrees.get(answer);
+  return held?.find((one) => TREE_INPUT_NAMES.every((input) => one.reads[input] === reads[input]))
+    ?.root;
+}
+
+/** The tree built for `reads` once the name walk has noted what it cites
+ *  (`noteOutlineReferences`): the tree a reader may be handed. Undefined between the build and
+ *  the walk, so a render that comes between them - another read's, the owner's publication to
+ *  the rest of the page - hands out no tree whose names read is not yet asked. */
+function walkedTree(reads: IssueTreeReads): TreeNode | undefined {
+  const root = cachedBuiltTree(reads);
+  return reads.tree === undefined || (root !== undefined && outlineReferences.has(root))
+    ? root
+    : undefined;
+}
 
 /**
  * `buildIssueTree` of `reads`, built once for one set of reads: a tree already built from the
@@ -227,15 +331,153 @@ const builtTrees = new WeakMap<
  */
 function builtTree(reads: IssueTreeReads): TreeNode {
   const answer = reads.tree;
-  if (answer === undefined) return buildIssueTree(reads);
+  if (answer === undefined) return emptyTree(reads.issue);
+  const found = cachedBuiltTree(reads);
+  if (found !== undefined) return found;
   const held = builtTrees.get(answer) ?? [];
-  const found = held.find((one) =>
-    TREE_INPUT_NAMES.every((input) => one.reads[input] === reads[input])
-  );
-  if (found !== undefined) return found.root;
   const root = buildIssueTree(reads);
   builtTrees.set(answer, [...held.slice(1 - TREES_PER_ANSWER), { reads, root }]);
   return root;
+}
+
+/** Build from the latest cache inputs in a task of its own, walk the built tree for the addresses
+ *  it cites in the next (`noteOutlineReferences`), and publish in a third, so React draws without
+ *  sharing a task with the build or the walk, and no one task holds both. A cache hit draws
+ *  without waiting, including when the reader returns to Conversation. While replacing the tree,
+ *  keep the last result for this outline.
+ *
+ *  A standalone slot (`standalone`, no tree owner above it) builds in its layout effect instead,
+ *  in the commit that receives a read: from its mount where it mounted on an answer already held
+ *  (`prepareWarm`), and else from the commit that draws the first tree a task built for it
+ *  (`layoutBuilds`). So a read that answers after its first drawing draws in the act that brought
+ *  it, as the base drew it, and no tree of it lands a task after that act. */
+function useBuiltTree(
+  reads: IssueTreeReads,
+  fallback: TreeNode,
+  client: QueryClient,
+  keys: ReadonlySet<string>,
+  latestReads: () => IssueTreeReads,
+  prepareWarm: boolean,
+  standalone: boolean
+): {
+  readonly building: boolean;
+  readonly layoutBuilds: boolean;
+  readonly root: TreeNode;
+  readonly source: TreeAnswer | undefined;
+} {
+  const [, setPublished] = useState(0);
+  const renderedReads = useRef(reads);
+  renderedReads.current = reads;
+  const last = useRef<{
+    readonly keys: ReadonlySet<string>;
+    readonly root: TreeNode;
+    readonly source: TreeAnswer | undefined;
+  }>(undefined);
+  const cached = walkedTree(reads);
+  const renderedCached = useRef<TreeNode | undefined>(undefined);
+  renderedCached.current = cached;
+  if (cached !== undefined) last.current = { keys, root: cached, source: reads.tree };
+  const [layoutBuilds, setLayoutBuilds] = useState(prepareWarm);
+  if (standalone && !layoutBuilds && cached !== undefined && reads.tree !== undefined) {
+    setLayoutBuilds(true);
+  }
+  // Standalone slots without a tree owner can mount on an answer already held in the cache
+  // (and receive synchronous cache updates via `setQueryData`). Keep their pre-paint contract
+  // in the layout effect without building inside render.
+  useLayoutEffect(() => {
+    if (!layoutBuilds || reads.tree === undefined || cached !== undefined) return;
+    prepareOutline(reads);
+    setPublished((count) => count + 1);
+  }, [cached, layoutBuilds, reads]);
+  const schedule = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => {
+    if (layoutBuilds) return;
+    let cancelBuild: (() => void) | undefined;
+    let cancelPublish: (() => void) | undefined;
+    // A state update can draw at the checkpoint of the task that asks for it, so the publication
+    // is a task of its own.
+    const publish = () => {
+      cancelPublish?.();
+      cancelPublish = askForTask(() => flushSync(() => setPublished((count) => count + 1)));
+    };
+    const build = () => {
+      if (cancelBuild !== undefined) return;
+      cancelBuild = askForTask(() => {
+        cancelBuild = undefined;
+        // Two reads that answer before this task runs need just one tree, from the latest
+        // inputs of both. Reading the cache also works when React has not committed an update.
+        const rendered = renderedReads.current;
+        const latest = latestReads();
+        const candidate =
+          latest.tree === undefined
+            ? undefined
+            : rendered.targets === undefined
+              ? latest
+              : { ...latest, targets: rendered.targets };
+        // If the rendered reads differ from the cache (for example a disabled query or a held
+        // answer), build the rendered reads themselves so `cachedBuiltTree(rendered)` hits.
+        const target =
+          candidate !== undefined && cachedBuiltTree(candidate) === undefined
+            ? candidate
+            : rendered.tree !== undefined && cachedBuiltTree(rendered) === undefined
+              ? rendered
+              : undefined;
+        if (target === undefined) {
+          // A tree built whose name walk was called off before it ran walks now.
+          const unwalked = [candidate, rendered].find(
+            (reads) => reads?.tree !== undefined && walkedTree(reads) === undefined
+          );
+          if (unwalked !== undefined) {
+            noteOutlineReferences(unwalked);
+            publish();
+            return;
+          }
+          // Only publish when another caller populated the shared cache since this hook last
+          // rendered; otherwise do not schedule another render.
+          if (walkedTree(rendered) !== renderedCached.current) publish();
+          return;
+        }
+        if (buildOutline(target)) {
+          publish();
+          return;
+        }
+        // The name walk in a task of its own, then the publication.
+        cancelBuild = askForTask(() => {
+          cancelBuild = undefined;
+          noteOutlineReferences(target);
+          publish();
+        });
+      });
+    };
+    const unsubscribe = client.getQueryCache().subscribe((event) => {
+      if (
+        event.type === "updated" &&
+        event.action.type === "success" &&
+        keys.has(event.query.queryHash)
+      ) {
+        build();
+      }
+    });
+    schedule.current = build;
+    return () => {
+      unsubscribe();
+      schedule.current = undefined;
+      cancelBuild?.();
+      cancelPublish?.();
+    };
+  }, [client, keys, latestReads, layoutBuilds]);
+  // Building, or built and not yet walked (`walkedTree`), which the next task does.
+  const building = cached === undefined;
+  useEffect(() => {
+    if (building && !layoutBuilds) schedule.current?.();
+  });
+  const held = last.current?.keys === keys ? last.current : undefined;
+  return {
+    building,
+    layoutBuilds,
+    root: cached ?? held?.root ?? fallback,
+    source: held?.source,
+  };
 }
 
 /**
@@ -271,10 +513,38 @@ function builtTree(reads: IssueTreeReads): TreeNode {
  * citation to the tree. Until the names answer the tree draws, with a chip naming its target's
  * address; on every read after the first the names already in hand stand while the new set
  * loads, and after its read fails (`IssueTreeView.namesFailure`).
+ *
+ * A standalone slot (`warmMount`) builds its tree in the commit that receives a read: from its
+ * mount where it mounts on an answer already in its cache, and else from the commit that draws
+ * the first tree a task built for it (`useBuiltTree`). A cold mount always schedules its first
+ * build in a separate task.
  */
-export function useIssueTree(issue: IssueDetails): IssueTreeView {
+export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeView {
   const key = issue.key;
   const read = useTreeRead(issue);
+  const { key: entry } = useLocation();
+  const opening = useRef(entry);
+  const prepareWarm = useRef(warmMount && read.answer !== undefined).current;
+  const client = useQueryClient();
+  const inputs = useMemo(() => treeInputKeys(key, read.queryKey), [key, read.queryKey]);
+  const inputHashes = useMemo(
+    () => new Set(Object.values(inputs).map((queryKey) => hashKey(queryKey))),
+    [inputs]
+  );
+  const latestReads = useCallback(
+    (): IssueTreeReads => ({
+      asks: client.getQueryData(inputs.asks),
+      coverage: client.getQueryData(inputs.coverage),
+      decisions: client.getQueryData(inputs.decisions),
+      holdsPlanTask: holdsPlanTask(client.getQueryData(inputs.plan)),
+      issue,
+      messages: client.getQueryData(inputs.messages),
+      results: client.getQueryData(inputs.results),
+      tree: client.getQueryData<TreeAnswer>(inputs.tree),
+      viewer: client.getQueryData(inputs.who)?.login,
+    }),
+    [client, inputs, issue]
+  );
   // Every read here takes `EVENT_FRESH`: events refresh it, and a slot mounted again reads
   // nothing.
   // The page's stage mounts the tree's slot again on every press of a view, so under the app's
@@ -367,8 +637,13 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       viewer,
     ]
   );
-  const unnamed = useMemo(() => builtTree(reads), [reads]);
-  const refs = useMemo(() => treeReferences(unnamed, asks.data), [unnamed, asks.data]);
+  const empty = emptyTree(issue);
+  const noOutlineRefs = useMemo(
+    () => treeReferences(empty, reads.tree === undefined ? asks.data : undefined),
+    [asks.data, empty, reads.tree]
+  );
+  const nextRefs = read.answer === undefined ? noOutlineRefs : cachedOutlineReferences(reads);
+  const refs = useLastAnswer(nextRefs) ?? noOutlineRefs;
   // One request for every name, not one per read that landed. Each of these reads adds to the
   // tree as it arrives - the tree read every node and every comment, the decisions read a
   // decision no node holds, the asks an answer - so asking while any is still out would ask for
@@ -382,6 +657,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // naming its target's address.
   const answered =
     !read.pending &&
+    nextRefs !== undefined &&
     !asks.isPending &&
     !coverage.isPending &&
     !decisions.isPending &&
@@ -487,77 +763,216 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     [naming, refs]
   );
   usePublishReferenceNames(published);
-  const built = useMemo(
-    () => (named === undefined ? unnamed : builtTree({ ...reads, targets: named })),
-    [named, reads, unnamed]
+  const withNames = useMemo(
+    () => (named?.length ? { ...reads, targets: named } : reads),
+    [named, reads]
   );
-  // Each held view's tree (`TreeViews.trees`): a getter per filter whose view answer is held,
-  // which builds the tree from that answer with the outline's context on its first read and
-  // answers that one tree on every read after, so a filter no reader asks for builds nothing,
-  // and callers of the same reads hold trees that compare equal.
+  const built = useBuiltTree(
+    withNames,
+    empty,
+    client,
+    inputHashes,
+    latestReads,
+    prepareWarm,
+    warmMount
+  );
+  const openingFilter = opening.current === entry ? read.filter : undefined;
+  const openingAnswer = openingFilter === undefined ? undefined : views?.[openingFilter];
+  const openingView = useOpeningViewTree(
+    openingFilter,
+    openingAnswer,
+    withNames,
+    built.layoutBuilds
+  );
+  // Publish a new view answer with the outline that uses it. In particular, Plan can
+  // change the marks of statements that are already drawn in the outline.
+  const heldViews = useRef<{
+    keys: ReadonlySet<string>;
+    sources: IssueTreeReads;
+    views: TreeViews | undefined;
+  }>(undefined);
+  if (
+    !built.building &&
+    (heldViews.current?.keys !== inputHashes ||
+      heldViews.current.sources !== withNames ||
+      heldViews.current.views !== views)
+  ) {
+    heldViews.current = { keys: inputHashes, sources: withNames, views };
+  } else if (
+    built.building &&
+    heldViews.current !== undefined &&
+    heldViews.current.keys === inputHashes &&
+    heldViews.current.views !== views &&
+    views?.decisions === heldViews.current.views?.decisions &&
+    holdsPlanTask(views?.plan) === heldViews.current.sources.holdsPlanTask
+  ) {
+    // A filter's view answer that comes while the outline is built again for another read is
+    // published at once, over the tree the outline holds and the reads that tree was built from,
+    // so the view the reader pressed draws its first screen from it before that build. An answer
+    // that changes what the tree reads of it - the Plan view's plan tasks, which mark statements,
+    // or the decisions - waits for the build, as above.
+    heldViews.current = { ...heldViews.current, views };
+  }
+  const drawn = heldViews.current?.keys === inputHashes ? heldViews.current : undefined;
+  const openingViewPending =
+    openingFilter !== undefined &&
+    openingAnswer !== undefined &&
+    (openingView === undefined || drawn?.views?.[openingFilter] === undefined);
   const trees = useMemo(() => {
+    if (drawn?.views === undefined) return undefined;
     const held: Partial<Record<TreeFilter, TreeNode>> = {};
     for (const filter of TREE_FILTERS) {
-      const answer = views?.[filter];
+      const answer = drawn?.views?.[filter];
       if (answer === undefined) continue;
+      if (filter === openingFilter) {
+        if (openingView !== undefined) held[filter] = openingView;
+        continue;
+      }
       let tree: TreeNode | undefined;
       Object.defineProperty(held, filter, {
-        enumerable: true,
-        get: (): TreeNode => {
+        // Inspecting props must not build another view.
+        enumerable: false,
+        get: () => {
           tree ??= builtTree({
-            ...reads,
-            tree: viewWithContext(answer, reads.tree),
-            ...(named === undefined ? {} : { targets: named }),
+            ...drawn.sources,
+            tree: viewWithContext(answer, drawn.sources.tree),
           });
           return tree;
         },
       });
     }
     return held;
-  }, [named, reads, views]);
+  }, [drawn, openingFilter, openingView]);
+  const publishedViews = useMemo(() => {
+    if (drawn?.views === undefined) return undefined;
+    if (openingFilter === undefined || openingView !== undefined) return drawn.views;
+    if (drawn.views[openingFilter] === undefined) return drawn.views;
+    const { [openingFilter]: _, ...rest } = drawn.views;
+    return Object.keys(rest).length === 0 ? undefined : rest;
+  }, [drawn, openingFilter, openingView]);
   const root = useMemo(
-    () => (views === undefined ? built : { ...built, views: { ...views, trees } }),
-    [built, trees, views]
+    () =>
+      publishedViews === undefined
+        ? built.root
+        : { ...built.root, views: { ...publishedViews, trees } },
+    [built.root, publishedViews, trees]
+  );
+  const outlineReady = built.source === read.answer;
+  const building = nextRefs === undefined;
+  const pending = read.pending || building || !outlineReady;
+  const blocksHeld = read.blocksHeld && outlineReady;
+  const blocksRead = read.blocksRead && outlineReady;
+  const lastRead = useRef<typeof read>(undefined);
+  if (outlineReady) lastRead.current = read;
+  const heldRead = lastRead.current?.queryKey === read.queryKey ? lastRead.current : undefined;
+  const blocksOf = useCallback<TreeRead["blocksOf"]>(
+    (role) => {
+      const blocks = read.blocksOf(role);
+      if (openingViewPending && role === openingFilter) return { ...blocks, data: undefined };
+      if (outlineReady || read.filter === role) return blocks;
+      return heldRead?.blocksOf(role) ?? { ...blocks, data: undefined };
+    },
+    [heldRead, openingFilter, openingViewPending, outlineReady, read]
   );
   return useMemo(
     () => ({
-      blocksHeld: read.blocksHeld,
-      blocksOf: read.blocksOf,
-      blocksRead: read.blocksRead,
+      blocksHeld,
+      blocksOf,
+      blocksRead,
+      building,
       failed: read.failed,
       namesFailure,
       namesHeld,
-      pending: read.pending,
+      openingViewPending,
+      pending,
       published,
       root,
+      warm: built.layoutBuilds,
     }),
     [
-      read.blocksHeld,
-      read.blocksOf,
-      read.blocksRead,
+      blocksHeld,
+      blocksOf,
+      blocksRead,
+      building,
       read.failed,
       namesFailure,
+      openingViewPending,
       namesHeld,
-      read.pending,
+      pending,
       published,
       root,
+      built.layoutBuilds,
     ]
   );
 }
 
+/** Prepare the opening filter before its first drawing. Keep its previous rows while new
+ *  answers are being built so refreshes do not remount the view or move its focus. Where the
+ *  outline builds in the commit that receives a read (`layout`, `useBuiltTree`'s
+ *  `layoutBuilds`), the view is built in that commit too. */
+function useOpeningViewTree(
+  filter: TreeFilter | undefined,
+  answer: TreeAnswer | undefined,
+  sources: IssueTreeReads,
+  layout: boolean
+): TreeNode | undefined {
+  const [held, setHeld] = useState<{
+    readonly filter: TreeFilter;
+    readonly root: TreeNode;
+  }>();
+  useLayoutEffect(() => {
+    if (!layout || filter === undefined || answer === undefined) return;
+    const root = builtTree({ ...sources, tree: viewWithContext(answer, sources.tree) });
+    setHeld((prev) => (prev?.filter === filter && prev.root === root ? prev : { filter, root }));
+  }, [answer, filter, layout, sources]);
+  useEffect(() => {
+    if (layout || filter === undefined || answer === undefined) return;
+    let cancelPublish: (() => void) | undefined;
+    const cancelBuild = askForTask(() => {
+      const root = builtTree({ ...sources, tree: viewWithContext(answer, sources.tree) });
+      cancelPublish = askForTask(() =>
+        flushSync(() =>
+          setHeld((prev) =>
+            prev?.filter === filter && prev.root === root ? prev : { filter, root }
+          )
+        )
+      );
+    });
+    return () => {
+      cancelBuild();
+      cancelPublish?.();
+    };
+  }, [answer, filter, layout, sources]);
+  return answer !== undefined && held?.filter === filter ? held?.root : undefined;
+}
+
+// Preserve the merged answer's identity so adding names does not re-merge the same two reads.
+const contextAnswers = new WeakMap<TreeAnswer, WeakMap<TreeAnswer, TreeAnswer>>();
+
 /** Keep the view's placement and metadata, adding only outline context the view omitted. */
 function viewWithContext(answer: TreeAnswer, outline: TreeAnswer | undefined): TreeAnswer {
   if (outline === undefined) return answer;
+  let byOutline = contextAnswers.get(answer);
+  if (byOutline === undefined) {
+    byOutline = new WeakMap();
+    contextAnswers.set(answer, byOutline);
+  }
+  const cached = byOutline.get(outline);
+  if (cached !== undefined) return cached;
   const nodes = new Set(answer.nodes?.map(({ id, kind }) => `${kind}:${id}`));
   const tupleKey = ({ kind, from, to }: NonNullable<TreeAnswer["tuples"]>[number]) =>
     `${kind} ${from.kind} ${from.id} ${to.kind} ${to.id}`;
   const tuples = new Set(answer.tuples?.map(tupleKey));
   const extraNodes = outline.nodes?.filter(({ id, kind }) => !nodes.has(`${kind}:${id}`));
   const extraTuples = outline.tuples?.filter((tuple) => !tuples.has(tupleKey(tuple)));
-  if (!extraNodes?.length && !extraTuples?.length) return answer;
-  return {
-    ...answer,
-    nodes: [...(answer.nodes ?? []), ...(extraNodes ?? [])],
-    tuples: [...(answer.tuples ?? []), ...(extraTuples ?? [])],
-  };
+  const merged =
+    !extraNodes?.length && !extraTuples?.length
+      ? answer
+      : {
+          ...answer,
+          nodes: [...(answer.nodes ?? []), ...(extraNodes ?? [])],
+          tuples: [...(answer.tuples ?? []), ...(extraTuples ?? [])],
+        };
+  byOutline.set(outline, merged);
+  return merged;
 }

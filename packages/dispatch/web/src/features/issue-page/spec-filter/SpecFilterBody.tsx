@@ -47,6 +47,8 @@ import { CONTENTS_PANE_QUERY } from "../contents-frame";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useDocumentAdmissions } from "../document-admission";
 import { useDocumentStage } from "../document-stage";
+import { useDrawnInSlices } from "../drawn-in-slices";
+import { holdsFirstFocus } from "../first-focus";
 import { useSetFocusedNode } from "../focused-node";
 import { type BriefCounts, ChecksNumber, IssueThreeThings } from "../IssueThreeThings";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
@@ -75,13 +77,18 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
-import { RowText, useOutOfTabOrder } from "../RowText";
+import { ROW_TIMING, RowText, rowTiming, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
 import { treeContext } from "../tree-drafts";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { issueTreeQuery, useBlocksRunning, useTreeRead } from "../tree-read/tree-read";
+import {
+  issueTreeQuery,
+  outlineQuery,
+  useBlocksRunning,
+  useTreeRead,
+} from "../tree-read/tree-read";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { abortOnReaderAct, nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
@@ -248,6 +255,7 @@ export function SpecFilterBody({
   };
   const decisionsRead = useQuery(treeRead(decisionsQuery));
   const asksRead = useQuery(treeRead(asksQuery));
+  const outlineRead = useQuery(treeRead(outlineQuery(issue.key, "conversation")));
   // One predicate per read: whether it holds an answer. Every part of the body that says what
   // decided a statement or how it stands - the decision cell and its line saying none did, the
   // line under a statement, the runs, the mark, and what `w` and `q` report - reads the
@@ -329,19 +337,36 @@ export function SpecFilterBody({
   // (`tree-drafts.ts`'s `treeContext`).
   const lineNames = useIssueNames(issue.key);
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
+  const heldAsks =
+    root.children.length === 0 && (outlineRead.isFetching || outlineRead.data !== undefined)
+      ? asksRead.data
+      : undefined;
   const { groups, others } = useMemo(
     () =>
       specDecidedBy({
+        asks: heldAsks,
         asksHeld,
         checks: resultsRead.data?.checks ?? [],
         decisions: decisionsRead.data,
+        issueKey: issue.key,
         lineNames,
         nodeIdOf,
         reader,
         root,
         view,
       }),
-    [asksHeld, decisionsRead.data, lineNames, nodeIdOf, reader, resultsRead.data, root, view]
+    [
+      asksHeld,
+      decisionsRead.data,
+      heldAsks,
+      issue.key,
+      lineNames,
+      nodeIdOf,
+      reader,
+      resultsRead.data,
+      root,
+      view,
+    ]
   );
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
@@ -390,6 +415,48 @@ export function SpecFilterBody({
     const rowKeys = new Map(rows.map((row) => [row.node.id, rowKeyOf(row)]));
     return { rows, rowKeys };
   }, [statements]);
+  // The statement the Contents list asked for, which the render after its ask draws, with every
+  // statement between the anchor and it, and whose layout effect gives it the focus (below).
+  const [wanted, setWanted] = useState<string | undefined>(undefined);
+  // The statements are drawn a screen around the anchor first, and the others in slices after it
+  // (`drawn-in-slices.ts`): the anchor is the statement the address names, else the first. The
+  // statement the address lands on, once it may (`readsSettled`), and the one the Contents list
+  // asked for are drawn in the render that names them, with every statement between the anchor
+  // and them; the keys draw the statement they move to first (`useTreeKeymap`'s `drawUpTo`, and
+  // `leaveCell` below).
+  const slicesMeasure = useCallback(
+    (key: string) =>
+      tree.current
+        ?.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(key)}"]`)
+        ?.getBoundingClientRect().top,
+    []
+  );
+  const drawing = useDrawnInSlices({
+    anchor: reveal === undefined ? undefined : rowKeys.get(reveal),
+    focused: focused === undefined ? undefined : rowKeys.get(focused),
+    keyOf: rowKeyOf,
+    measure: slicesMeasure,
+    needed: [readsSettled ? reveal : undefined, wanted].flatMap((id) => {
+      const key = id === undefined ? undefined : rowKeys.get(id);
+      return key === undefined ? [] : [key];
+    }),
+    rows,
+  });
+  const slices = drawing.slices;
+  // Each statement drawn by its node's id. A run is drawn whole beside its cell, which says how
+  // many statements it shaped and names them all, and draws the statements of it drawn so far; a
+  // run of which none is drawn yet, and a group of which no run is, are not drawn at all.
+  const drawnIds = new Set(drawing.drawn.map((row) => row.node.id));
+  const drawnGroups =
+    drawing.drawn === rows
+      ? groups
+      : groups.flatMap((group) => {
+          const runs = group.runs.filter((run) =>
+            run.statements.some((statement) => drawnIds.has(statement.node.id))
+          );
+          return runs.length === 0 ? [] : [{ ...group, runs }];
+        });
+  const drawnOthers = drawing.drawn === rows ? others : others.filter(({ id }) => drawnIds.has(id));
   const editingRow = editing?.row;
   // When the filter or a read removes the edited row, release its document even if the focus
   // was already elsewhere. There is no row for Escape's focus restoration to find.
@@ -504,35 +571,47 @@ export function SpecFilterBody({
   // `j`, `k` and the arrows from a cell, which is no row of the keymap's (it finds none there
   // and would start again from the top): the statement after the cell's run, or before it,
   // and at either end of the tree the run's own last or first statement, as the keymap stops
-  // at its ends.
+  // at its ends. The statement is drawn first where it is still to be drawn.
   const leaveCell = useCallback(
     (cell: HTMLElement, step: 1 | -1): void => {
-      const rows = [...(tree.current?.querySelectorAll<HTMLElement>("[data-node-row]") ?? [])];
       const ids = (cell.dataset.specStatements ?? "").split(" ");
-      const first = rows.findIndex((row) => row.dataset.nodeId === ids[0]);
-      const last = rows.findIndex((row) => row.dataset.nodeId === ids.at(-1));
+      const first = statements.findIndex((node) => node.id === ids[0]);
+      const last = statements.findIndex((node) => node.id === ids.at(-1));
       reportHere("");
-      const to = step > 0 ? (rows[last + 1] ?? rows[last]) : (rows[first - 1] ?? rows[first]);
-      if (to !== undefined) moveToRow(to);
+      const to =
+        step > 0
+          ? (statements[last + 1] ?? statements[last])
+          : (statements[first - 1] ?? statements[first]);
+      if (to === undefined) return;
+      const key = rowKeys.get(to.id);
+      if (key !== undefined) slices.drawUpTo(key);
+      const row = tree.current?.querySelector<HTMLElement>(nodeRowSelectorOf(to.id));
+      if (row != null) moveToRow(row);
     },
-    [reportHere]
+    [reportHere, rowKeys, slices, statements]
   );
   // What the page asked for, each ask taken once by whichever outline or body the page drew when
   // it came (`useTakeOutlineRequest`), so a body drawn again - the view turned off and on - does
   // not move the reader for an ask already acted on. An ask goes only to a statement's row,
-  // never to a cell: a cell can carry the answered ask's id, which a Contents entry names.
+  // never to a cell: a cell can carry the answered ask's id, which a Contents entry names. The
+  // statement takes the focus once the render after the ask has drawn it (`wanted`).
   const takeRequest = useTakeOutlineRequest();
   useEffect(() => {
     if (request === undefined || !takeRequest(request) || request.id === undefined) return;
-    tree.current?.querySelector<HTMLElement>(nodeRowSelectorOf(request.id))?.focus();
+    setWanted(request.id);
   }, [request, takeRequest]);
+  useLayoutEffect(() => {
+    if (wanted === undefined) return;
+    setWanted(undefined);
+    tree.current?.querySelector<HTMLElement>(nodeRowSelectorOf(wanted))?.focus();
+  }, [wanted]);
   // An address that names a row puts the focus on it once every read the tree's rows come from
   // has settled (`useAddressLanding`), looking again each time the statements the view draws
   // change, and the landing's hold keeps it on screen while the page grows above it - with the
   // statements, which the coverage read draws (`tree-drafts.ts`'s `addRequirements`), or the
   // spec's blocks where they answer first, and with what the page draws after the reads (the
   // names, the cuts once measured).
-  const drawn = useMemo(() => statements.map((node) => node.id).join(" "), [statements]);
+  const drawn = useMemo(() => drawing.drawn.map((row) => row.node.id).join(" "), [drawing.drawn]);
   const landingHold = useAddressLanding({
     acts: addressActs,
     drawn,
@@ -563,8 +642,10 @@ export function SpecFilterBody({
 
   useTreeKeymap({
     container: tree,
+    drawUpTo: (row) => slices.drawUpTo(rowKeyOf(row)),
     editing: editing !== undefined,
     holdsEscape,
+    isDrawn: (row) => slices.isDrawn(rowKeyOf(row)),
     onCycle: NOTHING,
     onEdit: edit,
     onEditEnd: stopEditing,
@@ -638,13 +719,17 @@ export function SpecFilterBody({
   const rowProps = (node: TreeNode): SpecRowProps => {
     const rowKey = rowKeys.get(node.id);
     const place = documentOfNode(node.id, artifacts);
+    const edited = editing !== undefined && editing.row === rowKey ? editing : undefined;
     return {
       editable: nodeEditable(place, issue.closed_at !== null, admissions),
-      editing: editing !== undefined && editing.row === rowKey ? editing.artifactId : undefined,
+      editing: edited?.artifactId,
       focused: focused === node.id,
       onFocus: (row) => focusStatement(row, node),
       ...(report?.row === node.id ? { report: report.line } : {}),
       rowKey,
+      // The page's kept block editor draws the block in a box of its own where the words stood
+      // (`block-editor.tsx`), so the row keeps its words and draws no stage over that box.
+      staged: edited?.kept === true ? undefined : edited?.artifactId,
       tabStop: tabStop === node.id,
     };
   };
@@ -720,8 +805,14 @@ export function SpecFilterBody({
           one tree, named as the tree every other filter draws, so a reader meets one outline
           on every address (R2, `IssueTree.tsx`). Its items are each statement and each
           decision beside them, which is what the focus moves between (R5's `w`); the layout
-          between them carries no role of its own. */}
+          between them carries no role of its own. It reads busy while the reads its statements
+          come from are out, and not once they hold their answers or one stands refused, whose
+          line says so over it: a press on Spec shows the view loading in the press's commit, and
+          the commit that draws the first screen of statements takes the mark off (R2). */}
       <div
+        aria-busy={
+          (!statementsHeld && !unreadable.some(({ line }) => line === "statements")) || undefined
+        }
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
         data-spec-tree=""
@@ -826,19 +917,21 @@ export function SpecFilterBody({
         role="tree"
         tabIndex={-1}
       >
-        {groups.map((group) => (
+        {drawnGroups.map((group) => (
           <Group
-            drawStatement={(statement, decision) => (
-              <Statement
-                {...rowProps(statement.node)}
-                context={context.has(statement.node.id)}
-                decision={decision}
-                key={statement.node.id}
-                marked={marked}
-                statement={statement}
-                wordsPress={wordsPressRow === statement.node.id}
-              />
-            )}
+            drawStatement={(statement, decision) =>
+              drawnIds.has(statement.node.id) ? (
+                <Statement
+                  {...rowProps(statement.node)}
+                  context={context.has(statement.node.id)}
+                  decision={decision}
+                  key={statement.node.id}
+                  marked={marked}
+                  statement={statement}
+                  wordsPress={wordsPressRow === statement.node.id}
+                />
+              ) : null
+            }
             group={group}
             key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
             known={decidedHeld}
@@ -846,7 +939,7 @@ export function SpecFilterBody({
             openCell={openCell}
           />
         ))}
-        {others.map((node) => (
+        {drawnOthers.map((node) => (
           <OtherRow {...rowProps(node)} key={node.id} node={node} />
         ))}
       </div>
@@ -901,8 +994,9 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
  * up to stood with its top 27 px down, under heads 31 px tall. Where the item stands under the
  * heads it is scrolled down by the rest, by the rule's own clearance (`CLEARANCE`), again
  * whenever it grows - after the rule has placed it, since its observer is made first - and never
- * while a press inside it is held, as the rule holds its own placing. At 901 px and below the
- * heads are not drawn, and the rule alone places it.
+ * while a press inside it is held or while it holds the view's first focus (`first-focus.ts`),
+ * as the rule holds its own placing. At 901 px and below the heads are not drawn, and the rule
+ * alone places it.
  *
  * Answers the item's own `onPointerDown`, as `useRowOnScreen` does, which marks the press for
  * the rule's step and for this one.
@@ -926,7 +1020,7 @@ function useOnScreenUnderHeads(
     const element = item.current;
     if (!focused || element === null) return;
     const place = () => {
-      if (placing.current && !pressed.current) clearOfHeads(element);
+      if (placing.current && !pressed.current && !holdsFirstFocus(element)) clearOfHeads(element);
     };
     place();
     if (typeof ResizeObserver === "undefined") return;
@@ -1414,6 +1508,10 @@ interface SpecRowProps {
   /** What a key pressed on this row reported when it had nowhere to go. */
   report?: string;
   rowKey: string | undefined;
+  /** The document whose whole editor the row draws on its stage in place of its words while it is
+   *  edited there; undefined while it is not, and while the issue page's kept block editor draws
+   *  its block where its words stood (`block-editor.tsx`), which keeps the words, hidden. */
+  staged: string | undefined;
   tabStop: boolean;
 }
 
@@ -1424,7 +1522,8 @@ interface SpecRowProps {
  * with no limit of lines, with the focus or without it (R6): the view is where a statement is
  * read, so it draws every word of it, as its author wrote it. Its chips stand on the words' own
  * line after their last word, as a row of the outline draws its trail (`NodeRow.tsx`). While
- * editing, the same document stage replaces the words and the chips move below it.
+ * editing in the document's whole editor, the same document stage replaces the words and the
+ * chips move below it; the kept block editor takes the words' place, words and chips alike.
  */
 function Statement({
   context,
@@ -1436,6 +1535,7 @@ function Statement({
   onFocus,
   report,
   rowKey,
+  staged,
   statement,
   tabStop,
   wordsPress,
@@ -1451,9 +1551,9 @@ function Statement({
   const node = statement.node;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
-  const stage = useDocumentStage(editing);
+  const stage = useDocumentStage(staged);
   const press = useOnScreenUnderHeads(row, focused, editing === undefined && !wordsPress);
-  useOutOfTabOrder(words, editing === undefined);
+  useOutOfTabOrder(words, staged === undefined);
   // The count of the checks that serve it, drawn only where one does, and where its reference
   // names the block the Verification view puts the focus on.
   const checks = node.counts?.checks ?? 0;
@@ -1515,17 +1615,23 @@ function Statement({
           data-node-words=""
           ref={words}
         >
-          {editing !== undefined ? (
+          {staged !== undefined ? (
             <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
           ) : (
             <>
-              <RowText markdown={node.text} source={node.source} tree={node.tree} />
+              <RowText
+                elementTiming={ROW_TIMING}
+                markdown={node.text}
+                source={node.source}
+                trailFollows={trail !== null}
+                tree={node.tree}
+              />
               {/* A direct child, so the styles draw the trail after the last word. */}
               {trail}
             </>
           )}
         </div>
-        {editing !== undefined && trail !== null ? (
+        {staged !== undefined && trail !== null ? (
           <div className="flex min-w-0 flex-wrap items-baseline">{trail}</div>
         ) : null}
         <Because decision={decision} statement={statement} />
@@ -1600,13 +1706,14 @@ function OtherRow({
   onFocus,
   report,
   rowKey,
+  staged,
   tabStop,
 }: SpecRowProps & { node: TreeNode }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
-  const stage = useDocumentStage(editing);
+  const stage = useDocumentStage(staged);
   const press = useOnScreenUnderHeads(row, focused, editing === undefined);
-  useOutOfTabOrder(words, editing === undefined);
+  useOutOfTabOrder(words, staged === undefined);
   return (
     <div
       aria-level={1}
@@ -1626,10 +1733,10 @@ function OtherRow({
       role="treeitem"
       tabIndex={tabStop ? 0 : -1}
     >
-      <p className={`text-xs leading-5 ${pageQuietText}`} {...pageChrome}>
+      <p className={`text-xs leading-5 ${pageQuietText}`} {...pageChrome} {...rowTiming}>
         {NODE_TYPE_NAMES[node.type]}
       </p>
-      {editing !== undefined ? (
+      {staged !== undefined ? (
         <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
       ) : (
         <div className={`text-[15px] leading-6 ${pageWordsText}`} data-node-words="" ref={words}>
@@ -1675,7 +1782,18 @@ function Because({
   decision: SpecDecision | undefined;
   statement: SpecStatement;
 }): ReactNode {
-  if (decision === undefined && statement.alsoShapedBy.length === 0) return null;
+  if (decision === undefined && statement.alsoShapedBy.length === 0) {
+    if (!statement.becauseHeld) return null;
+    return (
+      <p
+        aria-hidden="true"
+        className="mb-0.5 min-h-[18px] text-xs leading-[18px]"
+        data-spec-because-held=""
+      >
+        {"\u00a0"}
+      </p>
+    );
+  }
   const route = routeOf(decision);
   const quoted = decision === undefined ? null : <Quote decision={decision} />;
   // What the line says after the quote: who decided, when, and that the statement changed since.

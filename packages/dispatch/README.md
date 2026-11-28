@@ -751,6 +751,108 @@ DISPATCH_URL=https://dispatch.internal.example DISPATCH_TOKEN_FILE=<file holding
 `cd packages/dispatch && bun test e2e/__tests__/priority-list-production.test.ts` runs it against
 stand-ins of `curl`, `gh`, `gcloud` and `sleep` that reach nothing past the host.
 
+`e2e/acceptance/page-load.ts` is the driver of the checks `c-real-data` and `c-production`: it
+times five loads of the new issue page's Conversation of one issue on a running Dispatch, at 1440
+by 900 px with no slowing, each in a new browser context so that its cache is empty, and holds them
+to the bounds of `e2e/issue-page-load.e2e.ts` at the production check's limits.
+It reads each bound with that file's own instruments (`e2e/load-instruments.ts`), and after each
+load has ended it makes the acts at 1440 px that the row of every act after the load makes.
+It drives Playwright's Chromium, headless, with one renderer process: `--chromium <path>`, else
+Playwright's own build where it is installed, else `/usr/local/bin/chromium`.
+No request of the page that is not a GET leaves the browser; each is counted, and fails the run.
+The page's identity read, `GET /auth/whoami`, is answered in the browser for the reader
+`probe@example` with the event log's head, which the script reads on a socket of its own just
+before the load, and the new page is turned on for that login, so the script uses no person's
+credential.
+Every other GET to the Dispatch host carries the bearer, and a GET to another host goes as the
+page made it.
+The page's socket to the Dispatch host is opened by the script itself, with the bearer on its
+handshake, and the script carries its frames to the page and back; a socket to another host is the
+page's own, with no bearer.
+A frame the page sends that is neither a `subscribe` nor an `unsubscribe` goes nowhere and fails
+the run, and so does a handshake Dispatch refuses.
+
+Its inputs are `DISPATCH_URL`, the Dispatch, and `DISPATCH_TOKEN_FILE`, a file holding the agent
+bearer, which it reads as `read_bearer` (below) reads that file and prints nowhere; `--issue <KEY>`
+names the issue.
+It prints, once the five loads are done: `/proc/loadavg` before the first load; each request the
+page made, by what the script did with it, and the count of those it failed in the browser; each
+socket the page opened and the count of its frames the rule refused; for each load, before any
+reading, what it drew first, its reads of the issue's comments list and where it stopped; one
+reading line for each bound, with its five readings and its limit, and the largest contentful
+paint's five readings, which no limit holds; the rows drawn, the elements and the bytes of text at
+the end of each load; the issue tree's `converted`; `/proc/loadavg` after the last load; and a
+last line, `page-load: pass` or `page-load: fail: <the bound, request or socket>: <the readings>`.
+A bound holds where the fourth smallest of its five readings meets it: the first screen's rows
+painted within 3,750 ms; each act's result within 300 ms, and where it needed a read, the event to
+the page showing it loads, the event to the read and the read's answer to the rows, each within
+300 ms, which leaves the server's time out; no task after the first drawing of the view row over
+300 ms; and a layout shift of at most 0.1.
+
+Each load's first line is `load <n> drew-first-screen=<rows|empty-line|no> after=<ms>`: `rows`
+where a frame held a row of the view, and `empty-line` where one held Conversation's empty line,
+the line it draws in place of its rows for an issue whose tree holds nothing it shows, `after`
+then being the ms from the navigation's start to that frame; `no` where neither came, `after` then
+being how long the load waited; and `after=none` for a load that stopped before its navigation.
+The page gives the empty line no attribute or role of its own, so the script finds it by its
+words, `EMPTY_STATE_LINES.conversation`, on an element that carries `data-page-chrome`.
+Then each read of the issue's comments list (`GET /api/v1/issues/<KEY>/comments`) the load made
+by its end, or by its stop, is a line
+`load <n> comments-read path=<path> encoded=<bytes> decoded=<bytes>`: its path, its query cut,
+and Resource Timing's `encodedBodySize` and `decodedBodySize` of it, or where Resource Timing has
+none, the answer's own body.
+A load that made none prints `load <n> comments-read none`, and one whose reads could not be read
+`load <n> comments-read unread`.
+No load holds the run, because each wait of a load has a bound (`LOAD_BOUNDS` in the script):
+`setup-wait`, 60 s, for the load's context, its routes, the event head and the instruments;
+`first-screen-wait`, 180 s, for the navigation and the first drawing of a row of the view or of
+its empty line together; `load-end-wait`, 120 s, for the load's end, as the load ends and again
+after its acts; `act-wait`, 180 s, for one act and the steps that put the page back after it;
+`page-read-wait`, 60 s, for each read of what the instruments hold, which waits for the page's
+main thread; and
+`close-wait`, 30 s, for the close of the load's context, and after the last load of the browser.
+A load that waits past one prints
+`load <n> stopped: <bound>: <the wait> did not end within <ms> ms`, or
+`load <n> stopped: <bound>: <the wait> failed: <why>` where the wait failed on its own first, and
+the run goes on with the next load; a load stopped at two bounds names both.
+A stopped load keeps what it read before it stopped and reads `none` for the rest, and its page
+shape prints `none` where it stopped before its load had ended.
+An act that stops ends the acts of that load, since the next act would start from a page the act
+left half done, and the acts made before it are still read.
+A load that drew the empty line drew its first screen, and is no freeze: its paint is the moment
+the first frame that held the line was shown, since no Element Timing entry names the line, and
+every reading of a row reads `none`, the acts on a row among them (a fold, an unfold, `j` and
+`k`), which are not made.
+A load that drew neither reads `none` for the first screen's paint, each act's result, the longest
+task and the layout shift, and `none` counts as over every limit: one such load in five passes, as
+one load in five may read over any limit, and two such loads fail those bounds.
+A close of the browser that does not end within its bound is said on stderr.
+It exits 0 on a pass, 1 on a fail, and 2 where it cannot run (no `--issue`, no `DISPATCH_URL`, a
+token file it cannot read or that is empty, a tree read that does not answer, no browser, or a
+browser that opens no context for a load), with the reason on stderr and, but for the last,
+before it starts a browser.
+From `packages/dispatch`:
+
+```bash
+DISPATCH_URL=https://dispatch.internal.example DISPATCH_TOKEN_FILE=<file holding the bearer> \
+  bun e2e/acceptance/page-load.ts --issue <KEY>
+```
+
+The load-time part's production check also runs it once on the deployment's largest issue, for a
+reading that is no bound and holds no merge: on a preview of the head that also copies that issue
+(`./serve.sh <head> <KEY> <largest KEY>` of the preview recipe), the script runs with
+`--issue <largest KEY>`.
+Its record says, for each of the five loads, what the page drew first and its reads of the
+comments list, and where it drew a row or the empty line, every reading beside the production
+check's limits.
+On an earlier base, a cold load of such a copy drew no page after 165 s, which is why
+`first-screen-wait` is 180 s: such a load stops there and the run goes on with the next one.
+The check's result does not depend on that run, since the bounds are held on the issue it names;
+its record goes on the pull request with the rest.
+
+`cd packages/dispatch && bun run test:harness e2e/__tests__/page-load-policy.test.ts` holds what it
+does with each request, socket and frame, its verdict and its lines without a browser.
+
 `e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
 names blocks: a list written over a paragraph's whole text, a list written over the text of a
 nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
@@ -864,21 +966,28 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-Twenty-five of the twenty-nine drivers in `e2e/acceptance/` source `e2e/acceptance/lib.sh`, the
+Forty-eight of the fifty-seven drivers in `e2e/acceptance/` source `e2e/acceptance/lib.sh`, the
 preamble and the check vocabulary they share: it refuses an unset input or a missing command with
 exit 2, reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it,
 unsetting both so no process the script starts inherits it, and holds the `pass`, `fail`, `skip`,
-`want_status`, `expect` and `query` each of them checks with. Twenty-three source it themselves,
-and four of those (`answer-attribute-removal.sh`, `answered-decisions.sh`, `decision-nodes.sh` and
-`restore-redirects.sh`) source `lib-baseline.sh` beside it; `lens-schema.sh` and
+`want_status`, `expect` and `query` each of them checks with. Forty-six source it themselves, and
+eighteen of those source `lib-baseline.sh` beside it; `lens-schema.sh` and
 `node-visibility-census.sh` source `lib-processes.sh`, which sources `lib-baseline.sh`, which
-sources `lib.sh`. The other four source none of it:
+sources `lib.sh`. The other nine source none of it:
 `document-roundtrip.sh` and `omp-roundtrip.sh` check with functions of their own,
-`outside-path-reach.sh` is handed to a person as one file (below), and `outside-edge-refusals.sh`
-is one file that sources nothing (below). `with-harness.sh` is no driver
+`outside-path-reach.sh` is handed to a person as one file (below), `outside-edge-refusals.sh`
+is one file that sources nothing (below), the outside agent's three legs
+(`outside-agent-tailnet.sh`, `outside-agent-public.sh` and `outside-agent-codex.sh`) source
+`outside-agent-lib.sh` instead, `tree-read-db-medians.sh` reads the three logs it is given and
+no Dispatch, and `page-load.ts` is TypeScript, which reads `DISPATCH_TOKEN_FILE` as `read_bearer`
+reads it. `with-harness.sh` is no driver
 and sources none of it, and `lib-baseline.sh`, `lib-processes.sh`, `lib-tree.sh`,
 `seed-decisions.sh`, `node-visibility-census-lib.sh` and `node-visibility-census-stages.sh`
-(which `node-visibility-census.sh` sources) are files the drivers source, not drivers.
+(which `node-visibility-census.sh` sources), `outside-agent-lib.sh`, and
+`outside-agent-grants.sh`, `outside-agent-peer.sh`, `outside-agent-pins.sh` and
+`outside-agent-sweep.sh` (which `outside-agent-tailnet.sh` sources) are files the drivers source,
+not drivers; nor are the TypeScript programs drivers run (`broker-session.ts`, `socket-scope.ts`,
+`outside-agent-probe.ts`, `outside-agent-codex-model.ts` and `outside-agent-codex-provenance.ts`).
 
 The issue-tree drivers and `seed-corpus.sh` also source `e2e/acceptance/lib-tree.sh`,
 after `lib.sh` and, for a driver over rows an earlier release wrote, after `lib-baseline.sh`. It
@@ -1134,9 +1243,8 @@ every recording no row writes any more.
 
 ## Projects
 
-The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
-stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
+The suite has seventeen projects.
+`chromium` runs every spec except the two plain-HTTP specs, the five wall-clock specs the projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
 test's or its `test.describe`'s title). A phone width is one under 768 px. A test takes the tag
 only where the phone can change what it asserts: its layout, touch (`e2e/touch.ts`), a surface
@@ -1148,12 +1256,13 @@ that loses its tag drops out of them with no failure: read a project's rows with
 `e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
 engine, viewport, origin and server-process count. The iPhone project uses Chromium with iPhone
 13 viewport, touch, and user-agent emulation. A deployed run (`bun run e2e:deployed`) uses the
-same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
+same projects but the two stubbed ones and the five wall-clock ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
-the three wall-clock projects are out of the default selection. Listed at this head, a deployed
-run holds 1,302 rows in 169 files, and the other 51 are a wall-clock run of its own, under the
-same base URL:
-`bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
+the wall-clock projects are out of the default selection. Listed before the two load projects
+were added, a deployed run held 1,302 rows in 169 files, and the other rows - the 51 of the
+three `-alone` projects and the 25 that `e2e/issue-page-load.e2e.ts` declares for each load
+project - are a wall-clock run of its own, under the same base URL:
+`bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=chromium-load --project=iphone-load --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
 no use for. `bunx` and not a bare `playwright`, which is on no PATH here (`command -v
 playwright` in this package exits 1), and `build:contracts` because a fresh checkout has no
@@ -1186,24 +1295,24 @@ upstream once a page has closed. `chromium-plain-http-sign-out` runs the sign-ou
 `e2e/keyed-writes.e2e.ts` on that same origin, where the browser has no `navigator.locks`, so a
 tab holds the person's writes for another tab's sign-out on a renewed lease rather than on that
 tab's lock.
-The last three projects run the rows whose claim is a wall-clock time, with the machine to
-themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
-(a card draws without holding the main thread for a second)
+The five projects of `aloneProjects` run the rows whose claim is a wall-clock time, with the
+machine to themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and
+`e2e/nested-directive.e2e.ts` (a card draws without holding the main thread for a second)
 and `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes
 back inside half a second on the fastest of up to five fresh wakes, a sleeping view at the
 stream's worst case comes back inside 1.2 seconds on the fastest of up to eight fresh wakes, and
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
 thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-Each sets `default: false`, so a run that names no project holds none of their 51 rows, and each
-caps its own workers at one.
-What holds a reading to a quiet machine is the run being one worker wide, and the three files
-reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of
-`e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts` in a run of more than one worker,
-since four workers on one machine make a second of wall clock unmeasurable, and the rows of
-`e2e/agent-workspace-timing.e2e.ts`, which read a clock of their own, take that one worker from
-the command that runs them.
-`bun run e2e:clock` is the command that runs all three projects, and it names `--workers=1`
+`chromium-load` (1440 by 900, the processor slowed by 2) and `iphone-load` (Playwright's iPhone 13 in Chromium, slowed by 4) run `e2e/issue-page-load.e2e.ts` and the env-gated profiler `e2e/issue-page-load-longest.e2e.ts`, which `chromium-alone` leaves to them.
+Every row of `e2e/issue-page-load-longest.e2e.ts` skips unless `ISSUE_PAGE_LOAD_LONGEST=1`, so routine CI and `e2e:clock` runs stay fast.
+In `e2e/issue-page-load.e2e.ts`, on an issue of the largest issue's shape, each view of the new issue page paints its first screen within 2.5 s, each act shows its result within 200 ms during the load and after it, and nothing the page drew moves, each bound read over five cold loads and held at the fourth smallest, with one line printed for each (`e2e/load-instruments.ts`, `readingLine`).
+`ISSUE_PAGE_LOAD_CPU_RATE` sets another slowing for both.
+Each of the five sets
+`default: false`, so a run that names no project holds none of their rows, and each caps its
+own workers at one.
+What holds a reading to a quiet machine is the run being one worker wide, and the five files reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of `e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts`, and every row of `e2e/issue-page-load.e2e.ts` and `e2e/issue-page-load-longest.e2e.ts`, in a run of more than one worker, since four workers on one machine make a second of wall clock unmeasurable, and the rows of `e2e/agent-workspace-timing.e2e.ts`, which read a clock of their own, take that one worker from the command that runs them.
+`bun run e2e:clock` is the command that runs all five projects, and it names `--workers=1`
 beside them; one file in one engine is
 `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`, which names that
 worker count itself rather than taking the configuration's default, and which writes the project

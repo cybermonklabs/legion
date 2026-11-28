@@ -81,6 +81,7 @@ export function IssueHeader({
   documentArtifact,
   isClosed,
   issue,
+  onOpenDetails,
   onOpenField,
   onOpenLabels,
   priorityWrite,
@@ -90,6 +91,8 @@ export function IssueHeader({
   documentArtifact: Artifact | undefined;
   isClosed: boolean;
   issue: IssueDetails;
+  /** Called from the handler of a press on Details that opens it (`IssueIdentityRow`). */
+  onOpenDetails?: () => void;
   /** Opens Details at the row whose editor `field` is, with that editor open. */
   onOpenField: (field: IssueField) => void;
   /** Opens Details at its Labels row. */
@@ -183,6 +186,7 @@ export function IssueHeader({
         <IssueIdentityRow
           actions={actions}
           issueKey={issue.key}
+          {...(onOpenDetails === undefined ? {} : { onOpenDetails })}
           parent={issue.parent}
           project={issue.project}
         />

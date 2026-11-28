@@ -16,14 +16,18 @@ import { focusOnDocument } from "../../shell/roving";
 import { ChildrenSection } from "../children-section";
 import { ThreeThingsAbove } from "../contents-frame";
 import { DocumentStages } from "../document-stage";
+import { afterPaint } from "../drawn-in-slices";
+import { giveFirstFocus } from "../first-focus";
 import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
+import { newTreeBuilds, TreeBuildsContext, useTreesBuilt } from "../issue-tree-owner";
 import { useReadsSettled } from "../outline-reads";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
 import { useTellViewDrawn, type ViewDrawnTeller } from "../tree-read/tree-read";
 import { ViewReadProvider } from "../tree-read/view-read";
+import { usePendingView, useViewLeft } from "../view-press";
 import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
 import { useDroppedAddress, useFollowing } from "./following";
@@ -139,40 +143,46 @@ export function StageSlot({
   const landsItself = beside && preset === "graph";
   const dropped = useDroppedAddress();
   // The view's first drawing from its reads (`useTellViewDrawn`): its first row, which the box it
-  // is drawn in tells (`StageBox`), or, once every read it draws from has answered, what it draws
-  // then, in the frame after (`TellWhenSettled`).
+  // is drawn in tells (`StageBox`), or, once every read it draws from has answered and every tree
+  // its readers hold is built from them (`TreeBuilds`), what it draws then, in the frame after
+  // (`TellWhenSettled`).
   const viewDrawn = useTellViewDrawn(props.issue.key);
+  const [treeBuilds] = useState(newTreeBuilds);
   return (
     <ViewReadProvider issue={props.issue} preset={preset}>
       <FirstRowDrawn.Provider value={viewDrawn}>
-        <DocumentStages>
-          <ReaderActsWatch into={acts} key={following} />
-          {/* Below 1024 px, the issue's three sentences above the slot's first row (R13). */}
-          <ThreeThingsAbove {...props} view={View !== undefined} />
-          {/* The issue's children, above the slot's first row (R14). */}
-          <ChildrenSection {...props} />
-          {View === undefined ? (
-            <StageBox>
-              <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
-            </StageBox>
-          ) : (
-            <LandsItself.Provider value={landsItself}>
-              <ViewStage box={viewBox} dropped={dropped} key={preset}>
-                <View {...props} acts={acts} onAddressDrawn={onAddressDrawn} />
-              </ViewStage>
-            </LandsItself.Provider>
-          )}
-        </DocumentStages>
-        <TellWhenSettled issue={props.issue} preset={preset} tell={viewDrawn.tell} />
+        <TreeBuildsContext.Provider value={treeBuilds}>
+          <DocumentStages>
+            <ReaderActsWatch into={acts} key={following} />
+            {/* Below 1024 px, the issue's three sentences above the slot's first row (R13). */}
+            <ThreeThingsAbove {...props} view={View !== undefined} />
+            {/* The issue's children, above the slot's first row (R14). */}
+            <ChildrenSection {...props} />
+            {View === undefined ? (
+              <StageBox>
+                <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
+              </StageBox>
+            ) : (
+              <LandsItself.Provider value={landsItself}>
+                <ViewStage box={viewBox} dropped={dropped} key={preset}>
+                  <View {...props} acts={acts} onAddressDrawn={onAddressDrawn} />
+                </ViewStage>
+              </LandsItself.Provider>
+            )}
+          </DocumentStages>
+          <TellWhenSettled issue={props.issue} preset={preset} tell={viewDrawn.tell} />
+        </TreeBuildsContext.Provider>
       </FirstRowDrawn.Provider>
     </ViewReadProvider>
   );
 }
 
 /** Tells the stage's mark that its view has drawn (`useTellViewDrawn`) in the frame after every
- *  read the view draws from has answered (`useReadsSettled`): where the view draws no row, what it
- *  draws then in their place is its first drawing. It draws nothing itself, so as those reads
- *  change - each refetch, each page merged - it alone is drawn again, and not the stage. */
+ *  read the view draws from has answered (`useReadsSettled`) and every tree its readers hold is
+ *  built from them (`useTreesBuilt`): where the view draws no row, what it draws then in their
+ *  place is its first drawing, and where it draws rows, they are drawn by then. It draws nothing
+ *  itself, so as those reads and builds change - each refetch, each page merged - it alone is
+ *  drawn again, and not the stage. */
 function TellWhenSettled({
   issue,
   preset,
@@ -182,7 +192,8 @@ function TellWhenSettled({
   preset: Preset;
   tell: () => void;
 }): null {
-  const settled = useReadsSettled(issue, preset);
+  const built = useTreesBuilt();
+  const settled = useReadsSettled(issue, preset) && built;
   useEffect(() => (settled ? afterPaint(tell) : undefined), [settled, tell]);
   return null;
 }
@@ -325,10 +336,13 @@ export function ViewStage({
     // The frames that end `placed`, which go with the stage: one left to run after the view is
     // gone would focus what the take placed the focus on, off the page.
     const ending = new Set<number>();
-    // Puts the focus on `to`, and brings it on screen too once `bring`.
+    // Puts the focus on `to`, and brings it on screen too once `bring`. Otherwise it is the
+    // view's first focus, and `to` is left where it stands while it holds it (`giveFirstFocus`):
+    // a row that placed itself on screen as it took the focus scrolled the page after its first
+    // drawing, by as far as the issue's children stand above the view's rows (R3).
     const place = (to: HTMLElement): void => {
       if (bring) focusOn(to);
-      else to.focus({ preventScroll: true });
+      else giveFirstFocus(to);
     };
     // The Retry the take gave the focus to, while the focus rests there or nothing holds it: a
     // line the view draws above it later takes the focus to its own Retry (`firstLine`), so the
@@ -446,7 +460,12 @@ export function ViewStage({
  * (`FailedLineLeaves`), and the focus goes to the next failed read's Retry, to the tree's
  * tab-stop row, or to the tree itself, in that order, unless something else took it in the
  * render the line left in: once the line is off the page the browser has moved the focus to the
- * page's body, where nothing says where the reader was.
+ * page's body, where nothing says where the reader was. While a press on the view row waits on
+ * the reads of the view it turned on (`ViewPress`), the box reads busy, from the press's own
+ * commit to the commit that draws that view in its place: the box alone draws again for it, and
+ * not the slot it holds. From the task that takes the view the press left off the page to that
+ * commit, the box draws nothing in its place (`useViewLeft`), so the old view's take-down and the
+ * new view's drawing are two tasks, and no view is kept hidden in the document.
  *
  * Inside the stage (`FirstRowDrawn`), the box watches for the slot's first row until it holds
  * one, and tells the stage's mark that its view has drawn once the browser has painted it. Once
@@ -464,6 +483,8 @@ function StageBox({
 }): ReactNode {
   const own = useRef<HTMLDivElement>(null);
   const box = given ?? own;
+  const pressed = usePendingView() !== undefined;
+  const left = useViewLeft();
   const teller = useContext(FirstRowDrawn);
   useEffect(() => {
     const stage = box.current;
@@ -501,8 +522,8 @@ function StageBox({
   }, [box]);
   return (
     <FailedLineLeaves.Provider value={lineLeaves}>
-      <div className="contents" ref={box}>
-        {children}
+      <div aria-busy={pressed || undefined} className="contents" ref={box}>
+        {left ? null : children}
       </div>
     </FailedLineLeaves.Provider>
   );
@@ -516,19 +537,6 @@ const VIEW_ROW = "[data-node-row]";
  *  the box may stop watching. Undefined outside a stage (`ViewStage` drawn alone), where the box
  *  watches for nothing. */
 const FirstRowDrawn = createContext<ViewDrawnTeller | undefined>(undefined);
-
-/** Calls `then` once the browser has painted the frame it draws next: in the task that frame's
- *  animation callback queues, as the page reads a frame painted. Answers how to call it off. */
-function afterPaint(then: () => void): () => void {
-  let painted: number | undefined;
-  const frame = requestAnimationFrame(() => {
-    painted = window.setTimeout(then, 0);
-  });
-  return () => {
-    cancelAnimationFrame(frame);
-    window.clearTimeout(painted);
-  };
-}
 
 /** Puts the focus on `to` without scrolling to it, then brings it on screen on the next frame
  *  where it still holds the focus (`bringOnScreen`). The frame is for the chord that opens a view:

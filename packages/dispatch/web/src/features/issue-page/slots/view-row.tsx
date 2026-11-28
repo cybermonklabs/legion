@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useLayoutEffect, useMemo, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -7,6 +7,7 @@ import { TREE_FILTERS, whoAmIQuery } from "../../../api/queries";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { CONTENTS_PANE_QUERY, drawsContents, OutlineSheet, PAGE_INSET } from "../contents-frame";
+import { useCountsAfterDrawing } from "../counts-after-drawing";
 import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
@@ -15,7 +16,7 @@ import { useOutlineReads } from "../outline-reads";
 import type { Preset } from "../page-words";
 import { type Filter, filterSignals, type PresetSignal } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { planTasksOut } from "../tree-read/tree-read";
+import { outlineOf, planTasksOut, startPressedViewRead } from "../tree-read/tree-read";
 import { useIssueKeymap } from "../useIssueKeymap";
 
 /**
@@ -43,26 +44,27 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  const { namesHeld, readsHeld, root } = useOutlineReads(issue);
+  const { namesHeld, readsHeld, root, warm } = useOutlineReads(issue);
   // Decisions' flag counts the decisions marked `waiting` for the reader.
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  // What each control draws after its name (`viewRowSignals`).
-  const signals = useMemo(
-    () =>
-      viewRowSignals({
-        filter: address.filter,
-        namesHeld,
-        preset: address.preset,
-        readsHeld,
-        root,
-        viewer,
-      }),
-    [address.filter, address.preset, namesHeld, readsHeld, root, viewer]
-  );
+  // What each control draws after its name (`viewRowSignals`), computed in a task of its own
+  // after the first drawing so `filterSignals` and any lazy view tree it reads never run inside
+  // the first screen's render commit (R1). Each control already holds its signal's room from the
+  // first drawing (`IssuePresets.tsx`'s `Signal`), so the counts arriving later move nothing.
+  const signals = useDeferredSignals({
+    filter: address.filter,
+    namesHeld,
+    preset: address.preset,
+    readsHeld,
+    root,
+    viewer,
+    warm,
+  });
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const row = useRef<HTMLDivElement | null>(null);
   useViewRowHeight(row);
   useIssueKeymap(issue.key);
+  const queryClient = useQueryClient();
   return (
     <div
       className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[761px]:sticky max-[761px]:top-0 max-[761px]:z-[19]`}
@@ -71,6 +73,9 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       <IssuePresets
         active={address.preset}
         issueKey={issue.key}
+        // A press sends the read of the view it turns on from its own handler, so the read is out
+        // before the commit that turns the view on (R2).
+        onPress={(preset) => startPressedViewRead(queryClient, issue.key, preset)}
         outline={
           paned || !drawsContents(address.preset) ? undefined : <OutlineSheet slot={props} />
         }
@@ -124,6 +129,59 @@ export function viewRowSignals({
     verification: undefined,
     [cold]: filterSignals(root, filter)[cold],
   };
+}
+
+/**
+ * `viewRowSignals` computed in a task of its own after the first drawing (`askForTask`), rather
+ * than synchronously inside `ViewRowSlot`'s render: `filterSignals` walks the tree and builds any
+ * held filter view's tree (`root.views.trees`), which otherwise ran in the same commit that drew
+ * the view's first screen (R1). Each held view's tree is warmed in its own task before the
+ * signals are computed, so no single task combines multiple view builds. While the inputs cannot
+ * produce counts, this returns `undefined` synchronously.
+ */
+function useDeferredSignals({
+  filter,
+  namesHeld,
+  preset,
+  readsHeld,
+  root,
+  viewer,
+  warm,
+}: {
+  readonly filter: string;
+  readonly namesHeld: boolean;
+  readonly preset: Preset;
+  readonly readsHeld: boolean;
+  readonly root: TreeNode;
+  readonly viewer: string | undefined;
+  readonly warm: boolean;
+}): Readonly<Record<Filter, PresetSignal | undefined>> | undefined {
+  const wordsReady = namesHeld || filter === "";
+  const allReady = wordsReady && readsHeld && viewer !== undefined;
+  const cold = allReady
+    ? undefined
+    : TREE_FILTERS.find((one) => one === preset && root.views?.[one] !== undefined);
+  const ready = allReady || (wordsReady && cold !== undefined);
+  // While `allReady` holds, `viewRowSignals` reads `preset` only for the outline read it names,
+  // under which the plan's tasks may still be to read (`planTasksOut`, `outlineOf`), so pressing
+  // another view of the same read neither clears nor recomputes the counts.
+  const countedPreset = allReady ? (outlineOf(preset) ?? preset) : cold;
+  const count = useMemo(
+    () =>
+      ready
+        ? () =>
+            viewRowSignals({
+              filter,
+              namesHeld,
+              preset: countedPreset ?? "conversation",
+              readsHeld,
+              root,
+              viewer,
+            })
+        : undefined,
+    [countedPreset, filter, namesHeld, ready, readsHeld, root, viewer]
+  );
+  return useCountsAfterDrawing(root, count, warm);
 }
 
 /**

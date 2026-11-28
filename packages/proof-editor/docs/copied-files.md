@@ -95,6 +95,60 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
     In `src/typed-block-commands.ts`: `validateValue`'s `minutes` case calling it.
     In `src/tests/block-schema.test.ts`: its import and the suite's case for the kind.
 
+31. Single-block editors (the `element` option, decision 544).
+    `src/lib.ts`'s `CreateProofEditorOptions` gains `element?: Y.XmlElement`.
+    When `element` is given, `createProofEditor` refuses a document-level node (`XmlFragment` or `doc`), wraps `serializerCtx` before `.use(listener)` so a non-`doc` root serializes inside `doc`, sets `editorStateOptionsCtx` and `schema.topNodeType` to the element's own node type and attributes, and binds `collabService` to `opts.element` instead of `opts.ydoc.getXmlFragment(opts.fragment ?? 'prosemirror')` (the one rewritten line).
+    The `element` change in `t17` added 47 lines and rewrote one line in `src/lib.ts`.
+
+    Decision 551's rebind adds 34 lines and rewrites two in `src/lib.ts` (`+36 / −2` against `f885e9ba`):
+
+    | Lines after the rebind change | Count | Change |
+    | --- | ---: | --- |
+    | 39 | 1 added | Import `editorStateCtx`. |
+    | 63 | 1 added | Import `EditorState` to replace the state in the kept view. |
+    | 243–244 | 2 added | Declare `ProofEditorHandle.rebindElement`. |
+    | 341 | 1 added | Default `rememberAwareness` to `true` in the cursor installer. |
+    | 366 | 1 rewritten | Set the collaboration service's awareness only when `rememberAwareness` is true. |
+    | 614 | 1 added | Hold the bind generation, initially `0`. |
+    | 632 | 1 rewritten | Guard the initial cursor install by that generation and preserve the service's awareness for an editor made without `element`. |
+    | 657–669 | 13 added | Validate the target, construct its root with its own attributes, and advance the generation. |
+    | 670–684 | 15 added | Copy the live state plugins into Milkdown, disconnect, switch the root and state, and connect to the new element. Install cursors with the new generation and leave the view's own plugins untouched. |
+
+    `src/tests/element-option.test.ts` exercises the target's type and `blockId`, both places a host installs plugins, the old cursor install, and the refusal to rebind a full-document editor.
+
+    Decision 551's cut adds 6 lines to `src/lib.ts` beyond the lines above and rewrites none (`+6 / −0`); each acts only where `element` is given, so an editor made without it builds as before:
+
+    | Lines after the cut | Count | Change |
+    | --- | ---: | --- |
+    | 35 | 1 added | Import `createBlockBuildTiming` from `./block-build-timing`. |
+    | 460 | 1 added | Make the build's timing (`blockBuild`) for a block editor alone; it is `undefined` without `element`. |
+    | 542 | 1 added | Install its plugin, which gates Milkdown's dependency timers. |
+    | 593 | 1 added | Yield after `.create()`, before the parser guards and the view's setup (the `view setup` phase). |
+    | 611 | 1 added | Yield after `applyAccess`, before the collaboration binding (the `collaboration` phase). |
+    | 660 | 1 added | End the last phase's measure before the handle is returned. |
+
+    Decision 551, amended, adds 4 lines to `src/lib.ts` beyond the lines above and rewrites none (`+4 / −0`), in `rebindElement`, so an editor made without `element` builds as before:
+
+    | Lines after the amendment | Count | Change |
+    | --- | ---: | --- |
+    | 681–683 | 3 added | Say why the new state keeps the view's own configuration, and that prosemirror-state marks `config` internal. |
+    | 684 | 1 added | Give the new state the view's own configuration (`Object.assign(state, { config: Reflect.get(view.state, 'config') })`), so the rebind's own `view.updateState` destroys and makes no plugin view. |
+
+    `src/tests/element-option.test.ts` holds it: in the rebind's own `view.updateState`, no plugin view is destroyed or made again, and the root's view is made for the new block. With the line taken out, that call destroys and makes each plugin view again, and the case fails.
+
+    `src/block-build-timing.ts`, Dispatch's own file beside the copies, adds a gate to each of Milkdown's `initTimerCtx`, `schemaTimerCtx`, `editorStateTimerCtx` and `editorViewTimerCtx` and releases it in a task of its own, by a zero-delay timer, once every other timer in that list has resolved; Milkdown's plugins and their order are unchanged.
+    Each phase records one `block-editor-task` measure, from when its task begins to the next yield.
+    A hidden page releases each phase at once, with its measure: browsers run a hidden page's timers at most once a second, and Milkdown fails a timer still waited for 3 s after its first wait.
+    `src/tests/block-build-timing.test.ts` holds a build with `element`, a build without it, and a build on a hidden page.
+
+    A collaborator's caret label in a single-block editor hangs below its caret's line where it would pass the top of the editable, since the host draws that editor in a box of the block's own height (the issue page's row, R7); an editor whose root is `doc` places every label as before.
+    `src/lib.css` adds 9 lines: the `.proof-collab-cursor__label--below` rule, `top: 100%`, with its comment.
+    `src/collab-cursor-plugin.ts`, Dispatch's own file beside the copies, adds 25 lines and rewrites none: the class's name, the doc comment's paragraph, the read of each label's place before any class is written (`hangsAbove`, read from the caret and the label's own height, so the class it sets does not change what it reads), and the class's write, for an editor whose root is no `doc` alone; the editable's top is read only for such a root, so an editor of a whole document reads no more layout than before.
+
+    A single-block editor whose root is a paragraph or a heading draws the titles of the references its words hold, as a document's text block does.
+    `src/reference-decorations.ts`, Dispatch's own file, adds 8 lines and rewrites none: `candidatesBetween` reads such a root as the one text block it is, from 0, where `nodesBetween` visits no text block, and `nextCandidates` reads it again whole at each edit; an editor whose root is `doc` reads as before.
+    `src/tests/element-option.test.ts` holds the case for a paragraph root and a heading root.
+
 32. A `block[]` attribute's `items`, the item kinds its values may point at besides a block of a document - an issue's ask, comment or message, a block of one, or an issue - with their `item_versions`, and the `parent` attribute.
     In `src/block-schema.ts`: the import of `PARENT_ATTRIBUTE` and `pointerItemKind` from `@legion/contracts`; `creatableValue` reading `item_versions` for each item a `block[]` value points at; `validateBlockSchema` refusing `items` on any other kind, an item kind `ITEM_KINDS` does not name or one named twice, and a `parent` attribute of any kind but `block[]`; and `parseAttribute`'s `block[]` case passing `attribute.items` to `parseBlockPointers`.
     In `src/typed-block-commands.ts`: the import of `parentProblem` from `./block-pointers`, and `validateValue`'s `block[]` case passing `attribute.items` to `blockPointersProblem` and refusing what `parentProblem` refuses.

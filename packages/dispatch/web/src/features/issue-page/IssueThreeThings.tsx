@@ -10,6 +10,7 @@ import {
   pageStateText,
 } from "../../theme/classes";
 import { wordsOf } from "../refs/tree-fragment";
+import { useCountsAfterDrawing } from "./counts-after-drawing";
 import { drawnLine, firstLineOf, firstSentenceLength, LEADING_LABEL } from "./first-line";
 import { type IssueAddress, presetPath } from "./issue-address";
 import { isCheck, type TreeNode } from "./issue-tree";
@@ -24,6 +25,7 @@ import {
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
   type NodeState,
+  type Preset,
   VERIFICATION_WORDS,
 } from "./page-words";
 import { filterSignals, type PresetSignal, presetView } from "./presets";
@@ -112,6 +114,35 @@ export function briefCounts(
           },
     plan: plan.count === 0 && !filtered ? undefined : plan,
   };
+}
+
+/**
+ * `briefCounts` computed in a task of its own after the first drawing (`askForTask`), rather than
+ * synchronously inside the render that draws the first screen: `briefCounts` walks the
+ * Verification and Plan views (and builds any held view tree they read), which otherwise ran
+ * beside the first screen's rows (R1). Each "In short" row already holds its counts' line height
+ * from the first drawing (`BriefRow`), so the counts arriving a task later move nothing.
+ */
+export function useDeferredBriefCounts(
+  reads: {
+    readonly namesHeld: boolean;
+    readonly readsHeld: boolean;
+    readonly root: TreeNode;
+    readonly warm?: boolean;
+  },
+  query: string,
+  preset: Preset
+): BriefCounts | undefined {
+  const { namesHeld, readsHeld, root, warm } = reads;
+  const ready = readsHeld && (!queryTyped(query) || namesHeld);
+  const count = useMemo(
+    () =>
+      ready
+        ? () => briefCounts({ namesHeld, readsHeld, root }, { filter: query, preset })
+        : undefined,
+    [namesHeld, preset, query, readsHeld, ready, root]
+  );
+  return useCountsAfterDrawing(root, count, warm);
 }
 
 /**
@@ -276,11 +307,18 @@ function BriefRow({
       >
         {label}
       </span>
-      {detail === undefined ? null : (
-        <span className="block min-w-0" data-brief-counts="" id={`${id}-counts`}>
-          {detail}
-        </span>
-      )}
+      {/* The counts' line is drawn from the row's first drawing, a line high (18 px) and empty
+          until the counts may be drawn, then holding them: drawn only with them, it grew the
+          rows under the label once the tree's reads answered, and pushed every row below them
+          down (R3; below 1024 px the children's rows, 30 px). */}
+      <span
+        className="block min-h-[18px] min-w-0"
+        data-brief-counts=""
+        id={`${id}-counts`}
+        {...(detail === undefined ? { "aria-hidden": true } : {})}
+      >
+        {detail}
+      </span>
     </button>
   );
 }

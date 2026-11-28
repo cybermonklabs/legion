@@ -32,15 +32,19 @@ import {
   type HostBlockRenderer,
 } from './block-schema';
 import { createTypedBlockCommands, type TypedBlockCommands } from './typed-block-commands';
+import { createBlockBuildTiming } from './block-build-timing';
 import {
   Editor,
   rootCtx,
   defaultValueCtx,
+  editorStateCtx,
+  editorStateOptionsCtx,
   editorViewCtx,
   parserCtx,
   remarkCtx,
   schemaCtx,
   serializerCtx,
+  SerializerReady,
   remarkStringifyOptionsCtx,
   prosePluginsCtx,
 } from '@milkdown/core';
@@ -57,6 +61,7 @@ import { yCursorPluginKey, ySyncPluginKey } from 'y-prosemirror';
 import { collabCursorPlugin } from './collab-cursor-plugin';
 import type { Awareness } from 'y-protocols/awareness';
 import type * as Y from 'yjs';
+import { EditorState } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 import type { Ctx, MilkdownPlugin } from '@milkdown/ctx';
@@ -172,6 +177,10 @@ export interface CreateProofEditorOptions {
   /** The XmlFragment of `ydoc` the editor binds: the one holding its document, where the
    *  host's Yjs document holds several. Defaults to 'prosemirror'. */
   fragment?: string;
+  /** Bind a block editor directly to one block's `Y.XmlElement` instead of the document's whole
+   *  fragment, with the root node of the element's own type and attributes. Document-level nodes
+   *  (a bare fragment or a `doc` element) are refused. */
+  element?: Y.XmlElement;
   /** Host-owned awareness instance (e.g. from HocuspocusProvider#awareness).
    *  Pass null/undefined to run without collaborative cursors. */
   awareness?: Awareness | null;
@@ -232,6 +241,8 @@ export interface CreateProofEditorOptions {
  */
 export interface ProofEditorHandle extends TypedBlockCommands {
   view: EditorView;
+  /** Rebind a kept block editor to a live block in the host's room. */
+  rebindElement(element: Y.XmlElement, awareness?: Awareness | null): void;
   /** Serialize the current document to markdown via the configured serializer. */
   getMarkdown(): string;
   /** Replace the current document with parsed markdown. An editor with `'edit'` access writes
@@ -328,6 +339,7 @@ function installCollabCursorsWhenReady(
   collabService: CollabService,
   awareness: Awareness,
   isAlive: () => boolean,
+  rememberAwareness = true,
 ): void {
   const hasCursorPlugin = () => view.state.plugins.some((plugin) => plugin.spec.key === yCursorPluginKey);
 
@@ -352,7 +364,7 @@ function installCollabCursorsWhenReady(
     }
 
     try {
-      collabService.setAwareness(awareness);
+      if (rememberAwareness) collabService.setAwareness(awareness);
     } catch {
       // ignore; cursor plugin can still work with direct awareness reference
     }
@@ -433,10 +445,19 @@ export async function createProofEditor(
   opts: CreateProofEditorOptions,
 ): Promise<ProofEditorHandle> {
   root.classList.add('proof-editor');
+  if (opts.element !== undefined) {
+    const nodeName = (opts.element as { nodeName?: unknown }).nodeName;
+    if (typeof nodeName !== 'string' || nodeName === '' || nodeName === 'doc') {
+      throw new Error(
+        `createProofEditor element must be a block Y.XmlElement, not ${JSON.stringify(nodeName ?? 'XmlFragment')}`,
+      );
+    }
+  }
   setCurrentActor(`human:${opts.user.name}`);
   let alive = true;
   const heatMapMode: HeatMapMode = opts.heatMapMode ?? 'background';
   const proofMarks = opts.proofMarks ?? true;
+  const blockBuild = opts.element === undefined ? undefined : createBlockBuildTiming();
 
   const builder = Editor.make()
     .config((ctx) => {
@@ -463,6 +484,18 @@ export async function createProofEditor(
     .use(opts.blockSchema ? (blockSchemaPlugins(opts.blockSchema, opts.renderBlock, opts.documentRef) as unknown as MilkdownPlugin[]) : [])
     .use(blockIdPlugins)
     .use(history)
+    .use(
+      opts.element
+        ? ((ctx) => async () => {
+            await ctx.wait(SerializerReady);
+            const schema = ctx.get(schemaCtx);
+            const base = ctx.get(serializerCtx);
+            ctx.set(serializerCtx, (node) =>
+              base(node.type.name === 'doc' ? node : schema.nodes.doc.create(null, node)),
+            );
+          }) as MilkdownPlugin
+        : [],
+    )
     .use(listener)
     .use(collab)
     .use(cursor)
@@ -506,6 +539,7 @@ export async function createProofEditor(
   if (proofMarks) builder.use(dispatchActionBarPlugin({ by: opts.user.name, onMarkAction: opts.onMarkAction }));
 
   const editor = await builder
+    .use(blockBuild ? blockBuild.plugin : [])
     .use(findHighlightsPlugin)
     .use(taskCheckboxesPlugin)
     .use(mermaidCodeBlockPlugin(opts.drawMermaid))
@@ -534,8 +568,29 @@ export async function createProofEditor(
         },
       }));
       ctx.set(heatmapCtx.key, { mode: heatMapMode });
+      if (opts.element) {
+        const element = opts.element;
+        ctx.set(editorStateOptionsCtx, (prev) => {
+          const schema = prev.schema;
+          const nodeType = schema?.nodes[element.nodeName];
+          if (!schema || !nodeType) {
+            throw new Error(
+              `block editor element type ${JSON.stringify(element.nodeName)} is not in the editor schema`,
+            );
+          }
+          Object.assign(schema, { topNodeType: nodeType });
+          const doc = nodeType.createAndFill(element.getAttributes());
+          if (doc === null) {
+            throw new Error(
+              `block editor could not build a root node of type ${JSON.stringify(element.nodeName)}`,
+            );
+          }
+          return { ...prev, doc };
+        });
+      }
     })
     .create();
+  if (blockBuild) await blockBuild.nextTask('view setup');
 
   editor.action((ctx) => {
     installSelfHealingParser(ctx);
@@ -553,6 +608,7 @@ export async function createProofEditor(
     view.setProps({ editable: () => access === 'edit' });
   };
   applyAccess(currentAccess);
+  if (blockBuild) await blockBuild.nextTask('collaboration');
 
   // --- Collab binding -------------------------------------------------
   // Adapted from ProofEditorImpl's initFromShare() collab-activation block.
@@ -560,6 +616,7 @@ export async function createProofEditor(
   // connecting without it: y-prosemirror's cursor plugin can throw (nodeSize
   // on undefined) if it evaluates awareness state before the ySync plugin's
   // mapping is populated.
+  let bindGeneration = 0;
   editor.action((ctx) => {
     const collabService = ctx.get(collabServiceCtx);
     // Before the shared document renders: an ask or a decision two collaborators left off its
@@ -567,7 +624,7 @@ export async function createProofEditor(
     relaxAskContentCheck(ctx.get(schemaCtx));
     // This package's own edit of the copied file: upstream calls bindDoc, which binds the
     // 'prosemirror' fragment, and an issue's room holds one fragment per document.
-    collabService.bindXmlFragment(opts.ydoc.getXmlFragment(opts.fragment ?? 'prosemirror'));
+    collabService.bindXmlFragment(opts.element ?? opts.ydoc.getXmlFragment(opts.fragment ?? 'prosemirror'));
     collabService.mergeOptions({
       yCursorOpts: { cursorBuilder: collabCursorBuilder, selectionBuilder: collabSelectionBuilder },
     });
@@ -577,7 +634,7 @@ export async function createProofEditor(
       // Mirrors CollabClient#setLocalUser: yCursorPlugin's cursor builder reads
       // `awareness.getStates().get(clientId).user`.
       opts.awareness.setLocalStateField('user', opts.user);
-      installCollabCursorsWhenReady(view, ctx, collabService, opts.awareness, () => alive);
+      installCollabCursorsWhenReady(view, ctx, collabService, opts.awareness, () => alive && bindGeneration === 0, opts.element === undefined);
     }
   });
 
@@ -600,8 +657,41 @@ export async function createProofEditor(
   // other signal. A call before the first destroy, and every call after it, answers this.
   let torndown: Promise<void> = Promise.resolve();
 
+  blockBuild?.finish();
   return {
     view,
+    rebindElement(element, awareness = null): void {
+      if (!alive || view.isDestroyed) return;
+      if (opts.element === undefined) throw new Error('Only a block editor can be rebound.');
+      if (element.doc === null || (awareness !== null && awareness.doc !== element.doc)) {
+        throw new Error('The block and its awareness must belong to the same room.');
+      }
+      const schema = view.state.schema;
+      const nodeType = schema.nodes[element.nodeName];
+      if (!nodeType?.isBlock || nodeType.name === 'doc') throw new Error('The editor needs a block root.');
+      const doc = nodeType.createAndFill(element.getAttributes());
+      if (doc === null) throw new Error('The editor could not create the block root.');
+      const generation = ++bindGeneration;
+      editor.action((ctx) => {
+        const service = ctx.get(collabServiceCtx);
+        ctx.set(prosePluginsCtx, [...view.state.plugins]);
+        service.disconnect();
+        Object.assign(schema, { topNodeType: nodeType });
+        const state = EditorState.create({ doc, plugins: view.state.plugins });
+        // The new state keeps the view's own configuration, so this `updateState` keeps each
+        // plugin view and draws only the new block (decision 551, amended). prosemirror-state
+        // marks `config` internal and leaves it out of its types, so it is read by its name.
+        Object.assign(state, { config: Reflect.get(view.state, 'config') });
+        ctx.set(editorStateCtx, state);
+        view.updateState(state);
+        service.bindXmlFragment(element);
+        service.connect();
+        if (awareness !== null) {
+          awareness.setLocalStateField('user', opts.user);
+          installCollabCursorsWhenReady(view, ctx, service, awareness, () => alive && bindGeneration === generation, false);
+        }
+      });
+    },
     insertTypedBlock(typeName, attrs) {
       return view.isDestroyed ? false : typedBlockCommands.insertTypedBlock(typeName, attrs);
     },

@@ -88,10 +88,12 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 // says. Each is a bounded child, so what it cost is in the line this generation prints on its
 // own stderr when that child ends (`e2e/__tests__/bounded-subprocess.ts`).
 //
-// The second names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts).
-// They carry `default: false` since dispatch://INFRA-1280, so a listing that names no project
-// holds no row of `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` or
-// `nested-directive.e2e.ts` - 51 rows of those three files in this head's wall-clock listing -
+// The second names the wall-clock projects (`clockProjectNames`, e2e/configurations.ts), the
+// three `-alone` projects and the two load projects. They carry `default: false` since
+// dispatch://INFRA-1280, so a listing that names no project holds no row of
+// `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts`, `nested-directive.e2e.ts` or
+// `issue-page-load.e2e.ts` - 51 rows of the first three files in the wall-clock listing before
+// the load projects were added -
 // and with the default listing alone this generation refused outright: "the listing names no
 // real-stack row in them: heavy-bodies.e2e.ts, nested-directive.e2e.ts", measured by running
 // the tool before the second listing was added, when those two were the whole of the set.

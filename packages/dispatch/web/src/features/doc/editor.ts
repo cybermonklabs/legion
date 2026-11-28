@@ -79,6 +79,56 @@ export const createEditor: CreateEditor = async (root, options) => {
   return handle;
 };
 
+/** What `createBlockEditor` takes: the editor's options for one block's `element` in a scratch
+ *  document, with no room connection, no awareness and no margin card hosts. */
+export type BlockEditorOptions = Omit<
+  EditorOptions,
+  "anchoredBlock" | "awareness" | "element" | "fragment" | "onAskBlockHosts" | "ydoc"
+> & {
+  /** A block element in a scratch `Y.Doc` of its own, which the kept editor builds on before its
+   *  first bind (`rebindElement`), so the build writes nothing to the room and sets no awareness. */
+  readonly element: NonNullable<CreateProofEditorOptions["element"]>;
+};
+
+/**
+ * Builds the kept block editor for an issue page (decision 547, `issue-page/block-room.ts`): one
+ * ProseMirror view over `options.element`, with `editorAttributes` and Dispatch's typed-block node
+ * views (`installTypedBlocks`) installed before the first bind, so the first drawing in a row is
+ * the only one. Uses the modules `block-room.ts` already imported, and passes no awareness so
+ * nothing is published before the first bind. Ask cards are drawn by the outline's rows rather than
+ * portaled into the editor, so `onAskBlockHosts` drops its hosts (R7 forbids the asks read).
+ */
+export async function createBlockEditor(
+  root: HTMLElement,
+  options: BlockEditorOptions
+): Promise<EditorHandle> {
+  const ydoc = options.element.doc;
+  if (ydoc === null) {
+    throw new Error("createBlockEditor requires a scratch element attached to a Y.Doc.");
+  }
+  const [{ createProofEditor }, { installTypedBlocks }] = await importWhenOnline(() =>
+    Promise.all([import("@legion/proof-editor"), import("./ask-block")])
+  );
+  const handle = await createProofEditor(root, {
+    ...options,
+    awareness: null,
+    drawMermaid: requestMermaidDrawing,
+    ydoc,
+  });
+  for (const [name, value] of Object.entries(editorAttributes)) {
+    handle.view.dom.setAttribute(name, value);
+  }
+  installTypedBlocks(
+    handle.view,
+    options.blockSchema,
+    () => {},
+    options.watchPicture,
+    undefined,
+    options.askStateOf
+  );
+  return handle;
+}
+
 // bindRemoteMarks projects the document's `marks` map into the editor now and after every
 // transaction that changes it, and returns the unbinding. The projection waits for the end of the
 // transaction: Yjs calls the map's observers before the deep observer through which y-prosemirror

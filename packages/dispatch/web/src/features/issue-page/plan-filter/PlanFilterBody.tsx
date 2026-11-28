@@ -36,6 +36,7 @@ import {
 import { parseNodeReference, referenceHref } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
+import { useDrawnInSlices } from "../drawn-in-slices";
 import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { ChildIssueTag } from "../IssueChildren";
@@ -47,6 +48,7 @@ import type { FailedRead, OutlineReads } from "../outline-reads";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, PLAN_WORDS, PRESET_NAMES, STATE_LINES } from "../page-words";
 import { nodeReading } from "../presets";
+import { rowTiming } from "../RowText";
 import { FailedLineLeaves, FailedReadLine } from "../slots/failed-read-line";
 import { moveToRow, treeEnterKey } from "../useTreeKeymap";
 import {
@@ -417,7 +419,11 @@ function CycleLine({ cycle, inChart = false }: { cycle: PlanCycle; inChart?: boo
       className={`mb-2.5 flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm leading-5 ${pageMutedText}`}
       data-plan-cycle=""
     >
-      <span {...pageChrome}>{PLAN_WORDS.cycle}</span>
+      {/* In the chart the line is a row, and the cycle's word, a flex item, paints the start of
+          its first line (`RowText.tsx`'s `ROW_TIMING`). */}
+      <span {...pageChrome} {...(inChart ? rowTiming : {})}>
+        {PLAN_WORDS.cycle}
+      </span>
       {cycle.tasks.map((task) => (
         <TaskLink inChart={inChart} key={task.id} task={task} />
       ))}
@@ -525,6 +531,14 @@ interface DrawnPlace {
   readonly task: TreeNode;
 }
 
+/** The key a place is drawn in slices by (`drawn-in-slices.ts`): its own. */
+function placeKey(place: DrawnPlace): string {
+  return place.key;
+}
+
+/** No place: one empty list for every render. */
+const NO_KEYS: readonly string[] = [];
+
 /**
  * The chart of time (the prototype's `.chart`): one row per place in the plan's order. A
  * step's row draws its first line and the steps it needs, its bar, and the statements it
@@ -607,10 +621,6 @@ function PlanChart({
       }),
     [inView, places, reveal]
   );
-  const bars = useMemo(
-    () => places.flatMap((row) => (row.kind === "bar" && inView.has(row.task.id) ? [row] : [])),
-    [inView, places]
-  );
   const [focused, setFocused] = useState<string | undefined>(undefined);
   // Where the chart's one tab stop rests, which outlives the focus leaving it.
   const [stop, setStop] = useState<string | undefined>(undefined);
@@ -621,6 +631,37 @@ function PlanChart({
         rows.find((place) => place.row.kind === "bar") ??
         rows[0]
       )?.key;
+  // The chart's rows are drawn a screen around the anchor first, and the others in slices after
+  // it (`drawn-in-slices.ts`): the anchor is the row of the task the address names, else the
+  // first row; the row the address lands on is drawn in the render that names it (`land`), with
+  // every row between the anchor and it, and the keys draw the bar they move to first (`step`).
+  // Each row carries its task's id, a cycle's the task it stands for (`CycleRow`).
+  const taskOfPlace = useMemo(
+    () => new Map(rows.map((place) => [place.key, place.task.id])),
+    [rows]
+  );
+  const slicesMeasure = useCallback(
+    (key: string) => {
+      const id = taskOfPlace.get(key);
+      return id === undefined
+        ? undefined
+        : chart.current
+            ?.querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(id)}"]`)
+            ?.getBoundingClientRect().top;
+    },
+    [taskOfPlace]
+  );
+  const drawing = useDrawnInSlices({
+    anchor: rows.find((place) => place.task.id === reveal)?.key,
+    focused,
+    keyOf: placeKey,
+    measure: slicesMeasure,
+    needed:
+      land === undefined
+        ? NO_KEYS
+        : rows.flatMap((place) => (place.task.id === land ? [place.key] : [])),
+    rows,
+  });
 
   // The focused row gives its task to Details (`focused-node.tsx`) as the outline gives a focused
   // node, by the outline's own facts of it (`focusedNodeOf`: who wrote it, the item it is, its
@@ -649,7 +690,7 @@ function PlanChart({
   // `landOnRow`): the rows around it are still arriving and push it down the page.
   const landingHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => landingHold.current?.abort(), []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (land === undefined || !rows.some((place) => place.task.id === land)) return;
     const row = chart.current?.querySelector<HTMLElement>(
       `[data-node-row][data-node-id="${CSS.escape(land)}"]`
@@ -661,8 +702,8 @@ function PlanChart({
 
   // The lines between a bar and the bars it needs, from where the browser laid the bars out:
   // from the end of the needed bar to the start of the one that needs it (the prototype's
-  // `drawPlanLinks`). They are read again whenever the chart's box changes. A need whose bar is
-  // not drawn - a cycle's task, or a step the words filter left - has no line.
+  // `drawPlanLinks`). They are read again when the chart's box changes or another slice draws.
+  // A need whose bar is not drawn has no line.
   const [links, setLinks] = useState<{
     readonly height: number;
     readonly paths: readonly { readonly d: string; readonly of: readonly string[] }[];
@@ -683,7 +724,8 @@ function PlanChart({
           y: rect.top - frame.top + rect.height / 2,
         });
       }
-      const paths = bars.flatMap((bar) => {
+      const paths = drawing.drawn.flatMap(({ row: bar }) => {
+        if (bar.kind !== "bar") return [];
         const to = boxes.get(bar.task.id);
         if (to === undefined) return [];
         return bar.needs.flatMap((needed) => {
@@ -721,7 +763,7 @@ function PlanChart({
     const resized = new ResizeObserver(measure);
     resized.observe(element);
     return () => resized.disconnect();
-  }, [bars]);
+  }, [drawing.drawn]);
 
   /** The chart's rows as the browser holds them, bars and cycles, in the order of `rows`. */
   const items = (): HTMLElement[] => [
@@ -737,13 +779,13 @@ function PlanChart({
     document.activeElement === null ||
     document.activeElement === document.body ||
     at(items()) !== -1;
-  /** The first bar's row of `held` past `from`, going `by` rows at a time, or `from` itself
-   *  where there is none, so a move key at the chart's end stays on the row it is on, as the
-   *  outline's move keys stop at its ends: the keys that move the reader pass over a cycle's
-   *  row. */
-  const barFrom = (held: readonly HTMLElement[], from: number, by: 1 | -1): number => {
-    for (let index = from + by; index >= 0 && index < held.length; index += by) {
-      if (held[index]?.hasAttribute("data-plan-bar-row") === true) return index;
+  /** The first bar's place in `rows` past the `from`th, going `by` rows at a time, or `from`
+   *  itself where there is none, so a move key at the chart's end stays on the row it is on, as
+   *  the outline's move keys stop at its ends: the keys that move the reader pass over a cycle's
+   *  row. The rows are the chart's, drawn or still to be drawn. */
+  const barFrom = (from: number, by: 1 | -1): number => {
+    for (let index = from + by; index >= 0 && index < rows.length; index += by) {
+      if (rows[index]?.row.kind === "bar") return index;
     }
     return from;
   };
@@ -752,13 +794,29 @@ function PlanChart({
     const target = held[index];
     if (target !== undefined) moveToRow(target, { preventScroll: true });
   };
+  /** The outline's move to the `index`th of the chart's rows (`rows`), drawn first where it is
+   *  still to be drawn (`drawUpTo`). */
+  const moveToPlace = (index: number): void => {
+    const place = rows[index];
+    if (place === undefined) return;
+    drawing.slices.drawUpTo(place.key);
+    const target = chart.current?.querySelector<HTMLElement>(
+      `[data-node-row][data-node-id="${CSS.escape(place.task.id)}"]`
+    );
+    if (target != null) moveToRow(target, { preventScroll: true });
+  };
+  /** Which of the chart's rows (`rows`) the reader is on, a link inside it included, or -1 when
+   *  on none: the drawn rows stand in the browser in the order `drawing.drawn` holds them. */
+  const here = (): number => {
+    const place = drawing.drawn[at(items())];
+    return place === undefined ? -1 : rows.indexOf(place);
+  };
   /** The outline's move keys on the chart (`useTreeKeymap.ts`'s `tree-next`, `tree-previous` and
    *  `tree-arrows`): from a row to the nearest bar's row the way `by` goes (`barFrom`), and from
    *  the page itself to the first bar, whichever way the key goes. */
   const step = (by: 1 | -1): void => {
-    const held = items();
-    const on = at(held);
-    moveTo(held, on === -1 ? barFrom(held, -1, 1) : barFrom(held, on, by));
+    const on = here();
+    moveToPlace(on === -1 ? barFrom(-1, 1) : barFrom(on, by));
   };
   useKeymap("issue", [
     // The chart is one tab stop: Tab from the page itself enters it at that stop, the row the
@@ -797,10 +855,7 @@ function PlanChart({
       keys: "Home",
       label: "Move to the first row",
       palette: false,
-      run: () => {
-        const held = items();
-        moveTo(held, barFrom(held, -1, 1));
-      },
+      run: () => moveToPlace(barFrom(-1, 1)),
       when: () => at(items()) !== -1,
     },
     {
@@ -808,10 +863,7 @@ function PlanChart({
       keys: "End",
       label: "Move to the last row",
       palette: false,
-      run: () => {
-        const held = items();
-        moveTo(held, barFrom(held, held.length, -1));
-      },
+      run: () => moveToPlace(barFrom(rows.length, -1)),
       when: () => at(items()) !== -1,
     },
     {
@@ -843,7 +895,7 @@ function PlanChart({
       label: "Go to the focused step in the conversation",
       palette: false,
       run: () => {
-        const task = rows[items().indexOf(document.activeElement as HTMLElement)]?.task;
+        const task = drawing.drawn[items().indexOf(document.activeElement as HTMLElement)]?.task;
         const path = task === undefined ? undefined : conversationPath(task);
         if (path !== undefined) navigate(path);
       },
@@ -901,7 +953,7 @@ function PlanChart({
         </span>
       </div>
       <div aria-label={CONTROL_LABELS.tree} className="min-w-0" onBlur={releaseFocus} role="tree">
-        {rows.map((place) =>
+        {drawing.drawn.map((place) =>
           place.row.kind === "cycle" ? (
             <CycleRow
               cycle={place.row}
@@ -1178,6 +1230,7 @@ function BarRow({
           className={`text-[15px] leading-[22px] break-words ${pageInkText} max-[761px]:-order-2 max-[761px]:min-w-0 max-[761px]:basis-full`}
           data-node-words=""
           {...line.marks}
+          {...rowTiming}
         >
           {line.reads}
           {line.words}

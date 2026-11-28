@@ -80,7 +80,6 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   if (node === undefined || !words.contains(node)) return { x, y, offset: 0 };
   const end = doc.createRange();
   end.setStart(node, position?.offset ?? range?.startOffset ?? 0);
-  const walker = doc.createTreeWalker(words, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
   // The words as the editor holds them, and the press's place in them once it is passed.
   let held = "";
   let offset: number | undefined;
@@ -89,15 +88,7 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   // The element drawn in place of the editor's text the last thing counted belongs to, whose
   // texts count nothing more.
   let counted: Element | null = null;
-  for (let drawn = walker.nextNode(); drawn !== null; drawn = walker.nextNode()) {
-    // An element counts only where it is drawn in place of the editor's text (below), which is
-    // where it is one of `HELD_OTHERWISE` itself, so every other element is passed unread.
-    if (drawn instanceof Element && !drawn.matches(HELD_OTHERWISE)) continue;
-    const element = drawn instanceof Element ? drawn : drawn.parentElement;
-    if (element?.closest("[data-node-trail]") != null) continue;
-    const other = element?.closest(HELD_OTHERWISE) ?? null;
-    // An element counts only where it is drawn in place of the editor's text, and only once.
-    if (drawn instanceof Element ? drawn !== other : other !== null && other === counted) continue;
+  for (const { drawn, other, text } of wordUnits(words)) {
     if (offset === undefined) {
       if (other?.contains(node) === true || end.comparePoint(drawn, 0) >= 0) {
         offset = held.length;
@@ -105,7 +96,7 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
       } else if (drawn === node) offset = held.length + end.startOffset;
     }
     counted = other;
-    held += (other === null ? drawn.textContent : other.getAttribute(REFERENCE_WRITTEN)) ?? "";
+    held += text;
   }
   // A press past everything counted, after an atom - an element drawn in place of no text of the
   // editor's, as a reference is not - goes after that atom.
@@ -114,10 +105,33 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   return { x, y, offset: at, word: pressedWord(held, at), next: next || undefined };
 }
 
+/** The drawn text runs and their editor spellings, excluding the row's trail. A reference
+ *  contributes its written text and an atom contributes no text to the editor's offset. */
+export function* wordUnits(words: HTMLElement) {
+  const walker = words.ownerDocument.createTreeWalker(
+    words,
+    NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT
+  );
+  let counted: Element | null = null;
+  for (let drawn = walker.nextNode(); drawn !== null; drawn = walker.nextNode()) {
+    if (drawn instanceof Element && !drawn.matches(HELD_OTHERWISE)) continue;
+    const element = drawn instanceof Element ? drawn : drawn.parentElement;
+    if (element?.closest("[data-node-trail]") != null) continue;
+    const other = element?.closest(HELD_OTHERWISE) ?? null;
+    if (drawn instanceof Element ? drawn !== other : other !== null && other === counted) continue;
+    counted = other;
+    yield {
+      drawn,
+      other,
+      text: (other === null ? drawn.textContent : other.getAttribute(REFERENCE_WRITTEN)) ?? "",
+    };
+  }
+}
+
 /** The word at `offset` in `text` - the run of characters that are no space around it - with
  *  the text from the start of the word before it and the text to the end of the word after it,
  *  and how far into the word `offset` is (`CaretAt`); none where `offset` stands in no word. */
-function pressedWord(text: string, offset: number): CaretAt["word"] {
+export function pressedWord(text: string, offset: number): CaretAt["word"] {
   // Where the run of spaces, or of characters that are no space, beside `from` ends: before it
   // where `step` is -1, after it where `step` is 1. One step a character, so a long run of
   // characters that are no space costs no more than its length.

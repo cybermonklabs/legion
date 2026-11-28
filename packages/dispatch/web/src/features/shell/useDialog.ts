@@ -188,6 +188,13 @@ function handOverFocus(container: HTMLElement | null, giveBackTo: HTMLElement | 
 }
 
 export interface UseDialogOptions {
+  /** Takes the focus in the frame after the commit that opens the dialog, on its field, and none
+   *  in that commit: the new issue page's Details at the phone's width (`margin/Margin.tsx`'s
+   *  `DetailsDrawer`), whose sheet's focus in that commit laid its whole panel out inside the
+   *  press's task. A key typed before that frame reaches what holds the focus then, the control
+   *  that opened the dialog. A dialog with no field of its own takes none. Unset, the dialog takes
+   *  the focus itself in the commit that opens it. */
+  focusInFrame?: boolean;
   /** Element to focus first instead of the container's first focusable descendant. */
   initialFocusRef?: RefObject<HTMLElement | null>;
   onClose: () => void;
@@ -210,6 +217,7 @@ export interface DialogHandle<T extends HTMLElement> {
  * Tab trapping listens on the container.
  */
 export function useDialog<T extends HTMLElement>({
+  focusInFrame,
   initialFocusRef,
   onClose,
   open,
@@ -238,6 +246,10 @@ export function useDialog<T extends HTMLElement>({
   // this ref because the dialog may have no element (no entry in `focusRecords`), and because the
   // passive cleanup runs after the layout cleanup has deleted the entry.
   const focusRecord = useRef<FocusRecord | null>(null);
+  // Whether the dialog takes its first focus in the frame after it opens (`focusInFrame`), read
+  // by the effect that opens it through this ref, so the effect runs on `open` alone.
+  const focusInFrameRef = useRef(focusInFrame === true);
+  focusInFrameRef.current = focusInFrame === true;
 
   // The focus moves to the dialog itself at once, in the commit that opens it, so a key typed
   // before its field takes the focus reaches nothing behind it: a Space on the control that
@@ -269,6 +281,13 @@ export function useDialog<T extends HTMLElement>({
         container.tabIndex = -1;
       }
     };
+    if (focusInFrameRef.current && !container.contains(active)) {
+      // The field takes the focus in the frame after (`initialFocusFrame`), from wherever it is.
+      focusRecords.set(container, record);
+      return () => {
+        focusRecords.delete(container);
+      };
+    }
     if (!container.contains(active)) {
       makeFocusable();
       container.focus({ preventScroll: true });

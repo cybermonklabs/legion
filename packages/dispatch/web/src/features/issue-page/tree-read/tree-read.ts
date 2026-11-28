@@ -1,4 +1,6 @@
 import {
+  type DefaultError,
+  type FetchQueryOptions,
   focusManager,
   hashKey,
   matchQuery,
@@ -7,6 +9,7 @@ import {
   type QueryFilters,
   type QueryFunctionContext,
   type QueryKey,
+  QueryObserver,
   queryOptions,
   useQuery,
   useQueryClient,
@@ -446,6 +449,80 @@ export function useStartOutlineRead(key: string): () => void {
   }, [key, queryClient]);
 }
 
+/**
+ * Sends, from the handler of a press on the view control of `preset` (`IssuePresets.tsx`), the
+ * reads of issue `key` that view's rows are drawn from - the outline read it holds where its
+ * readers send it (`OutlineChoice.sends`: Graph's in Graph, Conversation's in Conversation and in
+ * each filter but Spec), and the filter's own view read - each before the commit that turns the
+ * view on (R2: the press sends the read, and the page shows that it took the act in that commit).
+ * Its readers sent each only as they subscribed, after that commit.
+ *
+ * It sends exactly what those readers' first look sends, by the tree's own rule (`TREE_FRESH`), so
+ * a press sends no request the page would not: nothing where a read is out already, nor where it
+ * holds an answer no one has asked for again, nor where it was refused and no one has asked for
+ * it since (`mayReadOnMount`), nor while a write of the issue holds it (`mayReadNow`). A read the
+ * cache holds no state of, or one a load reset (`resetViews`), is sent. The readers then find it
+ * out, and send nothing of their own. Answers the reads it sent: a press waits on those of them
+ * still out with no answer held before it draws the view (`view-press.tsx`), and on no read the
+ * load sent, which the view draws itself as loading while it is out.
+ */
+export function startPressedViewRead(
+  queryClient: QueryClient,
+  key: string,
+  preset: Preset
+): readonly Query[] {
+  const outline = outlineOf(preset);
+  const filter = TREE_FILTERS.find((one) => one === preset);
+  const decisions =
+    preset === "decisions"
+      ? queryClient
+          .getQueryCache()
+          .find({ exact: true, queryKey: issueDecisionsQuery(key, true).queryKey })
+      : undefined;
+  return [
+    outline !== undefined && preset !== "spec"
+      ? sendAsReadersWould(queryClient, outlineQuery(key, outline))
+      : undefined,
+    filter === undefined ? undefined : sendAsReadersWould(queryClient, viewQuery(key, filter)),
+    decisions !== undefined && readOut(decisions) ? decisions : undefined,
+  ].filter((sent) => sent !== undefined);
+}
+
+/** Whether `query` is out with no answer held. */
+export function readOut(query: Pick<Query, "state">): boolean {
+  return query.state.data === undefined && query.state.fetchStatus === "fetching";
+}
+
+/**
+ * Sends `read` where a new observer of it would send it by the tree's rule (`TREE_FRESH`): the
+ * cache holds no state of it, or it is not out, no write of the issue holds it, and it is not
+ * begun or is stale where it may be read on a mount (`startPressedViewRead`).
+ *
+ * The read is held by an observer of its own, which reads nothing, until it settles. TanStack
+ * gives up a read in flight whose last observer leaves, where its function took the read's signal,
+ * as `readTree` does: the press's commit takes the view it left off the page, and a reader there
+ * that watched this read - Conversation's body watches Graph's - was its last observer for that
+ * moment, before the view's readers subscribe after the commit. Given up, the read was sent a
+ * second time by those readers. Held, it goes on whatever leaves, and a press on another view
+ * before it answers keeps its answer for its view. Answers the read's query where it sent it.
+ */
+function sendAsReadersWould<TKey extends QueryKey>(
+  queryClient: QueryClient,
+  read: FetchQueryOptions<TreeAnswer, DefaultError, TreeAnswer, TKey>
+): Query | undefined {
+  const held = queryClient.getQueryCache().find({ exact: true, queryKey: read.queryKey });
+  const sends =
+    held === undefined ||
+    (held.state.fetchStatus === "idle" &&
+      mayReadNow(held) &&
+      (!outlineBegun(held) || (held.isStale() && mayReadOnMount(held))));
+  if (!sends) return held !== undefined && readOut(held) ? held : undefined;
+  const sent = queryClient.prefetchQuery(read);
+  const release = new QueryObserver(queryClient, { ...read, enabled: false }).subscribe(() => {});
+  void sent.finally(release);
+  return queryClient.getQueryCache().find({ exact: true, queryKey: read.queryKey });
+}
+
 /** One role's blocks from the read that holds them (`TreeRead.blocksOf`), answered as the blocks
  *  read of that role's document answered them (`artifactBlocksQuery`), less the members no caller
  *  reads (`TreeBlock`). The state is that read's own; whether that read runs is read apart, by
@@ -459,6 +536,9 @@ export interface TreeBlocksRead {
 
 /** The tree read, and how far it has got. */
 export interface TreeRead {
+  /** The cache key of the outline answer. Tree construction watches this answer separately
+   *  from its React observers, so it can be scheduled directly when a read changes. */
+  readonly queryKey: QueryKey;
   /** The pages read merged: the first, from the load on, and each next page the reader's press
    *  or an address read since (`readNextTreePage`). */
   readonly answer: TreeAnswer | undefined;
@@ -488,6 +568,8 @@ export interface TreeRead {
    *  A refetch that fails over a held answer is no such failure, since the page still draws what
    *  it holds. */
   readonly failed: boolean;
+  /** The filter whose view answer supplies the active role's blocks. */
+  readonly filter: TreeFilter | undefined;
   /** Whether the read holds no answer and has not settled since its last read began: its first
    *  read is out, or a read asked again after a refusal is, while `failed` holds too. It is what
    *  holds back a read that waits on every other read of the page, as the batched name read does
@@ -525,6 +607,10 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     refetch,
   } = read;
   const sent = choice.outline !== undefined && (choice.sends || fetchStatus !== "idle");
+  const queryKey = useMemo(
+    () => outlineKey(choice.outline ?? "conversation", issue.key),
+    [choice.outline, issue.key]
+  );
   const view = useQuery({ ...viewQuery(issue.key, filter ?? TREE_FILTERS[0]), enabled: false });
   const viewAnswer = filter === undefined ? undefined : view.data;
   const blocks = useMemo(
@@ -556,10 +642,12 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
       blocksRead: isSuccess,
       blocksOf,
       failed: answer === undefined && errorUpdateCount > 0,
+      filter,
       pending: sent && isPending,
+      queryKey,
       refetch,
     }),
-    [answer, blocksOf, errorUpdateCount, isPending, isSuccess, refetch, sent]
+    [answer, blocksOf, errorUpdateCount, filter, isPending, isSuccess, queryKey, refetch, sent]
   );
 }
 
