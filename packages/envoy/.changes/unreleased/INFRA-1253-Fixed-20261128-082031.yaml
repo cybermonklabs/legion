@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The move of a node, `PATCH /api/v1/issues/{key}/nodes/{id}`, no longer answers as `after` a
+  block that a text edit removed. Such a block keeps its place under its parent in the store, but
+  no tree read holds it, so a client could not place the node by that answer. The answer's `after`
+  is now the nearest sibling before the node that the issue's tree holds, or null where none does.
+  An `after` in the request that names such a block is refused `400 INVALID_POINTER`, as any other
+  `after` that is no sibling is, and `after: null` puts a node of the spec's band right after the
+  issue's memo even where a removed block stood before the memo.
+time: 2026-11-28T08:20:31Z
+custom:
+    Issue: INFRA-1253

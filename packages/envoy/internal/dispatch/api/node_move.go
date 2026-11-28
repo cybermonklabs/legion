@@ -107,8 +107,9 @@ type nodeMoveInput struct {
 }
 
 // nodeMoved is the answer of a move that is taken: the node's parent, the ranked sibling it now
-// follows, null where it follows none, each by its store address, and its new placement_seq, the
-// tag the next If-Match of the node takes.
+// follows, the nearest before it that the issue's head holds - never a block a text edit removed,
+// which keeps its part_of and its rank - null where it follows none, each by its store address, and
+// its new placement_seq, the tag the next If-Match of the node takes.
 type nodeMoved struct {
 	Parent       string  `json:"parent"`
 	After        *string `json:"after"`
@@ -954,19 +955,23 @@ func refuseUnreachedParent(ctx context.Context, tx pgx.Tx, moved, parent moveNod
 
 // moveSibling is one ranked child of the parent a move places a node under: its kind and id as its
 // tuples name it, its rank, its block's type and id and the document whose text holds it, each ""
-// for a node that is no block of a document.
+// for a node that is no block of a document, and whether the store holds it gone, as it holds a
+// block a text edit removed, which keeps its part_of and its rank: the issue's head holds such a
+// node as no child of the parent (refs' newHeadTree, treeChildStands), so it is no sibling.
 type moveSibling struct {
 	kind, id, rank       string
 	typ, block, document string
+	gone                 bool
 }
 
 // siblingsStatement reads every child the node its tuples name $1 and $2 holds through its current
 // part_of (graphstore.CurrentTupleRead, into a node) that holds a rank, with that rank, and, for a
 // block of a document, its type, its block id and the document whose text holds it
-// (refs.BlockDocumentSQL), in the order of their ranks, compared byte for byte.
+// (refs.BlockDocumentSQL), and whether its node's state is gone, in the order of their ranks,
+// compared byte for byte.
 var siblingsStatement = `
 	select child.from_kind, child.from_id, ranked.held, coalesce(d.type, ''), coalesce(d.block_id, ''),
-	       coalesce(` + refs.BlockDocumentSQL("d") + `::text, '')
+	       coalesce(` + refs.BlockDocumentSQL("d") + `::text, ''), coalesce(n.state = '` + graphstore.StateGone + `', false)
 	from (
 		` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
 	`t.to_kind in ($1, `+graphstore.AddressKindSQL("$1", "$2")+`) and t.to_id = $2 and t.kind = '`+graphstore.TuplePartOf+`'`) + `
@@ -978,6 +983,7 @@ var siblingsStatement = `
 		order by t.seq desc limit 1
 	) ranked on ranked.held is not null
 	left join document_blocks d on d.node_kind = child.from_kind and d.node_address = child.from_id
+	left join graph_nodes n on n.kind = child.from_kind and n.id = child.from_id
 	where child.asserted
 	order by ranked.held collate "C"`
 
@@ -989,15 +995,15 @@ func moveSiblings(ctx context.Context, q queryer, parent moveNode) ([]moveSiblin
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (moveSibling, error) {
 		var sibling moveSibling
-		err := row.Scan(&sibling.kind, &sibling.id, &sibling.rank, &sibling.typ, &sibling.block, &sibling.document)
+		err := row.Scan(&sibling.kind, &sibling.id, &sibling.rank, &sibling.typ, &sibling.block, &sibling.document, &sibling.gone)
 		return sibling, err
 	})
 }
 
 // movePlace is where a move puts its node among the ranked children of its parent: the rank it
-// gives it, "" for a node that holds none, the ranked sibling it now follows (nil for none), and
-// the ranked children of the parent in their new order, the moved node among them, each with its
-// block and its document.
+// gives it, "" for a node that holds none, the ranked sibling it now follows, the nearest before it
+// that is not gone (nil for none), and the ranked children of the parent in their new order, the
+// moved node among them, each with its block and its document, a gone one included.
 type movePlace struct {
 	rank     string
 	follows  *string
@@ -1013,6 +1019,12 @@ type movePlace struct {
 // sibling of its band. An after that is no child of the parent, the moved node itself, a node that
 // holds no rank or one of another band, and an after on a node that holds none, are each 400
 // INVALID_POINTER naming after.
+//
+// A gone child - a block a text edit removed, which keeps its part_of and its rank - is no sibling
+// (moveSibling): no after names it, it is no memo, and the answer's after is the nearest sibling
+// before the node that is not gone, the one the issue's head holds before it. It keeps its rank,
+// so the rank the node takes lies between the ranks right beside its place, a gone one's included:
+// the node holds a rank no child of the parent holds, should an edit bring that block back.
 func placeAmongSiblings(ctx context.Context, q queryer, move nodeMoveRequest, moved, parent moveNode) (movePlace, error) {
 	var held *string
 	if err := q.QueryRow(ctx, `
@@ -1050,25 +1062,27 @@ func placeAmongSiblings(ctx context.Context, q queryer, move nodeMoveRequest, mo
 			return movePlace{}, refuseAfter("it is the moved node itself")
 		}
 		lower = slices.IndexFunc(siblings, func(sibling moveSibling) bool {
-			return ok && sibling.kind == stored && sibling.id == id
+			return ok && !sibling.gone && sibling.kind == stored && sibling.id == id
 		})
 		if lower < 0 {
-			return movePlace{}, refuseAfter(fmt.Sprintf("it is no ranked child of %s: after names a node that holds a rank and stands under the parent the moved node has once the move is taken", parent.named))
+			return movePlace{}, refuseAfter(fmt.Sprintf("it is no ranked child of %s: after names a node that holds a rank and stands under the parent the moved node has once the move is taken, and a block a text edit removed is none", parent.named))
 		}
 		if !inBand(siblings[lower]) {
 			return movePlace{}, refuseAfter(fmt.Sprintf("it holds a rank of band %c, and %s stands in band %c: a rank stays in its document's band, so a node moves among the siblings of its own document",
 				siblings[lower].rank[0], moved.named, band))
 		}
 	case move.afterNamed:
-		// First in the band: after the last sibling of an earlier band, or after the memo where the
-		// band is the spec's and the parent the issue.
+		// First in the band: right after the last sibling of an earlier band, gone or not, or, where
+		// the band is the spec's and the parent the issue, after the memo: the band's first sibling
+		// that is not gone, where it is a callout.
 		for index, sibling := range siblings {
 			if sibling.rank[0] < band {
 				lower = index
 			}
 		}
 		if band == refs.RankBandSpec && parent.kind == graphstore.KindIssue {
-			if first := slices.IndexFunc(siblings, inBand); first >= 0 && siblings[first].typ == "callout" {
+			first := slices.IndexFunc(siblings, func(sibling moveSibling) bool { return inBand(sibling) && !sibling.gone })
+			if first >= 0 && siblings[first].typ == "callout" {
 				lower = first
 			}
 		}
@@ -1088,9 +1102,12 @@ func placeAmongSiblings(ctx context.Context, q queryer, move nodeMoveRequest, mo
 		above = siblings[next].rank
 	}
 	place := movePlace{rank: rank.Between(below, above)}
-	if lower >= 0 {
-		follows := storeAddress(graphstore.AddressKind(siblings[lower].kind, siblings[lower].id), siblings[lower].id)
-		place.follows = &follows
+	for index := lower; index >= 0; index-- {
+		if !siblings[index].gone {
+			follows := storeAddress(graphstore.AddressKind(siblings[index].kind, siblings[index].id), siblings[index].id)
+			place.follows = &follows
+			break
+		}
 	}
 	place.siblings = slices.Insert(siblings, lower+1, moveSibling{kind: moved.stored, id: moved.id, rank: place.rank})
 	return place, nil
