@@ -309,7 +309,7 @@ Mount writable volumes below the profile directory, never at `/home/legion` itse
 everything the image-time probe proved lives under `HOME` — the CodeGraph plugin's link and the lock at `~/.omp/profiles/legion/plugins`, the natives at `~/.omp/natives`, the warm Go module cache at `~/go/pkg/mod/cache/download` — and a volume at `HOME` (an `emptyDir`, or a `HOME` volume under `readOnlyRootFilesystem`) shadows all of it silently.
 It is `linux/amd64` only: the OMP fork release has no linux/arm64 build.
 One commit ⇒ one image, with one exception:
-a fresh pod still loads the image's own copies of `@sjawhar/pi-envoy` and `@sjawhar/pi-legion`, from the commit, never from an npm release, but a role relaunched onto a newer plugin contract in a kept pod loads the release's published pair, installed from npm under the generation directory ("Contract discipline" below)
+a fresh pod still loads the image's own copies of `@sjawhar/pi-envoy` and `@sjawhar/pi-legion`, from the commit, never from an npm release, but a role relaunched onto a newer plugin contract in a kept pod, or relaunched into a kept pod built on another image than the configured one, loads the release's published pair, installed from npm under the generation directory ("Contract discipline" below)
 — what the image does take from npm is pinned:
 the CodeGraph CLI, the CodeGraph plugin, TypeScript and the two npm language servers all by the committed lockfiles under `packages/daemon/docker/` (`codegraph`, `omp-plugins`, `language-servers`).
 
@@ -4778,6 +4778,13 @@ The install puts the release's plugins under the agent and nothing more, so a ke
 A controller pod whose other facets alone drifted is kept, and the pair is installed into it.
 An install failure ends the child before Oh My Pi starts;
 the launcher reports it gone, the daemon charges it as a launch failure, and the claim is retried until the budget ends it in a `worker-died`.
+
+A relaunch of a claim that records this daemon's contract, such as the relaunch after a death or after the prompt budget retired its process, carries no pair, since nothing of that claim is stale.
+Into a kept issue pod built on another image than `runtime.kubernetes.image`, such a relaunch installs the pair too, exactly as above (`relaunch`, `internal/runtime/sandbox/relaunch.go`, dispatch://INFRA-3916).
+That pod's image carries its own release's `pi-legion`, and a process that loaded it would register on that release's contract, be refused, and be relaunched once more, which ends its agent's background work again.
+No record holds the contract an image carries, so the image the pod was built on decides (`podImageDrift`):
+a pod on the configured image installs nothing, since the boot's image probe holds that image to the daemon's contract.
+A launch of a claim that has registered no session yet (`Spawn`) installs nothing there either, nor does a Claude Code launch (below), nor a daemon that knows no pair, and a pod the relaunch replaces comes up on the configured image with nothing installed.
 
 A role on Claude Code in a pod installs neither plugin.
 That install is `@sjawhar/pi-legion` and `@sjawhar/pi-envoy` from npm, and a phase worker `worker_backends` puts on `claude` loads neither:

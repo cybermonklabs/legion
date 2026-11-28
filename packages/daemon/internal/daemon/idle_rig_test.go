@@ -126,6 +126,12 @@ type idleWakeRig struct {
 	baseline map[string]int
 	// toolsPath holds the rig's `legion` and `omp` stand-ins, made once.
 	toolsPath string
+	// orphanSweep is the daemon's sweep interval (overrides.orphanSweep), which carries the pod
+	// update rounds a step among the rest; zero is the daemon's own minute.
+	orphanSweep time.Duration
+	// clock is the supervisor's clock (overrides.clock); nil is stillClock, whose timers never
+	// fire, so a test sees only what it drove.
+	clock supervise.Clock
 
 	// stop ends the running daemon, and done answers when it has.
 	stopMu sync.Mutex
@@ -154,6 +160,14 @@ type idleRigIssue struct {
 // issue; an issue it does not name, and every issue when plans is nil, runs the default plan. They
 // are set before the boot (idleRigPlan says why).
 func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
+	t.Helper()
+	return newTunedIdleWakeRig(t, nil, plans, issues...)
+}
+
+// newTunedIdleWakeRig is newIdleWakeRig with tune changing the rig before anything reads it: its
+// configuration (cfg), the daemon's sweep interval (orphanSweep) and the supervisor's clock
+// (clock), before the issues are seeded and the daemon boots. A nil tune changes nothing.
+func newTunedIdleWakeRig(t *testing.T, tune func(*idleWakeRig), plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	if _, err := pool.Exec(context.Background(), idleRigSessionTable()); err != nil {
@@ -209,6 +223,9 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	rig.kube.onPodReady = rig.podReady
 	rig.kube.onPodGone = rig.pods.podGone
 	rig.kube.run(t)
+	if tune != nil {
+		tune(rig)
+	}
 
 	for i, name := range issues {
 		rig.issues = append(rig.issues, rig.seed(name, cfg.Project+"-"+strconv.Itoa(i+1), i))
@@ -446,9 +463,13 @@ func (r *idleWakeRig) boot() {
 	// registered after r.stopDaemon and so run before it, printing a log that ends where the
 	// shutdown begins, or none at all when the stop is what failed.
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(r.logs, r.logFile()), &slog.HandlerOptions{Level: slog.LevelDebug}))
+	var clock supervise.Clock = stillClock{}
+	if r.clock != nil {
+		clock = r.clock
+	}
 	go func() {
 		done <- run(ctx, r.cfg, logger, overrides{
-			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, outboxSweep: idleRigOutboxSweep,
+			listen: heldListen, runtime: r.newRuntime, clock: clock, idleTick: idleRigTick, outboxSweep: idleRigOutboxSweep, orphanSweep: r.orphanSweep,
 			workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.t),
 		})
 	}()

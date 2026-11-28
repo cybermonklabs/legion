@@ -171,6 +171,9 @@ type Runtime struct {
 	// issue pod, with what the read of its workspace found (relaunch, R7 of
 	// #5285), nil for a runtime that tells nobody.
 	launchTook runtime.LaunchTook
+	// plugins is Options.Plugins: the pair a Resume into a kept pod built on another image
+	// installs where its spec carries none (relaunch), nil for a daemon that knows none.
+	plugins *runtime.PluginInstall
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
 	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
@@ -493,7 +496,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, clock: clock.Real(), helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace, gitHubRefresh: cmp.Or(opts.GitHubRefreshInterval, gitHubRefreshInterval),
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
-		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
+		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup), plugins: opts.Plugins,
 		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds, launchTakes: opts.LaunchTakes, launchTook: opts.LaunchTook,
 		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,

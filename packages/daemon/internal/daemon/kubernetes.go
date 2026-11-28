@@ -389,6 +389,10 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 			MinAgeMinutes: t.MinAgeMinutes, IntervalSeconds: t.IntervalSeconds,
 		}
 	}
+	// The pair this daemon pins, read where specs.plugins is (ResolvedPlugins over the same
+	// configuration), nil where it knows none: the runtime installs it into a kept pod built on
+	// another image for a resume whose spec carries no pair (sandbox.Options.Plugins).
+	plugins, _ := ResolvedPlugins(cfg)
 	opts := sandbox.Options{
 		Namespace: k.Namespace, Project: project, Image: k.Image, StorageClass: k.StorageClass, IssueVolume: issueVolume,
 		Scheduling: sandbox.Scheduling{NodeSelector: k.Scheduling.NodeSelector, Tolerations: tolerations, PriorityClass: k.Scheduling.PriorityClass},
@@ -408,6 +412,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 		ProvidersSecrets:        providersSecrets(cfg, lookup),
 		SessionStore:            k.SessionStore,
 		Setup:                   k.Setup,
+		Plugins:                 plugins,
 		TestPostgres:            k.TestPostgres,
 		// The guard's settings reach an accepted launcher on the answer to its hello (sandbox
 		// Runtime.LauncherResolver), each pod kind's from its own block: an issue pod's launchers
