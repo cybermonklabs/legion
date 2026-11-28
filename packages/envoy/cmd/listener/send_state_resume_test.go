@@ -21,8 +21,8 @@ import (
 // would deliver it again once the consumer's ack wait (bus.SessionConsumerAckWait, a minute) ran
 // out. So the test waits for the consumer to hold nothing pending with the resumed message acked:
 // the server delivers again only a message it holds pending, so an acknowledged one never comes
-// back. A copy sent twice at once, which needs no ack wait to arrive, is watched for over a short
-// window first.
+// back. A later marker on the session's agent subject must be the next frame, with no duplicate
+// of the resumed message before it.
 func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 	t.Parallel()
 	rig := newRelayRig(t)
@@ -45,9 +45,9 @@ func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 	if probed := first.probed.Load(); probed != 1 {
 		t.Fatalf("the plugin was probed %d times, want once", probed)
 	}
-	// The message sent while it was there is relayed and answered now, so the one collected
+	// The message sent while it was there is relayed and answered now, so the one received
 	// after the resume below can only be the message stored while it was stopped.
-	frames := first.collect(t, 1, 10*time.Second)
+	frames := first.receive(t, 1)
 	if frames[0].item.EventID != connected.EventID {
 		t.Fatalf("the connected session took %s, want the message just sent, %s",
 			frames[0].item.EventID, connected.EventID)
@@ -86,14 +86,13 @@ func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 	// it what it never acknowledged.
 	second := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.register(t, sessionID, map[string]any{"delivery": map[string]any{"consumer": true, "epoch": "epoch-2"}})
-	resumed := second.collect(t, 1, 30*time.Second)
+	resumed := second.receive(t, 1)
 	if resumed[0].item.EventID != stopped.EventID {
 		t.Fatalf("the resumed session took %s, want the message stored while it was stopped, %s",
 			resumed[0].item.EventID, stopped.EventID)
 	}
 
-	// A second copy sent at once arrives inside this window.
-	second.none(t, 2*time.Second)
+	rig.noneThroughMarker(t, second, sessionID)
 	// A copy the server would send again after its ack wait is one it still holds pending; this one
 	// is acknowledged.
 	awaitAcked(t, rig.consumers, sessionID, resumed[0].seq)

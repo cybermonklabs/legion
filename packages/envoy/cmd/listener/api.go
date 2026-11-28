@@ -1218,7 +1218,8 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 			}
 			conditions.NotRegisteredAfter = millis
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		// Use the listener's clock so a test can hold the request budget open.
+		ctx, cancel := d.clk().WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		// Whether the delete removes an entry is read before it runs: Delete is idempotent and
 		// EntryDeleted counts a key that was already absent, so neither answer tells a stop from

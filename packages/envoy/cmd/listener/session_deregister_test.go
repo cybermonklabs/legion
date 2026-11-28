@@ -16,6 +16,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
@@ -222,12 +223,10 @@ func TestAPublishToALaneTheListenerOwnsIsRefused(t *testing.T) {
 	}
 }
 
-// A deregistration answers before the consumer's delete it leaves running: the delete waits on
-// the session's lock with no bound of its own - a relay restart of this listener's can hold it
-// for its own 5 s - and then makes the bucket read, the delete, which records the consumer's
-// resume floor first, and the repair's own calls, where the client's attempt
-// ends at 5 s (LISTENER_CALL_TIMEOUT_MS) and the route promises an answer inside it. The
-// consumer goes once the wait ends, so nothing is given up for the earlier answer.
+// A deregistration answers while its consumer's delete waits for the session lock. The route's
+// budget cannot run out on a clock that never moves, so a route that waited for the delete
+// could never answer while the test holds the lock. Once the lock is released, the consumer
+// must still go.
 func TestADeregistrationAnswersWhileItsConsumerDeleteWaits(t *testing.T) {
 	t.Parallel()
 	rig := newSessionConsumerRig(t)
@@ -235,31 +234,20 @@ func TestADeregistrationAnswersWhileItsConsumerDeleteWaits(t *testing.T) {
 	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
 		"delivery":{"consumer":true,"epoch":"e"}}`)
 	rig.requireConsumer(t, sessionID)
+	rig.deps.clock = clocktest.New(time.Now())
 	// The session's lock, held as one of this listener's own consumer calls holds it: the
 	// delete waits for it, and the answer must not.
 	unlock := sync.OnceFunc(rig.deps.consumers.locks.lock(sessionID))
 	defer unlock()
 
 	recorder := httptest.NewRecorder()
-	answered := make(chan time.Duration, 1)
+	answered := make(chan struct{})
 	go func() {
-		started := time.Now()
 		rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID, nil))
-		answered <- time.Since(started)
+		close(answered)
 	}()
 
-	// DELETE uses a wall-clock context.WithTimeout, not the registration clock. Keep the
-	// route's wall-clock budget assertion until the DELETE route has a clock of its own.
-	select {
-	case took := <-answered:
-		if took >= sendRequestBudget {
-			unlock()
-			t.Fatalf("the deregistration answered %s in, outside the %s of bus work this route gives itself", took, sendRequestBudget)
-		}
-	case <-time.After(sendRequestBudget):
-		unlock()
-		t.Fatalf("the deregistration had not answered %s in while its consumer's delete waited: it waits for that delete", sendRequestBudget)
-	}
+	testwait.Receive(t, "the deregistration answer while the consumer's delete waits", answered)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("DELETE /v1/sessions/%s: status %d: %s", sessionID, recorder.Code, recorder.Body.String())
 	}

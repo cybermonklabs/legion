@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -36,60 +36,29 @@ func consumerRegistrationIn(t *testing.T, sessionID, epoch, dir string, topics .
 	return string(body)
 }
 
-// captureLaneForwards subscribes to sessionID's agent subject on a NATS connection of the session's
-// own, as a plugin in consumer mode holds one beside its relay subject, and returns every role
-// forward that arrives there: a frame whose envelope names another topic. It answers nothing, as
-// no session does - a forward is published into the stream for the holder's consumer, and the only
-// answer on that publish is the server's acknowledgement, which the sender reads. The session's
-// own messages arrive on this subject too and are not returned: their envelope names the subject
-// itself.
-//
-// The message reaches the session as a frame of its consumer, which the stream's stored copy of
-// the forward feeds, so a role message counted once here and counted once on the relay subject
-// reached the session once on each lane, as it does in production.
-func captureLaneForwards(t *testing.T, url, sessionID string) <-chan contracts.Envelope {
+// captureAgentLane reads the same subject the plugin holds alongside its relay subscription.
+// A role forward carries the role topic in its envelope. A later message whose envelope names
+// the agent subject itself marks the end of the check for duplicate forwards.
+func captureAgentLane(t *testing.T, url, sessionID string) <-chan contracts.Envelope {
 	t.Helper()
 	conn := testnats.Connect(t, url)
 	t.Cleanup(conn.Close)
 	agent := contracts.LegacyAgentSubject(sessionID)
-	forwards := make(chan contracts.Envelope, 16)
+	items := make(chan contracts.Envelope, 16)
 	if _, err := conn.Subscribe(agent, func(msg *natsgo.Msg) {
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err != nil {
 			t.Errorf("decode what %s received on %s: %v", sessionID, agent, err)
 			return
 		}
-		if item.Topic == agent {
-			return
-		}
-		forwards <- item
+		items <- item
 	}); err != nil {
 		t.Fatalf("subscribe %s to %s: %v", sessionID, agent, err)
 	}
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the subscription of %s to %s: %v", sessionID, agent, err)
 	}
-	return forwards
-}
-
-// requireOneForward fails the test unless exactly one forward, on topic, arrived within the window.
-func requireOneForward(t *testing.T, forwards <-chan contracts.Envelope, topic string, within time.Duration) contracts.Envelope {
-	t.Helper()
-	var first contracts.Envelope
-	select {
-	case first = <-forwards:
-	case <-time.After(within):
-		t.Fatalf("no forward on %s reached the session within %s", topic, within)
-	}
-	if first.Topic != topic {
-		t.Fatalf("the forward carries topic %s, want %s", first.Topic, topic)
-	}
-	select {
-	case again := <-forwards:
-		t.Fatalf("a second forward reached the session: %s on %s", again.EventID, again.Topic)
-	case <-time.After(500 * time.Millisecond):
-	}
-	return first
+	return items
 }
 
 // subscribeCore subscribes to subject on a connection of the test's own, apart from any listener's,
@@ -145,7 +114,7 @@ func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThrough
 	ownTopic := "notifications.team.current-registration-" + run
 
 	standIn := startSessionStandIn(t, uri, sessionID, answerDone)
-	forwards := captureLaneForwards(t, uri, sessionID)
+	agentLane := captureAgentLane(t, uri, sessionID)
 	consumers := observeConsumers(t, uri)
 	publisher := connectPublisher(t, uri)
 	ownMessages := subscribeCore(t, uri, ownTopic)
@@ -153,7 +122,10 @@ func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThrough
 	postListener(t, first.port, "/v1/interests/subscribe", consumerRegistrationIn(t, sessionID, "epoch-1", firstDir, followed))
 	through := newEnvelope("agent", agent, "through the first listener")
 	publish(t, publisher, through)
-	frames := standIn.collect(t, 1, 10*time.Second)
+	if got := testwait.Receive(t, "the first agent message on the agent lane", agentLane); got.EventID != through.EventID {
+		t.Fatalf("the agent lane received %s on %s, want %s on %s", got.EventID, got.Topic, through.EventID, through.Topic)
+	}
+	frames := standIn.receive(t, 1)
 	requireFrames(t, frames, through)
 	// The session wrote it, so the relay the second listener starts, at the ack floor, sends it no
 	// second time.
@@ -170,28 +142,37 @@ func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThrough
 
 	followedItem := newEnvelope("dispatch", comment, "a comment on the issue the session follows")
 	publish(t, publisher, followedItem)
-	requireFrames(t, standIn.collect(t, 1, 15*time.Second), followedItem)
+	requireFrames(t, standIn.receive(t, 1), followedItem)
 
 	postListener(t, second.port, "/v1/messages/publish",
 		`{"topic":"`+roleTopic+`","message":"a message for the role's holder","source":"agent","source_session":"ses_role_sender_`+run+`"}`)
-	forwarded := requireOneForward(t, forwards, roleTopic, 10*time.Second)
-	roleFrame := standIn.collect(t, 1, 15*time.Second)[0]
+	forwarded := testwait.Receive(t, "the forward on "+roleTopic, agentLane)
+	if forwarded.Topic != roleTopic {
+		t.Fatalf("the forward carries topic %s, want %s", forwarded.Topic, roleTopic)
+	}
+	// The inbox message marks the end of the forward check on the same NATS subscription.
+	inbox := newEnvelope("agent", agent, "a message for this session alone")
+	publish(t, publisher, inbox)
+	if next := testwait.Receive(t, "the agent-lane marker "+inbox.EventID, agentLane); next.EventID != inbox.EventID {
+		t.Fatalf("another message reached the agent lane before marker %s: %s on %s", inbox.EventID, next.EventID, next.Topic)
+	}
+	roleFrame := standIn.receive(t, 1)[0]
 	if roleFrame.item.EventID != forwarded.EventID || roleFrame.item.Topic != roleTopic {
 		t.Fatalf("the frame after the role message is %s on %s, want the forwarded %s on %s",
 			roleFrame.item.EventID, roleFrame.item.Topic, forwarded.EventID, roleTopic)
 	}
 
-	inbox := newEnvelope("agent", agent, "a message for this session alone")
-	publish(t, publisher, inbox)
-	requireFrames(t, standIn.collect(t, 1, 15*time.Second), inbox)
-	standIn.none(t, 2*time.Second)
+	requireFrames(t, standIn.receive(t, 1), inbox)
+	marker := newEnvelope("agent", agent, "end of the relay delivery check")
+	publish(t, publisher, marker)
+	standIn.noneBefore(t, marker)
 
 	status, answer := callListener(t, second.port, http.MethodPost, "/v1/messages/publish",
 		`{"topic":"`+ownTopic+`","message":"a message the session sends","source":"agent","source_session":"`+sessionID+`"}`)
 	if status != http.StatusOK {
 		t.Fatalf("the session's publish through the second listener: status %d: %s", status, answer)
 	}
-	message, err := ownMessages.NextMsg(10 * time.Second)
+	message, err := ownMessages.NextMsgWithContext(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("read the message the session sent on %s: %v", ownTopic, err)
 	}
