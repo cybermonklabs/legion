@@ -519,3 +519,82 @@ func TestAPodThatLostTheLeaseWhileWaitingOutABindingSettlesAHardTakeoverAfterIt(
 		t.Fatalf("pod-x's settle hold ended %v, want settled holding both messages", end)
 	}
 }
+
+// A term taken from a hand-back candidate that ends before it ever subscribed - a holder stuck on
+// its durable that gives the lease up, or a stop while it prepares - releases the record owing an
+// ack wait. No stopping pod ever saw this one receiving, and a lost node's binding had the
+// deliver subject to itself meanwhile, so what the durable pushed comes back only at its ack
+// wait: the next holder's record carries the debt, which makes its term no candidate at all, its
+// hold the 7 s one, and the message the lost binding was pushed reaches its session before a
+// newer one. A release that carried no debt would leave the next holder waiting for a mark that
+// never comes, and its hold would run to the same 7 s - but a term that stopped mid-hold may owe
+// what it held, which only the debt says.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
+func TestATermThatNeverSubscribedOwesTheNextHolderAnAckWait(t *testing.T) {
+	for _, row := range []struct {
+		name, machineID string
+		giveUp          bool
+	}{
+		{"gives the lease up", "box-handback-giveup", true},
+		{"stops before it subscribed", "box-handback-stop", false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			granted, denied := consumerInfoUnansweredNATS(t, row.machineID)
+			// A lost node's connection still push-binds the durable and acknowledges nothing.
+			client := bindAsADeadHolder(t, granted, row.machineID)
+			timing := testReceiveTiming()
+			timing.alarmAfter, timing.alarmEvery = 2*time.Second, time.Hour
+			// pod-a polls slowly as a standby, so after it has released the record it does not
+			// take its own back while the row reads it.
+			stuckLease := testLeaseTiming()
+			stuckLease.standbyPoll = 2 * time.Second
+			stuckHandle, stuckReceived := recordingHandler()
+			stuck := newReceiverRigVia(t, denied, granted, row.machineID, "pod-a", stuckHandle, timing, stuckLease)
+			// The record is written last, as a standby reads a graceful hand-back's.
+			putLeaseRecord(t, granted, row.machineID, `{"holder":"pod-gone","boot":"0123456789abcdef","released":true,"unsettled":true}`)
+			stuck.lease.Start(context.Background())
+			stuck.receiver.Start()
+			waitFor(t, "pod-a to take the hand-back", func() bool {
+				status := stuck.lease.Status()
+				return status.Holding && status.Settle && status.HandBack
+			})
+			stuck.awaitState(t, receivePreparing, 10*time.Second)
+
+			if row.giveUp {
+				waitFor(t, "pod-a to give the lease up", func() bool {
+					return strings.Contains(stuck.logs.String(), "giving the listener lease up")
+				})
+			} else {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				stuck.receiver.Stop(ctx)
+				cancel()
+			}
+			noneReceived(t, stuckReceived, time.Millisecond, "pod-a, which never subscribed")
+			stuck.awaitRecord(t, "released, unsettled and owing an ack wait", func(record leaseRecord) bool {
+				return record.Holder == "pod-a" && record.Released && record.Unsettled && record.AckWaitOwed
+			})
+
+			handle, received := recordingHandler()
+			next := newReceiverRig(t, granted, row.machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
+			next.lease.Start(context.Background())
+			waitFor(t, "pod-b to take the released record", next.lease.Holding)
+			if status := next.lease.Status(); !status.Settle || status.HandBack {
+				t.Fatalf("pod-b's lease = %+v, want settling and no hand-back candidate: pod-a's term never subscribed", status)
+			}
+			// The lost node's binding takes the older message alone, before pod-b subscribes.
+			publishToTheDeadHolder(t, client, row.machineID, "older")
+			next.receiver.Start()
+			must := next.logRecord(t, "listener lease term must settle; receiving at once and holding what arrives until the durable's outstanding messages are in hand", 10*time.Second)
+			if must["cap"] != (consumerAckWait + settleMargin).String() {
+				t.Fatalf("pod-b's settle hold = %v, want the %s cap of a term owed an ack wait", must, consumerAckWait+settleMargin)
+			}
+			next.awaitState(t, receiveActive, 10*time.Second)
+			publishDurable(t, client, "newer")
+			for _, want := range []string{"older", "newer"} {
+				if message := awaitReceived(t, received, consumerAckWait+10*time.Second, "pod-b's "+want); message.data != want {
+					t.Fatalf("pod-b delivered %q, want %q: the messages in the order they were published", message.data, want)
+				}
+			}
+		})
+	}
+}

@@ -39,7 +39,7 @@ func (censusRoles) Holder(context.Context, string) (session.SessionEntry, error)
 	return session.SessionEntry{SelfSubscribed: true, UpdatedAt: time.Now().UnixMilli()}, nil
 }
 
-func (censusRoles) LastSeen(string) int64 { return 0 }
+func (censusRoles) LastSeen(context.Context, string) int64 { return 0 }
 
 // censusStream is the outbox's NATS client as a stream that acknowledges every send at once, and
 // the window of each batch is that same stream: what this file reads is what the outbox records

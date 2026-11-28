@@ -16,7 +16,7 @@ body: |-
     unready. The pod logs one ERROR (`listener lease unavailable: the NATS user lacks the grant for
     KV bucket envoy_listener; delivering without a lease`) and delivers without the lease, as the
     machine's only deliverer with its state in its own process (`openDeliveryLease` in
-    `cmd/listener`). The
+    `cmd/listener`), until a grant lets it open the bucket and it joins the lease. The
     `ENVOY_NOTIFICATIONS`
     stream's read and create are logged and tried again the same way (`notification stream
     refused by the NATS grant; retrying`, with the stream and the grant), while a NATS credential

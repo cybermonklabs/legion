@@ -1,14 +1,16 @@
 //go:build multiprocess
 
 // The rows of the two-pod suite (multiprocess_harness_test.go) about the state the machine's pods
-// share: the writes a pod whose cache trails must not lose, a pod-local address another pod
-// accepted, and the role and last-seen answers every pod must give alike. Its first helpers read a
-// pod's log, its cache and the buckets, which these rows do more than the take-over ones.
+// share: the delivery ledger, the delivery exceptions one pod's work spares the other, the writes
+// a pod whose cache trails must not lose, a pod-local address another pod accepted, and the role
+// and last-seen answers every pod must give alike. Its first helpers read a pod's log, its cache
+// and the buckets, which these rows do more than the take-over ones.
 
 package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -16,8 +18,13 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dedupe"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // swallowNextAck has the pod's relay swallow the next acknowledgement the pod sends the durable
@@ -70,15 +77,18 @@ type mpRoleSet struct {
 // roleSetKeys is the KV key subject of every record a role set of role by sessionID reads or
 // writes, each a key naming the session or the role (roleSetHandler counts the round trips to
 // them): the claimant's registration, which the claim reads where the pod's cache does not hold
-// it, and which the refresh reads from the stream's leader and writes; the role's claim, which the
-// claim reads, reads for its delete marker and writes; and the claimant's interest record, which
-// the claim reads and writes, and reads once more after its tries to confirm the role's topic. The
-// pod's own traffic names none of them: its lease record's reads every half second are on
-// lease.<durable> in the listener state bucket, and its watchers' consumer creates, flow control
-// replies and stream info reads name no key at all.
+// it, and which the refresh reads from the stream's leader, writes and reads back; the claimant's
+// last-seen record in the last-seen bucket, which the refresh writes
+// (session.SessionRegistry's recordSeen); the role's claim, which the claim reads, reads for its
+// delete marker and writes; and the claimant's interest record, which the claim reads and writes,
+// and reads once more after its tries to confirm the role's topic. The pod's own traffic names
+// none of them: its lease record's reads every half second are on lease.<durable> in the listener
+// state bucket, and its watchers' consumer creates, flow control replies and stream info reads
+// name no key at all.
 func roleSetKeys(sessionID, role string) []string {
 	return []string{
 		"$KV." + bus.SessionBucket + "." + sessionID,
+		"$KV." + bus.LastSeenBucket + "." + bus.LastSeenPrefix + dedupe.SessionToken(sessionID),
 		"$KV." + bus.RoleClaimBucket + "." + role,
 		"$KV." + bus.InterestBucket + "." + sessionID,
 	}
@@ -190,6 +200,74 @@ func (p *mpPublisher) stored(t *testing.T, bucket, key string) map[string]any {
 	return value
 }
 
+// mpException is a delivery exception a listener published: its own id, and the event, recipient
+// and reason its payload reports.
+type mpException struct {
+	id, event, recipient, reason string
+}
+
+// watchExceptions subscribes, over core NATS, to the exception lane of topic, where a listener
+// reports a message on topic it could not deliver to one of the sessions that follow it. Every
+// publish there reaches it, a repeat the stream does not store again included.
+func (p *mpPublisher) watchExceptions(t *testing.T, topic string) *natsgo.Subscription {
+	t.Helper()
+	subject := bus.ExceptionTopicPrefix + topic
+	subscription, err := p.client.Conn.SubscribeSync(subject)
+	if err != nil {
+		t.Fatalf("subscribe to %s: %v", subject, err)
+	}
+	t.Cleanup(func() { _ = subscription.Unsubscribe() })
+	if err := p.client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the subscription to %s: %v", subject, err)
+	}
+	return subscription
+}
+
+// mpExceptionOf reads a delivery exception's own id, and the event, recipient and reason its
+// payload reports.
+func mpExceptionOf(t *testing.T, item contracts.Envelope) mpException {
+	t.Helper()
+	var payload struct {
+		EventID          string `json:"event_id"`
+		Reason           string `json:"reason"`
+		RecipientSession string `json:"recipient_session"`
+	}
+	if err := json.Unmarshal([]byte(item.Payload), &payload); err != nil {
+		t.Fatalf("decode a delivery exception's payload: %v (%s)", err, item.Payload)
+	}
+	return mpException{id: item.EventID, event: payload.EventID, recipient: payload.RecipientSession, reason: payload.Reason}
+}
+
+// mpDecodeException reads a delivery exception off the bus.
+func mpDecodeException(t *testing.T, data []byte) mpException {
+	t.Helper()
+	var item contracts.Envelope
+	if err := json.Unmarshal(data, &item); err != nil {
+		t.Fatalf("decode a delivery exception: %v (%s)", err, data)
+	}
+	return mpExceptionOf(t, item)
+}
+
+// mpNextException is the next delivery exception on subscription that reports a delivery to
+// recipient, passing over those reporting a delivery to any other session.
+func mpNextException(t *testing.T, subscription *natsgo.Subscription, recipient string, within time.Duration) mpException {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("no delivery exception to %s on %s within %s", recipient, subscription.Subject, within)
+		}
+		msg, err := subscription.NextMsg(remaining)
+		if err != nil {
+			t.Fatalf("no delivery exception to %s on %s within %s: %v", recipient, subscription.Subject, within, err)
+		}
+		if exception := mpDecodeException(t, msg.Data); exception.recipient == recipient {
+			return exception
+		}
+	}
+}
+
 // A frame a pod delivered and was killed before it could acknowledge reaches its session at most
 // twice, under its own event id, and the repeat comes inside the hard take-over bound. The
 // active pod relays a message to session S, S answers it, and the pod is SIGKILLed before the
@@ -224,6 +302,149 @@ func TestTwoPodsRepeatAtMostOnceWhatAKilledPodDelivered(t *testing.T) {
 	t.Logf("%s took %s %d times across the kill", sessionID, m.event, took)
 }
 
+// An attempt, then a crash: the active pod records in the shared ledger that it is delivering to
+// session S and is SIGKILLed while that delivery is unanswered (the session holds the frame). The
+// standby takes the killed pod's expired lease, so the attempt is a former holder's: it takes the
+// attempt over at once rather than deferring it as a live pod's, and S is sent the message, once,
+// within the hard take-over bound of the kill (a repeat with the same event id is allowed; the
+// held frame was never answered). Before INFRA-557 the durable's 60 s ack wait keeps the message
+// from the standby past that bound.
+func TestTwoPodsDeliverWhatAKilledPodOnlyAttempted(t *testing.T) {
+	uri := mpNATS(t)
+	binary := cmdtest.Build(t, "envoy-listener")
+	a, b := mpStartPair(t, binary, uri)
+	serving := mpStartNATSSessions(t, uri)
+	const sessionID = "ses_mp_attempt"
+	a.registerNATS(t, serving, sessionID)
+	publisher := mpConnectPublisher(t, uri)
+
+	inHand := serving.hold(sessionID)
+	m := publisher.mustPublish(t, sessionID)
+	select {
+	case <-inHand:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s never sent %s a frame", a.instance, sessionID)
+	}
+	killed := a.kill(t)
+	// The standby's restart at the ack floor after the kill recreates this consumer.
+	awaitSessionConsumerStored(t, publisher.client.Conn, sessionID)
+
+	const bound = mpHardBound
+	messages := []mpMessage{m}
+	serving.awaitAll(t, messages, bound+5*time.Second)
+	serving.requireWithin(t, messages, bound, killed)
+	time.Sleep(2 * time.Second)
+	serving.requireOnce(t, messages)
+	if line := lineWith(b.Output.String(), `"msg":"listener delivery deferred to another pod's attempt"`, `"event_id":"`+m.event+`"`); line != "" {
+		t.Fatalf("%s deferred %s as a live pod's attempt, though %s held the lease it took over: %s", b.instance, m.event, a.instance, line)
+	}
+}
+
+// A message on a team topic that a session on consumer delivery cannot be given, since its
+// delivery mode cannot be read, is reported by the fan-out of the pod that holds the machine's
+// durable: one delivery_failed exception for that session, on the topic's exception lane, which
+// the stream stores (TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery). When that pod is
+// SIGKILLed before the durable has its acknowledgement, the standby takes the message over and
+// reports it again: the fan-out asks the shared delivery ledger nothing for a recipient whose own
+// consumer relays the message (fanoutDelivery), so no record of the first report makes the second
+// delivery a dedupe skip. Both reports carry one id, deliveryExceptionID of the event, the
+// recipient and the reason, and the stream, which stores the lane under the Nats-Msg-Id of that
+// id's dedupe key, holds one. Before INFRA-557 each report minted an id of its own, and the stream
+// kept both. A message on an agent subject raises no exception (agentSubjectDelivery), so the row
+// reads a team topic's.
+//
+// The acknowledgement lost is the durable's alone. The active pod stands behind a lane relay,
+// which drops every `$JS.ACK.` frame on the pod's receive connection (mpReceiveConnection), the
+// one the machine's durable is bound and acknowledged on, and passes those on its session-consumer
+// connection (mpSessionConsumerConnection), where the relay of the session's own consumer
+// acknowledges the frame the session took. The row requires the session to have taken that frame
+// and its consumer to hold nothing unacknowledged before the kill, so the message the standby is
+// handed again is the durable's copy.
+//
+// A second interest in the topic, of a session with no entry, keeps the durable path reading it
+// (keepTheDurableReading): with the consumer's interest alone, the durable acknowledges the message
+// before it decodes it (durableNeedsDelivery). The fan-out reports that recipient too, on the same
+// lane, so the row reads only the reports to the session on consumer delivery.
+func TestTwoPodsReportARedeliveredTeamExceptionOnceUnderOneID(t *testing.T) {
+	uri := mpNATS(t)
+	binary := cmdtest.Build(t, "envoy-listener")
+	a := mpStartPodBehindLanes(t, binary, uri, "pod-a")
+	mpWaitActive(t, a, 30*time.Second)
+	b := mpStartPod(t, binary, uri, "pod-b")
+	mpWaitStandby(t, b, 30*time.Second)
+	serving := mpStartNATSSessions(t, uri)
+	publisher := mpConnectPublisher(t, uri)
+	const sessionID, reader, topic, reason = "ses_mp_refused", "ses_mp_durable_reader", "notifications.team.mp-refused", "delivery_failed"
+	a.registerNATS(t, serving, sessionID, topic)
+	registry, err := store.Open(t.Context(), publisher.client.Conn, store.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the interest registry: %v", err)
+	}
+	if _, err := registry.Upsert(store.Interest{SessionID: reader, MachineID: mpMachine}, []string{topic}); err != nil {
+		t.Fatalf("register the interest of %s: %v", reader, err)
+	}
+	for _, pod := range []*mpPod{a, b} {
+		mpEventually(t, 10*time.Second, pod.instance+" to hold "+sessionID+"'s entry and both interests in "+topic, func() bool {
+			return pod.cachedSession(sessionID) != nil && slices.Contains(pod.cachedTopics(sessionID), topic) && slices.Contains(pod.cachedTopics(reader), topic)
+		})
+	}
+	lane := bus.ExceptionTopicPrefix + topic
+	exceptions := publisher.watchExceptions(t, topic)
+
+	t.Cleanup(a.lanes.dropRequests(mpReceiveConnection(a.instance), "$JS.ACK."))
+	// The payload's delivery mode is one no session can be shown to advertise (payloadDeliveryMode).
+	const event = "evt-mp-refused"
+	item := contracts.Envelope{
+		EventID:        event,
+		Source:         "agent",
+		SourceEventID:  event,
+		Topic:          topic,
+		DedupeKey:      "multiprocess." + event,
+		IssuedAt:       contracts.NowMillis(),
+		PayloadSummary: "multiprocess message mp-event=" + event,
+		Payload:        `{"delivery":{"mode":"bogus"}}`,
+		TraceID:        "trace-" + event,
+	}
+	ack, err := publisher.client.JS().Publish(topic, marshalListenerEnvelope(t, item))
+	if err != nil {
+		t.Fatalf("store %s on %s: %v", event, topic, err)
+	}
+	first := mpNextException(t, exceptions, sessionID, 10*time.Second)
+	mpEventually(t, 10*time.Second, sessionID+" to have taken "+event+" from its own consumer's relay, acknowledged", func() bool {
+		return serving.framesTo(sessionID) == 1 && publisher.sessionAckPending(sessionID) == 0
+	})
+	killed := a.kill(t)
+	// The standby's restart at the ack floor after the kill recreates this consumer.
+	awaitSessionConsumerStored(t, publisher.client.Conn, sessionID)
+	// Long enough for a build before INFRA-557 to take the message back, after its 60 s ack wait.
+	second := mpNextException(t, exceptions, sessionID, 90*time.Second)
+	t.Logf("%s reported %s to %s again %s after %s was killed", b.instance, event, sessionID, time.Since(killed).Round(time.Millisecond), a.instance)
+	mpEventually(t, 10*time.Second, b.instance+" to log its own refusal of "+event+" to "+sessionID, func() bool {
+		return lineWith(b.Output.String(), `"msg":"listener delivery mode cannot be read unambiguously"`, `"session_id":"`+sessionID+`"`, `"event_id":"`+event+`"`) != ""
+	})
+
+	for _, exception := range []mpException{first, second} {
+		if exception.event != event || exception.recipient != sessionID || exception.reason != reason {
+			t.Fatalf("exception %+v, want %s for %s to %s", exception, reason, event, sessionID)
+		}
+	}
+	if first.id != second.id {
+		t.Fatalf("the two reports of %s's %s to %s carry the ids %s and %s, want one", event, reason, sessionID, first.id, second.id)
+	}
+	// Once the successor has acknowledged the message, the stream has answered each publish of
+	// its reports, so a second copy would be stored by now.
+	awaitDurableState(t, publisher.client, publisher.consumer, 0, ack.Sequence)
+	var stored []string
+	for _, held := range storedEnvelopes(t, publisher.client, lane) {
+		if exception := mpExceptionOf(t, held.item); exception.event == event && exception.recipient == sessionID && exception.reason == reason {
+			stored = append(stored, exception.id)
+		}
+	}
+	if len(stored) != 1 || stored[0] != first.id {
+		t.Fatalf("the stream holds the reports %v of %s's %s to %s on %s, want the one under %s", stored, event, reason, sessionID, lane, first.id)
+	}
+}
+
 // A send and a role claim through the pod whose cache trails: the standby sits behind a 150 ms slow
 // link, a session registers through the active pod, and at once a POST /v1/messages/send to it, and
 // for another such session a role set, go to the standby. Both answer 200, read from the bucket.
@@ -233,12 +454,12 @@ func TestTwoPodsRepeatAtMostOnceWhatAKilledPodDelivered(t *testing.T) {
 // The 150 ms is this rig's means to make the standby's cache trail: it delays every byte the server
 // sends the standby, so the standby's cache sees each write long after the test has made its next
 // request. It is no latency the claim is built for. The role set is a hard claim of a role
-// no claim has held, by a claimant the standby's cache does not hold yet: eight NATS round trips up
+// no claim has held, by a claimant the standby's cache does not hold yet: ten NATS round trips up
 // to its claim write, the read of the role's delete marker among them, which must land before the
 // claim's tries end (roleSetHandler counts them and says how slow a link they fit). The row counts
-// those requests through the standby's relay (countedRoleSet) and requires at most eight, a bound
-// no server's speed moves; the link alone would not tell a ninth, which at 150 ms lands at 1.35 s,
-// well before that claim's own tries' end at (7 s + 4 x 0.15 s)/3 = 2.53 s.
+// those requests through the standby's relay (countedRoleSet) and requires at most ten, a bound no
+// server's speed moves; the link alone would not tell an eleventh, which at 150 ms lands at 1.65 s,
+// well before that claim's own tries' end at (7 s + 6 x 0.15 s)/3 = 2.63 s.
 func TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails(t *testing.T) {
 	uri := mpNATS(t)
 	binary := cmdtest.Build(t, "envoy-listener")
@@ -256,7 +477,7 @@ func TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails(t *testing.T) {
 	if claim.status != http.StatusOK {
 		t.Fatalf("role set for %s through %s at once after it registered through %s: %d %s %v, want 200", claimant, b.instance, a.instance, claim.status, strings.TrimSpace(claim.body), claim.err)
 	}
-	claim.requireTrips(t, claimant, 8)
+	claim.requireTrips(t, claimant, 10)
 	mpEventually(t, 5*time.Second, a.instance+" to answer "+claimant+" as "+role+"'s holder", func() bool {
 		answer := a.call(http.MethodGet, "/v1/roles/"+role, "")
 		return answer.status == http.StatusOK && strings.Contains(answer.body, `"holder":"`+claimant+`"`)
@@ -267,13 +488,13 @@ func TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails(t *testing.T) {
 // Writes through the pod whose cache trails keep the other pod's newer write: the standby sits
 // behind a 250 ms slow link, so a write through the active pod reaches its cache 250 ms late. The
 // role set here is a hard claim of a role no claim has held, by a claimant the standby's cache
-// holds: seven NATS round trips up to its claim write, two of them before the store
-// (roleSetHandler counts them and says how slow a link they fit). At 250 ms the seventh lands at
-// 1.75 s and the server's time, 0.75 s before the claim's tries end at (7 s + 2 x 0.25 s)/3 =
-// 2.5 s. The row counts those requests through the standby's relay (countedRoleSet) and requires
-// at most seven, because the link alone cannot tell an eighth: with the claimant's read put back
-// before the refresh, eight land at 2 s, 0.58 s before that claim's own tries' end at (7 s + 3 x
-// 0.25 s)/3 = 2.58 s, so it would pass on timing, and the count fails it by one request whatever
+// holds: nine NATS round trips up to its claim write, four of them before the store
+// (roleSetHandler counts them and says how slow a link they fit). At 250 ms the ninth lands at
+// 2.25 s and the server's time, 0.42 s before the claim's tries end at (7 s + 4 x 0.25 s)/3 =
+// 2.67 s. The row counts those requests through the standby's relay (countedRoleSet) and requires
+// at most nine, because the link alone cannot tell a tenth: with the claimant's read put back
+// before the refresh, ten land at 2.5 s, 0.25 s before that claim's own tries' end at (7 s + 5 x
+// 0.25 s)/3 = 2.75 s, so it would pass on timing, and the count fails it by one request whatever
 // the server's speed. The row also requires the standby's cache to still hold the older host as
 // the role set begins, so the newer host the role set keeps is one that cache has not seen. A
 // heartbeat on the standby within that window, of a process that does not drive the session,
@@ -330,7 +551,7 @@ func TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite(t *testing.T) {
 		if claim.status != http.StatusOK {
 			t.Fatalf("claim %s for %s through %s: status %d %s %v, want 200", role, sessionID, b.instance, claim.status, strings.TrimSpace(claim.body), claim.err)
 		}
-		claim.requireTrips(t, sessionID, 7)
+		claim.requireTrips(t, sessionID, 9)
 		if stored := publisher.stored(t, bus.SessionBucket, sessionID); stored["host"] != "example-host-b" || stored["self_subscribed"] != true {
 			t.Fatalf("%s's registration after a role set on %s: %v, want host example-host-b, self-subscribed", sessionID, b.instance, stored)
 		}
@@ -339,10 +560,10 @@ func TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite(t *testing.T) {
 
 // A role claim whose holder is gone is answered alike by every pod, whenever each started: the
 // active pod has served for a while when the claim is made and its holder's session then ends,
-// and a standby starts after. Each answers the same holder, the same process holding the claim
-// and the same `claim_released: false`, and the claim itself stands: a lookup releases nothing
-// whatever its holder's state, and only the role claim reaper, on the pod holding the lease, takes
-// one away.
+// and a standby starts after. Each answers the same holder, the same process holding the claim,
+// the same last_seen and the same `claim_released: false`, and the claim itself stands: a lookup
+// releases nothing whatever its holder's state, and only the role claim reaper, on the pod
+// holding the lease, takes one away.
 //
 // The holder's process (`client_instance_id`) is the claim record's own, which lives in the
 // shared role bucket, so the pod that never took the claim answers it as the pod that did: no
@@ -369,7 +590,7 @@ func TestTwoPodsAnswerARoleWhoseHolderLapsedAlike(t *testing.T) {
 
 	onA := a.lapsedRole(t, "mp-grace")
 	onB := b.lapsedRole(t, "mp-grace")
-	requireSameLapsedAnswer(t, a, b, onA, onB, "holder", "holder_state", "claim_released", "client_instance_id")
+	requireSameLapsedAnswer(t, a, b, onA, onB, "holder", "holder_state", "claim_released", "last_seen", "client_instance_id")
 	if onA["client_instance_id"] != holdingProcess {
 		t.Fatalf("%s answers client_instance_id %v, want the process the claim names, %s: the holder's process is the claim record's and not the answering pod's: %v",
 			a.instance, onA["client_instance_id"], holdingProcess, onA)
@@ -380,6 +601,114 @@ func TestTwoPodsAnswerARoleWhoseHolderLapsedAlike(t *testing.T) {
 	if claim := publisher.stored(t, bus.RoleClaimBucket, "mp-grace"); claim["holder_session_id"] != holder || claim["client_instance_id"] != holdingProcess {
 		t.Fatalf("the role bucket holds %v after both pods looked mp-grace up; want %s's claim of process %s", claim, holder, holdingProcess)
 	}
+}
+
+// A role holder whose session expired while only the active pod ran is reported with one last_seen
+// by a standby started after it lapsed. The session bucket is made with a 10 s lifetime, as
+// startup_test.go's buckets are, so the registration expires within the row. Before INFRA-557 the
+// last-seen time lived in the memory of a pod whose cache had held the session, and the standby
+// reported none.
+func TestTwoPodsReportALapsedHoldersLastSeenAlike(t *testing.T) {
+	uri := mpNATS(t)
+	binary := cmdtest.Build(t, "envoy-listener")
+	publisher := mpConnectPublisher(t, uri)
+	const ttl = 10 * time.Second
+	sessionKV, err := publisher.client.JS().CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.SessionBucket, TTL: ttl, Storage: natsgo.FileStorage})
+	if err != nil {
+		t.Fatalf("create the session bucket with a %s lifetime: %v", ttl, err)
+	}
+	a := mpStartPod(t, binary, uri, "pod-a")
+	mpWaitActive(t, a, 30*time.Second)
+	const holder = "ses_mp_seen_holder"
+	a.subscribe(t, mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, holder)))
+	a.setRole(t, holder, "mp-seen-a")
+	a.setRole(t, holder, "mp-seen-b")
+	mpEventually(t, ttl+10*time.Second, holder+"'s registration to expire", func() bool {
+		_, err := sessionKV.Get(holder)
+		return errors.Is(err, natsgo.ErrKeyNotFound)
+	})
+	b := mpStartPod(t, binary, uri, "pod-b")
+	mpWaitStandby(t, b, 30*time.Second)
+
+	onA := a.lapsedRole(t, "mp-seen-a")
+	onB := b.lapsedRole(t, "mp-seen-b")
+	if onA["last_seen"] == nil {
+		t.Fatalf("%s reports no last_seen for %s: %v", a.instance, holder, onA)
+	}
+	requireSameLapsedAnswer(t, a, b, onA, onB, "holder", "last_seen", "claim_released")
+}
+
+// Both sides of this merge in one row: the relay of a session's own consumer, and the delivery
+// lease released by a holder whose receive connection is down.
+//
+// A session's first messages are delivered by the active pod, from the relay of the session's
+// own consumer, and the acknowledgements that relay sends never reach that consumer: the lane
+// relay drops every `$JS.ACK.` the pod's session-consumer connection carries. So the consumer
+// still holds all three, above its ack floor. The pod's receive connection is then cut: it
+// releases the lease, its relays stop with the receive term, the standby takes the lease and
+// starts the session's relay, which restarts the consumer at that floor and is given the three
+// messages again. The messages published after the take-over reach the machine through that
+// standby alone.
+//
+// Nothing is lost, because the lease the cut pod cannot deliver on is released to a pod that
+// can: without that release the cut pod holds it and the standby never serves the machine at
+// all. The three the drop left unacknowledged reach the session a second time, under their own
+// event ids and no other: a frame's reply and its acknowledgement ride the one connection, so a
+// drop that loses the acknowledgement leaves no pod able to say the session took it. Everything
+// published after the take-over arrives exactly once.
+func TestTwoPodsEveryQueuedMessageReachesTheSessionAtMostTwiceAcrossAReceiveLostTakeOver(t *testing.T) {
+	uri := mpNATS(t)
+	binary := cmdtest.Build(t, "envoy-listener")
+	a := mpStartPodBehindLanes(t, binary, uri, "pod-a")
+	mpWaitActive(t, a, 30*time.Second)
+	b := mpStartPod(t, binary, uri, "pod-b")
+	mpWaitStandby(t, b, 30*time.Second)
+	serving := mpStartNATSSessions(t, uri)
+	const sessionID = "ses_mp_queued_once"
+	a.registerNATS(t, serving, sessionID)
+	publisher := mpConnectPublisher(t, uri)
+
+	// Every acknowledgement the active pod's relays send is dropped, so the messages it delivers
+	// stay above its session consumer's ack floor and the standby's relay is given them again.
+	t.Cleanup(a.lanes.dropRequests(mpSessionConsumerConnection, "$JS.ACK."))
+
+	var delivered []mpMessage
+	for range 3 {
+		delivered = append(delivered, publisher.mustPublish(t, sessionID))
+	}
+	serving.awaitAll(t, delivered, 20*time.Second)
+
+	// The standby's restart at the ack floor after the cut below recreates this consumer.
+	awaitSessionConsumerStored(t, publisher.client.Conn, sessionID)
+
+	heal := a.lanes.cut(mpReceiveConnection(a.instance))
+	cut := time.Now()
+	t.Cleanup(heal)
+	mpEventually(t, mpHardBound, b.instance+" to take the lease over", b.active)
+	taken := time.Since(cut)
+	if released := lineWith(a.Output.String(), `"msg":"listener lease released: the receive connection is down"`); released == "" {
+		t.Fatalf("%s kept the lease its lost receive connection cannot deliver on:\n%s", a.instance, mpTail(mpLinesWithout(a.Output.String()), 40))
+	}
+
+	// Published once the cut pod relays nothing: only the standby can deliver them.
+	var afterTheTakeOver []mpMessage
+	for range 3 {
+		afterTheTakeOver = append(afterTheTakeOver, publisher.mustPublish(t, sessionID))
+	}
+	serving.awaitAll(t, afterTheTakeOver, mpHardBound+5*time.Second)
+	serving.requireWithin(t, afterTheTakeOver, mpHardBound, cut)
+
+	messages := append(slices.Clone(delivered), afterTheTakeOver...)
+	// Past the durable's ack wait, so a message a pod took and held back would have come again.
+	time.Sleep(mpQuiet)
+	serving.requireOnce(t, afterTheTakeOver)
+	for _, m := range delivered {
+		serving.requireAtMostTwice(t, m, "a frame whose acknowledgement the drop lost")
+	}
+	serving.requireKnown(t, messages)
+	serving.requireOrder(t, messages)
+	t.Logf("%s took the lease %s after the cut of %s's receive connection; the %d messages %s had delivered were given back, the %d published after the take-over arrived, and nothing came back under an id no message carried",
+		b.instance, taken.Round(time.Millisecond), a.instance, len(delivered), a.instance, len(afterTheTakeOver))
 }
 
 // sessionState is the state and the last registration a pod answers for sessionID on
@@ -403,9 +732,9 @@ func (p *mpPod) sessionState(t *testing.T, sessionID string) (string, int64) {
 // by each. It registers through the active pod and then heartbeats no more: both pods read it
 // live inside the live window, unresponsive past that window, and gone past the horizon, each
 // with one last_seen, the registration's own moment. Neither pod reads its own cache for any of
-// that — the state is the record's age (session.StateOf) and the time is the record's own
-// registration — so a pod that never watched the session answers as the pod that took its
-// registration does.
+// that — the state is the record's age (session.StateOf) and the time is the `seen.` record both
+// pods share (session.SessionRegistry.SetLastSeenBucket) — so a pod that never watched the
+// session answers as the pod that took its registration does.
 //
 // The claim that session holds is released by neither pod while it is unresponsive: no lookup
 // takes a claim away whatever its holder's state, and the role claim reaper, the one path that

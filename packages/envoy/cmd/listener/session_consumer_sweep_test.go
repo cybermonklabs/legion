@@ -45,10 +45,12 @@ func newSweepRigKeeping(t *testing.T, ttl time.Duration) *sweepRig {
 		session.WithSessionLiveWindow(sweepSessionWindow),
 		session.WithSessionGoneHorizon(sweepSessionWindow),
 	)
-	// A pass runs only on the pod serving its machine's receive term (sessionRelays.owned). The
-	// rig starts no relay - nothing here pulls a consumer - so the term is held on a relay set of
-	// its own, which the pass reads and nothing else touches.
-	relays := &sessionRelays{}
+	// A pass runs only on the pod serving its machine's receive term (sessionRelays.owned), and
+	// each of its deletes only while that term is current (sessionRelays.termContext). The rig
+	// starts no relay - nothing here pulls a consumer - so the term is held on a relay set of its
+	// own, which the pass reads and nothing else touches: an endless one, which a row may replace
+	// with a term of its own.
+	relays := &sessionRelays{term: endlessTerm()}
 	relays.owned.Store(true)
 	return &sweepRig{
 		sessionConsumerRig: rig,
@@ -203,4 +205,59 @@ func TestTheSweepKeepsTheConsumerOfASessionTheBucketStillHolds(t *testing.T) {
 	rig.sweep.pass(context.Background())
 
 	rig.requireConsumer(t, sessionID)
+}
+
+// A sweep pass that reaches a delete after this pod's lease stepped down sends nothing, so the
+// consumer the next holder created for the session survives it. The sweep runs on the lease
+// holder alone (holderLoops, main.go), under the context the receive loop cancels once it hears
+// the term has ended, and the lease ends the term a moment before that, so a pass in that moment
+// runs on a live context; each delete checks the term just before it is sent
+// (sessionDelivery.deleteConsumer, sessionRelays.termContext). Here the session ended and a first
+// pass deleted its consumer. Then another pod took the lease, and the session's registration on
+// that pod created the consumer again, as a registration does before it writes the session's
+// entry, so the bucket still holds no record of it. Then this pod's next pass, its context still
+// live, finds that consumer. The lease is on a fake clock and stepped by hand, as the relay's
+// rows step theirs (relay_ownership_test.go).
+func TestASweepDeleteReachedAfterTheLeaseSteppedDownLeavesTheNextHoldersConsumer(t *testing.T) {
+	t.Parallel()
+	rig := newSweepRig(t)
+	kv := leaseBucket(t)
+	clock := newFakeLeaseClock()
+	held := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
+	held.step()
+	status := held.Status()
+	if !status.Holding {
+		t.Fatalf("pod-a did not take the lease: %+v", status)
+	}
+	rig.sweep.relays.term = &relayTerm{ctx: context.Background(), untilLoss: func() time.Duration { return held.UntilLoss(status.Term) }}
+	const sessionID = "ses_sweep_after_step_down"
+	rig.register(t, sessionID)
+	rig.now.advance(sweepLapse)
+	rig.requireState(t, sessionID, session.Gone)
+	rig.sweep.pass(context.Background())
+	rig.requireNoConsumer(t, sessionID)
+
+	if !stepLeaseDown(t, kv, held) {
+		t.Fatal("pod-a's lease did not step down for the record another pod wrote")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	created, err := rig.consumers.Ensure(ctx, sessionID, sessionConsumerFilter(sessionID, nil), 0)
+	if err != nil || !created.Created {
+		t.Fatalf("the next holder's create of the consumer of %s: %+v, %v; want it created", sessionID, created, err)
+	}
+	before, err := rig.consumers.Info(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("the consumer the next holder created for %s: %v", sessionID, err)
+	}
+
+	rig.sweep.pass(context.Background())
+
+	after, err := rig.consumers.Info(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("a sweep pass reached after pod-a's lease stepped down deleted the consumer the next holder created for %s (%v): two pods act on one session's consumer at once", sessionID, err)
+	}
+	if !after.Created.Equal(before.Created) {
+		t.Fatalf("the consumer of %s was created again at %s after the pass, want the one the next holder created at %s standing untouched", sessionID, after.Created, before.Created)
+	}
 }

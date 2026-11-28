@@ -14,15 +14,16 @@ var errDurableStuck = errors.New("the lease holder could not prepare the durable
 
 // abandon ends a term that stopped, with err, before it received. A holder stuck on the durable
 // (errDurableStuck) gives the lease up (lease.GiveUp), so a standby takes it at its next poll and
-// tries in its place. The record it releases carries unsettled as the term left it: a term that
-// had to settle hands its hold on. A refused durable is reported (refuse). It reports whether the
-// durable was refused.
+// tries in its place. The record it releases carries unsettled and ack_wait_owed as the term left
+// them: a term that had to settle hands its hold on, and one that never subscribed still owes the
+// ack wait its acquisition took on, so the next holder's hold waits as long. A refused durable is
+// reported (refuse). It reports whether the durable was refused.
 func (r *durableReceiver) abandon(err error, status leaseStatus) bool {
 	if !errors.Is(err, errDurableStuck) {
 		return r.refuse(err)
 	}
 	r.logger.Warn("giving the listener lease up: this pod cannot deliver from the durable", slog.String("consumer", r.consumer))
-	r.lease.GiveUp(status.Term)
+	r.lease.Load().GiveUp(status.Term)
 	return false
 }
 
@@ -88,7 +89,7 @@ func (r *durableReceiver) failed(attempt time.Time, err error) bool {
 	if alarm {
 		r.alarm(err.Error(), failing)
 	}
-	return r.lease != nil && !refused && failing >= r.timing.alarmAfter
+	return r.lease.Load() != nil && !refused && failing >= r.timing.alarmAfter
 }
 
 // succeeded ends the failures failed times.

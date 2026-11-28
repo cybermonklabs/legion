@@ -30,8 +30,8 @@ related_issues:
 4. Judge "am I serving" against the authority that owns the work path, never by comparing two of
    your own copies. Two copies that one failing path updates together agree on a stale value and
    read healthy while nothing is delivered.
-5. A release for this reason owes the full hold, as a lapse does, since what the dead path held
-   comes back only at its ack wait.
+5. A release for this reason carries no clean-hand-back mark and owes the full hold, as a lapse
+   does, since what the dead path held comes back only at its ack wait.
 
 ## Evidence
 

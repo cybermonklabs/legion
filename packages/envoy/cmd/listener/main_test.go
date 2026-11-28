@@ -1863,9 +1863,11 @@ func TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat(t *testing.T) {
 }
 
 // A row for a session that has expired from the session cache still carries its last heartbeat
-// while the cache retains it, as the listener retains it for as long as the interest reaper can
-// still hold the row: the heartbeat, not the row's older updated_at. The read comes more than one
-// TTL after the session left, past the default retention, so only WithLastSeenRetention keeps it.
+// while the cache retains it, as a listener without the state bucket retains it for as long as the
+// interest reaper can still hold the row: the heartbeat, not the row's older updated_at. The read
+// comes more than one TTL after the session left, so the shortest retention, one TTL, would not
+// keep it. The minute WithLastSeenRetention sets here keeps it, and the default,
+// session.LastSeenMemory, would too.
 func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testing.T) {
 	t.Parallel()
 	const (
@@ -2545,8 +2547,8 @@ func TestASettingNATSCannotChangeOnTheListenerDurableIsRefused(t *testing.T) {
 // No retry can receive from a refused durable, so the listener exits at once instead of starting.
 // The refusal comes right after the NATS connect, before the interest and session cache warm-ups
 // (30 s each): on a NATS that holds no KV bucket yet, a refused listener exits without having
-// opened one, the CI bucket, which a listener mounting the GitHub route opens first, and the
-// listener state bucket included.
+// opened one, the CI bucket, which a listener mounting the GitHub route opens first, the listener
+// state bucket and the last-seen bucket included.
 func TestARefusedDurableStopsTheListenerAtOnce(t *testing.T) {
 	t.Parallel()
 	client := setupTestNATS(t)
@@ -2573,7 +2575,7 @@ func TestARefusedDurableStopsTheListenerAtOnce(t *testing.T) {
 	if strings.Contains(output.String(), "envoy-listener /v1 open") {
 		t.Fatalf("the listener opened /v1 before it refused the durable:\n%s", output.String())
 	}
-	for _, bucket := range []string{bus.InterestBucket, bus.SessionBucket, bus.CIStateBucket, bus.ListenerStateBucket} {
+	for _, bucket := range []string{bus.InterestBucket, bus.SessionBucket, bus.CIStateBucket, bus.ListenerStateBucket, bus.LastSeenBucket} {
 		if _, err := client.JS().KeyValue(bucket); !errors.Is(err, natsgo.ErrBucketNotFound) {
 			t.Fatalf("KV bucket %s after the refused start: %v, want not found: the refusal came after the cache warm-ups", bucket, err)
 		}
@@ -3106,7 +3108,7 @@ func TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed(t *t
 	assertDeliveryException(t, probe, item, "delivery_failed")
 
 	if got := forwards.Load(); got != 2 {
-		t.Fatalf("forward attempts = %d, want 2: a failed forward must clear the attempt cache", got)
+		t.Fatalf("forward attempts = %d, want 2: a failed forward must clear its ledger attempt", got)
 	}
 	if logs := harness.logs.String(); !strings.Contains(logs, `"msg":"listener role forward failed"`) {
 		t.Fatalf("a forward publish error must log as a failed forward:\n%s", logs)
@@ -3168,7 +3170,7 @@ func TestListenerDeliveryHandler_RoleForwardRefusesUnadvertisedDeliveryMode(t *t
 }
 
 // TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedelivery proves the
-// dedupe/attempt-cache check runs BEFORE the capability guard: a duplicate of an envelope
+// delivery-ledger check runs BEFORE the capability guard: a duplicate of an envelope
 // already forwarded successfully must be dropped by the existing dedupe skip -- zero forwards,
 // zero exceptions -- even if the holder's advertised capabilities have since changed, rather
 // than being re-evaluated against the holder's current capabilities and misreported as a fresh
@@ -3387,10 +3389,11 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndWakesAnAgent(t *testing.T)
 
 // TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode proves one
 // incapable subscriber cannot be given a tagged delivery or keep a capable
-// subscriber on the same topic from taking it. Both subscribers are on consumer delivery, as
-// every live session is, so the message the capable one is given is its own consumer's to relay:
-// the fan-out counts that recipient skipped and reports nothing of it, and the one exception it
-// publishes is the incapable subscriber's refusal (session.SessionEntry.ConsumerRelaysStored).
+// subscriber on the same topic from taking it. The capable subscriber is on consumer delivery, as
+// every live session is, so the message it is given is its own consumer's to relay: the fan-out
+// counts that recipient skipped and reports nothing of it (session.SessionEntry.ConsumerRelaysStored).
+// The incapable one's entry records no consumer of its own, so the fan-out is the one report of
+// its refusal and keeps its attempt beside the one exception it publishes (registerFanoutTarget).
 func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testing.T) {
 	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
@@ -3400,7 +3403,7 @@ func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testin
 		incapable = "ses_incapable"
 	)
 	harness.registerConsumerTarget(t, capable, topic, []string{"btw"})
-	harness.registerConsumerTarget(t, incapable, topic, nil)
+	harness.registerFanoutTarget(t, incapable, topic, nil)
 	item := listenerTestEnvelope(topic, "fanout-refuse-unadvertised-mode")
 	item.Payload = `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"btw"}}`
 	probe, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + item.Topic)
@@ -3424,12 +3427,17 @@ func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testin
 	}
 
 	// Nothing the fan-out hands to nobody is recorded: the capable subscriber's copy is its own
-	// consumer's to relay and the incapable one's is refused, so neither leaves a dedupe key
-	// behind (fanoutDelivery).
-	for _, target := range []string{capable, incapable} {
-		if harness.config.dedupeCache.Seen(item.DedupeKey, target) || harness.config.attemptCache.Seen(item.DedupeKey, target) {
-			t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", target)
-		}
+	// consumer's to relay, so it leaves no ledger record behind (fanoutDelivery). This branch's
+	// row asserted it recorded delivered instead; 2af83d53fc (#2603) removed the path that
+	// recorded it, session.Resolve's
+	// `if entry.SelfSubscribed { ... return DeliveryResult{Skipped: true}, nil }`.
+	if ledgerDelivered(t, harness.config, item.DedupeKey, capable) || ledgerAttempted(t, harness.config, item.DedupeKey, capable) {
+		t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", capable)
+	}
+	// The refusal keeps its recipient's attempt, which dedupes the exception across the copies of
+	// the event and the pods of the machine (fanoutDelivery).
+	if !ledgerAttempted(t, harness.config, item.DedupeKey, incapable) {
+		t.Fatalf("the fan-out did not keep %s's attempt beside the exception it reported", incapable)
 	}
 	if recipient := exceptionRecipient(t, assertDeliveryException(t, probe, item, "delivery_failed")); recipient != incapable {
 		t.Fatalf("exception recipient = %q, want %q", recipient, incapable)
@@ -3587,7 +3595,7 @@ func TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload(t *testing.T) {
 	}
 	noException(t, probe)
 	for _, target := range []string{firstTarget, nextTarget} {
-		if harness.config.dedupeCache.Seen(item.DedupeKey, target) || harness.config.attemptCache.Seen(item.DedupeKey, target) {
+		if ledgerDelivered(t, harness.config, item.DedupeKey, target) || ledgerAttempted(t, harness.config, item.DedupeKey, target) {
 			t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", target)
 		}
 	}
@@ -3626,7 +3634,7 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 			harness.coreHandler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 
 			for _, target := range []string{firstTarget, nextTarget} {
-				if harness.config.dedupeCache.Seen(item.DedupeKey, target) {
+				if ledgerDelivered(t, harness.config, item.DedupeKey, target) {
 					t.Fatalf("%s was given a message whose delivery mode cannot be read", target)
 				}
 			}
@@ -3805,10 +3813,6 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		t.Fatalf("open session registry: %v", err)
 	}
 	waitForSessions(t, sessions)
-	dedupeCache := dedupe.New(10 * time.Minute)
-	attemptCache := dedupe.New(5 * time.Minute)
-	t.Cleanup(dedupeCache.Stop)
-	t.Cleanup(attemptCache.Stop)
 	met := metrics.New()
 	logs := &cmdtest.LockedBuffer{}
 	t.Cleanup(func() {
@@ -3822,8 +3826,7 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		registry:          registry,
 		sessions:          sessions,
 		machineID:         "test-machine",
-		dedupeCache:       dedupeCache,
-		attemptCache:      attemptCache,
+		ledger:            testDeliveryLedger(t, client.Conn, "test-machine", "boot-test"),
 		logger:            logging.NewWithWriter("test", logs),
 		messagesReceived:  met.NewCounter("test_messages_received", "test"),
 		messagesDelivered: met.NewCounter("test_messages_delivered", "test"),
@@ -3870,6 +3873,22 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 	}
 }
 
+// testDeliveryLedger opens the listener state bucket on conn as main does and returns machineID's
+// shared delivery ledger as the process boot would hold it, with main's takeover age for a 5 s
+// request limit.
+func testDeliveryLedger(t testing.TB, conn *natsgo.Conn, machineID, boot string) *dedupe.KV {
+	t.Helper()
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
+	if err != nil {
+		t.Fatalf("open the listener state bucket: %v", err)
+	}
+	return dedupe.NewKV(kv, dedupe.KVConfig{
+		Durable:       bus.ListenerDurable(machineID),
+		Boot:          boot,
+		TakeoverAfter: 5*time.Second + ledgerTakeoverMargin,
+	})
+}
+
 // uncancelled is the durable's handler as a plain NATS one, for a test that drives it with no
 // handling context of its own: main gives each message the receive term's context, which only a
 // shutdown cancels.
@@ -3890,6 +3909,38 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		return nil, err
 	}
 	return subscription, client.Conn.Flush()
+}
+
+// ledgerVerdict reads what cfg's delivery ledger holds for the pair, leaving no claim of its own:
+// dedupe.Delivered for a pair the machine delivered, dedupe.InFlight or dedupe.Deferred for one a
+// delivery is in flight for, dedupe.Proceed for one it holds nothing about.
+func ledgerVerdict(t *testing.T, cfg listenerDeliveryHandlerConfig, dedupeKey, sessionID string) dedupe.Verdict {
+	t.Helper()
+	attempt, err := cfg.ledger.Attempt(dedupeKey, sessionID)
+	if err != nil {
+		t.Fatalf("read (%s, %s) from the delivery ledger: %v", dedupeKey, sessionID, err)
+	}
+	if attempt.Verdict == dedupe.Proceed {
+		if clearErr := cfg.ledger.Clear(attempt); clearErr != nil {
+			t.Fatalf("give the read's own claim up: %v", clearErr)
+		}
+	}
+	return attempt.Verdict
+}
+
+// ledgerAttempted reports whether the ledger says a delivery of the pair is in flight, on this pod or
+// another of the machine's: what the per-process attempt cache reported before the pods shared one ledger.
+func ledgerAttempted(t *testing.T, cfg listenerDeliveryHandlerConfig, dedupeKey, sessionID string) bool {
+	t.Helper()
+	verdict := ledgerVerdict(t, cfg, dedupeKey, sessionID)
+	return verdict == dedupe.InFlight || verdict == dedupe.Deferred
+}
+
+// ledgerDelivered reports whether the ledger records the pair delivered: what the per-process
+// dedupe cache reported before the pods shared one ledger.
+func ledgerDelivered(t *testing.T, cfg listenerDeliveryHandlerConfig, dedupeKey, sessionID string) bool {
+	t.Helper()
+	return ledgerVerdict(t, cfg, dedupeKey, sessionID) == dedupe.Delivered
 }
 
 // durableTestHandler is the durable's handler for a test that hands it messages itself: a message
@@ -5256,14 +5307,18 @@ func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndTwoPassesFitInsideTheGon
 	}
 }
 
-// The listener keeps no last-seen memory of its own: it opens the session registry on
-// session.LastSeenMemory, the package's own value, which must outlast both deadlines the
-// listener reads a departed session's last heartbeat for. The interest reaper can hold a dead
-// session's row until store.InterestReapAllowance after its last write, and /v1/interests/ gives
-// that row's session its real last heartbeat; and a refusal for a session past the gone horizon
-// says when it last registered. A retention shorter than either - the fifteen minutes the
-// listener used to set - leaves a row listed with no heartbeat to give and a gone session's
-// refusal unable to say when it was last seen.
+// The listener sets no last-seen retention of its own: it opens the session registry on
+// session.LastSeenMemory, the package's own value. A listener without the last-seen bucket keeps
+// last-seen times in process for that retention, which must outlast the two deadlines it reads a
+// departed session's last heartbeat for. The interest reaper can hold a dead session's row until
+// store.InterestReapAllowance after its last write, and /v1/interests/ gives that row's session
+// its real last heartbeat; and a refusal for a session past the gone horizon says when it last
+// registered. A retention shorter than either - the fifteen minutes the listener used to set -
+// leaves a row listed with no heartbeat to give and a gone session's refusal unable to say when
+// it was last seen. A listener with the last-seen bucket reads the time from it, whose MaxAge
+// (lastSeenAge: the registry's last-seen window, the session TTL and this retention, plus that
+// allowance, 4 h 15 min at the defaults) keeps the record past both deadlines, so the same
+// retention ends the answer there (main.go, where the bucket is opened).
 func TestTheRegistrysLastSeenMemoryOutlastsWhatTheListenerReadsItFor(t *testing.T) {
 	t.Parallel()
 	if allowance := store.InterestReapAllowance(store.InterestReapGrace); session.LastSeenMemory <= allowance {

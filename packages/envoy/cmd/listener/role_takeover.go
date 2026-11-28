@@ -12,15 +12,16 @@
 // the record when it changed it or once its last write is takeoverRecordRefresh old, only over the
 // body it read (writeTakeoverRecord). The claim route's handover runs the passes on the pod that
 // served the claim (runTakenRoleDrain), and the kept lane's sweep runs them on the machine's lease
-// holder alone; two pods' passes over one record store each copy once, under its message id
-// (takenFrameMsgID). The session relay, which runs in the receive term, copies a role message
+// holder alone, each copy and record write held to its receive term (keptSweepConfig,
+// takeoverWriteContext); two pods' passes over one record store each copy once, under its message
+// id (takenFrameMsgID). The session relay, which runs in the receive term, copies a role message
 // whose role another session holds instead of delivering it (sessionRelays.takeOverFrame).
 // Dispatch marks a send for a role route from its own identity alone (internal/dispatch/envoy,
 // Send), which is what lets a copy find a message Dispatch sent. A claim that names the session it
 // replaces adds a handover record, whose passes are these passes with the differences
-// runTakeoverPass names, run where these run, each direct copy stored once under its own message
-// id (handedOverMsgID); the claim route's side of it, its rule and its direct copies are in
-// role_handover.go.
+// runTakeoverPass names, run where these run and held to the same term, each direct copy stored
+// once under its own message id (handedOverMsgID); the claim route's side of it, its rule and its
+// direct copies are in role_handover.go.
 
 package main
 
@@ -261,6 +262,12 @@ type takeoverFaultSet struct {
 	// claimRecordWrite, when it returns an error, is the answer of the claim route's write of a
 	// takeover record in place of the write.
 	claimRecordWrite func(role, previous string) error
+	// claimHandoverWindow, when it is above zero, bounds the claim route's handover
+	// (runTakenRoleDrain) in place of roleKeepHandoverWindow.
+	claimHandoverWindow time.Duration
+	// laneBusyPause, when it is above zero, is a handover's pause after a walk that found the
+	// lane busy (roleKeepLaneBusy, handOverKeptRole) in place of bus.KeptRoleClaimWindow.
+	laneBusyPause time.Duration
 	// handoverRecordWrite, when it returns an error, is the answer of the claim route's write of
 	// a handover record (publishHandover) in place of the write.
 	handoverRecordWrite func(role, previous, successor string) error
@@ -414,10 +421,15 @@ func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 	if cfg.edge != nil {
 		return
 	}
-	if skip := cfg.takeoverFaults.faults().skipClaimHandover; skip != nil && skip(role) {
+	faults := cfg.takeoverFaults.faults()
+	if skip := faults.skipClaimHandover; skip != nil && skip(role) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), roleKeepHandoverWindow)
+	window := roleKeepHandoverWindow
+	if faults.claimHandoverWindow > 0 {
+		window = faults.claimHandoverWindow
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), window)
 	defer cancel()
 	release, taken := cfg.roleKeepDrains.hold(ctx, role)
 	if !taken {
@@ -466,11 +478,20 @@ func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // every pass of records: the records came from passRecords, so the grant went away since, and
 // every other record's first pass would be refused the same. A record another pass wrote, or the
 // stream removed, since this pass read it (bus.ErrTakeoverRecordMoved) is logged at debug too: its
-// next pass reads it again.
+// next pass reads it again. A write the sweep's term no longer allows (errTakeoverTermOver) ends
+// every pass here, logged once at INFO: the sweep of the pod that holds the lease next goes on from
+// each record.
 func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, records []bus.StoredTakeoverRecord) {
 	for _, stored := range records {
 		for !stored.Record.Finished && ctx.Err() == nil {
 			next, done, err := runTakeoverPass(ctx, cfg, stored)
+			if errors.Is(err, errTakeoverTermOver) {
+				cfg.logger.Info("listener takeover copy passes stopped: "+errTakeoverTermOver.Error()+"; the sweep of the pod holding the lease next goes on from each record",
+					slog.String("role", stored.Record.Role),
+					slog.String("previous_session_id", stored.Record.Previous),
+					slog.String("record", stored.Subject))
+				return
+			}
 			if err != nil {
 				refused := errors.Is(err, bus.ErrConsumerNotGranted)
 				level := slog.LevelWarn
@@ -734,20 +755,29 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 				return setBack(verdict, copied, handed)
 			}
 		}
+		// A copy is a write, a role message's to its kept lane and a handover's direct one to the
+		// successor alike, so it runs within the sweep's term and starts none once that term is
+		// over (takeoverWriteContext); a pass it ends writes no record either.
+		copyCtx, stopCopy, err := takeoverWriteContext(ctx, cfg)
+		if err != nil {
+			return stored, false, err
+		}
 		switch kind {
 		case takenRoleCopy:
-			if err := keepTakenRoleFrame(ctx, cfg, frame.role, frame.envelope(), message.Sequence); err != nil {
-				return stop(err)
-			}
-			copied++
-			if frame.role != record.Role && !slices.Contains(others, frame.role) {
-				others = append(others, frame.role)
+			if err = keepTakenRoleFrame(copyCtx, cfg, frame.role, frame.envelope(), message.Sequence); err == nil {
+				copied++
+				if frame.role != record.Role && !slices.Contains(others, frame.role) {
+					others = append(others, frame.role)
+				}
 			}
 		case takenDirectCopy:
-			if err := handOverDirectFrame(ctx, cfg, record.Previous, successor, frame, message.Sequence); err != nil {
-				return stop(err)
+			if err = handOverDirectFrame(copyCtx, cfg, record.Previous, successor, frame, message.Sequence); err == nil {
+				handed++
 			}
-			handed++
+		}
+		stopCopy()
+		if err != nil {
+			return stop(err)
 		}
 		next = message.Sequence + 1
 	}
@@ -835,18 +865,53 @@ func takeoverStart(ctx context.Context, cfg listenerDeliveryHandlerConfig, recor
 
 // writeTakeoverRecord writes record on stored's subject while that subject's newest message is
 // still the one stored was read at, and returns the sequence it stored
-// (bus.Client.WriteTakeoverRecordAt), within takeoverRecordWindow of ctx. A write another pass
-// moved under it, or one over a record the stream removed since the pass read it, is
-// bus.ErrTakeoverRecordMoved: this pass writes nothing and the next one reads the record again, so
-// a pass held since its read, or one whose write comes late, cannot write an older state over a
-// later pass's, the finish among it, nor bring back a record that was removed.
+// (bus.Client.WriteTakeoverRecordAt), within takeoverRecordWindow of ctx and within the sweep's
+// term (takeoverWriteContext). A write another pass moved under it, or one over a record the
+// stream removed since the pass read it, is bus.ErrTakeoverRecordMoved: this pass writes nothing
+// and the next one reads the record again, so a pass held since its read, or one whose write comes
+// late, cannot write an older state over a later pass's, the finish among it, nor bring back a
+// record that was removed.
 func writeTakeoverRecord(ctx context.Context, cfg listenerDeliveryHandlerConfig, stored bus.StoredTakeoverRecord, record bus.TakeoverRecord) (uint64, error) {
+	termCtx, stop, err := takeoverWriteContext(ctx, cfg)
+	if err != nil {
+		return 0, err
+	}
+	defer stop()
 	if hook := cfg.takeoverFaults.faults().beforeRecordWrite; hook != nil {
 		hook(record.Role, record.Previous, record.Next, record.Finished)
 	}
-	writeCtx, cancel := context.WithTimeout(ctx, takeoverRecordWindow)
+	writeCtx, cancel := context.WithTimeout(termCtx, takeoverRecordWindow)
 	defer cancel()
 	return cfg.client.WriteTakeoverRecordAt(writeCtx, stored, record)
+}
+
+// errTakeoverTermOver is a write of a takeover pass the kept lane's sweep ran that its term no
+// longer allows (takeoverWriteContext): nothing was written.
+var errTakeoverTermOver = errors.New("this pod's receive term is over, or another pod may hold the machine's lease")
+
+// takeoverWriteContext is the context one write of a takeover pass runs on: a copy of a frame to
+// the role's kept lane, a handover's copy of a direct message to its successor's own agent subject
+// (handOverDirectFrame), or the record's own write. On a configuration that carries no term
+// (listenerDeliveryHandlerConfig.takeoverTerm nil: the claim route's passes, which run on whichever
+// pod serves the claim, as its handover of the lane does) it is ctx itself. On the kept lane's
+// sweep's, a loop of the lease holder alone (holderLoops, main.go), it is ctx bounded by the
+// receive term the sweep runs under and by the lease's loss deadline for it
+// (sessionRelays.termContext), as each delete of the session reaper and the session consumer sweep
+// is (sessionDelivery.deleteConsumer); once that term is over or that deadline has passed it is
+// errTakeoverTermOver, with no context, so no write of a pass starts then. A write already sent
+// when the context ends can still land: the record's own write lands only over the body its pass
+// read (bus.Client.WriteTakeoverRecordAt), and a copy is stored once under its message id
+// (takenFrameMsgID, handedOverMsgID), however many passes make it. The caller calls stop once the
+// write is over.
+func takeoverWriteContext(ctx context.Context, cfg listenerDeliveryHandlerConfig) (context.Context, context.CancelFunc, error) {
+	if cfg.takeoverTerm == nil {
+		return ctx, func() {}, nil
+	}
+	bounded, stop, current := cfg.takeoverTerm(ctx)
+	if !current {
+		return nil, nil, errTakeoverTermOver
+	}
+	return bounded, stop, nil
 }
 
 // roleOfLaneTopic is the key of the claim a role lane's topic names (store.RoleClaimKeyOf), and
@@ -1090,6 +1155,19 @@ func keptMarkAt(ctx context.Context, cfg listenerDeliveryHandlerConfig, role str
 // sends the frame itself, beside the copy the walk forwards. The holder can then receive the event
 // twice, under the same event id.
 //
+// A role message is judged under the context the relay's restart of the consumer runs on
+// (sessionRelays.termContext), since its ack or its give-back acts on the session's consumer, and a
+// pod that takes the lease next may restart that consumer at its ack floor about a second after
+// this term's loss deadline (relayFormerSettle). So a frame reached once the term is over, or once
+// its loss deadline has passed, is taken and nothing of it starts: it is neither sent, copied,
+// acknowledged nor given back. That context ends with the term or at its loss deadline, so a claim
+// read or a copy still running then is cut off there, and a frame whose term no longer allows an
+// act on the consumer by the time its read or its copy is over is left the same way rather than
+// given back or acknowledged; a copy that stored before the cut is stored once, under its message
+// id (takenFrameMsgID), however many relays make it. A frame left so stays delivered and
+// unanswered at the consumer, and the session's next relay, on this pod or on the one that holds
+// the lease next, is handed it again when it restarts the consumer at its ack floor.
+//
 // An edge listener takes no frame (cfg.edge): its grant publishes no kept role lane
 // (natsgrant.Edge), so a copy would never store and the frame would be given back at every
 // delivery. The frame goes to the session as every frame does.
@@ -1104,7 +1182,30 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 	role := frame.role
 	// The id the relay's lines name; one that is not a string reads as none.
 	eventID, _ := fieldText("event_id", frame.eventID)
+	leave := func() bool {
+		m.logger.Info("listener session relay left a role message to the session's next relay: this pod's receive term is over, or another pod may hold the machine's lease",
+			slog.String("session_id", sessionID),
+			slog.String("role", role),
+			slog.String("event_id", eventID),
+			slog.Uint64("stream_seq", msg.StreamSeq))
+		return true
+	}
+	termCtx, stopTerm, current := m.termContext(ctx)
+	if !current {
+		return leave()
+	}
+	defer stopTerm()
+	// termOver reports whether the term no longer allows an act on the consumer (currentTerm). A
+	// run whose own context ended while the term is still current gives its frame back, as its
+	// release gives back every frame it holds.
+	termOver := func() bool {
+		_, left := m.currentTerm()
+		return left <= 0
+	}
 	giveBack := func(why string, err error) bool {
+		if termOver() {
+			return leave()
+		}
 		nakErr := msg.NakWithDelay(relayNakDelayFor(msg.Delivered))
 		m.logger.Warn("listener session relay gave a role message back to the server: "+why,
 			slog.String("session_id", sessionID),
@@ -1114,7 +1215,7 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 			slog.String("error", errors.Join(err, nakErr).Error()))
 		return true
 	}
-	holder, err := relayClaimHolder(ctx, m.cfg, role)
+	holder, err := relayClaimHolder(termCtx, m.cfg, role)
 	if err != nil {
 		return giveBack("its role's claim could not be read", err)
 	}
@@ -1122,8 +1223,11 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 		return false
 	}
 	item := frame.envelope()
-	if err := relayCopyFrame(ctx, m.cfg, role, item, msg.StreamSeq); err != nil {
+	if err := relayCopyFrame(termCtx, m.cfg, role, item, msg.StreamSeq); err != nil {
 		return giveBack("its copy to the role's kept lane did not store", err)
+	}
+	if termOver() {
+		return leave()
 	}
 	if err := msg.Ack(); err != nil {
 		m.logger.Warn("listener session relay could not acknowledge a role message it copied to the role's kept lane",

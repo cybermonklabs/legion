@@ -50,13 +50,21 @@ func newRelayRigReceipt(t *testing.T, first, max, receipt time.Duration) *relayR
 	t.Helper()
 	rig := newRelayRigUnowned(t, first, max)
 	rig.relays.receiptWait = receipt
-	rig.relays.setOwned(true)
+	rig.relays.setOwned(endlessTerm())
 	return rig
+}
+
+// endlessTerm is a receive term that never ends and that no lease bounds: the term a rig with no
+// receive loop of its own gives its relays, whether it elects them with it (sessionRelays.setOwned)
+// or only holds it so that the restarts and pulls a row drives itself act under a live term
+// (newRelayRigUnownedOn).
+func endlessTerm() *relayTerm {
+	return &relayTerm{ctx: context.Background()}
 }
 
 // newRelayRigUnowned bounds the same backoff, for a task that does not serve its machine's receive
 // term yet: it relays nothing, and no relay starts, until the test calls
-// rig.relays.setOwned(true). A test that must run the durable path before any relay
+// rig.relays.setOwned(endlessTerm()). A test that must run the durable path before any relay
 // orders them this way rather than by timing.
 func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 	t.Helper()
@@ -81,6 +89,13 @@ func newRelayRigUnownedAs(t *testing.T, first, max time.Duration, edge *edgeGran
 // the test opened to the server at url, or to a proxy of it, while the session-consumer
 // connection goes to url itself: a test that takes the main connection off NATS while the
 // session-consumer connection stays opens client through a testnats.Proxy.
+//
+// No relay of the rig's own starts, but a restart a row drives itself (sessionRelays.restart), and
+// the pull it starts, act only under a live receive term (sessionRelays.termContext,
+// sessionRelays.pullBound). So the rig's relays hold an endless term without serving it: a row
+// that drives a restart reaches the consumer as the relay of a live term would, and a row may set
+// a term of its own in its place before it drives one. The term a row elects the rig with, and
+// its end, replace it (sessionRelays.setOwned).
 func newRelayRigUnownedOn(t *testing.T, client *bus.Client, url string, first, max time.Duration) *relayRig {
 	t.Helper()
 	return newRelayRigUnownedOnAs(t, client, url, first, max, nil)
@@ -104,6 +119,7 @@ func newRelayRigUnownedOnAs(t *testing.T, client *bus.Client, url string, first,
 	})
 	// Set before the first relay starts, which the term's start is what does.
 	relays.pauseFirst, relays.pauseMax = first, max
+	relays.term = endlessTerm()
 	return &relayRig{sessionConsumerRig: rig, relays: relays, url: url}
 }
 
@@ -949,10 +965,10 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	// row exercises. The cancelled run returns the frame it holds, so the session's next owner --
 	// this pull, which stands in for the listener the session moved to -- is delivered that
 	// message again at once.
-	rig.relays.setOwned(false)
+	rig.relays.setOwned(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	pull, err := rig.consumers.Pull(ctx, sessionID)
+	pull, err := rig.consumers.Pull(ctx, sessionID, nil)
 	if err != nil {
 		t.Fatalf("pull the session's consumer as its next owner: %v", err)
 	}
@@ -989,7 +1005,7 @@ func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
 	// has: the nak of the frame the run holds and the drain of its pull both fail on it. The
 	// test reads the consumers through a connection of its own, which this leaves open.
 	rig.deps.consumers.close()
-	rig.relays.setOwned(false)
+	rig.relays.setOwned(nil)
 
 	const failed = "session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait"
 	const whole = "session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait"
@@ -1068,7 +1084,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamO
 	// take some of them away from.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pull, err := rig.consumers.Pull(ctx, sessionID)
+	pull, err := rig.consumers.Pull(ctx, sessionID, nil)
 	if err != nil {
 		t.Fatalf("pull the session's consumer as its next owner: %v", err)
 	}
@@ -1077,7 +1093,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamO
 	// (sessionRelays.stopAll), as a session moving to another listener does through
 	// sessionRelays.apply; both end in the run's one deferred hand-over, which is what this row
 	// exercises.
-	rig.relays.setOwned(false)
+	rig.relays.setOwned(nil)
 
 	// The 30 s of ctx is a hang guard, not the measurement: the hand-over is one nak per message
 	// on one connection. A message the relay failed to give back arrives only after

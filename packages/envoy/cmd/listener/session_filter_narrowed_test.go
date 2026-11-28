@@ -156,7 +156,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		pull, err := rig.consumers.Pull(ctx, sessionID)
+		pull, err := rig.consumers.Pull(ctx, sessionID, nil)
 		if err != nil {
 			t.Fatalf("pull the consumer of %s: %v", sessionID, err)
 		}
@@ -212,7 +212,16 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		filterHolds(t, "storedFilterStep", sesA, teamT, newerX)
 
 		reads = 0
+		// A relay pulls a session's consumer only while this task serves its machine's receive term
+		// (sessionRelays.pullBound; cmd/listener/README.md, "Take-over"), so the restart is given
+		// one, set on the relay set alone, which starts no run of its own.
+		relays.eventsMu.Lock()
+		relays.term = endlessTerm()
+		relays.eventsMu.Unlock()
 		_, pull, outcome := relays.restart(ctx, &relayRun{sessionID: sesA})
+		relays.eventsMu.Lock()
+		relays.term = nil
+		relays.eventsMu.Unlock()
 		if pull == nil || reads == 0 {
 			t.Errorf("the relay restart read the row %d times and pulled %v (outcome %v), want a read through storedFilter and a pull", reads, pull, outcome)
 		} else {

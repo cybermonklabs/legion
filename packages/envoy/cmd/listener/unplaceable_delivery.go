@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/logging"
 )
 
@@ -42,18 +43,18 @@ const defaultUnplaceableRetryWindow = 60 * time.Second
 //     AckWait (consumerAckWait, durable.go, 6 s) when retryAfter's fire-and-forget NAK is lost on
 //     the wire, counted from the delivery that took the slot; and this pod's: the redelivery waits
 //     in the receive loop's local queue (receive.go), kept alive by InProgress so the durable never
-//     redelivers it meanwhile, behind the handling of the message in hand, or behind a settle hold
-//     after a take-over (the receive config's settleCap), before the handler runs it and releases
-//     its slot.
+//     redelivers it meanwhile, behind the handling of the message in hand, up to
+//     deliveryHandlingLimit (30 s), or behind a settle hold after a take-over (either of the
+//     receive config's caps), before the handler runs it and releases its slot.
 //
 // The slack is a figure of its own, not a sum of consumerAckWait, since the ack wait bounds nothing
 // a message waits in the local queue: those waits come to under a minute, and 120 s leaves more
 // than as much again for messages queued ahead of the redelivery. A slot older than the expiry
 // belongs to a message that is not coming back here - the stream dropped or purged it, or its
 // redelivery reached another subscriber - and take reclaims it.
-// TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins that it exceeds the window and the
-// AckWait at every window it tries, so a message that is still pending never has its slot
-// reclaimed early.
+// TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins that it exceeds the window and those
+// waits at every window it tries, so a message that is still pending never has its slot reclaimed
+// early.
 func unplaceableDeferralExpiry(window time.Duration) time.Duration {
 	return max(window, 0) + unplaceableDeferralSlack
 }
@@ -199,40 +200,47 @@ func (cfg listenerDeliveryHandlerConfig) agentWait() time.Duration {
 // (unreadAgentDelivery). The first delivery is the stream's count (NumDelivered): a delivery a
 // stopping pod handed back before its handler ran counts too, so the message its successor
 // receives has spent its one wait.
-func noRecordAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
+//
+// attempt is the delivery-ledger attempt agentSubjectDelivery took for the pair, which the wait
+// gives up and a stored report records (reportNoRecordWake).
+func noRecordAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, attempt dedupe.Attempt) {
 	if metadata := message.metadata; metadata != nil && metadata.NumDelivered == 1 && cfg.agentWait() > 0 &&
 		cfg.deferredUnplaceable.take(metadata.Sequence.Stream) {
-		sendAgentMessageBack(cfg, message, item, sessionID)
+		sendAgentMessageBack(cfg, message, item, sessionID, attempt)
 		return
 	}
-	reportNoRecordWake(cfg, message, item, sessionID)
+	reportNoRecordWake(cfg, message, item, sessionID, attempt)
 }
 
 // reportNoRecordWake reports the wake of sessionID, a session with no record, with one publish the
 // stream must store (storeAgentWake), and settles the message on its answer. A stored report is
-// logged and counted delivery_status="wake_reported", and the message is acknowledged; its attempt
-// entry stays, so a redelivery an acknowledgement lost on the wire brings is an attempt-dedupe
-// skip and reports no second wake. A report the stream did not store sends the message back for
-// the agent wait, so its next delivery reads the record again and tries the report again; it takes
-// a free slot when there is one, and is sent back whether or not it got one. At the stream's last
-// delivery (consumerMaxDeliver), or with nothing that redelivers or bounds the message - a core
-// delivery, or metadata that does not parse - a report not stored is logged and the message is
-// acknowledged, since the stream sends it no more.
+// logged and counted delivery_status="wake_reported", the pair is recorded delivered in the
+// delivery ledger (settleRecord), and the message is acknowledged: a redelivery an acknowledgement
+// lost on the wire brings, on this pod or on the one that takes delivery over, is a dedupe skip
+// and reports no second wake. A report the stream did not store sends the message back for the
+// agent wait, its ledger attempt given up, so its next delivery reads the record again and tries
+// the report again; it takes a free slot when there is one, and is sent back whether or not it got
+// one. At the stream's last delivery (consumerMaxDeliver), or with nothing that redelivers or
+// bounds the message - a core delivery, or metadata that does not parse - a report not stored is
+// logged, its attempt kept (dedupe.Ledger.Keep), and the message is acknowledged, since the stream
+// sends it no more.
 //
 // An edge listener reports no wake (cfg.edge): its grant may not publish the wake topic
 // (natsgrant.Edge), so the stream would never store the report and the message would be sent
 // back at every delivery. It acknowledges the message with no publish, logged and counted
-// delivery_status="wake_left_to_shared". The shared listeners read the same message from their own
-// durables and report the wake when no listener holds the session's interest row. A session whose
-// row the edge holds gets no wake from any listener.
-func reportNoRecordWake(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
+// delivery_status="wake_left_to_shared", and records the pair. The shared listeners read the same
+// message from their own durables and report the wake when no listener holds the session's
+// interest row. A session whose row the edge holds gets no wake from any listener.
+func reportNoRecordWake(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, attempt dedupe.Attempt) {
 	if cfg.edge != nil {
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{
 			sessionID:    sessionID,
+			attempt:      attempt,
 			metricStatus: "wake_left_to_shared",
 			log: func(logger *logging.Logger) {
 				logger.DeliveryLog(slog.LevelInfo, "edge listener left the agent wake to the shared listeners", sessionID, item.Topic, item.EventID, "wake_left_to_shared")
 			},
+			settle: settleRecord,
 		})
 		message.finalize(false)
 		return
@@ -241,21 +249,24 @@ func reportNoRecordWake(cfg listenerDeliveryHandlerConfig, message deliveryMessa
 	if err == nil {
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{
 			sessionID:    sessionID,
+			attempt:      attempt,
 			metricStatus: "wake_reported",
 			log: func(logger *logging.Logger) {
 				logger.DeliveryLog(slog.LevelInfo, "listener agent wake reported", sessionID, item.Topic, item.EventID, "wake_reported")
 			},
+			settle: settleRecord,
 		})
 		message.finalize(false)
 		return
 	}
 	if metadata := message.metadata; metadata != nil && metadata.NumDelivered < consumerMaxDeliver {
 		cfg.deferredUnplaceable.take(metadata.Sequence.Stream)
-		sendAgentMessageBack(cfg, message, item, sessionID)
+		sendAgentMessageBack(cfg, message, item, sessionID, attempt)
 		return
 	}
 	cfg.logger.DeliveryLog(slog.LevelWarn, "listener agent wake not stored", sessionID, item.Topic, item.EventID, "wake_not_stored",
 		slog.String("error", err.Error()))
+	cfg.ledger.Keep(attempt)
 	message.finalize(false)
 }
 
@@ -266,33 +277,33 @@ func reportNoRecordWake(cfg listenerDeliveryHandlerConfig, message deliveryMessa
 // too. A core delivery, or a durable one whose metadata does not parse, has no stream sequence to
 // mark, so it logs the WARN at once. Below the stream's last delivery (consumerMaxDeliver) the
 // message takes a free slot when there is one, is sent back for the agent wait whether or not it
-// got one, and is decided again at its next delivery. At the last delivery the message is decided
-// as one with no record (reportNoRecordWake); so is a core delivery, or a durable one whose
-// metadata does not parse, which has no next delivery to decide it. The wake comes only from a
-// last delivery this process settles: JetStream stops at max_deliver with no word, so a 20th
-// delivery the server counted but this process never settled (a crash, a kill, the bounded
-// shutdown while it runs) ends the message with no wake and no line.
-func unreadAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, readErr error) {
+// got one, its ledger attempt given up, and is decided again at its next delivery. At the last
+// delivery the message is decided as one with no record (reportNoRecordWake); so is a core
+// delivery, or a durable one whose metadata does not parse, which has no next delivery to decide
+// it. The wake comes only from a last delivery this process settles: JetStream stops at
+// max_deliver with no word, so a 20th delivery the server counted but this process never settled
+// (a crash, a kill, the bounded shutdown while it runs) ends the message with no wake and no line.
+func unreadAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, readErr error, attempt dedupe.Attempt) {
 	metadata := message.metadata
 	if metadata == nil || cfg.deferredUnplaceable.firstUnread(metadata.Sequence.Stream) {
 		cfg.logger.DeliveryLog(slog.LevelWarn, "listener agent record unread", sessionID, item.Topic, item.EventID, "record_unread",
 			slog.String("error", readErr.Error()))
 	}
 	if metadata == nil || metadata.NumDelivered >= consumerMaxDeliver {
-		reportNoRecordWake(cfg, message, item, sessionID)
+		reportNoRecordWake(cfg, message, item, sessionID, attempt)
 		return
 	}
 	cfg.deferredUnplaceable.take(metadata.Sequence.Stream)
-	sendAgentMessageBack(cfg, message, item, sessionID)
+	sendAgentMessageBack(cfg, message, item, sessionID, attempt)
 }
 
 // sendAgentMessageBack asks the stream to deliver an agent message again after the agent wait. The
-// attempt entry agentSubjectDelivery recorded goes first, or the redelivery would be skipped as one
-// already on its way, and the message is counted NAKed. A message whose handling the receiver
-// cancelled on a shutdown comes back at once (retryAfter), so the pod that takes the lease next
-// decides it first.
-func sendAgentMessageBack(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
-	cfg.attemptCache.Clear(item.DedupeKey, sessionID)
+// ledger attempt agentSubjectDelivery took goes first (clearLedgerAttempt), or the redelivery would
+// be skipped as one already on its way (dedupe.InFlight), and the message is counted NAKed. A
+// message whose handling the receiver cancelled on a shutdown comes back at once (retryAfter), so
+// the pod that takes the lease next decides it first.
+func sendAgentMessageBack(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, attempt dedupe.Attempt) {
+	clearLedgerAttempt(cfg, item, attempt)
 	cfg.messagesNAKed.Inc()
 	message.retryAfter(cfg.agentWait())
 }

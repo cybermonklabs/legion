@@ -531,11 +531,13 @@ type Interest struct {
 }
 
 // InterestRow is one persisted interest as GET /v1/interests/ and GET /v1/interests/<session_id>
-// answer it: the stored record plus LastSeen, the session's last heartbeat (Unix ms) as the
-// listener's session cache knows it, zero when it does not know it (it lost it in a restart, or
-// predates the field). UpdatedAt, the row's last write, can lag that heartbeat by up to the
-// listener's interest refresh age (store.InterestRefreshAge), since an unchanged row is rewritten
-// only that often.
+// answer it: the stored record plus LastSeen, the session's last heartbeat (Unix ms), left out
+// when unknown. While the session is live it is the live entry's UpdatedAt, and once it has lapsed
+// the session's seen. record in the listener state bucket, which every pod of the machine answers
+// alike; a listener without that bucket keeps those records in its process, so one that restarted
+// since the session lapsed does not know it. UpdatedAt, the row's last write, can lag that
+// heartbeat by up to the listener's interest refresh age (store.InterestRefreshAge), since an
+// unchanged row is rewritten only that often.
 type InterestRow struct {
 	Interest
 	LastSeen int64 `json:"last_seen,omitempty"`

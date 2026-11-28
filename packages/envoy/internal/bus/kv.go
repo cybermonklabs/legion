@@ -753,10 +753,10 @@ func (kv KeyValue) PutString(key string, value string) (uint64, error) {
 // Create writes value under key when the bucket holds no value for it. A key whose newest entry is
 // a delete or purge marker holds none: nats.go's Create, refused over the marker, reads the key
 // again and updates at the marker's revision (nats.go@v1.55.0 kv.go:729-739). So it is the write
-// of a caller to which a deleted key is a key never written - a lease record no pod holds, a spent
-// DPoP proof - and not of one whose write must land only over the entry a read of its own found:
-// such a caller reads with GetLatest and writes with Update at the revision that read answered, 0
-// for no entry at all.
+// of a caller to which a deleted key is a key never written - a delivery attempt on a pair no
+// attempt holds (dedupe.KV.Attempt), a lease record no pod holds, a spent DPoP proof - and not of
+// one whose write must land only over the entry a read of its own found: such a caller reads with
+// GetLatest and writes with Update at the revision that read answered, 0 for no entry at all.
 func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err

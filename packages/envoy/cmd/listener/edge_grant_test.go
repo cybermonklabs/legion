@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/session"
@@ -246,15 +247,15 @@ func TestAnEdgeListenerPublishesNoDeliveryExceptionItsGrantDoesNotHold(t *testin
 	const recipient = "ses_edge_refused"
 
 	github := listenerTestEnvelope("notifications.github.acme.pub.pr.1.opened", "edge-github-"+id.New())
-	applyDeliveryOutcome(edge, github, fanoutRefusalOutcome(recipient, github, followedTopicModeUnreadable, "", false))
+	applyDeliveryOutcome(edge, github, fanoutRefusalOutcome(recipient, github, followedTopicModeUnreadable, "", dedupe.Attempt{}, false))
 	dispatch := listenerTestEnvelope("notifications.dispatch.issue.PRIV.PRIV-1.comment.created", "edge-dispatch-"+id.New())
-	applyDeliveryOutcome(edge, dispatch, fanoutRefusalOutcome(recipient, dispatch, followedTopicModeNotAdvertised, "bogus", false))
+	applyDeliveryOutcome(edge, dispatch, fanoutRefusalOutcome(recipient, dispatch, followedTopicModeNotAdvertised, "bogus", dedupe.Attempt{}, false))
 	agent := listenerTestEnvelope(contracts.LegacyAgentSubject(recipient), "edge-agent-"+id.New())
 	applyDeliveryOutcome(edge, agent, deliveryOutcome{sessionID: recipient, exceptionReason: "delivery_failed"})
 	role := listenerTestEnvelope(contracts.RoleTopicPrefix+"PRIV.reviewer", "edge-role-"+id.New())
 	applyDeliveryOutcome(edge, role, deliveryOutcome{sessionID: recipient, exceptionReason: "delivery_failed"})
 	shared := listenerTestEnvelope("notifications.github.acme.pub.pr.2.opened", "shared-github-"+id.New())
-	applyDeliveryOutcome(harness.config, shared, fanoutRefusalOutcome(recipient, shared, followedTopicModeUnreadable, "", false))
+	applyDeliveryOutcome(harness.config, shared, fanoutRefusalOutcome(recipient, shared, followedTopicModeUnreadable, "", dedupe.Attempt{}, false))
 
 	for _, want := range []string{bus.ExceptionTopicPrefix + role.Topic, bus.ExceptionTopicPrefix + shared.Topic} {
 		message, err := exceptions.NextMsg(10 * time.Second)

@@ -57,7 +57,7 @@ func newWindowRig(t *testing.T) *windowRig {
 	})
 	// Set before the first relay starts, which gaining the binding is what does.
 	relays.pauseFirst, relays.pauseMax, relays.receiptWait = relayPauseFirst, relayPauseMax, relayReceiptWait
-	relays.setOwned(true)
+	relays.setOwned(endlessTerm())
 	// The routes read the deps they were built over at each request, so the record set here is
 	// the one the publish route answers a role send from.
 	consumers.deps.confirmed = newConfirmedRecord(t)

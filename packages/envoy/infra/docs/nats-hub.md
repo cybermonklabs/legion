@@ -458,28 +458,36 @@ secret and writes the seed with `envoy-infra seed generate`, whose printed key i
 `NATS_NKEY_SEED` through `docker run --env-file`, which Docker reads as root, since the listener's
 image runs as an unprivileged user.
 
-The hub runs one listener for machine `<h>`, so `<h>` has no standby: while the listener restarts, or while a new VM boots, `<h>`'s durable holds its deliveries until the listener is back.
-The listener's user grants the `envoy_listener` bucket,
-which holds the delivery lease and the delivery state that the listeners of one machine share
-(`ListenerPermissions`).
-Each user may write only its own machine's keys there:
-`lease.listener-<machine id>` (the lease),
-`handback.listener-<machine id>.*` (the lease's hand-back marks)
-and `delivery.listener-<machine id>.*.*` (the delivery ledger)
-(`natsgrant.ListenerState`).
-A hub's users gain this grant only when envoy-infra renders them again,
-and a change to the hub's users rewrites its user data, which replaces the VM.
-A hub whose users an earlier envoy-infra rendered lacks the bucket: a listener image that uses it then logs
+The hub runs one listener for machine `<h>`, so `<h>` has no standby: while the listener restarts,
+or while a new VM boots, `<h>`'s durable holds its deliveries until the listener is back. The
+listener's user grants the `envoy_listener` bucket, where a listener keeps its machine's delivery
+lease and the delivery state every listener of the machine shares (`ListenerPermissions`, from the
+envoy-infra release that added it; see `packages/envoy/cmd/listener/README.md`). Each user may write
+only its own machine's keys there, `lease.listener-<machine id>` (the lease),
+`handback.listener-<machine id>.*` (the lease's hand-back marks) and
+`delivery.listener-<machine id>.*.*` (the delivery ledger) (`natsgrant.ListenerState`). A hub whose
+users an earlier envoy-infra rendered lacks the bucket: a listener image that uses it then logs
 `listener lease unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without a lease`
-at ERROR once and delivers without a lease, as the machine's only deliverer.
-A listener elsewhere started with `ENVOY_MACHINE_ID=<h>` would share the hub listener's lease and become its standby, or its deliverer, so no other listener takes the hub's `hostname` as its id.
+at ERROR once and delivers without a lease, as the machine's only deliverer, keeping that state in
+its own process until it joins the lease. Meanwhile it tries the bucket again, and logs
+`listener state bucket refused by the NATS grant; delivering without a lease and retrying` at ERROR
+at each try the grant refuses, with a `retry_in` that starts at 2 s and doubles up to 30 s. Once a
+grant lets it open the bucket, it joins the lease with no restart and records that state in the
+bucket from then on (`joinDeliveryLease`). The grant reaches the hub with the update that renders
+its users again, which replaces the VM. A hub rendered with the bucket's writes not yet scoped to
+each machine's keys runs this listener as it is; the update narrows them.
+A listener elsewhere started with `ENVOY_MACHINE_ID=<h>` would share the hub listener's lease and
+become its standby, or its deliverer, so no other listener takes the hub's `hostname` as its id.
 
-The listener's user also grants the `envoy_last_seen` bucket,
-which holds every session's last-seen record, `seen.*`.
-Each user writes and reads every session's record there (`natsgrant.LastSeen`),
-because a role claim names its holder session and no machine,
-so a record is read across machines.
-A hub's users gain this bucket only when envoy-infra renders them again.
+The listener's user also grants the `envoy_last_seen` bucket, where every listener keeps each
+session's last-seen record, `seen.*`: each user writes and reads every session's record there, as
+it did in `envoy_listener` before the records moved (`natsgrant.LastSeen`). A hub's users gain this
+bucket only when envoy-infra renders them again. A listener image that uses it under a grant
+rendered before then logs
+`last-seen bucket refused by the NATS grant; keeping last-seen in process and retrying` at ERROR at
+each try, with a `retry_in` that starts at 1 s and doubles up to 30 s, serves all the same with
+last-seen times kept in its own process, and opens the bucket with no restart once its grant
+carries it.
 
 ### The listener's broker check
 
