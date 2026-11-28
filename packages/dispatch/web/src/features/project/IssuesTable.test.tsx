@@ -1644,15 +1644,29 @@ test("Take out of epic lands its focus wholly in the box the List draws once the
   );
 });
 
-// By the architect's ruling of 2026-11-27 18:48Z (INFRA-3135): the List's selection bar stands at
-// the foot at every width, and the List keeps room at its end for the bar's whole height and the
-// 1rem under it, never less than 6rem, so its box ends above the bar: a bar wrapped onto three
-// lines at 360 px gets room of its height, and a bar of one line gets 96 px.
-test("the List keeps room at its end for its selection bar's whole height, and never less than 96 px", async () => {
+/** Sets happy-dom's window `width` px wide, which its `matchMedia` answers from, and answers the
+ *  function that puts the width back. That runs inside `act`: the resize it fires has a List still
+ *  drawn measure its box again. */
+function windowWidth(width: number): () => void {
+  const window_ = window as unknown as {
+    happyDOM: { setViewport(size: { width: number }): void };
+    innerWidth: number;
+  };
+  const was = window_.innerWidth;
+  window_.happyDOM.setViewport({ width });
+  return () => act(() => window_.happyDOM.setViewport({ width: was }));
+}
+
+// From `sm` up the List's selection bar stands at the foot, and the List keeps room at its end for
+// the bar's whole height and the 1rem under it, never less than 6rem, so its box ends above the
+// bar: a bar wrapped onto three lines gets room of its height, and a bar of one line gets 96 px.
+// Below `sm` the bar stands under the header, and the List keeps no room at its end for it.
+test("from sm up the List keeps room at its end for its selection bar's whole height, never less than 96 px, and below sm none", async () => {
   const user = userEvent.setup();
+  restores.push(windowWidth(640));
   // Three lines of 36 px controls, two 8 px gaps between them and the bar's own 4 px padding
   // above and below; happy-dom lays nothing out, so the bar's box is given here, 16 px above the
-  // screen's bottom edge, as `bottom-4` stands it.
+  // screen's bottom edge, as `sm:bottom-4` stands it.
   let barHeight = 132;
   const own = Element.prototype.getBoundingClientRect;
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
@@ -1665,13 +1679,13 @@ test("the List keeps room at its end for its selection bar's whole height, and n
   restores.push(() => rect.mockRestore());
   table([issue("CORE-1"), issue("CORE-2")]);
   const section = await screen.findByRole("region", { name: "Project issues" });
-  // The section's bottom padding is Tailwind's rule of the larger of 6rem and the property the
-  // bar's foot inset writes. happy-dom's computed `padding-bottom` reads empty with that rule in
-  // the document, so the room is read as a browser computes the rule: the larger of 96 px and the
-  // property.
-  expect(section.classList.contains(`pb-[max(6rem,var(${SELECTION_BAR_TOP_PROPERTY},0px))]`)).toBe(
-    true
-  );
+  // The section's bottom padding is Tailwind's rule, from `sm` up only, of the larger of 6rem and
+  // the property the bar's foot inset writes, and it has no other: below `sm` it keeps no room.
+  // happy-dom's computed `padding-bottom` reads empty with that rule in the document, so the room
+  // is read as a browser computes the rule from `sm` up: the larger of 96 px and the property.
+  expect([...section.classList].filter((name) => name.includes("pb-"))).toEqual([
+    `sm:pb-[max(6rem,var(${SELECTION_BAR_TOP_PROPERTY},0px))]`,
+  ]);
   const room = () => {
     const bar = Number.parseFloat(
       document.documentElement.style.getPropertyValue(SELECTION_BAR_TOP_PROPERTY)
@@ -1686,14 +1700,15 @@ test("the List keeps room at its end for its selection bar's whole height, and n
   expect(room()).toBe(96);
 });
 
-// The room the List keeps at its end follows its selection bar's band through the property the
-// bar's foot inset writes, which resizes nothing the box's own observer watches; so the box fits
-// its height again each time that property changes, with no window resize. At 640x900 two marked
-// rows wrapped the bar onto two lines, 106 px tall with its top at 778: the room grew from 96 to
-// 122 px while the box kept its height, and its last rows stood under the bar (builds Job
-// `infra-3135-i-room-ftsl4`).
+// From `sm` up the room the List keeps at its end follows its selection bar's band through the
+// property the bar's foot inset writes, which resizes nothing the box's own observer watches; so
+// the box fits its height again each time that property changes, with no window resize. At
+// 640x900 two marked rows wrapped the bar onto two lines, 106 px tall with its top at 778: the
+// room grew from 96 to 122 px while the box kept its height, and its last rows stood under the bar
+// (builds Job `infra-3135-i-room-ftsl4`).
 test("the List's box fits its height again each time its selection bar's band changes the room at its end, with no window resize", async () => {
   const user = userEvent.setup();
+  restores.push(windowWidth(640));
   const sizes = installResizeObserver();
   restores.push(() => sizes.restore());
   const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
@@ -1704,7 +1719,7 @@ test("the List's box fits its height again each time its selection bar's band ch
   });
   // happy-dom lays nothing out, so the case gives the boxes: the List's box 200 px down the window
   // at the height the List gives it, its pager's 20 px right under it, and the bar 16 px above the
-  // screen's bottom edge, as `bottom-4` stands it, on one line, 42 px, until it wraps onto two,
+  // screen's bottom edge, as `sm:bottom-4` stands it, on one line, 42 px, until it wraps onto two,
   // 106 px, as the browsers drew it at 1440 and at 640 px wide.
   let barHeight = 42;
   const ownRect = Element.prototype.getBoundingClientRect;
@@ -1723,8 +1738,8 @@ test("the List's box fits its height again each time its selection bar's band ch
     return ownRect.call(this);
   });
   restores.push(() => rect.mockRestore());
-  // The section's bottom padding as a browser computes its rule, the larger of 96 px and the
-  // property the bar's foot inset writes: happy-dom's own reads empty with that rule.
+  // The section's bottom padding as a browser computes its rule from `sm` up, the larger of 96 px
+  // and the property the bar's foot inset writes: happy-dom's own reads empty with that rule.
   const ownStyle = window.getComputedStyle;
   const style = spyOn(window, "getComputedStyle").mockImplementation(
     (element: Element, pseudo?: string | null) => {

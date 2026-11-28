@@ -590,16 +590,17 @@ export function IssuesTable({
   // puts the skeleton in place of the table alone, and the control pressed, with the keyboard
   // focus on it, stays where it was. Everything else here needs the listing and waits for it.
   // The section is the table's frame: its toolbar, box and pager, which another table's
-  // page-wide keys leave to it (`TABLE_FRAME_ATTRIBUTE`). Its bottom padding is the room the
-  // selection bar takes at the foot of the screen, at every width: the bar's whole height and the
-  // 1rem under it while it is drawn (`SELECTION_BAR_TOP_PROPERTY`, which the bar's foot inset
-  // writes), and never less than 6rem, which it keeps with no bar or a one-line one, so the box
-  // under the bar ends above it and its last rows scroll clear of it however many lines the bar
-  // wraps onto. The box takes the window less that padding (`components/table-layout.ts`).
+  // page-wide keys leave to it (`TABLE_FRAME_ATTRIBUTE`). From `sm` up its bottom padding is the
+  // room the selection bar takes at the foot of the screen: the bar's whole height and the 1rem
+  // under it while it is drawn (`SELECTION_BAR_TOP_PROPERTY`, which the bar's foot inset writes),
+  // and never less than 6rem, which it keeps with no bar or a one-line one, so the box under the
+  // bar ends above it and its last rows scroll clear of it however many lines the bar wraps onto.
+  // Below `sm` the bar stands under the header, and the section keeps no room at its end. The box
+  // takes the window less that padding (`components/table-layout.ts`).
   return (
     <section
       aria-label={name}
-      className="space-y-3 pb-[max(6rem,var(--selection-bar-top,0px))]"
+      className="space-y-3 sm:pb-[max(6rem,var(--selection-bar-top,0px))]"
       {...TABLE_FRAME_MARK}
       {...ARM_ON_PRESS}
       onFocus={noteFocus}

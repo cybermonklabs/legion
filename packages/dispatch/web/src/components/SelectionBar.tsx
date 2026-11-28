@@ -72,9 +72,10 @@ export interface SelectionBarProps {
    *  control its running action holds in one of them that is marked is that press's own, as a
    *  control it holds in a marked row is (`focus-place.ts`'s `holds`). */
   readonly rows?: () => readonly Element[];
-  /** The page's size (`ControlSize`): the bar's own padding, where it stands, and how its line of
-   *  actions lays out (`BAR_BOX`, `BAR_PLACE`, `BAR_LINE`). The actions in it are the page's, and
-   *  each carries the page's size itself. */
+  /** The page's size (`ControlSize`): the bar's own padding and how its line of actions lays out
+   *  (`BAR_BOX`, `BAR_LINE`), and at the compact size the band it publishes for the room the
+   *  project List keeps at its end (`SELECTION_BAR_TOP_PROPERTY`). The actions in it are the
+   *  page's, and each carries the page's size itself. */
   readonly size?: ControlSize;
   /** The bar's own words in place of the count, for what a count cannot say: the Inbox's
    *  `Every row selected`, which covers rows a fold or a page is holding back, and its
@@ -907,16 +908,16 @@ function markShown(mark: HTMLElement, clips: Map<Element, boolean>, head: Elemen
  *
  * It is `fixed`, over the list rather than in it, which is what keeps the list's height:
  * selecting a row leaves the top of the list's first row where it was, and a bar drawn in the
- * page would push every row down the moment the first one was marked. The compact bar, the
- * project List's, stands at the foot of the screen at every width; the others stand under the
- * header on a narrow screen and at the foot of the screen from `sm` (`BAR_PLACE`), so the rows a
- * reader is marking stay in sight at either width.
+ * page would push every row down the moment the first one was marked. It sits under the header
+ * on a narrow screen and at the foot of the screen from `sm`, so the rows a reader is marking
+ * stay in sight at either width.
  *
  * The comfortable and toolbar bars are one line of actions that scrolls sideways - an action
  * pushed onto a second line would make the bar taller under the reader's hand - and a notice,
  * which takes a line of its own. The compact line, the project List's, wraps instead at every
- * width, each group whole, and scrolls nowhere sideways: the list keeps room at its end for the
- * bar's whole height, whatever lines it takes (`BAR_LINE`, `SELECTION_BAR_TOP_PROPERTY`).
+ * width, each group whole, and scrolls nowhere sideways; from `sm` up, where the bar stands at
+ * the foot, the list keeps room at its end for the bar's whole height, whatever lines it takes
+ * (`BAR_LINE`, `SELECTION_BAR_TOP_PROPERTY`).
  *
  * A bar that goes while it holds the keyboard focus because the reader caused it - **Clear
  * selection** pressed, Escape from a control inside it, a press on a row's mark that took the last
@@ -979,34 +980,23 @@ export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactN
  *  and its own size at every size. The comfortable and toolbar lines are one line that scrolls
  *  sideways where it must. The compact line, the project List's, wraps onto as many lines as its
  *  groups need at every width, each group whole and none wider than the line, so nothing in it
- *  scrolls sideways, which the layout rule reads as a breach (`e2e/layout-measure.ts`). Its bar
- *  stands at the foot of the screen at every width (`BAR_PLACE`), where the list keeps room at its
- *  end for the bar's whole height (`SELECTION_BAR_TOP_PROPERTY`), so the wrapped bar covers no row
- *  the reader acts on: wrapped under the header at 390x664, it stood 210 px over those rows, and
- *  a double click on a marked row's held Start next landed on the bar instead (builds Jobs
- *  `infra-3135-infra-3135-r30j-dblp` and `-r30k-dblp`). */
+ *  scrolls sideways, which the layout rule reads as a breach (`e2e/layout-measure.ts`). From `sm`
+ *  up its bar stands at the foot of the screen, where the list keeps room at its end for the
+ *  bar's whole height (`SELECTION_BAR_TOP_PROPERTY`), so the wrapped bar covers no row the reader
+ *  acts on. Below `sm` it stands under the header, over the top of the page - at the page's start
+ *  its own controls above the table - and the list keeps no room for it. */
 const BAR_LINE: Record<ControlSize, string> = {
   comfortable: "flex-nowrap overflow-x-auto",
   compact: "flex-wrap [&>*]:max-w-full",
   toolbar: "flex-nowrap overflow-x-auto",
 };
 
-/** Where the bar stands at each size. The compact bar, the project List's, stands at the foot of
- *  the screen at every width, so the room the list keeps at its end for it is one rule at every
- *  width. The comfortable bar, the Inbox's, and the toolbar size's stand under the header below
- *  `sm`, over the list's top rows, and at the foot from `sm` up. */
-const BAR_PLACE: Record<ControlSize, string> = {
-  comfortable: "top-14 sm:top-auto sm:bottom-4",
-  compact: "bottom-4",
-  toolbar: "top-14 sm:top-auto sm:bottom-4",
-};
-
 /** The property on the document element that holds how far above the screen's bottom edge the
- *  compact bar's top stands while it is drawn - its whole height and the 1rem under it - and is
- *  unset while it is not. The foot inset writes it from the bar's band (`useFootInset`'s
- *  `topProperty`). The project List keeps that much room at its end, and never less than the 6rem
- *  it keeps with no bar (`IssuesTable`), so its last rows scroll clear of the bar whatever lines
- *  the bar wraps onto. */
+ *  compact bar's top stands while it is drawn at the foot, from `sm` up - its whole height and the
+ *  1rem under it - and is unset while it is not. The foot inset writes it from the bar's band
+ *  (`useFootInset`'s `topProperty`). From `sm` up the project List keeps that much room at its
+ *  end, and never less than the 6rem it keeps with no bar (`IssuesTable`), so its last rows
+ *  scroll clear of the bar whatever lines the bar wraps onto. */
 export const SELECTION_BAR_TOP_PROPERTY = "--selection-bar-top";
 
 /** The bar's own box at each size. The comfortable size is the bar the Inbox draws. The compact
@@ -1018,10 +1008,10 @@ const BAR_BOX: Record<ControlSize, string> = {
   toolbar: "px-2 py-1",
 };
 
-/** Tailwind's `sm` itself: true exactly when the `sm:` classes of the comfortable and toolbar bars
- *  put them at the foot of the screen rather than under the header (`BAR_PLACE`). In `rem`, for
- *  `MD_VIEWPORT_QUERY`'s reason (`features/shell/useDialog.ts`): Tailwind declares `sm` as
- *  `40rem`, so only a `rem` query switches with those classes at any default font size. */
+/** Tailwind's `sm` itself: true exactly when the bar's `sm:` classes put it at the foot of the
+ *  screen rather than under the header. In `rem`, for `MD_VIEWPORT_QUERY`'s reason
+ *  (`features/shell/useDialog.ts`): Tailwind declares `sm` as `40rem`, so only a `rem` query
+ *  switches with those classes at any default font size. */
 const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
 
 /** The bar's own arming of its hand-off at its root, for a key: what every component's root arms
@@ -1061,20 +1051,14 @@ function DrawnBar({
 }): ReactNode {
   const ownRef = useRef<HTMLElement>(null);
   const ref = barRef ?? ownRef;
-  // A bar at the foot of the screen - the compact bar at every width, the others from `sm` up - is
-  // in the foot's page layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in
-  // each), so the hook holds its band, its box on the screen, and the floats keep clear of its
-  // controls. The compact bar's band gives the list under it its room as well
-  // (`SELECTION_BAR_TOP_PROPERTY`). Below `sm` the other bars sit under the header, at the top of
-  // the screen and not at its foot, so they count nothing there.
+  // From `sm` up the bar sits at the foot of the screen, in the foot's page layer
+  // (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so the hook holds
+  // its band, its box on the screen, and the floats keep clear of its controls. The compact bar's
+  // band gives the list under it its room as well (`SELECTION_BAR_TOP_PROPERTY`). Below `sm` the
+  // bar sits under the header, at the top of the screen and not at its foot, so it counts nothing
+  // there and publishes no band.
   const atFoot = useMediaQuery(SM_VIEWPORT_QUERY);
-  const alwaysAtFoot = size === "compact";
-  useFootInset(
-    ref,
-    alwaysAtFoot || atFoot,
-    "page",
-    alwaysAtFoot ? SELECTION_BAR_TOP_PROPERTY : undefined
-  );
+  useFootInset(ref, atFoot, "page", size === "compact" ? SELECTION_BAR_TOP_PROPERTY : undefined);
   // What inside the bar took the focus last, the bar's own element included, until the reader
   // moves the focus off it: a focus event bubbles up to the bar from every control in it.
   const focused = useRef<Element | null>(null);
@@ -1139,7 +1123,7 @@ function DrawnBar({
   return (
     <div
       aria-label={label}
-      className={`fixed inset-x-2 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-col gap-2 rounded-2xl border text-sm shadow-xl outline-none focus-visible:ring-2 ${BAR_PLACE[size]} ${BAR_BOX[size]} ${card} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
+      className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-col gap-2 rounded-2xl border text-sm shadow-xl outline-none focus-visible:ring-2 sm:top-auto sm:bottom-4 ${BAR_BOX[size]} ${card} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
       data-control={CONTROL.selectionBar}
       onChangeCapture={armAtRoot}
       onClickCapture={armAtRoot}

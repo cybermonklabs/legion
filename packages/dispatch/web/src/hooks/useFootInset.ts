@@ -40,10 +40,10 @@ import { type RefObject, useLayoutEffect } from "react";
  *     thread's and a phone reply's in the Conversation, and a phone margin thread's (`ThreadCard`'s
  *     composer frame), all through `MentionComposer`. From `sm` up the docked composer sticks to
  *     the top and counts nothing.
- *   - The shared selection bar (`SelectionBar`): the issues table's at every width, and the
- *     Inbox's from `sm` up, over their marked rows. Below `sm` the Inbox's sits under the header
- *     and counts nothing. The issues table's publishes its band's upper edge too (`useFootInset`'s
- *     `topProperty`), the room the table keeps at its end for it.
+ *   - The shared selection bar from `sm` up (`SelectionBar`), over the issues table's and the
+ *     Inbox's marked rows. Below `sm` it sits under the header and counts nothing. The issues
+ *     table's publishes its band's upper edge too (`useFootInset`'s `topProperty`), the room the
+ *     table keeps at its end for it.
  *   - The margin's sheet below `xl` while it is collapsed (`MarginSheet`).
  *   - The Agents page's broadcast composer, sticky to the foot of the page's scroll
  *     (`AgentsPage`), wherever it is on screen, stuck or resting at the end of the list: the
