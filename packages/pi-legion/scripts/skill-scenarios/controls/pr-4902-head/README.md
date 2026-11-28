@@ -1,20 +1,20 @@
-# COPIES of two files of #4902's plan guidance change, at its head `25463ff115d`
+# COPIES of two files of #4902's plan guidance change, at its head `bda048a7780`
 
 `architect-common.md` and `plan.md` here are copies, byte for byte, of
 `packages/daemon/internal/prompts/go/architect-common.md` and
 `skills/legion-architect/references/plan.md` at the change's head
-`25463ff115d309756d8f4fb101ec2d3c2a96cc03`, the commit of branch `legion/INFRA-4115` that changes
-the owner's paragraph on the choice of an agent; that branch's pull request carries the change
-since #4902 closed. This directory's name is #4902's, whose change it holds. The files are
+`bda048a7780f9a46a0e0387f1e717425f9e8931d`, the commit of branch `legion/INFRA-4115` that adds a
+sentence to the owner's paragraph on the choice of an agent; that branch's pull request carries the
+change since #4902 closed. This directory's name is #4902's, whose change it holds. The files are
 fixtures of the owner-walk manifests of every form (`owner-walk-head.txt` for A, B and C,
 `owner-walk-D.txt` for D and `owner-walk-E.txt` for E), not guidance: do not edit them.
 `../patches/README.md` names the commits, their blobs, their sha256 and the command that extracts
 them.
 
 The manifests depend on the exact bytes of the originals. A change to
-`skills/legion-architect/references/plan.md` lines 16-21 (the task block's example, whose sentences
-E drops) or lines 83-85 ("Reading how plans went"), or to
-`packages/daemon/internal/prompts/go/architect-common.md` lines 1-8 (the hunk of D's patch, which
+`skills/legion-architect/references/plan.md` lines 16-22 (the task block's example, whose sentences
+E drops) or lines 84-86 ("Reading how plans went"), or to
+`packages/daemon/internal/prompts/go/architect-common.md` lines 1-9 (the hunk of D's patch, which
 holds the change's paragraph that names `dispatch plans` and the choice paragraph E drops), needs
 a refresh of each of these that holds the changed bytes or their blob: the texts of `../drops/`,
 `../patches/owner-walk-D.patch`, this directory's `plan.md` and `architect-common.md`, the patch's

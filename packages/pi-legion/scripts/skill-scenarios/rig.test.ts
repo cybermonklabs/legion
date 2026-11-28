@@ -2108,7 +2108,7 @@ describe("label_tree", () => {
 
   const controls = path.join(scenarios, "controls");
   /** The two files of #4902's plan guidance change at its head
-   * (25463ff115d309756d8f4fb101ec2d3c2a96cc03, on branch legion/INFRA-4115, whose pull request
+   * (bda048a7780f9a46a0e0387f1e717425f9e8931d, on branch legion/INFRA-4115, whose pull request
    * carries the change since #4902 closed) that the control manifests change, committed as
    * controls/pr-4902-head/ (controls/patches/README.md): each fixture, the path it has in the head,
    * and its blob there. The names here say #4902, whose change it is. */
@@ -2116,12 +2116,12 @@ describe("label_tree", () => {
     [
       "architect-common.md",
       "packages/daemon/internal/prompts/go/architect-common.md",
-      "fbb7e914ba5829ff824b65db6aacfdf4e2d854d8",
+      "9e440337702b9621eda5ac95e9aef3d2210e6d30",
     ],
     [
       "plan.md",
       "skills/legion-architect/references/plan.md",
-      "4f4fd934e859e507cddf191b9f19be7da9e55217",
+      "ad404ad4518604d99c0f0fe21cb3a6c88b2bc017",
     ],
   ] as const;
   /** A repository of one commit that holds #4902's head's two files at their paths, built from the
@@ -2178,9 +2178,11 @@ describe("label_tree", () => {
       builtTree(repo, freshDir(`at-4902-${name}`), name, head, path.join(controls, manifest));
   });
 
-  // Catches: a D whose tree takes out more than #4902's own lines from form A's (a manifest line
-  // too many, a patch of another file), which would make D's control a control of something else;
-  // and a hold against D's own commit, from which every form's tree differs in the plans-read lines.
+  // Catches: a D whose tree differs from form A's in more than the lines of D's patch, the change's
+  // whole change of go/architect-common.md, whose reverse puts the base's file back (a manifest
+  // line too many, a patch of another file), or that puts back other lines than the patch removes,
+  // which would make D's control a control of something else; and a hold against D's own commit,
+  // from which every form's tree differs in the plans-read lines.
   test("D's tree differs from form A's tree in the patch's lines alone, at #4902's head's two files", () => {
     const { repo, head } = repo4902();
     const patch = path.join(controls, "patches/owner-walk-D.patch");
@@ -2197,10 +2199,11 @@ describe("label_tree", () => {
     console.log(
       `D's tree at ${head}, its record: ${made.stdout.split("\n").find((line) => line.startsWith("manifest ")) ?? "no manifest line"}`
     );
-    // Against its commit, D's tree differs in the plans-read lines too, which form A's takes out.
+    // Against its commit, D's tree differs in the base's go/architect-common.md, and in the
+    // plans-read lines too, which form A's takes out.
     expect(readFileSync(path.join(work, "label-trees/ctl-d/diff.numstat"), "utf8")).toBe(
       [
-        "0\t2\tpackages/daemon/internal/prompts/go/architect-common.md",
+        "1\t3\tpackages/daemon/internal/prompts/go/architect-common.md",
         "0\t3\tskills/legion-architect/references/plan.md",
         "",
       ].join("\n")
@@ -2208,7 +2211,7 @@ describe("label_tree", () => {
     expect(holds("ctl-d")).toEqual({
       code: 0,
       stdout:
-        "the label tree ctl-d differs from the label tree head in the lines of owner-walk-D.patch alone: 0 2 packages/daemon/internal/prompts/go/architect-common.md\n",
+        "the label tree ctl-d differs from the label tree head in the lines of owner-walk-D.patch alone: 1 3 packages/daemon/internal/prompts/go/architect-common.md\n",
       stderr: "",
     });
     // D with one manifest line more, E's sentences of plan.md taken out too, fails the same check.
@@ -2223,6 +2226,22 @@ describe("label_tree", () => {
     expect(failed.stderr).toContain(
       "the label tree ctl-d-more differs from the label tree head in more than the lines of"
     );
+    // D whose put-back line is not the base's, in the same counts (one word of the base's choice
+    // paragraph changed in the built tree and staged, as cmd_label_tree stages a tree), fails too.
+    builtTree(repo, work, "ctl-d-other", head, path.join(controls, "owner-walk-D.txt"));
+    const other = path.join(work, "label-trees/ctl-d-other/tree");
+    const prompt = path.join(other, "packages/daemon/internal/prompts/go/architect-common.md");
+    const base = readFileSync(prompt, "utf8");
+    const planted = base.replace(
+      "decide whether a fresh agent works it",
+      "decide whether a new agent works it"
+    );
+    expect(planted).not.toBe(base);
+    writeFileSync(prompt, planted);
+    git(other, "add", "-A");
+    const otherLine = holds("ctl-d-other");
+    expect(otherLine.code).toBe(1);
+    expect(otherLine.stderr).toContain("the label tree ctl-d-other puts back other lines than");
   });
 });
 

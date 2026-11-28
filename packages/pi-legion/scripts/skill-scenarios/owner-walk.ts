@@ -36,9 +36,10 @@
  * label-tree): A, B and C at `head` (controls/owner-walk-head.txt), D at `ctl-d` and E at `ctl-e`.
  * Every form's manifest takes out the lines of the architect's plan reference that name
  * `dispatch plans --project`, so the owner's prompt part is the one text of a form that can name
- * the read of earlier plans. D's tree is A's with that part without #4902's paragraph that names
- * the read of earlier plans, so it names no such read; E's is B's with the owner's sentences on
- * the choice of an agent taken out.
+ * the read of earlier plans. D's tree is A's with the base's go/architect-common.md, so its prompt
+ * part is the owner's as it was before this change: it names no such read and holds the old
+ * paragraph on the choice of an agent. E's is B's with the owner's sentences on the choice of an
+ * agent taken out.
  *
  *   owner-walk.ts cases [<stage>]
  *     Prints each case of the stage (default guidance) and the scored runs it takes, `<case> <n>`,
