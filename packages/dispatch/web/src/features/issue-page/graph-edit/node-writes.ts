@@ -305,11 +305,14 @@ const FAILED = { status: "failed" } as const;
 const READ_NEXT: Next = { kind: "read_next" };
 const GONE: Next = { kind: "drop", reason: undefined };
 
+/** `client`'s state, made on its first use, which then has the cache's reads of the server
+ *  clear `guessed` (`trustServerReads`). */
 function stateOf(client: QueryClient): NodeWriteState {
   let state = states.get(client);
   if (state === undefined) {
     state = { chains: new Map(), lines: new Map(), listeners: new Set() };
     states.set(client, state);
+    trustServerReads(client);
   }
   return state;
 }
@@ -529,6 +532,31 @@ function placeIn(nodes: readonly TreeAnswerNode[], from: number, place: SiblingP
   return place.child === undefined ? subtreeEnd(nodes, from) : nodes.indexOf(place.child);
 }
 
+/** The nodes Graph's held reads hold where a taken move's answer was written past the pages
+ *  loaded, at a place the read did not show (`movedIn`): where such a node stands shows nothing,
+ *  for its own place or a later one (`placement.ts`' `siblingPlace`, `nodeTrusted`). The cache's
+ *  copy of such a node is one too (`writeHeld`), and a read of the server clears them all
+ *  (`trustServerReads`). */
+const guessed = new WeakSet<TreeAnswerNode>();
+
+/** Takes out of `guessed` every node a read of the server answers for Graph's outline of an issue,
+ *  once `client`'s cache holds it: the read stands each node where the walk stands it, though the
+ *  cache keeps the object it held where the read answers a node as it held it, at the same index
+ *  (`replaceEqualDeep`). A fetch's answer is no `manual` one; a next page's merge and this
+ *  module's own writes are (`setQueryData`), and change no mark. */
+function trustServerReads(client: QueryClient): void {
+  client.getQueryCache().subscribe((event) => {
+    if (event.type !== "updated" || event.action.type !== "success") return;
+    if (event.action.manual === true) return;
+    const [, issue] = event.query.queryKey;
+    if (typeof issue !== "string") return;
+    if (event.query.queryHash !== hashKey(outlineQuery(issue, "graph").queryKey)) return;
+    for (const node of (event.action.data as TreeAnswer | undefined)?.nodes ?? []) {
+      guessed.delete(node);
+    }
+  });
+}
+
 /** `held` with `taken`, the taken move of `node` (its answer, and the body it answered), written
  *  into it (`read`), and whether `held` shows that place (`shown`, `placement.ts`'
  *  `SiblingPlace`): the node's whole subtree, on every page it stands on (`cutSubtree`), under
@@ -538,12 +566,13 @@ function placeIn(nodes: readonly TreeAnswerNode[], from: number, place: SiblingP
  *  `placement_seq` the answer's. The issue's memo, where that parent holds one (`SiblingPlace`'s
  *  `memo`), goes where the walk then stands it: right after the node's subtree where the place
  *  stands before it by rank and `held` shows that place, and first among the issue's children
- *  otherwise, until a page shows the place. The place is found among the parent's children with
- *  the node's subtree cut out, and whether it is shown is read on `held` as it stands, the node
- *  set aside where it stands there (`siblingPlace`): a memo held at its rank right after the node
- *  shows the place, and is first among the parent's children once the node is cut. Where `held`
- *  holds no such node, it is answered as it stands; where it holds no such parent, the node keeps
- *  its place and takes the answer's `placement_seq` alone. Neither shows the place. */
+ *  otherwise, until a page shows the place. The place and whether it is shown are both read on
+ *  `held` as it stands, the node set aside where it stands there (`siblingPlace`). Where the node
+ *  stands there shows the place, as a memo held at its rank does, unless an earlier answer was
+ *  written there at a place not shown (`guessed`). Where `held` holds no such node, it is answered
+ *  as it stands; where it holds no such parent, the node keeps its place and takes the answer's
+ *  `placement_seq` alone. Neither shows the place. A node written at a place not shown is
+ *  `guessed`. */
 function movedIn(
   held: TreeAnswer,
   node: string,
@@ -559,15 +588,16 @@ function movedIn(
   const from = rest.findIndex((each) => names(each, answer.parent));
   const parent = rest[from];
   if (parent === undefined) {
+    guessed.add(renewed);
     const read = { ...held, nodes: [...nodes.slice(0, at), renewed, ...nodes.slice(at + 1)] };
     return { read, shown: false };
   }
   const ref = own.parent?.id === parent.id ? own.parent : parentRef(rest, parent);
-  const place = siblingPlace({ ...held, nodes: rest }, parent.id, own, taken);
-  const { shown } = siblingPlace(held, parent.id, own, taken);
-  const { memo } = place;
+  const place = siblingPlace(held, parent.id, own, taken, !guessed.has(own));
+  const { memo, shown } = place;
   const to = placeIn(rest, from, place);
   const top = { ...renewed, parent: ref };
+  if (!shown) guessed.add(top);
   const moved = [...rest.slice(0, to), top, ...subtree.slice(1), ...rest.slice(to)];
   if (memo === undefined) return { read: { ...held, nodes: moved }, shown };
   const cut = cutSubtree(moved, moved.indexOf(memo.node));
@@ -583,11 +613,17 @@ function movedIn(
 }
 
 /** Writes `answer` as Graph's held read of `issue`, keeping the stale mark an event or a write
- *  put on it, as `readNextTreePage` does. */
+ *  put on it, as `readNextTreePage` does. The cache shares what it held with `answer`
+ *  (`replaceEqualDeep`), so it holds a copy of each node it did not hold as it was, at the node's
+ *  own index: the copy of a `guessed` node is `guessed` too. */
 function writeHeld(client: QueryClient, issue: string, answer: TreeAnswer): void {
   const { queryKey } = outlineQuery(issue, "graph");
   const stale = client.getQueryCache().find({ exact: true, queryKey })?.state.isInvalidated;
-  client.setQueryData(queryKey, answer);
+  const kept = client.setQueryData(queryKey, answer)?.nodes ?? [];
+  (answer.nodes ?? []).forEach((node, at) => {
+    const copy = kept[at];
+    if (copy !== undefined && guessed.has(node)) guessed.add(copy);
+  });
   if (stale === true) {
     void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
   }

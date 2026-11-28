@@ -348,7 +348,7 @@ export function standsAt(
   const at = children.indexOf(node);
   if (at < 0) return false;
   if (answer !== null) return true;
-  const place = placeAmong(held.issue, walk, under.id, node, { answer: null, body });
+  const place = placeAmong(held.issue, walk, under.id, node, { answer: null, body }, false);
   const { memo } = place;
   if (memo !== undefined && !memo.first) return children[at + 1] === memo.node;
   if (place.kind === "after") return children[at - 1] === place.child;
@@ -362,7 +362,7 @@ export function standsAt(
 export function holdsPlace(held: TreeAnswer, node: TreeAnswerNode, taken: TakenPlace): boolean {
   const under = (held.nodes ?? []).find((each) => names(each, taken.answer.parent));
   if (under === undefined) return false;
-  return placeAmong(held.issue, walkOf(held), under.id, node, taken).shown;
+  return placeAmong(held.issue, walkOf(held), under.id, node, taken, false).shown;
 }
 
 /** Indexes `held`: its nodes by read id, each parent's children and its ranked children in the
@@ -461,14 +461,16 @@ export function memoIn(held: TreeAnswer, node: string): TreeAnswerNode | undefin
  *  subtree of `child` (`after`), or right before `child` (`before`), which is undefined where the
  *  place stands past every child the read holds. `shown` says whether the read shows the place:
  *  it holds the child the place stands after or before, or the parent's children cannot go on
- *  past the loaded pages (`Walk.open`), or the place is the first child past the issue's
- *  conversation - before the memo by rank, or right after it - and the read holds the memo at
- *  its rank rather than first: the conversation is then all held, and nothing ranks between the
- *  memo and either place. That memo shows no later place past it, since children of that place's
- *  band may go on past the loaded pages. `memo` is the issue's memo among the parent's children
- *  (`memoOf`), and whether it stands before the place by rank, so that the walk stands it
- *  `first` among the issue's children, or past it, so that the walk stands it right after the
- *  node's subtree. */
+ *  past the loaded pages (`Walk.open`), or it holds the node itself where the server's walk
+ *  stands it, under the parent at or past the place's band, since a read holds every child that
+ *  stands before a child it holds (`siblingPlace`'s `nodeTrusted`), or the place is the first
+ *  child past the issue's conversation - before the memo by rank, or right after it - and the
+ *  read holds the memo at its rank rather than first: the conversation is then all held, and
+ *  nothing ranks between the memo and either place. That memo shows no later place past it, since
+ *  children of that place's band may go on past the loaded pages. `memo` is the issue's memo
+ *  among the parent's children (`memoOf`), and whether it stands before the place by rank, so
+ *  that the walk stands it `first` among the issue's children, or past it, so that the walk
+ *  stands it right after the node's subtree. */
 export type SiblingPlace = (
   | { readonly kind: "after"; readonly child: TreeAnswerNode }
   | { readonly kind: "before"; readonly child: TreeAnswerNode | undefined }
@@ -494,14 +496,18 @@ export type SiblingPlace = (
  * both of the spec's band, a null `after` or a gone one means a gone block of the spec stood before
  * the memo - and makes the node the first child past the conversation, so the walk then stands the
  * memo right after it, not first.
+ *
+ * `nodeTrusted` says that `held` holds the node where the server's walk stood it, so that where
+ * it stands shows the place (`SiblingPlace`'s `shown`); not where a write guessed its place.
  */
 export function siblingPlace(
   held: TreeAnswer,
   parent: string,
   node: TreeAnswerNode,
-  taken: TakenPlace
+  taken: TakenPlace,
+  nodeTrusted: boolean
 ): SiblingPlace {
-  return placeAmong(held.issue, walkOf(held), parent, node, taken);
+  return placeAmong(held.issue, walkOf(held), parent, node, taken, nodeTrusted);
 }
 
 /** `siblingPlace` over `walk`, the index of a held read of the issue `issue`, for a taken place,
@@ -513,7 +519,8 @@ function placeAmong(
   walk: Walk,
   parent: string,
   node: TreeAnswerNode,
-  { answer, body }: TakenPlace | { readonly answer: null; readonly body: Place }
+  { answer, body }: TakenPlace | { readonly answer: null; readonly body: Place },
+  nodeTrusted: boolean
 ): SiblingPlace {
   const band = bandOf(node);
   const children = childrenIn(walk, parent);
@@ -526,7 +533,10 @@ function placeAmong(
     const child = children.find(
       (each) => each.id !== node.id && each !== memo && atOrPastBand(each, start)
     );
-    const shown = child !== undefined || (atRank && memoShows) || !walk.open.has(parent);
+    // The node, held where the walk stands it, shows every child that stands before it.
+    const ownShows = nodeTrusted && children.includes(node) && atOrPastBand(node, start);
+    const shown =
+      child !== undefined || ownShows || (atRank && memoShows) || !walk.open.has(parent);
     return { child, kind: "before", memo: memoAt(memoFirst), shown };
   };
   const before = (start: number) => {
