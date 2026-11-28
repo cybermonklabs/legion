@@ -999,65 +999,127 @@ func TestABudgetThatPassesWhileTheProbeRunsStopsItsWholeGroup(t *testing.T) {
 	}
 }
 
-// A probe that handles its budget's SIGTERM and exits at once is reported no later than half of
-// procgroup.StopGrace after the budget passed, as workspace's RunCommand is held for a command that
-// handles its SIGTERM (main's TestRunCommandStopsItsCommandTheSameWay): the stop finds the group
-// gone within its first poll, so a run that returns later than that held the probe it started.
-// Such a run is a gate that waits between the probe's start and its Wait: os/exec's stop still
-// lands at the budget, the probe exits on it, and the run returns only when the late Wait reaps
-// it. The budget passes at a fact of the run, once the probe has set its trap and marked that it
-// is ready, so how fast the machine starts the probe is no part of the span. Where the two rows
-// beside it (TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt and
-// TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPipePastIt) take a run
-// again for a leader the machine reaped late, this row holds the run that follows the stop: it is
-// their catcher for a gate that waits before its Wait. The probe waits on its watcher in the wait
-// builtin, which a trapped signal ends at once, and runs until a signal ends it, the row's cleanup
-// writes held, or this test process is gone, never on a timer of its own.
-func TestAProbeThatHandlesItsBudgetsSIGTERMIsReportedWithinHalfTheGrace(t *testing.T) {
-	t.Parallel()
-	const bound = procgroup.StopGrace / 2
-	dir := t.TempDir()
-	ready, exited, held := filepath.Join(dir, "ready"), filepath.Join(dir, "exited"), filepath.Join(dir, "held")
-	t.Cleanup(func() { _ = os.WriteFile(held, nil, 0o644) })
-	within := testwait.Bounded(t, answerBudget, cutRunMargin)
-	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: answerBudget}
-	passed := make(chan time.Time, 1)
-	gate.expire = func(ctx context.Context) (context.Context, context.CancelFunc) {
-		attempt, pass, cancel := testwait.StandInDeadline(ctx)
-		go func() {
-			if !testwait.Holds(within, testwait.Poll, func() bool { _, err := os.Stat(ready); return err == nil }) {
-				_ = os.WriteFile(held, nil, 0o644)
-				passed <- time.Time{}
-				return
+// The gate reaps a probe that leaves on its budget's SIGTERM within a quarter of procgroup.StopGrace
+// of that exit, less the time this process waited for a CPU. The probe's trap kills and reaps its
+// watcher, which reaps its own sleep, and only then writes its exit mark (testexec.MarkNow) and
+// exits: at that mark its group holds the probe alone, so what follows to the run's return is the
+// gate's own part. A gate that waits on its probe ends that part at once: its Wait reaps the
+// probe, the stop's next poll (every 20 ms) finds the group gone, and the run returns. A gate that
+// waits between the probe's start and its Wait leaves the probe a zombie until that Wait comes,
+// and the group answers the stop's polls the whole time. On a loaded machine the gate's own part
+// also holds the time the kernel kept this process's threads waiting for a CPU; each thread
+// records it (schedstat's second field), and the row takes off what they recorded from the
+// budget's passing to the return. That reading starts before the exit mark, so it can take off a
+// little more than the gate's own part held, never less. A kernel that keeps no schedstat (gVisor)
+// leaves it unknown, and the whole part is held to the bound. Main's
+// TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt failed a gate that
+// waited 1.5 s before its Wait; the two rows of that name take a run again for a leader the
+// machine reaped late, and this row is their catcher for that gate. The budget passes at a fact of
+// the run, once the probe has set its trap, started its watcher and marked that it is ready. A run
+// whose probe wrote no exit mark (the machine held its trap past the grace, and the stop's SIGKILL
+// ended it) is not judged, and the row runs again within its bound.
+func TestTheGateReapsAProbeThatLeavesOnItsBudgetsSIGTERMWithinAQuarterOfTheGrace(t *testing.T) {
+	// Not parallel: the row takes off the run-queue wait of every thread of this process, which a test running beside it would add to.
+	const bound = procgroup.StopGrace / 4
+	// Each time since boot the row reads, its own and the probe's mark, is off by less than a tick.
+	const clockSlack = 2 * testexec.ClockTick
+	within := testwait.Bounded(t, time.Minute, answerBudget+cutRunMargin)
+	until := time.Now().Add(within)
+	// The probe waits on its watcher in the wait builtin, which a trapped signal ends at once, and
+	// runs until a signal ends it, the row's cleanup writes held, or this test process is gone,
+	// never on a timer of its own. The watcher's own trap reaps its sleep, and the probe's trap
+	// reaps the watcher. A function's $2 is its own argument, so the trap names the exit mark's path
+	// by a variable.
+	script := `exited="$2"; onterm() { kill "$w" 2>/dev/null; wait "$w" 2>/dev/null; ` + testexec.MarkNow(`"$exited"`) + `; exit 0; }; trap onterm TERM; ` +
+		`(trap 'kill $! 2>/dev/null; wait $! 2>/dev/null; exit 0' TERM; while [ ! -e "$3" ] && kill -0 "$4" 2>/dev/null; do sleep 0.01 & wait $!; done) & w=$!; ` +
+		`: >"$1"; wait "$w"; exit 0`
+	for runs := 1; ; runs++ {
+		dir := t.TempDir()
+		ready, exited, held := filepath.Join(dir, "ready"), filepath.Join(dir, "exited"), filepath.Join(dir, "held")
+		t.Cleanup(func() { _ = os.WriteFile(held, nil, 0o644) })
+		gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: answerBudget}
+		type passing struct {
+			waited time.Duration
+			known  bool
+		}
+		passed := make(chan passing, 1)
+		gate.expire = func(ctx context.Context) (context.Context, context.CancelFunc) {
+			attempt, pass, cancel := testwait.StandInDeadline(ctx)
+			go func() {
+				if !testwait.Holds(time.Until(until), testwait.Poll, func() bool { _, err := os.Stat(ready); return err == nil }) {
+					_ = os.WriteFile(held, nil, 0o644)
+					close(passed)
+					return
+				}
+				waited, known := threadsRunQueueWait()
+				pass(context.DeadlineExceeded)
+				passed <- passing{waited, known}
+			}()
+			return attempt, cancel
+		}
+
+		r, err := gate.run(context.Background(), script, ready, exited, held, strconv.Itoa(os.Getpid()))
+		returned := testexec.SinceBoot(t)
+		waitedAtReturn, knownAtReturn := threadsRunQueueWait()
+		at, ok := <-passed
+
+		if !ok {
+			t.Fatalf("run %d: the probe never marked that it was ready within the row's %s bound, so its budget never passed (run = %v, exit %d, stderr %q after %s)", runs, within, err, r.exit, r.stderr, r.elapsed)
+		}
+		if err != nil || !r.timedOut {
+			t.Fatalf("run %d: run = exit %d, timed out %t, error %v, stderr %q after %s; want the budget's kill: the budget passed while the probe ran", runs, r.exit, r.timedOut, err, r.stderr, r.elapsed)
+		}
+		exit, markErr := testexec.ReadNowMark(exited)
+		if markErr != nil {
+			if time.Now().Before(until) {
+				t.Logf("run %d is not judged: the probe wrote no exit mark (%v), so its trap did not finish before the stop's SIGKILL", runs, markErr)
+				continue
 			}
-			at := time.Now()
-			pass(context.DeadlineExceeded)
-			passed <- at
-		}()
-		return attempt, cancel
+			t.Fatalf("no run of %d over %s in which the probe wrote its exit mark: the last wrote none (%v), so the stop's SIGKILL came before its SIGTERM trap finished, %s after the run began", runs, within, markErr, r.elapsed)
+		}
+		part := returned - exit
+		gateHeld, read := part, fmt.Sprintf("this kernel keeps no schedstat for this process's threads, so the whole %s is held", part)
+		if at.known && knownAtReturn {
+			waited := waitedAtReturn - at.waited
+			gateHeld = part - waited
+			read = fmt.Sprintf("the run returned %s after the probe's exit mark, and this process's threads waited %s for a CPU from the budget's passing to the return", part, waited)
+		}
+		if gateHeld > bound+clockSlack {
+			t.Fatalf("run %d: the gate held its probe %s past the probe's exit, past a quarter of procgroup.StopGrace, %s (%s): the probe's group held the probe alone at that exit, so the gate reaped it late, as a gate does that waits before its Wait", runs, gateHeld, bound, read)
+		}
+		t.Logf("run %d: the gate held its probe %s past the probe's exit, against a quarter of procgroup.StopGrace, %s (%s)", runs, gateHeld, bound, read)
+		return
 	}
+}
 
-	// A function's $2 is its own argument, so the trap names the exit mark's path by a variable.
-	script := `exited="$2"; onterm() { ` + testexec.MarkNow(`"$exited"`) + `; exit 0; }; trap onterm TERM; : >"$1"; (while [ ! -e "$3" ] && kill -0 "$4" 2>/dev/null; do sleep 0.01; done) & wait $!; exit 0`
-	r, err := gate.run(context.Background(), script, ready, exited, held, strconv.Itoa(os.Getpid()))
-	returned, returnedBoot := time.Now(), testexec.SinceBoot(t)
-	at := <-passed
-
-	if at.IsZero() {
-		t.Fatalf("the probe never marked that it was ready within the row's %s bound, so its budget never passed (run = %v, exit %d, stderr %q after %s)", within, err, r.exit, r.stderr, r.elapsed)
+// threadsRunQueueWait is the time every thread of this process has waited for a CPU, the second
+// field of each /proc/self/task/<tid>/schedstat, and false where the kernel keeps none (gVisor). A
+// thread that exits between two readings takes its wait with it, so a difference of two readings
+// is no more than the wait the threads held between them.
+func threadsRunQueueWait() (time.Duration, bool) {
+	tasks, err := os.ReadDir("/proc/self/task")
+	if err != nil {
+		return 0, false
 	}
-	if err != nil || !r.timedOut {
-		t.Fatalf("run = exit %d, timed out %t, error %v, stderr %q after %s; want the budget's kill: the budget passed while the probe ran", r.exit, r.timedOut, err, r.stderr, r.elapsed)
+	var sum int64
+	read := 0
+	for _, task := range tasks {
+		raw, err := os.ReadFile(filepath.Join("/proc/self/task", task.Name(), "schedstat"))
+		if err != nil {
+			continue
+		}
+		fields := strings.Fields(string(raw))
+		if len(fields) < 2 {
+			continue
+		}
+		waited, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		sum += waited
+		read++
 	}
-	trapped := "its trap recorded no exit"
-	if exit, markErr := testexec.ReadNowMark(exited); markErr == nil {
-		trapped = fmt.Sprintf("its trap marked its exit %s before the run returned", returnedBoot-exit)
-	}
-	if span := returned.Sub(at); span > bound {
-		t.Fatalf("the run returned %s after the probe's budget passed, past half of procgroup.StopGrace, %s, for a probe that exits on its SIGTERM (%s): the gate held the probe it started, as a gate does that waits before its Wait", span, bound, trapped)
-	} else {
-		t.Logf("the run returned %s after the probe's budget passed, against half of procgroup.StopGrace, %s (%s)", span, bound, trapped)
-	}
+	return time.Duration(sum), read > 0
 }
 
 // pidIn is the PID a probe's shell wrote to path, once the whole line is there, and 0 before.
