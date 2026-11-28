@@ -64,7 +64,7 @@ func sameTime(a *time.Time, b time.Time) bool { return a != nil && a.Equal(b) }
 // reads the lagging clock.
 func laggingDatabaseClock(t *testing.T, ctx context.Context, pool *store.Pool, lag time.Duration) *store.Pool {
 	t.Helper()
-	schema := fmt.Sprintf("lagging_clock_%d", time.Now().UnixNano())
+	schema := fmt.Sprintf("lagging_clock_%d", testSerials.Add(1))
 	if _, err := pool.Exec(ctx, fmt.Sprintf(`
 		create schema %[1]s;
 		create function %[1]s.now() returns timestamptz language sql stable as $$ select pg_catalog.now() - interval '%[2]d microseconds' $$;
@@ -83,7 +83,9 @@ func laggingDatabaseClock(t *testing.T, ctx context.Context, pool *store.Pool, l
 		t.Fatalf("open a pool on the lagging clock: %v", err)
 	}
 	lagging := store.NewPool(opened)
-	t.Cleanup(lagging.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the pool on the lagging clock to come back, so the pool closes", lagging.Close)
+	})
 	return lagging
 }
 
@@ -116,17 +118,31 @@ func listenConn(t *testing.T, ctx context.Context, pool *store.Pool, channel str
 	return conn
 }
 
-// nextNotification is the next notification conn receives within wait, or nil.
-func nextNotification(t *testing.T, ctx context.Context, conn *pgx.Conn, wait time.Duration) *pgconn.Notification {
+// nextNotification waits through the shared wait for the next notification conn receives, what
+// naming it in the failure.
+func nextNotification(t *testing.T, conn *pgx.Conn, what string) *pgconn.Notification {
 	t.Helper()
-	waitCtx, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-	notification, err := conn.WaitForNotification(waitCtx)
+	notification, err := conn.WaitForNotification(testwait.Context(t))
 	if err != nil {
-		if waitCtx.Err() != nil && ctx.Err() == nil {
-			return nil
-		}
-		t.Fatalf("wait for a notification: %v", err)
+		t.Fatalf("wait for %s: %v", what, err)
+	}
+	return notification
+}
+
+// notifiedBeforeMarker notifies channel with a marker from pool, in a transaction that commits
+// after every write the test has made, and returns what conn receives before the marker, or nil.
+// Postgres hands a listener the notifications of different transactions in the order they
+// committed, so a notification any earlier write made is received before the marker: this is the
+// later action whose effect proves that nothing more was notified.
+func notifiedBeforeMarker(t *testing.T, ctx context.Context, pool *store.Pool, conn *pgx.Conn, channel string) *pgconn.Notification {
+	t.Helper()
+	marker := "marker " + testID(t)
+	if _, err := pool.Exec(ctx, `select pg_notify($1, $2)`, channel, marker); err != nil {
+		t.Fatalf("notify %s with the marker: %v", channel, err)
+	}
+	notification := nextNotification(t, conn, "the marker notified on "+channel)
+	if notification.Channel == channel && notification.Payload == marker {
+		return nil
 	}
 	return notification
 }
@@ -295,10 +311,7 @@ func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 		if err := write.write(); err != nil {
 			t.Fatalf("%s: %v", write.name, err)
 		}
-		notification := nextNotification(t, ctx, conn, 5*time.Second)
-		if notification == nil {
-			t.Fatalf("%s notified nothing", write.name)
-		}
+		notification := nextNotification(t, conn, write.name+"'s notification")
 		var payload freshnessPayload
 		if err := json.Unmarshal([]byte(notification.Payload), &payload); err != nil {
 			t.Fatalf("%s's payload %q: %v", write.name, notification.Payload, err)
@@ -306,7 +319,7 @@ func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 		if !write.want(payload) {
 			t.Fatalf("%s notified %s", write.name, notification.Payload)
 		}
-		if extra := nextNotification(t, ctx, conn, 200*time.Millisecond); extra != nil {
+		if extra := notifiedBeforeMarker(t, ctx, pool, conn, "delivery_freshness"); extra != nil {
 			t.Fatalf("%s notified twice: %s", write.name, extra.Payload)
 		}
 	}
@@ -397,10 +410,7 @@ func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
 		if err := RecordReconcileError(ctx, pool, message); err != nil {
 			t.Fatalf("RecordReconcileError with 5,000 %s: %v", name, err)
 		}
-		notification := nextNotification(t, ctx, conn, 5*time.Second)
-		if notification == nil {
-			t.Fatalf("5,000 %s notified nothing", name)
-		}
+		notification := nextNotification(t, conn, "the notification of 5,000 "+name)
 		if size := len(notification.Payload); size >= 8000 {
 			t.Fatalf("5,000 %s notified %d bytes, want under 8,000", name, size)
 		}
@@ -424,16 +434,14 @@ func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if early := nextNotification(t, ctx, conn, 300*time.Millisecond); early != nil {
+	if early := notifiedBeforeMarker(t, ctx, pool, conn, "delivery_changes"); early != nil {
 		t.Fatalf("notified before commit: %+v", early)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	if nextNotification(t, ctx, conn, 5*time.Second) == nil {
-		t.Fatal("the commit notified nothing")
-	}
-	if extra := nextNotification(t, ctx, conn, 300*time.Millisecond); extra != nil {
+	nextNotification(t, conn, "the commit's notification")
+	if extra := notifiedBeforeMarker(t, ctx, pool, conn, "delivery_changes"); extra != nil {
 		t.Fatalf("one change notified twice: %+v", extra)
 	}
 }

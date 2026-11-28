@@ -72,13 +72,13 @@ func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *t
 	}
 	ended := time.Since(frozen)
 	thaw()
-	waitFor(t, 30*time.Second, func() bool { return conn.Stats().Reconnects == before+1 && conn.IsConnected() }, func() string {
-		return fmt.Sprintf("the holder's connection did not reconnect within 30 s of the link thawing: reconnects %d, from %d before the freeze",
+	waitFor(t, func() bool { return conn.Stats().Reconnects == before+1 && conn.IsConnected() }, func() string {
+		return fmt.Sprintf("the holder's connection did not reconnect once the link thawed: reconnects %d, from %d before the freeze",
 			conn.Stats().Reconnects, before)
 	})
 	publishMergedPullRequest(t, publisher, numbers[3])
 
-	waitFor(t, tuningFor(t).ackWait()+30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		for _, number := range numbers {
 			if holder.fetches(number) == 0 {
 				return false
@@ -86,7 +86,7 @@ func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *t
 		}
 		return true
 	}, func() string {
-		return fmt.Sprintf("the holder did not handle every message within the ack wait and 30 s: fetches %v; %s", fetchesOf(holder, numbers), consumerState(publisher))
+		return fmt.Sprintf("the holder did not handle every message: fetches %v; %s", fetchesOf(holder, numbers), consumerState(publisher))
 	})
 	awaitEverythingAcknowledged(t, publisher)
 	for _, number := range numbers {

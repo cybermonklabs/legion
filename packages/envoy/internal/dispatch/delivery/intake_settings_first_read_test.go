@@ -75,7 +75,7 @@ func TestAnIntakeBindsOnlyOnceTheSettingsCachesFirstReadHasAnswered(t *testing.T
 		}
 		return waiters
 	}
-	waitFor(t, 20*time.Second, func() bool { return waiting() > 0 }, func() string {
+	waitFor(t, func() bool { return waiting() > 0 }, func() string {
 		return "control: the settings cache's first read never waited on the lock on delivery_settings"
 	})
 	// Long enough for an intake that did not wait for the read to bind and handle the merge.
@@ -92,8 +92,8 @@ func TestAnIntakeBindsOnlyOnceTheSettingsCachesFirstReadHasAnswered(t *testing.T
 		}
 		return rows
 	}
-	waitFor(t, 30*time.Second, func() bool { return count() == 1 }, func() string {
-		return fmt.Sprintf("acme/widgets#42, merged while the settings cache's first read waited, has %d delivery rows 30s after the read could answer, want 1: the intake handled it by no settings\n%s",
+	waitFor(t, func() bool { return count() == 1 }, func() string {
+		return fmt.Sprintf("acme/widgets#42, merged while the settings cache's first read waited, has %d delivery rows after the read could answer, want 1: the intake handled it by no settings\n%s",
 			count(), intakeStateReport(t, natsClient))
 	})
 }

@@ -1644,6 +1644,9 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	seedDeliveryProject(t, ctx, pool)
 	withoutBranchCommits(t, ctx, pool)
 	capHeadWriteDeliveriesAt(t, 2)
+	// The second delivery must be the hand-back's, so the server's own redelivery at the ack wait
+	// never comes inside the run (ackWaitPastTheRun).
+	ackWaitPastTheRun(t)
 
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
@@ -1660,7 +1663,7 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	})
 
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 45*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info = deliveryConsumerInfo(t, natsClient)
 		return info.Delivered.Consumer-before >= 2
 	}, func() string {

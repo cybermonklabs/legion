@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	natsgo "github.com/nats-io/nats.go"
@@ -44,6 +43,9 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	withoutBranchCommits(t, ctx, pool)
 
 	natsClient := intakeTestClient(t)
+	// The hand-back is what must deliver the envelope again, so the server's own redelivery at the
+	// ack wait never comes inside the run (ackWaitPastTheRun).
+	ackWaitPastTheRun(t)
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
@@ -58,7 +60,7 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	})
 
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 45*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info = deliveryConsumerInfo(t, natsClient)
 		return info.Delivered.Consumer-before >= 2
 	}, func() string {
@@ -215,6 +217,10 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	publisher := intakeTestClient(t)
 	answers := durableAnswers(t, publisher)
 
+	// The row's envelope must reach the keeper by the take-over's recreate at the ack floor, never
+	// by the server's redelivery at the ack wait, which then never comes inside the run
+	// (ackWaitPastTheRun).
+	ackWaitPastTheRun(t)
 	holder := startHeadWriteProcess(t, pool, natsURL, true)
 	awaitBoundDurable(t, publisher)
 	keeper := startHeadWriteProcess(t, pool, natsURL, false)
@@ -229,21 +235,21 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 		"head_sha":         "5555555555555555555555555555555555555555",
 		"merge_commit_sha": "6666666666666666666666666666666666666666",
 	})
-	waitFor(t, 30*time.Second, func() bool { return holder.reads.Load() == 1 }, func() string {
+	waitFor(t, func() bool { return holder.reads.Load() == 1 }, func() string {
 		return "the holder's handler never reached the read this row holds it in: " + consumerState(publisher)
 	})
 
 	// The cut takes the holder off the lease pool its hold is renewed on, as a network that
 	// took it off Postgres would: the hold lapses, and the holder stops delivering.
 	holder.leases.cut.Store(true)
-	waitFor(t, 30*time.Second, func() bool { return keyedRunnerStopped(holder.intake) }, func() string {
+	waitFor(t, func() bool { return keyedRunnerStopped(holder.intake) }, func() string {
 		return "the holder never began stopping, though its hold is no longer renewed: " + consumerState(publisher)
 	})
 	holder.release()
 
 	// The holder's subscription gone from the durable is its stop finished, so its handler has
 	// returned and whatever it was going to publish is behind it.
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && !info.PushBound
 	}, func() string {
@@ -251,9 +257,9 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	})
 	restoreBranchCommits()
 
-	// 60 s: the hold's lapse (intakeHoldTTL, 15 s), the keeper's poll (durableBindInterval, 2 s)
-	// and its take-over's delete, subscribe and create under the consumer lease.
-	waitFor(t, 60*time.Second, func() bool { return keeper.reads.Load() >= 1 }, func() string {
+	// The hold's lapse (intakeHoldTTL, 15 s), the keeper's poll (durableBindInterval, 2 s) and its
+	// take-over's delete, subscribe and create under the consumer lease.
+	waitFor(t, func() bool { return keeper.reads.Load() >= 1 }, func() string {
 		return fmt.Sprintf("the keeper was never handed the envelope the holder left unanswered: holder %d read(s), keeper %d; %s",
 			holder.reads.Load(), keeper.reads.Load(), consumerState(publisher))
 	})

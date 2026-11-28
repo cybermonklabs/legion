@@ -47,12 +47,12 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	row.conn = holderConn
 
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
-	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+	waitFor(t, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
-	waitFor(t, 20*time.Second, func() bool { return queuedBehindKeys(subscribedDelivery(holder.intake)) == 2 }, func() string {
+	waitFor(t, func() bool { return queuedBehindKeys(subscribedDelivery(holder.intake)) == 2 }, func() string {
 		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second and third messages: %s", queuedBehindKeys(subscribedDelivery(holder.intake)), consumerState(publisher))
 	})
 
@@ -77,7 +77,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 		holder.stop()
 		close(done)
 	}()
-	waitFor(t, 20*time.Second, holder.keyedRunnerStopped, func() string {
+	waitFor(t, holder.keyedRunnerStopped, func() string {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
 	})
 	holder.release()
@@ -99,7 +99,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 		t.Fatal("control: the stop released its hold with its hand-back pending")
 	}
 	row.holder.leases.cut.Store(true)
-	waitFor(t, 60*time.Second, func() bool { return slices.Contains(row.recorded.since(row.from), durableCreated) }, func() string {
+	waitFor(t, func() bool { return slices.Contains(row.recorded.since(row.from), durableCreated) }, func() string {
 		return fmt.Sprintf("the standby did not take over the lapsed hold and create the durable: %q; %s", row.recorded.since(row.from), consumerState(row.publisher))
 	})
 	closed := make(chan bool, 1)
@@ -157,11 +157,11 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	startIntakeProcess(t, pool, natsURL, nil)
 	holderConn := holder.client.Connection()
 	publishMergedPullRequest(t, publisher, inFlight)
-	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+	waitFor(t, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
 	publishMergedPullRequest(t, publisher, inFlight)
-	waitFor(t, 20*time.Second, func() bool { return queuedBehindKeys(subscribedDelivery(holder.intake)) == 1 }, func() string {
+	waitFor(t, func() bool { return queuedBehindKeys(subscribedDelivery(holder.intake)) == 1 }, func() string {
 		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second message: %s", queuedBehindKeys(subscribedDelivery(holder.intake)), consumerState(publisher))
 	})
 
@@ -187,7 +187,7 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 		holder.stop()
 		close(stopped)
 	}()
-	waitFor(t, 20*time.Second, holder.keyedRunnerStopped, func() string {
+	waitFor(t, holder.keyedRunnerStopped, func() string {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
 	})
 	holder.release()
@@ -211,7 +211,7 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	}
 	thaw := link.HoldStalledWrite(t, holderConn)
 	holder.leases.cut.Store(true)
-	waitFor(t, 60*time.Second, func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
+	waitFor(t, func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
 		return fmt.Sprintf("the standby did not take over the lapsed hold and create the durable: %q; %s", recorded.since(from), consumerState(publisher))
 	})
 	closed := make(chan bool, 1)

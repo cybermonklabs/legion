@@ -94,11 +94,13 @@ func (r *durableEvents) barrier(t *testing.T) {
 	if err := r.conn.Publish(durableEventsBarrier, []byte(id)); err != nil {
 		t.Fatalf("publish the durable watch's barrier: %v", err)
 	}
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		return r.barriers[id]
-	}, func() string { return "the durable's watch did not record its barrier within 30 s" })
+	}, func() string {
+		return fmt.Sprintf("the durable's watch has not recorded its barrier %s; it holds %d event(s)", id, r.count())
+	})
 }
 
 // stopWithAHeldHandBack is stopWithAHeldHandBackWithin with the stop's deadline shrunk to
@@ -142,7 +144,7 @@ func stopWithAHeldHandBackWithin(t *testing.T, budget time.Duration) heldHandBac
 	row.conn = holderConn
 
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
-	waitFor(t, untilTheBinaryDeadline(t), func() bool { return holder.fetches(inFlight) >= 1 }, func() string {
+	waitFor(t, func() bool { return holder.fetches(inFlight) >= 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
 	row.delivery = subscribedDelivery(holder.intake)
@@ -152,7 +154,7 @@ func stopWithAHeldHandBackWithin(t *testing.T, budget time.Duration) heldHandBac
 	// before its stream's send loop puts it on the wire (stream.go, internalLoop), and a stop whose
 	// drain reaches the server first leaves the message with the durable, never sent to the holder.
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
-	waitFor(t, untilTheBinaryDeadline(t), func() bool { return queuedBehindKeys(row.delivery) == 1 }, func() string {
+	waitFor(t, func() bool { return queuedBehindKeys(row.delivery) == 1 }, func() string {
 		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second message: %s", queuedBehindKeys(row.delivery), consumerState(publisher))
 	})
 
@@ -182,28 +184,34 @@ func stopWithAHeldHandBackWithin(t *testing.T, budget time.Duration) heldHandBac
 		holder.stop()
 		close(done)
 	}()
-	waitFor(t, untilTheBinaryDeadline(t), holder.keyedRunnerStopped, func() string {
+	waitFor(t, holder.keyedRunnerStopped, func() string {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
 	})
 	// The handler finishes as the stop waits for it; the stop then hands back the message that
 	// was waiting behind it, and the hook holds the write before that publish. The hook runs on a
 	// goroutine the holder's Run waits for -- the stop's own, or a handler's the stop gave up, whose
 	// deferred answer hands its message back -- so a hand-back reaches the hook before Run returns,
-	// and a Run that returned with held still open made none. held is read again once done is, as
-	// both can be closed by the time the select runs.
+	// and a Run that returned with held still open made none: the row fails then, at once. held is
+	// read again once done is, as both can be closed by the time the select runs.
 	holder.release()
-	select {
-	case <-held:
-	case <-done:
+	waitFor(t, func() bool {
 		select {
 		case <-held:
+			return true
+		case <-done:
+			select {
+			case <-held:
+				return true
+			default:
+				t.Fatal("control: the holder's stop returned with no hand-back having reached its publish: it withheld them: " + consumerState(publisher))
+			}
 		default:
-			t.Fatal("control: the holder's stop returned with no hand-back having reached its publish: it withheld them: " + consumerState(publisher))
 		}
-	case <-time.After(untilTheBinaryDeadline(t)):
-		t.Fatal("the holder's stop neither published a hand-back nor returned: " + consumerState(publisher))
-	}
-	row.thaw = <-thawed
+		return false
+	}, func() string {
+		return "the holder's stop neither published a hand-back nor returned: " + consumerState(publisher)
+	})
+	row.thaw = testwait.Receive(t, "the hook's hold of the write, sent before held closed", thawed)
 	return row
 }
 
@@ -250,10 +258,10 @@ const stopBudget = 3 * time.Second
 // before the hand-back lands, so this one is long.
 const landingBudget = 30 * time.Second
 
-// untilTheBinaryDeadline is how long the rows below, and awaitBoundDurable, wait for an event that
-// ends a wait of their own or of the stop's: what the test binary's deadline leaves less
-// rowDeadlineMargin (testwait.Remaining), so that a row whose event never comes fails by name before
-// go test's own timeout, and none of these waits ends at a span a loaded runner can outlast. A
+// untilTheBinaryDeadline is how long the rows below wait for an event that ends a wait of their
+// own or of the stop's: what the test binary's deadline leaves less rowDeadlineMargin
+// (testwait.Remaining), so that a row whose event never comes fails by name before go test's own
+// timeout, and none of these waits ends at a span a loaded runner can outlast. A
 // deadline that leaves no more than the margin fails the row by name, saying whether the -timeout
 // was too short or what ran before used it up. A run with no deadline (-timeout 0) waits
 // rowWaitUnbounded, which the intake's ack wait (intakeAckWait: intakeMaxAckPending times
@@ -326,7 +334,7 @@ func holdRenewedBeforeItsExpiry(t *testing.T, pool *store.Pool) bool {
 // standby's consumer delivered one of the row's messages (sequences) more than once.
 func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client, sequences []uint64) {
 	t.Helper()
-	waitFor(t, untilTheBinaryDeadline(t), func() bool {
+	waitFor(t, func() bool {
 		events := recorded.since(from)
 		return slices.Contains(events, "-NAK") && slices.Contains(events, durableCreated)
 	}, func() string {
@@ -367,7 +375,7 @@ func handBackAfterCreation(events []string) bool {
 func requireDeliveredOnceAfterTakeOver(t *testing.T, publisher *bus.Client, sequences []uint64) {
 	t.Helper()
 	var info *natsgo.ConsumerInfo
-	waitFor(t, untilTheBinaryDeadline(t), func() bool {
+	waitFor(t, func() bool {
 		read, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil {
 			return false
@@ -396,7 +404,7 @@ func requireDeliveredOnceAfterTakeOver(t *testing.T, publisher *bus.Client, sequ
 // connection never reaches the server, which is allowed: the message stays with the durable.
 func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client, sequences []uint64) {
 	t.Helper()
-	waitFor(t, untilTheBinaryDeadline(t), func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
+	waitFor(t, func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
 		return fmt.Sprintf("the standby did not create the durable: %q; %s", recorded.since(from), consumerState(publisher))
 	})
 	if events := recorded.since(from); handBackAfterCreation(events) {
@@ -461,7 +469,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
 		logs := captureIntakeLogs(t)
 		row := stopWithAHeldHandBackWithin(t, landingBudget)
-		waitFor(t, untilTheBinaryDeadline(t), func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
+		waitFor(t, func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
 			return "control: the stop never went on without the held hand-back's publish: " + consumerState(row.publisher)
 		})
 		row.thaw()

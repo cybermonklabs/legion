@@ -142,7 +142,7 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	}
 
 	publishPullRequestEnvelope(t, observer, "acme", "widgets", firstConnectNumber, mergedPullRequest(firstConnectNumber))
-	waitFor(t, firstConnectWithin, func() bool { return fetches.Load() >= 1 }, func() string {
+	waitFor(t, func() bool { return fetches.Load() >= 1 }, func() string {
 		return fmt.Sprintf("the intake never handled pull request %d published after the callback; the messages logged were %q", firstConnectNumber, loggedMessages(logs()))
 	})
 	if !intakeHoldsSubscription(intake) {

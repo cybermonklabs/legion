@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -9,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestJobsReadBeforeARunEndsLeaveItForTheBackfill: jobs read while the run was still running leave
@@ -253,9 +253,8 @@ func TestAnEmptyListingStillWritesTheRunRow(t *testing.T) {
 // them as a deadlock (40P01).
 func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	t.Parallel()
-	pool, ctx := deliveryTestPool(t)
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	pool, _ := deliveryTestPool(t)
+	ctx := testwait.Context(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	run := changeTestRun(803, DeliveryRunKindDeploy, started, started)
 	if err := UpsertRun(ctx, pool, run); err != nil {
@@ -287,10 +286,10 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("release the change log's lock: %v", err)
 	}
-	if err := <-jobsDone; err != nil {
+	if err := testwait.Receive(t, "UpsertRunJobs to return once the gate committed", jobsDone); err != nil {
 		t.Errorf("UpsertRunJobs: %v", err)
 	}
-	if err := <-runDone; err != nil {
+	if err := testwait.Receive(t, "UpsertRun to return once the gate committed", runDone); err != nil {
 		t.Errorf("UpsertRun: %v", err)
 	}
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 803)

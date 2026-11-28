@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // heldPullRequests is a fake GitHub pull request read that records each fetch's start and end by
@@ -136,11 +137,7 @@ func (h *heldPullRequests) releaseNumber(number string) {
 func (h *heldPullRequests) awaitEntered(t *testing.T) {
 	t.Helper()
 	for number, hold := range h.holds {
-		select {
-		case <-hold.entered:
-		case <-time.After(20 * time.Second):
-			t.Fatalf("the intake never fetched pull request %s", number)
-		}
+		testwait.Receive(t, fmt.Sprintf("the intake to fetch pull request %s", number), hold.entered)
 	}
 }
 
@@ -193,6 +190,9 @@ func TestAPullRequestHeldOnGitHubHoldsBackOnlyItsOwnMessages(t *testing.T) {
 	// After the fake's server, so it runs first: the server's Close waits for the fetch it holds.
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
+	// GitHub holds pull request 1's fetch while the row stages its next steps, so the handler's own
+	// deadline and the server's redelivery at the ack wait both lie past the run (ackWaitPastTheRun).
+	ackWaitPastTheRun(t)
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -203,7 +203,7 @@ func TestAPullRequestHeldOnGitHubHoldsBackOnlyItsOwnMessages(t *testing.T) {
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 2, mergedPullRequest(2))
 
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info = deliveryConsumerInfo(t, natsClient)
 		return slices.Equal(held.of("2"), []string{"start 2", "end 2"}) &&
 			info.Delivered.Consumer-before == 3 && info.NumAckPending == 2
@@ -226,6 +226,8 @@ func TestAPullRequestHeldOnGitHubHoldsBackOnlyItsOwnMessages(t *testing.T) {
 // checks, an issue, a push of a tag and a job event. The pull request's own message is decoded,
 // once.
 func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T) {
+	// Not parallel: the row replaces the package variable decodeEnvelope, which every intake in
+	// the process decodes with, so another test's intake would count in decodes.
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	var decodes atomic.Int64
@@ -269,6 +271,7 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 	github := fake.newTestClient()
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
+	ackWaitPastTheRun(t)
 	stopFirst := runIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -277,7 +280,7 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 	held.awaitEntered(t)
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 1, mergedPullRequest(1))
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info = deliveryConsumerInfo(t, natsClient)
 		return info.Delivered.Consumer-before == 2 && info.NumAckPending == 2
 	}, func() string {
@@ -290,7 +293,7 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 		defer close(stopped)
 		stopFirst()
 	}()
-	waitFor(t, 20*time.Second, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
+	waitFor(t, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
 		return "the stopping intake kept its subscription"
 	})
 	held.release()
@@ -303,7 +306,8 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 		t.Fatalf("the stopping intake's fetches of pull request 1 = %q, want the held one alone", events)
 	}
 
-	// The ack wait is minutes; the second process is handed the message within seconds.
+	// The ack wait is a day here (ackWaitPastTheRun), so only the message's hand-back brings it to
+	// the second process inside the run.
 	runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitAcknowledged(t, natsClient)
 	if events, want := held.of("1"), []string{"start 1", "end 1", "start 1", "end 1"}; !slices.Equal(events, want) {
@@ -344,6 +348,9 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 	github := fake.newTestClient()
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
+	// The message given back is what must reach the standby, so the server's own redelivery at the
+	// ack wait never comes inside the run (ackWaitPastTheRun).
+	ackWaitPastTheRun(t)
 	first := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	stopFirst := runIntake(t, first)
 	awaitBoundDurable(t, natsClient)
@@ -353,7 +360,7 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 	held.awaitEntered(t)
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 1, mergedPullRequest(1))
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info = deliveryConsumerInfo(t, natsClient)
 		return info.Delivered.Consumer-before == 2 && info.NumAckPending == 2
 	}, func() string {
@@ -368,7 +375,7 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 		defer close(stopped)
 		stopFirst()
 	}()
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		first.mu.Lock()
 		defer first.mu.Unlock()
 		return first.delivering != nil && first.delivering.stopping.Load()
@@ -464,6 +471,9 @@ func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.
 	github := fake.newTestClient()
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
+	// The message given back is what the next process must redo at once, so the server's own
+	// redelivery at the ack wait never comes inside the run (ackWaitPastTheRun).
+	ackWaitPastTheRun(t)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	subscribed, bindReturns := make(chan struct{}), make(chan struct{})
 	intake.boundHook = func() {
@@ -500,7 +510,7 @@ func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.
 			waited.Round(time.Millisecond), bindReturnsAfterSignal, within)
 	}
 	// The fake records the end once it sees the request cancelled, a moment after the client did.
-	waitFor(t, 5*time.Second, func() bool { return slices.Equal(held.of("1"), []string{"start 1", "end 1"}) }, func() string {
+	waitFor(t, func() bool { return slices.Equal(held.of("1"), []string{"start 1", "end 1"}) }, func() string {
 		return fmt.Sprintf("pull request 1's events once Run returned = %q, want the held fetch given up", held.of("1"))
 	})
 
@@ -515,6 +525,8 @@ func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.
 // yet routed when the intake stops, is negatively acknowledged rather than handled, and the next
 // process to bind the durable handles it.
 func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
+	// Not parallel: the row replaces the package variable decodeEnvelope, which every intake in
+	// the process decodes with, so another test's intake would hold its first decode.
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	// The first decode, the workflow run's in the callback, waits until unblock: the messages
@@ -536,6 +548,10 @@ func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
 	held := holdPullRequestOne(fake)
 	github := fake.newTestClient()
 	natsClient := intakeTestClient(t)
+	// The message given back is what must bring pull request 9 to the next process, so the server's
+	// own redelivery at the ack wait never comes inside the run: both intakes take a message timeout
+	// past it (ackWaitPastTheRun).
+	ackWaitPastTheRun(t)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	stopFirst := runIntake(t, intake)
 	release := sync.OnceFunc(func() { close(unblock) })
@@ -544,16 +560,12 @@ func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
 
 	// Another repository's run: whichever way the stop finds it, nothing is fetched for it.
 	publishWorkflowEnvelope(t, natsClient, "other-org", "other-repo", ".github/workflows/deploy.yml", 9001)
-	select {
-	case <-blocked:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the intake's callback never decoded the workflow run's envelope")
-	}
+	testwait.Receive(t, "the intake's callback to decode the workflow run's envelope", blocked)
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 9, mergedPullRequest(9))
 	intake.mu.Lock()
 	delivery := intake.delivering
 	intake.mu.Unlock()
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		buffered, _, err := delivery.sub.Pending()
 		return err == nil && buffered >= 2
 	}, func() string { return "the pull request's message never reached the client's buffer" })
@@ -563,13 +575,9 @@ func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
 		defer close(stopped)
 		stopFirst()
 	}()
-	waitFor(t, 20*time.Second, delivery.stopping.Load, func() string { return "the intake never began stopping" })
+	waitFor(t, delivery.stopping.Load, func() string { return "the intake never began stopping" })
 	release()
-	select {
-	case <-stopped:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the stopping intake did not return once its callback was free")
-	}
+	testwait.Receive(t, "the stopping intake to return once its callback was free", stopped)
 	if events := held.of("9"); len(events) != 0 {
 		t.Fatalf("the stopping intake fetched the buffered pull request: %q", events)
 	}
@@ -620,10 +628,9 @@ func TestAHandlerThatFinishesInsideTheStopIsAcknowledgedAtOnce(t *testing.T) {
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 1, mergedPullRequest(1))
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 2, mergedPullRequest(2))
 	held.awaitEntered(t)
-	// 20 s, the bound every wait of this file on the durable's state carries: the server has
-	// counted a message outstanding by the time its handler is inside its fetch, and this read
-	// only has to see both.
-	waitFor(t, 20*time.Second, func() bool { return deliveryAckPending(natsClient) == 2 }, func() string {
+	// The server has counted a message outstanding by the time its handler is inside its fetch,
+	// and this read only has to see both.
+	waitFor(t, func() bool { return deliveryAckPending(natsClient) == 2 }, func() string {
 		return fmt.Sprintf("the durable reports %d message(s) outstanding with both handlers inside their fetches, want 2 (-1 reads as a consumer this test could not read)",
 			deliveryAckPending(natsClient))
 	})
@@ -637,15 +644,15 @@ func TestAHandlerThatFinishesInsideTheStopIsAcknowledgedAtOnce(t *testing.T) {
 	}()
 	// The subscription goes before the stop waits for its handlers, so from here on what the
 	// durable reports outstanding is what this stopping process still owes it.
-	waitFor(t, 20*time.Second, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
+	waitFor(t, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
 		return "the stopping intake kept its subscription"
 	})
 	held.releaseNumber("2")
 
-	// 10 s rather than the 20 s above: the acknowledgement is published as the handler returns,
-	// with no bind and no delivery to wait for, so this bound is for a loaded runner alone -- and
-	// it has to leave the stop inside its budget, still waiting for pull request 1.
-	waitFor(t, 10*time.Second, func() bool { return deliveryAckPending(natsClient) == 1 }, func() string {
+	// The acknowledgement is published as the handler returns, with no bind and no delivery to
+	// wait for, and the stop is still waiting for pull request 1 while it does: the check below
+	// reads that the stop had not ended when the count fell.
+	waitFor(t, func() bool { return deliveryAckPending(natsClient) == 1 }, func() string {
 		return fmt.Sprintf("the durable still reports %d message(s) outstanding while the stop waits for the other handler, want 1: the finished handler's acknowledgement was held for the stop rather than made where the handler finished",
 			deliveryAckPending(natsClient))
 	})
@@ -698,7 +705,7 @@ func TestAnIntakeSubscribesAtTheDeliverSubjectItIsGiven(t *testing.T) {
 
 	intake.StopDelivering(t.Context())
 	intake.StopDelivering(t.Context())
-	waitFor(t, 5*time.Second, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
+	waitFor(t, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
 		return "the durable kept its subscriber after StopDelivering returned"
 	})
 }
@@ -736,7 +743,7 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 	}
 	t.Cleanup(func() { intake.StopDelivering(context.Background()) })
 	intake.StopDelivering(t.Context())
-	waitFor(t, 5*time.Second, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
+	waitFor(t, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
 		return "the durable kept its subscriber after StopDelivering returned"
 	})
 
@@ -780,8 +787,7 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 	// The row requires that no component logged a line about a drain: the intakes, the duty leases
 	// and holds they take, and their NATS clients take the test's logger, and nothing else on the
 	// path (the store, GitHub's client) writes one. Serial: the one-second sleep after the publish,
-	// a quiet window in which the durable must deliver the stopping intake nothing, and the 5 s
-	// bound on the subscription's drop.
+	// a quiet window in which the durable must deliver the stopping intake nothing.
 	logs, logger := captureTestLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -795,6 +801,9 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 		hooked <- struct{}{}
 		return nil
 	})
+	// The next process must be handed the message published during the stop, so the server's own
+	// redelivery at the ack wait never comes inside the run (ackWaitPastTheRun).
+	ackWaitPastTheRun(t)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	stop := runIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
@@ -807,7 +816,7 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 	case <-time.After(30 * time.Second):
 		t.Fatal("the client's reconnect hooks never ran")
 	}
-	waitFor(t, 20*time.Second, func() bool { return natsClient.SubOK() && deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
+	waitFor(t, func() bool { return natsClient.SubOK() && deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
 		return "the client never bound the intake's subscription again on its new connection"
 	})
 	intake.mu.Lock()
@@ -824,8 +833,8 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 		defer close(stopped)
 		stop()
 	}()
-	waitFor(t, 20*time.Second, delivery.stopping.Load, func() string { return "the intake never began stopping" })
-	waitFor(t, 5*time.Second, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
+	waitFor(t, delivery.stopping.Load, func() string { return "the intake never began stopping" })
+	waitFor(t, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
 		return "the stopping intake's subscription stayed bound to the durable while its handler ran: the stop did not drain " +
 			"the subscription the client restored on its new connection"
 	})
@@ -1011,7 +1020,7 @@ func TestTheCopyUnderARepositorysFormerNameRunsNoSecondHandler(t *testing.T) {
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
-	id := fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano())
+	id := testID(t)
 	published := contracts.Envelope{
 		EventID: id, Source: "github", SourceEventID: id, DedupeKey: "github." + id,
 		Topic:   "notifications.github.cybermonklabs.legion.pr.42",

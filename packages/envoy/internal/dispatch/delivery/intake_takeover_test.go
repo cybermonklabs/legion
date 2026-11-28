@@ -6,7 +6,6 @@ package delivery
 // subscription up rather than leaving a binding no other process can see.
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -20,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // takeOverAttempt is one intake's own process: its client, its lease pool and the intake itself,
@@ -44,11 +44,7 @@ func newTakeOverProcess(t *testing.T, pool *store.Pool, natsURL string) *takeOve
 	t.Cleanup(client.Close)
 	intake := newIntake(tuningFor(t), client, second.Pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(),
 		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
-	t.Cleanup(func() {
-		stopping, cancel := context.WithTimeout(context.Background(), intakeStopBudget)
-		defer cancel()
-		intake.stop(stopping)
-	})
+	t.Cleanup(func() { intake.stop(testwait.Context(t)) })
 	return &takeOverAttempt{intake: intake, client: client}
 }
 
@@ -153,8 +149,10 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 
 	holder.stop()
 	stopped := time.Now()
+	// The bound is the row's subject, so the wait for the take-over is the shared one and the bound
+	// is read after it.
 	var taken *natsgo.ConsumerInfo
-	waitFor(t, standbyTakeOverBound, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil || !info.PushBound || info.Config.DeliverSubject == held.Config.DeliverSubject {
 			return false
@@ -162,12 +160,17 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 		taken = info
 		return true
 	}, func() string {
-		return "the standby did not take the durable the holder released over within the bound: " + consumerState(publisher)
+		return "the standby did not take the durable the holder released over: " + consumerState(publisher)
 	})
-	t.Logf("the standby took the durable over %s after the holder stopped", time.Since(stopped))
+	tookOver := time.Since(stopped)
+	if tookOver > standbyTakeOverBound {
+		t.Errorf("the standby took the durable over %s after the holder stopped, past standbyTakeOverBound (%s): %s",
+			tookOver, standbyTakeOverBound, consumerState(publisher))
+	}
+	t.Logf("the standby took the durable over %s after the holder stopped", tookOver)
 
 	publishMergedPullRequest(t, publisher, 11)
-	waitFor(t, 20*time.Second, func() bool { return standby.fetches(11) == 1 }, func() string {
+	waitFor(t, func() bool { return standby.fetches(11) == 1 }, func() string {
 		return "the standby that took the durable over did not handle a message: " + consumerState(publisher)
 	})
 	if taken.Config.DeliverSubject == held.Config.DeliverSubject {
@@ -202,7 +205,7 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	// up whole: its keyed runner is stopped (heldDurable.stopDeliveringWithin), which no later
 	// attempt undoes, since each one subscribes afresh.
 	var subscribed *intakeDelivery
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		process.intake.mu.Lock()
 		subscribed = process.intake.delivering
 		process.intake.mu.Unlock()
@@ -210,7 +213,7 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	}, func() string {
 		return fmt.Sprintf("the take-over never subscribed before its create: creates=%d; %s", attempts.Load(), consumerState(publisher))
 	})
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		subscribed.keys.mu.Lock()
 		defer subscribed.keys.mu.Unlock()
 		return subscribed.keys.stopped
@@ -238,7 +241,7 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	failing.Store(false)
 	awaitPushBound(t, publisher, "", "the intake never bound the durable afresh after the take-over it gave up")
 	publishMergedPullRequest(t, publisher, 12)
-	waitFor(t, 30*time.Second, func() bool { return process.fetches(12) == 1 }, func() string {
+	waitFor(t, func() bool { return process.fetches(12) == 1 }, func() string {
 		return "the intake never bound the durable afresh after the take-over it gave up: " + consumerState(publisher)
 	})
 }

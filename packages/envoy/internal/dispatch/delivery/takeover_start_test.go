@@ -282,8 +282,8 @@ func TestATakeOverOfADurableWhoseFloorLiesPastTheStreamsEndStartsAtItsFirstMessa
 	startIntake(t, newIntake(tuningFor(t), connect(), pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	taken := awaitPushBound(t, publisher, first.Config.DeliverSubject, "the second intake never took the durable over")
 	for _, number := range []int{firstAfter, secondAfter} {
-		waitFor(t, 20*time.Second, func() bool { return headRows(t, ctx, pool, number) == 1 }, func() string {
-			return fmt.Sprintf("%s#%d, opened after the cut, has %d head rows 20s after the take-over created the durable at %d, want 1",
+		waitFor(t, func() bool { return headRows(t, ctx, pool, number) == 1 }, func() string {
+			return fmt.Sprintf("%s#%d, opened after the cut, has %d head rows after the take-over created the durable at %d, want 1",
 				deliveryRepo, number, headRows(t, ctx, pool, number), taken.Config.OptStartSeq)
 		})
 	}

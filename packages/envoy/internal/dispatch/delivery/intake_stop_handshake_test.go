@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // stopRow is one intake delivery subscribed through a handshake hold (testnats.HandshakeHold) on a
@@ -70,7 +71,7 @@ func startStopRow(t *testing.T, key func(*natsgo.Msg) (string, *contracts.Envelo
 		t.Fatalf("subscribe at %s: %v", wanted.DeliverSubject, err)
 	}
 	row := &stopRow{server: server, uri: uri, hold: hold, client: client, conn: client.Connection(), durable: &durable, sub: sub, subject: wanted.DeliverSubject, reconnected: reconnected}
-	waitFor(t, 10*time.Second, func() bool { return row.subscribers(t) == 1 }, func() string {
+	waitFor(t, func() bool { return row.subscribers(t) == 1 }, func() string {
 		return fmt.Sprintf("control: the server reports %d subscriber(s) on the deliver subject before the hold, want 1", row.subscribers(t))
 	})
 	return row
@@ -154,11 +155,7 @@ func watchHandBacks(t *testing.T, uri string) func() int64 {
 		if err := observer.Barrier(func() { close(done) }); err != nil {
 			t.Fatalf("barrier the acknowledgement watch: %v", err)
 		}
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			t.Fatal("the acknowledgement watch's barrier did not return within 30 s")
-		}
+		testwait.Receive(t, "the acknowledgement watch's barrier to run", done)
 		return naks.Load()
 	}
 }
@@ -182,12 +179,8 @@ func startGivenUpRow(t *testing.T) *stopRow {
 	}, true)
 	row.decided = decided
 	row.publishPullRequestSeven(t)
-	select {
-	case <-handling:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the first message never reached its handler")
-	}
-	waitFor(t, 30*time.Second, func() bool { return queuedBehindKeys(row.delivery()) == 1 }, func() string {
+	testwait.Receive(t, "the first message to reach its handler (control)", handling)
+	waitFor(t, func() bool { return queuedBehindKeys(row.delivery()) == 1 }, func() string {
 		return fmt.Sprintf("control: %d message(s) wait behind their key's handler, want the second message", queuedBehindKeys(row.delivery()))
 	})
 	return row
@@ -199,11 +192,7 @@ func startGivenUpRow(t *testing.T) *stopRow {
 // the server, and the watch's Barrier has run every callback the server routed to it.
 func (r *stopRow) requireNoHandBack(t *testing.T, delivery *intakeDelivery, naks func() int64) {
 	t.Helper()
-	select {
-	case <-delivery.handBacksLanded():
-	case <-time.After(30 * time.Second):
-		t.Fatal("a hand-back publish was still waiting for NATS 30 s after the link came back")
-	}
+	testwait.Receive(t, "every hand-back publish the delivery left running to return once the link came back", delivery.handBacksLanded())
 	if err := r.conn.Flush(); err != nil {
 		t.Fatalf("flush the intake's client once its link was back: %v", err)
 	}
@@ -219,11 +208,7 @@ func (r *stopRow) reconnect(t *testing.T) {
 		<-r.reconnected
 	}
 	r.hold.Release()
-	select {
-	case <-r.reconnected:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the client did not reconnect within 30 s of the hold's release")
-	}
+	testwait.Receive(t, "the client to reconnect through the released hold (control)", r.reconnected)
 }
 
 // An intake's stop does not wait for nats.go's connection lock, which a reconnect's handshake and a
@@ -282,7 +267,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		row.hold.HoldReconnect(t, row.conn)
 		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", row.stopUnder(context.Background()), row.stopUnder(context.Background()))
 		row.reconnect(t)
-		waitFor(t, 30*time.Second, func() bool { return !row.sub.IsValid() && row.subscribers(t) == 0 }, func() string {
+		waitFor(t, func() bool { return !row.sub.IsValid() && row.subscribers(t) == 0 }, func() string {
 			return fmt.Sprintf("after the reconnect the stopped subscription is still valid = %t and the server reports %d subscriber(s) on its deliver subject, want neither: the stop left it subscribed",
 				row.sub.IsValid(), row.subscribers(t))
 		})
@@ -329,7 +314,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		stopped := row.stopUnder(ctx)
-		waitFor(t, 30*time.Second, func() bool { return !row.sub.IsValid() }, func() string {
+		waitFor(t, func() bool { return !row.sub.IsValid() }, func() string {
 			return "control: the stop's drain did not end the subscription on the down link between attempts"
 		})
 		row.reconnect(t)
@@ -503,7 +488,7 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 	releaseWrite := row.hold.HoldWriteLock(t, row.conn)
 	close(writeHeld)
 	delivery := row.delivery()
-	waitFor(t, 30*time.Second, func() bool { return delivery.handedBack() }, func() string {
+	waitFor(t, func() bool { return delivery.handedBack() }, func() string {
 		return "the hand-back was withheld while a write held nats.go's lock: a connected read outside any stop blocked it"
 	})
 	testnats.RequireLockHeld(t, row.conn)
@@ -563,8 +548,8 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 		t.Fatal("the hand-back did not land within 30 s on the reconnecting link")
 	}
 	// The error is logged on callNATS's call goroutine, after the deferred that closes published
-	// runs. Wait for the INFO record itself, with a 30 s guard.
-	waitFor(t, 30*time.Second, func() bool {
+	// runs. Wait for the INFO record itself, through the shared wait.
+	waitFor(t, func() bool {
 		for _, record := range logs() {
 			msg, _ := record["msg"].(string)
 			if strings.Contains(msg, "hand a message back for redelivery") {
@@ -613,7 +598,7 @@ func TestACallNATSThatOutlivesItsWaitStillCompletesItsBookkeeping(t *testing.T) 
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
 	})
 	delivery := row.delivery()
-	waitFor(t, 30*time.Second, func() bool { return delivery.handedBack() }, func() string {
+	waitFor(t, func() bool { return delivery.handedBack() }, func() string {
 		return "the hand-back was never published"
 	})
 	select {
@@ -642,11 +627,7 @@ func startBufferedDrainRow(t *testing.T) (*stopRow, func()) {
 		return intakeKey(msg)
 	}, func(*intakeDelivery, intakeMessage) {}, true)
 	row.publishPullRequestSeven(t)
-	select {
-	case <-keyed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the first message never reached the subscription's callback")
-	}
+	testwait.Receive(t, "the first message to reach the subscription's callback (control)", keyed)
 	return row, release
 }
 
@@ -654,7 +635,7 @@ func startBufferedDrainRow(t *testing.T) (*stopRow, func()) {
 // hand-backs, waiting for its drain to end.
 func awaitDrainWait(t *testing.T, row *stopRow) {
 	t.Helper()
-	waitFor(t, 30*time.Second, func() bool { return stopReleased(row.delivery()) }, func() string {
+	waitFor(t, func() bool { return stopReleased(row.delivery()) }, func() string {
 		return "control: the stop never reached its wait for the drain to end"
 	})
 }

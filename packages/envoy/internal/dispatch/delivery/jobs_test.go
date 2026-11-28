@@ -119,13 +119,13 @@ func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); jobs.Run(runCtx) }()
 	t.Cleanup(func() { cancel(); <-done })
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchJobDurable)
 		return err == nil && info.PushBound
 	}, func() string { return "the job intake never bound its durable" })
 
 	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
-	waitFor(t, 20*time.Second, func() bool { return len(clock.Armed()) == 1 }, func() string { return "the job event scheduled no read" })
+	waitFor(t, func() bool { return len(clock.Armed()) == 1 }, func() string { return "the job event scheduled no read" })
 	if calls := fake.calls.Load(); calls != 0 {
 		t.Fatalf("read the jobs %d times before the burst went quiet", calls)
 	}
@@ -508,7 +508,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 		releaseOnce()
 		fired.Wait()
 	})
-	waitFor(t, 20*time.Second, func() bool { return inFlight.Load() >= reconcilePartialConcurrency }, func() string {
+	waitFor(t, func() bool { return inFlight.Load() >= reconcilePartialConcurrency }, func() string {
 		return fmt.Sprintf("%d jobs reads in flight, want %d", inFlight.Load(), reconcilePartialConcurrency)
 	})
 	// Every run's burst has ended; give the rest a moment to start reads they should not.
@@ -769,7 +769,7 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	// The event under test, waiting behind it on the one key.
 	event := jobPayload("acme/widgets", 501)
 	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.501.completed", event)
-	waitFor(t, 20*time.Second, func() bool { return consumer().Delivered.Consumer >= 2 }, func() string {
+	waitFor(t, func() bool { return consumer().Delivered.Consumer >= 2 }, func() string {
 		return fmt.Sprintf("the job event under test was never delivered to the intake: %+v", consumer())
 	})
 
@@ -797,7 +797,7 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 		t.Fatal("the delivery was already stopping, so the row would measure the stop's own guard rather than the moment before it")
 	}
 	close(clock.release)
-	waitFor(t, 20*time.Second, runnerIdle, func() string {
+	waitFor(t, runnerIdle, func() string {
 		return fmt.Sprintf("the job event under test was never handled: %+v", consumer())
 	})
 

@@ -10,21 +10,23 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // settingsWake runs a pglisten.Hub on pool's listener connection until the test ends, as the
 // server does, and answers its wake on SettingsChannel once the hub has listened. The hub signals
-// that wake after its LISTEN, so the channel already holds a signal when it is returned.
+// that wake after its LISTEN, just after it runs the callback this wait ends on, so a signal is
+// on its way when the wake is returned.
 func settingsWake(t *testing.T, pool *store.Pool) <-chan struct{} {
 	t.Helper()
 	hub := &pglisten.Hub{Owner: "delivery settings test", Dial: pool.Listener}
@@ -39,13 +41,9 @@ func settingsWake(t *testing.T, pool *store.Pool) <-chan struct{} {
 	}()
 	t.Cleanup(func() {
 		stop()
-		<-done
+		testwait.Receive(t, "the settings hub's Run to return once its context ended", done)
 	})
-	select {
-	case <-connected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the settings hub did not listen within 10s")
-	}
+	testwait.Receive(t, "the settings hub to listen", connected)
 	return wake
 }
 
@@ -61,7 +59,7 @@ func runSettingsCache(t *testing.T, cache *SettingsCache) {
 	}()
 	t.Cleanup(func() {
 		stop()
-		<-done
+		testwait.Receive(t, "the settings cache's Run to return once its context ended", done)
 	})
 }
 
@@ -86,9 +84,11 @@ func countedDeliveryPool(t *testing.T, pool *store.Pool) (*store.Pool, *settings
 }
 
 // With both intakes running and bound, and nothing written, delivery_settings is read twice in
-// all -- at the cache's start and on the hub's signal after its LISTEN -- and then not once over
-// three seconds: no timer reads it.
+// all -- at the cache's start and on the hub's signal after its LISTEN -- and then the cache waits
+// for its wake with no retry armed and no signal pending: nothing but a write's notification, or
+// the hub's next LISTEN, can make it read again, and no timer reads it.
 func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	counted, counter := countedDeliveryPool(t, pool)
@@ -96,10 +96,31 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 	natsURL := testnats.URL(t)
 	publisher := intakeTestClient(t)
 
+	// settingsWait is one block of the cache in its wait (SettingsCache.Run, the settingsWaiting
+	// hook): whether a retry was armed there, the reads made by then, and the wake's signals
+	// already pending, each read as it blocked.
+	type settingsWait struct {
+		retrying bool
+		reads    int64
+		pending  int
+	}
+	var waitsMu sync.Mutex
+	var waits []settingsWait
+	waiting := func(retrying bool) {
+		waitsMu.Lock()
+		defer waitsMu.Unlock()
+		waits = append(waits, settingsWait{retrying: retrying, reads: counter.reads.Load(), pending: len(wake)})
+	}
+	tuning := tuningFor(t)
+	tuning.settingsWaiting.Store(&waiting)
+
 	runCtx, cancel := context.WithCancel(ctx)
-	stop, err := StartIntakes(runCtx, func(name string) (*bus.Client, error) {
+	// startIntakes rather than StartIntakes, whose cache runs production's tuning, which has no
+	// hook: this test's tuning holds production's values (tuningFor) and the hook above, and the
+	// intakes run on the real clock, as StartIntakes runs them.
+	stop, err := startIntakes(runCtx, tuning, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, counted, deliveryTestIntakeLeases(t, counted), newFakeGitHub(t).newTestClient(), events.NewBroker(), wake, nil, unrenamed())
+	}, counted, deliveryTestIntakeLeases(t, counted), newFakeGitHub(t).newTestClient(), events.NewBroker(), wake, nil, unrenamed(), clock.Real())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -109,18 +130,30 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 		stop()
 	})
 	awaitBoundDurable(t, publisher)
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchJobDurable)
 		return err == nil && info.PushBound
 	}, func() string { return "the job intake never bound its durable" })
-	waitFor(t, 5*time.Second, func() bool { return counter.reads.Load() >= 2 }, func() string {
+	waitFor(t, func() bool { return counter.reads.Load() >= 2 }, func() string {
 		return fmt.Sprintf("delivery_settings was read %d times, want the start's read and the hub signal's", counter.reads.Load())
 	})
 
-	before := counter.reads.Load()
-	time.Sleep(3 * time.Second)
-	if read := counter.reads.Load() - before; read != 0 || before != 2 {
-		t.Fatalf("delivery_settings read %d times before the idle window and %d times over 3s of it; want 2 and none", before, read)
+	// The state that would make a read happen: a retry armed in the cache's wait, or a signal
+	// waiting on its wake. Once the cache blocks with neither, and has read nothing since it
+	// blocked, only a notification on SettingsChannel, which nothing here writes, or a LISTEN of
+	// the hub's on a new connection can end its wait, and the cache is the intakes' one reader of
+	// delivery_settings.
+	idle := testwait.Until(t, "the settings cache to block in its wait with no retry armed and no wake pending", func() (settingsWait, bool) {
+		waitsMu.Lock()
+		defer waitsMu.Unlock()
+		if len(waits) == 0 {
+			return settingsWait{}, false
+		}
+		last := waits[len(waits)-1]
+		return last, !last.retrying && last.pending == 0 && last.reads == counter.reads.Load()
+	})
+	if read := counter.reads.Load(); idle.reads != 2 || read != 2 {
+		t.Fatalf("delivery_settings read %d times as the cache went idle and %d times by now; want 2 and 2", idle.reads, read)
 	}
 }
 

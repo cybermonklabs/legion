@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -221,25 +222,25 @@ func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 // publishPullRequestEnvelope publishes one notifications.github.<owner>.<repo>.pr.<number>
 // envelope (the shape intake.go's handlePullRequestEnvelope reads), waits for the publish to be
 // acknowledged by JetStream, and answers the stream sequence the stream stored it at. The publish
-// has the 5 s bound Client.Publish gives one.
+// runs on testwait.Context(t) and sets no bound of its own: the acknowledgement wait still ends at
+// the bus's own bound on a publish where that is sooner than the context's deadline.
 func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(fields)
 	if err != nil {
 		t.Fatalf("encode payload: %v", err)
 	}
+	id := testID(t)
 	envelope := contracts.Envelope{
-		EventID:       fmt.Sprintf("test-%s-%s-%d-%d", owner, repo, number, time.Now().UnixNano()),
+		EventID:       fmt.Sprintf("test-%s-%s-%d-%s", owner, repo, number, id),
 		Source:        "github",
-		SourceEventID: fmt.Sprintf("%d", time.Now().UnixNano()),
+		SourceEventID: id,
 		Topic:         contracts.GithubResourceSubject(owner, repo, "pr", fmt.Sprintf("%d", number)),
 		Payload:       string(payload),
 		TraceID:       "test-trace",
 		IssuedAt:      time.Now().Unix(),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	stored, err := natsClient.PublishAckWithin(ctx, envelope)
+	stored, err := natsClient.PublishAckWithin(testwait.Context(t), envelope)
 	if err != nil {
 		t.Fatalf("publish envelope: %v", err)
 	}
@@ -250,13 +251,26 @@ func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, rep
 // no string map can hold (publishPullRequestEnvelope encodes one).
 func publishGitHubEnvelope(t *testing.T, natsClient *bus.Client, topic, payload string) {
 	t.Helper()
-	id := fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano())
+	id := testID(t)
 	if err := natsClient.Publish(contracts.Envelope{
 		EventID: id, Source: "github", SourceEventID: id, Topic: topic, Payload: payload,
 		TraceID: "test-trace", IssuedAt: time.Now().Unix(),
 	}); err != nil {
 		t.Fatalf("publish %s: %v", topic, err)
 	}
+}
+
+// testSerials numbers the ids this package's tests make (testID), so that each is unique in the
+// test process without reading a clock. The process has a NATS server and databases of its own
+// (testnats.Main, storetest.Run), so unique in the process is unique wherever the id is read.
+var testSerials atomic.Uint64
+
+// testID is an id no other call in this test process makes: t's name and the next serial. A
+// stream's message id (bus.ForwardMsgID, from a dedupe key that names the event) and a delivery's
+// id are made from it, so it must not repeat across the runs of one test that -count makes in one
+// process, which share t's name.
+func testID(t testing.TB) string {
+	return fmt.Sprintf("%s-%d", t.Name(), testSerials.Add(1))
 }
 
 // awaitAcknowledged waits for the intake to have acknowledged every message the test's stream
@@ -270,7 +284,7 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	}
 	last := stream.State.LastSeq
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.AckFloor.Stream >= last && info.NumAckPending == 0
 	}, func() string {
@@ -346,6 +360,24 @@ func shrinkIntakeFlowControl(t *testing.T) {
 func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 	t.Helper()
 	tuningFor(t).headWriteMaxDeliveries = deliveries
+}
+
+// messageTimeoutPastTheRun is the message timeout (intakeTuning.messageTimeout) ackWaitPastTheRun
+// gives the intakes of a test: six hours.
+const messageTimeoutPastTheRun = 6 * time.Hour
+
+// ackWaitPastTheRun sets the messageTimeout of the intakes this test builds after it (tuningFor)
+// to messageTimeoutPastTheRun, the way shrinkIntakeFlowControl shrinks it. Their ack wait derives
+// from it (intakeTuning.ackWait), so the durable an intake creates (deliveryConsumerConfig, a
+// take-over's takeOverConfig) waits a day for an acknowledgement, and an intake's handler deadline
+// (Intake.deliver) is six hours out. A row whose message must reach a process at once, by a
+// hand-back or by a take-over's recreate at the ack floor, calls it before its intakes start:
+// the server's own redelivery once the ack wait expires then never comes inside the run, so a
+// wait the row leaves to the shared bound fails on a broken hand-back rather than passing on that
+// redelivery, as a short bound of the row's own once failed it.
+func ackWaitPastTheRun(t *testing.T) {
+	t.Helper()
+	tuningFor(t).messageTimeout = messageTimeoutPastTheRun
 }
 
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and
@@ -428,14 +460,13 @@ func intakeTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Client {
 }
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
-// test that means to publish into a bound consumer does not race the bind. Its one bound is what
-// the test binary's deadline leaves less rowDeadlineMargin (untilTheBinaryDeadline): a bind that is
-// merely slow on a loaded machine still passes, and one that never comes fails the row with time
-// left for its cleanups.
+// test that means to publish into a bound consumer does not race the bind. It waits as waitFor
+// does: a bind that is merely slow on a loaded machine still passes, and one that never comes
+// fails the row naming the durable's last state.
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
 	var state string
-	waitFor(t, untilTheBinaryDeadline(t), func() bool {
+	waitFor(t, func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil {
 			state = err.Error()
@@ -452,26 +483,32 @@ func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 // stream's message count and the consumer's whole state when it does not -- the numbers that say
 // whether a shortfall is a consumer that stopped being given messages or messages that never
 // reached the stream.
-func awaitRuns(t *testing.T, ctx context.Context, pool *store.Pool, natsClient *bus.Client, want int, within time.Duration) {
+func awaitRuns(t *testing.T, ctx context.Context, pool *store.Pool, natsClient *bus.Client, want int) {
 	t.Helper()
 	stored := 0
-	waitFor(t, within, func() bool {
+	waitFor(t, func() bool {
 		stored = countRuns(t, ctx, pool)
 		return stored >= want
 	}, func() string {
-		return fmt.Sprintf("delivery_runs rows = %d, want %d after %s\n%s", stored, want, within, intakeStateReport(t, natsClient))
+		return fmt.Sprintf("delivery_runs rows = %d, want %d\n%s", stored, want, intakeStateReport(t, natsClient))
 	})
 }
 
-// waitFor polls done until it reports true, and fails the test once within has passed with the
-// message failure builds at that moment -- so the message carries the state the wait gave up on,
-// not the state it started from.
-func waitFor(t *testing.T, within time.Duration, done func() bool, failure func() string) {
+// waitFor waits through the shared wait (testwait.Until) until done reports true, with no bound of
+// its own. Should the wait give up, its last reading is the text failure builds at that moment --
+// so the message carries the state the wait gave up on, not the state it started from.
+func waitFor(t *testing.T, done func() bool, failure func() string) {
 	t.Helper()
-	if !testwait.Holds(within, 50*time.Millisecond, done) {
-		t.Fatal(failure())
-	}
+	testwait.Until(t, "the condition whose failure the last reading names", func() (failureText, bool) {
+		return failure, done()
+	})
 }
+
+// failureText is a wait's failure text, built only when the wait prints it (fmt calls String),
+// since some (intakeStateReport) ask NATS for what they say.
+type failureText func() string
+
+func (f failureText) String() string { return f() }
 
 // intakeStateReport is the stream's message count per subject and the consumer's delivery state,
 // one line each.

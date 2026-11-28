@@ -70,12 +70,12 @@ func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *t
 		}
 		return false
 	}
-	waitFor(t, 20*time.Second, lost, func() string {
+	waitFor(t, lost, func() string {
 		return fmt.Sprintf("the intake never said at ERROR that its durable was lost: %v", logs())
 	})
 	holdName := intakeHoldName(bus.DispatchDeliveryDurable)
 	var token string
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		read, _, err := duty.HoldToken(ctx, leases, holdName)
 		token = read
 		return err == nil && parseIntakeHoldToken(read).start == lastAcked+1
@@ -89,8 +89,8 @@ func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *t
 	}
 	created := awaitPushBound(t, natsClient, bound.Config.DeliverSubject, "the intake never created its lost durable again")
 	for _, number := range []int{firstAfter, secondAfter} {
-		waitFor(t, 20*time.Second, func() bool { return headRows(t, ctx, pool, number) == 1 }, func() string {
-			return fmt.Sprintf("%s#%d, published after the durable was lost, has %d head rows 20s after the durable was created again at %d, want 1\n%s",
+		waitFor(t, func() bool { return headRows(t, ctx, pool, number) == 1 }, func() string {
+			return fmt.Sprintf("%s#%d, published after the durable was lost, has %d head rows after the durable was created again at %d, want 1\n%s",
 				deliveryRepo, number, headRows(t, ctx, pool, number), created.Config.OptStartSeq, intakeStateReport(t, natsClient))
 		})
 	}

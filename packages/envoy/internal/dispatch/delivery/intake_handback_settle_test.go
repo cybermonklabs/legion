@@ -48,10 +48,11 @@ import (
 //
 // Each subtest ends once the standby has acknowledged the message, by requiring that no -NAK reached
 // the server after the standby created the durable and that its consumer delivered the message once
-// (requireNoHandBackAfterCreation). No step waits on a time: each waits for an event, with a 30 s or
-// 60 s guard against one that never comes. The negative controls: the code before the seal, where the
-// hand-back was counted after beforeHandBackPublish, and a stop that does not seal, each fail the
-// second subtest with the standby's consumer delivering the message twice.
+// (requireNoHandBackAfterCreation). No step waits on a time: each waits for an event, through the
+// shared wait (testwait), whose bound guards against one that never comes. The negative controls:
+// the code before the seal, where the hand-back was counted after beforeHandBackPublish, and a stop
+// that does not seal, each fail the second subtest with the standby's consumer delivering the
+// message twice.
 func TestACallbacksHandBackAsTheStopEndsLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	// Serial until the hang a reviewer saw once in requireHandBackBeforeCreation is explained
 	// (build-cluster Job legion-ci-handback-hang-4zwgk reproduces it at main).
@@ -109,11 +110,7 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 	standby := startIntakeProcess(t, pool, natsURL, func(int) bool { return true })
 	from := recorded.count()
 	sequences := []uint64{publishMergedPullRequest(t, client, number)}
-	select {
-	case <-keying:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the holder's callback never began keying the message: " + consumerState(client))
-	}
+	testwait.Receive(t, "the holder's callback to begin keying the message (control)", keying)
 
 	atPublish := make(chan struct{})
 	var reached sync.Once
@@ -133,41 +130,29 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 		durable.stop(stopping)
 		close(stopped)
 	}()
-	waitFor(t, 30*time.Second, func() bool { return stopReleased(delivery) }, func() string {
+	waitFor(t, func() bool { return stopReleased(delivery) }, func() string {
 		return "control: the holder's stop never reached its wait for the drain to end"
 	})
 	releaseKeying()
-	select {
-	case <-atPublish:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the callback's hand-back never reached its publish: the rule withheld it")
-	}
+	testwait.Receive(t, "the callback's hand-back to reach its publish (control: the rule withheld it if it never does)", atPublish)
 	if !heldPastTheStop {
 		releasePublish()
-		select {
-		case <-delivery.handBacksLanded():
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: the callback's hand-back did not land within 30 s of its release")
-		}
+		testwait.Receive(t, "the callback's hand-back to land once released (control)", delivery.handBacksLanded())
 	}
 	endStop()
-	select {
-	case <-stopped:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the holder's stop did not return within 30 s of its context's end")
-	}
+	testwait.Receive(t, "the holder's stop to return once its context ended", stopped)
 
 	if heldPastTheStop && !holdLive(t, pool, durable.holder) {
 		// The stop released its hold with the callback's hand-back still to be decided: the standby
 		// takes the durable over and starts the message, and only then does the hand-back go on.
-		waitFor(t, 30*time.Second, func() bool { return standby.fetches(number) == 1 }, func() string {
+		waitFor(t, func() bool { return standby.fetches(number) == 1 }, func() string {
 			return "control: the standby did not start the message the holder left: " + consumerState(client)
 		})
 		releasePublish()
-		waitFor(t, 30*time.Second, func() bool {
+		waitFor(t, func() bool {
 			return handBackAfterCreation(recorded.since(from)) || loggedMessage(logs(), handBackSealed)
 		}, func() string {
-			return fmt.Sprintf("the callback's hand-back neither reached the server nor was withheld within 30 s of its release: %q; logged %q", recorded.since(from), loggedMessages(logs()))
+			return fmt.Sprintf("the callback's hand-back neither reached the server nor was withheld once released: %q; logged %q", recorded.since(from), loggedMessages(logs()))
 		})
 		if handBackAfterCreation(recorded.since(from)) {
 			delivered := uint64(0)
@@ -186,7 +171,7 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 		return
 	}
 	releasePublish()
-	waitFor(t, 60*time.Second, func() bool { return standby.fetches(number) >= 1 }, func() string {
+	waitFor(t, func() bool { return standby.fetches(number) >= 1 }, func() string {
 		return fmt.Sprintf("the standby did not start the message the holder left: %s; events %q", consumerState(client), recorded.since(from))
 	})
 	standby.release()
@@ -221,9 +206,9 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 //     no count; the order is what shows it.
 //
 // Each ends by requiring that the standby's consumer delivered each message the holder left once.
-// No step waits on a time but the hold's own expiry; a 60 s guard covers a standby that never
-// takes over. The negative control is the finalizer before the sever, which returned at the lost
-// hold and left the hand-back pending: the second subtest fails there with the -NAK after the
+// No step waits on a time but the hold's own expiry; the shared wait's bound covers a standby that
+// never takes over. The negative control is the finalizer before the sever, which returned at the
+// lost hold and left the hand-back pending: the second subtest fails there with the -NAK after the
 // creation.
 func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *testing.T) {
 	t.Parallel()
@@ -256,7 +241,7 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 				return
 			}
 			row.holder.leases.cut.Store(true)
-			waitFor(t, 60*time.Second, func() bool { return slices.Contains(row.recorded.since(row.from), durableCreated) }, func() string {
+			waitFor(t, func() bool { return slices.Contains(row.recorded.since(row.from), durableCreated) }, func() string {
 				return fmt.Sprintf("the standby did not take over the lapsed hold and create the durable: %q; %s", row.recorded.since(row.from), consumerState(row.publisher))
 			})
 			row.thaw()
@@ -305,7 +290,7 @@ func TestAStopUnderAnEndedContextHoldsTheMessageWaitingBehindItsKey(t *testing.T
 	naks := watchHandBacks(t, row.uri)
 	delivery := row.delivery()
 	row.publishPullRequestSeven(t)
-	waitFor(t, 30*time.Second, func() bool { return started.Load() == 1 && queuedBehindKeys(delivery) == 1 }, func() string {
+	waitFor(t, func() bool { return started.Load() == 1 && queuedBehindKeys(delivery) == 1 }, func() string {
 		return fmt.Sprintf("control: %d handler(s) started and %d message(s) wait behind their key, want the first in its handler and the second behind it", started.Load(), queuedBehindKeys(delivery))
 	})
 
