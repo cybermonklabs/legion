@@ -3279,21 +3279,39 @@ there for ever. The filter envoy_session_stall already selects packages/envoy/**
 packages/envoy-client/**, so the suite brings no new path into this job's closure.
 
 Each of these suites, the role topics and CI-result suites and the role takeover smoke beside
-them starts a stack of its own: its binaries built into a scratch directory of its own that also
-keeps its servers' state, its servers on ports the kernel chose for them, and each Dispatch
-server and the CI-result stack's brokers on a database of their own. They share the checkout,
-the Postgres service and the Go module and build caches. Most of each suite's time is a real
-window or timer it is about (nats.js's ping and dial timers, the listener's live window, gone
-horizon and reap interval), so as one step after another the thirteen were 628 s of the job's
-673 s median (31 green merge-group jobs, 2026-11-27 and 28), and over the ten that ran on
-2026-11-27 the runner's four cores were about 10 % busy. The job queues them through the harness
-pool (#the-harness-pool), longest first, and its wait step is their verdict. The go-envoy entry
-holds no objects of ./cmd/dispatch, of the NATS auth service or of the four commands the
-CI-result stack builds (./cmd/cipherd, ./cmd/dev-oidc-issuer, ./cmd/dev-proxy-stands and
-./cmd/cipher), and each suite that runs one builds its own, so the job compiles each once before
-the pool starts any suite: started at once, the four Dispatch suites of 2026-11-27 each compiled
-./cmd/dispatch again, and a compile beside the suites would share the processors with rows that
-read real clocks.
+them starts a stack of its own (test/envoy-stack.ts, test/dispatch-stack.ts,
+test/ci-results-stack.ts, packages/pi-envoy/scripts/smoke-role-takeover.sh): its binaries built
+into a scratch directory of its own that also keeps its servers' state, its servers on ports the
+kernel chose for them, and each Dispatch server and the CI-result stack's brokers on a database
+of their own. They share the checkout, the Postgres service and the Go module and build caches.
+Most of each suite's time is a real window or timer it is about (nats.js's ping and dial timers,
+the listener's live window, gone horizon and reap interval): as one step after another the
+thirteen were 628 s of the job's 673 s median (31 green merge-group jobs, runs 46065919629 to
+46103162044, 2026-11-27 and 28), and over the ten of them that ran on 2026-11-27 the runner's
+four cores were 9.6 to 10.5 % busy (vmstat every 5 s, four jobs of probe run 46024057392). So
+the job queues them through the harness pool (#the-harness-pool), and its wait step is their
+verdict.
+
+The go-envoy entry holds no objects of ./cmd/dispatch, of the NATS auth service or of the four
+commands the CI-result stack builds (./cmd/cipherd, ./cmd/dev-oidc-issuer, ./cmd/dev-proxy-stands
+and ./cmd/cipher), and each suite that runs one builds its own, so the first build of each in a
+run compiles it. One step after another, only the first suite that built each paid that compile:
+22.6 s to the first Dispatch suite's first row against 5.9 s for the next (job 140522567454), and
+49.5 s to the first CI-result suite's first row against 11.3 s for the second (job 140850240061).
+Queued in the pool, the four Dispatch suites of 2026-11-27 started within 16 s of each other and
+each compiled ./cmd/dispatch again (66.8, 31.2, 16.3 and 16.6 s of CPU, job 140590752284), and a
+compile beside the suites shares the processors with rows that read real clocks. So the job
+compiles each command once, before the pool starts any suite.
+
+The suites are queued longest first by each suite's wall in the pool after that build, so that
+the shorter ones fill the other cores around the longest. For ten of them that wall is the
+median of six jobs of probe run 46030395172: the smoke 117 s, envoy-client's NATS stall 107 s,
+the session state rig 88 s, claude-envoy's stall 77 s, the broker credential tests 30 s (27.5 to
+49.9 s, queued ahead of pi-envoy for that longest reading), pi-envoy's stall 32 s, the comment
+mention 17 s, the design-gate advice 9 s, the keyed resend 8 s and the moved-approval advice 7 s.
+The three that joined the job after that probe are placed by their walls in job 140859710731:
+the CI-result suite 56.3 s, queued after claude-envoy's stall, and the role topics 16.4 s and the
+refused result 17.0 s, queued after the comment mention.
 
 ## What the refill live proof shows
 

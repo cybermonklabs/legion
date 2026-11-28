@@ -88,50 +88,27 @@ jobs:
       - name: Build contracts for the stall suites
         run: bun run build
         working-directory: packages/contracts
-      # The Go commands of packages/envoy the suites below build whose objects the go-envoy entry
-      # does not hold: the Dispatch server, which each of the six Dispatch suites builds
-      # (packages/envoy-client/test/dispatch-stack.ts); the NATS auth service, which the broker
-      # credential tests build beside natsd; and the secrets broker, the cluster token issuer, the
-      # airlock's authority and fronts and agent-secrets, which each of the two CI-result suites
-      # builds (packages/envoy-client/test/ci-results-stack.ts). So the first build of each in a
-      # run compiles it. One step after another, only the first suite that built each paid that
-      # compile: 22.6 s to the first Dispatch suite's first row against 5.9 s for the next (job
-      # 140522567454), and 49.5 s to the first CI-result suite's first row against 11.3 s for the
-      # second (job 140850240061). Queued in the pool, the four Dispatch suites the job then had
-      # started within 16 s of each other and each compiled the server again (66.8, 31.2, 16.3 and
-      # 16.6 s of CPU, job 140590752284). This step compiles each command once, before any suite
-      # starts, so no suite's rows share the processors with that compile and each suite links what
-      # it builds from this run's build cache. A go build of more than one main package links each
-      # and writes no binary.
+      # why: .github/ci-notes/ci.md#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack
+      # The Go commands of packages/envoy the suites below build that the go-envoy entry does not
+      # hold: the Dispatch server (the six Dispatch suites), the NATS auth service (the broker
+      # credential tests), and the secrets broker, the cluster token issuer, the airlock's authority
+      # and fronts and agent-secrets (the two CI-result suites). It compiles each once, before any
+      # suite starts, so that no suite compiles one beside rows that read real clocks; each suite
+      # then links what it builds from this run's build cache. A go build of more than one main
+      # package links each and writes no binary.
       - name: Build once the Go commands the suites below build
         run: go build ./cmd/dispatch ./internal/testnats/cmd/calloutd ./cmd/cipherd ./cmd/dev-oidc-issuer ./cmd/dev-proxy-stands ./cmd/cipher
         working-directory: packages/envoy
+      # why: .github/ci-notes/ci.md#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack
       # The suites below, each a Bun suite or the shell smoke against a stack of its own, mostly
-      # wait out the real windows and timers they are about: nats.js's ping and dial timers, the
-      # listener's live window, gone horizon and reap interval. As one step after another the
-      # thirteen were 628 s of this job's 673 s median (31 green merge-group jobs, runs 46065919629
-      # to 46103162044, 2026-11-27 and 28); over the ten of them that ran on 2026-11-27 the
-      # runner's four cores were 9.6 to 10.5 % busy (vmstat every 5 s, four jobs of probe run
-      # 46024057392). Each step below keeps its name and hands its suite to
-      # .github/scripts/harness-pool.sh, which queues it and returns; the suites then run beside
-      # each other, no more at once than the runner has cores, in the order queued, and "Wait for
-      # the script harnesses and judge them" is their verdict and prints each one's log
-      # (.github/ci-notes/ci.md#the-harness-pool). What each suite runs is its own: every stack
-      # builds its binaries into a scratch directory of its own and keeps its servers' state there,
-      # its servers serve on ports the kernel chose for them, and each Dispatch stack and the
-      # CI-result stack's brokers make a database of their own
-      # (packages/envoy-client/test/envoy-stack.ts, test/dispatch-stack.ts, test/ci-results-stack.ts,
-      # packages/pi-envoy/scripts/smoke-role-takeover.sh). The checkout, the Postgres service and
-      # the Go module and build caches are shared. The suites are queued longest first, so the
-      # shorter ones fill the other cores around the longest, by each suite's wall in the pool
-      # after the step above (median of six jobs of probe run 46030395172): the smoke 117 s,
-      # envoy-client's NATS stall 107 s, the session state rig 88 s, claude-envoy's stall 77 s, the
-      # broker credential tests 30 s (27.5 to 49.9, ahead of pi-envoy for that longest reading),
-      # pi-envoy's stall 32 s, the comment mention 17 s, the design-gate advice 9 s, the keyed
-      # resend 8 s and the moved-approval advice 7 s. Of the three suites that joined the job after
-      # that probe, in the pool after this step (job 140859710731): the CI-result suite 56.3 s,
-      # queued after claude-envoy's stall, and the role topics 16.4 s and the refused result 17.0 s,
-      # queued after the comment mention.
+      # wait out the real windows and timers they are about. Each step below keeps its name and
+      # hands its suite to .github/scripts/harness-pool.sh, which queues it and returns; the suites
+      # then run beside each other, no more at once than the runner has cores, queued longest
+      # first, and "Wait for the script harnesses and judge them" is their verdict and prints each
+      # one's log (.github/ci-notes/ci.md#the-harness-pool). Each stack builds its binaries into a
+      # scratch directory of its own, serves on ports the kernel chose, and makes a database of its
+      # own for each Dispatch server and the CI-result stack's brokers; the suites share only the
+      # checkout, the Postgres service and the Go module and build caches.
       #
       # The role takeover smoke (INFRA-404, A5): one line per row of its spec's R8 table, driven
       # with real client processes against a listener and natsd this job already sets Go up for.
@@ -242,12 +219,14 @@ jobs:
       # every suite's log with the time it was written, and this keeps that record for 90 days, as
       # envoy-go-checks and the test job keep theirs (.github/actions/harness-times-upload,
       # docs/testing.md). .github/scripts/harness_case_times.py reads every job of a run that has
-      # the wait step above and reads one with no record as UNKNOWN. Its case lines match the
-      # smoke's `PASS:` rows and no line of a Bun suite, so it reads each Bun suite as one harness
-      # row. `always()`, so a cancelled or timed-out job keeps what was stamped before it ended.
-      # `continue-on-error`, since nothing the pool records may change what a test run decides: a
-      # failed upload is a red mark on this step alone, and the job and its ci-ok report keep the
-      # suites' verdict.
+      # the wait step above and reads one with no record as UNKNOWN. It reads each of the smoke's
+      # rows as a case, from the case line before it to the `PASS:` or `FAIL:` line the smoke prints
+      # as the row ends, its first from the smoke's start, the smoke's build of natsd and the
+      # listener included; and each Bun suite as one harness row, since no line of a Bun suite
+      # matches its case grammar. `always()`, so a cancelled or timed-out job keeps what was
+      # stamped before it ended. `continue-on-error`, since nothing the pool records may change
+      # what a test run decides: a failed upload is a red mark on this step alone, and the job and
+      # its ci-ok report keep the suites' verdict.
       - name: Upload the harness case times
         if: always()
         continue-on-error: true
