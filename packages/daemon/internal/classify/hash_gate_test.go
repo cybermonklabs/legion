@@ -401,3 +401,145 @@ func describeGate(gate record.DesignGate) string {
 	}
 	return string(encoded)
 }
+
+// TestSameDesignGateNamesEveryField holds sameDesignGate, by which ApplyGateFact says whether a
+// fact changed the row, to every field of record.DesignGate and of each type the row holds, which
+// the test enumerates by reflection (gateFields), so a field added to the row and not named in
+// sameDesignGate fails here. Each subtest named by a field's path is a row that differs from a
+// filled row (filledGate) in that field alone, in its value or, for a pointer or a slice, in its
+// form (nil, empty, longer), and reads different. DeepEqual compares every two of those rows, the
+// zero row and the filled row, each built afresh so no two share a pointer: sameDesignGate
+// answers as reflect.DeepEqual does, a nil pointer equal to nil alone and a nil slice apart from
+// an empty one. instant is the one place it answers otherwise: a time reads by the instant it
+// names, whatever its location.
+func TestSameDesignGateNamesEveryField(t *testing.T) {
+	fields := gateFields(t, reflect.TypeFor[record.DesignGate](), "DesignGate", func(row reflect.Value) reflect.Value { return row })
+	names := []string{"the zero row", "the filled row"}
+	for _, field := range fields {
+		names = append(names, field.path)
+	}
+	rows := func() []record.DesignGate {
+		rows := []record.DesignGate{{}, filledGate(t)}
+		for _, field := range fields {
+			row := filledGate(t)
+			field.change(reflect.ValueOf(&row).Elem())
+			rows = append(rows, row)
+		}
+		return rows
+	}
+	changed := rows()[2:]
+	for i, field := range fields {
+		t.Run(field.path, func(t *testing.T) {
+			if sameDesignGate(filledGate(t), changed[i]) {
+				t.Errorf("two rows that differ in %s alone read the same: sameDesignGate must name the field", field.path)
+			}
+		})
+	}
+	t.Run("DeepEqual", func(t *testing.T) {
+		left, right := rows(), rows()
+		for i := range left {
+			for j := range right {
+				if got, want := sameDesignGate(left[i], right[j]), reflect.DeepEqual(left[i], right[j]); got != want {
+					t.Errorf("sameDesignGate(%s, %s) = %t, want reflect.DeepEqual's %t", names[i], names[j], got, want)
+				}
+			}
+		}
+	})
+	t.Run("instant", func(t *testing.T) {
+		elsewhere := filledGate(t)
+		elsewhere.Basis.RegisteredAt = elsewhere.Basis.RegisteredAt.In(time.FixedZone("UTC+1", 60*60))
+		if !sameDesignGate(filledGate(t), elsewhere) {
+			t.Error("a registration time of one instant in another location reads as another row, want the same")
+		}
+	})
+}
+
+// gateField is one way a row can differ from filledGate in one field alone: the field's path in
+// record.DesignGate, with the form it takes where it changes the field's form rather than its
+// value (nil, empty, longer), and that change, made to a filled row.
+type gateField struct {
+	path   string
+	change func(row reflect.Value)
+}
+
+// gateFields is each way a row can differ from filledGate in the field of typ at path alone, which
+// at finds in a row: a time, a string, a bool or a number changed; a pointer nil, or the value it
+// points at changed; a slice nil, empty or one element longer, or its element changed; and each
+// field of a struct by these rules. A kind the row held none of when this test was written fails
+// the test, which must learn it, and sameDesignGate how to compare it, before it passes.
+func gateFields(t *testing.T, typ reflect.Type, path string, at func(row reflect.Value) reflect.Value) []gateField {
+	t.Helper()
+	one := func(path string, change func(field reflect.Value)) gateField {
+		return gateField{path: path, change: func(row reflect.Value) { change(at(row)) }}
+	}
+	switch kind := typ.Kind(); {
+	case typ == reflect.TypeFor[time.Time]():
+		return []gateField{one(path, func(field reflect.Value) { field.Set(reflect.ValueOf(field.Interface().(time.Time).Add(time.Second))) })}
+	case kind == reflect.Struct:
+		var fields []gateField
+		for i := range typ.NumField() {
+			field := typ.Field(i)
+			if !field.IsExported() {
+				t.Fatalf("%s.%s is unexported, which this test cannot change", path, field.Name)
+			}
+			fields = append(fields, gateFields(t, field.Type, path+"."+field.Name, func(row reflect.Value) reflect.Value { return at(row).Field(i) })...)
+		}
+		return fields
+	case kind == reflect.Pointer:
+		return append([]gateField{one(path+" nil", reflect.Value.SetZero)},
+			gateFields(t, typ.Elem(), path, func(row reflect.Value) reflect.Value { return at(row).Elem() })...)
+	case kind == reflect.Slice:
+		return append([]gateField{
+			one(path+" nil", reflect.Value.SetZero),
+			one(path+" empty", func(field reflect.Value) { field.Set(reflect.MakeSlice(typ, 0, 0)) }),
+			one(path+" longer", func(field reflect.Value) { field.Set(reflect.Append(field, field.Index(0))) }),
+		}, gateFields(t, typ.Elem(), path+"[0]", func(row reflect.Value) reflect.Value { return at(row).Index(0) })...)
+	case kind == reflect.String:
+		return []gateField{one(path, func(field reflect.Value) { field.SetString(field.String() + " changed") })}
+	case kind == reflect.Bool:
+		return []gateField{one(path, func(field reflect.Value) { field.SetBool(!field.Bool()) })}
+	case kind >= reflect.Int && kind <= reflect.Int64:
+		return []gateField{one(path, func(field reflect.Value) { field.SetInt(field.Int() + 1) })}
+	}
+	t.Fatalf("%s is a %s, which this test cannot change", path, typ)
+	return nil
+}
+
+// filledGate is a row whose every field, through each pointer and in the one element of each
+// slice, holds a value other than its zero, so a row differs from it in one field by a change of
+// that field alone (gateFields). Each call builds a row of its own, which shares no pointer with
+// another.
+func filledGate(t *testing.T) record.DesignGate {
+	t.Helper()
+	var row record.DesignGate
+	fillField(t, reflect.ValueOf(&row).Elem())
+	return row
+}
+
+// fillField gives field, and each field it holds, a value other than its zero (filledGate).
+func fillField(t *testing.T, field reflect.Value) {
+	t.Helper()
+	typ := field.Type()
+	switch kind := typ.Kind(); {
+	case typ == reflect.TypeFor[time.Time]():
+		field.Set(reflect.ValueOf(hashGateBase))
+	case kind == reflect.Struct:
+		for i := range field.NumField() {
+			fillField(t, field.Field(i))
+		}
+	case kind == reflect.Pointer:
+		field.Set(reflect.New(typ.Elem()))
+		fillField(t, field.Elem())
+	case kind == reflect.Slice:
+		field.Set(reflect.MakeSlice(typ, 1, 1))
+		fillField(t, field.Index(0))
+	case kind == reflect.String:
+		field.SetString("filled")
+	case kind == reflect.Bool:
+		field.SetBool(true)
+	case kind >= reflect.Int && kind <= reflect.Int64:
+		field.SetInt(1)
+	default:
+		t.Fatalf("a field of type %s, which this test cannot fill", typ)
+	}
+}

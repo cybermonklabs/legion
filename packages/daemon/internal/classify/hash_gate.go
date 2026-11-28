@@ -1,8 +1,6 @@
 package classify
 
 import (
-	"reflect"
-
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -126,7 +124,7 @@ func ApplyGateFact(gate record.DesignGate, fact GateFact) GateFactResult {
 	switch {
 	case gate.Verdict == nil && !carriesDigest:
 		after := ApplyDesignGateEvent(gate, fact.Kind, fact.Version, fact.Mark)
-		return GateFactResult{Gate: after, Changed: !reflect.DeepEqual(gate, after)}
+		return GateFactResult{Gate: after, Changed: !sameDesignGate(gate, after)}
 	case gate.Verdict != nil && !carriesDigest && !review:
 		return versionModeAgain(gate, fact)
 	case gate.Verdict != nil && review && fact.Version < gate.LatestVersion:
@@ -162,7 +160,7 @@ func ApplyGateFact(gate record.DesignGate, fact GateFact) GateFactResult {
 		toldChanges = fact.Mark
 	}
 	gate = verdictAfterReviews(gate, toldChanges)
-	if !entering && reflect.DeepEqual(gate, before) {
+	if !entering && sameDesignGate(gate, before) {
 		return GateFactResult{Gate: before}
 	}
 	told := record.ToldStanding(prior)
@@ -364,3 +362,56 @@ func toldOpen(held *bool, open bool) *bool {
 	}
 	return &open
 }
+
+// sameDesignGate says whether a and b are the same row, as ApplyGateFact asks whether a fact
+// changed one: each field equal, a pointer's by the value it points at (nil equal to nil alone), a
+// slice's element by element (nil apart from an empty one, same), and a time by the instant it
+// names (time.Time.Equal), whatever its location. It must name every field of record.DesignGate,
+// and sameBasis, samePersonApproval, sameVerdict and sameMark every field of the types the row
+// holds: a field one leaves out reads as no change of the row
+// (TestSameDesignGateNamesEveryField).
+func sameDesignGate(a, b record.DesignGate) bool {
+	return a.Issue == b.Issue && a.Step == b.Step && a.ArtifactID == b.ArtifactID && a.LatestVersion == b.LatestVersion &&
+		samePointer(a.ApprovedVersion, b.ApprovedVersion, equal) && sameMark(a.ApprovedMark, b.ApprovedMark) &&
+		samePointer(a.ToldChangesVersion, b.ToldChangesVersion, equal) && a.ToldChangesReason == b.ToldChangesReason &&
+		sameMark(a.ToldChangesMark, b.ToldChangesMark) && a.EverOpened == b.EverOpened && samePointer(a.Basis, b.Basis, sameBasis) &&
+		samePointer(a.KeptPerson, b.KeptPerson, samePersonApproval) && same(a.RestsOn, b.RestsOn) && a.BasisMoves == b.BasisMoves &&
+		samePointer(a.Verdict, b.Verdict, sameVerdict) && a.ApprovedDigest == b.ApprovedDigest &&
+		samePointer(a.ToldOpen, b.ToldOpen, equal) && a.Carried == b.Carried
+}
+
+// sameBasis says whether a and b are the same basis, each field of record.GateBasis compared as
+// sameDesignGate compares a row's.
+func sameBasis(a, b record.GateBasis) bool {
+	return a.Issue == b.Issue && a.ArtifactID == b.ArtifactID && a.Version == b.Version && sameMark(a.Approval, b.Approval) &&
+		a.Approver == b.Approver && same(a.Serves, b.Serves) && a.Reason == b.Reason && a.Session == b.Session &&
+		a.RegisteredAt.Equal(b.RegisteredAt) && a.RootVersion == b.RootVersion && samePointer(a.Pending, b.Pending, equal)
+}
+
+// samePersonApproval says whether a and b are the same person's approval: one version, one mark.
+func samePersonApproval(a, b record.PersonApproval) bool {
+	return a.Version == b.Version && sameMark(a.Mark, b.Mark)
+}
+
+// sameVerdict says whether a and b are the same verdict, each field of record.GateVerdict equal.
+func sameVerdict(a, b record.GateVerdict) bool {
+	return a.Version == b.Version && a.Current == b.Current && a.Digest == b.Digest && sameMark(a.Mark, b.Mark)
+}
+
+// sameMark says whether a and b are one mark field by field: one sequence, and times of one
+// instant. It is not record.EventMark.Same, which matches two marks where either lacks a part.
+func sameMark(a, b record.EventMark) bool {
+	return a.Seq == b.Seq && a.At.Equal(b.At)
+}
+
+// samePointer says whether a and b point at values sameValue reads as one, a nil pointer equal to
+// nil alone.
+func samePointer[T any](a, b *T, sameValue func(T, T) bool) bool {
+	if a == nil || b == nil || a == b {
+		return a == b
+	}
+	return sameValue(*a, *b)
+}
+
+// equal says whether a and b are equal by ==, for samePointer.
+func equal[T comparable](a, b T) bool { return a == b }
