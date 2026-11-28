@@ -81,14 +81,16 @@ func (h *harness) requests() []contracts.CIVerifyRequest {
 	return requests
 }
 
-// waitForRequest polls the bucket until it holds a verify request of the harness's head past
-// after, the revision of an earlier one (zero for any), and answers it.
+// waitForRequest waits until the bucket holds a verify request of the harness's head past after,
+// the revision of an earlier one (zero for any), and answers it.
 func (h *harness) waitForRequest(after uint64) contracts.CIVerifyRequest {
 	h.t.Helper()
 	return h.waitForRequestOf(headSHA, after)
 }
 
-// waitForRequestOf is waitForRequest for the head at sha.
+// waitForRequestOf is waitForRequest for the head at sha. The listener writes a request from its
+// summary loop, which runs on ciClock, so each try that finds none moves that clock on to the next
+// moment the loop arms within a debounce and a tick (driveLoop), as settlement does.
 func (h *harness) waitForRequestOf(sha string, after uint64) contracts.CIVerifyRequest {
 	h.t.Helper()
 	return testwait.Until(h.t, "a verify request past the head's previous revision", func() (contracts.CIVerifyRequest, bool) {
@@ -97,16 +99,23 @@ func (h *harness) waitForRequestOf(sha string, after uint64) contracts.CIVerifyR
 				return request, true
 			}
 		}
+		h.driveLoop(h.loopStep())
 		return contracts.CIVerifyRequest{}, false
 	})
 }
 
-// waitForState polls the head's record until done holds of it.
+// waitForState waits until the head's record is one done holds of, and answers it. The record is
+// the summary loop's to write as well as the passes', and the loop writes only as ciClock moves, so
+// each read done does not hold of moves that clock on as settlement does (driveLoop).
 func (h *harness) waitForState(why string, done func(cistore.State) bool) cistore.State {
 	h.t.Helper()
 	return testwait.Until(h.t, why, func() (cistore.State, bool) {
 		state, _, ok := h.record()
-		return state, ok && done(state)
+		if ok && done(state) {
+			return state, true
+		}
+		h.driveLoop(h.loopStep())
+		return state, false
 	})
 }
 

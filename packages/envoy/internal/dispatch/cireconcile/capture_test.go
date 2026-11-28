@@ -7,10 +7,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The head the captured answers below are of: the oldest open pull request of
@@ -276,10 +274,8 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 		delivery++
 		h.post("check_suite", capturedWebhook(t, "check_suite", item), fmt.Sprintf("suite-%d", delivery))
 	}
-	if _, err := settlements.NextMsgWithContext(testwait.Context(t)); err != nil {
-		t.Fatalf("the webhooks published no settlement: %v", err)
-	}
-	_, before := h.settledRecordAt(capturedRepository, capturedNumber, capturedSHA, 50*time.Millisecond)
+	h.settlement(settlements, "the webhooks' settlement of the captured head")
+	_, before := h.settledRecordAt(capturedRepository, capturedNumber, capturedSHA)
 
 	h.pass()
 

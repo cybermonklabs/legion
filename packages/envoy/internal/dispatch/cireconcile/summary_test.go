@@ -9,15 +9,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-const summaryDebounce = 100 * time.Millisecond
 
 var errUnexpectedSettlement = errors.New("unexpected settlement")
 
@@ -28,11 +25,10 @@ type scheduledRecord struct {
 }
 
 // summaryWitness receives actual scheduling decisions from the real summary loop. Publish still
-// goes through the real bus. The buffered wake is a change notification, not a clock tick.
+// goes through the real bus.
 type summaryWitness struct {
 	mu        sync.Mutex
 	records   map[string]scheduledRecord
-	wake      chan struct{}
 	completed uint64
 }
 
@@ -42,20 +38,12 @@ func (p *summaryWitness) SummaryScheduled(key string, state cistore.State, kind 
 	p.mu.Lock()
 	p.records[key] = scheduledRecord{state: state, kind: kind, pass: p.completed + 1}
 	p.mu.Unlock()
-	select {
-	case p.wake <- struct{}{}:
-	default:
-	}
 }
 
 func (p *summaryWitness) SummaryPassEnded() {
 	p.mu.Lock()
 	p.completed++
 	p.mu.Unlock()
-	select {
-	case p.wake <- struct{}{}:
-	default:
-	}
 }
 
 func (p *summaryWitness) record(key string) (scheduledRecord, bool, uint64) {
@@ -95,63 +83,85 @@ func (h *harness) subjectRecords(owner, repo, number string) ([]nats.KeyValueEnt
 }
 
 // waitForNoSettlement returns the keys whose matching, completed decisions it judged. The
-// regression test checks this evidence even if an unwanted settlement is already queued.
+// regression test checks this evidence even if an unwanted settlement is already queued. It
+// judges the subject's records at the shared wait's pace (judgeSubject), and each reading that is
+// not decisive moves the summary loop's clock on to the next moment the loop arms within a
+// debounce and a tick (driveLoop): the loop runs a pass only when its clock is moved, so a record
+// still in its debounce, or one the loop has not looked at since it changed, is decided only once
+// the witness moves it.
 func (h *harness) waitForNoSettlement(sub *nats.Subscription, why, owner, repo, number string) ([]string, error) {
 	h.t.Helper()
 	prefix := cistore.Key(owner, repo, number, "")
-	ctx := testwait.Context(h.t)
-	for {
-		records, err := h.subjectRecords(owner, repo, number)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", why, err)
-		}
-		decisive := true
-		var keys, judged []string
-		for _, entry := range records {
-			key := entry.Key()
-			keys = append(keys, key)
-			note, reported, completed := h.summary.record(key)
-			if !reported {
-				decisive = false
-				continue
-			}
-			var durable cistore.State
-			if err := json.Unmarshal(entry.Value(), &durable); err != nil {
-				return judged, fmt.Errorf("%s: decode CI record %s: %w", why, key, err)
-			}
-			want, err := json.Marshal(durable)
-			if err != nil {
-				return judged, err
-			}
-			got, err := json.Marshal(note.state)
-			if err != nil {
-				return judged, err
-			}
-			if !bytes.Equal(got, want) || completed < note.pass {
-				decisive = false
-				continue
-			}
-			judged = append(judged, key)
-			switch note.kind {
-			case "attempt":
-				return judged, fmt.Errorf("%s: the summary loop scheduled a settlement of the durable record: %+v: %w", why, durable, errUnexpectedSettlement)
-			case "debounce", "claim":
-				decisive = false
-			case "verify", "idle", "not-ready", "retry", "held", "stuck":
-				// A matching decision from a completed pass cannot publish without new evidence.
-			default:
-				return judged, fmt.Errorf("%s: unknown scheduler verdict %q", why, note.kind)
-			}
+	var judged []string
+	var failure error
+	testwait.Until(h.t, why+": decisive passes of the summary loop for "+prefix, func() (string, bool) {
+		var keys []string
+		var decisive bool
+		judged, keys, decisive, failure = h.judgeSubject(why, owner, repo, number)
+		if failure != nil {
+			return failure.Error(), true
 		}
 		if decisive {
-			return judged, h.queuedSettlementError(sub, why)
+			failure = h.queuedSettlementError(sub, why)
+			return fmt.Sprintf("decisive decisions of %v", judged), true
 		}
-		select {
-		case <-h.summary.wake:
-		case <-ctx.Done():
-			return judged, fmt.Errorf("%s: the summary loop never completed decisive passes for %s; last keys: %v: %w", why, prefix, keys, ctx.Err())
+		moved := h.driveLoop(h.loopStep())
+		return fmt.Sprintf("no decisive passes; keys %v, judged %v; this try moved the summary loop's clock: %t; armed on it now: %v",
+			keys, judged, moved, h.ciClock.Armed()), false
+	})
+	return judged, failure
+}
+
+// judgeSubject reads every record under the pull request's subject once and the summary loop's
+// last decision of each, and returns the keys whose matching, completed decisions it judged, every
+// key it read, and whether those decisions are decisive: every key has one, from a pass that has
+// completed, made on the record as the bucket holds it, and none of them a transient debounce or
+// claim wait. A judged attempt is an unexpected settlement, and a transport or decode failure is
+// an error.
+func (h *harness) judgeSubject(why, owner, repo, number string) (judged, keys []string, decisive bool, err error) {
+	h.t.Helper()
+	records, err := h.subjectRecords(owner, repo, number)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("%s: %w", why, err)
+	}
+	decisive = true
+	for _, entry := range records {
+		key := entry.Key()
+		keys = append(keys, key)
+		note, reported, completed := h.summary.record(key)
+		if !reported {
+			decisive = false
+			continue
+		}
+		var durable cistore.State
+		if err := json.Unmarshal(entry.Value(), &durable); err != nil {
+			return judged, keys, false, fmt.Errorf("%s: decode CI record %s: %w", why, key, err)
+		}
+		want, err := json.Marshal(durable)
+		if err != nil {
+			return judged, keys, false, err
+		}
+		got, err := json.Marshal(note.state)
+		if err != nil {
+			return judged, keys, false, err
+		}
+		if !bytes.Equal(got, want) || completed < note.pass {
+			decisive = false
+			continue
+		}
+		judged = append(judged, key)
+		switch note.kind {
+		case "attempt":
+			return judged, keys, false, fmt.Errorf("%s: the summary loop scheduled a settlement of the durable record: %+v: %w", why, durable, errUnexpectedSettlement)
+		case "debounce", "claim":
+			decisive = false
+		case "verify", "idle", "not-ready", "retry", "held", "stuck":
+			// A matching decision from a completed pass cannot publish without new evidence.
+		default:
+			return judged, keys, false, fmt.Errorf("%s: unknown scheduler verdict %q", why, note.kind)
 		}
 	}
+	return judged, keys, decisive, nil
 }
 
 func (h *harness) queuedSettlementError(sub *nats.Subscription, why string) error {
@@ -187,11 +197,15 @@ func TestTheAbsenceWitnessRejectsAnotherSHAOnTheSamePullRequestSubject(t *testin
 		t.Fatal("the webhook did not create the second durable SHA on the same pull request")
 	}
 	// Exercise the old helper's blind case even on a fast runner: the message is already
-	// queued, so only the judged-key evidence distinguishes a one-commit helper.
+	// queued, so only the judged-key evidence distinguishes a one-commit helper. The summary
+	// loop publishes it only as its clock moves, so each try that finds none moves it on.
 	testwait.Until(t, "the second SHA's queued settlement before the absence assertion", func() (int, bool) {
 		pending, _, err := settlements.Pending()
 		if err != nil {
 			t.Fatal(err)
+		}
+		if pending == 0 {
+			h.driveLoop(h.loopStep())
 		}
 		return pending, pending > 0
 	})
@@ -263,9 +277,15 @@ func TestTheWitnessListsAKeyWrittenAgainWhileItLists(t *testing.T) {
 	second := runAt(other, 2, "second-ci", "completed", "success", "2026-11-05T03:02:00Z")
 	h.post("check_run", webhookFor("check_run", second, 7), "subject-second")
 	for _, sha := range []string{headSHA, other.sha} {
+		// The summary loop settles a record only as its clock moves, so each read that finds the
+		// record unsettled moves it on.
 		testwait.Until(t, "the settled CI record of "+sha, func() (*cistore.State, bool) {
 			state, _ := h.recordAt(gitHubRepository, 7, sha)
-			return state, state != nil && state.SettledEmitted && state.Claim == nil
+			settled := state != nil && state.SettledEmitted && state.Claim == nil
+			if !settled {
+				h.driveLoop(h.loopStep())
+			}
+			return state, settled
 		})
 	}
 	kv, err := h.bus.JS().KeyValue(bus.CIStateBucket)
